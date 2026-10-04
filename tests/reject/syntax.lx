@@ -1,0 +1,4 @@
+// RULE syntax
+kernel k
+  in x: f32[1, 4]
+{ }

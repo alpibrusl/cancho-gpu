@@ -1,0 +1,12 @@
+// RULE bounds
+// ARGS n=64
+algo k(n)
+  in  x: f32[n, n]
+  out y: f32[n, n]
+  tile b
+{
+  grid i over n / b
+  let a = load x[i * b + 1, 0 ; b, n]
+  store a -> y[i * b, 0]
+}
+schedule k for nvidia-ada { threads 32 b 16 }

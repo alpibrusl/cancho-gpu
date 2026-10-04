@@ -1,0 +1,9 @@
+// A file with no schedule for either target the compiler lowers for.
+algo k
+  in  x: f32[1, 4]
+  out y: f32[1, 4]
+{
+  let a = load x
+  store a -> y
+}
+schedule k for amd-cdna3 { threads 64 }

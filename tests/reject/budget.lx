@@ -1,0 +1,9 @@
+// RULE budget
+algo k
+  in  x: f16[256, 256]
+  out y: f16[256, 256]
+{
+  let a = load x[0, 0 ; 256, 256] @shared
+  store sigmoid a -> y
+}
+schedule k for apple-m-series { threads 256 }

@@ -1,0 +1,15 @@
+// y = x w^T for one row: a matrix-vector product, the decode-time shape.
+// Fewer outputs than threads, so the lowering splits the reduction
+// across lanes and combines with shuffles (the split-K path).
+algo matvec(n, k)
+  in  x: f32[1, k]
+  in  w: f32[n, k]
+  out y: f32[1, n]
+{
+  let xt = load x
+  let wt = load w
+  store matmul_nt xt wt -> y
+}
+
+schedule matvec for apple-m-series { threads 256 }
+schedule matvec for nvidia-ada     { threads 128 }

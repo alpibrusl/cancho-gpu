@@ -1,0 +1,129 @@
+# <file.lx> [name=value ...] -- see scripts/differential.sh
+# lex-gpu's own kernels, at the sizes its README uses and at others.
+tests/lx/lex-gpu/silu_mul.lx
+tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=0.00001
+tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=5120 eps=1e-6
+tests/lx/lex-gpu/rmsnorm.lx n=64 eps=0.1
+tests/lx/lex-gpu/rmsnorm.lx n=3 eps=0.3
+tests/lx/lex-gpu/rmsnorm.lx n=4096
+tests/lx/lex-gpu/gemm.lx m=128 n=128 k=64
+tests/lx/lex-gpu/gemm.lx m=64 n=32 k=256
+tests/lx/lex-gpu/gemm.lx m=48 n=16 k=32
+tests/lx/lex-gpu/gemm.lx m=128 n=128 k=48
+tests/lx/lex-gpu/gemm_mma.lx m=128 n=128 k=64
+tests/lx/lex-gpu/gemm_mma.lx m=256 n=256 k=128
+tests/lx/lex-gpu/gemm_mma.lx m=128 n=256 k=640
+tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64
+tests/lx/lex-gpu/gemm_fp4.lx m=512 n=1024 k=5120
+tests/lx/lex-gpu/gemm_fp4.lx m=256 n=128 k=128
+tests/lx/lex-gpu/gemm_fp4_res.lx m=128 n=128 k=64
+tests/lx/lex-gpu/gemm_fp4_res.lx m=512 n=5120 k=17408
+# Programs written for this repository, for the lowering paths the six
+# above do not reach.
+tests/lx/matvec.lx n=64 k=4096
+tests/lx/matvec.lx n=16 k=100
+tests/lx/matvec.lx n=1 k=8
+tests/lx/matvec.lx n=300 k=64
+tests/lx/matvec_fp4.lx n=64 k=4096
+tests/lx/matvec_fp4.lx n=8 k=256
+tests/lx/matvec_fp4.lx n=32 k=48
+tests/lx/batch_fp4.lx b=4 n=64 k=512
+tests/lx/batch_fp4.lx b=2 n=200 k=256
+tests/lx/batch_fp4.lx b=16 n=128 k=4096
+tests/lx/batch_fp4.lx b=3 n=40 k=96
+tests/lx/rowops.lx r=4 n=1024
+tests/lx/rowops.lx r=300 n=7
+tests/lx/rowops.lx r=1 n=33
+tests/lx/stage.lx m=8 k=64
+tests/lx/stage.lx m=3 k=96
+# Refusals: both sides must refuse.
+tests/lx/lex-gpu/rmsnorm.lx
+tests/lx/lex-gpu/gemm.lx m=100 n=128 k=64
+tests/lx/lex-gpu/gemm_mma.lx m=128 n=128 k=100
+tests/lx/lex-gpu/gemm_mma.lx m=64 n=64 k=64
+tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=63
+tests/lx/batch_fp4.lx b=2 n=64 k=40
+# f32 constants: `1 / n` folded in f32 and `eps` printed by `{:?}`.
+tests/lx/lex-gpu/rmsnorm.lx n=3 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=5 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=6 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=7 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=9 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=11 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=12 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=13 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=17 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=24 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=25 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=31 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=96 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=100 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=333 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=1000 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=1023 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=4097 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=10000 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=12345 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=65536 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=99991 eps=1e-5
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=0.25
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=123.456
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=1e20
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=9.99e-5
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=0.0001
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=1e-4
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=1e16
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=9999999999999999
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=3.3e-7
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=1e-38
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=1e-45
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=7e-46
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=3.4028235e38
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=0.1
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=0.3
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=2.5
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=1e-10
+tests/lx/lex-gpu/rmsnorm.lx n=256 eps=6.02214076e23
+tests/lx/lex-gpu/rmsnorm.lx n=792 eps=1.919833016678e-11
+tests/lx/lex-gpu/rmsnorm.lx n=5992 eps=0.2753
+tests/lx/lex-gpu/rmsnorm.lx n=3518 eps=2.7182972439552973e+21
+tests/lx/lex-gpu/rmsnorm.lx n=1145 eps=18.969550792622
+tests/lx/lex-gpu/rmsnorm.lx n=969 eps=80.732171064725
+tests/lx/lex-gpu/rmsnorm.lx n=1014 eps=7.9279249e-22
+tests/lx/lex-gpu/rmsnorm.lx n=3623 eps=0.00016
+tests/lx/lex-gpu/rmsnorm.lx n=4745 eps=1.0899e-08
+tests/lx/lex-gpu/rmsnorm.lx n=5055 eps=308.6
+tests/lx/lex-gpu/rmsnorm.lx n=1689 eps=5.35843e+09
+tests/lx/lex-gpu/rmsnorm.lx n=6102 eps=4.428383e+07
+tests/lx/lex-gpu/rmsnorm.lx n=977 eps=0.677
+tests/lx/lex-gpu/rmsnorm.lx n=5147 eps=6.1900959317355
+tests/lx/lex-gpu/rmsnorm.lx n=5925 eps=2.3573640092732e+19
+tests/lx/lex-gpu/rmsnorm.lx n=4000 eps=3.43302e+09
+tests/lx/lex-gpu/rmsnorm.lx n=8112 eps=9.0469466380356405
+tests/lx/lex-gpu/rmsnorm.lx n=4718 eps=1.18364281953018e+15
+tests/lx/lex-gpu/rmsnorm.lx n=8388 eps=3.988e-21
+tests/lx/lex-gpu/rmsnorm.lx n=2491 eps=1.5257019729e+11
+tests/lx/lex-gpu/rmsnorm.lx n=1272 eps=0.00013
+tests/lx/lex-gpu/rmsnorm.lx n=5573 eps=199759.05364
+tests/lx/lex-gpu/rmsnorm.lx n=7475 eps=5462037.539898128
+tests/lx/lex-gpu/rmsnorm.lx n=7768 eps=11644.949
+tests/lx/lex-gpu/rmsnorm.lx n=5073 eps=1.2e-22
+tests/lx/lex-gpu/rmsnorm.lx n=4663 eps=34904381156.8685
+# Every refusal fixture: the Rust must refuse it as well.
+tests/reject/bounds.lx n=64
+tests/reject/budget.lx 
+tests/reject/carry.lx n=64
+tests/reject/chunk.lx n=100
+tests/reject/consume-outer.lx n=64
+tests/reject/grid.lx n=64
+tests/reject/leak.lx n=8
+tests/reject/lowering.lx m=128 n=128 k=64
+tests/reject/moved-while-borrowed.lx n=8
+tests/reject/narrowing.lx n=8
+tests/reject/offset.lx n=64
+tests/reject/shape.lx n=8
+tests/reject/syntax.lx 
+tests/reject/type.lx n=8
+tests/reject/unbound.lx n=4
+tests/reject/use-after-move.lx n=8

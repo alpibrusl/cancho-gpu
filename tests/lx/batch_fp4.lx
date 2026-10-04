@@ -1,0 +1,19 @@
+// A few rows against NVFP4 weights: the batched-rows lowering, every
+// weight read and decoded once for the whole batch.
+algo batch_fp4(b, n, k)
+  in  x:  f32[b, k]
+  in  wq: i8[n, k / 2]
+  in  ws: i8[n, k / 16]
+  in  wg: f32[n]
+  out y:  f32[b, n]
+{
+  let xt = load x
+  let q  = load wq
+  let s  = load ws
+  let g  = load wg
+  let w  = dequant_fp4 q s g 16
+  store matmul_nt xt w -> y
+}
+
+schedule batch_fp4 for apple-m-series { threads 256 }
+schedule batch_fp4 for nvidia-ada     { threads 256 }

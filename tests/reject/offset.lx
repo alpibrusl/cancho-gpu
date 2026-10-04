@@ -1,0 +1,12 @@
+// RULE offset
+// ARGS n=64
+algo k(n)
+  in  x: f32[n, n]
+  out y: f32[n, n]
+  tile b
+{
+  grid i over n / b, j over n / b
+  let a = load x[i * j, 0 ; b, b]
+  store a -> y[0, 0]
+}
+schedule k for nvidia-ada { threads 32 b 16 }

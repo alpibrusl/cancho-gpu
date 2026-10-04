@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The compiler these sources were written for: the commit pinned in
+      # lex-sys.toml, read from there so there is one place to change it.
+      - name: Read the compiler pin
+        id: pin
+        run: echo "rev=$(sed -n 's/^lex-sys = "\([0-9a-f]*\)".*/\1/p' lex-sys.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the compiler
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/lex-sys-bin
+          key: lex-sys-${{ steps.pin.outputs.rev }}-ubuntu-24.04
+
+      - name: Check out lex-sys
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: alpibrusl/lex-sys
+          ref: ${{ steps.pin.outputs.rev }}
+          path: lex-sys
+
+      - name: Build lex-sys
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd lex-sys
+          cargo build --release -p lex-sys
+          mkdir -p ~/lex-sys-bin
+          cp target/release/lex-sys ~/lex-sys-bin/
+
+      - name: Gate
+        run: LEX_SYS=~/lex-sys-bin/lex-sys scripts/gate.sh
