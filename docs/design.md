@@ -1,6 +1,7 @@
 # lexsys-gpu: design
 
-> **Status: slices 1–7 of lex-sys#251 built and measured.** The `.lx`
+> **Status: slices 1–8 of lex-sys#251 built and measured** (slice 8,
+> driving a GPU, against a mock driver only: [`device.md`](device.md)). The `.lx`
 > front end, checker and both emitters of
 > [lex-gpu](https://github.com/alpibrusl/lex-gpu), written in lex-sys,
 > produce **byte-identical** CUDA C and Metal for every case in

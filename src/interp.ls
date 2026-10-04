@@ -575,7 +575,7 @@ fn stmt[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, s: in
 // The made-up inputs: one tensor per parameter, `[dtype, shape, offset,
 // length]`, or -1. Floats in [-0.5, 0.5) from the Rust's LCG, I8 codes
 // `0x30 + i % 8`, writable parameters zero.
-fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int) -> [] int {
+pub fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int) -> [] int {
     let out = mem.list(m);
     var seed = 12345;
     let ps = ir.p_params(m, prog);
@@ -619,14 +619,9 @@ fn first_four[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], at: int,
     return text.f1(m, t, "[$]", text.joined(m, t, parts, ", "));
 }
 
-// Run `prog` over made-up inputs and answer the summary lines (one per
-// writable parameter, each ending in a newline, prefixed `target: `),
-// or -1.
-pub fn run[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, target: int) -> [] int {
-    let globals = inputs(m, t, fm, prog);
-    if globals < 0 {
-        return 0 - 1;
-    }
+// Run `prog` over the tensors `globals` (from `inputs`), in place.
+// Answers 0, or -1.
+pub fn execute[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, globals: int) -> [] int {
     let it = new_interp(m, prog, globals);
     let pid = ir.p_pid(m, prog);
     let pid2 = ir.p_pid2(m, prog);
@@ -653,6 +648,11 @@ pub fn run[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, 
         }
         g2 = g2 + 1;
     }
+    return 0;
+}
+
+// The summary lines of the writable tensors, each `label: ...\n`.
+pub fn summary[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, globals: int, label: int) -> [] int {
     let lines = mem.list(m);
     let ps = ir.p_params(m, prog);
     var i = 0;
@@ -670,10 +670,24 @@ pub fn run[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, 
                 j = j + 1;
             }
             let mean = f32.div(sum, f32.round(float_of(n)));
-            let l = mem.of6(m, target, ir.param_name(m, p), ir.shape_debug(m, t, ir.param_shape(m, p)), f32.fixed(m, t, mean, 4), f32.fixed(m, t, peak, 4), first_four(m, t, fm, at, n));
+            let l = mem.of6(m, label, ir.param_name(m, p), ir.shape_debug(m, t, ir.param_shape(m, p)), f32.fixed(m, t, mean, 4), f32.fixed(m, t, peak, 4), first_four(m, t, fm, at, n));
             mem.push(m, lines, text.fmt(m, t, "$: $ $ = mean $, peak $, first $\n", l));
         }
         i = i + 1;
     }
     return text.joined(m, t, lines, "");
+}
+
+// Run `prog` over made-up inputs and answer the summary lines (one per
+// writable parameter, each ending in a newline, prefixed `target: `),
+// or -1.
+pub fn run[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, target: int) -> [] int {
+    let globals = inputs(m, t, fm, prog);
+    if globals < 0 {
+        return 0 - 1;
+    }
+    if execute(m, t, fm, prog, globals) < 0 {
+        return 0 - 1;
+    }
+    return summary(m, t, fm, prog, globals, target);
 }

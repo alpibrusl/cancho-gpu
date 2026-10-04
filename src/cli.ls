@@ -1,0 +1,69 @@
+edition 5;
+module cli;
+
+// What both programs (`src/main.ls`, `device/main.ls`) do with a command
+// line: read `name=value` constants, and print refusals as
+// `error[<rule>]: <message>`.
+
+import std.io;
+import mem;
+import text;
+import err;
+import f32;
+
+pub fn report[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io) -> [err_write] int {
+    var i = 0;
+    while i < err.count(m) {
+        let (rule, msg) = err.nth(m, i);
+        io.error_all(io, "error[");
+        io.error_all(io, text.bytes(t, rule));
+        io.error_all(io, "]: ");
+        io.error_all(io, text.bytes(t, msg));
+        io.error_all(io, "\n");
+        i = i + 1;
+    }
+    return 1;
+}
+
+// `name=value` arguments from `from` on, as `[name, f64 bits]` records;
+// -1 with a refusal for one that is not.
+pub fn constants[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args, from: int) -> [args] int {
+    let out = mem.list(m);
+    var i = from;
+    while i < arg_count(args) {
+        let s = text.from_bytes(m, t, arg(args, i));
+        if !text.is(t, s, "--run") {
+            let c = constant(m, t, s);
+            if c < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, out, c);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// One `name=value`, as `[name, f64 bits]`, or -1.
+fn constant[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+    let eq = text.index_of(t, s, '=', 0);
+    if eq < 0 {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not name=value", s));
+    }
+    let name = text.sub(s, 0, eq);
+    var v = text.sub(s, eq + 1, text.size(s));
+    var negative = false;
+    if text.size(v) > 0 && text.at(t, v, 0) == '-' {
+        negative = true;
+        v = text.sub(v, 1, text.size(v));
+    }
+    let (ok, x) = f32.parse(m, t, v);
+    if !ok {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not a number", text.sub(s, eq + 1, text.size(s))));
+    }
+    var value = x;
+    if negative {
+        value = -x;
+    }
+    return mem.rec2(m, name, bits_of(value));
+}
