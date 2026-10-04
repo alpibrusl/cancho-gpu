@@ -1,0 +1,679 @@
+edition 5;
+module interp;
+
+// The reference interpreter: `lex_front::interp`, for the ops a `.lx`
+// file reaches, and `emit_lx`'s `--run` summary (`docs/design.md` §10).
+//
+// Every value is f32 and every operation is done in the order the Rust
+// does it, each rounded once (`f32.ls`), because the summary the Rust
+// prints depends on the order: `gemm_fp4`'s two targets already differ
+// in a last digit. A value is rounded to its tile's dtype whenever a
+// tile of that dtype is made, as the Rust's `fresh` does.
+//
+// Floats live in `fm`, a third memory only this module uses. A tile is
+// `[ty, offset in fm, length]`; a tensor (one per parameter) is
+// `[dtype, shape, offset, length]`. The environment holds, per
+// variable, a kind (0 absent, 1 tile, 2 index) and a value. Moves
+// really remove a value, so a program that slipped past the checker
+// fails here, as `interp` (`err.ls`), instead of reading stale data.
+
+import mem;
+import text;
+import err;
+import kinds;
+import f32;
+import ir;
+
+fn fail[&m, &t](m: &!m [int], t: &!t [byte], msg: int) -> [] int {
+    return err.fail(m, t, "interp", msg);
+}
+
+// `n` floats of `fm`, or -1 when they do not fit.
+fn falloc[&m, &f](m: &!m [int], fm: &!f [float], n: int) -> [] int {
+    let at = m[mem.float_slot()];
+    if at + n > len(fm) {
+        return 0 - 1;
+    }
+    m[mem.float_slot()] = at + n;
+    return at;
+}
+
+fn round_to(dt: int, x: float) -> [] float {
+    if dt == kinds.f16() {
+        return f32.round_half(x);
+    }
+    if dt == kinds.i8() {
+        return f32.round_i8(x);
+    }
+    return x;
+}
+
+// --- The interpreter's record: `[prog, kinds, values, globals]`
+
+fn new_interp[&m](m: &!m [int], prog: int, globals: int) -> [] int {
+    let n = ir.vars(m, prog) + 1;
+    return mem.rec4(m, prog, mem.grab(m, n), mem.grab(m, n), globals);
+}
+
+fn put[&m](m: &!m [int], it: int, v: int, kind: int, value: int) -> [] int {
+    m[m[it + 1] + v] = kind;
+    m[m[it + 2] + v] = value;
+    return 0;
+}
+
+fn name[&m](m: &!m [int], it: int, v: int) -> [] int {
+    return ir.name_of(m, m[it], v);
+}
+
+// Take a tile out of the environment: its record, or -1.
+fn take[&m, &t](m: &!m [int], t: &!t [byte], it: int, v: int) -> [] int {
+    if m[m[it + 1] + v] != 1 {
+        return fail(m, t, text.f1(m, t, "`$` used after move", name(m, it, v)));
+    }
+    m[m[it + 1] + v] = 0;
+    return m[m[it + 2] + v];
+}
+
+fn get[&m, &t](m: &!m [int], t: &!t [byte], it: int, v: int) -> [] int {
+    if m[m[it + 1] + v] != 1 {
+        return fail(m, t, text.f1(m, t, "`$` borrowed after move", name(m, it, v)));
+    }
+    return m[m[it + 2] + v];
+}
+
+fn operand[&m, &t](m: &!m [int], t: &!t [byte], it: int, a: int) -> [] int {
+    if ir.is_borrow(a) {
+        return get(m, t, it, ir.var_of(a));
+    }
+    return take(m, t, it, ir.var_of(a));
+}
+
+// The value of an index, which the checker has proven is one.
+fn index_value[&m](m: &!m [int], it: int, v: int) -> [] int {
+    return m[m[it + 2] + v];
+}
+
+fn eval[&m](m: &!m [int], it: int, e: int) -> [] int {
+    var x = ir.idx_constant(m, e);
+    var i = 0;
+    while i < ir.idx_count(m, e) {
+        x = x + ir.idx_coeff(m, e, i) * index_value(m, it, ir.idx_var(m, e, i));
+        i = i + 1;
+    }
+    return x;
+}
+
+// A view's offsets, evaluated and bounds-checked: a list, or -1.
+fn offsets[&m, &t](m: &!m [int], t: &!t [byte], it: int, vw: int) -> [] int {
+    let p = ir.param(m, m[it], ir.view_param(m, vw));
+    let dims = ir.param_shape(m, p);
+    let shape = ir.view_shape(m, vw);
+    let offs = ir.view_offsets(m, vw);
+    let out = mem.list(m);
+    var d = 0;
+    while d < mem.size(m, offs) {
+        let o = eval(m, it, mem.get(m, offs, d));
+        if o < 0 || o + mem.get(m, shape, d) > mem.get(m, dims, d) {
+            return fail(m, t, text.n2(m, t, "view out of bounds on dim $: $", d, o));
+        }
+        mem.push(m, out, o);
+        d = d + 1;
+    }
+    return out;
+}
+
+// Linear element of flat index `flat` of a window: row-major in the
+// window, laid out in the parameter's `dims`.
+fn elem[&m](m: &!m [int], dims: int, off: int, shape: int, flat: int) -> [] int {
+    let r = mem.size(m, shape);
+    var lin = 0;
+    var d = 0;
+    while d < r {
+        let inner = mem.product_from(m, shape, d + 1);
+        let coord = flat / inner % mem.get(m, shape, d);
+        lin = lin * mem.get(m, dims, d) + mem.get(m, off, d) + coord;
+        d = d + 1;
+    }
+    return lin;
+}
+
+fn tensor_of[&m](m: &!m [int], it: int, param: int) -> [] int {
+    return mem.get(m, m[it + 3], param);
+}
+
+// A fresh tile of `ty` with room for its elements, or -1.
+fn new_tile[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], ty: int) -> [] int {
+    let n = ir.elems(m, ty);
+    let at = falloc(m, fm, n);
+    if at < 0 {
+        return fail(m, t, text.lit(m, t, "the run's tiles do not fit the interpreter's memory"));
+    }
+    return mem.rec3(m, ty, at, n);
+}
+
+fn reg_tile[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], dt: int, shape: int) -> [] int {
+    return new_tile(m, t, fm, ir.tile(m, dt, shape, kinds.reg()));
+}
+
+fn read_global[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, param: int, off: int, ty: int) -> [] int {
+    let tile = new_tile(m, t, fm, ty);
+    if tile < 0 {
+        return 0 - 1;
+    }
+    let g = tensor_of(m, it, param);
+    let dims = m[g + 1];
+    let shape = ir.shape(m, ty);
+    let dt = ir.dtype(m, ty);
+    var i = 0;
+    while i < m[tile + 2] {
+        fm[m[tile + 1] + i] = round_to(dt, fm[m[g + 2] + elem(m, dims, off, shape, i)]);
+        i = i + 1;
+    }
+    return tile;
+}
+
+// Round every element of a tile to its dtype, in place: the Rust's
+// `fresh`, done after the values are written.
+fn settle[&m, &f](m: &!m [int], fm: &!f [float], tile: int) -> [] int {
+    let dt = ir.dtype(m, m[tile]);
+    if dt == kinds.f32() {
+        return tile;
+    }
+    var i = 0;
+    while i < m[tile + 2] {
+        fm[m[tile + 1] + i] = round_to(dt, fm[m[tile + 1] + i]);
+        i = i + 1;
+    }
+    return tile;
+}
+
+fn apply(bop: int, a: float, b: float) -> [] float {
+    if bop == kinds.add() {
+        return f32.add(a, b);
+    }
+    if bop == kinds.sub() {
+        return f32.sub(a, b);
+    }
+    if bop == kinds.mul() {
+        return f32.mul(a, b);
+    }
+    if bop == kinds.div() {
+        return f32.div(a, b);
+    }
+    return f32.max(a, b);
+}
+
+fn unary_apply(u: int, x: float) -> [] float {
+    if u == kinds.rsqrt() {
+        return f32.div(1.0, f32.sqrt32(x));
+    }
+    if u == kinds.sigmoid() {
+        return f32.div(1.0, f32.add(1.0, f32.exp32(-x)));
+    }
+    // max(x, 0) + ln_1p(exp(-|x|))
+    return f32.add(f32.max(x, 0.0), f32.ln_1p32(f32.exp32(-f32.abs(x))));
+}
+
+// `sum_p a[i, p] * b[.., p]` in f32, in order, starting from 0.
+fn dot[&f](fm: &!f [float], a: int, astride: int, b: int, bstride: int, k: int) -> [] float {
+    var s = 0.0;
+    var p = 0;
+    while p < k {
+        s = f32.add(s, f32.mul(fm[a + p * astride], fm[b + p * bstride]));
+        p = p + 1;
+    }
+    return s;
+}
+
+// One op: answers the result tile, 0 for none, or -1.
+fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int) -> [] int {
+    let k = m[o];
+    if k == kinds.op_fill() {
+        let tile = new_tile(m, t, fm, m[o + 1]);
+        if tile < 0 {
+            return 0 - 1;
+        }
+        let v = round_to(ir.dtype(m, m[o + 1]), f32.from_bits(m[o + 2]));
+        var i = 0;
+        while i < m[tile + 2] {
+            fm[m[tile + 1] + i] = v;
+            i = i + 1;
+        }
+        return tile;
+    }
+    if k == kinds.op_load() {
+        let off = offsets(m, t, it, m[o + 1]);
+        if off < 0 {
+            return 0 - 1;
+        }
+        return read_global(m, t, fm, it, ir.view_param(m, m[o + 1]), off, m[o + 2]);
+    }
+    if k == kinds.op_store() {
+        let src = operand(m, t, it, m[o + 1]);
+        if src < 0 {
+            return 0 - 1;
+        }
+        let vw = m[o + 2];
+        let off = offsets(m, t, it, vw);
+        if off < 0 {
+            return 0 - 1;
+        }
+        let g = tensor_of(m, it, ir.view_param(m, vw));
+        let shape = ir.view_shape(m, vw);
+        var i = 0;
+        while i < m[src + 2] {
+            fm[m[g + 2] + elem(m, m[g + 1], off, shape, i)] = round_to(m[g], fm[m[src + 1] + i]);
+            i = i + 1;
+        }
+        return 0;
+    }
+    if k == kinds.op_add_window() {
+        let a = operand(m, t, it, m[o + 1]);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let vw = m[o + 2];
+        let off = offsets(m, t, it, vw);
+        if off < 0 {
+            return 0 - 1;
+        }
+        let w = read_global(m, t, fm, it, ir.view_param(m, vw), off, ir.tile(m, kinds.f32(), ir.view_shape(m, vw), kinds.reg()));
+        if w < 0 {
+            return 0 - 1;
+        }
+        let out = new_tile(m, t, fm, m[a]);
+        if out < 0 {
+            return 0 - 1;
+        }
+        var i = 0;
+        while i < m[out + 2] {
+            fm[m[out + 1] + i] = f32.add(fm[m[a + 1] + i], fm[m[w + 1] + i]);
+            i = i + 1;
+        }
+        return out;
+    }
+    if k == kinds.op_stage() {
+        let a = operand(m, t, it, m[o + 1]);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let out = new_tile(m, t, fm, ir.tile(m, m[o + 2], ir.shape(m, m[a]), kinds.threadgroup()));
+        if out < 0 {
+            return 0 - 1;
+        }
+        var i = 0;
+        while i < m[out + 2] {
+            fm[m[out + 1] + i] = round_to(m[o + 2], fm[m[a + 1] + i]);
+            i = i + 1;
+        }
+        return out;
+    }
+    if k == kinds.op_mma() || k == kinds.op_matmul() || k == kinds.op_matmul_nt() {
+        return matmul(m, t, fm, it, o);
+    }
+    if k == kinds.op_binary() {
+        let a = operand(m, t, it, m[o + 2]);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let b = operand(m, t, it, m[o + 3]);
+        if b < 0 {
+            return 0 - 1;
+        }
+        let (sa, sb) = (ir.shape(m, m[a]), ir.shape(m, m[b]));
+        let two = mem.size(m, sa) == 2;
+        let row = two && mem.size(m, sb) == 1 && mem.get(m, sb, 0) == mem.get(m, sa, 0);
+        let col = two && !row && mem.size(m, sb) == 2 && mem.get(m, sb, 0) == 1 && mem.get(m, sb, 1) == mem.get(m, sa, 1);
+        var cols = 1;
+        if two {
+            cols = mem.get(m, sa, 1);
+        }
+        let out = reg_tile(m, t, fm, ir.dtype(m, m[a]), sa);
+        if out < 0 {
+            return 0 - 1;
+        }
+        var i = 0;
+        while i < m[out + 2] {
+            var j = i;
+            if row {
+                j = i / cols;
+            } else if col {
+                j = i % cols;
+            }
+            fm[m[out + 1] + i] = apply(m[o + 1], fm[m[a + 1] + i], fm[m[b + 1] + j]);
+            i = i + 1;
+        }
+        return settle(m, fm, out);
+    }
+    if k == kinds.op_unary() || k == kinds.op_scale() {
+        var x = m[o + 1];
+        if k == kinds.op_unary() {
+            x = m[o + 2];
+        }
+        let a = operand(m, t, it, x);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let out = reg_tile(m, t, fm, ir.dtype(m, m[a]), ir.shape(m, m[a]));
+        if out < 0 {
+            return 0 - 1;
+        }
+        let s = f32.from_bits(m[o + 2]);
+        var i = 0;
+        while i < m[out + 2] {
+            let v = fm[m[a + 1] + i];
+            if k == kinds.op_scale() {
+                fm[m[out + 1] + i] = f32.mul(v, s);
+            } else {
+                fm[m[out + 1] + i] = unary_apply(m[o + 1], v);
+            }
+            i = i + 1;
+        }
+        return settle(m, fm, out);
+    }
+    if k == kinds.op_row_reduce() {
+        let a = operand(m, t, it, m[o + 2]);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let sa = ir.shape(m, m[a]);
+        let (rows, n) = (mem.get(m, sa, 0), mem.get(m, sa, 1));
+        let out = reg_tile(m, t, fm, ir.dtype(m, m[a]), mem.of1(m, rows));
+        if out < 0 {
+            return 0 - 1;
+        }
+        var i = 0;
+        while i < rows {
+            var s = -0.0;
+            if m[o + 1] == kinds.r_max() {
+                s = -f32.infinity();
+            }
+            var j = 0;
+            while j < n {
+                let v = fm[m[a + 1] + i * n + j];
+                if m[o + 1] == kinds.r_max() {
+                    s = f32.max(s, v);
+                } else {
+                    s = f32.add(s, v);
+                }
+                j = j + 1;
+            }
+            fm[m[out + 1] + i] = s;
+            i = i + 1;
+        }
+        return settle(m, fm, out);
+    }
+    // DequantFp4
+    let q = operand(m, t, it, m[o + 1]);
+    if q < 0 {
+        return 0 - 1;
+    }
+    let sc = operand(m, t, it, m[o + 2]);
+    if sc < 0 {
+        return 0 - 1;
+    }
+    let gs = operand(m, t, it, m[o + 3]);
+    if gs < 0 {
+        return 0 - 1;
+    }
+    let group = m[o + 4];
+    let sq = ir.shape(m, m[q]);
+    let r = mem.get(m, sq, 0);
+    let c = 2 * mem.get(m, sq, 1);
+    let out = reg_tile(m, t, fm, kinds.f32(), mem.of2(m, r, c));
+    if out < 0 {
+        return 0 - 1;
+    }
+    var i = 0;
+    while i < r * c {
+        let (row, cl) = (i / c, i % c);
+        let byte = truncate(fm[m[q + 1] + row * c / 2 + cl / 2]) & 255;
+        var code = byte >> 4;
+        if cl % 2 == 0 {
+            code = byte & 15;
+        }
+        let g = row * (c / group) + cl / group;
+        let scale = f32.e4m3(truncate(fm[m[sc + 1] + g]) & 255);
+        fm[m[out + 1] + i] = f32.mul(f32.mul(f32.e2m1(code), scale), fm[m[gs + 1] + row]);
+        i = i + 1;
+    }
+    return out;
+}
+
+// `mma`, `matmul_nt` and `matmul`: f32 sums in the Rust's order.
+fn matmul[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int) -> [] int {
+    let k = m[o];
+    let is_mma = k == kinds.op_mma();
+    var c = 0 - 1;
+    var ai = m[o + 1];
+    var bi = m[o + 2];
+    if is_mma {
+        c = operand(m, t, it, m[o + 1]);
+        if c < 0 {
+            return 0 - 1;
+        }
+        ai = m[o + 2];
+        bi = m[o + 3];
+    }
+    let a = operand(m, t, it, ai);
+    if a < 0 {
+        return 0 - 1;
+    }
+    let b = operand(m, t, it, bi);
+    if b < 0 {
+        return 0 - 1;
+    }
+    let (sa, sb) = (ir.shape(m, m[a]), ir.shape(m, m[b]));
+    let (mm, kd) = (mem.get(m, sa, 0), mem.get(m, sa, 1));
+    let nt = is_mma || k == kinds.op_matmul_nt();
+    var n = mem.get(m, sb, 1);
+    if nt {
+        n = mem.get(m, sb, 0);
+    }
+    var dt = m[o + 3];
+    if is_mma {
+        dt = ir.dtype(m, m[c]);
+    }
+    let out = reg_tile(m, t, fm, dt, mem.of2(m, mm, n));
+    if out < 0 {
+        return 0 - 1;
+    }
+    var i = 0;
+    while i < mm {
+        var j = 0;
+        while j < n {
+            var s = 0.0;
+            if nt {
+                s = dot(fm, m[a + 1] + i * kd, 1, m[b + 1] + j * kd, 1, kd);
+            } else {
+                s = dot(fm, m[a + 1] + i * kd, 1, m[b + 1] + j, n, kd);
+            }
+            if is_mma {
+                s = f32.add(fm[m[c + 1] + i * n + j], s);
+            }
+            fm[m[out + 1] + i * n + j] = s;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return settle(m, fm, out);
+}
+
+// Run a block; answers the list of its yields' tiles, or -1.
+fn block[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, b: int) -> [] int {
+    let stmts = m[b];
+    var i = 0;
+    while i < mem.size(m, stmts) {
+        if stmt(m, t, fm, it, mem.get(m, stmts, i)) < 0 {
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    let out = mem.list(m);
+    i = 0;
+    while i < mem.size(m, m[b + 1]) {
+        let y = take(m, t, it, mem.get(m, m[b + 1], i));
+        if y < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, out, y);
+        i = i + 1;
+    }
+    return out;
+}
+
+fn stmt[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, s: int) -> [] int {
+    if m[s] == kinds.st_let() {
+        let v = op(m, t, fm, it, m[s + 2]);
+        if v < 0 {
+            return 0 - 1;
+        }
+        if m[s + 1] >= 0 && v > 0 {
+            put(m, it, m[s + 1], 1, v);
+        }
+        return 0;
+    }
+    let (index, start, end) = (m[s + 1], m[s + 2], m[s + 3]);
+    let (init, params, body, results) = (m[s + 4], m[s + 5], m[s + 6], m[s + 7]);
+    var carry = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, init) {
+        let v = take(m, t, it, mem.get(m, init, i));
+        if v < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, carry, v);
+        i = i + 1;
+    }
+    var step = start;
+    while step < end {
+        put(m, it, index, 2, step);
+        i = 0;
+        while i < mem.size(m, params) {
+            put(m, it, mem.get(m, params, i), 1, mem.get(m, carry, i));
+            i = i + 1;
+        }
+        carry = block(m, t, fm, it, body);
+        if carry < 0 {
+            return 0 - 1;
+        }
+        step = step + 1;
+    }
+    put(m, it, index, 0, 0);
+    i = 0;
+    while i < mem.size(m, results) {
+        put(m, it, mem.get(m, results, i), 1, mem.get(m, carry, i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------
+// The run, and the summary `emit_lx --run` prints
+// ---------------------------------------------------------------------
+
+// The made-up inputs: one tensor per parameter, `[dtype, shape, offset,
+// length]`, or -1. Floats in [-0.5, 0.5) from the Rust's LCG, I8 codes
+// `0x30 + i % 8`, writable parameters zero.
+fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int) -> [] int {
+    let out = mem.list(m);
+    var seed = 12345;
+    let ps = ir.p_params(m, prog);
+    var i = 0;
+    while i < mem.size(m, ps) {
+        let p = mem.get(m, ps, i);
+        let shape = ir.param_shape(m, p);
+        let n = mem.product(m, shape);
+        let at = falloc(m, fm, n);
+        if at < 0 {
+            return fail(m, t, text.lit(m, t, "the run's tensors do not fit the interpreter's memory"));
+        }
+        let dt = ir.param_dtype(m, p);
+        var j = 0;
+        while j < n {
+            var v = 0.0;
+            if dt == kinds.i8() {
+                v = float_of(48 + j % 8);
+            } else if !ir.param_writable(m, p) {
+                seed = (seed * 1664525 + 1013904223) % 4294967296;
+                // `(seed >> 9) as f32 / 2^23 - 0.5`: both steps exact or
+                // rounded once in f32.
+                v = f32.sub(f32.div(f32.round(float_of(seed >> 9)), 8388608.0), 0.5);
+            }
+            fm[at + j] = round_to(dt, v);
+            j = j + 1;
+        }
+        mem.push(m, out, mem.rec4(m, dt, shape, at, n));
+        i = i + 1;
+    }
+    return out;
+}
+
+fn first_four[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], at: int, n: int) -> [] int {
+    let parts = mem.list(m);
+    var i = 0;
+    while i < n && i < 4 {
+        mem.push(m, parts, f32.debug(m, t, fm[at + i]));
+        i = i + 1;
+    }
+    return text.f1(m, t, "[$]", text.joined(m, t, parts, ", "));
+}
+
+// Run `prog` over made-up inputs and answer the summary lines (one per
+// writable parameter, each ending in a newline, prefixed `target: `),
+// or -1.
+pub fn run[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int, target: int) -> [] int {
+    let globals = inputs(m, t, fm, prog);
+    if globals < 0 {
+        return 0 - 1;
+    }
+    let it = new_interp(m, prog, globals);
+    let pid = ir.p_pid(m, prog);
+    let pid2 = ir.p_pid2(m, prog);
+    // Instances are independent by construction, so one after another is
+    // faithful; the Rust runs them in this order.
+    var g2 = 0;
+    while g2 < ir.p_grid2(m, prog) {
+        if pid2 >= 0 {
+            put(m, it, pid2, 2, g2);
+        }
+        var g = 0;
+        while g < ir.p_grid(m, prog) {
+            if pid >= 0 {
+                put(m, it, pid, 2, g);
+            }
+            // Every instance's tiles are dead once it ends: give the
+            // memory back, so a large grid runs in the space of one.
+            let mark = m[mem.float_slot()];
+            if block(m, t, fm, it, ir.p_body(m, prog)) < 0 {
+                return 0 - 1;
+            }
+            m[mem.float_slot()] = mark;
+            g = g + 1;
+        }
+        g2 = g2 + 1;
+    }
+    let lines = mem.list(m);
+    let ps = ir.p_params(m, prog);
+    var i = 0;
+    while i < mem.size(m, ps) {
+        let p = mem.get(m, ps, i);
+        if ir.param_writable(m, p) {
+            let g = mem.get(m, globals, i);
+            let (at, n) = (m[g + 2], m[g + 3]);
+            var peak = 0.0;
+            var sum = -0.0;
+            var j = 0;
+            while j < n {
+                peak = f32.max(peak, f32.abs(fm[at + j]));
+                sum = f32.add(sum, fm[at + j]);
+                j = j + 1;
+            }
+            let mean = f32.div(sum, f32.round(float_of(n)));
+            let l = mem.of6(m, target, ir.param_name(m, p), ir.shape_debug(m, t, ir.param_shape(m, p)), f32.fixed(m, t, mean, 4), f32.fixed(m, t, peak, 4), first_four(m, t, fm, at, n));
+            mem.push(m, lines, text.fmt(m, t, "$: $ $ = mean $, peak $, first $\n", l));
+        }
+        i = i + 1;
+    }
+    return text.joined(m, t, lines, "");
+}

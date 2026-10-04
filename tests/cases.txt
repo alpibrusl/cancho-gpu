@@ -127,3 +127,17 @@ tests/reject/syntax.lx
 tests/reject/type.lx n=8
 tests/reject/unbound.lx n=4
 tests/reject/use-after-move.lx n=8
+# `--run`: the interpreter's summary, against the Rust's (docs/design.md §10).
+tests/lx/lex-gpu/silu_mul.lx --run
+tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=1e-5 --run
+tests/lx/lex-gpu/rmsnorm.lx n=7 eps=0.25 --run
+tests/lx/lex-gpu/gemm.lx m=64 n=32 k=64 --run
+tests/lx/lex-gpu/gemm_mma.lx m=128 n=128 k=64 --run
+tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64 --run
+tests/lx/lex-gpu/gemm_fp4_res.lx m=128 n=128 k=64 --run
+tests/lx/matvec.lx n=64 k=4096 --run
+tests/lx/matvec_fp4.lx n=64 k=4096 --run
+tests/lx/batch_fp4.lx b=4 n=64 k=512 --run
+tests/lx/rowops.lx r=4 n=1024 --run
+tests/lx/rowops.lx r=300 n=7 --run
+tests/lx/stage.lx m=8 k=64 --run

@@ -9,7 +9,8 @@ algo rowops(r, n)
   let sh = x - mx
   let sp = softplus sh
   let bb = load b
-  let z  = sp + bb
+  let sb = softplus bb
+  let z  = sp + sb
   let s  = rsqrt &z
   let ss = rowsum &s
   let q  = s * z

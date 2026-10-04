@@ -18,6 +18,7 @@ lex-sys build                                  # the compiler pinned in lex-sys.
 mkdir -p out
 build/lexsys-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64
 build/lexsys-gpu check tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=1e-5
+build/lexsys-gpu check tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64 --run   # interpret it on the CPU
 ```
 
 ```
@@ -35,8 +36,8 @@ error[use-after-move]: `x.0` used after it was moved
 
 | | |
 |---|---|
-| Parser, elaboration, checker, CUDA and Metal emitters | **built**: byte-identical with the Rust on 98 emitting cases, and refuses the 24 the Rust refuses |
-| CPU reference interpreter (`--run`) | not yet (lex-sys#251 slice 7) |
+| Parser, elaboration, checker, CUDA and Metal emitters | **built**: byte-identical with the Rust on every emitting case of `tests/cases.txt`, and refuses what the Rust refuses |
+| CPU reference interpreter (`--run`) | **built**: the same summary as the Rust's on 13 runs, f32 order included |
 | Driving a GPU (`Ffi` + a C shim) | not yet (slice 8) |
 | The inference runtime | not yet (slice 9) |
 

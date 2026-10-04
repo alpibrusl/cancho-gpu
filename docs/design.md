@@ -1,11 +1,12 @@
 # lexsys-gpu: design
 
-> **Status: slices 1–6 of lex-sys#251 built and measured.** The `.lx`
+> **Status: slices 1–7 of lex-sys#251 built and measured.** The `.lx`
 > front end, checker and both emitters of
 > [lex-gpu](https://github.com/alpibrusl/lex-gpu), written in lex-sys,
 > produce **byte-identical** CUDA C and Metal for every case in
-> `tests/cases.txt`: 122 cases, 98 that emit and 24 that both compilers
-> refuse.
+> `tests/cases.txt`: 135 cases, 111 that emit and 24 that both compilers
+> refuse, 13 of them also checking the interpreter's `--run` summary
+> (§10).
 
 ---
 
@@ -161,10 +162,12 @@ Rust's closure-taking `for_range` at exactly the points the closure ran.
 
 | | |
 |---|---|
-| **A local shadows a module's function** (lex-sys#236) | Hit 5 times: `ir.op`, `ir.index`, `gen.lines`, `gen.d`, `dialect.entry` became unreachable from functions with a local of that name. Each fixed by renaming the function |
+| **A local shadows a module's function** (lex-sys#236) | Hit 6 times: `ir.op`, `ir.index`, `gen.lines`, `gen.d`, `dialect.entry`, `text.num` became unreachable from functions with a local of that name. Each fixed by renaming one side |
 | **Reserved words and prelude names** | `alloc`, `val`, `res`, `defer` cannot be identifiers; `join` and `split` cannot be declared even inside a module, because the prelude's builtins share the namespace |
 | **No reference in a struct** | §3.1: the whole memory model follows from it |
-| **No float from bits** | §4: worked around with `ldexp`; the f32 module is ~470 lines |
+| **No float from bits** | §4: worked around with `ldexp`; the f32 module is ~710 lines with the interpreter's needs (§10) |
+| **No f32** | §10.2: the interpreter is about 20× slower than the Rust on matrix products, all of it spent rounding |
+| **No `continue`** | One loop restructured |
 | **No `mkdir`** | `emit` needs its output directory to exist; the Rust creates it |
 
 What it did **not** make hard: recursion (the parser and the checker
@@ -176,10 +179,12 @@ the Rust release build's 4–6, both dominated by starting the process.
 
 The Rust this ports is 7,514 lines in five files, of which about 5,200
 are what the surface can reach -- an estimate from reading which arms
-are reachable, not a measurement. The port is **7,551
-lines** of lex-sys, of which about 1,460 are infrastructure the Rust
-gets from its standard library: the memory and lists, the string pool
-and formatting, f32. Roughly 1.2× for the compiler proper.
+are reachable, not a measurement. The compiler (slices 1–6) is **7,551 lines** of lex-sys, of which about
+1,460 are infrastructure the Rust gets from its standard library: the
+memory and lists, the string pool and formatting, f32. Roughly 1.2× for
+the compiler proper. The interpreter (§10) brings the total to
+**8514**: about 680 lines for `interp.ls` against the Rust's ~650
+reachable (an estimate, as above), and 240 more of f32.
 
 ## 8. Differences from the Rust, on purpose
 
@@ -189,8 +194,9 @@ and formatting, f32. Roughly 1.2× for the compiler proper.
 * **No environment knobs.** The Rust reads `LEX_VEC`, `LEX_NARROW` and
   `LEX_NO_LAZY` to measure alternatives; unset, they are the defaults,
   and the defaults are what this port does.
-* **No `--run`.** The reference interpreter is slice 7 of lex-sys#251,
-  and wants f32 arithmetic over whole tensors.
+* **`--run` has a memory limit**: 32M floats of tensors and live tiles.
+  A larger run is refused (`interp`) before it starts; the Rust would
+  allocate and run it.
 * **A grid beside a schedule's `chunk`, or two `grid` statements,** is a
   `grid` refusal; the Rust panics on an assertion in its builder.
 
@@ -210,3 +216,92 @@ and formatting, f32. Roughly 1.2× for the compiler proper.
 Each was broken on purpose and watched fail: a changed loop spelling in
 `gen.owned` (every case differed), one byte of one golden (that case
 failed), the tie rule of the f32 printer (two unit tests failed).
+
+## 10. The reference interpreter (`--run`)
+
+> **Status: built (lex-sys#251 slice 7) and measured, §10.2.**
+
+`emit --run` interprets the program on the CPU over made-up inputs
+before lowering it, and prints what each writable parameter holds:
+
+```
+nvidia-ada: y [128, 128] = mean -0.0006, peak 6.7963, first [1.035939, -2.6367636, 1.53777, 2.1982696]
+```
+
+It is `lex_front::interp` and `emit_lx`'s `interpret`, for the ops a
+`.lx` file reaches. **The contract is the same as the emitters': the
+same lines as the Rust, byte for byte.** That is stricter than it looks.
+The Rust sums in f32, in program order, so `gemm_fp4`'s last digit
+already differs *between its own two targets* (`-2.6367636` against
+`-2.6367638`), because their tile sizes cut the reduction differently.
+Matching it means emulating every f32 operation in the order the Rust
+does it, which §4's rounding gives exactly:
+
+* `+ − × ÷` and `sqrt`: one binary64 operation, rounded once to f32.
+  Correct by §4's argument, and `sqrt` is correctly rounded on both
+  sides.
+* `exp` and `ln_1p` (sigmoid, softplus): binary64 `std.math`, rounded to
+  f32. The Rust calls libm's `expf`/`log1pf`, which glibc documents as
+  within 0.502 ULP rather than correctly rounded, so this is the one place
+  the two may disagree in the last bit. Whether they do is measured on
+  the cases, not assumed (§10.2).
+* f16 tiles round to half precision, ties to even, overflow to infinity,
+  as the `half` crate does; I8 rounds half away from zero and clamps.
+* `rowmax` folds `f32::max`, which ignores a NaN; `rowsum` and the mean
+  start from `-0.0`, as Rust's `Sum for f32` does.
+
+**Where the values live.** Tiles hold thousands of floats and an op
+touches each once, so going through `bits_of`/`ldexp` on every read
+would be the cost of the whole run. The interpreter gets a third
+memory: a boxed slice of `float` (`fm`), bump-allocated like `m`, that
+only it uses. A tile is `[ty, offset in fm, length]` in `m`.
+
+**Inputs** are the Rust's: an LCG seeded 12345 (`seed * 1664525 +
+1013904223` in u32, value `(seed >> 9) / 2^23 − 0.5`), I8 parameters
+`0x30 + i % 8`, writable ones zero.
+
+**Printing.** `{:.4}` is exact fixed-point with ties to even (Rust
+prints `0.03125` as `0.0312` and `0.09375` as `0.0938`); `{:?}` of the
+first four values is §4's printer.
+
+**Refusals.** A run that reads past a view, or a tile that was moved,
+cannot happen after the checker; if it does, it is `interp`, not a trap.
+A run whose tensors do not fit the float memory is refused as `interp`
+before it starts.
+
+### 10.1 What it costs
+
+One f32 operation is a binary64 operation plus a rounding in integers.
+The largest case worth running (`gemm_fp4` at 128³) is about 2M of
+them.
+
+### 10.2 Measured
+
+**The summary is byte-identical with the Rust's on all 13 `--run` cases
+of `tests/cases.txt`**, on both targets. They cover every op a `.lx`
+file reaches: f16 inputs (`gemm`, `gemm_mma`), NVFP4 decode in all three
+matmul shapes, `sigmoid` over 16,384 values (`silu_mul`), `softplus`,
+`rsqrt`, `rowmax` and `rowsum` (`rowops`), staging, and the residual
+epilogue. That includes `gemm_fp4`'s target-dependent last digit, so the
+f32 order is reproduced, not just the values approximately.
+
+The libm question of §10 came back empty: 16,384 `exp` and about 7,200
+`exp`/`ln_1p` pairs, rounded from binary64, gave the same f32 bits as
+glibc's `expf` and `log1pf` every time. That is evidence on these
+inputs, not a proof: glibc does not promise correct rounding, so a value
+whose binary64 result sits within a hair of an f32 tie could still
+differ. If one ever does, the case that shows it goes in `tests/cases.txt`.
+
+Each piece was broken and watched fail: summing in binary64 without the
+per-step rounding (7 cases differed), dropping f16 rounding (4), and the
+tie rule of `{:.4}` (no golden lands on an exact tie, so it is held by
+`test_interpreter_rounding_and_fixed_point_match_rust` instead, which
+failed).
+
+**Speed.** One f32 operation costs a binary64 operation and an integer
+rounding with two `ldexp`s, and it shows: `gemm_mma` and `gemm_fp4` at
+128³ run in 0.33 s and 0.28 s against the Rust release build's 13 and 17
+ms, about 20×. The matvec at 64×4096 is 0.18 s against 39 ms. For a
+reference interpreter run on test sizes that is acceptable; an f32 type
+in lex-sys would remove all of it, and this is the measurement that
+says how much an asker loses without one.

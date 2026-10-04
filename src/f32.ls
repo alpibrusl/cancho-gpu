@@ -471,3 +471,241 @@ pub fn count_string[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
     }
     return text.joined(m, t, parts, "");
 }
+
+// ---------------------------------------------------------------------
+// What the interpreter needs (`docs/design.md` §10)
+// ---------------------------------------------------------------------
+
+// `f16::from_f32(x).to_f32()`: nearest half, ties to even, past the
+// largest half to infinity. `x` is an f32.
+pub fn round_half(x: float) -> [] float {
+    if is_nan(x) || !is_finite(x) || x == 0.0 {
+        return x;
+    }
+    let (negative, m, e) = parts_of(x);
+    let lead = bit_length(m) - 1 + e;
+    var q = 0 - 24;
+    if lead >= 0 - 14 {
+        q = lead - 10;
+    }
+    let drop = q - e;
+    var kept = 0;
+    if drop <= 0 {
+        kept = m << 0 - drop;
+    } else if drop <= 54 {
+        kept = m >> drop;
+        let rest = m - (kept << drop);
+        let half = pow2i(drop - 1);
+        if rest > half || rest == half && kept & 1 == 1 {
+            kept = kept + 1;
+        }
+    }
+    if kept == pow2i(11) {
+        kept = pow2i(10);
+        q = q + 1;
+    }
+    if q + 10 > 15 {
+        return signed(negative, infinity());
+    }
+    return signed(negative, math.ldexp(float_of(kept), q));
+}
+
+// `x.round()` for an I8 tile: half away from zero, then clamped.
+pub fn round_i8(x: float) -> [] float {
+    if is_nan(x) {
+        return 0.0;
+    }
+    var r = math.round(x);
+    if r < -128.0 {
+        r = -128.0;
+    }
+    if r > 127.0 {
+        r = 127.0;
+    }
+    return r;
+}
+
+// `f32::max`: the larger, and a NaN loses to anything.
+pub fn max(a: float, b: float) -> [] float {
+    if is_nan(a) {
+        return b;
+    }
+    if is_nan(b) {
+        return a;
+    }
+    if a < b {
+        return b;
+    }
+    if a == 0.0 && b == 0.0 && bits_of(a) < 0 {
+        return b;
+    }
+    return a;
+}
+
+pub fn abs(a: float) -> [] float {
+    if bits_of(a) < 0 {
+        return -a;
+    }
+    return a;
+}
+
+// f32 `sqrt`: correctly rounded on both sides.
+pub fn sqrt32(x: float) -> [] float {
+    return round(sqrt(x));
+}
+
+// f32 `exp` and `ln_1p`: binary64 rounded to f32 (`docs/design.md` §10).
+pub fn exp32(x: float) -> [] float {
+    return round(math.exp(x));
+}
+
+pub fn ln_1p32(x: float) -> [] float {
+    return round(math.log1p(x));
+}
+
+// One NVFP4 value: sign, 2-bit exponent, 1-bit mantissa.
+pub fn e2m1(code: int) -> [] float {
+    let k = code & 7;
+    var v = 0.0;
+    if k == 1 {
+        v = 0.5;
+    } else if k == 2 {
+        v = 1.0;
+    } else if k == 3 {
+        v = 1.5;
+    } else if k == 4 {
+        v = 2.0;
+    } else if k == 5 {
+        v = 3.0;
+    } else if k == 6 {
+        v = 4.0;
+    } else if k == 7 {
+        v = 6.0;
+    }
+    if code & 8 != 0 {
+        return -v;
+    }
+    return v;
+}
+
+// One FP8 E4M3 byte (OCP `e4m3fn`: no infinities, max 448).
+pub fn e4m3(b: int) -> [] float {
+    let e = b >> 3 & 15;
+    let mant = float_of(b & 7);
+    var v = 0.0;
+    if e == 0 {
+        v = mant * math.ldexp(1.0, 0 - 9);
+    } else if e == 15 && b & 7 == 7 {
+        return infinity() - infinity();
+    } else {
+        v = (1.0 + mant / 8.0) * math.ldexp(1.0, e - 7);
+    }
+    if b & 128 != 0 {
+        return -v;
+    }
+    return v;
+}
+
+// The whole number `m * 2^e` (`e >= 0`), in decimal: limbs of 10^9,
+// doubled `e` times.
+fn whole_string[&m, &t](m: &!m [int], t: &!t [byte], mant: int, e: int) -> [] int {
+    let base = 1000000000;
+    let limbs = mem.list(m);
+    mem.push(m, limbs, mant % base);
+    mem.push(m, limbs, mant / base % base);
+    mem.push(m, limbs, mant / base / base);
+    var k = 0;
+    while k < e {
+        var carry = 0;
+        var i = 0;
+        while i < mem.size(m, limbs) {
+            let v = mem.get(m, limbs, i) * 2 + carry;
+            mem.set(m, limbs, i, v % base);
+            carry = v / base;
+            i = i + 1;
+        }
+        if carry > 0 {
+            mem.push(m, limbs, carry);
+        }
+        k = k + 1;
+    }
+    var top = mem.size(m, limbs) - 1;
+    while top > 0 && mem.get(m, limbs, top) == 0 {
+        top = top - 1;
+    }
+    let parts = mem.of1(m, text.num(m, t, mem.get(m, limbs, top)));
+    var i = top - 1;
+    while i >= 0 {
+        let d = text.num(m, t, mem.get(m, limbs, i));
+        mem.push(m, parts, text.cat(m, t, zeros(m, t, 9 - text.size(d)), d));
+        i = i - 1;
+    }
+    return text.joined(m, t, parts, "");
+}
+
+// The f32 `x` as Rust's `{:.prec$}` writes it: exact, ties to even, the
+// sign kept on a negative value that rounds to zero.
+pub fn fixed[&m, &t](m: &!m [int], t: &!t [byte], x: float, prec: int) -> [] int {
+    if is_nan(x) {
+        return text.lit(m, t, "NaN");
+    }
+    var sign = text.empty();
+    if bits_of(x) < 0 {
+        sign = text.lit(m, t, "-");
+    }
+    if !is_finite(x) {
+        return text.cat(m, t, sign, text.lit(m, t, "inf"));
+    }
+    var scale = 1;
+    var k = 0;
+    while k < prec {
+        scale = scale * 10;
+        k = k + 1;
+    }
+    let point = text.lit(m, t, ".");
+    if x == 0.0 {
+        if prec == 0 {
+            return text.cat(m, t, sign, text.lit(m, t, "0"));
+        }
+        return text.f3(m, t, "$0$$", sign, point, zeros(m, t, prec));
+    }
+    // The f32's own significand and exponent.
+    let (negative, m53, e53) = parts_of(x);
+    let lead = bit_length(m53) - 1 + e53;
+    var e = 0 - 149;
+    if lead >= 0 - 126 {
+        e = lead - 23;
+    }
+    var sig = 0;
+    if e >= e53 {
+        sig = m53 >> e - e53;
+    } else {
+        sig = m53 << e53 - e;
+    }
+    if e >= 0 {
+        let whole = whole_string(m, t, sig, e);
+        if prec == 0 {
+            return text.cat(m, t, sign, whole);
+        }
+        return text.f3(m, t, "$$.$", sign, whole, zeros(m, t, prec));
+    }
+    // n = round_half_even(sig * 10^prec / 2^-e)
+    let numer = sig * scale;
+    let sh = 0 - e;
+    var n = 0;
+    if sh < 62 {
+        n = numer >> sh;
+        let rest = numer - (n << sh);
+        let half = pow2i(sh - 1);
+        if rest > half || rest == half && n & 1 == 1 {
+            n = n + 1;
+        }
+    }
+    let digits = text.num(m, t, n);
+    let padded = text.cat(m, t, zeros(m, t, prec + 1 - text.size(digits)), digits);
+    let cut = text.size(padded) - prec;
+    if prec == 0 {
+        return text.cat(m, t, sign, padded);
+    }
+    return text.f4(m, t, "$$$$", sign, text.sub(padded, 0, cut), point, text.sub(padded, cut, text.size(padded)));
+}

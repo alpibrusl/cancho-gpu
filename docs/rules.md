@@ -24,5 +24,6 @@ stable part; the message is for a person. Each has a fixture in
 | `bounds` | checker | A view outside its parameter on some iteration |
 | `budget` | checker, lowering | Threadgroup memory past the target's limit, or past a static declaration's |
 | `lowering` | lowering | A program the emitters cannot lower (a warp grid that does not match the threads, ...) |
+| `interp` | interpreter | A `--run` whose tensors do not fit the interpreter's memory, or a value it cannot find (the latter cannot happen after the checker) |
 | `usage` | CLI | A constant that is not `name=number` |
 | `io` | CLI | A file that cannot be read or written |
