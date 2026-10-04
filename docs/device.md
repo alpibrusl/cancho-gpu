@@ -32,7 +32,7 @@ void **extra)` takes an array of pointers to arguments, and `CUdeviceptr`
 and `CUfunction` are values a program holds. No signature in it can be
 declared from lex-sys directly.
 
-So a shim of about 250 lines of C, `shim/lexgpu.c`, owns every handle
+So a shim of about 380 lines of C, `shim/lexgpu.c`, owns every handle
 and hands lex-sys **integers**: a buffer is `3`, a function `0`. Every
 entry point takes `int64_t`s and at most one trailing byte buffer, and
 answers an `int64_t` (≥ 0 a handle or a count, < 0 a failure whose text
