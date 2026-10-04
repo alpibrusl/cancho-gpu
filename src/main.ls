@@ -2,14 +2,16 @@ edition 5;
 
 // `lexsys-gpu` -- lex-gpu's `.lx` compiler, in lex-sys.
 //
-//     lexsys-gpu emit  <file.lx> <dir> [name=value ...]
-//     lexsys-gpu check <file.lx> [name=value ...]
+//     lexsys-gpu emit  <file.lx> <dir> [name=value ...] [--run]
+//     lexsys-gpu check <file.lx> [name=value ...] [--run]
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
 // writes `<dir>/<kernel>.cu` and `<dir>/<kernel>.metal`; it is
 // `lex-msl`'s `emit_lx` example, and `tests/golden.sh` holds the two to
-// the same bytes. `check` stops after the checker. The directory must
+// the same bytes. `check` stops after the checker. `--run` interprets
+// the program on the CPU over made-up inputs first and prints what it
+// writes, as `emit_lx --run` does (`docs/design.md` §10). The directory must
 // exist: lex-sys has no way to make one.
 //
 // Exit status: 0, or 1 with every refusal on standard error as
@@ -26,6 +28,7 @@ import check;
 import target;
 import dialect;
 import lower;
+import interp;
 
 fn words() -> [] int {
     return 8000000;
@@ -35,8 +38,13 @@ fn bytes_cap() -> [] int {
     return 64000000;
 }
 
+// Floats for `--run`: untouched pages cost nothing.
+fn floats_cap() -> [] int {
+    return 32000000;
+}
+
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: lexsys-gpu emit <file.lx> <dir> [name=value ...]\n       lexsys-gpu check <file.lx> [name=value ...]\n");
+    io.error_all(io, "usage: lexsys-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       lexsys-gpu check <file.lx> [name=value ...] [--run]\n");
     return 2;
 }
 
@@ -61,34 +69,45 @@ fn constants[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args, from: int) 
     var i = from;
     while i < arg_count(args) {
         let s = text.from_bytes(m, t, arg(args, i));
-        let eq = text.index_of(t, s, '=', 0);
-        if eq < 0 {
-            return err.fail(m, t, "usage", text.f1(m, t, "`$` is not name=value", s));
+        if !text.is(t, s, "--run") {
+            let c = constant(m, t, s);
+            if c < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, out, c);
         }
-        let name = text.sub(s, 0, eq);
-        var v = text.sub(s, eq + 1, text.size(s));
-        var negative = false;
-        if text.size(v) > 0 && text.at(t, v, 0) == '-' {
-            negative = true;
-            v = text.sub(v, 1, text.size(v));
-        }
-        let (ok, x) = f32.parse(m, t, v);
-        if !ok {
-            return err.fail(m, t, "usage", text.f1(m, t, "`$` is not a number", text.sub(s, eq + 1, text.size(s))));
-        }
-        var value = x;
-        if negative {
-            value = -x;
-        }
-        mem.push(m, out, mem.rec2(m, name, bits_of(value)));
         i = i + 1;
     }
     return out;
 }
 
+// One `name=value`, as `[name, f64 bits]`, or -1.
+fn constant[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+    let eq = text.index_of(t, s, '=', 0);
+    if eq < 0 {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not name=value", s));
+    }
+    let name = text.sub(s, 0, eq);
+    var v = text.sub(s, eq + 1, text.size(s));
+    var negative = false;
+    if text.size(v) > 0 && text.at(t, v, 0) == '-' {
+        negative = true;
+        v = text.sub(v, 1, text.size(v));
+    }
+    let (ok, x) = f32.parse(m, t, v);
+    if !ok {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not a number", text.sub(s, eq + 1, text.size(s))));
+    }
+    var value = x;
+    if negative {
+        value = -x;
+    }
+    return mem.rec2(m, name, bits_of(value));
+}
+
 // The kernel for one target: `[lowered, path suffix]`, or 0 when the
 // file has no schedule for it, or -1.
-fn one_target[&m, &t](m: &!m [int], t: &!t [byte], unit: int, tg: int, d: int, vals: int, lower_it: bool) -> [] int {
+fn one_target[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], unit: int, tg: int, d: int, vals: int, lower_it: bool, run_it: bool) -> [] int {
     let name = target.name(m, tg);
     let scheds = m[unit + 1];
     var found = false;
@@ -110,17 +129,24 @@ fn one_target[&m, &t](m: &!m [int], t: &!t [byte], unit: int, tg: int, d: int, v
     if check.check(m, t, prog, tg) < 0 {
         return 0 - 1;
     }
+    var ran = text.empty();
+    if run_it {
+        ran = interp.run(m, t, fm, prog, name);
+        if ran < 0 {
+            return 0 - 1;
+        }
+    }
     if !lower_it {
-        return mem.rec2(m, 0, 0);
+        return mem.rec2(m, 0, ran);
     }
     let l = lower.lower(m, t, prog, tg, d, m[s + 1], m[s + 3], m[s + 4], m[s + 5]);
     if l < 0 {
         return 0 - 1;
     }
-    return mem.rec2(m, l, 0);
+    return mem.rec2(m, l, ran);
 }
 
-fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), args] int {
+fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), args] int {
     if arg_count(args) < 3 {
         return usage(io);
     }
@@ -144,6 +170,14 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
     }
     m[mem.text_slot()] = top + got;
     let src = text.handle(top, got);
+    var run_it = false;
+    var ai = 2;
+    while ai < arg_count(args) {
+        if text.is(t, text.from_bytes(m, t, arg(args, ai)), "--run") {
+            run_it = true;
+        }
+        ai = ai + 1;
+    }
     var first = 3;
     if emit {
         first = 4;
@@ -171,12 +205,13 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
             d = dialect.msl();
             ext = text.lit(m, t, "metal");
         }
-        let r = one_target(m, t, unit, tg, d, vals, emit);
+        let r = one_target(m, t, fm, unit, tg, d, vals, emit, run_it);
         if r < 0 {
             return report(m, t, io);
         }
         if r > 0 {
             any = true;
+            io.write_all(io, text.bytes(t, m[r + 1]));
             if emit {
                 let l = m[r];
                 let path = text.f3(m, t, "$/$.$", dir, m[l], ext);
@@ -223,15 +258,19 @@ fn main(world: World) -> [] int {
     borrow mut heap as &!h in {
         var mb = box_slice(h, words(), 0);
         var tb = box_slice(h, bytes_cap(), byte_of(0));
+        var fb = box_slice(h, floats_cap(), 0.0);
         borrow mut mb as &!mr in {
             borrow mut tb as &!tr in {
-                let m = contents(mr);
-                let t = contents(tr);
-                mem.init(m);
-                borrow mut io as &!i in {
-                    borrow fs as &f in {
-                        borrow args as &a in {
-                            status = run(m, t, i, f, a);
+                borrow mut fb as &!fr in {
+                    let m = contents(mr);
+                    let t = contents(tr);
+                    let fm = contents(fr);
+                    mem.init(m);
+                    borrow mut io as &!i in {
+                        borrow fs as &f in {
+                            borrow args as &a in {
+                                status = run(m, t, fm, i, f, a);
+                            }
                         }
                     }
                 }
@@ -239,6 +278,7 @@ fn main(world: World) -> [] int {
         }
         unbox_slice(h, mb);
         unbox_slice(h, tb);
+        unbox_slice(h, fb);
     }
     release(heap);
     release(io);

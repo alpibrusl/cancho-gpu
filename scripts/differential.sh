@@ -26,9 +26,14 @@ while read -r file rest; do
   path=$ROOT/$file
   mkdir -p "$WORK/$n/rust" "$WORK/$n/ours"
   # shellcheck disable=SC2086
-  if "$THEIRS" "$path" "$WORK/$n/rust" $rest >/dev/null 2>&1; then r=ok; else r=refused; fi
+  if "$THEIRS" "$path" "$WORK/$n/rust" $rest >"$WORK/$n/rust.out" 2>/dev/null; then r=ok; else r=refused; fi
   # shellcheck disable=SC2086
-  if "$OURS" emit "$path" "$WORK/$n/ours" $rest >/dev/null 2>"$WORK/$n/err"; then o=ok; else o=refused; fi
+  if "$OURS" emit "$path" "$WORK/$n/ours" $rest >"$WORK/$n/ours.out" 2>"$WORK/$n/err"; then o=ok; else o=refused; fi
+  # What `--run` printed, without the lines naming the files written.
+  case " $rest " in *" --run "*)
+    grep -v "^$WORK/$n/rust/" "$WORK/$n/rust.out" > "$WORK/$n/rust/RUN.txt" || true
+    grep -v "^$WORK/$n/ours/" "$WORK/$n/ours.out" > "$WORK/$n/ours/RUN.txt" || true ;;
+  esac
   if [ "$r" = "$o" ] && diff -r "$WORK/$n/rust" "$WORK/$n/ours" >/dev/null; then
     pass=$((pass + 1))
   else

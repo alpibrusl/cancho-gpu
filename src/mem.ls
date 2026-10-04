@@ -40,6 +40,11 @@ pub fn err_list_slot() -> [] int {
     return 3;
 }
 
+// Next free slot of the interpreter's float memory (`interp.ls`).
+pub fn float_slot() -> [] int {
+    return 4;
+}
+
 // First word the allocator hands out.
 pub fn first_word() -> [] int {
     return 64;
@@ -52,6 +57,7 @@ pub fn init[&m](m: &!m [int]) -> [] int {
     m[err_count_slot()] = 0;
     m[err_list_slot()] = 0;
     m[err_list_slot()] = list(m);
+    m[float_slot()] = 0;
     return 0;
 }
 

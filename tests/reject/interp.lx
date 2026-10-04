@@ -1,0 +1,15 @@
+// RULE interp
+// ARGS n=8192 k=8192 --run
+// A run whose tensors do not fit the interpreter's float memory is
+// refused before it starts, rather than trapping part way through.
+algo matvec(n, k)
+  in  x: f32[1, k]
+  in  w: f32[n, k]
+  out y: f32[1, n]
+{
+  let xt = load x
+  let wt = load w
+  store matmul_nt xt wt -> y
+}
+
+schedule matvec for nvidia-ada { threads 128 }

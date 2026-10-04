@@ -21,8 +21,13 @@ while read -r file rest; do
   dir=$ROOT/golden/$("$ROOT/scripts/case-name.sh" "$file" $rest)
   mkdir -p "$dir"
   # shellcheck disable=SC2086
-  if ! "$THEIRS" "$ROOT/$file" "$dir" $rest >/dev/null 2>&1; then
-    rm -f "$dir"/*
+  if "$THEIRS" "$ROOT/$file" "$dir" $rest >"$dir/.stdout" 2>/dev/null; then
+    # A `--run` case also records what the interpreter printed: every
+    # line but the ones naming the files written.
+    case " $rest " in *" --run "*) grep -v "^$dir/" "$dir/.stdout" > "$dir/RUN.txt" || true ;; esac
+    rm -f "$dir/.stdout"
+  else
+    rm -f "$dir"/* "$dir/.stdout"
     touch "$dir/REFUSED"
   fi
 done < "$ROOT/tests/cases.txt"

@@ -22,7 +22,8 @@ while read -r file rest; do
   mkdir -p "$out"
   status=0
   # shellcheck disable=SC2086
-  "$BIN" emit "$ROOT/$file" "$out" $rest >/dev/null 2>"$WORK/err" || status=$?
+  "$BIN" emit "$ROOT/$file" "$out" $rest >"$WORK/stdout" 2>"$WORK/err" || status=$?
+  case " $rest " in *" --run "*) grep -v "^$out/" "$WORK/stdout" > "$out/RUN.txt" || true ;; esac
   if [ -f "$want/REFUSED" ]; then
     if [ "$status" -eq 1 ] && [ -z "$(ls "$out")" ]; then
       pass=$((pass + 1))

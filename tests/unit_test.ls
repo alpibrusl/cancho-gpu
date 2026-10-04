@@ -92,6 +92,48 @@ fn check_text[&m, &t](m: &!m [int], t: &!t [byte]) -> [] bool {
     return ok;
 }
 
+fn shows[&m, &t](m: &!m [int], t: &!t [byte], x: float, want: &static [byte]) -> [] bool {
+    return text.is(t, f32.debug(m, t, x), want);
+}
+
+// The expected strings are what lex-gpu's `interp::round`, `e4m3` and
+// Rust's `{:.N}` print for the same inputs, recorded by running them.
+fn check_interpreter_math[&m, &t](m: &!m [int], t: &!t [byte]) -> [] bool {
+    let third = f32.div(1.0, 3.0);
+    var ok = shows(m, t, f32.round_half(third), "0.33325195");
+    ok = ok && shows(m, t, f32.round_half(65504.0), "65504.0");
+    ok = ok && shows(m, t, f32.round_half(65519.0), "65504.0");
+    ok = ok && shows(m, t, f32.round_half(65520.0), "inf");
+    ok = ok && shows(m, t, f32.round_half(f32.round(0.00000001)), "0.0");
+    ok = ok && shows(m, t, f32.round_half(f32.round(0.00000003)), "5.9604645e-8");
+    ok = ok && shows(m, t, f32.round_half(f32.round(0.1)), "0.099975586");
+    ok = ok && shows(m, t, f32.round_half(f32.round(0.000061)), "6.097555e-5");
+    ok = ok && shows(m, t, f32.round_i8(0.5), "1.0");
+    ok = ok && shows(m, t, f32.round_i8(-1.5), "-2.0");
+    ok = ok && shows(m, t, f32.round_i8(2.5), "3.0");
+    ok = ok && shows(m, t, f32.round_i8(f32.round(127.6)), "127.0");
+    ok = ok && shows(m, t, f32.round_i8(-200.0), "-128.0");
+    ok = ok && shows(m, t, f32.e4m3(1), "0.001953125");
+    ok = ok && shows(m, t, f32.e4m3(7), "0.013671875");
+    ok = ok && shows(m, t, f32.e4m3(56), "1.0");
+    ok = ok && shows(m, t, f32.e4m3(126), "448.0");
+    ok = ok && shows(m, t, f32.e4m3(127), "NaN");
+    ok = ok && shows(m, t, f32.e4m3(184), "-1.0");
+    ok = ok && shows(m, t, f32.max(f32.infinity() - f32.infinity(), 1.0), "1.0");
+    // `{:.4}` and friends: exact, ties to even, the sign kept.
+    ok = ok && text.is(t, f32.fixed(m, t, 0.25, 1), "0.2");
+    ok = ok && text.is(t, f32.fixed(m, t, 0.375, 2), "0.38");
+    ok = ok && text.is(t, f32.fixed(m, t, 0.03125, 4), "0.0312");
+    ok = ok && text.is(t, f32.fixed(m, t, 0.09375, 4), "0.0938");
+    ok = ok && text.is(t, f32.fixed(m, t, f32.round(-0.000025), 4), "-0.0000");
+    ok = ok && text.is(t, f32.fixed(m, t, -0.0, 4), "-0.0000");
+    ok = ok && text.is(t, f32.fixed(m, t, f32.round(0.99995), 4), "0.9999");
+    ok = ok && text.is(t, f32.fixed(m, t, f32.round(0.00015), 4), "0.0002");
+    ok = ok && text.is(t, f32.fixed(m, t, 16777216.0, 4), "16777216.0000");
+    ok = ok && text.is(t, f32.fixed(m, t, f32.round(1e30), 4), "1000000015047466219876688855040.0000");
+    return ok;
+}
+
 fn with_memory[&h](heap: &!h Heap, which: int) -> [heap] int {
     var mb = box_slice(heap, words(), 0);
     var tb = box_slice(heap, 1000000, byte_of(0));
@@ -109,6 +151,8 @@ fn with_memory[&h](heap: &!h Heap, which: int) -> [heap] int {
                 ok = check_parsing(m, t);
             } else if which == 3 {
                 ok = check_counts(m, t);
+            } else if which == 5 {
+                ok = check_interpreter_math(m, t);
             } else {
                 ok = check_text(m, t);
             }
@@ -140,4 +184,8 @@ fn test_kernel_name_counts_saturate_like_usize[&h](heap: &!h Heap) -> [heap] int
 
 fn test_the_string_pool[&h](heap: &!h Heap) -> [heap] int {
     return with_memory(heap, 4);
+}
+
+fn test_interpreter_rounding_and_fixed_point_match_rust[&h](heap: &!h Heap) -> [heap] int {
+    return with_memory(heap, 5);
 }
