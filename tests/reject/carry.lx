@@ -1,0 +1,15 @@
+// RULE carry
+// ARGS n=64
+algo k(n)
+  in  x: f32[1, n]
+  out y: f32[1, 16]
+{
+  let a = zeros f32[1, 16]
+  let b = zeros f32[1, 16]
+  let a = for p in 0 .. n / 16 with a, b {
+    let t = load x[0, p * 16 ; 1, 16]
+    yield a + t
+  }
+  store a -> y
+}
+schedule k for nvidia-ada { threads 32 }

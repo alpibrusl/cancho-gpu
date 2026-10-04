@@ -1,0 +1,847 @@
+edition 5;
+module parser;
+
+// Tokens to a syntax tree: `lex_front::syntax::Parser` and `parse`,
+// ported. A node is a record `[kind, a, b, c, d, e]` (`kinds.ls` names
+// the kinds); a list of nodes is a `mem` list. Names are text handles.
+//
+// The grammar, and every refusal's wording, is the Rust's: a `.lx` file
+// it accepts is accepted here and one it refuses is refused with the
+// same sentence (rule `syntax`).
+
+import mem;
+import text;
+import err;
+import kinds;
+import lexer;
+
+pub fn node[&m](m: &!m [int], k: int, a: int, b: int, c: int, d: int, e: int) -> [] int {
+    let r = mem.grab(m, 6);
+    m[r] = k;
+    m[r + 1] = a;
+    m[r + 2] = b;
+    m[r + 3] = c;
+    m[r + 4] = d;
+    m[r + 5] = e;
+    return r;
+}
+
+// --- The parser's state: `[tokens, position]`.
+
+fn peek[&m](m: &!m [int], p: int) -> [] int {
+    return mem.get(m, m[p], m[p + 1]);
+}
+
+fn here[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let tok = peek(m, p);
+    return err.pos(m, t, lexer.line(m, tok), lexer.col(m, tok));
+}
+
+fn bump[&m](m: &!m [int], p: int) -> [] int {
+    let tok = peek(m, p);
+    if m[p + 1] + 1 < mem.size(m, m[p]) {
+        m[p + 1] = m[p + 1] + 1;
+    }
+    return tok;
+}
+
+fn is_punct[&m, &t](m: &!m [int], t: &!t [byte], tok: int, s: &static [byte]) -> [] bool {
+    return lexer.kind(m, tok) == lexer.punct() && text.is(t, lexer.spelling(m, tok), s);
+}
+
+fn is_kw[&m, &t](m: &!m [int], t: &!t [byte], tok: int, s: &static [byte]) -> [] bool {
+    return lexer.kind(m, tok) == lexer.ident() && text.is(t, lexer.spelling(m, tok), s);
+}
+
+fn eat_punct[&m, &t](m: &!m [int], t: &!t [byte], p: int, s: &static [byte]) -> [] bool {
+    if is_punct(m, t, peek(m, p), s) {
+        bump(m, p);
+        return true;
+    }
+    return false;
+}
+
+fn want_punct[&m, &t](m: &!m [int], t: &!t [byte], p: int, s: &static [byte]) -> [] int {
+    if eat_punct(m, t, p, s) {
+        return 0;
+    }
+    let at = here(m, t, p);
+    let found = lexer.show(m, t, peek(m, p));
+    return err.fail(m, t, "syntax", text.f3(m, t, "$: expected `$`, found $", at, text.lit(m, t, s), found));
+}
+
+fn eat_kw[&m, &t](m: &!m [int], t: &!t [byte], p: int, s: &static [byte]) -> [] bool {
+    if is_kw(m, t, peek(m, p), s) {
+        bump(m, p);
+        return true;
+    }
+    return false;
+}
+
+// A name, or -1. The Rust reports the position *after* the bad token.
+fn want_ident[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let tok = bump(m, p);
+    if lexer.kind(m, tok) == lexer.ident() {
+        return lexer.spelling(m, tok);
+    }
+    let at = here(m, t, p);
+    return err.fail(m, t, "syntax", text.f2(m, t, "$: expected a name, found $", at, lexer.show(m, t, tok)));
+}
+
+// A number token's value, or -1 with `what` in the refusal.
+fn want_count[&m, &t](m: &!m [int], t: &!t [byte], p: int, at: int, what: &static [byte]) -> [] int {
+    let tok = bump(m, p);
+    if lexer.kind(m, tok) == lexer.num() {
+        return f32_count(lexer.value(m, tok));
+    }
+    return err.fail(m, t, "syntax", text.f3(m, t, "$: $, found $", at, text.lit(m, t, what), lexer.show(m, t, tok)));
+}
+
+fn f32_count(v: float) -> [] int {
+    if is_nan(v) || v <= 0.0 {
+        return 0;
+    }
+    return truncate(v);
+}
+
+// --- Constant expressions: `*` and `/` bind tighter than `+` and `-`.
+
+fn ce[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    var lhs = ce_product(m, t, p);
+    while lhs >= 0 {
+        var op = 0;
+        if eat_punct(m, t, p, "+") {
+            op = '+';
+        } else if eat_punct(m, t, p, "-") {
+            op = '-';
+        } else {
+            return lhs;
+        }
+        let rhs = ce_product(m, t, p);
+        if rhs < 0 {
+            return 0 - 1;
+        }
+        lhs = node(m, kinds.c_bin(), op, lhs, rhs, 0, 0);
+    }
+    return lhs;
+}
+
+fn ce_product[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    var lhs = ce_atom(m, t, p);
+    while lhs >= 0 {
+        var op = 0;
+        if eat_punct(m, t, p, "*") {
+            op = '*';
+        } else if eat_punct(m, t, p, "/") {
+            op = '/';
+        } else {
+            return lhs;
+        }
+        let rhs = ce_atom(m, t, p);
+        if rhs < 0 {
+            return 0 - 1;
+        }
+        lhs = node(m, kinds.c_bin(), op, lhs, rhs, 0, 0);
+    }
+    return lhs;
+}
+
+fn ce_atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let at = here(m, t, p);
+    if eat_punct(m, t, p, "(") {
+        let e = ce(m, t, p);
+        if e < 0 || want_punct(m, t, p, ")") < 0 {
+            return 0 - 1;
+        }
+        return e;
+    }
+    let tok = bump(m, p);
+    if lexer.kind(m, tok) == lexer.num() {
+        return node(m, kinds.c_num(), m[tok + 2], 0, 0, 0, 0);
+    }
+    if lexer.kind(m, tok) == lexer.ident() {
+        return node(m, kinds.c_name(), lexer.spelling(m, tok), 0, 0, 0, 0);
+    }
+    return err.fail(m, t, "syntax", text.f2(m, t, "$: expected a number or a name, found $", at, lexer.show(m, t, tok)));
+}
+
+// A dimension: a literal, a name, or an expression.
+fn dim[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let e = ce(m, t, p);
+    if e < 0 {
+        return 0 - 1;
+    }
+    if m[e] == kinds.c_num() {
+        return node(m, kinds.d_lit(), m[e + 1], 0, 0, 0, 0);
+    }
+    if m[e] == kinds.c_name() {
+        return node(m, kinds.d_named(), m[e + 1], 0, 0, 0, 0);
+    }
+    return node(m, kinds.d_expr(), e, 0, 0, 0, 0);
+}
+
+// `a, b, c` of `f`, at least one. `f` is 0 for constant expressions and
+// 1 for dimensions.
+fn ce_list[&m, &t](m: &!m [int], t: &!t [byte], p: int, dims: bool) -> [] int {
+    let out = mem.list(m);
+    var going = true;
+    while going {
+        var e = 0;
+        if dims {
+            e = dim(m, t, p);
+        } else {
+            e = ce(m, t, p);
+        }
+        if e < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, out, e);
+        going = eat_punct(m, t, p, ",");
+    }
+    return out;
+}
+
+fn dtype_of[&t](t: &!t [byte], s: int) -> [] int {
+    if text.is(t, s, "f32") {
+        return 1;
+    }
+    if text.is(t, s, "f16") {
+        return 0;
+    }
+    if text.is(t, s, "i8") {
+        return 2;
+    }
+    return 0 - 1;
+}
+
+// `f32[1, n]`: answers a record `[dtype, dims]`.
+fn ty[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let at = here(m, t, p);
+    let name = want_ident(m, t, p);
+    if name < 0 {
+        return 0 - 1;
+    }
+    let d = dtype_of(t, name);
+    if d < 0 {
+        return err.fail(m, t, "syntax", text.f2(m, t, "$: `$` is not a dtype this slice knows", at, name));
+    }
+    if want_punct(m, t, p, "[") < 0 {
+        return 0 - 1;
+    }
+    let shape = ce_list(m, t, p, true);
+    if shape < 0 || want_punct(m, t, p, "]") < 0 {
+        return 0 - 1;
+    }
+    return mem.rec2(m, d, shape);
+}
+
+// An optional `@shared`, `@frag` or `@reg` after a tile's shape.
+fn space[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    if !eat_punct(m, t, p, "@") {
+        return kinds.reg();
+    }
+    let at = here(m, t, p);
+    let s = want_ident(m, t, p);
+    if s < 0 {
+        return 0 - 1;
+    }
+    if text.is(t, s, "reg") {
+        return kinds.reg();
+    }
+    if text.is(t, s, "shared") {
+        return kinds.threadgroup();
+    }
+    if text.is(t, s, "frag") {
+        return kinds.frag();
+    }
+    return err.fail(m, t, "syntax", text.f2(m, t, "$: `@$` is not a memory space (reg, shared, frag)", at, s));
+}
+
+// Unary and atoms.
+fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let at = here(m, t, p);
+    if eat_punct(m, t, p, "&") {
+        let n = want_ident(m, t, p);
+        if n < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_borrow(), n, 0, 0, 0, 0);
+    }
+    if eat_punct(m, t, p, "(") {
+        let e = expr(m, t, p);
+        if e < 0 || want_punct(m, t, p, ")") < 0 {
+            return 0 - 1;
+        }
+        return e;
+    }
+    let tok = bump(m, p);
+    if lexer.kind(m, tok) == lexer.num() {
+        return node(m, kinds.e_num(), m[tok + 2], 0, 0, 0, 0);
+    }
+    if lexer.kind(m, tok) != lexer.ident() {
+        return err.fail(m, t, "syntax", text.f2(m, t, "$: expected a value, found $", at, lexer.show(m, t, tok)));
+    }
+    let s = lexer.spelling(m, tok);
+    if text.is(t, s, "load") {
+        let name = want_ident(m, t, p);
+        if name < 0 {
+            return 0 - 1;
+        }
+        if !eat_punct(m, t, p, "[") {
+            return node(m, kinds.e_load(), name, 0, 0, 0, 0);
+        }
+        let offs = ce_list(m, t, p, false);
+        if offs < 0 || want_punct(m, t, p, ";") < 0 {
+            return 0 - 1;
+        }
+        let shape = ce_list(m, t, p, true);
+        if shape < 0 || want_punct(m, t, p, "]") < 0 {
+            return 0 - 1;
+        }
+        let sp = space(m, t, p);
+        if sp < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_load_at(), name, offs, shape, sp, 0);
+    }
+    if text.is(t, s, "zeros") {
+        let ts = ty(m, t, p);
+        if ts < 0 {
+            return 0 - 1;
+        }
+        let sp = space(m, t, p);
+        if sp < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_zeros(), m[ts], m[ts + 1], sp, 0, 0);
+    }
+    if text.is(t, s, "mma") {
+        let c = atom(m, t, p);
+        if c < 0 {
+            return 0 - 1;
+        }
+        let a = atom(m, t, p);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let b = atom(m, t, p);
+        if b < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_mma(), c, a, b, 0, 0);
+    }
+    if text.is(t, s, "dequant_fp4") {
+        let q = atom(m, t, p);
+        if q < 0 {
+            return 0 - 1;
+        }
+        let sc = atom(m, t, p);
+        if sc < 0 {
+            return 0 - 1;
+        }
+        let g = atom(m, t, p);
+        if g < 0 {
+            return 0 - 1;
+        }
+        let gat = here(m, t, p);
+        let group = want_count(m, t, p, gat, "a group size is a number");
+        if group < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_dequant_fp4(), q, sc, g, group, 0);
+    }
+    if text.is(t, s, "add_window") {
+        let acc = atom(m, t, p);
+        if acc < 0 {
+            return 0 - 1;
+        }
+        let name = want_ident(m, t, p);
+        if name < 0 || want_punct(m, t, p, "[") < 0 {
+            return 0 - 1;
+        }
+        let offs = ce_list(m, t, p, false);
+        if offs < 0 || want_punct(m, t, p, "]") < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_add_window(), acc, name, offs, 0, 0);
+    }
+    if text.is(t, s, "stage") {
+        let dat = here(m, t, p);
+        let dn = want_ident(m, t, p);
+        if dn < 0 {
+            return 0 - 1;
+        }
+        var d = 0 - 1;
+        if text.is(t, dn, "f16") {
+            d = kinds.f16();
+        } else if text.is(t, dn, "f32") {
+            d = kinds.f32();
+        } else {
+            return err.fail(m, t, "syntax", text.f2(m, t, "$: `$` is not a staging dtype (f16, f32)", dat, dn));
+        }
+        let e = atom(m, t, p);
+        if e < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_stage(), d, e, 0, 0, 0);
+    }
+    if text.is(t, s, "matmul_nt") || text.is(t, s, "matmul") {
+        let a = atom(m, t, p);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let b = atom(m, t, p);
+        if b < 0 {
+            return 0 - 1;
+        }
+        var nt = 0;
+        if text.is(t, s, "matmul_nt") {
+            nt = 1;
+        }
+        return node(m, kinds.e_matmul(), nt, a, b, 0, 0);
+    }
+    if text.is(t, s, "for") {
+        return for_loop(m, t, p);
+    }
+    // A call is `name expr` with no parentheses: `rowsum sq`, `rsqrt t`.
+    if text.is(t, s, "rowsum") || text.is(t, s, "rowmax") || text.is(t, s, "rsqrt") || text.is(t, s, "sigmoid") || text.is(t, s, "softplus") {
+        let e = atom(m, t, p);
+        if e < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_call(), s, e, 0, 0, 0);
+    }
+    return node(m, kinds.e_move(), s, 0, 0, 0, 0);
+}
+
+// `for p in 0 .. k / bk with acc { ... }`, after `for`.
+fn for_loop[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let index = want_ident(m, t, p);
+    if index < 0 {
+        return 0 - 1;
+    }
+    if !eat_kw(m, t, p, "in") {
+        let at = here(m, t, p);
+        return err.fail(m, t, "syntax", text.f2(m, t, "$: expected `in` after `for $`", at, index));
+    }
+    let start = ce(m, t, p);
+    if start < 0 || want_punct(m, t, p, "..") < 0 {
+        return 0 - 1;
+    }
+    let end = ce(m, t, p);
+    if end < 0 {
+        return 0 - 1;
+    }
+    let carry = mem.list(m);
+    if eat_kw(m, t, p, "with") {
+        var going = true;
+        while going {
+            let c = want_ident(m, t, p);
+            if c < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, carry, c);
+            going = eat_punct(m, t, p, ",");
+        }
+    }
+    if want_punct(m, t, p, "{") < 0 {
+        return 0 - 1;
+    }
+    let body = block(m, t, p);
+    if body < 0 {
+        return 0 - 1;
+    }
+    return node(m, kinds.e_for(), index, start, end, carry, body);
+}
+
+fn product[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    var lhs = atom(m, t, p);
+    while lhs >= 0 {
+        var op = 0;
+        if eat_punct(m, t, p, "*") {
+            op = kinds.mul();
+        } else if eat_punct(m, t, p, "/") {
+            op = kinds.div();
+        } else {
+            return lhs;
+        }
+        let rhs = atom(m, t, p);
+        if rhs < 0 {
+            return 0 - 1;
+        }
+        lhs = node(m, kinds.e_bin(), op, lhs, rhs, 0, 0);
+    }
+    return lhs;
+}
+
+fn expr[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    var lhs = product(m, t, p);
+    while lhs >= 0 {
+        var op = 0;
+        if eat_punct(m, t, p, "+") {
+            op = kinds.add();
+        } else if eat_punct(m, t, p, "-") {
+            op = kinds.sub();
+        } else {
+            return lhs;
+        }
+        let rhs = product(m, t, p);
+        if rhs < 0 {
+            return 0 - 1;
+        }
+        lhs = node(m, kinds.e_bin(), op, lhs, rhs, 0, 0);
+    }
+    return lhs;
+}
+
+// Statements up to and including the closing `}`.
+fn block[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
+    let body = mem.list(m);
+    while !eat_punct(m, t, p, "}") {
+        if eat_kw(m, t, p, "let") {
+            let dst = want_ident(m, t, p);
+            if dst < 0 || want_punct(m, t, p, "=") < 0 {
+                return 0 - 1;
+            }
+            let e = expr(m, t, p);
+            if e < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, body, node(m, kinds.s_let(), dst, e, 0, 0, 0));
+        } else if eat_kw(m, t, p, "store") {
+            let e = expr(m, t, p);
+            if e < 0 || want_punct(m, t, p, "->") < 0 {
+                return 0 - 1;
+            }
+            let dst = want_ident(m, t, p);
+            if dst < 0 {
+                return 0 - 1;
+            }
+            var at = 0 - 1;
+            if eat_punct(m, t, p, "[") {
+                at = ce_list(m, t, p, false);
+                if at < 0 || want_punct(m, t, p, "]") < 0 {
+                    return 0 - 1;
+                }
+            }
+            mem.push(m, body, node(m, kinds.s_store(), e, dst, at, 0, 0));
+        } else if eat_kw(m, t, p, "grid") {
+            let axes = mem.list(m);
+            var going = true;
+            while going {
+                let name = want_ident(m, t, p);
+                if name < 0 {
+                    return 0 - 1;
+                }
+                if !eat_kw(m, t, p, "over") {
+                    let at = here(m, t, p);
+                    return err.fail(m, t, "syntax", text.f2(m, t, "$: expected `over` after `grid $`", at, name));
+                }
+                let e = ce(m, t, p);
+                if e < 0 {
+                    return 0 - 1;
+                }
+                mem.push(m, axes, mem.rec2(m, name, e));
+                going = eat_punct(m, t, p, ",");
+            }
+            mem.push(m, body, node(m, kinds.s_grid(), axes, 0, 0, 0, 0));
+        } else if eat_kw(m, t, p, "yield") {
+            let ys = mem.list(m);
+            var going = true;
+            while going {
+                let e = expr(m, t, p);
+                if e < 0 {
+                    return 0 - 1;
+                }
+                mem.push(m, ys, e);
+                going = eat_punct(m, t, p, ",");
+            }
+            mem.push(m, body, node(m, kinds.s_yield(), ys, 0, 0, 0, 0));
+        } else {
+            let at = here(m, t, p);
+            let found = lexer.show(m, t, peek(m, p));
+            return err.fail(m, t, "syntax", text.f2(m, t, "$: expected `let`, `store`, `grid`, `yield` or `}`, found $", at, found));
+        }
+    }
+    return body;
+}
+
+// ---------------------------------------------------------------------
+// A unit: `[algo, schedules]`
+// ---------------------------------------------------------------------
+//
+// algo:     `[name, consts, tiles, params, body]`
+// param:    `[name, dtype, dims, writable]`
+// schedule: `[target, threads, chunk, warps_rows, warps_cols, pad, extents]`
+//           with -1 for an unset optional; `extents` a list of
+//           `[name, value]`.
+
+pub fn algo_name[&m](m: &!m [int], unit: int) -> [] int {
+    return m[m[unit]];
+}
+
+// Parse one `.lx` file (the source as a handle). Answers the unit, or -1
+// with the refusal recorded.
+pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], src: int) -> [] int {
+    let toks = lexer.tokens(m, t, src);
+    if toks < 0 {
+        return 0 - 1;
+    }
+    let p = mem.rec2(m, toks, 0);
+    if !eat_kw(m, t, p, "algo") {
+        let at = here(m, t, p);
+        return err.fail(m, t, "syntax", text.f1(m, t, "$: a file starts with `algo`", at));
+    }
+    let name = want_ident(m, t, p);
+    if name < 0 {
+        return 0 - 1;
+    }
+    // `algo rmsnorm(n, eps)`: the constants a caller supplies.
+    let consts = mem.list(m);
+    if eat_punct(m, t, p, "(") {
+        var going = !eat_punct(m, t, p, ")");
+        while going {
+            let c = want_ident(m, t, p);
+            if c < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, consts, c);
+            if !eat_punct(m, t, p, ",") {
+                if want_punct(m, t, p, ")") < 0 {
+                    return 0 - 1;
+                }
+                going = false;
+            } else if eat_punct(m, t, p, ")") {
+                going = false;
+            }
+        }
+    }
+    let params = mem.list(m);
+    var more = true;
+    while more {
+        var writable = 0 - 1;
+        if eat_kw(m, t, p, "in") {
+            writable = 0;
+        } else if eat_kw(m, t, p, "out") {
+            writable = 1;
+        }
+        if writable < 0 {
+            more = false;
+        } else {
+            let pn = want_ident(m, t, p);
+            if pn < 0 || want_punct(m, t, p, ":") < 0 {
+                return 0 - 1;
+            }
+            let ts = ty(m, t, p);
+            if ts < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, params, mem.rec4(m, pn, m[ts], m[ts + 1], writable));
+        }
+    }
+    if mem.size(m, params) == 0 {
+        let at = here(m, t, p);
+        return err.fail(m, t, "syntax", text.f1(m, t, "$: an algo needs at least one parameter", at));
+    }
+    // `tile bm, bn, bk`: extents the schedule sets.
+    let tiles = mem.list(m);
+    if eat_kw(m, t, p, "tile") {
+        var going = true;
+        while going {
+            let tn = want_ident(m, t, p);
+            if tn < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, tiles, tn);
+            going = eat_punct(m, t, p, ",");
+        }
+    }
+    if want_punct(m, t, p, "{") < 0 {
+        return 0 - 1;
+    }
+    let body = block(m, t, p);
+    if body < 0 {
+        return 0 - 1;
+    }
+    let algo = mem.rec5(m, name, consts, tiles, params, body);
+
+    let schedules = mem.list(m);
+    while eat_kw(m, t, p, "schedule") {
+        let s = schedule(m, t, p, algo, schedules);
+        if s < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, schedules, s);
+    }
+    if lexer.kind(m, peek(m, p)) != lexer.end() {
+        let at = here(m, t, p);
+        return err.fail(m, t, "syntax", text.f1(m, t, "$: trailing input after the algo", at));
+    }
+    return mem.rec2(m, algo, schedules);
+}
+
+fn names_debug[&m, &t](m: &!m [int], t: &!t [byte], names: int) -> [] int {
+    let parts = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, names) {
+        mem.push(m, parts, text.f1(m, t, "\"$\"", mem.get(m, names, i)));
+        i = i + 1;
+    }
+    return text.f1(m, t, "[$]", text.joined(m, t, parts, ", "));
+}
+
+fn has_name[&m, &t](m: &!m [int], t: &!t [byte], names: int, s: int) -> [] bool {
+    var i = 0;
+    while i < mem.size(m, names) {
+        if text.eq(t, mem.get(m, names, i), s) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// `schedule <algo> for <target> { threads N ... }`, after `schedule`.
+fn schedule[&m, &t](m: &!m [int], t: &!t [byte], p: int, algo: int, done: int) -> [] int {
+    let at = here(m, t, p);
+    let for_algo = want_ident(m, t, p);
+    if for_algo < 0 {
+        return 0 - 1;
+    }
+    if !text.eq(t, for_algo, m[algo]) {
+        return err.fail(m, t, "syntax", text.f3(m, t, "$: this file declares `$`, not `$`", at, m[algo], for_algo));
+    }
+    if !eat_kw(m, t, p, "for") {
+        let a2 = here(m, t, p);
+        return err.fail(m, t, "syntax", text.f1(m, t, "$: expected `for <target>`", a2));
+    }
+    // Target names carry dashes, which do not lex as one identifier.
+    var target = want_ident(m, t, p);
+    if target < 0 {
+        return 0 - 1;
+    }
+    while eat_punct(m, t, p, "-") {
+        let part = want_ident(m, t, p);
+        if part < 0 {
+            return 0 - 1;
+        }
+        target = text.f2(m, t, "$-$", target, part);
+    }
+    if want_punct(m, t, p, "{") < 0 {
+        return 0 - 1;
+    }
+    var threads = 0 - 1;
+    var chunk = 0 - 1;
+    var wr = 0 - 1;
+    var wc = 0 - 1;
+    var pad = 0 - 1;
+    let extents = mem.list(m);
+    let tiles = m[algo + 2];
+    while !eat_punct(m, t, p, "}") {
+        let kat = here(m, t, p);
+        let key = want_ident(m, t, p);
+        if key < 0 {
+            return 0 - 1;
+        }
+        if text.is(t, key, "threads") {
+            threads = want_count(m, t, p, kat, "threads takes a number");
+            if threads < 0 {
+                return 0 - 1;
+            }
+        } else if text.is(t, key, "pad") {
+            pad = want_count(m, t, p, kat, "pad takes a number");
+            if pad < 0 {
+                return 0 - 1;
+            }
+        } else if text.is(t, key, "warps") {
+            let a = bump(m, p);
+            let b = bump(m, p);
+            if lexer.kind(m, a) != lexer.num() || lexer.kind(m, b) != lexer.num() {
+                let shown = text.f2(m, t, "($, $)", lexer.show(m, t, a), lexer.show(m, t, b));
+                return err.fail(m, t, "syntax", text.f2(m, t, "$: warps takes two numbers, found $", kat, shown));
+            }
+            wr = f32_count(lexer.value(m, a));
+            wc = f32_count(lexer.value(m, b));
+        } else if text.is(t, key, "chunk") {
+            chunk = want_count(m, t, p, kat, "chunk takes a number");
+            if chunk < 0 {
+                return 0 - 1;
+            }
+        } else if has_name(m, t, tiles, key) {
+            let tok = bump(m, p);
+            if lexer.kind(m, tok) != lexer.num() {
+                return err.fail(m, t, "syntax", text.f3(m, t, "$: $ takes a number, found $", kat, key, lexer.show(m, t, tok)));
+            }
+            mem.push(m, extents, mem.rec2(m, key, f32_count(lexer.value(m, tok))));
+        } else {
+            return err.fail(m, t, "syntax", text.f3(m, t, "$: `$` is not a schedule key (this algo's tiles are $)", kat, key, names_debug(m, t, tiles)));
+        }
+        // A comma between keys is allowed and means nothing.
+        eat_punct(m, t, p, ",");
+    }
+    if threads < 0 {
+        return err.fail(m, t, "syntax", text.f2(m, t, "$: the schedule for `$` sets no threads", at, target));
+    }
+    var i = 0;
+    while i < mem.size(m, done) {
+        if text.eq(t, m[mem.get(m, done, i)], target) {
+            return err.fail(m, t, "syntax", text.f2(m, t, "$: two schedules for `$`", at, target));
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < mem.size(m, tiles) {
+        let tn = mem.get(m, tiles, i);
+        var set = false;
+        var j = 0;
+        while j < mem.size(m, extents) {
+            if text.eq(t, m[mem.get(m, extents, j)], tn) {
+                set = true;
+            }
+            j = j + 1;
+        }
+        if !set {
+            return err.fail(m, t, "syntax", text.f3(m, t, "$: the schedule for `$` sets no `$`", at, target, tn));
+        }
+        i = i + 1;
+    }
+    let s = mem.grab(m, 7);
+    m[s] = target;
+    m[s + 1] = threads;
+    m[s + 2] = chunk;
+    m[s + 3] = wr;
+    m[s + 4] = wc;
+    m[s + 5] = pad;
+    m[s + 6] = extents;
+    return s;
+}
+
+// The schedule for a target name (a handle), or -1 with the Rust's
+// refusal: no schedule is a program nobody chose a shape for.
+pub fn schedule_for[&m, &t](m: &!m [int], t: &!t [byte], unit: int, target: int) -> [] int {
+    let scheds = m[unit + 1];
+    let have = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, scheds) {
+        let s = mem.get(m, scheds, i);
+        if text.eq(t, m[s], target) {
+            return s;
+        }
+        mem.push(m, have, m[s]);
+        i = i + 1;
+    }
+    return err.fail(m, t, "no-schedule", text.f3(m, t, "`$` has no schedule for `$`; it has $", algo_name(m, unit), target, names_debug(m, t, have)));
+}
+
+// Whether the unit has a schedule for a target, without a refusal.
+pub fn has_schedule[&m, &t](m: &!m [int], t: &!t [byte], unit: int, target: &static [byte]) -> [] bool {
+    let scheds = m[unit + 1];
+    var i = 0;
+    while i < mem.size(m, scheds) {
+        if text.is(t, m[mem.get(m, scheds, i)], target) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}

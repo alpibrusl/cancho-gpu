@@ -1,0 +1,10 @@
+// RULE moved-while-borrowed
+// ARGS n=8
+algo k(n)
+  in  x: f32[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  store a * &a -> y
+}
+schedule k for nvidia-ada { threads 32 }

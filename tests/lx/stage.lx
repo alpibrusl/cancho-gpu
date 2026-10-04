@@ -1,0 +1,18 @@
+// A computed tile staged into shared memory and read back: the generic
+// staging copy, and a register accumulator carried through a loop.
+algo stage(m, k)
+  in  a: f32[m, k]
+  out y: f32[m, k]
+  tile bk
+{
+  let acc = zeros f32[m, bk]
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[0, p * bk ; m, bk]
+    let st = stage f32 at
+    yield acc + st
+  }
+  store acc -> y[0, 0]
+}
+
+schedule stage for apple-m-series { threads 64 bk 16 }
+schedule stage for nvidia-ada     { threads 64 bk 32 }

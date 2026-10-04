@@ -1,0 +1,473 @@
+edition 5;
+module f32;
+
+// `f32` -- single precision, without a single-precision type.
+//
+// lex-sys has one floating type, binary64 (`lex-sys/docs/floating-point.md`
+// §1). The Rust this compiler ports computes its constants in f32 and
+// prints them with `{:?}`, and "the same program" is byte-identical
+// output, so the f32 rounding and the f32 printing both have to be
+// exact. They are, with two facts (`docs/design.md` §4):
+//
+// * every f32 is exactly a binary64, so an f32 is held as a `float`
+//   whose value happens to be one; and
+// * binary64 has more than `2 * 24 + 2` significand bits, so one f32
+//   `+ - * /` done in binary64 and rounded once to f32 is the correctly
+//   rounded f32 result -- double rounding cannot bite.
+//
+// So the only primitive needed is "round a binary64 to the nearest f32",
+// done in integers on `bits_of` and rebuilt with `math.ldexp`, which is
+// exact for every f32. lex-sys has `bits_of` but nothing that builds a
+// float from bits; `ldexp` is the way round that, and lexsys-gpu is the
+// first program that asked (lex-sys#251).
+
+import mem;
+import text;
+import std.math;
+import std.bignum;
+import std.json;
+
+// 2^n for 0 <= n <= 62.
+fn pow2i(n: int) -> [] int {
+    return 1 << n;
+}
+
+fn bit_length(x: int) -> [] int {
+    var n = 0;
+    var v = x;
+    while v > 0 {
+        v = v >> 1;
+        n = n + 1;
+    }
+    return n;
+}
+
+fn is_finite(x: float) -> [] bool {
+    let e = bits_of(x) >> 52 & 0x7ff;
+    return e != 0x7ff;
+}
+
+// The positive infinity, built rather than divided into: 2^1023 * 2.
+pub fn infinity() -> [] float {
+    return math.ldexp(1.0, 1023) * 2.0;
+}
+
+// `x` as `(negative, significand, exponent)` with value `m * 2^e`, `m`
+// an integer under 2^53. `x` is finite.
+fn parts_of(x: float) -> [] (bool, int, int) {
+    let bits = bits_of(x);
+    let negative = bits < 0;
+    let raw = bits & 0xfffffffffffff;
+    let biased = bits >> 52 & 0x7ff;
+    if biased == 0 {
+        return (negative, raw, 0 - 1074);
+    }
+    return (negative, raw | 1 << 52, biased - 1075);
+}
+
+fn signed(negative: bool, x: float) -> [] float {
+    if negative {
+        return -x;
+    }
+    return x;
+}
+
+// `x as f32`: nearest, ties to even; past the largest f32, infinity.
+pub fn round(x: float) -> [] float {
+    if is_nan(x) || !is_finite(x) || x == 0.0 {
+        return x;
+    }
+    let (negative, m, e) = parts_of(x);
+    // Where the leading bit sits, and so which exponent the f32 has.
+    let lead = bit_length(m) - 1 + e;
+    var q = 0 - 149;
+    if lead >= 0 - 126 {
+        q = lead - 23;
+    }
+    let drop = q - e;
+    var kept = 0;
+    if drop <= 0 {
+        kept = m << 0 - drop;
+    } else if drop <= 54 {
+        kept = m >> drop;
+        let rest = m - (kept << drop);
+        let half = pow2i(drop - 1);
+        if rest > half || rest == half && kept & 1 == 1 {
+            kept = kept + 1;
+        }
+    }
+    if kept == pow2i(24) {
+        kept = pow2i(23);
+        q = q + 1;
+    }
+    if q + 23 > 127 {
+        return signed(negative, infinity());
+    }
+    return signed(negative, math.ldexp(float_of(kept), q));
+}
+
+// One f32 operation, correctly rounded (see the header).
+pub fn add(a: float, b: float) -> [] float {
+    return round(a + b);
+}
+
+pub fn sub(a: float, b: float) -> [] float {
+    return round(a - b);
+}
+
+pub fn mul(a: float, b: float) -> [] float {
+    return round(a * b);
+}
+
+pub fn div(a: float, b: float) -> [] float {
+    return round(a / b);
+}
+
+// A float back from the bits `bits_of` gave: the direction lex-sys does
+// not have, for a value kept in an `int` table. Finite values only;
+// infinities and NaN come back as themselves through `special`.
+pub fn from_bits(bits: int) -> [] float {
+    let negative = bits < 0;
+    let raw = bits & 0xfffffffffffff;
+    let biased = bits >> 52 & 0x7ff;
+    if biased == 0x7ff {
+        if raw == 0 {
+            return signed(negative, infinity());
+        }
+        return infinity() - infinity();
+    }
+    if biased == 0 {
+        return signed(negative, math.ldexp(float_of(raw), 0 - 1074));
+    }
+    return signed(negative, math.ldexp(float_of(raw | 1 << 52), biased - 1075));
+}
+
+// ---------------------------------------------------------------------
+// Printing: what Rust's `{:?}` writes for an f32
+// ---------------------------------------------------------------------
+
+fn limbs() -> [] int {
+    return 80;
+}
+
+// The shortest digits that read back as the f32 `x` (positive, finite,
+// nonzero), by Steele and White's algorithm -- `std.fmt`'s, with the
+// neighbours of an f32 in place of a binary64's. Answers the digits
+// (a list of 0..9) and `k`, with `x = 0.d1d2... * 10^k`. Ties round up,
+// as Rust's shortest mode does.
+fn shortest[&m](m: &!m [int], x: float) -> [] (int, int) {
+    let (negative, m53, e53) = parts_of(x);
+    // The same value with an f32's significand.
+    let lead = bit_length(m53) - 1 + e53;
+    var e = 0 - 149;
+    if lead >= 0 - 126 {
+        e = lead - 23;
+    }
+    var sig = 0;
+    if e >= e53 {
+        sig = m53 >> e - e53;
+    } else {
+        sig = m53 << e53 - e;
+    }
+    let uneven = sig == pow2i(23) && e > 0 - 149;
+    let even = sig & 1 == 0;
+    let digits = mem.list(m);
+    var k = 0;
+    region a {
+        let r = alloc_slice[a](limbs(), 0);
+        let s = alloc_slice[a](limbs(), 0);
+        let minus = alloc_slice[a](limbs(), 0);
+        let plus = alloc_slice[a](limbs(), 0);
+        let scratch = alloc_slice[a](limbs(), 0);
+        if e >= 0 {
+            bignum.set(r, sig);
+            bignum.set(minus, 1);
+            bignum.set(plus, 1);
+            if uneven {
+                bignum.shift_left(r, e + 2);
+                bignum.set(s, 4);
+                bignum.shift_left(minus, e);
+                bignum.shift_left(plus, e + 1);
+            } else {
+                bignum.shift_left(r, e + 1);
+                bignum.set(s, 2);
+                bignum.shift_left(minus, e);
+                bignum.shift_left(plus, e);
+            }
+        } else {
+            bignum.set(r, sig);
+            bignum.set(s, 1);
+            bignum.set(minus, 1);
+            if uneven {
+                bignum.mul_small(r, 4);
+                bignum.shift_left(s, 2 - e);
+                bignum.set(plus, 2);
+            } else {
+                bignum.mul_small(r, 2);
+                bignum.shift_left(s, 1 - e);
+                bignum.set(plus, 1);
+            }
+        }
+        var settled = false;
+        while !settled {
+            bignum.add_into(scratch, r, plus);
+            let over = bignum.compare(scratch, s);
+            if over > 0 || even && over == 0 {
+                bignum.mul_small(s, 10);
+                k = k + 1;
+            } else {
+                settled = true;
+            }
+        }
+        settled = false;
+        while !settled {
+            bignum.add_into(scratch, r, plus);
+            bignum.mul_small(scratch, 10);
+            let under = bignum.compare(scratch, s);
+            if under < 0 || !even && under == 0 {
+                bignum.mul_small(r, 10);
+                bignum.mul_small(minus, 10);
+                bignum.mul_small(plus, 10);
+                k = k - 1;
+            } else {
+                settled = true;
+            }
+        }
+        var done = false;
+        var count = 0;
+        while !done && count < 20 {
+            bignum.mul_small(r, 10);
+            bignum.mul_small(minus, 10);
+            bignum.mul_small(plus, 10);
+            var digit = 0;
+            while bignum.compare(r, s) >= 0 {
+                bignum.subtract(r, s);
+                digit = digit + 1;
+            }
+            let under = bignum.compare(r, minus);
+            let low = under < 0 || even && under == 0;
+            bignum.add_into(scratch, r, plus);
+            let over = bignum.compare(scratch, s);
+            let high = over > 0 || even && over == 0;
+            if low || high {
+                var last = digit;
+                if low && high {
+                    bignum.copy(scratch, r);
+                    bignum.mul_small(scratch, 2);
+                    if bignum.compare(scratch, s) >= 0 {
+                        last = digit + 1;
+                    }
+                } else if high {
+                    last = digit + 1;
+                }
+                mem.push(m, digits, last);
+                done = true;
+            } else {
+                mem.push(m, digits, digit);
+            }
+            count = count + 1;
+        }
+    }
+    return (digits, k);
+}
+
+fn digit_str[&m, &t](m: &!m [int], t: &!t [byte], digits: int, from: int, to: int) -> [] int {
+    let parts = mem.list(m);
+    var i = from;
+    while i < to {
+        mem.push(m, parts, text.num(m, t, mem.get(m, digits, i)));
+        i = i + 1;
+    }
+    return text.joined(m, t, parts, "");
+}
+
+fn zeros[&m, &t](m: &!m [int], t: &!t [byte], n: int) -> [] int {
+    var s = text.empty();
+    var i = 0;
+    while i < n {
+        s = text.cat(m, t, s, text.lit(m, t, "0"));
+        i = i + 1;
+    }
+    return s;
+}
+
+// The f32 `x` as Rust's `{:?}` writes it: the shortest digits that read
+// back, positional between 1e-4 and 1e16 with at least one digit after
+// the point (`0.5`, `16384.0`), exponential outside it (`1e-5`, `1.5e16`).
+pub fn debug[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
+    if is_nan(x) {
+        return text.lit(m, t, "NaN");
+    }
+    let negative = bits_of(x) < 0;
+    var sign = text.empty();
+    if negative {
+        sign = text.lit(m, t, "-");
+    }
+    if !is_finite(x) {
+        return text.cat(m, t, sign, text.lit(m, t, "inf"));
+    }
+    if x == 0.0 {
+        return text.cat(m, t, sign, text.lit(m, t, "0.0"));
+    }
+    var a = x;
+    if negative {
+        a = -x;
+    }
+    let (digits, k) = shortest(m, a);
+    let n = mem.size(m, digits);
+    let lo = round(0.0001);
+    let hi = round(10000000000000000.0);
+    if a < lo || a >= hi {
+        var body = digit_str(m, t, digits, 0, 1);
+        if n > 1 {
+            body = text.f2(m, t, "$.$", body, digit_str(m, t, digits, 1, n));
+        }
+        return text.f3(m, t, "$$e$", sign, body, text.num(m, t, k - 1));
+    }
+    if k <= 0 {
+        let frac = text.cat(m, t, zeros(m, t, 0 - k), digit_str(m, t, digits, 0, n));
+        return text.f2(m, t, "$0.$", sign, frac);
+    }
+    if k < n {
+        let whole = digit_str(m, t, digits, 0, k);
+        let frac = digit_str(m, t, digits, k, n);
+        return text.f3(m, t, "$$.$", sign, whole, frac);
+    }
+    let whole = text.cat(m, t, digit_str(m, t, digits, 0, n), zeros(m, t, k - n));
+    return text.f2(m, t, "$$.0", sign, whole);
+}
+
+// ---------------------------------------------------------------------
+// Reading: a decimal literal, correctly rounded to binary64
+// ---------------------------------------------------------------------
+
+// `s` as Rust's `str::parse::<f64>` reads the numbers the `.lx` lexer
+// produces: digits, an optional point and fraction, an optional
+// exponent. Answers `(true, value)`, or `(false, 0.0)` when it is not a
+// number. The rounding is `std.json`'s, which is correct (Clinger's fast
+// path and an exact slow path); the text is first brought to the JSON
+// grammar, which forbids the leading zeros and the bare trailing point
+// that Rust accepts.
+pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] (bool, float) {
+    let n = text.size(s);
+    // digits [. digits] [(e|E) [+|-] digits]
+    var i = 0;
+    let int_from = i;
+    while i < n && text.at(t, s, i) >= '0' && text.at(t, s, i) <= '9' {
+        i = i + 1;
+    }
+    let int_to = i;
+    if int_to == int_from {
+        return (false, 0.0);
+    }
+    var frac_from = i;
+    var frac_to = i;
+    if i < n && text.at(t, s, i) == '.' {
+        i = i + 1;
+        frac_from = i;
+        while i < n && text.at(t, s, i) >= '0' && text.at(t, s, i) <= '9' {
+            i = i + 1;
+        }
+        frac_to = i;
+    }
+    var exp = text.empty();
+    if i < n && (text.at(t, s, i) == 'e' || text.at(t, s, i) == 'E') {
+        let e_from = i;
+        i = i + 1;
+        if i < n && (text.at(t, s, i) == '+' || text.at(t, s, i) == '-') {
+            i = i + 1;
+        }
+        let d = i;
+        while i < n && text.at(t, s, i) >= '0' && text.at(t, s, i) <= '9' {
+            i = i + 1;
+        }
+        if i == d {
+            return (false, 0.0);
+        }
+        exp = text.sub(s, e_from, i);
+    }
+    if i != n {
+        return (false, 0.0);
+    }
+    // Leading zeros of the whole part go, keeping one.
+    var lead = int_from;
+    while lead + 1 < int_to && text.at(t, s, lead) == '0' {
+        lead = lead + 1;
+    }
+    var json_text = text.sub(s, lead, int_to);
+    if frac_to > frac_from {
+        json_text = text.f2(m, t, "$.$", json_text, text.sub(s, frac_from, frac_to));
+    }
+    json_text = text.cat(m, t, json_text, exp);
+    var ok = false;
+    var value = 0.0;
+    region a {
+        let src = text.bytes(t, json_text);
+        let tape = alloc_slice[a](json.tape_len(src), 0);
+        let nodes = json.parse(src, tape);
+        if nodes > 0 && json.is_number(tape, 0) {
+            ok = true;
+            value = json.to_float(src, tape, 0);
+        }
+    }
+    return (ok, value);
+}
+
+// Is `x` a whole number? (`x.fract() == 0.0`, for the magnitudes a
+// shape or an index can have.)
+pub fn is_whole(x: float) -> [] bool {
+    if !is_finite(x) {
+        return false;
+    }
+    if x > 4611686018427387904.0 || x < -4611686018427387904.0 {
+        return true;
+    }
+    return float_of(truncate(x)) == x;
+}
+
+// `x as usize` / `x as i64` for the values that reach one: truncation
+// toward zero, saturating at zero below.
+pub fn to_count(x: float) -> [] int {
+    if is_nan(x) || x <= 0.0 {
+        return 0;
+    }
+    if x > 4611686018427387904.0 {
+        return 4611686018427387904;
+    }
+    return truncate(x);
+}
+
+// `x as usize`, printed: the exact integer for a whole `x` below 2^64,
+// and `usize::MAX` at and past it -- which is what the Rust's kernel
+// names carry for a constant that large. lex-sys's `int` stops at 2^63,
+// so the value is held as two 32-bit halves and divided down by hand.
+pub fn count_string[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
+    if is_nan(x) || x <= 0.0 {
+        return text.lit(m, t, "0");
+    }
+    let two32 = 4294967296.0;
+    if x >= two32 * two32 {
+        return text.lit(m, t, "18446744073709551615");
+    }
+    if x < 4611686018427387904.0 {
+        return text.num(m, t, truncate(x));
+    }
+    // x = hi * 2^32 + lo, both exact: x is whole and under 2^64.
+    var hi = truncate(x / two32);
+    var lo = truncate(x - float_of(hi) * two32);
+    let digits = mem.list(m);
+    while hi > 0 || lo > 0 {
+        let r = (hi % 10 * 4294967296 + lo) % 10;
+        let q_lo = (hi % 10 * 4294967296 + lo) / 10;
+        hi = hi / 10;
+        lo = q_lo;
+        mem.push(m, digits, r);
+    }
+    let parts = mem.list(m);
+    var i = mem.size(m, digits) - 1;
+    while i >= 0 {
+        mem.push(m, parts, text.num(m, t, mem.get(m, digits, i)));
+        i = i - 1;
+    }
+    return text.joined(m, t, parts, "");
+}

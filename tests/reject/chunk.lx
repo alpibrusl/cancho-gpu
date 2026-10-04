@@ -1,0 +1,10 @@
+// RULE chunk
+// ARGS n=100
+algo k(n)
+  in  x: f32[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  store sigmoid a -> y
+}
+schedule k for nvidia-ada { threads 32, chunk 64 }

@@ -1,0 +1,296 @@
+edition 5;
+module kinds;
+
+// The numbers the tables hold, named. lex-sys has no enum that a table
+// of `int` can hold, so every tag is a small integer and these functions
+// are its names (`docs/design.md` §3.3). The orders follow the Rust
+// enums they mirror (`lex_ir::DType`, `lex_ir::Space`, `ir::BinOp`, ...).
+
+// --- DType
+pub fn f16() -> [] int {
+    return 0;
+}
+
+pub fn f32() -> [] int {
+    return 1;
+}
+
+pub fn i8() -> [] int {
+    return 2;
+}
+
+pub fn size_bytes(d: int) -> [] int {
+    if d == 0 {
+        return 2;
+    }
+    if d == 1 {
+        return 4;
+    }
+    return 1;
+}
+
+pub fn dtype_name(d: int) -> [] &static [byte] {
+    if d == 0 {
+        return "F16";
+    }
+    if d == 1 {
+        return "F32";
+    }
+    return "I8";
+}
+
+// --- Space
+pub fn global() -> [] int {
+    return 0;
+}
+
+pub fn threadgroup() -> [] int {
+    return 1;
+}
+
+pub fn reg() -> [] int {
+    return 2;
+}
+
+pub fn frag() -> [] int {
+    return 3;
+}
+
+pub fn space_name(s: int) -> [] &static [byte] {
+    if s == 0 {
+        return "Global";
+    }
+    if s == 1 {
+        return "Threadgroup";
+    }
+    if s == 2 {
+        return "Reg";
+    }
+    return "Frag";
+}
+
+// --- BinOp
+pub fn add() -> [] int {
+    return 0;
+}
+
+pub fn sub() -> [] int {
+    return 1;
+}
+
+pub fn mul() -> [] int {
+    return 2;
+}
+
+pub fn div() -> [] int {
+    return 3;
+}
+
+pub fn max() -> [] int {
+    return 4;
+}
+
+pub fn binop_name(b: int) -> [] &static [byte] {
+    if b == 0 {
+        return "add";
+    }
+    if b == 1 {
+        return "sub";
+    }
+    if b == 2 {
+        return "mul";
+    }
+    if b == 3 {
+        return "div";
+    }
+    return "max";
+}
+
+// --- UnOp
+pub fn rsqrt() -> [] int {
+    return 0;
+}
+
+pub fn sigmoid() -> [] int {
+    return 1;
+}
+
+pub fn softplus() -> [] int {
+    return 2;
+}
+
+// --- Reduce
+pub fn r_max() -> [] int {
+    return 0;
+}
+
+pub fn r_sum() -> [] int {
+    return 1;
+}
+
+// --- Syntax nodes: expressions
+pub fn e_load_at() -> [] int {
+    return 1;
+}
+
+pub fn e_zeros() -> [] int {
+    return 2;
+}
+
+pub fn e_dequant_fp4() -> [] int {
+    return 3;
+}
+
+pub fn e_add_window() -> [] int {
+    return 4;
+}
+
+pub fn e_stage() -> [] int {
+    return 5;
+}
+
+pub fn e_mma() -> [] int {
+    return 6;
+}
+
+pub fn e_matmul() -> [] int {
+    return 7;
+}
+
+pub fn e_for() -> [] int {
+    return 8;
+}
+
+pub fn e_move() -> [] int {
+    return 9;
+}
+
+pub fn e_borrow() -> [] int {
+    return 10;
+}
+
+pub fn e_num() -> [] int {
+    return 11;
+}
+
+pub fn e_load() -> [] int {
+    return 12;
+}
+
+pub fn e_call() -> [] int {
+    return 13;
+}
+
+pub fn e_bin() -> [] int {
+    return 14;
+}
+
+// --- Syntax nodes: constant expressions
+pub fn c_num() -> [] int {
+    return 20;
+}
+
+pub fn c_name() -> [] int {
+    return 21;
+}
+
+pub fn c_bin() -> [] int {
+    return 22;
+}
+
+// --- Syntax nodes: dimensions
+pub fn d_lit() -> [] int {
+    return 30;
+}
+
+pub fn d_named() -> [] int {
+    return 31;
+}
+
+pub fn d_expr() -> [] int {
+    return 32;
+}
+
+// --- Syntax nodes: statements
+pub fn s_let() -> [] int {
+    return 40;
+}
+
+pub fn s_store() -> [] int {
+    return 41;
+}
+
+pub fn s_grid() -> [] int {
+    return 42;
+}
+
+pub fn s_yield() -> [] int {
+    return 43;
+}
+
+// --- IR ops (`ir::Op`, the ones a `.lx` program can produce)
+pub fn op_fill() -> [] int {
+    return 1;
+}
+
+pub fn op_load() -> [] int {
+    return 2;
+}
+
+pub fn op_store() -> [] int {
+    return 3;
+}
+
+pub fn op_binary() -> [] int {
+    return 4;
+}
+
+pub fn op_unary() -> [] int {
+    return 5;
+}
+
+pub fn op_scale() -> [] int {
+    return 6;
+}
+
+pub fn op_row_reduce() -> [] int {
+    return 7;
+}
+
+pub fn op_matmul_nt() -> [] int {
+    return 8;
+}
+
+pub fn op_matmul() -> [] int {
+    return 9;
+}
+
+pub fn op_mma() -> [] int {
+    return 10;
+}
+
+pub fn op_stage() -> [] int {
+    return 11;
+}
+
+pub fn op_add_window() -> [] int {
+    return 12;
+}
+
+pub fn op_dequant_fp4() -> [] int {
+    return 13;
+}
+
+// --- IR statements
+pub fn st_let() -> [] int {
+    return 1;
+}
+
+pub fn st_for() -> [] int {
+    return 2;
+}
+
+// "No value": a missing optional, a `Var` that is not there.
+pub fn none() -> [] int {
+    return 0 - 1;
+}

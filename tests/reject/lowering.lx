@@ -1,0 +1,13 @@
+// RULE lowering
+// ARGS m=128 n=128 k=64
+algo k(m, n, k)
+  in  a: f16[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+{
+  let acc = zeros f32[m, n] @frag
+  let at = load a[0, 0 ; m, k] @shared
+  let wt = load w[0, 0 ; n, k] @shared
+  store mma acc at wt -> y[0, 0]
+}
+schedule k for nvidia-ada { threads 128 warps 2 4 }

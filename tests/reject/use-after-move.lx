@@ -1,0 +1,12 @@
+// RULE use-after-move
+// ARGS n=8
+algo k(n)
+  in  x: f32[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  let b = sigmoid a
+  let c = rsqrt a
+  store b + c -> y
+}
+schedule k for nvidia-ada { threads 32 }

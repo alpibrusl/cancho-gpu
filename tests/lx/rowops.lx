@@ -1,0 +1,22 @@
+// Row reductions, broadcasts and the unary ops: softmax-like pieces.
+algo rowops(r, n)
+  in  x: f32[r, n]
+  in  b: f32[1, n]
+  out y: f32[r, n]
+{
+  let x  = load x
+  let mx = rowmax &x
+  let sh = x - mx
+  let sp = softplus sh
+  let bb = load b
+  let z  = sp + bb
+  let s  = rsqrt &z
+  let ss = rowsum &s
+  let q  = s * z
+  let h  = 2 * q
+  let o  = h / ss
+  store o -> y
+}
+
+schedule rowops for apple-m-series { threads 128 }
+schedule rowops for nvidia-ada     { threads 256 }

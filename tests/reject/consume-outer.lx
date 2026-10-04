@@ -1,0 +1,17 @@
+// RULE consume-outer
+// ARGS n=64
+algo k(n)
+  in  x: f32[1, n]
+  in  w: f32[1, 16]
+  out y: f32[1, 16]
+{
+  let v = load w
+  let a = zeros f32[1, 16]
+  let a = for p in 0 .. n / 16 with a {
+    let t = load x[0, p * 16 ; 1, 16]
+    let s = a + t
+    yield s * v
+  }
+  store a -> y
+}
+schedule k for nvidia-ada { threads 32 }
