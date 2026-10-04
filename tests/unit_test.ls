@@ -134,6 +134,25 @@ fn check_interpreter_math[&m, &t](m: &!m [int], t: &!t [byte]) -> [] bool {
     return ok;
 }
 
+// IEEE words for the device (`docs/device.md` §3), against Python's
+// `struct` packing of the same values.
+fn check_bit_patterns() -> [] bool {
+    var ok = true;
+    ok = ok && f32.bits32(1.0) == 1065353216 && f32.from_bits32(1065353216) == 1.0;
+    ok = ok && f32.bits32(-2.5) == 3223322624 && f32.from_bits32(3223322624) == -2.5;
+    ok = ok && f32.bits32(f32.round(0.1)) == 1036831949 && f32.from_bits32(1036831949) == f32.round(0.1);
+    ok = ok && f32.bits32(f32.round(1e-45)) == 1 && f32.from_bits32(1) == f32.round(1e-45);
+    ok = ok && f32.bits32(f32.round(3.4028235e38)) == 2139095039 && f32.from_bits32(2139095039) == f32.round(3.4028235e38);
+    ok = ok && f32.bits32(f32.infinity()) == 2139095040 && f32.from_bits32(2139095040) == f32.infinity();
+    ok = ok && f32.bits32(-0.0) == 2147483648 && f32.from_bits32(2147483648) == -0.0;
+    ok = ok && f32.bits16(1.0) == 15360 && f32.from_bits16(15360) == 1.0;
+    ok = ok && f32.bits16(65504.0) == 31743 && f32.from_bits16(31743) == 65504.0;
+    ok = ok && f32.bits16(f32.round_half(f32.round(0.00000003))) == 1 && f32.from_bits16(1) == f32.round_half(f32.round(0.00000003));
+    ok = ok && f32.bits16(-2.5) == 49408 && f32.from_bits16(49408) == -2.5;
+    ok = ok && f32.bits16(f32.round_half(f32.round(0.1))) == 11878 && f32.from_bits16(11878) == f32.round_half(f32.round(0.1));
+    return ok;
+}
+
 fn with_memory[&h](heap: &!h Heap, which: int) -> [heap] int {
     var mb = box_slice(heap, words(), 0);
     var tb = box_slice(heap, 1000000, byte_of(0));
@@ -188,4 +207,11 @@ fn test_the_string_pool[&h](heap: &!h Heap) -> [heap] int {
 
 fn test_interpreter_rounding_and_fixed_point_match_rust[&h](heap: &!h Heap) -> [heap] int {
     return with_memory(heap, 5);
+}
+
+fn test_ieee_bit_patterns_for_the_device() -> [] int {
+    if check_bit_patterns() {
+        return 0;
+    }
+    return 1;
 }

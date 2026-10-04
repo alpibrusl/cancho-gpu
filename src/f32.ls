@@ -709,3 +709,88 @@ pub fn fixed[&m, &t](m: &!m [int], t: &!t [byte], x: float, prec: int) -> [] int
     }
     return text.f4(m, t, "$$$$", sign, text.sub(padded, 0, cut), point, text.sub(padded, cut, text.size(padded)));
 }
+
+// ---------------------------------------------------------------------
+// Bit patterns, for a device that holds f32 and f16 as IEEE words
+// (`docs/device.md` §3). lex-sys has neither cast; these are integers.
+// ---------------------------------------------------------------------
+
+// The IEEE word of `x`, which is exactly a value of the format with
+// `sig` significand bits (implicit one included), exponent bias `bias`
+// and `width` bits in all: f32 is (24, 127, 32), f16 (11, 15, 16).
+fn bits_of_format(x: float, sig: int, bias: int, width: int) -> [] int {
+    let frac_bits = sig - 1;
+    let exp_bits = width - 1 - frac_bits;
+    let exp_max = (1 << exp_bits) - 1;
+    var sign = 0;
+    if bits_of(x) < 0 {
+        sign = 1 << width - 1;
+    }
+    if is_nan(x) {
+        return exp_max << frac_bits | 1 << frac_bits - 1;
+    }
+    if !is_finite(x) {
+        return sign | exp_max << frac_bits;
+    }
+    if x == 0.0 {
+        return sign;
+    }
+    let (negative, m53, e53) = parts_of(x);
+    let lead = bit_length(m53) - 1 + e53;
+    let emin = 1 - bias;
+    if lead >= emin {
+        // Normal: the significand at `frac_bits` below the leading one.
+        let q = lead - frac_bits;
+        var mant = 0;
+        if q >= e53 {
+            mant = m53 >> q - e53;
+        } else {
+            mant = m53 << e53 - q;
+        }
+        return sign | lead + bias << frac_bits | mant - (1 << frac_bits);
+    }
+    // Subnormal: units of 2^(emin - frac_bits).
+    let q = emin - frac_bits;
+    var mant = 0;
+    if q >= e53 {
+        mant = m53 >> q - e53;
+    } else {
+        mant = m53 << e53 - q;
+    }
+    return sign | mant;
+}
+
+fn from_format(b: int, sig: int, bias: int, width: int) -> [] float {
+    let frac_bits = sig - 1;
+    let exp_bits = width - 1 - frac_bits;
+    let exp_max = (1 << exp_bits) - 1;
+    let negative = b >> width - 1 & 1 == 1;
+    let biased = b >> frac_bits & exp_max;
+    let frac = b & (1 << frac_bits) - 1;
+    if biased == exp_max {
+        if frac == 0 {
+            return signed(negative, infinity());
+        }
+        return infinity() - infinity();
+    }
+    if biased == 0 {
+        return signed(negative, math.ldexp(float_of(frac), 1 - bias - frac_bits));
+    }
+    return signed(negative, math.ldexp(float_of(frac | 1 << frac_bits), biased - bias - frac_bits));
+}
+
+pub fn bits32(x: float) -> [] int {
+    return bits_of_format(x, 24, 127, 32);
+}
+
+pub fn bits16(x: float) -> [] int {
+    return bits_of_format(x, 11, 15, 16);
+}
+
+pub fn from_bits32(b: int) -> [] float {
+    return from_format(b, 24, 127, 32);
+}
+
+pub fn from_bits16(b: int) -> [] float {
+    return from_format(b, 11, 15, 16);
+}

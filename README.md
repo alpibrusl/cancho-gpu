@@ -38,7 +38,7 @@ error[use-after-move]: `x.0` used after it was moved
 |---|---|
 | Parser, elaboration, checker, CUDA and Metal emitters | **built**: byte-identical with the Rust on every emitting case of `tests/cases.txt`, and refuses what the Rust refuses |
 | CPU reference interpreter (`--run`) | **built**: the same summary as the Rust's on 13 runs, f32 order included |
-| Driving a GPU (`Ffi` + a C shim) | not yet (slice 8) |
+| Driving a GPU (`Ffi` + a C shim) | **built, checked against a mock driver; not yet run on a GPU** ([`docs/device.md`](docs/device.md)) |
 | The inference runtime | not yet (slice 9) |
 
 How it is built, what it cost and what the language made hard:
@@ -47,7 +47,8 @@ How it is built, what it cost and what the language made hard:
 ## Checking it
 
 ```sh
-LEX_SYS=lex-sys scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals
+LEX_SYS=lex-sys scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing
+LEX_SYS=lex-sys scripts/build-device.sh       # build/lexsys-gpu-device: run a kernel on a CUDA GPU against the interpreter
 scripts/differential.sh ../lex-gpu            # the same cases against a live build of the Rust
 scripts/regen-golden.sh ../lex-gpu            # golden/ from the Rust, never from this compiler
 ```

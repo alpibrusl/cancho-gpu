@@ -13,6 +13,9 @@ before writing lex-sys.
   `scripts/differential.sh` against a lex-gpu checkout.
 - **Every refusal has a rule tag** and a fixture in `tests/reject/`
   (`tests/reject.sh` fails on a tag without one). No input reaches a trap.
+- **Two programs.** `lexsys-gpu` (from `lex-sys.toml`) links only libc;
+  `lexsys-gpu-device` (`scripts/build-device.sh`) links `shim/lexgpu.c`.
+  Nothing reachable from `src/main.ls` may call the shim.
 - **No source file over 2,000 lines** (`tests/files.sh`). Split by concern.
 - **Design before code**, in `docs/`, with claims measured; a claim that
   turns out false is corrected in place.
