@@ -1,9 +1,9 @@
-# lexsys-gpu: design
+# cancho-gpu: design
 
-> **Status: slices 1–8 of lex-sys#251 built and measured** (slice 8,
+> **Status: slices 1–8 of cancho#251 built and measured** (slice 8,
 > driving a GPU, against a mock driver only: [`device.md`](device.md)). The `.lx`
 > front end, checker and both emitters of
-> [lex-gpu](https://github.com/alpibrusl/lex-gpu), written in lex-sys,
+> [lex-gpu](https://github.com/alpibrusl/lex-gpu), written in cancho,
 > produce **byte-identical** CUDA C and Metal for every case in
 > `tests/cases.txt`: 135 cases, 111 that emit and 24 that both compilers
 > refuse, 13 of them also checking the interpreter's `--run` summary
@@ -16,17 +16,17 @@
 lex-gpu compiles a typed tile program — an `algo` that says what to
 compute over tiles, and a `schedule` per target that says how big the
 pieces are — to CUDA C and Metal Shading Language. Its compiler is
-Rust. This repository is the same compiler in lex-sys.
+Rust. This repository is the same compiler in cancho.
 
-It is **not** a GPU backend for lex-sys, and it does not reopen
-lex-sys's `docs/gpu.md` §5 (whether a GPU dialect of lex-sys should
-exist). `.lx` stays its own language; lex-sys is what its compiler is
+It is **not** a GPU backend for cancho, and it does not reopen
+cancho's `docs/gpu.md` §5 (whether a GPU dialect of cancho should
+exist). `.lx` stays its own language; cancho is what its compiler is
 written in. The program is text in, text out: nothing here runs on a
 device.
 
-Why it exists (lex-sys#251):
+Why it exists (cancho#251):
 
-* lex-sys had no compiler-sized program written in it. This is one,
+* cancho had no compiler-sized program written in it. This is one,
   with an external oracle — the Rust emitter — so "does it work" is a
   `diff`, not an opinion.
 * It is a real asker for the language gaps the GPU discussion named
@@ -37,15 +37,15 @@ Why it exists (lex-sys#251):
 
 | Stage | Rust (lex-gpu) | Here |
 |---|---|---|
-| Lexer | `lex_front::syntax::Lexer` | `src/lexer.ls` |
-| Parser | `lex_front::syntax::Parser`, `parse` | `src/parser.ls` |
-| Elaboration (`Unit::compile`) | `syntax::Algo::build_with`, `lower`, `substitute`, `affine` | `src/elab.ls` |
-| Tile IR and builder | `lex_front::ir` | `src/ir.ls` |
-| Checker | `lex_front::check` | `src/check.ls` |
-| Target table | `lex_ir::Target` | `src/target.ls` |
-| Lowering | `lex_msl::program` | `src/gen.ls`, `src/lower.ls`, `src/matmul.ls` |
-| Dialects | `lex_msl::dialect` (`Msl`, `Cuda`, `Wmma`, `Simdgroup`) | `src/dialect.ls` |
-| CLI | `lex-msl/examples/emit_lx.rs` | `src/main.ls` |
+| Lexer | `lex_front::syntax::Lexer` | `src/lexer.cho` |
+| Parser | `lex_front::syntax::Parser`, `parse` | `src/parser.cho` |
+| Elaboration (`Unit::compile`) | `syntax::Algo::build_with`, `lower`, `substitute`, `affine` | `src/elab.cho` |
+| Tile IR and builder | `lex_front::ir` | `src/ir.cho` |
+| Checker | `lex_front::check` | `src/check.cho` |
+| Target table | `lex_ir::Target` | `src/target.cho` |
+| Lowering | `lex_msl::program` | `src/gen.cho`, `src/lower.cho`, `src/matmul.cho` |
+| Dialects | `lex_msl::dialect` (`Msl`, `Cuda`, `Wmma`, `Simdgroup`) | `src/dialect.cho` |
+| CLI | `lex-msl/examples/emit_lx.rs` | `src/main.cho` |
 
 The ported subset is everything a `.lx` file can reach. The Rust IR has
 more — futures, arrays, pipes and warp-specialised roles, the Q4/Q6/
@@ -58,16 +58,16 @@ same goes for the lowering paths only they reach.
 ### 3.1 Why not structs and `Vec`
 
 A compiler is many small tables: tokens, syntax nodes, IR statements,
-the storage of every value. lex-sys offers growable collections as
+the storage of every value. cancho offers growable collections as
 `res` values moved from call to call (`std.vec`), and **a struct cannot
-hold a reference** (lex-sys `examples/tls_nb/gaps/t2_ref_field`), so a
+hold a reference** (cancho `examples/tls_nb/gaps/t2_ref_field`), so a
 function that reads five tables takes five parameters and a function
 that grows one returns it. Done that way, every function in the
 lowering would carry a dozen tables in and out.
 
 Instead there is one boxed slice of `int`, `m`, with a bump allocator
-(`src/mem.ls`), and one boxed slice of bytes, `t`, for text
-(`src/text.ls`). Every table is a record in `m` named by its offset.
+(`src/mem.cho`), and one boxed slice of bytes, `t`, for text
+(`src/text.cho`). Every table is a record in `m` named by its offset.
 Every function takes `m` and `t` and nothing else that is mutable. The
 first 64 words of `m` are fixed slots: the allocator's top, the text
 pool's top, the error list.
@@ -92,7 +92,7 @@ another, which is why the pool can be a single bump pointer.
 
 ### 3.3 Enums
 
-Every tag is a small integer and `src/kinds.ls` names them. The orders
+Every tag is a small integer and `src/kinds.cho` names them. The orders
 follow the Rust enums (`DType`, `Space`, `BinOp`, ...).
 
 ### 3.4 Memory
@@ -103,24 +103,24 @@ k=17408) peaks at **9 MB** resident.
 
 ## 4. f32 without an f32 type
 
-lex-sys has one float type, binary64 (lex-sys `docs/floating-point.md`
+cancho has one float type, binary64 (cancho `docs/floating-point.md`
 §1). The Rust computes constants in f32 — `1 / n` is folded as
 `1f32 / n as f32` — and prints them with `{:?}`, and "the same program"
 means the same constant in the text. So f32 rounding and f32 printing
-both have to be exact (`src/f32.ls`):
+both have to be exact (`src/f32.cho`):
 
 * **An f32 is held as a `float` whose value is one.** Every f32 is
   exactly a binary64.
 * **Rounding** a binary64 to the nearest f32 (ties to even, overflow to
   infinity, subnormals included) is done in integers on `bits_of`, and
   the result rebuilt with `math.ldexp`, which is exact for every f32.
-  lex-sys has `bits_of` and nothing that builds a float from bits;
+  cancho has `bits_of` and nothing that builds a float from bits;
   `ldexp` is the way round it.
 * **Arithmetic**: binary64 has more than `2·24 + 2` significand bits, so
   one f32 `+ − × ÷` done in binary64 and rounded once is the correctly
   rounded f32 result.
 * **Printing** is Steele and White's shortest-digits algorithm — the one
-  lex-sys's `std.fmt` uses for binary64 — with an f32's neighbours, ties
+  cancho's `std.fmt` uses for binary64 — with an f32's neighbours, ties
   rounded up as Rust's shortest mode does, then laid out as Rust's
   `{:?}` lays out an f32: positional from 1e-4 to 1e16 with at least one
   fractional digit, exponential outside it.
@@ -128,7 +128,7 @@ both have to be exact (`src/f32.ls`):
   conversion, after bringing the text to JSON's grammar (which forbids
   the leading zeros and bare trailing point Rust accepts).
 
-Measured: `tests/unit_test.ls` checks 25 literals against what Rust
+Measured: `tests/unit_test.cho` checks 25 literals against what Rust
 printed for them (recorded by running Rust), and `tests/cases.txt`
 sweeps 72 `rmsnorm` cases whose `1/n` and `eps` constants cover both
 layouts, subnormals, overflow and the exact-tie case `2^-12`, which
@@ -136,14 +136,14 @@ Rust prints `0.00024414063`.
 
 **Found by the differential, not by reading:** a kernel's name carries
 each whole constant as `v as usize`, and for `eps = 1e20` that is
-`18446744073709551615` — `usize::MAX`, saturated. lex-sys's `int` stops
+`18446744073709551615` — `usize::MAX`, saturated. cancho's `int` stops
 at 2^63, so the first version printed `4611686018427387904`. Five cases
 of the sweep differed; `f32.count_string` now prints the exact integer
 below 2^64 from two 32-bit halves, and the saturated value above it.
 
 ## 5. The IR records
 
-As `src/ir.ls` documents them:
+As `src/ir.cho` documents them:
 
 * TileTy `[dtype, shape, space]`; Ty is a TileTy, or `-2` for a loop
   index.
@@ -163,7 +163,7 @@ Rust's closure-taking `for_range` at exactly the points the closure ran.
 
 | | |
 |---|---|
-| **A local shadows a module's function** (lex-sys#236) | Hit 6 times: `ir.op`, `ir.index`, `gen.lines`, `gen.d`, `dialect.entry`, `text.num` became unreachable from functions with a local of that name. Each fixed by renaming one side |
+| **A local shadows a module's function** (cancho#236) | Hit 6 times: `ir.op`, `ir.index`, `gen.lines`, `gen.d`, `dialect.entry`, `text.num` became unreachable from functions with a local of that name. Each fixed by renaming one side |
 | **Reserved words and prelude names** | `alloc`, `val`, `res`, `defer` cannot be identifiers; `join` and `split` cannot be declared even inside a module, because the prelude's builtins share the namespace |
 | **No reference in a struct** | §3.1: the whole memory model follows from it |
 | **No float from bits** | §4: worked around with `ldexp`; the f32 module is ~710 lines with the interpreter's needs (§10) |
@@ -180,11 +180,11 @@ the Rust release build's 4–6, both dominated by starting the process.
 
 The Rust this ports is 7,514 lines in five files, of which about 5,200
 are what the surface can reach -- an estimate from reading which arms
-are reachable, not a measurement. The compiler (slices 1–6) is **7,551 lines** of lex-sys, of which about
+are reachable, not a measurement. The compiler (slices 1–6) is **7,551 lines** of cancho, of which about
 1,460 are infrastructure the Rust gets from its standard library: the
 memory and lists, the string pool and formatting, f32. Roughly 1.2× for
 the compiler proper. The interpreter (§10) brings the total to
-**8514**: about 680 lines for `interp.ls` against the Rust's ~650
+**8514**: about 680 lines for `interp.cho` against the Rust's ~650
 reachable (an estimate, as above), and 240 more of f32.
 
 ## 8. Differences from the Rust, on purpose
@@ -212,7 +212,7 @@ reachable (an estimate, as above), and 240 more of f32.
 * `tests/reject.sh`: one fixture per rule tag, each refused with its own
   tag and nothing written; and every tag the sources can raise has a
   fixture.
-* `tests/unit_test.ls`: f32 and the string pool.
+* `tests/unit_test.cho`: f32 and the string pool.
 
 Each was broken on purpose and watched fail: a changed loop spelling in
 `gen.owned` (every case differed), one byte of one golden (that case
@@ -220,7 +220,7 @@ failed), the tie rule of the f32 printer (two unit tests failed).
 
 ## 10. The reference interpreter (`--run`)
 
-> **Status: built (lex-sys#251 slice 7) and measured, §10.2.**
+> **Status: built (cancho#251 slice 7) and measured, §10.2.**
 
 `emit --run` interprets the program on the CPU over made-up inputs
 before lowering it, and prints what each writable parameter holds:
@@ -304,5 +304,5 @@ rounding with two `ldexp`s, and it shows: `gemm_mma` and `gemm_fp4` at
 128³ run in 0.33 s and 0.28 s against the Rust release build's 13 and 17
 ms, about 20×. The matvec at 64×4096 is 0.18 s against 39 ms. For a
 reference interpreter run on test sizes that is acceptable; an f32 type
-in lex-sys would remove all of it, and this is the measurement that
+in cancho would remove all of it, and this is the measurement that
 says how much an asker loses without one.

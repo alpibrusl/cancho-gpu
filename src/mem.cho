@@ -5,9 +5,9 @@ module mem;
 // built in it.
 //
 // A compiler's tables are many and small: tokens, syntax nodes, IR
-// statements, the storage of every value. lex-sys gives a growable
+// statements, the storage of every value. cancho gives a growable
 // collection only as a `res` value moved from call to call (`std.vec`),
-// and a struct cannot hold a reference (`lex-sys`'s
+// and a struct cannot hold a reference (`cancho`'s
 // `examples/tls_nb/gaps/t2_ref_field`), so passing a dozen tables to
 // every function would be a dozen parameters. Instead there is one
 // boxed slice of `int`, `m`, with a bump allocator, and every table is a
@@ -25,22 +25,22 @@ pub fn top_slot() -> [] int {
     return 0;
 }
 
-// Next free byte of the text pool (`text.ls`).
+// Next free byte of the text pool (`text.cho`).
 pub fn text_slot() -> [] int {
     return 1;
 }
 
-// Number of errors recorded (`err.ls`).
+// Number of errors recorded (`err.cho`).
 pub fn err_count_slot() -> [] int {
     return 2;
 }
 
-// The list of error messages (`err.ls`).
+// The list of error messages (`err.cho`).
 pub fn err_list_slot() -> [] int {
     return 3;
 }
 
-// Next free slot of the interpreter's float memory (`interp.ls`).
+// Next free slot of the interpreter's float memory (`interp.cho`).
 pub fn float_slot() -> [] int {
     return 4;
 }

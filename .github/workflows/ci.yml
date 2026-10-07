@@ -12,33 +12,33 @@ jobs:
       - uses: actions/checkout@v4
 
       # The compiler these sources were written for: the commit pinned in
-      # lex-sys.toml, read from there so there is one place to change it.
+      # cancho.toml, read from there so there is one place to change it.
       - name: Read the compiler pin
         id: pin
-        run: echo "rev=$(sed -n 's/^lex-sys = "\([0-9a-f]*\)".*/\1/p' lex-sys.toml)" >> "$GITHUB_OUTPUT"
+        run: echo "rev=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)" >> "$GITHUB_OUTPUT"
 
       - name: Cache the compiler
         id: cache
         uses: actions/cache@v4
         with:
-          path: ~/lex-sys-bin
-          key: lex-sys-${{ steps.pin.outputs.rev }}-ubuntu-24.04
+          path: ~/cancho-bin
+          key: cancho-${{ steps.pin.outputs.rev }}-ubuntu-24.04
 
-      - name: Check out lex-sys
+      - name: Check out cancho
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: alpibrusl/lex-sys
+          repository: alpibrusl/cancho
           ref: ${{ steps.pin.outputs.rev }}
-          path: lex-sys
+          path: cancho
 
-      - name: Build lex-sys
+      - name: Build cancho
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          cd lex-sys
-          cargo build --release -p lex-sys
-          mkdir -p ~/lex-sys-bin
-          cp target/release/lex-sys ~/lex-sys-bin/
+          cd cancho
+          cargo build --release -p cancho
+          mkdir -p ~/cancho-bin
+          cp target/release/cancho ~/cancho-bin/
 
       - name: Gate
-        run: LEX_SYS=~/lex-sys-bin/lex-sys scripts/gate.sh
+        run: CANCHO=~/cancho-bin/cancho scripts/gate.sh

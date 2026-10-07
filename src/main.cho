@@ -1,9 +1,9 @@
 edition 5;
 
-// `lexsys-gpu` -- lex-gpu's `.lx` compiler, in lex-sys.
+// `cancho-gpu` -- lex-gpu's `.lx` compiler, in cancho.
 //
-//     lexsys-gpu emit  <file.lx> <dir> [name=value ...] [--run]
-//     lexsys-gpu check <file.lx> [name=value ...] [--run]
+//     cancho-gpu emit  <file.lx> <dir> [name=value ...] [--run]
+//     cancho-gpu check <file.lx> [name=value ...] [--run]
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
@@ -12,7 +12,7 @@ edition 5;
 // the same bytes. `check` stops after the checker. `--run` interprets
 // the program on the CPU over made-up inputs first and prints what it
 // writes, as `emit_lx --run` does (`docs/design.md` §10). The directory must
-// exist: lex-sys has no way to make one.
+// exist: cancho has no way to make one.
 //
 // Exit status: 0, or 1 with every refusal on standard error as
 // `error[<rule>]: <message>`, or 2 for a usage mistake.
@@ -45,7 +45,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: lexsys-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       lexsys-gpu check <file.lx> [name=value ...] [--run]\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n");
     return 2;
 }
 

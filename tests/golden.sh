@@ -1,11 +1,11 @@
 #!/bin/sh
-# Hold lexsys-gpu to the committed goldens (golden/, the Rust emitter's
+# Hold cancho-gpu to the committed goldens (golden/, the Rust emitter's
 # output, scripts/regen-golden.sh): every case of tests/cases.txt either
 # writes exactly the golden files, byte for byte, or is refused where the
 # Rust refused. Needs nothing but the built compiler.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BIN=${LEXSYS_GPU:-$ROOT/build/lexsys-gpu}
+BIN=${CANCHO_GPU:-$ROOT/build/cancho-gpu}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 pass=0
@@ -28,7 +28,7 @@ while read -r file rest; do
     if [ "$status" -eq 1 ] && [ -z "$(ls "$out")" ]; then
       pass=$((pass + 1))
     else
-      echo "$case_name: the Rust refuses this, lexsys-gpu exited $status"; fail=$((fail + 1))
+      echo "$case_name: the Rust refuses this, cancho-gpu exited $status"; fail=$((fail + 1))
     fi
   elif [ "$status" -ne 0 ]; then
     echo "$case_name: refused: $(head -1 "$WORK/err")"; fail=$((fail + 1))

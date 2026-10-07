@@ -5,7 +5,7 @@ module interp;
 // file reaches, and `emit_lx`'s `--run` summary (`docs/design.md` §10).
 //
 // Every value is f32 and every operation is done in the order the Rust
-// does it, each rounded once (`f32.ls`), because the summary the Rust
+// does it, each rounded once (`f32.cho`), because the summary the Rust
 // prints depends on the order: `gemm_fp4`'s two targets already differ
 // in a last digit. A value is rounded to its tile's dtype whenever a
 // tile of that dtype is made, as the Rust's `fresh` does.
@@ -15,7 +15,7 @@ module interp;
 // `[dtype, shape, offset, length]`. The environment holds, per
 // variable, a kind (0 absent, 1 tile, 2 index) and a value. Moves
 // really remove a value, so a program that slipped past the checker
-// fails here, as `interp` (`err.ls`), instead of reading stale data.
+// fails here, as `interp` (`err.cho`), instead of reading stale data.
 
 import mem;
 import text;

@@ -1,6 +1,6 @@
 #!/bin/sh
 # The device path without a device (docs/device.md section 5): build the
-# mock driver and NVRTC, run `lexsys-gpu-device` on each of lex-gpu's
+# mock driver and NVRTC, run `cancho-gpu-device` on each of lex-gpu's
 # kernels against them, and check what reached the "driver" against what
 # the program is -- the entry the golden .cu defines, the grid and threads
 # `emit` reports, one argument per parameter. The mock runs no kernel, so
@@ -8,12 +8,12 @@
 # `device-mismatch`: that is the check that the comparison can fail.
 # Then once with no driver at all, which must be `device`, not a trap.
 #
-#     LEX_SYS=<pinned lex-sys> tests/device.sh
+#     CANCHO=<pinned cancho> tests/device.sh
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CC=${CC:-cc}
 "$ROOT/scripts/build-device.sh" >/dev/null
-BIN=$ROOT/build/lexsys-gpu-device
+BIN=$ROOT/build/cancho-gpu-device
 MOCK=$ROOT/build/mock
 mkdir -p "$MOCK"
 for lib in libcuda_mock libnvrtc_mock; do
@@ -33,7 +33,7 @@ while read -r file rest; do
   # What `emit` says about the launch: `<path>: <threads> threads, grid <gx>x<gy>, ...`
   mkdir -p "$WORK/emit"
   # shellcheck disable=SC2086
-  launch=$("$ROOT/build/lexsys-gpu" emit "$ROOT/$file" "$WORK/emit" $rest | grep '\.cu:')
+  launch=$("$ROOT/build/cancho-gpu" emit "$ROOT/$file" "$WORK/emit" $rest | grep '\.cu:')
   threads=$(echo "$launch" | sed 's/.*: \([0-9]*\) threads.*/\1/')
   grid=$(echo "$launch" | sed 's/.*grid \([0-9]*x[0-9]*\),.*/\1/')
   rm -f "$WORK/log"
