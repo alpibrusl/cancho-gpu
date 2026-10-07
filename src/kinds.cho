@@ -1,7 +1,7 @@
 edition 5;
 module kinds;
 
-// The numbers the tables hold, named. lex-sys has no enum that a table
+// The numbers the tables hold, named. cancho has no enum that a table
 // of `int` can hold, so every tag is a small integer and these functions
 // are its names (`docs/design.md` §3.3). The orders follow the Rust
 // enums they mirror (`lex_ir::DType`, `lex_ir::Space`, `ir::BinOp`, ...).

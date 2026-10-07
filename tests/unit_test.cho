@@ -5,7 +5,7 @@ edition 5;
 // `{:?}` prints for `s.parse::<f64>().unwrap() as f32`, recorded by
 // running it), the f32 operations, and the string pool.
 //
-//     lex-sys test tests/unit_test.ls <every src/*.ls but main.ls> --std
+//     cancho test tests/unit_test.cho <every src/*.cho but main.cho> --std
 
 import mem;
 import text;

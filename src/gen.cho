@@ -2,8 +2,8 @@ edition 5;
 module gen;
 
 // The lowering's state and the helpers every op uses: `lex_msl::program::Gen`
-// and its small methods, ported. The ops themselves are in `lower.ls`
-// and the matrix products in `matmul.ls`.
+// and its small methods, ported. The ops themselves are in `lower.cho`
+// and the matrix products in `matmul.cho`.
 //
 // A generator is a record (the slots are named below) with four tables
 // indexed by variable: where each value lives (`locs`), its lazy

@@ -1,21 +1,21 @@
-# Driving a GPU from lex-sys
+# Driving a GPU from cancho
 
-> **Status: built (lex-sys#251 slice 8) and verified against a mock
+> **Status: built (cancho#251 slice 8) and verified against a mock
 > driver, §7. Not yet run on a GPU** — this repository's machines have
 > none. §6 says exactly what that leaves unproven.
 
-lex-sys's `docs/gpu.md` §6 left one question open: *"can a lex-sys
+cancho's `docs/gpu.md` §6 left one question open: *"can a cancho
 program drive a GPU at all, with no new backend?"* This is the answer
 for CUDA. It is a question about **reach**, not speed: the kernels are
-the ones this compiler already emits; what is new is a lex-sys program
+the ones this compiler already emits; what is new is a cancho program
 that compiles one with NVRTC, uploads inputs, launches it and reads the
 result back — and compares that against the reference interpreter
 (`docs/design.md` §10).
 
 ## 1. Why a C shim, and how thin
 
-lex-sys reaches C through `extern fn` under an `Ffi` capability, with
-three limits that decide the shape (lex-sys `docs/opaque-pointers.md`,
+cancho reaches C through `extern fn` under an `Ffi` capability, with
+three limits that decide the shape (cancho `docs/opaque-pointers.md`,
 `docs/foreign-linking.md`, `examples/tls_nb/gaps/`):
 
 1. **No floats cross.** An extern parameter is an `int`, a `bool`, a
@@ -24,16 +24,16 @@ three limits that decide the shape (lex-sys `docs/opaque-pointers.md`,
    as the last parameter (`g7`, `g14`).
 3. **`c_ptr` names only an extern's own parameters and results** — an
    ordinary function cannot take or return one, so a handle could not be
-   passed around a lex-sys program.
+   passed around a cancho program.
 
 The CUDA driver API needs the opposite of all three:
 `cuLaunchKernel(f, gx, gy, gz, bx, by, bz, shared, stream, void **params,
 void **extra)` takes an array of pointers to arguments, and `CUdeviceptr`
 and `CUfunction` are values a program holds. No signature in it can be
-declared from lex-sys directly.
+declared from cancho directly.
 
 So a shim of about 380 lines of C, `shim/lexgpu.c`, owns every handle
-and hands lex-sys **integers**: a buffer is `3`, a function `0`. Every
+and hands cancho **integers**: a buffer is `3`, a function `0`. Every
 entry point takes `int64_t`s and at most one trailing byte buffer, and
 answers an `int64_t` (≥ 0 a handle or a count, < 0 a failure whose text
 `lxg_error` copies out):
@@ -50,7 +50,7 @@ answers an `int64_t` (≥ 0 a handle or a count, < 0 a failure whose text
 | `lxg_error(out)` | the last failure's text |
 | `lxg_close()` | everything freed, context destroyed |
 
-`lxg_arg` is how the `void **params` array is built without lex-sys ever
+`lxg_arg` is how the `void **params` array is built without cancho ever
 holding a pointer: the shim keeps it.
 
 The shim `dlopen`s rather than links, as lex-gpu's own `lex-cuda` does,
@@ -62,16 +62,16 @@ uses.
 ## 2. The authority
 
 Every entry is declared under `Ffi("liblexgpu")`, and the device program
-narrows its `Ffi` to exactly that, so `lex-sys authority` reports
+narrows its `Ffi` to exactly that, so `cancho authority` reports
 `ffi("liblexgpu")` and every symbol by name — and `unbounded`, honestly:
-lex-sys's `docs/gpu.md` §6 predicted it would "report `ffi("libcuda")`
+cancho's `docs/gpu.md` §6 predicted it would "report `ffi("libcuda")`
 and nothing about the device". It does, one library over. Narrowing a
-GPU capability is lex-sys's `gpu.md` §3 (`Gpu(device)`), which this
+GPU capability is cancho's `gpu.md` §3 (`Gpu(device)`), which this
 measures the need for but does not build.
 
 ## 3. The program
 
-`lexsys-gpu-device run <file.lx> [name=value ...]`, a second binary
+`cancho-gpu-device run <file.lx> [name=value ...]`, a second binary
 (`device/`), so the compiler itself still links nothing but libc:
 
 1. Parse, elaborate, check and lower for `nvidia-ada`, exactly as
@@ -79,8 +79,8 @@ measures the need for but does not build.
 2. Open the device, compile the emitted source, find the entry.
 3. Upload every parameter with the **same** inputs the interpreter used,
    encoded as the device holds them: f32 as IEEE bits, f16 as half bits,
-   I8 as bytes. lex-sys has no float bit casts in either direction for
-   f32 or f16; `f32.ls` computes the bit patterns in integers.
+   I8 as bytes. cancho has no float bit casts in either direction for
+   f32 or f16; `f32.cho` computes the bit patterns in integers.
 4. Launch on the program's grid with the schedule's threads.
 5. Download the writable parameters, decode them, and print the same
    summary line `--run` prints, prefixed `device:`, then the worst
@@ -108,7 +108,7 @@ past it, `error[device-mismatch]`.
 
 A mock driver and a mock NVRTC (`tests/mock/`, C) stand in for the real
 ones. They cannot run a kernel, so they check the **plumbing** — the part
-the C-to-lex-sys boundary can get wrong:
+the C-to-cancho boundary can get wrong:
 
 * NVRTC's "PTX" is the source itself; the mock driver writes, per
   launch, the entry it was asked for, the grid, the block, how many
@@ -158,7 +158,7 @@ The bit patterns (§3) are checked against Python's `struct` packing of
 the same values (`test_ieee_bit_patterns_for_the_device`): normal,
 subnormal, the largest finite, infinity and `-0.0`, for f32 and f16.
 
-What `lex-sys authority` says about the device program — §2's
+What `cancho authority` says about the device program — §2's
 prediction, exactly:
 
 ```

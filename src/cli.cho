@@ -1,7 +1,7 @@
 edition 5;
 module cli;
 
-// What both programs (`src/main.ls`, `device/main.ls`) do with a command
+// What both programs (`src/main.cho`, `device/main.cho`) do with a command
 // line: read `name=value` constants, and print refusals as
 // `error[<rule>]: <message>`.
 

@@ -2,7 +2,7 @@ edition 5;
 module parser;
 
 // Tokens to a syntax tree: `lex_front::syntax::Parser` and `parse`,
-// ported. A node is a record `[kind, a, b, c, d, e]` (`kinds.ls` names
+// ported. A node is a record `[kind, a, b, c, d, e]` (`kinds.cho` names
 // the kinds); a list of nodes is a `mem` list. Names are text handles.
 //
 // The grammar, and every refusal's wording, is the Rust's: a `.lx` file

@@ -1,7 +1,7 @@
-# lexsys-gpu
+# cancho-gpu
 
 [lex-gpu](https://github.com/alpibrusl/lex-gpu)'s `.lx` kernel compiler,
-written in [lex-sys](https://github.com/alpibrusl/lex-sys).
+written in [cancho](https://github.com/alpibrusl/cancho).
 
 A `.lx` file is a typed tile program: an `algo` says what to compute,
 over tiles that are each consumed exactly once, and a `schedule` per
@@ -10,15 +10,15 @@ bounds, shapes, the threadgroup budget — and lowers it to **CUDA C**
 (`nvidia-ada`) and **Metal** (`apple-m-series`), producing the same
 bytes as lex-gpu's Rust emitter for every case in `tests/cases.txt`.
 
-It is the epic lex-sys#251: lex-sys's first compiler-sized program, held
+It is the epic cancho#251: cancho's first compiler-sized program, held
 to an external oracle.
 
 ```sh
-lex-sys build                                  # the compiler pinned in lex-sys.toml
+cancho build                                  # the compiler pinned in cancho.toml
 mkdir -p out
-build/lexsys-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64
-build/lexsys-gpu check tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=1e-5
-build/lexsys-gpu check tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64 --run   # interpret it on the CPU
+build/cancho-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64
+build/cancho-gpu check tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=1e-5
+build/cancho-gpu check tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64 --run   # interpret it on the CPU
 ```
 
 ```
@@ -47,8 +47,8 @@ How it is built, what it cost and what the language made hard:
 ## Checking it
 
 ```sh
-LEX_SYS=lex-sys scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing
-LEX_SYS=lex-sys scripts/build-device.sh       # build/lexsys-gpu-device: run a kernel on a CUDA GPU against the interpreter
+CANCHO=cancho scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing
+CANCHO=cancho scripts/build-device.sh       # build/cancho-gpu-device: run a kernel on a CUDA GPU against the interpreter
 scripts/differential.sh ../lex-gpu            # the same cases against a live build of the Rust
 scripts/regen-golden.sh ../lex-gpu            # golden/ from the Rust, never from this compiler
 ```
