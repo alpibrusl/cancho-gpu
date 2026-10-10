@@ -3,7 +3,7 @@ module f32;
 
 // `f32` -- single precision, without a single-precision type.
 //
-// lex-sys has one floating type, binary64 (`lex-sys/docs/floating-point.md`
+// cancho has one floating type, binary64 (`cancho/docs/floating-point.md`
 // §1). The Rust this compiler ports computes its constants in f32 and
 // prints them with `{:?}`, and "the same program" is byte-identical
 // output, so the f32 rounding and the f32 printing both have to be
@@ -17,9 +17,9 @@ module f32;
 //
 // So the only primitive needed is "round a binary64 to the nearest f32",
 // done in integers on `bits_of` and rebuilt with `math.ldexp`, which is
-// exact for every f32. lex-sys has `bits_of` but nothing that builds a
-// float from bits; `ldexp` is the way round that, and lexsys-gpu is the
-// first program that asked (lex-sys#251).
+// exact for every f32. cancho has `bits_of` but nothing that builds a
+// float from bits; `ldexp` is the way round that, and cancho-gpu is the
+// first program that asked (cancho#251).
 
 import mem;
 import text;
@@ -123,7 +123,7 @@ pub fn div(a: float, b: float) -> [] float {
     return round(a / b);
 }
 
-// A float back from the bits `bits_of` gave: the direction lex-sys does
+// A float back from the bits `bits_of` gave: the direction cancho does
 // not have, for a value kept in an `int` table. Finite values only;
 // infinities and NaN come back as themselves through `special`.
 pub fn from_bits(bits: int) -> [] float {
@@ -439,7 +439,7 @@ pub fn to_count(x: float) -> [] int {
 
 // `x as usize`, printed: the exact integer for a whole `x` below 2^64,
 // and `usize::MAX` at and past it -- which is what the Rust's kernel
-// names carry for a constant that large. lex-sys's `int` stops at 2^63,
+// names carry for a constant that large. cancho's `int` stops at 2^63,
 // so the value is held as two 32-bit halves and divided down by hand.
 pub fn count_string[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
     if is_nan(x) || x <= 0.0 {
@@ -557,6 +557,10 @@ pub fn sqrt32(x: float) -> [] float {
 // f32 `exp` and `ln_1p`: binary64 rounded to f32 (`docs/design.md` §10).
 pub fn exp32(x: float) -> [] float {
     return round(math.exp(x));
+}
+
+pub fn log32(x: float) -> [] float {
+    return round(math.log(x));
 }
 
 pub fn ln_1p32(x: float) -> [] float {
@@ -712,7 +716,7 @@ pub fn fixed[&m, &t](m: &!m [int], t: &!t [byte], x: float, prec: int) -> [] int
 
 // ---------------------------------------------------------------------
 // Bit patterns, for a device that holds f32 and f16 as IEEE words
-// (`docs/device.md` §3). lex-sys has neither cast; these are integers.
+// (`docs/device.md` §3). cancho has neither cast; these are integers.
 // ---------------------------------------------------------------------
 
 // The IEEE word of `x`, which is exactly a value of the format with

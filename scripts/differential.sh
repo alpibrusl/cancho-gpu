@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run lex-gpu's Rust emitter and lexsys-gpu over the same `.lx` files and
+# Run lex-gpu's Rust emitter and cancho-gpu over the same `.lx` files and
 # constants, and require the same outcome: both refuse, or both write the
 # same files with the same bytes.
 #
@@ -12,7 +12,7 @@ set -eu
 LEX_GPU=${1:?usage: differential.sh <lex-gpu checkout> [cases-file]}
 CASES=${2:-tests/cases.txt}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-OURS=${LEXSYS_GPU:-$ROOT/build/lexsys-gpu}
+OURS=${CANCHO_GPU:-$ROOT/build/cancho-gpu}
 (cd "$LEX_GPU" && cargo build -q -p lex-msl --example emit_lx)
 THEIRS=$LEX_GPU/target/debug/examples/emit_lx
 WORK=$(mktemp -d)
@@ -38,7 +38,7 @@ while read -r file rest; do
     pass=$((pass + 1))
   else
     fail=$((fail + 1))
-    echo "DIFFERS: $file $rest (rust: $r, lexsys-gpu: $o)"
+    echo "DIFFERS: $file $rest (rust: $r, cancho-gpu: $o)"
     diff -r "$WORK/$n/rust" "$WORK/$n/ours" | head -20 || true
     head -3 "$WORK/$n/err"
   fi

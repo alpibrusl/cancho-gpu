@@ -8,7 +8,7 @@
 # `diag`), so a new rule without a fixture fails this script.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BIN=${LEXSYS_GPU:-$ROOT/build/lexsys-gpu}
+BIN=${CANCHO_GPU:-$ROOT/build/cancho-gpu}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
@@ -32,7 +32,7 @@ done
 # Rules that need no fixture: `io` and `usage` are about the command
 # line, not a program, and are checked below; `no-schedule` is a file
 # with no schedule for either target, also below.
-for rule in $(grep -ho 'fail(m, t, "[a-z-]*"\|diag(m, t, c, "[a-z-]*"\|bad(m, t, "[a-z-]*"' "$ROOT"/src/*.ls | grep -o '"[a-z-]*"' | tr -d '"' | sort -u); do
+for rule in $(grep -ho 'fail(m, t, "[a-z-]*"\|diag(m, t, c, "[a-z-]*"\|bad(m, t, "[a-z-]*"' "$ROOT"/src/*.cho | grep -o '"[a-z-]*"' | tr -d '"' | sort -u); do
   # `scope` is the checker's defence against an elaborator that bound a
   # name outside its block; the surface has no way to write one (a
   # binding in a loop body is not in the outer environment at all, so it

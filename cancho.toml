@@ -1,0 +1,14 @@
+[package]
+name = "cancho-gpu"
+cancho = "a4572ea3b506e4bcec1c4be43deda1043c11ba9f"   # the compiler these sources were written for
+
+[[bin]]
+name = "cancho-gpu"
+sources = ["src"]
+std = true
+out = "build/cancho-gpu"
+
+[[test]]
+name = "unit"
+sources = ["tests/unit_test.cho", "src/mem.cho", "src/text.cho", "src/err.cho", "src/f32.cho"]
+std = true

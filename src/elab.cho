@@ -539,6 +539,10 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         var u = 0 - 1;
         if text.is(t, f, "rsqrt") {
             u = kinds.rsqrt();
+        } else if text.is(t, f, "exp") {
+            u = kinds.exp();
+        } else if text.is(t, f, "log") {
+            u = kinds.log();
         } else if text.is(t, f, "sigmoid") {
             u = kinds.sigmoid();
         } else if text.is(t, f, "softplus") {

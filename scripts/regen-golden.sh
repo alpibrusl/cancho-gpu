@@ -6,7 +6,7 @@
 #     scripts/regen-golden.sh <lex-gpu checkout>
 #
 # The goldens are the Rust's output, never this compiler's: regenerating
-# them from lexsys-gpu would make tests/golden.sh check the compiler
+# them from cancho-gpu would make tests/golden.sh check the compiler
 # against itself. golden/LEX_GPU records the commit they came from.
 set -eu
 LEX_GPU=${1:?usage: regen-golden.sh <lex-gpu checkout>}

@@ -1,10 +1,10 @@
-/* lexgpu -- the CUDA driver and NVRTC, as lex-sys can call them.
+/* lexgpu -- the CUDA driver and NVRTC, as cancho can call them.
  *
- * docs/device.md is the design. lex-sys's `extern fn` passes 64-bit
+ * docs/device.md is the design. cancho's `extern fn` passes 64-bit
  * integers and, as the last parameter, a byte slice as a pointer and a
  * length; it cannot pass a float, and a `c_ptr` cannot travel through
  * its ordinary functions. So everything the driver hands out stays here,
- * in tables, and lex-sys holds indices: every entry point takes
+ * in tables, and cancho holds indices: every entry point takes
  * `int64_t`s and at most one trailing `(const char *, int64_t)` buffer,
  * and answers an `int64_t` -- a handle or a count when >= 0, a failure
  * when < 0, whose text `lxg_error` copies out.
@@ -91,7 +91,7 @@ static int64_t cu_fail(const char *what, CUresult r) {
     return fail(what, detail);
 }
 
-/* A NUL-terminated copy of a lex-sys byte slice. */
+/* A NUL-terminated copy of a cancho byte slice. */
 static char *cstr(const char *p, int64_t n) {
     char *s = malloc((size_t)n + 1);
     if (s) {

@@ -1,20 +1,20 @@
 edition 5;
 
-// `lexsys-gpu-device` -- run a `.lx` kernel on a CUDA device and hold it
+// `cancho-gpu-metal-device` -- run a `.lx` kernel on a Metal device and hold it
 // to the reference interpreter (`docs/device.md`).
 //
-//     lexsys-gpu-device run <file.lx> [name=value ...]
+//     cancho-gpu-metal-device run <file.lx> [name=value ...]
 //
-// Compiles the program for `nvidia-ada` as `emit` does, runs the
+// Compiles the program for `apple-m-series` as `emit` does, runs the
 // interpreter over the made-up inputs, then compiles the emitted source
-// with NVRTC, uploads the same inputs, launches the kernel, reads the
+// with Metal, uploads the same inputs, launches the kernel, reads the
 // writable parameters back and prints both summaries and the worst
 // difference. Exit 0 when every output is within 2e-2 of its peak, 1
 // with `error[device]` or `error[device-mismatch]` otherwise, 2 for a
 // usage mistake.
 //
-// A second program, so `lexsys-gpu` itself links nothing but libc; this
-// one links `shim/lexgpu.c` (`scripts/build-device.sh`).
+// A second program, so `cancho-gpu` itself links nothing but libc; this
+// one links `shim/lexgpu-metal.c` (`scripts/build-metal-device.sh`).
 
 import std.io;
 import mem;
@@ -31,7 +31,7 @@ import dialect;
 import lower;
 import interp;
 import cli;
-import cuda;
+import metal;
 
 fn words() -> [] int {
     return 8000000;
@@ -46,14 +46,14 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: lexsys-gpu-device run <file.lx> [name=value ...]\n");
+    io.error_all(io, "usage: cancho-gpu-device run <file.lx> [name=value ...]\n");
     return 2;
 }
 
 // The shim's last failure, as a `device` refusal.
-fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("liblexgpu"), what: &static [byte]) -> [ffi("liblexgpu")] int {
+fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
     let top = m[mem.text_slot()];
-    let n = cuda.lxg_error(ffi, t[top..top + 4096]);
+    let n = metal.lxg_error(ffi, t[top..top + 4096]);
     // Keep the bytes the shim wrote before the pool is used again.
     var detail = text.handle(top, 0);
     if n > 0 {
@@ -63,6 +63,60 @@ fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("liblexgpu")
         detail = text.lit(m, t, "no detail");
     }
     return err.fail(m, t, "device", text.f2(m, t, "$: $", text.lit(m, t, what), detail));
+}
+
+// The Metal device program uses apple-m-series target instead of nvidia-ada
+fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), prog: int, l: int, got: int, sizes: int) -> [ffi("libmetalgpu")] int {
+    if metal.lxg_open(ffi) < 0 {
+        return device_fail(m, t, ffi, "opening the device");
+    }
+    let compiled_mod = metal.lxg_compile(ffi, text.bytes(t, m[l + 1]));
+    if compiled_mod < 0 {
+        return device_fail(m, t, ffi, "compiling the kernel");
+    }
+    let func = metal.lxg_function(ffi, compiled_mod, text.bytes(t, m[l]));
+    if func < 0 {
+        return device_fail(m, t, ffi, "finding the entry point");
+    }
+    let bufs = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, got) {
+        let g = mem.get(m, got, i);
+        let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+        mem.push(m, sizes, bytes);
+        let buf = metal.lxg_alloc(ffi, bytes);
+        if buf < 0 {
+            return device_fail(m, t, ffi, "allocating a buffer");
+        }
+        let at = encode(m, t, fm, g);
+        if metal.lxg_upload(ffi, buf, t[at..at + bytes]) < 0 {
+            return device_fail(m, t, ffi, "uploading an input");
+        }
+        if metal.lxg_arg(ffi, buf) < 0 {
+            return device_fail(m, t, ffi, "binding an argument");
+        }
+        mem.push(m, bufs, buf);
+        i = i + 1;
+    }
+    if metal.lxg_launch(ffi, func, m[l + 2], m[l + 3], m[l + 4]) < 0 {
+        return device_fail(m, t, ffi, "launching the kernel");
+    }
+    let ps = ir.p_params(m, prog);
+    i = 0;
+    while i < mem.size(m, got) {
+        if ir.param_writable(m, mem.get(m, ps, i)) {
+            let g = mem.get(m, got, i);
+            let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+            let at = reserve(m, bytes);
+            if metal.lxg_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
+                return device_fail(m, t, ffi, "reading an output back");
+            }
+            decode(m, t, fm, g, at);
+        }
+        i = i + 1;
+    }
+    metal.lxg_close(ffi);
+    return 0;
 }
 
 // `n` bytes at the end of the pool, reserved: a staging area for one
@@ -166,62 +220,7 @@ fn compare[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], prog: int, 
     return text.joined(m, t, lines, "");
 }
 
-// Upload every parameter, launch, and read the writable ones back into
-// `got` (fresh inputs, overwritten). Answers 0, or -1 with a refusal.
-fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("liblexgpu"), prog: int, l: int, got: int, sizes: int) -> [ffi("liblexgpu")] int {
-    if cuda.lxg_open(ffi) < 0 {
-        return device_fail(m, t, ffi, "opening the device");
-    }
-    let compiled_mod = cuda.lxg_compile(ffi, text.bytes(t, m[l + 1]));
-    if compiled_mod < 0 {
-        return device_fail(m, t, ffi, "compiling the kernel");
-    }
-    let func = cuda.lxg_function(ffi, compiled_mod, text.bytes(t, m[l]));
-    if func < 0 {
-        return device_fail(m, t, ffi, "finding the entry point");
-    }
-    let bufs = mem.list(m);
-    var i = 0;
-    while i < mem.size(m, got) {
-        let g = mem.get(m, got, i);
-        let bytes = m[g + 3] * kinds.size_bytes(m[g]);
-        mem.push(m, sizes, bytes);
-        let buf = cuda.lxg_alloc(ffi, bytes);
-        if buf < 0 {
-            return device_fail(m, t, ffi, "allocating a buffer");
-        }
-        let at = encode(m, t, fm, g);
-        if cuda.lxg_upload(ffi, buf, t[at..at + bytes]) < 0 {
-            return device_fail(m, t, ffi, "uploading an input");
-        }
-        if cuda.lxg_arg(ffi, buf) < 0 {
-            return device_fail(m, t, ffi, "binding an argument");
-        }
-        mem.push(m, bufs, buf);
-        i = i + 1;
-    }
-    if cuda.lxg_launch(ffi, func, m[l + 2], m[l + 3], m[l + 4]) < 0 {
-        return device_fail(m, t, ffi, "launching the kernel");
-    }
-    let ps = ir.p_params(m, prog);
-    i = 0;
-    while i < mem.size(m, got) {
-        if ir.param_writable(m, mem.get(m, ps, i)) {
-            let g = mem.get(m, got, i);
-            let bytes = m[g + 3] * kinds.size_bytes(m[g]);
-            let at = reserve(m, bytes);
-            if cuda.lxg_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
-                return device_fail(m, t, ffi, "reading an output back");
-            }
-            decode(m, t, fm, g, at);
-        }
-        i = i + 1;
-    }
-    cuda.lxg_close(ffi);
-    return 0;
-}
-
-fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("liblexgpu")) -> [io_write, err_write, fs_read(""), args, ffi("liblexgpu")] int {
+fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_write, err_write, fs_read(""), args, ffi("libmetalgpu")] int {
     if arg_count(args) < 3 {
         return usage(io);
     }
@@ -246,7 +245,7 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     if unit < 0 {
         return cli.report(m, t, io);
     }
-    let tg = target.nvidia_ada(m, t);
+    let tg = target.apple_m_series(m, t);
     let compiled = elab.compile(m, t, unit, target.name(m, tg), vals);
     if compiled < 0 {
         return cli.report(m, t, io);
@@ -255,7 +254,7 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     if check.check(m, t, prog, tg) < 0 {
         return cli.report(m, t, io);
     }
-    let l = lower.lower(m, t, prog, tg, dialect.cuda(), m[s + 1], m[s + 3], m[s + 4], m[s + 5]);
+    let l = lower.lower(m, t, prog, tg, dialect.msl(), m[s + 1], m[s + 3], m[s + 4], m[s + 5]);
     if l < 0 {
         return cli.report(m, t, io);
     }
@@ -293,7 +292,7 @@ fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock } = split(world);
     release(net);
     release(clock);
-    let gpu = narrow(ffi, "liblexgpu");
+    let gpu = narrow(ffi, "libmetalgpu");
     var status = 0;
     borrow mut heap as &!h in {
         var mb = box_slice(h, words(), 0);

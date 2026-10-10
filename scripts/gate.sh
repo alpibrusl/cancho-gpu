@@ -1,7 +1,7 @@
 #!/bin/sh
 # The gate: everything that must pass before a change is called done.
 #
-#     LEX_SYS=<path to the pinned lex-sys> scripts/gate.sh
+#     CANCHO=<path to the pinned cancho> scripts/gate.sh
 #
 # Canonical formatting, the file budget, the build, the unit tests, the
 # goldens (byte-identical with lex-gpu's Rust emitter), the refusal
@@ -10,13 +10,13 @@
 # and the goldens are its recorded answer.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-LEX_SYS=${LEX_SYS:-lex-sys}
+CANCHO=${CANCHO:-cancho}
 cd "$ROOT"
-"$LEX_SYS" fmt --check src tests device
+"$CANCHO" fmt --check src tests device
 tests/files.sh
-"$LEX_SYS" build
-"$LEX_SYS" test
+"$CANCHO" build
+"$CANCHO" test
 tests/golden.sh
 tests/reject.sh
-LEX_SYS="$LEX_SYS" tests/device.sh
+CANCHO="$CANCHO" tests/device.sh
 echo "gate: ok"
