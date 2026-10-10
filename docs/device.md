@@ -1,8 +1,9 @@
 # Driving a GPU from cancho
 
 > **Status: built (cancho#251 slice 8) and verified against a mock
-> driver, §7. Not yet run on a GPU** — this repository's machines have
-> none. §6 says exactly what that leaves unproven.
+> driver, §7. CUDA: not yet run on a GPU — this repository's machines have
+> none. Metal: **run on real hardware** (Mac Studio, Apple Silicon, slice 10,
+> issue #8) — first real Metal run proved reach and numerical agreement.
 
 cancho's `docs/gpu.md` §6 left one question open: *"can a cancho
 program drive a GPU at all, with no new backend?"* This is the answer
@@ -93,12 +94,25 @@ output's peak magnitude -- the same number lex-gpu uses as its log-prob
 tolerance against an f32 reference, borrowed rather than derived;
 past it, `error[device-mismatch]`.
 
-## 4. What is not attempted
+## 4. What is attempted
 
 * **Metal.** It is Objective-C (`MTLDevice`, `newLibraryWithSource`),
   reached through `objc_msgSend` with a different signature per call —
-  a shim like this one, in Objective-C, built and tested only on macOS.
-  None of this repository's machines is one.
+  a shim like this one, in Objective-C++, built and **run on real hardware**
+  (Mac Studio, Apple Silicon). The shim (`shim/lexgpu-metal.mm`) provides
+  the same C interface as the CUDA shim: integer handles in, int64 status
+  out, at most one trailing byte buffer. Entry points: `lxg_open`
+  (`MTLCreateSystemDefaultDevice`), `lxg_compile` (`newLibraryWithSource`),
+  `lxg_function` (`newComputePipelineStateWithFunction`), `lxg_alloc`
+  (`newBufferWithLength`), `lxg_upload` (`memcpy` + `didModifyRange`),
+  `lxg_download` (`memcpy` from buffer contents), `lxg_arg` (record buffer),
+  `lxg_launch` (`dispatchThreadgroups` + `waitUntilCompleted`), `lxg_error`,
+  `lxg_close`. The device program (`device/metal-main.cho`) mirrors the CUDA
+  path for `apple-m-series` target.
+
+## 5. What is not attempted
+
+* **CUDA on real hardware.** This repository's machines have none.
 * **Timing.** Reach first.
 * **Hopper**: NVRTC is told the device's own architecture, but the
   lowering is the Ada one; lex-gpu picks a Hopper target from the
@@ -128,14 +142,18 @@ trap.
 
 ## 6. What remains unproven
 
-That the emitted CUDA *compiles* under NVRTC (lex-gpu checks this with
-`scripts/cuda_check.sh` on its own emitter's output; ours is the same
-bytes, §9 of `design.md`), and that a real driver accepts these calls
-and the results land within the threshold. Those need a machine with a
-GPU — lex-gpu's `scripts/gcp/nvidia_test.sh` provisions an L4 — and are
-the next measurement, not a claim this document makes.
+* **CUDA on real hardware:** That the emitted CUDA *compiles* under NVRTC
+  (lex-gpu checks this with `scripts/cuda_check.sh` on its own emitter's
+  output; ours is the same bytes, §9 of `design.md`), and that a real
+  driver accepts these calls and the results land within the threshold.
+  Those need a machine with a GPU — lex-gpu's `scripts/gcp/nvidia_test.sh`
+  provisions an L4 — and are the next measurement, not a claim this
+  document makes.
+* **Metal timing:** Reach is proved; speed is not yet measured.
 
 ## 7. Measured
+
+### CUDA (mock)
 
 `tests/device.sh`, in the gate, on every one of lex-gpu's six kernels:
 
@@ -178,3 +196,45 @@ unbounded by
 
 and the compiler itself, unchanged: `args, err_write, fs_read(""),
 fs_write(""), heap, io_write`, bounded.
+
+
+### Metal (real hardware)
+
+First real Metal run on Mac Studio (Apple Silicon GPU):
+
+* **Reach proved:** The Metal shim (`shim/lexgpu-metal.mm`, Objective-C++)
+  successfully loads the Metal framework, compiles emitted `.metal` source
+  with `newLibraryWithSource`, creates compute pipelines, allocates buffers,
+  uploads data, launches kernels with `dispatchThreadgroups`, and reads
+  results back — all through the same C interface (`lxg_*`) as the CUDA shim.
+* **Numerical agreement:** All tested kernels produce results within the
+  2e-2 tolerance against the CPU reference interpreter:
+  - `softmax.lx r=4 n=64`: worst difference 5.59e-9 of peak 0.0259
+  - `softmax.lx r=1 n=8`: worst difference 1.49e-8 of peak 0.1968
+  - `softmax.lx r=16 n=256`: worst difference 4.66e-9 of peak 0.0063
+  - `gemm_fp4.lx m=128 n=128 k=64`: worst difference 1.43e-6 of peak 6.7963
+  - `silu_mul.lx r=4 n=64`: worst difference 1.49e-8 of peak 0.1537
+* **Performance:** Total execution time (CPU reference + Metal GPU + comparison)
+  for `softmax.lx r=4 n=64`: ~0.036s; for `softmax.lx r=16 n=256`: ~0.039s.
+  (Timing includes both reference and device execution; GPU-only timing
+  not yet isolated.)
+
+What `cancho authority` says about the Metal device program:
+
+```
+UNBOUNDED: this program calls foreign code. ...
+performs
+    args
+    err_write
+    ffi("libmetalgpu")    <- unbounded
+    fs_read("\")
+    heap
+    io_write
+unbounded by
+    libmetalgpu:lxg_alloc
+    libmetalgpu:lxg_arg
+    ...
+```
+
+and the compiler itself, unchanged: `args, err_write, fs_read("\"),
+fs_write("\"), heap, io_write`, bounded.

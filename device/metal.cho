@@ -1,0 +1,26 @@
+edition 5;
+module metal;
+
+// The Metal shim's entry points (`shim/lexgpu-metal.c`, mirroring `docs/device.md` §1),
+// each under `Ffi("libmetalgpu")`: integers in, an integer out, and at most one
+// byte buffer, last. A negative answer is a failure; `lxg_error` copies
+// its text out. Same interface as CUDA but for Metal on apple-m-series.
+extern fn lxg_open[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_compile[&f, &s](ffi: &f Ffi("libmetalgpu"), src: &s [byte]) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_function[&f, &s](ffi: &f Ffi("libmetalgpu"), handle: int, name: &s [byte]) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_alloc[&f](ffi: &f Ffi("libmetalgpu"), bytes: int) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_upload[&f, &s](ffi: &f Ffi("libmetalgpu"), buf: int, data: &s [byte]) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_download[&f, &s](ffi: &f Ffi("libmetalgpu"), buf: int, out: &!s [byte]) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_arg[&f](ffi: &f Ffi("libmetalgpu"), buf: int) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_launch[&f](ffi: &f Ffi("libmetalgpu"), func: int, gx: int, gy: int, threads: int) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_error[&f, &s](ffi: &f Ffi("libmetalgpu"), out: &!s [byte]) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_close[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
