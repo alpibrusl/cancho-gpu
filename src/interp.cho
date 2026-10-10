@@ -207,6 +207,12 @@ fn unary_apply(u: int, x: float) -> [] float {
     if u == kinds.rsqrt() {
         return f32.div(1.0, f32.sqrt32(x));
     }
+    if u == kinds.exp() {
+        return f32.exp32(x);
+    }
+    if u == kinds.log() {
+        return f32.log32(x);
+    }
     if u == kinds.sigmoid() {
         return f32.div(1.0, f32.add(1.0, f32.exp32(-x)));
     }

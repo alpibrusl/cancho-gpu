@@ -141,3 +141,10 @@ tests/lx/batch_fp4.lx b=4 n=64 k=512 --run
 tests/lx/rowops.lx r=4 n=1024 --run
 tests/lx/rowops.lx r=300 n=7 --run
 tests/lx/stage.lx m=8 k=64 --run
+
+# Softmax: the first kernel that needs the `exp` unop.
+tests/lx/softmax.lx r=1 n=8
+tests/lx/softmax.lx r=4 n=64
+tests/lx/softmax.lx r=16 n=256
+tests/lx/softmax.lx r=3 n=7
+tests/lx/softmax.lx r=4 n=64 --run
