@@ -1,0 +1,20 @@
+// y = exp(x - rowmax(x)) / rowsum(exp(x - rowmax(x))), over each row of n.
+//
+// The softmax a decode step needs: the max subtracted for stability, the
+// exponentials in the numerator, and the row of exponentials summed for
+// the denominator. The first kernel that needs the `exp` unop.
+algo softmax(r, n)
+  in  x: f32[r, n]
+  out y: f32[r, n]
+{
+  let x  = load x
+  let mx = rowmax &x
+  let sh = x - mx
+  let e  = exp sh
+  let s  = rowsum &e
+  let q  = e / s
+  store q -> y
+}
+
+schedule softmax for apple-m-series { threads 256 }
+schedule softmax for nvidia-ada     { threads 256 }

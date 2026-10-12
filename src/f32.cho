@@ -559,6 +559,10 @@ pub fn exp32(x: float) -> [] float {
     return round(math.exp(x));
 }
 
+pub fn log32(x: float) -> [] float {
+    return round(math.log(x));
+}
+
 pub fn ln_1p32(x: float) -> [] float {
     return round(math.log1p(x));
 }

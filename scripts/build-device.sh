@@ -13,6 +13,6 @@ mkdir -p "$ROOT/build"
 "$CC" -std=c11 -Wall -Wextra -Werror -O2 -c "$ROOT/shim/lexgpu.c" -o "$ROOT/build/lexgpu.o"
 ar rcs "$ROOT/build/liblexgpu.a" "$ROOT/build/lexgpu.o"
 # shellcheck disable=SC2046
-"$CANCHO" build $(ls "$ROOT"/src/*.cho | grep -v '/main\.cho$') "$ROOT"/device/*.cho --std \
+"$CANCHO" build $(ls "$ROOT"/src/*.cho | grep -v '/main\.cho$') "$ROOT"/device/main.cho "$ROOT"/device/cuda.cho --std \
   -l lexgpu -l dl -L "$ROOT/build" -o "$ROOT/build/cancho-gpu-device"
 echo "built $ROOT/build/cancho-gpu-device"

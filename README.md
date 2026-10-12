@@ -37,7 +37,7 @@ error[use-after-move]: `x.0` used after it was moved
 | | |
 |---|---|
 | Parser, elaboration, checker, CUDA and Metal emitters | **built**: byte-identical with the Rust on every emitting case of `tests/cases.txt`, and refuses what the Rust refuses |
-| CPU reference interpreter (`--run`) | **built**: the same summary as the Rust's on 13 runs, f32 order included |
+| CPU reference interpreter (`--run`) | **built**: the same summary as the Rust's on 14 runs, f32 order included |
 | Driving a GPU (`Ffi` + a C shim) | **built, checked against a mock driver; not yet run on a GPU** ([`docs/device.md`](docs/device.md)) |
 | The inference runtime | not yet (slice 9) |
 

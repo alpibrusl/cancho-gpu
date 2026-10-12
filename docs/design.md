@@ -241,11 +241,15 @@ does it, which §4's rounding gives exactly:
 * `+ − × ÷` and `sqrt`: one binary64 operation, rounded once to f32.
   Correct by §4's argument, and `sqrt` is correctly rounded on both
   sides.
-* `exp` and `ln_1p` (sigmoid, softplus): binary64 `std.math`, rounded to
-  f32. The Rust calls libm's `expf`/`log1pf`, which glibc documents as
-  within 0.502 ULP rather than correctly rounded, so this is the one place
-  the two may disagree in the last bit. Whether they do is measured on
-  the cases, not assumed (§10.2).
+* `exp`, `log` and `ln_1p` (the `exp`/`log` unops, sigmoid, softplus):
+  binary64 `std.math`, rounded to f32. The Rust calls libm's
+  `expf`/`logf`/`log1pf`, which glibc documents as within 0.502 ULP
+  rather than correctly rounded, so this is the one place the two may
+  disagree in the last bit. Whether they do is measured on the cases,
+  not assumed (§10.2). The `exp` and `log` unops arrived with
+  `softmax.lx` (the first kernel that needs them); the IR's own `Op::Exp`
+  and the dialects' `exp`/`log` spellings already existed for
+  sigmoid/softplus, so the unops add no new emitters, only surface.
 * f16 tiles round to half precision, ties to even, overflow to infinity,
   as the `half` crate does; I8 rounds half away from zero and clamps.
 * `rowmax` folds `f32::max`, which ignores a NaN; `rowsum` and the mean
@@ -278,11 +282,12 @@ them.
 
 ### 10.2 Measured
 
-**The summary is byte-identical with the Rust's on all 13 `--run` cases
+**The summary is byte-identical with the Rust's on all 14 `--run` cases
 of `tests/cases.txt`**, on both targets. They cover every op a `.lx`
 file reaches: f16 inputs (`gemm`, `gemm_mma`), NVFP4 decode in all three
 matmul shapes, `sigmoid` over 16,384 values (`silu_mul`), `softplus`,
-`rsqrt`, `rowmax` and `rowsum` (`rowops`), staging, and the residual
+`rsqrt`, `rowmax` and `rowsum` (`rowops`), the `exp` unop over full
+rows (`softmax`), staging, and the residual
 epilogue. That includes `gemm_fp4`'s target-dependent last digit, so the
 f32 order is reproduced, not just the values approximately.
 
