@@ -4,7 +4,7 @@
 > attention layer: [`kernels.md`](kernels.md); split-KV for long contexts is not
 > built) and 10 of cancho#251 built and measured** (driving a GPU: CUDA against a mock driver only, Metal also on
 > Apple Silicon, [`device.md`](device.md); the first stage of the model
-> reader, [`runtime.md`](runtime.md)). The `.lx`
+> reader, [`runtime.md`](runtime.md)). The `.chx`
 > front end, checker and both emitters of
 > [lex-gpu](https://github.com/alpibrusl/lex-gpu), written in cancho,
 > produce **byte-identical** CUDA C and Metal for every case in
@@ -23,7 +23,7 @@ Rust. This repository is the same compiler in cancho.
 
 It is **not** a GPU backend for cancho, and it does not reopen
 cancho's `docs/gpu.md` §5 (whether a GPU dialect of cancho should
-exist). `.lx` stays its own language; cancho is what its compiler is
+exist). `.chx` stays its own language; cancho is what its compiler is
 written in. The program is text in, text out: nothing here runs on a
 device.
 
@@ -50,7 +50,7 @@ Why it exists (cancho#251):
 | Dialects | `lex_msl::dialect` (`Msl`, `Cuda`, `Wmma`, `Simdgroup`) | `src/dialect.cho` |
 | CLI | `lex-msl/examples/emit_lx.rs` | `src/main.cho` |
 
-The ported subset is everything a `.lx` file can reach. The Rust IR has
+The ported subset is everything a `.chx` file can reach. The Rust IR has
 more — futures, arrays, pipes and warp-specialised roles, the Q4/Q6/
 ternary dequantisations — but those come only from the Rust builder
 API; the surface has no syntax for them, so neither does this port. The
@@ -233,7 +233,7 @@ nvidia-ada: y [128, 128] = mean -0.0006, peak 6.7963, first [1.035939, -2.636763
 ```
 
 It is `lex_front::interp` and `emit_lx`'s `interpret`, for the ops a
-`.lx` file reaches. **The contract is the same as the emitters': the
+`.chx` file reaches. **The contract is the same as the emitters': the
 same lines as the Rust, byte for byte.** That is stricter than it looks.
 The Rust sums in f32, in program order, so `gemm_fp4`'s last digit
 already differs *between its own two targets* (`-2.6367636` against
@@ -250,7 +250,7 @@ does it, which §4's rounding gives exactly:
   rather than correctly rounded, so this is the one place the two may
   disagree in the last bit. Whether they do is measured on the cases,
   not assumed (§10.2). The `exp` and `log` unops arrived with
-  `softmax.lx` (the first kernel that needs them); the IR's own `Op::Exp`
+  `softmax.chx` (the first kernel that needs them); the IR's own `Op::Exp`
   and the dialects' `exp`/`log` spellings already existed for
   sigmoid/softplus, so the unops add no new emitters, only surface.
 * f16 tiles round to half precision, ties to even, overflow to infinity,
@@ -286,7 +286,7 @@ them.
 ### 10.2 Measured
 
 **The summary is byte-identical with the Rust's on all 14 `--run` cases
-of `tests/cases.txt`**, on both targets. They cover every op a `.lx`
+of `tests/cases.txt`**, on both targets. They cover every op a `.chx`
 file reaches: f16 inputs (`gemm`, `gemm_mma`), NVFP4 decode in all three
 matmul shapes, `sigmoid` over 16,384 values (`silu_mul`), `softplus`,
 `rsqrt`, `rowmax` and `rowsum` (`rowops`), the `exp` unop over full

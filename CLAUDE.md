@@ -1,6 +1,6 @@
 # CLAUDE.md — cancho-gpu
 
-lex-gpu's `.lx` compiler in cancho. Read [`docs/design.md`](docs/design.md)
+lex-gpu's `.chx` compiler in cancho. Read [`docs/design.md`](docs/design.md)
 before changing it, and cancho's `AGENTS.md` (`cancho agent-guidelines`)
 before writing cancho.
 

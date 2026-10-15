@@ -34,7 +34,7 @@ def lcg(sizes):
 
 
 def run(kernel, consts):
-    r = subprocess.run([BIN, "check", f"tests/lx/{kernel}.lx"] + consts + ["--run"], capture_output=True, text=True)
+    r = subprocess.run([BIN, "check", f"tests/chx/{kernel}.chx"] + consts + ["--run"], capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"{kernel} {consts}: {r.stderr.strip()}")
     # {output: {target: (mean, peak, first four)}}: both targets are printed.

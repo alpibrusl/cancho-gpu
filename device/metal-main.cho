@@ -1,9 +1,9 @@
 edition 5;
 
-// `cancho-gpu-metal-device` -- run a `.lx` kernel on a Metal device and hold it
+// `cancho-gpu-metal-device` -- run a `.chx` kernel on a Metal device and hold it
 // to the reference interpreter (`docs/device.md`).
 //
-//     cancho-gpu-metal-device run <file.lx> [name=value ...]
+//     cancho-gpu-metal-device run <file.chx> [name=value ...]
 //
 // Compiles the program for `apple-m-series` as `emit` does, runs the
 // interpreter over the made-up inputs, then compiles the emitted source
@@ -46,7 +46,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-device run <file.lx> [name=value ...]\n");
+    io.error_all(io, "usage: cancho-gpu-device run <file.chx> [name=value ...]\n");
     return 2;
 }
 

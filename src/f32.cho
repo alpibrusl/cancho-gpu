@@ -341,7 +341,7 @@ pub fn debug[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
 // Reading: a decimal literal, correctly rounded to binary64
 // ---------------------------------------------------------------------
 
-// `s` as Rust's `str::parse::<f64>` reads the numbers the `.lx` lexer
+// `s` as Rust's `str::parse::<f64>` reads the numbers the `.chx` lexer
 // produces: digits, an optional point and fraction, an optional
 // exponent. Answers `(true, value)`, or `(false, 0.0)` when it is not a
 // number. The rounding is `std.json`'s, which is correct (Clinger's fast

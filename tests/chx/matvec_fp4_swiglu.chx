@@ -1,6 +1,6 @@
 // The gate and up projections of a SwiGLU MLP and the activation, in one
 // kernel: y = silu(x wg^T) * (x wu^T), both weights NVFP4 (see
-// matvec_fp4_rows.lx). One launch where there were three, and the two
+// matvec_fp4_rows.chx). One launch where there were three, and the two
 // products never go to memory.
 algo matvec_fp4_swiglu(n, k)
   in  x:   f32[1, k]

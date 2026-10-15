@@ -1,4 +1,4 @@
-# Qwen3.8-27B in `.lx`
+# Qwen3.8-27B in `.chx`
 
 > **Status: Qwen3.8-27B runs on a Metal GPU in cancho and agrees with the reference
 > implementation's golden log-probabilities (§4); about 22 tokens a second, against the
@@ -31,16 +31,16 @@ gated one; the host adds 1 when it loads them.
 
 | Kernel | What | Shapes |
 |---|---|---|
-| `matvec_fp4_rows.lx`, `matvec_fp4_res.lx` | `x w^T` over NVFP4 weights, and added to the residual | `n=17408 k=5120` (gate, up), `n=5120 k=17408` (down), `n=248320 k=5120` (head), ... |
-| `rmsnorm.lx` | the layer norms | `n=5120` |
-| `rmsnorm_rows.lx` | the per-head norm of q and k | `r=24` and `4`, `n=256` |
-| `rope.lx`, `kv_row.lx`, `attention.lx`, `attn_gate.lx` | partial RoPE, the cache write, attention, the output gate | `h=32 p=192`; `nkv=4 d=256`; `g=6` |
-| `conv_step.lx` | the four-tap convolution and silu, rewriting its window; 256 channels to a threadgroup | `c=10240` |
-| `qk_norm.lx` | the queries' and keys' RMS normalisation and scaling | `nk=16 rows=80` |
-| `gates.lx` | `beta = sigmoid(b)`, `g = exp(-A softplus(a + dt_bias))` | `h=48` |
-| `delta_step.lx` | the delta rule for the three value heads of each key head | `nk=16` |
-| `gated_norm.lx` | the norm gated by `silu(z)` | `h=48 n=128` |
-| `swiglu.lx` | `silu(gate) * up` | `n=17408` |
+| `matvec_fp4_rows.chx`, `matvec_fp4_res.chx` | `x w^T` over NVFP4 weights, and added to the residual | `n=17408 k=5120` (gate, up), `n=5120 k=17408` (down), `n=248320 k=5120` (head), ... |
+| `rmsnorm.chx` | the layer norms | `n=5120` |
+| `rmsnorm_rows.chx` | the per-head norm of q and k | `r=24` and `4`, `n=256` |
+| `rope.chx`, `kv_row.chx`, `attention.chx`, `attn_gate.chx` | partial RoPE, the cache write, attention, the output gate | `h=32 p=192`; `nkv=4 d=256`; `g=6` |
+| `conv_step.chx` | the four-tap convolution and silu, rewriting its window; 256 channels to a threadgroup | `c=10240` |
+| `qk_norm.chx` | the queries' and keys' RMS normalisation and scaling | `nk=16 rows=80` |
+| `gates.chx` | `beta = sigmoid(b)`, `g = exp(-A softplus(a + dt_bias))` | `h=48` |
+| `delta_step.chx` | the delta rule for the three value heads of each key head | `nk=16` |
+| `gated_norm.chx` | the norm gated by `silu(z)` | `h=48 n=128` |
+| `swiglu.chx` | `silu(gate) * up` | `n=17408` |
 
 Two shapes needed finding. The delta state is a 128 x 128 f32 tile, 64 KiB, which does
 not fit a threadgroup (32 KiB on Metal, 48 KiB on CUDA): but the rule is independent for
@@ -63,7 +63,7 @@ twice and moved on the third use.
 
 ## 4. The runner and how it is checked
 
-`device/run35-main.cho` (`scripts/build-run35.sh`, `build/cancho-gpu-run35 <ollama store> tests/lx
+`device/run35-main.cho` (`scripts/build-run35.sh`, `build/cancho-gpu-run35 <ollama store> tests/chx
 "<prompt>" <new tokens> [--trace] [--timing]`) reads Ollama's manifest and runs the 64 layers as the
 kernels above on a Metal GPU. The dimensions are the model's own, written as constants, so it runs this
 model and no other.
@@ -102,12 +102,12 @@ Where a token goes, measured by leaving kernels out of the real, pipelined run (
 makes the output wrong and the timing true; `CANCHOGPU_PROFILE=2` times each kernel alone, which adds about 60
 us of launch overhead to each and so overstates small kernels): the NVFP4 matrix-vector products are about
 31 of the 41 ms and already read at about 430 GB/s, against 546 for the chip; the rest is some 900 small
-launches at about 10 us each. What brought it from 52 ms to 41, all in `.lx` and the runner:
+launches at about 10 us each. What brought it from 52 ms to 41, all in `.chx` and the runner:
 
-* `kv_row.lx` writes only the new cache row (the position is the cache buffer's byte offset) instead of
-  rewriting the whole cache (7.7 ms a token down to 0.1), and `conv_step.lx` spreads its channels over
+* `kv_row.chx` writes only the new cache row (the position is the cache buffer's byte offset) instead of
+  rewriting the whole cache (7.7 ms a token down to 0.1), and `conv_step.chx` spreads its channels over
   threadgroups (6.6 ms down to 0.3);
-* `matvec_fp4_swiglu.lx` does the gate and up projections and the activation in one launch;
+* `matvec_fp4_swiglu.chx` does the gate and up projections and the activation in one launch;
 * the encoder dispatches concurrently and a barrier separates launches that depend on each other
   (`cgpu_overlap` marks the ones that do not: the q/k/v and the qkv/z/a/b projections and so on).
 

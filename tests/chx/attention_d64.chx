@@ -1,5 +1,5 @@
 // attention for head dimension d = 64 (Qwen2.5-0.5B's), the scale 1/sqrt(64) = 0.125
-// written as a literal, as attention.lx does for 256; the mask makes t a capacity.
+// written as a literal, as attention.chx does for 256; the mask makes t a capacity.
 algo attention_d64(nkv, g, t, d, tmax)
   in  q:    f32[nkv * g, d]
   in  k:    f32[nkv * tmax, d]

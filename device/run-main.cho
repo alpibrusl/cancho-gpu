@@ -7,7 +7,7 @@ edition 5;
 //
 // The model dir is a Hugging Face checkpoint of the Qwen2 architecture
 // (`config.json`, `tokenizer.json`, `model.safetensors`, bf16). The kernels are
-// the `.lx` files of `tests/lx/`, compiled here for `apple-m-series` and run
+// the `.chx` files of `tests/chx/`, compiled here for `apple-m-series` and run
 // through the Metal shim; the weights go up as f32, the prompt is tokenized by
 // `bpe.cho`, and the next token is drawn by `sampler.cho` (greedy unless a
 // temperature is given). The prompt is read as raw text and fed one token at a
@@ -495,18 +495,18 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         device_fail(m, t, ffi, "opening the device");
         return cli.report(m, t, io);
     }
-    let k_rms = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "lex-gpu/rmsnorm.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "eps", f32.round(from_bits_f64(m[cfg + 6]))));
-    let k_qb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
-    let k_kvb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(kv_dim)), "k", float_of(hidden)));
-    let k_oproj = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
-    let k_gate = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(inter)), "k", float_of(hidden)));
-    let k_down = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(inter)));
-    let k_head = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(vocab)), "k", float_of(hidden)));
-    let k_swiglu = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "swiglu.lx"), cv(m, t, mem.list(m), "n", float_of(inter)));
-    let k_ropeq = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(heads)), "h", float_of(half)), "p", 0.0));
-    let k_ropek = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(kv_heads)), "h", float_of(half)), "p", 0.0));
-    let k_attn = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "attention_d64.lx"), cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "g", float_of(group)), "t", float_of(tmax)), "d", float_of(head_dim)), "tmax", float_of(tmax)));
-    let k_kvw = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "kv_write.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "tmax", float_of(tmax)), "d", float_of(head_dim)));
+    let k_rms = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "ported/rmsnorm.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "eps", f32.round(from_bits_f64(m[cfg + 6]))));
+    let k_qb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias_f16.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
+    let k_kvb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias_f16.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(kv_dim)), "k", float_of(hidden)));
+    let k_oproj = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res_f16.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
+    let k_gate = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows_f16.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(inter)), "k", float_of(hidden)));
+    let k_down = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res_f16.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(inter)));
+    let k_head = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows_f16.chx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(vocab)), "k", float_of(hidden)));
+    let k_swiglu = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "swiglu.chx"), cv(m, t, mem.list(m), "n", float_of(inter)));
+    let k_ropeq = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.chx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(heads)), "h", float_of(half)), "p", 0.0));
+    let k_ropek = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.chx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(kv_heads)), "h", float_of(half)), "p", 0.0));
+    let k_attn = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "attention_d64.chx"), cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "g", float_of(group)), "t", float_of(tmax)), "d", float_of(head_dim)), "tmax", float_of(tmax)));
+    let k_kvw = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "kv_write.chx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "tmax", float_of(tmax)), "d", float_of(head_dim)));
     if err.failed(m) {
         return cli.report(m, t, io);
     }

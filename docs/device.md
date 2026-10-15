@@ -72,7 +72,7 @@ measures the need for but does not build.
 
 ## 3. The program
 
-`cancho-gpu-device run <file.lx> [name=value ...]`, a second binary
+`cancho-gpu-device run <file.chx> [name=value ...]`, a second binary
 (`device/`), so the compiler itself still links nothing but libc:
 
 1. Parse, elaborate, check and lower for `nvidia-ada`, exactly as
@@ -209,13 +209,13 @@ First real Metal run on Mac Studio (Apple Silicon GPU):
   results back — all through the same C interface (`cgpu_*`) as the CUDA shim.
 * **Numerical agreement:** All tested kernels produce results within the
   2e-2 tolerance against the CPU reference interpreter:
-  - `softmax.lx r=4 n=64`: worst difference 5.59e-9 of peak 0.0259
-  - `softmax.lx r=1 n=8`: worst difference 1.49e-8 of peak 0.1968
-  - `softmax.lx r=16 n=256`: worst difference 4.66e-9 of peak 0.0063
-  - `gemm_fp4.lx m=128 n=128 k=64`: worst difference 1.43e-6 of peak 6.7963
-  - `silu_mul.lx r=4 n=64`: worst difference 1.49e-8 of peak 0.1537
+  - `softmax.chx r=4 n=64`: worst difference 5.59e-9 of peak 0.0259
+  - `softmax.chx r=1 n=8`: worst difference 1.49e-8 of peak 0.1968
+  - `softmax.chx r=16 n=256`: worst difference 4.66e-9 of peak 0.0063
+  - `gemm_fp4.chx m=128 n=128 k=64`: worst difference 1.43e-6 of peak 6.7963
+  - `silu_mul.chx r=4 n=64`: worst difference 1.49e-8 of peak 0.1537
 * **Performance:** Total execution time (CPU reference + Metal GPU + comparison)
-  for `softmax.lx r=4 n=64`: ~0.036s; for `softmax.lx r=16 n=256`: ~0.039s.
+  for `softmax.chx r=4 n=64`: ~0.036s; for `softmax.chx r=16 n=256`: ~0.039s.
   (Timing includes both reference and device execution; GPU-only timing
   not yet isolated.)
 

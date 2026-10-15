@@ -14,7 +14,7 @@ BIN=$ROOT/build/cancho-gpu-metal-device
 fail=0
 while read -r kernel rest; do
   # shellcheck disable=SC2086
-  "$BIN" run "$ROOT/tests/lx/$kernel.lx" $rest > "${TMPDIR:-/tmp}/metal-kernels.out" 2>&1 || { echo "$kernel $rest: failed: $(tail -1 "${TMPDIR:-/tmp}/metal-kernels.out")"; fail=1; continue; }
+  "$BIN" run "$ROOT/tests/chx/$kernel.chx" $rest > "${TMPDIR:-/tmp}/metal-kernels.out" 2>&1 || { echo "$kernel $rest: failed: $(tail -1 "${TMPDIR:-/tmp}/metal-kernels.out")"; fail=1; continue; }
   worst=$(grep '^compare:' "${TMPDIR:-/tmp}/metal-kernels.out" | awk '{d=$(NF-3); p=$NF; r=(p>0)?d/p:d; if (r>m) m=r} END {printf "%.2e", m}')
   ok=$(echo "$worst" | awk '{print ($1 <= 1e-5) ? "ok" : "TOO FAR"}')
   echo "$ok  $kernel $rest: worst relative difference $worst"

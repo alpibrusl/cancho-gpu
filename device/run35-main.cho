@@ -9,7 +9,7 @@ edition 5;
 // safetensors blob a tensor. The dimensions are the model's own and written here
 // as constants (a 64-layer model of hidden size 5120: every fourth layer grouped
 // attention, the rest gated-delta), so this runs that model and no other. The
-// kernels are the `.lx` files of `tests/lx/`. The prompt is raw text fed one token
+// kernels are the `.chx` files of `tests/chx/`. The prompt is raw text fed one token
 // at a time, greedy, with a 256-position context.
 //
 // Linked with `shim/canchogpu-metal.mm` (`scripts/build-run35.sh`).
@@ -659,28 +659,28 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     }
     // The kernels.
     let h = hidden();
-    let k_rms = compile_kernel(m, t, ffi, fs, kdir, "lex-gpu/rmsnorm.lx", cv(m, t, c1(m, t, "n", h), "eps", f32.round(0.000001)));
-    let k_qkv = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", 10240, "k", h));
-    let k_z = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", 6144, "k", h));
-    let k_ab = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16.lx", c2(m, t, "n", 48, "k", h));
-    let k_out = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res.lx", c2(m, t, "n", h, "k", 6144));
-    let k_down = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res.lx", c2(m, t, "n", h, "k", inter()));
-    let k_head = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", vocab(), "k", h));
-    let k_gateup = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu.lx", c2(m, t, "n", inter(), "k", h));
-    let k_conv = compile_kernel(m, t, ffi, fs, kdir, "conv_step.lx", c1(m, t, "c", 10240));
-    let k_qknorm = compile_kernel(m, t, ffi, fs, kdir, "qk_norm.lx", c2(m, t, "nk", 16, "rows", 80));
-    let k_gates = compile_kernel(m, t, ffi, fs, kdir, "gates.lx", c1(m, t, "h", 48));
-    let k_delta = compile_kernel(m, t, ffi, fs, kdir, "delta_step.lx", c1(m, t, "nk", 16));
-    let k_gnorm = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.lx", cv(m, t, c2(m, t, "h", 48, "n", 128), "eps", f32.round(0.000001)));
-    let k_qg = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", 12288, "k", h));
-    let k_kv = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", 1024, "k", h));
-    let k_qnorm = compile_kernel(m, t, ffi, fs, kdir, "qnorm.lx", cv(m, t, c2(m, t, "r", 24, "n", 256), "eps", f32.round(0.000001)));
-    let k_knorm = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.lx", cv(m, t, c2(m, t, "r", 4, "n", 256), "eps", f32.round(0.000001)));
-    let k_ropeq = compile_kernel(m, t, ffi, fs, kdir, "rope.lx", cv(m, t, c2(m, t, "r", 24, "h", 32), "p", 192.0));
-    let k_ropek = compile_kernel(m, t, ffi, fs, kdir, "rope.lx", cv(m, t, c2(m, t, "r", 4, "h", 32), "p", 192.0));
-    let k_kvw = compile_kernel(m, t, ffi, fs, kdir, "kv_row.lx", cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0));
-    let k_attn = compile_kernel(m, t, ffi, fs, kdir, "attention.lx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(tmax())), "d", 256.0), "tmax", float_of(tmax())));
-    let k_attn_gate = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.lx", c2(m, t, "r", 24, "n", 256));
+    let k_rms = compile_kernel(m, t, ffi, fs, kdir, "ported/rmsnorm.chx", cv(m, t, c1(m, t, "n", h), "eps", f32.round(0.000001)));
+    let k_qkv = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.chx", c2(m, t, "n", 10240, "k", h));
+    let k_z = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.chx", c2(m, t, "n", 6144, "k", h));
+    let k_ab = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16.chx", c2(m, t, "n", 48, "k", h));
+    let k_out = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res.chx", c2(m, t, "n", h, "k", 6144));
+    let k_down = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res.chx", c2(m, t, "n", h, "k", inter()));
+    let k_head = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.chx", c2(m, t, "n", vocab(), "k", h));
+    let k_gateup = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu.chx", c2(m, t, "n", inter(), "k", h));
+    let k_conv = compile_kernel(m, t, ffi, fs, kdir, "conv_step.chx", c1(m, t, "c", 10240));
+    let k_qknorm = compile_kernel(m, t, ffi, fs, kdir, "qk_norm.chx", c2(m, t, "nk", 16, "rows", 80));
+    let k_gates = compile_kernel(m, t, ffi, fs, kdir, "gates.chx", c1(m, t, "h", 48));
+    let k_delta = compile_kernel(m, t, ffi, fs, kdir, "delta_step.chx", c1(m, t, "nk", 16));
+    let k_gnorm = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", cv(m, t, c2(m, t, "h", 48, "n", 128), "eps", f32.round(0.000001)));
+    let k_qg = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.chx", c2(m, t, "n", 12288, "k", h));
+    let k_kv = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.chx", c2(m, t, "n", 1024, "k", h));
+    let k_qnorm = compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", cv(m, t, c2(m, t, "r", 24, "n", 256), "eps", f32.round(0.000001)));
+    let k_knorm = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", 4, "n", 256), "eps", f32.round(0.000001)));
+    let k_ropeq = compile_kernel(m, t, ffi, fs, kdir, "rope.chx", cv(m, t, c2(m, t, "r", 24, "h", 32), "p", 192.0));
+    let k_ropek = compile_kernel(m, t, ffi, fs, kdir, "rope.chx", cv(m, t, c2(m, t, "r", 4, "h", 32), "p", 192.0));
+    let k_kvw = compile_kernel(m, t, ffi, fs, kdir, "kv_row.chx", cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0));
+    let k_attn = compile_kernel(m, t, ffi, fs, kdir, "attention.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(tmax())), "d", 256.0), "tmax", float_of(tmax())));
+    let k_attn_gate = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24, "n", 256));
     if err.failed(m) {
         return cli.report(m, t, io);
     }

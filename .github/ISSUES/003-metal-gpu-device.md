@@ -28,7 +28,7 @@ The current cancho-gpu implementation supports CUDA GPUs through `shim/canchogpu
 - [ ] Verify mock implementation works before real GPU testing
 
 ### 4. Real GPU Testing
-- [ ] Test with real Metal GPU: `cancho-gpu-device run tests/lx/softmax.lx r=4 n=64`
+- [ ] Test with real Metal GPU: `cancho-gpu-device run tests/chx/softmax.chx r=4 n=64`
 - [ ] Test other cases: rmsnorm, gemm_fp4, silu_mul
 - [ ] Compare against CPU interpreter using `device-mismatch` on any difference
 

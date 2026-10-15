@@ -29,7 +29,7 @@ fail = False
 for prompt, steps in zip(prompts, cases):
     n = min(new, len(steps))
     out = subprocess.run([root + "/build/cancho-gpu-run35", __import__("os").path.expanduser("~/.ollama/models"),
-                          root + "/tests/lx", prompt, str(n), "--trace"], capture_output=True, text=True).stdout
+                          root + "/tests/chx", prompt, str(n), "--trace"], capture_output=True, text=True).stdout
     ours = [[(int(a.split("=")[0]), float(a.split("=")[1])) for a in l.split("top: ")[1].split()]
             for l in out.splitlines() if l.startswith("step")]
     tokens = [int(x) for l in out.splitlines() if l.startswith("tokens:") for x in l.split()[1:]]

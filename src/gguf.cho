@@ -5,7 +5,7 @@ module gguf;
 // (slice 9a of cancho#251, issue #5; `docs/runtime.md`).
 //
 // `lex-rt/src/gguf.rs` is the oracle. The file's bytes are read straight
-// into the text pool (`t`), exactly as `main.cho` reads a `.lx` source,
+// into the text pool (`t`), exactly as `main.cho` reads a `.chx` source,
 // and this module holds **positions** in them, never copies: a key is
 // `(start, length)`, a value is the position after its type, a tensor's
 // dimensions are the position of the first. Nothing here allocates but

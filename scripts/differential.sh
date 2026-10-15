@@ -1,12 +1,12 @@
 #!/bin/sh
-# Run lex-gpu's Rust emitter and cancho-gpu over the same `.lx` files and
+# Run lex-gpu's Rust emitter and cancho-gpu over the same `.chx` files and
 # constants, and require the same outcome: both refuse, or both write the
 # same files with the same bytes.
 #
 #     scripts/differential.sh <lex-gpu checkout> [cases-file]
 #
 # A case is one line of `cases-file` (default tests/cases.txt):
-# `<file.lx> [name=value ...]`, the path relative to this repository. Needs `cargo` and the lex-gpu checkout; the
+# `<file.chx> [name=value ...]`, the path relative to this repository. Needs `cargo` and the lex-gpu checkout; the
 # CI gate instead diffs the committed goldens (tests/golden.sh).
 set -eu
 LEX_GPU=${1:?usage: differential.sh <lex-gpu checkout> [cases-file]}

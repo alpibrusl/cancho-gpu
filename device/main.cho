@@ -1,9 +1,9 @@
 edition 5;
 
-// `cancho-gpu-device` -- run a `.lx` kernel on a CUDA device and hold it
+// `cancho-gpu-device` -- run a `.chx` kernel on a CUDA device and hold it
 // to the reference interpreter (`docs/device.md`).
 //
-//     cancho-gpu-device run <file.lx> [name=value ...]
+//     cancho-gpu-device run <file.chx> [name=value ...]
 //
 // Compiles the program for `nvidia-ada` as `emit` does, runs the
 // interpreter over the made-up inputs, then compiles the emitted source
@@ -46,7 +46,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-device run <file.lx> [name=value ...]\n");
+    io.error_all(io, "usage: cancho-gpu-device run <file.chx> [name=value ...]\n");
     return 2;
 }
 

@@ -1,7 +1,7 @@
 edition 5;
 module interp;
 
-// The reference interpreter: `lex_front::interp`, for the ops a `.lx`
+// The reference interpreter: `lex_front::interp`, for the ops a `.chx`
 // file reaches, and `emit_lx`'s `--run` summary (`docs/design.md` §10).
 //
 // Every value is f32 and every operation is done in the order the Rust

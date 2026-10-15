@@ -1,9 +1,9 @@
 edition 5;
 
-// `cancho-gpu` -- lex-gpu's `.lx` compiler, in cancho.
+// `cancho-gpu` -- lex-gpu's `.chx` compiler, in cancho.
 //
-//     cancho-gpu emit  <file.lx> <dir> [name=value ...] [--run]
-//     cancho-gpu check <file.lx> [name=value ...] [--run]
+//     cancho-gpu emit  <file.chx> <dir> [name=value ...] [--run]
+//     cancho-gpu check <file.chx> [name=value ...] [--run]
 //     cancho-gpu gguf  <file.gguf> [--sum]
 //     cancho-gpu safetensors <file>
 //     cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>
@@ -66,7 +66,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.chx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
     return 2;
 }
 

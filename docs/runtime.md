@@ -34,7 +34,7 @@ getting exactly right and the bulk of what stages 3 and 4 read.
 ## 2. The reader
 
 `src/gguf.cho` reads the first 32 MiB of the file (`gguf_cap`, more than
-any header) straight into the text pool, as `main.cho` reads a `.lx`
+any header) straight into the text pool, as `main.cho` reads a `.chx`
 source, and keeps **positions**: a key is `(start, length)`, a value is
 the position after its type, a tensor's dimensions are the position of the
 first. `parse` allocates only the small records naming those positions
