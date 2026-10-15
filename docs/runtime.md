@@ -1,6 +1,7 @@
 # The runtime core: reading a model (slice 9a)
 
-> **Status: stage 1 of 4 built and measured (GGUF headers, §2–§5).**
+> **Status: stage 1 of 4 built and measured (GGUF headers, §2–§5), on
+> fixtures and on five real models.**
 > Safetensors headers, the BPE tokenizer and the sampler are not started
 > (§6). Issue [#5](https://github.com/alpibrusl/cancho-gpu/issues/5).
 
@@ -120,9 +121,15 @@ example into the checkout for the build and removes it).
 * 17 hostile fixtures are each refused with the rule their name starts
   with and nothing written.
 * 2,696 hostile files: no trap, no hang.
-* Not measured: a real model. The fixtures are small and synthetic; the
-  first real file (a Qwen or Llama GGUF from an Ollama store) is the next
-  check, and needs the multi-gigabyte file on the machine that runs it.
+* **Five real models** from an Ollama store (`scripts/gguf-real.sh`):
+  llama3.2:1b (147 tensors, 30 metadata keys, a 128k-entry vocabulary),
+  qwen3:8b, qwen3.5:4b, qwen3.5:9b and ministral-3:3b (up to 458 tensors
+  and 51 keys). The dump is **byte-identical with `lex-rt`'s on all five**,
+  and takes about 10 ms for a 1.2 GB file (it reads the first 32 MiB).
+  `--sum` was not run on them: it needs the tensor bytes, which are past
+  that prefix.
+* Not covered: a file whose header is larger than 32 MiB (none seen; it is
+  refused as `gguf-truncated`), and any GGUF not from these five.
 
 ## 6. What is left of the slice
 
