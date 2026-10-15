@@ -1,7 +1,8 @@
 #!/bin/sh
 # Regenerate golden/ from lex-gpu's Rust emitter: for every case of
 # tests/cases.txt that the Rust accepts, the files it writes, in
-# golden/<case>/; for one it refuses, golden/<case>/REFUSED.
+# golden/<case>/; for one it refuses, golden/<case>/REFUSED (beside any
+# files it wrote before refusing).
 #
 #     scripts/regen-golden.sh <lex-gpu checkout>
 #
@@ -13,8 +14,10 @@ LEX_GPU=${1:?usage: regen-golden.sh <lex-gpu checkout>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 (cd "$LEX_GPU" && cargo build -q -p lex-msl --example emit_lx)
 THEIRS=$LEX_GPU/target/debug/examples/emit_lx
-rm -rf "$ROOT/golden"
+# Only the case directories: golden/gguf, safetensors, tokenizer and sampler
+# are other oracles' (their own regen scripts).
 mkdir -p "$ROOT/golden"
+find "$ROOT/golden" -mindepth 1 -maxdepth 1 -type d ! -name gguf ! -name safetensors ! -name tokenizer ! -name sampler -exec rm -rf {} +
 git -C "$LEX_GPU" rev-parse HEAD > "$ROOT/golden/LEX_GPU"
 while read -r file rest; do
   case "$file" in ''|'#'*) continue ;; esac
@@ -27,7 +30,9 @@ while read -r file rest; do
     case " $rest " in *" --run "*) grep -v "^$dir/" "$dir/.stdout" > "$dir/RUN.txt" || true ;; esac
     rm -f "$dir/.stdout"
   else
-    rm -f "$dir"/* "$dir/.stdout"
+    # A refusal. Some are partial: CUDA is written and then Metal is over its
+    # budget, so the files the Rust did write are part of the answer.
+    rm -f "$dir/.stdout"
     touch "$dir/REFUSED"
   fi
 done < "$ROOT/tests/cases.txt"

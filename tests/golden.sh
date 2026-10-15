@@ -25,10 +25,12 @@ while read -r file rest; do
   "$BIN" emit "$ROOT/$file" "$out" $rest >"$WORK/stdout" 2>"$WORK/err" || status=$?
   case " $rest " in *" --run "*) grep -v "^$out/" "$WORK/stdout" > "$out/RUN.txt" || true ;; esac
   if [ -f "$want/REFUSED" ]; then
-    if [ "$status" -eq 1 ] && [ -z "$(ls "$out")" ]; then
+    # Refused, with exactly the files the Rust wrote before refusing (none,
+    # for most; for an over-budget Metal kernel, the CUDA one).
+    if [ "$status" -eq 1 ] && diff -r -x REFUSED "$want" "$out" >"$WORK/diff"; then
       pass=$((pass + 1))
     else
-      echo "$case_name: the Rust refuses this, cancho-gpu exited $status"; fail=$((fail + 1))
+      echo "$case_name: the Rust refuses this (exit 1, writing what the golden holds); cancho-gpu exited $status"; head -5 "$WORK/diff"; fail=$((fail + 1))
     fi
   elif [ "$status" -ne 0 ]; then
     echo "$case_name: refused: $(head -1 "$WORK/err")"; fail=$((fail + 1))
