@@ -1,0 +1,19 @@
+// y = x w^T + r: a projection whose output is added to the residual stream
+// (a layer's o_proj and down_proj).
+algo matvec_res(n, k)
+  in  x: f32[1, k]
+  in  w: f32[n, k]
+  in  r: f32[1, n]
+  out y: f32[1, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let wt = load w[i * bn, 0 ; bn, k]
+  let rt = load r[0, i * bn ; 1, bn]
+  let p  = matmul_nt xt wt
+  store p + rt -> y[0, i * bn]
+}
+
+schedule matvec_res for apple-m-series { threads 256 bn 8 }
+schedule matvec_res for nvidia-ada     { threads 128 bn 4 }

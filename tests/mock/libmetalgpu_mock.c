@@ -50,6 +50,14 @@ int64_t lxg_upload(int64_t buf, const char *s, int64_t n) {
     return n;
 }
 
+int64_t lxg_upload_at(int64_t buf, int64_t offset, const char *s, int64_t n) {
+    if (buf < 0 || buf >= n_blocks || offset < 0 || n < 0) {
+        return -1;
+    }
+    memcpy((char *)blocks[buf].p + offset, s, (size_t)n);
+    return n;
+}
+
 int64_t lxg_download(int64_t buf, char *d, int64_t n) {
     if (buf < 0 || buf >= n_blocks) {
         return -1;

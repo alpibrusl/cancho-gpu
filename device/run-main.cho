@@ -1,0 +1,667 @@
+edition 5;
+
+// `cancho-gpu-run` -- run a language model on a Metal GPU, written in cancho
+// (`docs/inference.md`).
+//
+//     cancho-gpu-run <model dir> <kernel dir> "<prompt>" <new tokens> [--trace] [temperature top_p top_k seed]
+//
+// The model dir is a Hugging Face checkpoint of the Qwen2 architecture
+// (`config.json`, `tokenizer.json`, `model.safetensors`, bf16). The kernels are
+// the `.lx` files of `tests/lx/`, compiled here for `apple-m-series` and run
+// through the Metal shim; the weights go up as f32, the prompt is tokenized by
+// `bpe.cho`, and the next token is drawn by `sampler.cho` (greedy unless a
+// temperature is given). The prompt is read as raw text and fed one token at a
+// time: there is no batched prefill and no chat template yet.
+//
+// Linked with `shim/lexgpu-metal.mm` (`scripts/build-run.sh`).
+
+import std.io;
+import std.json;
+import std.math;
+import mem;
+import text;
+import err;
+import f32;
+import kinds;
+import ir;
+import parser;
+import elab;
+import check;
+import target;
+import dialect;
+import lower;
+import cli;
+import fileio;
+import safetensors;
+import bpe;
+import sampler;
+import metal;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 536870912;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-run <model dir> <kernel dir> \"<prompt>\" <new tokens> [--trace] [temperature top_p top_k seed]\n");
+    return 2;
+}
+
+// ---------------------------------------------------------------------
+// The device
+// ---------------------------------------------------------------------
+
+fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
+    let top = m[mem.text_slot()];
+    let n = metal.lxg_error(ffi, t[top..top + 4096]);
+    var detail = text.lit(m, t, "no detail");
+    if n > 0 {
+        detail = text.from_bytes(m, t, t[top..top + n]);
+    }
+    return err.fail(m, t, "device", text.f2(m, t, "$: $", text.lit(m, t, what), detail));
+}
+
+// A kernel: `[function, grid x, grid y, threads]`, or -1.
+fn compile_kernel[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, vals: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let (top, got, size) = fileio.prefix(m, t, fs, text.bytes(t, path), 1048576);
+    if top < 0 {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", path));
+    }
+    let unit = parser.parse(m, t, text.handle(top, got));
+    if unit < 0 {
+        return 0 - 1;
+    }
+    let tg = target.apple_m_series(m, t);
+    let compiled = elab.compile(m, t, unit, target.name(m, tg), vals);
+    if compiled < 0 {
+        return 0 - 1;
+    }
+    let (prog, s) = (m[compiled], m[compiled + 1]);
+    if check.check(m, t, prog, tg) < 0 {
+        return 0 - 1;
+    }
+    let l = lower.lower(m, t, prog, tg, dialect.msl(), m[s + 1], m[s + 3], m[s + 4], m[s + 5]);
+    if l < 0 {
+        return 0 - 1;
+    }
+    let lib = metal.lxg_compile(ffi, text.bytes(t, m[l + 1]));
+    if lib < 0 {
+        return device_fail(m, t, ffi, "compiling a kernel");
+    }
+    let func = metal.lxg_function(ffi, lib, text.bytes(t, m[l]));
+    if func < 0 {
+        return device_fail(m, t, ffi, "finding a kernel's entry point");
+    }
+    return mem.rec4(m, func, m[l + 2], m[l + 3], m[l + 4]);
+}
+
+// A list of launch constants: `name` is each one's name, `v` its value.
+fn cv[&m, &t](m: &!m [int], t: &!t [byte], list: int, name: &static [byte], v: float) -> [] int {
+    mem.push(m, list, mem.rec2(m, text.lit(m, t, name), bits_of(v)));
+    return list;
+}
+
+fn kernel_file[&m, &t](m: &!m [int], t: &!t [byte], dir: int, name: &static [byte]) -> [] int {
+    return text.f2(m, t, "$/$", dir, text.lit(m, t, name));
+}
+
+// Bind up to five buffers (-1 is none) and launch.
+fn run_kernel[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, b0: int, b1: int, b2: int, b3: int, b4: int) -> [ffi("libmetalgpu")] int {
+    var ok = metal.lxg_arg(ffi, b0) >= 0;
+    if b1 >= 0 {
+        ok = ok && metal.lxg_arg(ffi, b1) >= 0;
+    }
+    if b2 >= 0 {
+        ok = ok && metal.lxg_arg(ffi, b2) >= 0;
+    }
+    if b3 >= 0 {
+        ok = ok && metal.lxg_arg(ffi, b3) >= 0;
+    }
+    if b4 >= 0 {
+        ok = ok && metal.lxg_arg(ffi, b4) >= 0;
+    }
+    if !ok {
+        return 0 - 1;
+    }
+    return metal.lxg_launch(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
+}
+
+// ---------------------------------------------------------------------
+// Weights
+// ---------------------------------------------------------------------
+
+fn reserve[&m](m: &!m [int], n: int) -> [] int {
+    let at = m[mem.text_slot()];
+    m[mem.text_slot()] = at + n;
+    return at;
+}
+
+// bf16 to f32 is a shift: the 16 bits are the top of the f32. `n` values from
+// `from` become `4 n` bytes at `to`.
+fn widen_bf16[&t](t: &!t [byte], from: int, to: int, n: int) -> [] int {
+    var i = 0;
+    while i < n {
+        t[to + 4 * i] = byte_of(0);
+        t[to + 4 * i + 1] = byte_of(0);
+        t[to + 4 * i + 2] = t[from + 2 * i];
+        t[to + 4 * i + 3] = t[from + 2 * i + 1];
+        i = i + 1;
+    }
+    return 0;
+}
+
+// The tensor record named `name` of a parsed safetensors header, or -1.
+fn find_tensor[&m, &t](m: &!m [int], t: &!t [byte], st: int, name: int) -> [] int {
+    let list = m[st + safetensors.f_list()];
+    var i = 0;
+    while i < mem.size(m, list) {
+        let r = mem.get(m, list, i);
+        if text.eq(t, m[r], name) {
+            return r;
+        }
+        i = i + 1;
+    }
+    return err.fail(m, t, "weights", text.f1(m, t, "the checkpoint has no tensor `$`", name));
+}
+
+// A weight as an f32 device buffer, streamed in chunks of 4M values: the
+// buffer, or -1. `elems` is checked against the file's shape.
+fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, st: int, data: int, name: int, elems: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let rec = find_tensor(m, t, st, name);
+    if rec < 0 {
+        return 0 - 1;
+    }
+    if m[rec + 1] != 8 || mem.product(m, m[rec + 2]) != elems {
+        return err.fail(m, t, "weights", text.f1(m, t, "`$` is not a bf16 tensor of the expected size", name));
+    }
+    let buf = metal.lxg_alloc(ffi, elems * 4);
+    if buf < 0 {
+        return device_fail(m, t, ffi, "allocating a weight");
+    }
+    let mark = m[mem.text_slot()];
+    var done = 0;
+    while done < elems {
+        var n = elems - done;
+        if n > 4194304 {
+            n = 4194304;
+        }
+        let raw = reserve(m, 2 * n);
+        let got = fileio.read_at(t, fs, text.bytes(t, path), data + m[rec + 3] + 2 * done, raw, 2 * n);
+        if got != 2 * n {
+            return err.fail(m, t, "weights", text.f1(m, t, "short read of `$`", name));
+        }
+        let out = reserve(m, 4 * n);
+        widen_bf16(t, raw, out, n);
+        if metal.lxg_upload_at(ffi, buf, 4 * done, t[out..out + 4 * n]) < 0 {
+            return device_fail(m, t, ffi, "uploading a weight");
+        }
+        m[mem.text_slot()] = mark;
+        done = done + n;
+    }
+    return buf;
+}
+
+fn layer_name[&m, &t](m: &!m [int], t: &!t [byte], l: int, suffix: &static [byte]) -> [] int {
+    return text.f2(m, t, "model.layers.$.$", text.num(m, t, l), text.lit(m, t, suffix));
+}
+
+// ---------------------------------------------------------------------
+// Looking at a buffer
+// ---------------------------------------------------------------------
+
+// The first four values and the mean absolute value of the f32 buffer `buf` of
+// `n` values, as a line, for `--trace`.
+fn peek[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), buf: int, n: int, label: &static [byte]) -> [ffi("libmetalgpu")] int {
+    let mark = m[mem.text_slot()];
+    let at = reserve(m, 4 * n);
+    if metal.lxg_download(ffi, buf, t[at..at + 4 * n]) < 0 {
+        return device_fail(m, t, ffi, "reading a buffer back");
+    }
+    var sum = 0.0;
+    var i = 0;
+    while i < n {
+        sum = sum + f32.abs(f32.from_bits32(gguf_le(t, at + 4 * i)));
+        i = i + 1;
+    }
+    let parts = mem.list(m);
+    i = 0;
+    while i < 4 && i < n {
+        mem.push(m, parts, f32.debug(m, t, f32.from_bits32(gguf_le(t, at + 4 * i))));
+        i = i + 1;
+    }
+    let line = text.f3(m, t, "$: first [$], mean |x| $\n", text.lit(m, t, label), text.joined(m, t, parts, ", "), f32.debug(m, t, f32.round(sum / float_of(n))));
+    m[mem.text_slot()] = mark;
+    return line;
+}
+
+// The five largest logits of the row at `lg`, as a line: `step N top: id=value ...`.
+fn top5[&m, &t](m: &!m [int], t: &!t [byte], lg: int, vocab: int, pos: int) -> [] int {
+    let parts = mem.list(m);
+    let taken = mem.list(m);
+    var r = 0;
+    while r < 5 {
+        var best = 0 - 1;
+        var bv = 0.0;
+        var i = 0;
+        while i < vocab {
+            let v = f32.from_bits32(gguf_le(t, lg + 4 * i));
+            if !mem.contains(m, taken, i) && (best < 0 || v > bv) {
+                best = i;
+                bv = v;
+            }
+            i = i + 1;
+        }
+        mem.push(m, taken, best);
+        mem.push(m, parts, text.f2(m, t, "$=$", text.num(m, t, best), f32.fixed(m, t, bv, 4)));
+        r = r + 1;
+    }
+    return text.f2(m, t, "step $ top: $\n", text.num(m, t, pos), text.joined(m, t, parts, " "));
+}
+
+fn gguf_le[&t](t: &!t [byte], p: int) -> [] int {
+    return int_of(t[p]) | int_of(t[p + 1]) << 8 | int_of(t[p + 2]) << 16 | int_of(t[p + 3]) << 24;
+}
+
+// ---------------------------------------------------------------------
+// The model
+// ---------------------------------------------------------------------
+
+fn cfg_int[&m, &t](m: &!m [int], t: &!t [byte], tape: int, words: int, hs: int, n: int, key: &static [byte]) -> [] int {
+    let node = json.get(t[hs..hs + n], m[tape..tape + words], 0, key);
+    if node < 0 || !json.is_int(m[tape..tape + words], node) {
+        return err.fail(m, t, "config", text.f1(m, t, "config.json has no integer `$`", text.lit(m, t, key)));
+    }
+    return json.to_int(t[hs..hs + n], m[tape..tape + words], node);
+}
+
+fn cfg_float[&m, &t](m: &!m [int], t: &!t [byte], tape: int, words: int, hs: int, n: int, key: &static [byte]) -> [] float {
+    let node = json.get(t[hs..hs + n], m[tape..tape + words], 0, key);
+    return json.to_float(t[hs..hs + n], m[tape..tape + words], node);
+}
+
+// The dimensions, as `[hidden, intermediate, layers, heads, kv heads, vocab]`
+// and the f64 bits of `[eps, theta]` at words 6 and 7; or -1.
+fn read_config[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int) -> [fs_read(""), file_read] int {
+    let (hs, n, size) = fileio.prefix(m, t, fs, text.bytes(t, path), 1048576);
+    if hs < 0 || size > n {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", path));
+    }
+    let words = 3 * jstr_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        return err.fail(m, t, "config", text.lit(m, t, "config.json is not JSON"));
+    }
+    let c = mem.rec(m, 8);
+    m[c] = cfg_int(m, t, tape, words, hs, n, "hidden_size");
+    m[c + 1] = cfg_int(m, t, tape, words, hs, n, "intermediate_size");
+    m[c + 2] = cfg_int(m, t, tape, words, hs, n, "num_hidden_layers");
+    m[c + 3] = cfg_int(m, t, tape, words, hs, n, "num_attention_heads");
+    m[c + 4] = cfg_int(m, t, tape, words, hs, n, "num_key_value_heads");
+    m[c + 5] = cfg_int(m, t, tape, words, hs, n, "vocab_size");
+    m[c + 6] = bits_of(cfg_float(m, t, tape, words, hs, n, "rms_norm_eps"));
+    m[c + 7] = bits_of(cfg_float(m, t, tape, words, hs, n, "rope_theta"));
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    return c;
+}
+
+fn jstr_bound[&t](t: &!t [byte], from: int, to: int) -> [] int {
+    var n = 1;
+    var p = from;
+    while p < to {
+        let c = int_of(t[p]);
+        if c == 44 || c == 58 || c == 91 || c == 123 {
+            n = n + 1;
+        }
+        p = p + 1;
+    }
+    return n;
+}
+
+// f32 bits of `v`, four bytes little-endian, at `at` in the pool.
+fn put_f32[&t](t: &!t [byte], at: int, bits: int) -> [] int {
+    t[at] = byte_of(bits & 255);
+    t[at + 1] = byte_of(bits >> 8 & 255);
+    t[at + 2] = byte_of(bits >> 16 & 255);
+    t[at + 3] = byte_of(bits >> 24 & 255);
+    return 0;
+}
+
+fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu")] int {
+    if arg_count(args) < 5 {
+        return usage(io);
+    }
+    let dir = text.from_bytes(m, t, arg(args, 1));
+    let kdir = text.from_bytes(m, t, arg(args, 2));
+    let prompt = arg(args, 3);
+    var new_tokens = 0;
+    let nt = text.from_bytes(m, t, arg(args, 4));
+    var d = 0;
+    while d < text.size(nt) {
+        new_tokens = new_tokens * 10 + text.at(t, nt, d) - 48;
+        d = d + 1;
+    }
+    var trace = false;
+    var temperature = 0.0;
+    var top_p = 0.95;
+    var top_k = 20;
+    var seed = 1;
+    var ai = 5;
+    if arg_count(args) > ai && text.is(t, text.from_bytes(m, t, arg(args, ai)), "--trace") {
+        trace = true;
+        ai = ai + 1;
+    }
+    if arg_count(args) >= ai + 4 {
+        let (ok1, v1) = f32.parse(m, t, text.from_bytes(m, t, arg(args, ai)));
+        let (ok2, v2) = f32.parse(m, t, text.from_bytes(m, t, arg(args, ai + 1)));
+        temperature = f32.round(v1);
+        top_p = f32.round(v2);
+        let ks = text.from_bytes(m, t, arg(args, ai + 2));
+        top_k = 0;
+        var q = 0;
+        while q < text.size(ks) {
+            top_k = top_k * 10 + text.at(t, ks, q) - 48;
+            q = q + 1;
+        }
+        let ss = text.from_bytes(m, t, arg(args, ai + 3));
+        seed = 0;
+        q = 0;
+        while q < text.size(ss) {
+            seed = seed * 10 + text.at(t, ss, q) - 48;
+            q = q + 1;
+        }
+    }
+    let config_path = text.f1(m, t, "$/config.json", dir);
+    let cfg = read_config(m, t, fs, config_path);
+    if cfg < 0 {
+        return cli.report(m, t, io);
+    }
+    let hidden = m[cfg];
+    let inter = m[cfg + 1];
+    let layers = m[cfg + 2];
+    let heads = m[cfg + 3];
+    let kv_heads = m[cfg + 4];
+    let vocab = m[cfg + 5];
+    let eps = f32.round(from_bits_f64(m[cfg + 6]));
+    let theta = from_bits_f64(m[cfg + 7]);
+    let head_dim = hidden / heads;
+    let kv_dim = kv_heads * head_dim;
+    let group = heads / kv_heads;
+    let half = head_dim / 2;
+    // The context the cache and the mask hold.
+    let tmax = 256;
+    // The tokenizer.
+    let tok_path = text.f1(m, t, "$/tokenizer.json", dir);
+    let (tk0, tkn, tks) = fileio.prefix(m, t, fs, text.bytes(t, tok_path), 100663296);
+    if tk0 < 0 || tks > tkn {
+        io.error_all(io, "error[io]: cannot read the tokenizer\n");
+        return 1;
+    }
+    let tk = bpe.from_json(m, t, tk0, tkn);
+    if tk < 0 {
+        return cli.report(m, t, io);
+    }
+    let pstart = m[mem.text_slot()];
+    let ptext = text.from_bytes(m, t, prompt);
+    let ids = bpe.encode(m, t, tk, text.start(ptext), text.start(ptext) + text.size(ptext));
+    if ids < 0 {
+        return cli.report(m, t, io);
+    }
+    let n_prompt = mem.size(m, ids);
+    if n_prompt + new_tokens > tmax || n_prompt == 0 {
+        io.error_all(io, "error[context]: the prompt and the new tokens must fit in 256 positions and the prompt must not be empty\n");
+        return 1;
+    }
+    // The weights' header.
+    let st_path = text.f1(m, t, "$/model.safetensors", dir);
+    let (sh, sn, ssize) = fileio.prefix(m, t, fs, text.bytes(t, st_path), 2097152);
+    if sh < 0 {
+        io.error_all(io, "error[io]: cannot read model.safetensors\n");
+        return 1;
+    }
+    let st = safetensors.parse(m, t, sh, sh + sn, ssize);
+    if st < 0 {
+        return cli.report(m, t, io);
+    }
+    let data = 8 + m[st + safetensors.f_header()];
+    // The device and its kernels.
+    if metal.lxg_open(ffi) < 0 {
+        device_fail(m, t, ffi, "opening the device");
+        return cli.report(m, t, io);
+    }
+    let k_rms = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "lex-gpu/rmsnorm.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "eps", f32.round(from_bits_f64(m[cfg + 6]))));
+    let k_qb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
+    let k_kvb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(kv_dim)), "k", float_of(hidden)));
+    let k_oproj = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
+    let k_gate = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(inter)), "k", float_of(hidden)));
+    let k_down = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(inter)));
+    let k_head = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(vocab)), "k", float_of(hidden)));
+    let k_swiglu = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "swiglu.lx"), cv(m, t, mem.list(m), "n", float_of(inter)));
+    let k_ropeq = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(heads)), "h", float_of(half)), "p", 0.0));
+    let k_ropek = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(kv_heads)), "h", float_of(half)), "p", 0.0));
+    let k_attn = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "attention_d64.lx"), cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "g", float_of(group)), "t", float_of(tmax)), "d", float_of(head_dim)), "tmax", float_of(tmax)));
+    if err.failed(m) {
+        return cli.report(m, t, io);
+    }
+    // Weights: twelve a layer, then the final norm and the embedding.
+    let wb = mem.list(m);
+    var l = 0;
+    while l < layers {
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "input_layernorm.weight"), hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.q_proj.weight"), hidden * hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.q_proj.bias"), hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.k_proj.weight"), kv_dim * hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.k_proj.bias"), kv_dim));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.v_proj.weight"), kv_dim * hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.v_proj.bias"), kv_dim));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.o_proj.weight"), hidden * hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "post_attention_layernorm.weight"), hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.gate_proj.weight"), inter * hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.up_proj.weight"), inter * hidden));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.down_proj.weight"), hidden * inter));
+        if err.failed(m) {
+            return cli.report(m, t, io);
+        }
+        l = l + 1;
+    }
+    mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, text.lit(m, t, "model.norm.weight"), hidden));
+    mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, text.lit(m, t, "model.embed_tokens.weight"), vocab * hidden));
+    if err.failed(m) {
+        return cli.report(m, t, io);
+    }
+    let embed_rec = find_tensor(m, t, st, text.lit(m, t, "model.embed_tokens.weight"));
+    // Activations and the cache.
+    let b_x = metal.lxg_alloc(ffi, 4 * hidden);
+    let b_x2 = metal.lxg_alloc(ffi, 4 * hidden);
+    let b_n = metal.lxg_alloc(ffi, 4 * hidden);
+    let b_q = metal.lxg_alloc(ffi, 4 * hidden);
+    let b_qr = metal.lxg_alloc(ffi, 4 * hidden);
+    let b_k = metal.lxg_alloc(ffi, 4 * kv_dim);
+    let b_kr = metal.lxg_alloc(ffi, 4 * kv_dim);
+    let b_v = metal.lxg_alloc(ffi, 4 * kv_dim);
+    let b_o = metal.lxg_alloc(ffi, 4 * hidden);
+    let b_g = metal.lxg_alloc(ffi, 4 * inter);
+    let b_u = metal.lxg_alloc(ffi, 4 * inter);
+    let b_a = metal.lxg_alloc(ffi, 4 * inter);
+    let b_logits = metal.lxg_alloc(ffi, 4 * vocab);
+    let b_cos = metal.lxg_alloc(ffi, 4 * half);
+    let b_sin = metal.lxg_alloc(ffi, 4 * half);
+    let b_mask = metal.lxg_alloc(ffi, 4 * tmax);
+    let kc = mem.list(m);
+    let vc = mem.list(m);
+    l = 0;
+    while l < layers {
+        mem.push(m, kc, metal.lxg_alloc(ffi, 4 * kv_heads * tmax * head_dim));
+        mem.push(m, vc, metal.lxg_alloc(ffi, 4 * kv_heads * tmax * head_dim));
+        l = l + 1;
+    }
+    if b_mask < 0 || b_logits < 0 {
+        device_fail(m, t, ffi, "allocating the activations");
+        return cli.report(m, t, io);
+    }
+    // The mask starts all "not in use".
+    let mark0 = m[mem.text_slot()];
+    let mk = reserve(m, 4 * tmax);
+    var z = 0;
+    while z < tmax {
+        put_f32(t, mk + 4 * z, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
+        z = z + 1;
+    }
+    metal.lxg_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax]);
+    m[mem.text_slot()] = mark0;
+    // Generation.
+    let smp = sampler.new(m, temperature, top_p, top_k, seed);
+    let out_ids = mem.list(m);
+    var pos = 0;
+    var token = mem.get(m, ids, 0);
+    var done = false;
+    let step_total = n_prompt + new_tokens - 1;
+    while pos < step_total && !done {
+        let step_mark = m[mem.text_slot()];
+        // The embedding row of `token`, as the residual stream.
+        let raw = reserve(m, 2 * hidden);
+        fileio.read_at(t, fs, text.bytes(t, st_path), data + m[embed_rec + 3] + 2 * hidden * token, raw, 2 * hidden);
+        let wide = reserve(m, 4 * hidden);
+        widen_bf16(t, raw, wide, hidden);
+        metal.lxg_upload_at(ffi, b_x, 0, t[wide..wide + 4 * hidden]);
+        // The mask admits this position; the rotary tables are this position's.
+        let zero = reserve(m, 4);
+        put_f32(t, zero, 0);
+        metal.lxg_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
+        let tab = reserve(m, 8 * half);
+        var jj = 0;
+        while jj < half {
+            let inv = math.pow(theta, 0.0 - float_of(2 * jj) / float_of(head_dim));
+            let ang = float_of(pos) * inv;
+            put_f32(t, tab + 4 * jj, f32.bits32(f32.round(math.cos(ang))));
+            put_f32(t, tab + 4 * half + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
+            jj = jj + 1;
+        }
+        metal.lxg_upload_at(ffi, b_cos, 0, t[tab..tab + 4 * half]);
+        metal.lxg_upload_at(ffi, b_sin, 0, t[tab + 4 * half..tab + 8 * half]);
+        if trace {
+            io.write_all(io, text.bytes(t, peek(m, t, ffi, b_x, hidden, "embedding")));
+        }
+        var cur = b_x;
+        var nxt = b_x2;
+        l = 0;
+        while l < layers {
+            let w = l * 12;
+            run_kernel(m, ffi, k_rms, cur, mem.get(m, wb, w), b_n, 0 - 1, 0 - 1);
+            run_kernel(m, ffi, k_qb, b_n, mem.get(m, wb, w + 1), mem.get(m, wb, w + 2), b_q, 0 - 1);
+            run_kernel(m, ffi, k_kvb, b_n, mem.get(m, wb, w + 3), mem.get(m, wb, w + 4), b_k, 0 - 1);
+            run_kernel(m, ffi, k_kvb, b_n, mem.get(m, wb, w + 5), mem.get(m, wb, w + 6), b_v, 0 - 1);
+            run_kernel(m, ffi, k_ropeq, b_q, b_cos, b_sin, b_qr, 0 - 1);
+            run_kernel(m, ffi, k_ropek, b_k, b_cos, b_sin, b_kr, 0 - 1);
+            // The new key and value go into the cache, a row for each head.
+            let kv_mark = m[mem.text_slot()];
+            let kb = reserve(m, 4 * kv_dim);
+            let vb = reserve(m, 4 * kv_dim);
+            metal.lxg_download(ffi, b_kr, t[kb..kb + 4 * kv_dim]);
+            metal.lxg_download(ffi, b_v, t[vb..vb + 4 * kv_dim]);
+            var h2 = 0;
+            while h2 < kv_heads {
+                let row = 4 * ((h2 * tmax + pos) * head_dim);
+                metal.lxg_upload_at(ffi, mem.get(m, kc, l), row, t[kb + 4 * h2 * head_dim..kb + 4 * (h2 + 1) * head_dim]);
+                metal.lxg_upload_at(ffi, mem.get(m, vc, l), row, t[vb + 4 * h2 * head_dim..vb + 4 * (h2 + 1) * head_dim]);
+                h2 = h2 + 1;
+            }
+            m[mem.text_slot()] = kv_mark;
+            run_kernel(m, ffi, k_attn, b_qr, mem.get(m, kc, l), mem.get(m, vc, l), b_mask, b_o);
+            run_kernel(m, ffi, k_oproj, b_o, mem.get(m, wb, w + 7), cur, nxt, 0 - 1);
+            run_kernel(m, ffi, k_rms, nxt, mem.get(m, wb, w + 8), b_n, 0 - 1, 0 - 1);
+            run_kernel(m, ffi, k_gate, b_n, mem.get(m, wb, w + 9), b_g, 0 - 1, 0 - 1);
+            run_kernel(m, ffi, k_gate, b_n, mem.get(m, wb, w + 10), b_u, 0 - 1, 0 - 1);
+            run_kernel(m, ffi, k_swiglu, b_g, b_u, b_a, 0 - 1, 0 - 1);
+            run_kernel(m, ffi, k_down, b_a, mem.get(m, wb, w + 11), nxt, cur, 0 - 1);
+            if trace && l % 6 == 5 {
+                io.write_all(io, text.bytes(t, peek(m, t, ffi, cur, hidden, "layer output")));
+            }
+            l = l + 1;
+        }
+        // The final norm and the tied output projection.
+        run_kernel(m, ffi, k_rms, cur, mem.get(m, wb, layers * 12), b_n, 0 - 1, 0 - 1);
+        run_kernel(m, ffi, k_head, b_n, mem.get(m, wb, layers * 12 + 1), b_logits, 0 - 1, 0 - 1);
+        if pos + 1 >= n_prompt {
+            let lg = reserve(m, 4 * vocab);
+            if metal.lxg_download(ffi, b_logits, t[lg..lg + 4 * vocab]) < 0 {
+                device_fail(m, t, ffi, "reading the logits back");
+                return cli.report(m, t, io);
+            }
+            if trace {
+                io.write_all(io, text.bytes(t, top5(m, t, lg, vocab, pos)));
+            }
+            let (nids, nprobs) = sampler.nucleus(m, t, smp, lg, vocab);
+            let pick = sampler.draw(m, smp, nids, nprobs);
+            mem.push(m, out_ids, pick);
+            token = pick;
+            if pick == 151645 || pick == 151643 {
+                done = true;
+            }
+        } else {
+            token = mem.get(m, ids, pos + 1);
+        }
+        m[mem.text_slot()] = step_mark;
+        pos = pos + 1;
+    }
+    let (ds, dn) = bpe.decode(m, t, tk, out_ids);
+    io.write_all(io, text.bytes(t, text.handle(ds, dn)));
+    io.write_all(io, "\n");
+    var numbers = mem.list(m);
+    var q2 = 0;
+    while q2 < mem.size(m, out_ids) {
+        mem.push(m, numbers, text.num(m, t, mem.get(m, out_ids, q2)));
+        q2 = q2 + 1;
+    }
+    io.write_all(io, text.bytes(t, text.f1(m, t, "tokens: $\n", text.joined(m, t, numbers, " "))));
+    metal.lxg_close(ffi);
+    if err.failed(m) {
+        return cli.report(m, t, io);
+    }
+    return 0;
+}
+
+fn from_bits_f64(bits: int) -> [] float {
+    return f32.from_bits(bits);
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(net);
+    release(clock);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                borrow mut io as &!i in {
+                    borrow fs as &f in {
+                        borrow args as &a in {
+                            borrow gpu as &g in {
+                                status = run(m, t, i, f, a, g);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    return status;
+}

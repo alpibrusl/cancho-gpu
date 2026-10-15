@@ -19,7 +19,7 @@ extern "C" {
 
 #define MAX_MODULES 64
 #define MAX_FUNCTIONS 256
-#define MAX_BUFFERS 256
+#define MAX_BUFFERS 4096
 #define MAX_ARGS 64
 
 static struct {
@@ -186,6 +186,24 @@ int64_t lxg_upload(int64_t buf, const char *p, int64_t n) {
     // Mark buffer as modified
     [g.buffers[buf] didModifyRange:NSMakeRange(0, (NSUInteger)n)];
     
+    return n;
+}
+
+// Write `n` bytes into a buffer at `offset`: a model's weights go up a chunk at
+// a time, and the activations a token at a time, so a whole-buffer upload is
+// not enough.
+int64_t lxg_upload_at(int64_t buf, int64_t offset, const char *p, int64_t n) {
+    if (buf < 0 || buf >= g.n_buffers) {
+        return fail("lxg_upload_at", "no such buffer");
+    }
+    if (offset < 0 || n < 0 || offset > g.sizes[buf] - n) {
+        return fail("lxg_upload_at", "the bytes run past the end of the buffer");
+    }
+    char *contents = (char *)[g.buffers[buf] contents];
+    if (!contents) {
+        return fail("lxg_upload_at", "failed to get buffer contents");
+    }
+    memcpy(contents + offset, p, (size_t)n);
     return n;
 }
 

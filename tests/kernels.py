@@ -73,7 +73,7 @@ def rope(r, h, p):
     return y
 
 
-def attention(nkv, g, t, d, tmax):
+def attention(nkv, g, t, d, tmax, scale=0.0625):
     q, k, v, mask = lcg([nkv * g * d, nkv * tmax * d, nkv * tmax * d, t])
     out = []
     for i in range(nkv):
@@ -82,7 +82,7 @@ def attention(nkv, g, t, d, tmax):
             s = []
             for pos in range(t):
                 kr = k[(i * tmax + pos) * d:(i * tmax + pos + 1) * d]
-                s.append(sum(a * b for a, b in zip(qr, kr)) * 0.0625 + mask[pos])  # d is 256: tests/lx/attention.lx
+                s.append(sum(a * b for a, b in zip(qr, kr)) * scale + mask[pos])  # 1/sqrt(d), a literal in the kernel
             mx = max(s)
             e = [math.exp(x - mx) for x in s]
             z = sum(e)
@@ -107,6 +107,20 @@ def attn_gate(r, n):
     return [a / (1 + math.exp(-b)) for a, b in zip(o, gate)]
 
 
+def matvec(n, k, extra=None):
+    x, w = lcg([k, n * k])[:2]
+    third = lcg([k, n * k] + ([n] if extra else []))[2] if extra else None
+    y = [sum(x[j] * w[i * k + j] for j in range(k)) for i in range(n)]
+    if extra == "bias" or extra == "res":
+        y = [a + b for a, b in zip(y, third)]
+    return y
+
+
+def swiglu(n):
+    g, u = lcg([n, n])
+    return [a / (1 + math.exp(-a)) * b for a, b in zip(g, u)]
+
+
 ok = True
 for r, h, p in ((24, 32, 192), (3, 4, 2)):
     ok &= check(f"rope r={r} h={h} p={p}", run("rope", [f"r={r}", f"h={h}", f"p={p}"])["y"], rope(r, h, p))
@@ -120,4 +134,9 @@ for nkv, tmax, d, pos in ((4, 64, 256, 17), (2, 8, 16, 0), (2, 2, 1, 1), (4, 1, 
     ok &= check(f"kv_append vc nkv={nkv} tmax={tmax} d={d} pos={pos}", got["vc"], vc)
 for r, n in ((24, 256), (3, 7)):
     ok &= check(f"attn_gate r={r} n={n}", run("attn_gate", [f"r={r}", f"n={n}"])["y"], attn_gate(r, n))
+for kernel, n, k, extra in (("matvec_rows", 64, 96, None), ("matvec_bias", 64, 96, "bias"), ("matvec_res", 64, 96, "res")):
+    ok &= check(f"{kernel} n={n} k={k}", run(kernel, [f"n={n}", f"k={k}"])["y"], matvec(n, k, extra))
+ok &= check("swiglu n=100", run("swiglu", ["n=100"])["y"], swiglu(100))
+got = run("attention_d64", ["nkv=2", "g=7", "t=32", "d=64", "tmax=40"])["o"]
+ok &= check("attention_d64 nkv=2 g=7 t=32 d=64 tmax=40", got, attention(2, 7, 32, 64, 40, 0.125))
 sys.exit(0 if ok else 1)
