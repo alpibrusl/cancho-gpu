@@ -1,0 +1,504 @@
+edition 5;
+module gguf;
+
+// `gguf` -- a GGUF header reader: the metadata and the tensor directory
+// (slice 9a of cancho#251, issue #5; `docs/runtime.md`).
+//
+// `lex-rt/src/gguf.rs` is the oracle. The file's bytes are read straight
+// into the text pool (`t`), exactly as `main.cho` reads a `.lx` source,
+// and this module holds **positions** in them, never copies: a key is
+// `(start, length)`, a value is the position after its type, a tensor's
+// dimensions are the position of the first. Nothing here allocates but
+// the small records that name those positions, in `m`.
+//
+// The reader is strict where the Rust is lenient, and only that way:
+// every input the Rust accepts and this refuses is listed in
+// `docs/runtime.md` §3 with its rule tag (`gguf-version` past 3,
+// `gguf-duplicate`, `gguf-alignment`, `gguf-block`, `gguf-tensor-offset`,
+// `gguf-dims`, `gguf-depth`). It has no input that traps: every length
+// read from the file is checked against the bytes left before it is
+// used, and a count against the smallest record it could describe.
+
+import mem;
+import text;
+import err;
+
+// ---------------------------------------------------------------------
+// The record `parse` answers, in `m`
+// ---------------------------------------------------------------------
+
+pub fn f_version() -> [] int {
+    return 0;
+}
+
+pub fn f_tensors() -> [] int {
+    return 1;
+}
+
+pub fn f_kv() -> [] int {
+    return 2;
+}
+
+// The list of metadata records `[key start, key length, type, value]`.
+pub fn f_kvs() -> [] int {
+    return 3;
+}
+
+// The list of tensor records
+// `[name start, name length, dim count, dims, ggml type, offset, elements]`.
+pub fn f_tensor_list() -> [] int {
+    return 4;
+}
+
+// Where the tensor data begins, as a position in `t`.
+pub fn f_data() -> [] int {
+    return 5;
+}
+
+pub fn f_alignment() -> [] int {
+    return 6;
+}
+
+// The position one past the last byte that was read.
+pub fn f_end() -> [] int {
+    return 7;
+}
+
+// ---------------------------------------------------------------------
+// Reading the bytes
+// ---------------------------------------------------------------------
+
+// `n` bytes at `p`, little-endian, `n <= 8`; eight bytes wrap into the
+// sign bit as Rust's `as i64` does.
+pub fn le[&t](t: &!t [byte], p: int, n: int) -> [] int {
+    var v = 0;
+    var i = n - 1;
+    while i >= 0 {
+        v = v << 8 | int_of(t[p + i]);
+        i = i - 1;
+    }
+    return v;
+}
+
+// Are `n` bytes available at `p` before `end`? A length read from the
+// file can be any 64-bit pattern, so it is checked as a value first.
+fn room(p: int, n: int, end: int) -> [] bool {
+    return n >= 0 && n <= end - p;
+}
+
+fn truncated[&m, &t](m: &!m [int], t: &!t [byte]) -> [] int {
+    return err.fail(m, t, "gguf-truncated", text.lit(m, t, "truncated GGUF file: the header runs past the bytes read"));
+}
+
+// Bytes of a fixed-size value type, or 0.
+fn value_size(ty: int) -> [] int {
+    if ty == 0 || ty == 1 || ty == 7 {
+        return 1;
+    }
+    if ty == 2 || ty == 3 {
+        return 2;
+    }
+    if ty == 4 || ty == 5 || ty == 6 {
+        return 4;
+    }
+    if ty == 10 || ty == 11 || ty == 12 {
+        return 8;
+    }
+    return 0;
+}
+
+// The position after a value of type `ty` that starts at `p`, or -1.
+pub fn skip[&m, &t](m: &!m [int], t: &!t [byte], p: int, end: int, ty: int, depth: int) -> [] int {
+    let fixed = value_size(ty);
+    if fixed > 0 {
+        if room(p, fixed, end) {
+            return p + fixed;
+        }
+        return truncated(m, t);
+    }
+    if ty == 8 {
+        if !room(p, 8, end) {
+            return truncated(m, t);
+        }
+        let n = le(t, p, 8);
+        if !room(p + 8, n, end) {
+            return truncated(m, t);
+        }
+        return p + 8 + n;
+    }
+    if ty != 9 {
+        return err.fail(m, t, "gguf-value-type", text.n1(m, t, "unknown GGUF value type $", ty));
+    }
+    if depth >= 8 {
+        return err.fail(m, t, "gguf-depth", text.lit(m, t, "arrays nest more than 8 deep"));
+    }
+    if !room(p, 12, end) {
+        return truncated(m, t);
+    }
+    let et = le(t, p, 4);
+    let n = le(t, p + 4, 8);
+    var q = p + 12;
+    if n < 0 {
+        return truncated(m, t);
+    }
+    if n == 0 {
+        return q;
+    }
+    let es = value_size(et);
+    if es > 0 {
+        if n > (end - q) / es {
+            return truncated(m, t);
+        }
+        return q + n * es;
+    }
+    if et != 8 && et != 9 {
+        return err.fail(m, t, "gguf-value-type", text.n1(m, t, "unknown GGUF value type $", et));
+    }
+    // A string is at least its length word, so a count the bytes left
+    // cannot hold is refused before the loop, not by it.
+    if n > (end - q) / 8 {
+        return truncated(m, t);
+    }
+    var i = 0;
+    while i < n {
+        q = skip(m, t, q, end, et, depth + 1);
+        if q < 0 {
+            return q;
+        }
+        i = i + 1;
+    }
+    return q;
+}
+
+// The integer a value of an integer type holds, as Rust's `Value::Int`.
+pub fn is_int(ty: int) -> [] bool {
+    return ty <= 5 || ty == 10 || ty == 11;
+}
+
+pub fn int_at[&t](t: &!t [byte], p: int, ty: int) -> [] int {
+    if ty == 0 {
+        return le(t, p, 1);
+    }
+    if ty == 1 {
+        let v = le(t, p, 1);
+        if v >= 128 {
+            return v - 256;
+        }
+        return v;
+    }
+    if ty == 2 {
+        return le(t, p, 2);
+    }
+    if ty == 3 {
+        let v = le(t, p, 2);
+        if v >= 32768 {
+            return v - 65536;
+        }
+        return v;
+    }
+    if ty == 4 {
+        return le(t, p, 4);
+    }
+    if ty == 5 {
+        let v = le(t, p, 4);
+        if v >= 2147483648 {
+            return v - 4294967296;
+        }
+        return v;
+    }
+    return le(t, p, 8);
+}
+
+// ---------------------------------------------------------------------
+// ggml tensor types
+// ---------------------------------------------------------------------
+
+// Values per block, or 0 for a type this reader does not know the
+// layout of (`GgmlType::block` in the Rust).
+pub fn block_values(ty: int) -> [] int {
+    if ty == 0 || ty == 1 || ty == 30 {
+        return 1;
+    }
+    if ty == 8 {
+        return 32;
+    }
+    if ty == 12 || ty == 14 {
+        return 256;
+    }
+    if ty == 142 || ty == 143 {
+        return 128;
+    }
+    return 0;
+}
+
+pub fn block_bytes(ty: int) -> [] int {
+    if ty == 0 {
+        return 4;
+    }
+    if ty == 1 || ty == 30 {
+        return 2;
+    }
+    if ty == 8 || ty == 142 {
+        return 34;
+    }
+    if ty == 12 {
+        return 144;
+    }
+    if ty == 14 {
+        return 210;
+    }
+    if ty == 143 {
+        return 28;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------
+// Strings of the file
+// ---------------------------------------------------------------------
+
+pub fn same_bytes[&t](t: &!t [byte], a: int, an: int, b: int, bn: int) -> [] bool {
+    if an != bn {
+        return false;
+    }
+    var i = 0;
+    while i < an {
+        if t[a + i] != t[b + i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Byte-wise order, as Rust orders `String`s.
+pub fn less[&t](t: &!t [byte], a: int, an: int, b: int, bn: int) -> [] bool {
+    var i = 0;
+    while i < an && i < bn {
+        let x = int_of(t[a + i]);
+        let y = int_of(t[b + i]);
+        if x != y {
+            return x < y;
+        }
+        i = i + 1;
+    }
+    return an < bn;
+}
+
+fn is_key[&t](t: &!t [byte], start: int, n: int, name: &static [byte]) -> [] bool {
+    if n != len(name) {
+        return false;
+    }
+    var i = 0;
+    while i < n {
+        if t[start + i] != name[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A length-prefixed string at `p`: `(start, length, next)` or `(-1, 0, 0)`.
+fn string_at[&m, &t](m: &!m [int], t: &!t [byte], p: int, end: int) -> [] (int, int, int) {
+    if !room(p, 8, end) {
+        truncated(m, t);
+        return (0 - 1, 0, 0);
+    }
+    let n = le(t, p, 8);
+    if !room(p + 8, n, end) {
+        truncated(m, t);
+        return (0 - 1, 0, 0);
+    }
+    // Names are text-pool handles, which hold a length under 2^24.
+    if n >= 16777216 {
+        err.fail(m, t, "gguf-string", text.lit(m, t, "a key or tensor name is 16 MiB or longer"));
+        return (0 - 1, 0, 0);
+    }
+    return (p + 8, n, p + 8 + n);
+}
+
+// ---------------------------------------------------------------------
+// The header
+// ---------------------------------------------------------------------
+
+// Parse the header of the file whose bytes are `t[base..end]`: the
+// record described above, or -1 with a refusal.
+pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], base: int, end: int) -> [] int {
+    var p = base;
+    if !room(p, 4, end) {
+        return truncated(m, t);
+    }
+    if t[p] != byte_of('G') || t[p + 1] != byte_of('G') || t[p + 2] != byte_of('U') || t[p + 3] != byte_of('F') {
+        return err.fail(m, t, "gguf-magic", text.lit(m, t, "not a GGUF file"));
+    }
+    p = p + 4;
+    if !room(p, 4, end) {
+        return truncated(m, t);
+    }
+    let version = le(t, p, 4);
+    p = p + 4;
+    if version < 2 {
+        return err.fail(m, t, "gguf-version", text.n1(m, t, "GGUF version $ is too old", version));
+    }
+    if version > 3 {
+        return err.fail(m, t, "gguf-version", text.n1(m, t, "GGUF version $ is newer than this reader knows (2 and 3)", version));
+    }
+    if !room(p, 16, end) {
+        return truncated(m, t);
+    }
+    let n_tensors = le(t, p, 8);
+    let n_kv = le(t, p + 8, 8);
+    p = p + 16;
+    // The smallest metadata record is a key length, a type and one byte;
+    // the smallest tensor record is a name length, a dimension count, a
+    // type and an offset.
+    if n_kv < 0 || n_kv > (end - p) / 13 || n_tensors < 0 || n_tensors > (end - p) / 24 {
+        return truncated(m, t);
+    }
+    let g = mem.rec(m, 8);
+    let kvs = mem.list(m);
+    let tensors = mem.list(m);
+    m[g + f_version()] = version;
+    m[g + f_tensors()] = n_tensors;
+    m[g + f_kv()] = n_kv;
+    m[g + f_kvs()] = kvs;
+    m[g + f_tensor_list()] = tensors;
+    m[g + f_alignment()] = 32;
+    m[g + f_end()] = end;
+    var i = 0;
+    while i < n_kv {
+        let (ks, kn, after_key) = string_at(m, t, p, end);
+        if ks < 0 {
+            return 0 - 1;
+        }
+        p = after_key;
+        if !room(p, 4, end) {
+            return truncated(m, t);
+        }
+        let ty = le(t, p, 4);
+        p = p + 4;
+        let value = p;
+        p = skip(m, t, p, end, ty, 0);
+        if p < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, kvs, mem.rec4(m, ks, kn, ty, value));
+        if is_key(t, ks, kn, "general.alignment") {
+            if !is_int(ty) {
+                return err.fail(m, t, "gguf-alignment", text.lit(m, t, "general.alignment is not an integer"));
+            }
+            let a = int_at(t, value, ty);
+            if a <= 0 || a > 1048576 {
+                return err.fail(m, t, "gguf-alignment", text.n1(m, t, "general.alignment $ is not in 1..1048576", a));
+            }
+            m[g + f_alignment()] = a;
+        }
+        i = i + 1;
+    }
+    if has_duplicate(t, m, kvs) {
+        return err.fail(m, t, "gguf-duplicate", text.lit(m, t, "a metadata key appears twice"));
+    }
+    var j = 0;
+    while j < n_tensors {
+        let (ns, nn, after_name) = string_at(m, t, p, end);
+        if ns < 0 {
+            return 0 - 1;
+        }
+        p = after_name;
+        if !room(p, 4, end) {
+            return truncated(m, t);
+        }
+        let nd = le(t, p, 4);
+        p = p + 4;
+        if nd > 8 {
+            return err.fail(m, t, "gguf-dims", text.n1(m, t, "a tensor has $ dimensions (at most 8)", nd));
+        }
+        if !room(p, nd * 8 + 12, end) {
+            return truncated(m, t);
+        }
+        let dims = p;
+        var elems = 1;
+        var d = 0;
+        while d < nd {
+            let size = le(t, dims + 8 * d, 8);
+            // 2^62 elements is far past any file, and keeps every
+            // product below in range.
+            if size < 0 || size > 0 && elems > 4611686018427387904 / size {
+                return err.fail(m, t, "gguf-dims", text.lit(m, t, "a tensor has a dimension or an element count past 2^62"));
+            }
+            elems = elems * size;
+            d = d + 1;
+        }
+        p = p + nd * 8;
+        let gty = le(t, p, 4);
+        let offset = le(t, p + 4, 8);
+        p = p + 12;
+        let per = block_values(gty);
+        if per > 0 && elems % per != 0 {
+            return err.fail(m, t, "gguf-block", text.lit(m, t, "a tensor's element count is not a whole number of blocks"));
+        }
+        if offset < 0 || offset % m[g + f_alignment()] != 0 {
+            return err.fail(m, t, "gguf-tensor-offset", text.lit(m, t, "a tensor's offset is not a multiple of the alignment"));
+        }
+        let rec = mem.rec(m, 7);
+        m[rec] = ns;
+        m[rec + 1] = nn;
+        m[rec + 2] = nd;
+        m[rec + 3] = dims;
+        m[rec + 4] = gty;
+        m[rec + 5] = offset;
+        m[rec + 6] = elems;
+        mem.push(m, tensors, rec);
+        j = j + 1;
+    }
+    if has_duplicate(t, m, tensors) {
+        return err.fail(m, t, "gguf-duplicate", text.lit(m, t, "a tensor name appears twice"));
+    }
+    let used = p - base;
+    let a = m[g + f_alignment()];
+    m[g + f_data()] = base + (used + a - 1) / a * a;
+    return g;
+}
+
+// Two records of `list` whose first two words (a string) are equal.
+fn has_duplicate[&m, &t](t: &!t [byte], m: &!m [int], list: int) -> [] bool {
+    let n = mem.size(m, list);
+    var i = 0;
+    while i < n {
+        let a = mem.get(m, list, i);
+        var j = i + 1;
+        while j < n {
+            let b = mem.get(m, list, j);
+            if same_bytes(t, m[a], m[a + 1], m[b], m[b + 1]) {
+                return true;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The bytes a tensor takes, or -1 for a type with no known layout.
+pub fn tensor_bytes[&m](m: &!m [int], rec: int) -> [] int {
+    let per = block_values(m[rec + 4]);
+    if per == 0 {
+        return 0 - 1;
+    }
+    return m[rec + 6] / per * block_bytes(m[rec + 4]);
+}
+
+// The kv record named `name`, or -1.
+pub fn find_kv[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte]) -> [] int {
+    let kvs = m[g + f_kvs()];
+    var i = 0;
+    while i < mem.size(m, kvs) {
+        let r = mem.get(m, kvs, i);
+        if is_key(t, m[r], m[r + 1], name) {
+            return r;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}

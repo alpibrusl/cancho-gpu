@@ -1,12 +1,14 @@
 # cancho-gpu: design
 
-> **Status: slices 1–8 of cancho#251 built and measured** (slice 8,
-> driving a GPU, against a mock driver only: [`device.md`](device.md)). The `.lx`
+> **Status: slices 1–8, 9b (part 1) and 10 of cancho#251 built and
+> measured** (driving a GPU: CUDA against a mock driver only, Metal also on
+> Apple Silicon, [`device.md`](device.md); the first stage of the model
+> reader, [`runtime.md`](runtime.md)). The `.lx`
 > front end, checker and both emitters of
 > [lex-gpu](https://github.com/alpibrusl/lex-gpu), written in cancho,
 > produce **byte-identical** CUDA C and Metal for every case in
-> `tests/cases.txt`: 135 cases, 111 that emit and 24 that both compilers
-> refuse, 13 of them also checking the interpreter's `--run` summary
+> `tests/cases.txt`: 140 cases, 116 that emit and 24 that both compilers
+> refuse, 14 of them also checking the interpreter's `--run` summary
 > (§10).
 
 ---

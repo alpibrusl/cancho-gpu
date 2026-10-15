@@ -1,0 +1,270 @@
+edition 5;
+module gguf_dump;
+
+// `gguf_dump` -- the canonical text of a GGUF header, the form the Rust
+// oracle prints too (`tools/gguf-dump`), so `tests/gguf.sh` can hold the
+// two to the same bytes (`docs/runtime.md` §4):
+//
+//     gguf v3 tensors=2 kv=3 alignment=32
+//     kv general.architecture str "llama"
+//     kv llama.rope.freq_base float 0x40c3880000000000
+//     kv tokenizer.ggml.tokens array n=3 [str "a", str "b", str "c"]
+//     tensor token_embd.weight type=F16 dims=[4,8] bytes=64 sum=1a2b3c4d
+//
+// Metadata and tensors are sorted by name, byte-wise, because the Rust
+// holds them in a hash map. A float is its binary64 bits (an f32 widened
+// exactly), an array its length and its first four elements, a string
+// its bytes with `"`, `\`, controls and everything past ASCII as `\xNN`.
+// `sum` (with `with_sum`) is the 32-bit FNV-1a of the tensor's bytes, and
+// is what shows that the data offset is right.
+
+import mem;
+import text;
+import err;
+import gguf;
+
+fn hex_digit(d: int) -> [] byte {
+    if d < 10 {
+        return byte_of('0' + d);
+    }
+    return byte_of('a' + d - 10);
+}
+
+fn put_hex[&m, &t](m: &!m [int], t: &!t [byte], v: int, digits: int) -> [] int {
+    var k = digits - 1;
+    while k >= 0 {
+        text.put_byte(m, t, hex_digit(v >> 4 * k & 15));
+        k = k - 1;
+    }
+    return 0;
+}
+
+fn put_lit[&m, &t](m: &!m [int], t: &!t [byte], s: &static [byte]) -> [] int {
+    var i = 0;
+    while i < len(s) {
+        text.put_byte(m, t, s[i]);
+        i = i + 1;
+    }
+    return 0;
+}
+
+pub fn quoted[&m, &t](m: &!m [int], t: &!t [byte], p: int, n: int) -> [] int {
+    let from = text.begin(m);
+    text.put_byte(m, t, byte_of(34));
+    var i = 0;
+    while i < n {
+        let c = int_of(t[p + i]);
+        if c == 34 || c == 92 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(c));
+        } else if c < 32 || c >= 127 {
+            put_lit(m, t, "\\x");
+            put_hex(m, t, c, 2);
+        } else {
+            text.put_byte(m, t, byte_of(c));
+        }
+        i = i + 1;
+    }
+    text.put_byte(m, t, byte_of(34));
+    return text.finish(m, from);
+}
+
+// An f32's bits as the binary64 it widens to: `(sign and exponent, the
+// 52 fraction bits)`, so no 64-bit pattern is ever built. A NaN gets its
+// quiet bit, as the hardware's conversion sets it.
+fn widen(x: int) -> [] (int, int) {
+    let sign = x >> 31 & 1;
+    let e = x >> 23 & 255;
+    let f = x & 8388607;
+    if e == 255 {
+        var mant = 0;
+        if f != 0 {
+            mant = f << 29 | 1 << 51;
+        }
+        return (sign << 11 | 2047, mant);
+    }
+    if e == 0 {
+        if f == 0 {
+            return (sign << 11, 0);
+        }
+        var h = 22;
+        while f >> h & 1 == 0 {
+            h = h - 1;
+        }
+        return (sign << 11 | h + 874, f << 52 - h & 4503599627370495);
+    }
+    return (sign << 11 | e + 896, f << 29);
+}
+
+fn float_text[&m, &t](m: &!m [int], t: &!t [byte], p: int, ty: int) -> [] int {
+    let from = text.begin(m);
+    put_lit(m, t, "float 0x");
+    if ty == 12 {
+        var i = 7;
+        while i >= 0 {
+            put_hex(m, t, int_of(t[p + i]), 2);
+            i = i - 1;
+        }
+    } else {
+        let (top, mant) = widen(gguf.le(t, p, 4));
+        put_hex(m, t, top, 3);
+        put_hex(m, t, mant, 13);
+    }
+    return text.finish(m, from);
+}
+
+// A value of type `ty` at `p`: `int 5`, `float 0x...`, `bool true`,
+// `str "x"` or `array n=3 [...]`.
+fn value_text[&m, &t](m: &!m [int], t: &!t [byte], p: int, end: int, ty: int) -> [] int {
+    if gguf.is_int(ty) {
+        return text.n1(m, t, "int $", gguf.int_at(t, p, ty));
+    }
+    if ty == 6 || ty == 12 {
+        return float_text(m, t, p, ty);
+    }
+    if ty == 7 {
+        if t[p] == byte_of(0) {
+            return text.lit(m, t, "bool false");
+        }
+        return text.lit(m, t, "bool true");
+    }
+    if ty == 8 {
+        let n = gguf.le(t, p, 8);
+        return text.cat(m, t, text.lit(m, t, "str "), quoted(m, t, p + 8, n));
+    }
+    let et = gguf.le(t, p, 4);
+    let n = gguf.le(t, p + 4, 8);
+    var q = p + 12;
+    let parts = mem.list(m);
+    var i = 0;
+    while i < n && i < 4 {
+        mem.push(m, parts, value_text(m, t, q, end, et));
+        q = gguf.skip(m, t, q, end, et, 1);
+        i = i + 1;
+    }
+    var more = text.empty();
+    if n > 4 {
+        more = text.lit(m, t, ", ...");
+    }
+    return text.f3(m, t, "array n=$ [$$]", text.num(m, t, n), text.joined(m, t, parts, ", "), more);
+}
+
+fn type_name[&m, &t](m: &!m [int], t: &!t [byte], ty: int) -> [] int {
+    if ty == 0 {
+        return text.lit(m, t, "F32");
+    }
+    if ty == 1 {
+        return text.lit(m, t, "F16");
+    }
+    if ty == 30 {
+        return text.lit(m, t, "BF16");
+    }
+    if ty == 8 {
+        return text.lit(m, t, "Q8_0");
+    }
+    if ty == 12 {
+        return text.lit(m, t, "Q4_K");
+    }
+    if ty == 14 {
+        return text.lit(m, t, "Q6_K");
+    }
+    if ty == 142 {
+        return text.lit(m, t, "PQ2_0");
+    }
+    if ty == 143 {
+        return text.lit(m, t, "PTQ1_0");
+    }
+    return text.n1(m, t, "other($)", ty);
+}
+
+// The records of `list` ordered by their string (words 0 and 1).
+fn sorted[&m, &t](m: &!m [int], t: &!t [byte], list: int) -> [] int {
+    let out = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, list) {
+        mem.push(m, out, mem.get(m, list, i));
+        i = i + 1;
+    }
+    var a = 1;
+    while a < mem.size(m, out) {
+        let x = mem.get(m, out, a);
+        var b = a;
+        while b > 0 && gguf.less(t, m[x], m[x + 1], m[mem.get(m, out, b - 1)], m[mem.get(m, out, b - 1) + 1]) {
+            mem.set(m, out, b, mem.get(m, out, b - 1));
+            b = b - 1;
+        }
+        mem.set(m, out, b, x);
+        a = a + 1;
+    }
+    return out;
+}
+
+fn fnv32[&t](t: &!t [byte], p: int, n: int) -> [] int {
+    var h = 2166136261;
+    var i = 0;
+    while i < n {
+        h = (h ^ int_of(t[p + i])) * 16777619 & 4294967295;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn hex_text[&m, &t](m: &!m [int], t: &!t [byte], v: int, digits: int) -> [] int {
+    let from = text.begin(m);
+    put_hex(m, t, v, digits);
+    return text.finish(m, from);
+}
+
+fn tensor_line[&m, &t](m: &!m [int], t: &!t [byte], g: int, rec: int, with_sum: bool) -> [] int {
+    let end = m[g + gguf.f_end()];
+    let dims = mem.list(m);
+    var d = 0;
+    while d < m[rec + 2] {
+        mem.push(m, dims, text.num(m, t, gguf.le(t, m[rec + 3] + 8 * d, 8)));
+        d = d + 1;
+    }
+    let bytes = gguf.tensor_bytes(m, rec);
+    var size = text.lit(m, t, "unsupported");
+    if bytes >= 0 {
+        size = text.num(m, t, bytes);
+    }
+    var sum = text.empty();
+    if with_sum && bytes >= 0 {
+        let start = m[g + gguf.f_data()] + m[rec + 5];
+        if m[rec + 5] > end - m[g + gguf.f_data()] || bytes > end - start {
+            return err.fail(m, t, "gguf-tensor-range", text.lit(m, t, "a tensor's data runs past the bytes read"));
+        }
+        sum = text.cat(m, t, text.lit(m, t, " sum="), hex_text(m, t, fnv32(t, start, bytes), 8));
+    }
+    let name = text.handle(m[rec], m[rec + 1]);
+    let kind = type_name(m, t, m[rec + 4]);
+    let shape = text.joined(m, t, dims, ",");
+    return text.f5(m, t, "tensor $ type=$ dims=[$] bytes=$$\n", name, kind, shape, size, sum);
+}
+
+// The dump of header `g`, or -1 with a refusal.
+pub fn dump[&m, &t](m: &!m [int], t: &!t [byte], g: int, with_sum: bool) -> [] int {
+    let end = m[g + gguf.f_end()];
+    let lines = mem.list(m);
+    let head = text.fmt(m, t, "gguf v$ tensors=$ kv=$ alignment=$\n", mem.of4(m, text.num(m, t, m[g + gguf.f_version()]), text.num(m, t, m[g + gguf.f_tensors()]), text.num(m, t, m[g + gguf.f_kv()]), text.num(m, t, m[g + gguf.f_alignment()])));
+    mem.push(m, lines, head);
+    let kvs = sorted(m, t, m[g + gguf.f_kvs()]);
+    var i = 0;
+    while i < mem.size(m, kvs) {
+        let r = mem.get(m, kvs, i);
+        let value = value_text(m, t, m[r + 3], end, m[r + 2]);
+        mem.push(m, lines, text.f2(m, t, "kv $ $\n", text.handle(m[r], m[r + 1]), value));
+        i = i + 1;
+    }
+    let tensors = sorted(m, t, m[g + gguf.f_tensor_list()]);
+    var j = 0;
+    while j < mem.size(m, tensors) {
+        let line = tensor_line(m, t, g, mem.get(m, tensors, j), with_sum);
+        if line < 0 {
+            return line;
+        }
+        mem.push(m, lines, line);
+        j = j + 1;
+    }
+    return text.joined(m, t, lines, "");
+}
