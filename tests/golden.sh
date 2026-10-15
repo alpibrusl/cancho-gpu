@@ -41,4 +41,31 @@ while read -r file rest; do
   fi
 done < "$ROOT/tests/cases.txt"
 echo "$pass of $((pass + fail)) golden cases agree"
-[ "$fail" -eq 0 ]
+# The lowering paths the Rust does not have: held to what this compiler recorded
+# (golden-self/, scripts/record-self-golden.sh), not to an oracle.
+spass=0
+sfail=0
+while read -r file rest; do
+  case "$file" in ''|'#'*) continue ;; esac
+  # shellcheck disable=SC2086
+  case_name=$("$ROOT/scripts/case-name.sh" "$file" $rest)
+  want=$ROOT/golden-self/$case_name
+  if [ ! -d "$want" ]; then
+    echo "$case_name: no recorded output (run scripts/record-self-golden.sh)"; sfail=$((sfail + 1)); continue
+  fi
+  out=$WORK/self-$case_name
+  mkdir -p "$out"
+  status=0
+  # shellcheck disable=SC2086
+  "$BIN" emit "$ROOT/$file" "$out" $rest >"$WORK/stdout" 2>"$WORK/err" || status=$?
+  case " $rest " in *" --run "*) grep -v "^$out/" "$WORK/stdout" > "$out/RUN.txt" || true ;; esac
+  if [ "$status" -ne 0 ]; then
+    echo "$case_name: refused: $(head -1 "$WORK/err")"; sfail=$((sfail + 1))
+  elif diff -r "$want" "$out" >"$WORK/diff"; then
+    spass=$((spass + 1))
+  else
+    echo "$case_name: differs from golden-self/"; head -20 "$WORK/diff"; sfail=$((sfail + 1))
+  fi
+done < "$ROOT/tests/self-cases.txt"
+echo "$spass of $((spass + sfail)) self-recorded cases agree"
+[ "$fail" -eq 0 ] && [ "$sfail" -eq 0 ]

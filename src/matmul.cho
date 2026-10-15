@@ -141,6 +141,12 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
     }
     let threads = gen.threads(m, g);
     let weight = gen.lazy(m, g, b) >= 0;
+    if nt && weight && gen.frag(m, g) > 0 {
+        let fr = frag_rows(m, t, g, x, acc, mm, nn, kd, b, ops);
+        if fr != 0 - 2 {
+            return fr;
+        }
+    }
     if nt && weight && mm > 1 && mm <= 16 && nn < threads {
         return batched_rows(m, t, g, x, acc, mm, nn, kd, b, ops);
     }
@@ -245,6 +251,128 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
     let dn = dialect.shuffle_down(m, t, gen.dia(m, g), text.lit(m, t, "s"), text.lit(m, t, "d"));
     gen.line(m, t, g, text.f2(m, t, "for (uint d = $u; d > 0; d /= 2) s += $;", n(m, t, lanes / 2), dn));
     gen.line(m, t, g, text.f2(m, t, "if (o < $u && lane == 0) scratch[$ + o] = s;", n(m, t, outs), n(m, t, resv)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    let name = gen.declare_reg(m, t, g, x, ir.tile(m, acc, mem.of2(m, mm, nn), kinds.reg()));
+    let cv = dialect.convert(m, t, gen.dia(m, g), acc, text.f1(m, t, "scratch[$ + e]", n(m, t, resv)));
+    return gen.owned1(m, t, g, outs, text.f2(m, t, "$[k] = $;", name, cv));
+}
+
+// `out[i, j] = sum_p a[i, p] * b[j, p]` for up to eight rows `i` of the
+// activations and NVFP4 weights, on the matrix unit but from registers
+// (docs/kernels.md section 6): a simdgroup owns
+// `frag` tiles of eight weight rows, and a lane of an 8x8 fragment holds two
+// neighbouring columns of one row, which for the weights is one packed byte,
+// so the codes go from memory to the fragment with no threadgroup memory. The
+// sum over p does not depend on the order p is taken in, so a lane loads a
+// whole word (four bytes, eight codes, four 8x8 steps) and the activations'
+// fragment is permuted the same way. The cost is nearly flat in the number of
+// rows, which is the point: a prefill chunk, or the tokens a speculative step
+// checks, costs about what one token does. Only when the schedule sets `frag`
+// (a key the Rust has not); answers -2 when the shapes do not fit, and the
+// generic path lowers it.
+fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, b: int, ops: int) -> [] int {
+    let frag = gen.frag(m, g);
+    let threads = gen.threads(m, g);
+    let d = gen.dq_of(m, g, ir.var_of(b));
+    if d == 0 || !dialect.fragments(gen.dia(m, g)) || mm > 8 || kd % 32 != 0 {
+        return 0 - 2;
+    }
+    if nn % (8 * frag) != 0 || nn / (8 * frag) > threads / 32 {
+        return 0 - 2;
+    }
+    if m[d + 4] != 16 || m[d + 3] != kd || m[d + 7] != kd / 2 {
+        return 0 - 2;
+    }
+    let oa = mem.get(m, ops, 0);
+    if m[oa] != gen.a_lazy() || gen.lvalue(t, m[d + 6]) < 0 {
+        return 0 - 2;
+    }
+    let outs = mm * nn;
+    let resv = gen.staged(m, g);
+    gen.need_scratch(m, g, resv + outs);
+    if gen.staged(m, g) == 0 {
+        gen.barrier(m, t, g);
+    }
+    gen.line_lit(m, t, g, "{");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint sgid = tid / 32u, lane = tid % 32u;");
+    gen.line(m, t, g, text.f1(m, t, "if (sgid < $u) {", n(m, t, nn / (8 * frag))));
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint qid = lane / 4u;");
+    gen.line_lit(m, t, g, "const uint fm = (qid & 4u) + ((lane / 2u) % 4u);");
+    gen.line_lit(m, t, g, "const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;");
+    gen.line_lit(m, t, g, "const uint g4 = fn / 2u;");
+    gen.line(m, t, g, text.f2(m, t, "simdgroup_float8x8 C[$]; for (uint t = 0; t < $u; ++t) C[t] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);", n(m, t, frag), n(m, t, frag)));
+    // `unroll` blocks of 32 values a step: the loads of all of them are issued before any
+    // arithmetic, so a lane has that many words of codes in flight, not one.
+    var unroll = 8;
+    while unroll > 1 && kd / 32 % unroll != 0 {
+        unroll = unroll / 2;
+    }
+    gen.line(m, t, g, text.f2(m, t, "for (uint blk0 = 0; blk0 < $u; blk0 += $u) {", n(m, t, kd / 32), n(m, t, unroll)));
+    gen.depth_in(m, g);
+    let av = gen.read(m, t, oa, text.f1(m, t, "i * $u + p", n(m, t, kd)));
+    gen.line(m, t, g, text.f1(m, t, "float xs[$][4][2];", n(m, t, unroll)));
+    gen.line(m, t, g, text.f1(m, t, "for (uint u = 0; u < $u; ++u) {", n(m, t, unroll)));
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "for (uint s = 0; s < 4u; ++s) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "for (uint c = 0; c < 2u; ++c) {");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f2(m, t, "float xv = 0.0f; if (fn + c < $u) { const uint i = fn + c; const uint p = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s; xv = $; }", n(m, t, mm), av));
+    gen.line_lit(m, t, g, "xs[u][s][c] = xv;");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line(m, t, g, text.f1(m, t, "for (uint t = 0; t < $u; ++t) {", n(m, t, frag)));
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f1(m, t, "const uint j = sgid * $u + t * 8u + fm;", n(m, t, 8 * frag)));
+    gen.line(m, t, g, text.f2(m, t, "uint wb[$]; float sgv[$];", n(m, t, unroll), n(m, t, unroll)));
+    gen.line(m, t, g, text.f1(m, t, "for (uint u = 0; u < $u; ++u) {", n(m, t, unroll)));
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint blk = blk0 + u;");
+    let wl = gen.at_index(m, t, gen.lvalue(t, m[d + 6]), text.f1(m, t, "j * $u + blk * 16u + g4 * 4u", n(m, t, m[d + 7])));
+    gen.line(m, t, g, text.f1(m, t, "wb[u] = $;", dialect.vector_load(m, t, gen.dia(m, g), text.lit(m, t, "uint"), wl)));
+    gen.line(m, t, g, text.f1(m, t, "const uint grp = j * $u + blk * 2u + g4 / 2u;", n(m, t, kd / 16)));
+    gen.line(m, t, g, text.f1(m, t, "sgv[u] = $;", gen.at_index_lit(m, t, m[d + 1], "grp")));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line(m, t, g, text.f1(m, t, "for (uint u = 0; u < $u; ++u) {", n(m, t, unroll)));
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "for (uint s = 0; s < 4u; ++s) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "simdgroup_float8x8 A, B;");
+    gen.line_lit(m, t, g, "const float2 q = fp4_pair((wb[u] >> (8u * s)) & 0xFFu);");
+    gen.line_lit(m, t, g, "A.thread_elements()[0] = q.x * sgv[u]; A.thread_elements()[1] = q.y * sgv[u];");
+    gen.line_lit(m, t, g, "B.thread_elements()[0] = xs[u][s][0]; B.thread_elements()[1] = xs[u][s][1];");
+    gen.line_lit(m, t, g, "simdgroup_multiply_accumulate(C[t], A, B, C[t]);");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line(m, t, g, text.f1(m, t, "for (uint t = 0; t < $u; ++t) {", n(m, t, frag)));
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f1(m, t, "const uint j = sgid * $u + t * 8u + fm;", n(m, t, 8 * frag)));
+    if m[d + 2] >= 0 {
+        gen.line(m, t, g, text.f1(m, t, "const float rsc = float($) * 16384.0f;", gen.at_index_lit(m, t, m[d + 2], "j")));
+    } else {
+        gen.line_lit(m, t, g, "const float rsc = 16384.0f;");
+    }
+    gen.line(m, t, g, text.f3(m, t, "if (fn < $u) scratch[$ + fn * $u + j] = C[t].thread_elements()[0] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
+    gen.line(m, t, g, text.f3(m, t, "if (fn + 1u < $u) scratch[$ + (fn + 1u) * $u + j] = C[t].thread_elements()[1] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
     gen.depth_out(m, g);
     gen.line_lit(m, t, g, "}");
     gen.barrier(m, t, g);

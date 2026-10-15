@@ -1,0 +1,24 @@
+// y = x w^T + r for m rows of x at once, NVFP4 weights: the batched form of
+// matvec_fp4_res.chx (the weights are read once whatever m is).
+algo matvec_fp4_res_batch(m, n, k)
+  in  x:  f32[m, k]
+  in  wq: i8[n, k / 2]
+  in  ws: i8[n, k / 16]
+  in  wg: f32[n]
+  in  r:  f32[m, n]
+  out y:  f32[m, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let q  = load wq[i * bn, 0 ; bn, k / 2]
+  let s  = load ws[i * bn, 0 ; bn, k / 16]
+  let g  = load wg[i * bn ; bn]
+  let rt = load r[0, i * bn ; m, bn]
+  let w  = dequant_fp4 q s g 16
+  let p  = matmul_nt xt w
+  store p + rt -> y[0, i * bn]
+}
+
+schedule matvec_fp4_res_batch for apple-m-series { threads 256 bn 64 frag 1 }
+schedule matvec_fp4_res_batch for nvidia-ada     { threads 256 bn 8 }

@@ -28,5 +28,10 @@ attention nkv=3 g=2 t=16 d=256 tmax=20
 attention nkv=4 g=6 t=1364 d=256 tmax=2048
 attn_gate r=24 n=256
 attn_gate r=3 n=7
+matvec_fp4_batch m=1 n=128 k=256
+matvec_fp4_batch m=3 n=128 k=256
+matvec_fp4_batch m=8 n=128 k=1024
+matvec_fp4_res_batch m=4 n=128 k=512
+matvec_fp4_swiglu_batch m=4 n=128 k=512
 CASES
 exit $fail

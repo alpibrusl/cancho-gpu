@@ -180,6 +180,27 @@ def matvec_fp4_swiglu(n, k):
     return [silu_(dot(row, g1)) * dot(row, g2) for row in range(n)]
 
 
+def matvec_fp4_batch(m, n, k, kind=None):
+    """The batched kernels: every row of x against the same NVFP4 weights; `kind` res adds a residual
+    r[m, n] (the last input), swiglu takes a second weight (its own f32 scale) for the up projection."""
+    sizes = [m * k, n] + ([n] if kind == "swiglu" else []) + ([m * n] if kind == "res" else [])
+    ins = lcg(sizes)
+    x, g = ins[0], ins[1]
+    w = fp4_weights(n, k)
+    def dot(t, row, scale):
+        return sum(x[t * k + c] * e2m1(w[row * k + c][0]) * w[row * k + c][1] * scale[row] for c in range(k))
+    out = []
+    for t in range(m):
+        for row in range(n):
+            v = dot(t, row, g)
+            if kind == "res":
+                v += ins[2][t * n + row]
+            elif kind == "swiglu":
+                v = silu_(v) * dot(t, row, ins[2])
+            out.append(v)
+    return out
+
+
 def silu_(x):
     return x / (1 + math.exp(-x))
 
@@ -290,6 +311,9 @@ got = run("attention_d64", ["nkv=2", "g=7", "t=32", "d=64", "tmax=40"])["o"]
 ok &= check("attention_d64 nkv=2 g=7 t=32 d=64 tmax=40", got, attention(2, 7, 32, 64, 40, 0.125))
 ok &= check("matvec_fp4_rows n=16 k=64", run("matvec_fp4_rows", ["n=16", "k=64"])["y"], matvec_fp4(16, 64))
 ok &= check("matvec_fp4_swiglu n=16 k=64", run("matvec_fp4_swiglu", ["n=16", "k=64"])["y"], matvec_fp4_swiglu(16, 64))
+for kern, kind in (("matvec_fp4_batch", None), ("matvec_fp4_res_batch", "res"), ("matvec_fp4_swiglu_batch", "swiglu")):
+    for m_ in (1, 3):
+        ok &= check(f"{kern} m={m_} n=64 k=128", run(kern, [f"m={m_}", "n=64", "k=128"])["y"], matvec_fp4_batch(m_, 64, 128, kind))
 ok &= check("matvec_fp4_res n=16 k=64", run("matvec_fp4_res", ["n=16", "k=64"])["y"], matvec_fp4(16, 64, True))
 got = run("conv_step", ["c=512"])
 want_y, want_ns = conv_step(512)

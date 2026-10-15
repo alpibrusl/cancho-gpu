@@ -572,9 +572,11 @@ fn block[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
 //
 // algo:     `[name, consts, tiles, params, body]`
 // param:    `[name, dtype, dims, writable]`
-// schedule: `[target, threads, chunk, warps_rows, warps_cols, pad, extents]`
+// schedule: `[target, threads, chunk, warps_rows, warps_cols, pad, extents, frag]`
 //           with -1 for an unset optional; `extents` a list of
-//           `[name, value]`.
+//           `[name, value]`; `frag` (not in the Rust) is the number of
+//           8-row tiles a simdgroup owns in a register-fragment NVFP4
+//           product (docs/kernels.md section 6).
 
 pub fn algo_name[&m](m: &!m [int], unit: int) -> [] int {
     return m[m[unit]];
@@ -735,6 +737,7 @@ fn schedule[&m, &t](m: &!m [int], t: &!t [byte], p: int, algo: int, done: int) -
     var wr = 0 - 1;
     var wc = 0 - 1;
     var pad = 0 - 1;
+    var frag = 0 - 1;
     let extents = mem.list(m);
     let tiles = m[algo + 2];
     while !eat_punct(m, t, p, "}") {
@@ -762,6 +765,11 @@ fn schedule[&m, &t](m: &!m [int], t: &!t [byte], p: int, algo: int, done: int) -
             }
             wr = f32_count(lexer.value(m, a));
             wc = f32_count(lexer.value(m, b));
+        } else if text.is(t, key, "frag") {
+            frag = want_count(m, t, p, kat, "frag takes a number");
+            if frag < 0 {
+                return 0 - 1;
+            }
         } else if text.is(t, key, "chunk") {
             chunk = want_count(m, t, p, kat, "chunk takes a number");
             if chunk < 0 {
@@ -805,7 +813,7 @@ fn schedule[&m, &t](m: &!m [int], t: &!t [byte], p: int, algo: int, done: int) -
         }
         i = i + 1;
     }
-    let s = mem.grab(m, 7);
+    let s = mem.grab(m, 8);
     m[s] = target;
     m[s + 1] = threads;
     m[s + 2] = chunk;
@@ -813,6 +821,7 @@ fn schedule[&m, &t](m: &!m [int], t: &!t [byte], p: int, algo: int, done: int) -
     m[s + 4] = wc;
     m[s + 5] = pad;
     m[s + 6] = extents;
+    m[s + 7] = frag;
     return s;
 }
 

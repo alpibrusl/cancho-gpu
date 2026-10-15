@@ -918,7 +918,7 @@ fn join2[&m, &t](m: &!m [int], t: &!t [byte], is_max: bool, a: int, b: int) -> [
 // Lower `prog` for `tg` in dialect `d` with a schedule's `threads`,
 // `warps` (`wr`, `wc`, -1 for none) and `pad` (-1 for the dialect's).
 // Answers `[entry, source, grid, grid2, threads, arena, scratch]`, or -1.
-pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, threads: int, wr: int, wc: int, pad: int) -> [] int {
+pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, threads: int, wr: int, wc: int, pad: int, frag: int) -> [] int {
     let simd = target.simd_width(m, tg);
     let mma_used = uses_mma(m, ir.p_body(m, prog));
     if mma_used && wr >= 0 && threads != simd * wr * wc {
@@ -928,7 +928,7 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, th
     if threads == 0 || threads % simd != 0 || threads > target.max_threads(m, tg) {
         return err.fail(m, t, "lowering", text.f3(m, t, "$ threads is not a whole number of simdgroups within $'s limit of $", n(m, t, threads), target.name(m, tg), n(m, t, target.max_threads(m, tg))));
     }
-    let g = gen.new_gen(m, prog, d, threads, wr, wc, mma_used, tg);
+    let g = gen.new_gen(m, prog, d, threads, wr, wc, mma_used, tg, frag);
     if mma_used {
         var p = pad;
         if p < 0 {

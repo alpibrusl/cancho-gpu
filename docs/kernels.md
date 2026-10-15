@@ -121,3 +121,38 @@ changing the language is the maintainer's call and the second is a real design.
 * **Real weights or activations.** The inputs are the interpreter's made-up
   numbers.
 * The 48 linear-attention layers, and the decode loop that would use these.
+
+## 6. NVFP4 for a batch: the matrix unit from registers
+
+A decode step multiplies one vector by each weight matrix; a prefill chunk, or the tokens a speculative
+step checks, multiplies several. The weights are what costs (13 GB read a token), so a batch of tokens
+should cost about what one does. It did not:
+
+* The generic path for a batch (`matmul_nt` over a dequantised weight with 2 to 16 rows of `x`) keeps one
+  accumulator per row and multiplies every weight pair against every row. Measured in the running
+  Qwen3.8-27B pipeline, with the small kernels left single-token, the matrix-vector products of a pass cost
+  1.4x a plain token's at 2 rows, 2x at 3 and 3x at 4 (31 ms for one; 43, 62, 96): compute-bound, so
+  checking four tokens would cost more than decoding three.
+* `matvec_fp4_batch.chx`, `matvec_fp4_res_batch.chx` and `matvec_fp4_swiglu_batch.chx` take `frag` in their
+  Apple schedule (`threads 256 bn 64 frag 1`), which selects a different lowering (`frag_rows` in
+  `src/matmul.cho`): the matrix unit, fed from registers. A lane of an 8x8 simdgroup fragment holds two
+  neighbouring columns of one row, which for the weights is one packed byte, so the codes go from memory to
+  the fragment with no threadgroup memory, and the activations are the other operand (up to eight tokens, the
+  missing columns zero). The sum over the reduction does not care in what order it is taken, so a lane loads
+  a whole word of codes (eight, four 8x8 steps) at once and the activations' fragment is permuted the same
+  way; the loop is unrolled so that eight words are in flight a lane. The row factor and the 2^14 of the
+  half-precision decode are applied once, to the result.
+
+The cost is flat in the number of rows (in isolation, 17408x5120: 220 to 235 us for 1, 2, 4 and 8 rows; in
+the pipeline an 8-token pass of the whole model is about 63 ms, which is 8 ms a token for prefill against
+42 for a decode step today). It is correct against the interpreter to about 1e-6 of the peak at 1, 3 and 8
+rows (`scripts/metal-kernels.sh`) and against the plain-Python model (`tests/kernels.py`). It is not yet
+as fast as the decode path for one row, which is why those kernels are separate files: the decode path is
+unchanged.
+
+`frag` is a schedule key the Rust does not have, so no oracle can hold these cases: their expected output is
+`golden-self/`, recorded from this compiler (`scripts/record-self-golden.sh`, `tests/self-cases.txt`) and
+reviewed as text; what they compute is held by the interpreter, `tests/kernels.py` and the device check.
+A schedule that sets `frag` where the shapes do not fit (more than eight rows, a reduction that is not a
+multiple of 32, a group size other than 16, CUDA) lowers through the generic path, so the key is never wrong,
+only unused.

@@ -107,6 +107,12 @@ pub fn warps_cols[&m](m: &!m [int], g: int) -> [] int {
     return m[g + 13];
 }
 
+// The schedule's `frag` (8-row tiles a simdgroup owns in a register-fragment
+// product), or -1 when the schedule sets none.
+pub fn frag[&m](m: &!m [int], g: int) -> [] int {
+    return m[g + 19];
+}
+
 pub fn tile_align[&m](m: &!m [int], g: int) -> [] int {
     return m[g + 14];
 }
@@ -147,9 +153,9 @@ pub fn need_scratch[&m](m: &!m [int], g: int, n: int) -> [] int {
     return 0;
 }
 
-pub fn new_gen[&m](m: &!m [int], p: int, d: int, threads: int, wr: int, wc: int, mma: bool, tg: int) -> [] int {
+pub fn new_gen[&m](m: &!m [int], p: int, d: int, threads: int, wr: int, wc: int, mma: bool, tg: int, frag: int) -> [] int {
     let n = ir.vars(m, p) + 1;
-    let g = mem.grab(m, 19);
+    let g = mem.grab(m, 20);
     m[g] = p;
     m[g + 1] = d;
     m[g + 2] = threads;
@@ -174,6 +180,7 @@ pub fn new_gen[&m](m: &!m [int], p: int, d: int, threads: int, wr: int, wc: int,
     m[g + 16] = mem.grab(m, n);
     m[g + 17] = mem.grab(m, n);
     m[g + 18] = tg;
+    m[g + 19] = frag;
     return g;
 }
 
