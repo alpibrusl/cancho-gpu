@@ -158,7 +158,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 ```
 src/               the compiler (lexer, parser, elaboration, checker, lowering, interpreter) and the model reader (gguf, safetensors, bpe, sampler, unicode)
 device/            the device programs (CUDA, Metal): the only code that calls the shim
-shim/              lexgpu.c (CUDA, over dlopen) and lexgpu-metal.mm (Metal)
+shim/              canchogpu.c (CUDA, over dlopen) and canchogpu-metal.mm (Metal)
 tests/             goldens, refusal fixtures, the mock driver, fixtures, fuzzing and references for each reader and kernel
 golden/            what lex-gpu's Rust writes for every case (and, in subdirectories, what each reader's oracle prints)
 tools/             the oracle programs (Rust examples copied into lex-gpu for the build; a Python script for safetensors)

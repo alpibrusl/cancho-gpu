@@ -13,7 +13,7 @@ edition 5;
 // temperature is given). The prompt is read as raw text and fed one token at a
 // time: there is no batched prefill and no chat template yet.
 //
-// Linked with `shim/lexgpu-metal.mm` (`scripts/build-run.sh`).
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-run.sh`).
 
 import std.io;
 import std.json;
@@ -56,7 +56,7 @@ fn usage[&i](io: &!i Io) -> [err_write] int {
 
 fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
     let top = m[mem.text_slot()];
-    let n = metal.lxg_error(ffi, t[top..top + 4096]);
+    let n = metal.cgpu_error(ffi, t[top..top + 4096]);
     var detail = text.lit(m, t, "no detail");
     if n > 0 {
         detail = text.from_bytes(m, t, t[top..top + n]);
@@ -87,11 +87,11 @@ fn compile_kernel[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
     if l < 0 {
         return 0 - 1;
     }
-    let lib = metal.lxg_compile(ffi, text.bytes(t, m[l + 1]));
+    let lib = metal.cgpu_compile(ffi, text.bytes(t, m[l + 1]));
     if lib < 0 {
         return device_fail(m, t, ffi, "compiling a kernel");
     }
-    let func = metal.lxg_function(ffi, lib, text.bytes(t, m[l]));
+    let func = metal.cgpu_function(ffi, lib, text.bytes(t, m[l]));
     if func < 0 {
         return device_fail(m, t, ffi, "finding a kernel's entry point");
     }
@@ -110,23 +110,23 @@ fn kernel_file[&m, &t](m: &!m [int], t: &!t [byte], dir: int, name: &static [byt
 
 // Bind up to five buffers (-1 is none) and launch.
 fn run_kernel[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, b0: int, b1: int, b2: int, b3: int, b4: int) -> [ffi("libmetalgpu")] int {
-    var ok = metal.lxg_arg(ffi, b0) >= 0;
+    var ok = metal.cgpu_arg(ffi, b0) >= 0;
     if b1 >= 0 {
-        ok = ok && metal.lxg_arg(ffi, b1) >= 0;
+        ok = ok && metal.cgpu_arg(ffi, b1) >= 0;
     }
     if b2 >= 0 {
-        ok = ok && metal.lxg_arg(ffi, b2) >= 0;
+        ok = ok && metal.cgpu_arg(ffi, b2) >= 0;
     }
     if b3 >= 0 {
-        ok = ok && metal.lxg_arg(ffi, b3) >= 0;
+        ok = ok && metal.cgpu_arg(ffi, b3) >= 0;
     }
     if b4 >= 0 {
-        ok = ok && metal.lxg_arg(ffi, b4) >= 0;
+        ok = ok && metal.cgpu_arg(ffi, b4) >= 0;
     }
     if !ok {
         return 0 - 1;
     }
-    return metal.lxg_launch_async(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
+    return metal.cgpu_launch_async(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
 }
 
 // ---------------------------------------------------------------------
@@ -222,7 +222,7 @@ fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
     if half {
         width = 2;
     }
-    let buf = metal.lxg_alloc(ffi, elems * width);
+    let buf = metal.cgpu_alloc(ffi, elems * width);
     if buf < 0 {
         return device_fail(m, t, ffi, "allocating a weight");
     }
@@ -244,7 +244,7 @@ fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
         } else {
             widen_bf16(t, raw, out, n);
         }
-        if metal.lxg_upload_at(ffi, buf, width * done, t[out..out + width * n]) < 0 {
+        if metal.cgpu_upload_at(ffi, buf, width * done, t[out..out + width * n]) < 0 {
             return device_fail(m, t, ffi, "uploading a weight");
         }
         m[mem.text_slot()] = mark;
@@ -264,10 +264,10 @@ fn layer_name[&m, &t](m: &!m [int], t: &!t [byte], l: int, suffix: &static [byte
 // The first four values and the mean absolute value of the f32 buffer `buf` of
 // `n` values, as a line, for `--trace`.
 fn peek[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), buf: int, n: int, label: &static [byte]) -> [ffi("libmetalgpu")] int {
-    metal.lxg_sync(ffi);
+    metal.cgpu_sync(ffi);
     let mark = m[mem.text_slot()];
     let at = reserve(m, 4 * n);
-    if metal.lxg_download(ffi, buf, t[at..at + 4 * n]) < 0 {
+    if metal.cgpu_download(ffi, buf, t[at..at + 4 * n]) < 0 {
         return device_fail(m, t, ffi, "reading a buffer back");
     }
     var sum = 0.0;
@@ -491,7 +491,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     }
     let data = 8 + m[st + safetensors.f_header()];
     // The device and its kernels.
-    if metal.lxg_open(ffi) < 0 {
+    if metal.cgpu_open(ffi) < 0 {
         device_fail(m, t, ffi, "opening the device");
         return cli.report(m, t, io);
     }
@@ -538,30 +538,30 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     }
     let embed_rec = find_tensor(m, t, st, text.lit(m, t, "model.embed_tokens.weight"));
     // Activations and the cache.
-    let b_x = metal.lxg_alloc(ffi, 4 * hidden);
-    let b_x2 = metal.lxg_alloc(ffi, 4 * hidden);
-    let b_n = metal.lxg_alloc(ffi, 4 * hidden);
-    let b_q = metal.lxg_alloc(ffi, 4 * hidden);
-    let b_qr = metal.lxg_alloc(ffi, 4 * hidden);
-    let b_k = metal.lxg_alloc(ffi, 4 * kv_dim);
-    let b_kr = metal.lxg_alloc(ffi, 4 * kv_dim);
-    let b_v = metal.lxg_alloc(ffi, 4 * kv_dim);
-    let b_o = metal.lxg_alloc(ffi, 4 * hidden);
-    let b_g = metal.lxg_alloc(ffi, 4 * inter);
-    let b_u = metal.lxg_alloc(ffi, 4 * inter);
-    let b_a = metal.lxg_alloc(ffi, 4 * inter);
-    let b_logits = metal.lxg_alloc(ffi, 4 * vocab);
-    let b_cos = metal.lxg_alloc(ffi, 4 * half);
-    let b_sin = metal.lxg_alloc(ffi, 4 * half);
-    let b_mask = metal.lxg_alloc(ffi, 4 * tmax);
-    let b_sel = metal.lxg_alloc(ffi, 4 * tmax);
-    let b_keep = metal.lxg_alloc(ffi, 4 * tmax);
+    let b_x = metal.cgpu_alloc(ffi, 4 * hidden);
+    let b_x2 = metal.cgpu_alloc(ffi, 4 * hidden);
+    let b_n = metal.cgpu_alloc(ffi, 4 * hidden);
+    let b_q = metal.cgpu_alloc(ffi, 4 * hidden);
+    let b_qr = metal.cgpu_alloc(ffi, 4 * hidden);
+    let b_k = metal.cgpu_alloc(ffi, 4 * kv_dim);
+    let b_kr = metal.cgpu_alloc(ffi, 4 * kv_dim);
+    let b_v = metal.cgpu_alloc(ffi, 4 * kv_dim);
+    let b_o = metal.cgpu_alloc(ffi, 4 * hidden);
+    let b_g = metal.cgpu_alloc(ffi, 4 * inter);
+    let b_u = metal.cgpu_alloc(ffi, 4 * inter);
+    let b_a = metal.cgpu_alloc(ffi, 4 * inter);
+    let b_logits = metal.cgpu_alloc(ffi, 4 * vocab);
+    let b_cos = metal.cgpu_alloc(ffi, 4 * half);
+    let b_sin = metal.cgpu_alloc(ffi, 4 * half);
+    let b_mask = metal.cgpu_alloc(ffi, 4 * tmax);
+    let b_sel = metal.cgpu_alloc(ffi, 4 * tmax);
+    let b_keep = metal.cgpu_alloc(ffi, 4 * tmax);
     let kc = mem.list(m);
     let vc = mem.list(m);
     l = 0;
     while l < layers {
-        mem.push(m, kc, metal.lxg_alloc(ffi, 4 * kv_heads * tmax * head_dim));
-        mem.push(m, vc, metal.lxg_alloc(ffi, 4 * kv_heads * tmax * head_dim));
+        mem.push(m, kc, metal.cgpu_alloc(ffi, 4 * kv_heads * tmax * head_dim));
+        mem.push(m, vc, metal.cgpu_alloc(ffi, 4 * kv_heads * tmax * head_dim));
         l = l + 1;
     }
     if b_mask < 0 || b_logits < 0 {
@@ -578,7 +578,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         put_f32(t, mk + 4 * z, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
         z = z + 1;
     }
-    metal.lxg_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax]);
+    metal.cgpu_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax]);
     m[mem.text_slot()] = mark0;
     // Generation.
     let smp = sampler.new(m, temperature, top_p, top_k, seed);
@@ -595,11 +595,11 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         fileio.read_at(t, fs, text.bytes(t, st_path), data + m[embed_rec + 3] + 2 * hidden * token, raw, 2 * hidden);
         let wide = reserve(m, 4 * hidden);
         widen_bf16(t, raw, wide, hidden);
-        metal.lxg_upload_at(ffi, b_x, 0, t[wide..wide + 4 * hidden]);
+        metal.cgpu_upload_at(ffi, b_x, 0, t[wide..wide + 4 * hidden]);
         // The mask admits this position; the rotary tables are this position's.
         let zero = reserve(m, 4);
         put_f32(t, zero, 0);
-        metal.lxg_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
+        metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
         let sk = reserve(m, 8 * tmax);
         var zz = 0;
         while zz < tmax {
@@ -611,8 +611,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             put_f32(t, sk + 4 * tmax + 4 * zz, f32.bits32(float_of(1 - is_pos)));
             zz = zz + 1;
         }
-        metal.lxg_upload_at(ffi, b_sel, 0, t[sk..sk + 4 * tmax]);
-        metal.lxg_upload_at(ffi, b_keep, 0, t[sk + 4 * tmax..sk + 8 * tmax]);
+        metal.cgpu_upload_at(ffi, b_sel, 0, t[sk..sk + 4 * tmax]);
+        metal.cgpu_upload_at(ffi, b_keep, 0, t[sk + 4 * tmax..sk + 8 * tmax]);
         let tab = reserve(m, 8 * half);
         var jj = 0;
         while jj < half {
@@ -622,8 +622,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             put_f32(t, tab + 4 * half + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
             jj = jj + 1;
         }
-        metal.lxg_upload_at(ffi, b_cos, 0, t[tab..tab + 4 * half]);
-        metal.lxg_upload_at(ffi, b_sin, 0, t[tab + 4 * half..tab + 8 * half]);
+        metal.cgpu_upload_at(ffi, b_cos, 0, t[tab..tab + 4 * half]);
+        metal.cgpu_upload_at(ffi, b_sin, 0, t[tab + 4 * half..tab + 8 * half]);
         if trace {
             io.write_all(io, text.bytes(t, peek(m, t, ffi, b_x, hidden, "embedding")));
         }
@@ -651,16 +651,16 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             if trace && l % 6 == 5 {
                 io.write_all(io, text.bytes(t, peek(m, t, ffi, cur, hidden, "layer output")));
             }
-            metal.lxg_flush(ffi);
+            metal.cgpu_flush(ffi);
             l = l + 1;
         }
         // The final norm and the tied output projection.
         run_kernel(m, ffi, k_rms, cur, mem.get(m, wb, layers * 12), b_n, 0 - 1, 0 - 1);
         run_kernel(m, ffi, k_head, b_n, mem.get(m, wb, layers * 12 + 1), b_logits, 0 - 1, 0 - 1);
-        gpu_ns = gpu_ns + metal.lxg_sync(ffi);
+        gpu_ns = gpu_ns + metal.cgpu_sync(ffi);
         if pos + 1 >= n_prompt {
             let lg = reserve(m, 4 * vocab);
-            if metal.lxg_download(ffi, b_logits, t[lg..lg + 4 * vocab]) < 0 {
+            if metal.cgpu_download(ffi, b_logits, t[lg..lg + 4 * vocab]) < 0 {
                 device_fail(m, t, ffi, "reading the logits back");
                 return cli.report(m, t, io);
             }
@@ -700,7 +700,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     if timing {
         io.write_all(io, text.bytes(t, text.fmt(m, t, "timing: load_ms=$ prefill_tokens=$ prefill_ms=$ decode_tokens=$ decode_ms=$\n", mem.of5(m, text.num(m, t, t_loaded - t_start), text.num(m, t, n_prompt), text.num(m, t, t_first - t_loaded), text.num(m, t, mem.size(m, out_ids) - 1), text.num(m, t, t_end - t_first)))));
     }
-    metal.lxg_close(ffi);
+    metal.cgpu_close(ffi);
     if err.failed(m) {
         return cli.report(m, t, io);
     }

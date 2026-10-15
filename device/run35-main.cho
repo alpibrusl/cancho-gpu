@@ -12,7 +12,7 @@ edition 5;
 // kernels are the `.lx` files of `tests/lx/`. The prompt is raw text fed one token
 // at a time, greedy, with a 256-position context.
 //
-// Linked with `shim/lexgpu-metal.mm` (`scripts/build-run35.sh`).
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-run35.sh`).
 
 import std.io;
 import std.json;
@@ -83,7 +83,7 @@ fn is_attention(l: int) -> [] bool {
 
 fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
     let top = m[mem.text_slot()];
-    let n = metal.lxg_error(ffi, t[top..top + 4096]);
+    let n = metal.cgpu_error(ffi, t[top..top + 4096]);
     var detail = text.lit(m, t, "no detail");
     if n > 0 {
         detail = text.from_bytes(m, t, t[top..top + n]);
@@ -114,11 +114,11 @@ fn compile_kernel[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
     if l < 0 {
         return 0 - 1;
     }
-    let lib = metal.lxg_compile(ffi, text.bytes(t, m[l + 1]));
+    let lib = metal.cgpu_compile(ffi, text.bytes(t, m[l + 1]));
     if lib < 0 {
         return device_fail(m, t, ffi, "compiling a kernel");
     }
-    let func = metal.lxg_function(ffi, lib, text.bytes(t, m[l]));
+    let func = metal.cgpu_function(ffi, lib, text.bytes(t, m[l]));
     if func < 0 {
         return device_fail(m, t, ffi, "finding a kernel's entry point");
     }
@@ -145,14 +145,14 @@ fn at(buf: int, off: int) -> [] int {
 
 fn bind_arg[&g](ffi: &g Ffi("libmetalgpu"), a: int) -> [ffi("libmetalgpu")] bool {
     if a / 4096 == 0 {
-        return metal.lxg_arg(ffi, a) >= 0;
+        return metal.cgpu_arg(ffi, a) >= 0;
     }
-    return metal.lxg_arg_at(ffi, a % 4096, a / 4096) >= 0;
+    return metal.cgpu_arg_at(ffi, a % 4096, a / 4096) >= 0;
 }
 
 // The next launch does not depend on the one before it: let the GPU run them together.
 fn ov[&g](ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
-    return metal.lxg_overlap(ffi);
+    return metal.cgpu_overlap(ffi);
 }
 
 // Bind up to eight arguments (-1 is none) and encode the launch.
@@ -182,7 +182,7 @@ fn go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, a0: int, a1: int
     if !ok {
         return 0 - 1;
     }
-    return metal.lxg_launch_async(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
+    return metal.cgpu_launch_async(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
 }
 
 // A matrix-vector product over an NVFP4 weight `w` (its three buffers).
@@ -372,7 +372,7 @@ fn stream[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"
         if got != c {
             return err.fail(m, t, "store", text.lit(m, t, "short read of a weight"));
         }
-        if metal.lxg_upload_at(ffi, buf, at_ + done, t[raw..raw + c]) < 0 {
+        if metal.cgpu_upload_at(ffi, buf, at_ + done, t[raw..raw + c]) < 0 {
             return device_fail(m, t, ffi, "uploading a weight");
         }
         m[mem.text_slot()] = mark;
@@ -392,9 +392,9 @@ fn weight_fp4[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetal
     if m[rec + 2] != 10 || m[rec + 3] != n || m[rec + 4] != k / 8 || m[rec + 6] < 0 || m[rec + 8] < 0 {
         return err.fail(m, t, "store", text.f1(m, t, "`$` is not an NVFP4 weight of the expected shape", name));
     }
-    let wq = metal.lxg_alloc(ffi, n * (k / 2));
-    let ws = metal.lxg_alloc(ffi, n * (k / 16));
-    let wg = metal.lxg_alloc(ffi, 4 * n);
+    let wq = metal.cgpu_alloc(ffi, n * (k / 2));
+    let ws = metal.cgpu_alloc(ffi, n * (k / 16));
+    let wg = metal.cgpu_alloc(ffi, 4 * n);
     if wq < 0 || ws < 0 || wg < 0 {
         return device_fail(m, t, ffi, "allocating a weight");
     }
@@ -413,7 +413,7 @@ fn weight_fp4[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetal
         put_f32(t, rows_at + 4 * i, gbits);
         i = i + 1;
     }
-    metal.lxg_upload_at(ffi, wg, 0, t[rows_at..rows_at + 4 * n]);
+    metal.cgpu_upload_at(ffi, wg, 0, t[rows_at..rows_at + 4 * n]);
     m[mem.text_slot()] = mark;
     return mem.of3(m, wq, ws, wg);
 }
@@ -432,7 +432,7 @@ fn weight_bf16[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
     if op == 2 {
         width = 2;
     }
-    let buf = metal.lxg_alloc(ffi, elems * width);
+    let buf = metal.cgpu_alloc(ffi, elems * width);
     if buf < 0 {
         return device_fail(m, t, ffi, "allocating a weight");
     }
@@ -465,7 +465,7 @@ fn weight_bf16[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
             }
             i = i + 1;
         }
-        if metal.lxg_upload_at(ffi, buf, width * done, t[out..out + width * c]) < 0 {
+        if metal.cgpu_upload_at(ffi, buf, width * done, t[out..out + width * c]) < 0 {
             return device_fail(m, t, ffi, "uploading a weight");
         }
         m[mem.text_slot()] = mark;
@@ -513,7 +513,7 @@ fn weight_conv[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
     if rec < 0 {
         return 0 - 1;
     }
-    let buf = metal.lxg_alloc(ffi, 16 * c);
+    let buf = metal.cgpu_alloc(ffi, 16 * c);
     if buf < 0 || m[rec + 2] != 8 {
         return err.fail(m, t, "store", text.lit(m, t, "the convolution weight is not bf16"));
     }
@@ -534,7 +534,7 @@ fn weight_conv[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
         t[dst + 3] = t[raw + 2 * i + 1];
         i = i + 1;
     }
-    metal.lxg_upload_at(ffi, buf, 0, t[out..out + 16 * c]);
+    metal.cgpu_upload_at(ffi, buf, 0, t[out..out + 16 * c]);
     m[mem.text_slot()] = mark;
     return buf;
 }
@@ -548,10 +548,10 @@ fn lname[&m, &t](m: &!m [int], t: &!t [byte], l: int, suffix: &static [byte]) ->
 // ---------------------------------------------------------------------
 
 fn peek[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), buf: int, n: int, label: int) -> [ffi("libmetalgpu")] int {
-    metal.lxg_sync(ffi);
+    metal.cgpu_sync(ffi);
     let mark = m[mem.text_slot()];
     let p = reserve(m, 4 * n);
-    if metal.lxg_download(ffi, buf, t[p..p + 4 * n]) < 0 {
+    if metal.cgpu_download(ffi, buf, t[p..p + 4 * n]) < 0 {
         return device_fail(m, t, ffi, "reading a buffer back");
     }
     var sum = 0.0;
@@ -653,7 +653,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         io.error_all(io, "error[context]: the prompt and the new tokens must fit in 256 positions and the prompt must not be empty\n");
         return 1;
     }
-    if metal.lxg_open(ffi) < 0 {
+    if metal.cgpu_open(ffi) < 0 {
         device_fail(m, t, ffi, "opening the device");
         return cli.report(m, t, io);
     }
@@ -731,34 +731,34 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         return cli.report(m, t, io);
     }
     // Activations, states and caches.
-    let b_x = metal.lxg_alloc(ffi, 4 * h);
-    let b_x2 = metal.lxg_alloc(ffi, 4 * h);
-    let b_n = metal.lxg_alloc(ffi, 4 * h);
-    let b_qkv = metal.lxg_alloc(ffi, 4 * 10240);
-    let b_conv = metal.lxg_alloc(ffi, 4 * 10240);
-    let b_qn = metal.lxg_alloc(ffi, 4 * 2048);
-    let b_kn = metal.lxg_alloc(ffi, 4 * 2048);
-    let b_z = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_a = metal.lxg_alloc(ffi, 4 * 48);
-    let b_b = metal.lxg_alloc(ffi, 4 * 48);
-    let b_g = metal.lxg_alloc(ffi, 4 * 48 * 128);
-    let b_bt = metal.lxg_alloc(ffi, 4 * 48 * 128);
-    let b_y = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_gn = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_qg = metal.lxg_alloc(ffi, 4 * 12288);
-    let b_k = metal.lxg_alloc(ffi, 4 * 1024);
-    let b_v = metal.lxg_alloc(ffi, 4 * 1024);
-    let b_q2 = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_k2 = metal.lxg_alloc(ffi, 4 * 1024);
-    let b_qr = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_kr = metal.lxg_alloc(ffi, 4 * 1024);
-    let b_o = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_og = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_act = metal.lxg_alloc(ffi, 4 * inter());
-    let b_logits = metal.lxg_alloc(ffi, 4 * vocab());
-    let b_cos = metal.lxg_alloc(ffi, 4 * 32);
-    let b_sin = metal.lxg_alloc(ffi, 4 * 32);
-    let b_mask = metal.lxg_alloc(ffi, 4 * tmax());
+    let b_x = metal.cgpu_alloc(ffi, 4 * h);
+    let b_x2 = metal.cgpu_alloc(ffi, 4 * h);
+    let b_n = metal.cgpu_alloc(ffi, 4 * h);
+    let b_qkv = metal.cgpu_alloc(ffi, 4 * 10240);
+    let b_conv = metal.cgpu_alloc(ffi, 4 * 10240);
+    let b_qn = metal.cgpu_alloc(ffi, 4 * 2048);
+    let b_kn = metal.cgpu_alloc(ffi, 4 * 2048);
+    let b_z = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_a = metal.cgpu_alloc(ffi, 4 * 48);
+    let b_b = metal.cgpu_alloc(ffi, 4 * 48);
+    let b_g = metal.cgpu_alloc(ffi, 4 * 48 * 128);
+    let b_bt = metal.cgpu_alloc(ffi, 4 * 48 * 128);
+    let b_y = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_gn = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_qg = metal.cgpu_alloc(ffi, 4 * 12288);
+    let b_k = metal.cgpu_alloc(ffi, 4 * 1024);
+    let b_v = metal.cgpu_alloc(ffi, 4 * 1024);
+    let b_q2 = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_k2 = metal.cgpu_alloc(ffi, 4 * 1024);
+    let b_qr = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_kr = metal.cgpu_alloc(ffi, 4 * 1024);
+    let b_o = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_og = metal.cgpu_alloc(ffi, 4 * 6144);
+    let b_act = metal.cgpu_alloc(ffi, 4 * inter());
+    let b_logits = metal.cgpu_alloc(ffi, 4 * vocab());
+    let b_cos = metal.cgpu_alloc(ffi, 4 * 32);
+    let b_sin = metal.cgpu_alloc(ffi, 4 * 32);
+    let b_mask = metal.cgpu_alloc(ffi, 4 * tmax());
     // Per layer: a linear layer's convolution window (two, taken in turn) and its
     // delta state; an attention layer's key and value caches. All start at zero.
     let st1 = mem.list(m);
@@ -767,13 +767,13 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     l = 0;
     while l < layers() {
         if is_attention(l) {
-            mem.push(m, st1, metal.lxg_alloc(ffi, 4 * 4 * tmax() * 256));
-            mem.push(m, st2, metal.lxg_alloc(ffi, 4 * 4 * tmax() * 256));
+            mem.push(m, st1, metal.cgpu_alloc(ffi, 4 * 4 * tmax() * 256));
+            mem.push(m, st2, metal.cgpu_alloc(ffi, 4 * 4 * tmax() * 256));
             mem.push(m, st3, 0 - 1);
         } else {
-            mem.push(m, st1, metal.lxg_alloc(ffi, 4 * 3 * 10240));
-            mem.push(m, st2, metal.lxg_alloc(ffi, 4 * 3 * 10240));
-            mem.push(m, st3, metal.lxg_alloc(ffi, 4 * 48 * 128 * 128));
+            mem.push(m, st1, metal.cgpu_alloc(ffi, 4 * 3 * 10240));
+            mem.push(m, st2, metal.cgpu_alloc(ffi, 4 * 3 * 10240));
+            mem.push(m, st3, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
         }
         l = l + 1;
     }
@@ -789,7 +789,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         put_f32(t, mk + 4 * z, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
         z = z + 1;
     }
-    metal.lxg_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax()]);
+    metal.cgpu_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax()]);
     m[mem.text_slot()] = mark0;
     let t_loaded = clock_ms(clock);
     var t_first = t_loaded;
@@ -813,12 +813,12 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             t[wide + 4 * col + 3] = t[raw_c + 2 * col + 1];
             col = col + 1;
         }
-        metal.lxg_upload_at(ffi, b_x, 0, t[wide..wide + 4 * h]);
+        metal.cgpu_upload_at(ffi, b_x, 0, t[wide..wide + 4 * h]);
         // This position: the mask, the one-hot cache row, the rotary tables (theta 10^7,
         // the first 64 dimensions of a head).
         let zero = reserve(m, 4);
         put_f32(t, zero, 0);
-        metal.lxg_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
+        metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
         let tab = reserve(m, 256);
         var jj = 0;
         while jj < 32 {
@@ -828,8 +828,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             put_f32(t, tab + 128 + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
             jj = jj + 1;
         }
-        metal.lxg_upload_at(ffi, b_cos, 0, t[tab..tab + 128]);
-        metal.lxg_upload_at(ffi, b_sin, 0, t[tab + 128..tab + 256]);
+        metal.cgpu_upload_at(ffi, b_cos, 0, t[tab..tab + 128]);
+        metal.cgpu_upload_at(ffi, b_sin, 0, t[tab + 128..tab + 256]);
         if trace {
             io.write_all(io, text.bytes(t, peek(m, t, ffi, b_x, h, text.lit(m, t, "embedding"))));
         }
@@ -882,7 +882,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             go(m, ffi, k_rms, nxt, mem.get(m, w, 10), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             fp4_swiglu(m, ffi, k_gateup, b_n, mem.get(m, w, 11), mem.get(m, w, 12), b_act);
             fp4_res(m, ffi, k_down, b_act, mem.get(m, w, 13), nxt, cur);
-            metal.lxg_flush(ffi);
+            metal.cgpu_flush(ffi);
             if trace && l % 8 == 7 {
                 io.write_all(io, text.bytes(t, peek(m, t, ffi, cur, h, text.f1(m, t, "layer $ output", text.num(m, t, l)))));
             }
@@ -890,10 +890,10 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         }
         go(m, ffi, k_rms, cur, final_norm, b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
         fp4(m, ffi, k_head, b_n, head, b_logits);
-        metal.lxg_sync(ffi);
+        metal.cgpu_sync(ffi);
         if pos + 1 >= n_prompt {
             let lg = reserve(m, 4 * vocab());
-            if metal.lxg_download(ffi, b_logits, t[lg..lg + 4 * vocab()]) < 0 {
+            if metal.cgpu_download(ffi, b_logits, t[lg..lg + 4 * vocab()]) < 0 {
                 device_fail(m, t, ffi, "reading the logits back");
                 return cli.report(m, t, io);
             }
@@ -930,7 +930,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     if timing {
         io.write_all(io, text.bytes(t, text.fmt(m, t, "timing: load_ms=$ prefill_tokens=$ prefill_ms=$ decode_tokens=$ decode_ms=$\n", mem.of5(m, text.num(m, t, t_loaded - t_start), text.num(m, t, n_prompt), text.num(m, t, t_first - t_loaded), text.num(m, t, mem.size(m, out_ids) - 1), text.num(m, t, t_end - t_first)))));
     }
-    metal.lxg_close(ffi);
+    metal.cgpu_close(ffi);
     if err.failed(m) {
         return cli.report(m, t, io);
     }

@@ -76,7 +76,7 @@ model and no other.
 * **A token**: per layer a norm; for a gated-delta layer the `qkv`, `z`, `a`, `b` projections, the
   convolution (its window ping-pongs between two buffers), `qk_norm`, `gates`, the delta step (in place on
   the layer's 3 MB state, reading the convolution's value part through a buffer offset, the shim's
-  `lxg_arg_at`), the gated norm and `out_proj` added to the residual; for an attention layer `q`, `k`, `v`,
+  `cgpu_arg_at`), the gated norm and `out_proj` added to the residual; for an attention layer `q`, `k`, `v`,
   the per-head norms, RoPE, the cache write, attention, the gate and `o_proj`; then the norm and the SwiGLU
   MLP. One command buffer a layer, committed without waiting; the CPU waits once, for the logits.
 * **Checked** (`scripts/qwen35-check.sh <reference checkout>`, not in the gate: it needs the model and a Mac):
@@ -98,8 +98,8 @@ the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weig
 second and MLX-LM (a different 4-bit quantisation) at about 28; the reference runtime measured 25 (39 ms a
 token) when it was run for its tokens.
 
-Where a token goes, measured by leaving kernels out of the real, pipelined run (`LEXGPU_SKIP=<name>`, which
-makes the output wrong and the timing true; `LEXGPU_PROFILE=2` times each kernel alone, which adds about 60
+Where a token goes, measured by leaving kernels out of the real, pipelined run (`CANCHOGPU_SKIP=<name>`, which
+makes the output wrong and the timing true; `CANCHOGPU_PROFILE=2` times each kernel alone, which adds about 60
 us of launch overhead to each and so overstates small kernels): the NVFP4 matrix-vector products are about
 31 of the 41 ms and already read at about 430 GB/s, against 546 for the chip; the rest is some 900 small
 launches at about 10 us each. What brought it from 52 ms to 41, all in `.lx` and the runner:
@@ -109,7 +109,7 @@ launches at about 10 us each. What brought it from 52 ms to 41, all in `.lx` and
   threadgroups (6.6 ms down to 0.3);
 * `matvec_fp4_swiglu.lx` does the gate and up projections and the activation in one launch;
 * the encoder dispatches concurrently and a barrier separates launches that depend on each other
-  (`lxg_overlap` marks the ones that do not: the q/k/v and the qkv/z/a/b projections and so on).
+  (`cgpu_overlap` marks the ones that do not: the q/k/v and the qkv/z/a/b projections and so on).
 
 What did not help: threads or rows per threadgroup (nine schedules, the same time), and the emitter's
 wide-load text on Metal (faster for one kernel alone, 450 against 340 GB/s, slower in the run). A

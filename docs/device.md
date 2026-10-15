@@ -33,38 +33,38 @@ void **extra)` takes an array of pointers to arguments, and `CUdeviceptr`
 and `CUfunction` are values a program holds. No signature in it can be
 declared from cancho directly.
 
-So a shim of about 380 lines of C, `shim/lexgpu.c`, owns every handle
+So a shim of about 380 lines of C, `shim/canchogpu.c`, owns every handle
 and hands cancho **integers**: a buffer is `3`, a function `0`. Every
 entry point takes `int64_t`s and at most one trailing byte buffer, and
 answers an `int64_t` (≥ 0 a handle or a count, < 0 a failure whose text
-`lxg_error` copies out):
+`cgpu_error` copies out):
 
 | Entry | Does |
 |---|---|
-| `lxg_open()` | `dlopen` the driver (`libcuda.so.1`) and NVRTC, `cuInit`, device 0, a context |
-| `lxg_compile(src)` | NVRTC to PTX for the device's own `compute_XY`, then `cuModuleLoadData`: a module |
-| `lxg_function(module, name)` | `cuModuleGetFunction`: a function |
-| `lxg_alloc(bytes)` | `cuMemAlloc`: a buffer |
-| `lxg_upload(buf, bytes)` / `lxg_download(buf, out)` | `cuMemcpyHtoD` / `DtoH` of a whole buffer |
-| `lxg_arg(buf)` | append a buffer to the next launch's argument list |
-| `lxg_launch(fn, gx, gy, threads)` | `cuLaunchKernel` with the arguments appended, then synchronise; clears the list |
-| `lxg_error(out)` | the last failure's text |
-| `lxg_close()` | everything freed, context destroyed |
+| `cgpu_open()` | `dlopen` the driver (`libcuda.so.1`) and NVRTC, `cuInit`, device 0, a context |
+| `cgpu_compile(src)` | NVRTC to PTX for the device's own `compute_XY`, then `cuModuleLoadData`: a module |
+| `cgpu_function(module, name)` | `cuModuleGetFunction`: a function |
+| `cgpu_alloc(bytes)` | `cuMemAlloc`: a buffer |
+| `cgpu_upload(buf, bytes)` / `cgpu_download(buf, out)` | `cuMemcpyHtoD` / `DtoH` of a whole buffer |
+| `cgpu_arg(buf)` | append a buffer to the next launch's argument list |
+| `cgpu_launch(fn, gx, gy, threads)` | `cuLaunchKernel` with the arguments appended, then synchronise; clears the list |
+| `cgpu_error(out)` | the last failure's text |
+| `cgpu_close()` | everything freed, context destroyed |
 
-`lxg_arg` is how the `void **params` array is built without cancho ever
+`cgpu_arg` is how the `void **params` array is built without cancho ever
 holding a pointer: the shim keeps it.
 
 The shim `dlopen`s rather than links, as lex-gpu's own `lex-cuda` does,
 so the program builds on any machine and a missing driver is an answer
-(`error[device]: …`), not a link failure. `LEXGPU_LIBCUDA` and
-`LEXGPU_LIBNVRTC` name other libraries, which is what the mock (§5)
+(`error[device]: …`), not a link failure. `CANCHOGPU_LIBCUDA` and
+`CANCHOGPU_LIBNVRTC` name other libraries, which is what the mock (§5)
 uses.
 
 ## 2. The authority
 
-Every entry is declared under `Ffi("liblexgpu")`, and the device program
+Every entry is declared under `Ffi("libcanchogpu")`, and the device program
 narrows its `Ffi` to exactly that, so `cancho authority` reports
-`ffi("liblexgpu")` and every symbol by name — and `unbounded`, honestly:
+`ffi("libcanchogpu")` and every symbol by name — and `unbounded`, honestly:
 cancho's `docs/gpu.md` §6 predicted it would "report `ffi("libcuda")`
 and nothing about the device". It does, one library over. Narrowing a
 GPU capability is cancho's `gpu.md` §3 (`Gpu(device)`), which this
@@ -99,15 +99,15 @@ past it, `error[device-mismatch]`.
 * **Metal.** It is Objective-C (`MTLDevice`, `newLibraryWithSource`),
   reached through `objc_msgSend` with a different signature per call —
   a shim like this one, in Objective-C++, built and **run on real hardware**
-  (Mac Studio, Apple Silicon). The shim (`shim/lexgpu-metal.mm`) provides
+  (Mac Studio, Apple Silicon). The shim (`shim/canchogpu-metal.mm`) provides
   the same C interface as the CUDA shim: integer handles in, int64 status
-  out, at most one trailing byte buffer. Entry points: `lxg_open`
-  (`MTLCreateSystemDefaultDevice`), `lxg_compile` (`newLibraryWithSource`),
-  `lxg_function` (`newComputePipelineStateWithFunction`), `lxg_alloc`
-  (`newBufferWithLength`), `lxg_upload` (`memcpy` + `didModifyRange`),
-  `lxg_download` (`memcpy` from buffer contents), `lxg_arg` (record buffer),
-  `lxg_launch` (`dispatchThreadgroups` + `waitUntilCompleted`), `lxg_error`,
-  `lxg_close`. The device program (`device/metal-main.cho`) mirrors the CUDA
+  out, at most one trailing byte buffer. Entry points: `cgpu_open`
+  (`MTLCreateSystemDefaultDevice`), `cgpu_compile` (`newLibraryWithSource`),
+  `cgpu_function` (`newComputePipelineStateWithFunction`), `cgpu_alloc`
+  (`newBufferWithLength`), `cgpu_upload` (`memcpy` + `didModifyRange`),
+  `cgpu_download` (`memcpy` from buffer contents), `cgpu_arg` (record buffer),
+  `cgpu_launch` (`dispatchThreadgroups` + `waitUntilCompleted`), `cgpu_error`,
+  `cgpu_close`. The device program (`device/metal-main.cho`) mirrors the CUDA
   path for `apple-m-series` target.
 
 ## 5. What is not attempted
@@ -184,13 +184,13 @@ UNBOUNDED: this program calls foreign code. ...
 performs
     args
     err_write
-    ffi("liblexgpu")    <- unbounded
+    ffi("libcanchogpu")    <- unbounded
     fs_read("")
     heap
     io_write
 unbounded by
-    liblexgpu:lxg_alloc
-    liblexgpu:lxg_arg
+    libcanchogpu:cgpu_alloc
+    libcanchogpu:cgpu_arg
     ...
 ```
 
@@ -202,11 +202,11 @@ fs_write(""), heap, io_write`, bounded.
 
 First real Metal run on Mac Studio (Apple Silicon GPU):
 
-* **Reach proved:** The Metal shim (`shim/lexgpu-metal.mm`, Objective-C++)
+* **Reach proved:** The Metal shim (`shim/canchogpu-metal.mm`, Objective-C++)
   successfully loads the Metal framework, compiles emitted `.metal` source
   with `newLibraryWithSource`, creates compute pipelines, allocates buffers,
   uploads data, launches kernels with `dispatchThreadgroups`, and reads
-  results back — all through the same C interface (`lxg_*`) as the CUDA shim.
+  results back — all through the same C interface (`cgpu_*`) as the CUDA shim.
 * **Numerical agreement:** All tested kernels produce results within the
   2e-2 tolerance against the CPU reference interpreter:
   - `softmax.lx r=4 n=64`: worst difference 5.59e-9 of peak 0.0259
@@ -231,8 +231,8 @@ performs
     heap
     io_write
 unbounded by
-    libmetalgpu:lxg_alloc
-    libmetalgpu:lxg_arg
+    libmetalgpu:cgpu_alloc
+    libmetalgpu:cgpu_arg
     ...
 ```
 

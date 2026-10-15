@@ -51,8 +51,8 @@ device memory and the 15 GB checkpoints this is aimed at never pass through the
 pool whole.
 
 A token's kernels are encoded into one command buffer a layer, committed without
-waiting (`lxg_launch_async`, `lxg_flush`), and the CPU waits once, for the
-logits (`lxg_sync`).
+waiting (`cgpu_launch_async`, `cgpu_flush`), and the CPU waits once, for the
+logits (`cgpu_sync`).
 
 The prompt is tokenized by `bpe.cho` and fed **one token at a time**, so
 prefill costs what decoding does. There is no chat template.
@@ -112,9 +112,9 @@ that is the next measurement, not a claim made here.
 
 All of §2-§4 of `docs/runtime.md`: the safetensors header, the tokenizer, the
 sampler; `fileio.read_at` (a positioned read of any length); a shim that can write
-into a buffer at an offset and hold a few thousand of them (`lxg_upload_at`, the
+into a buffer at an offset and hold a few thousand of them (`cgpu_upload_at`, the
 buffer limit raised from 256: this model has 290 weight tensors), and that can
-encode launches without waiting (`lxg_launch_async`, `lxg_flush`, `lxg_sync`).
+encode launches without waiting (`cgpu_launch_async`, `cgpu_flush`, `cgpu_sync`).
 
 ## 6. Qwen3.8-27B
 

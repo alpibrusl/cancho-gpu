@@ -14,7 +14,7 @@ edition 5;
 // usage mistake.
 //
 // A second program, so `cancho-gpu` itself links nothing but libc; this
-// one links `shim/lexgpu-metal.c` (`scripts/build-metal-device.sh`).
+// one links `shim/canchogpu-metal.c` (`scripts/build-metal-device.sh`).
 
 import std.io;
 import mem;
@@ -53,7 +53,7 @@ fn usage[&i](io: &!i Io) -> [err_write] int {
 // The shim's last failure, as a `device` refusal.
 fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
     let top = m[mem.text_slot()];
-    let n = metal.lxg_error(ffi, t[top..top + 4096]);
+    let n = metal.cgpu_error(ffi, t[top..top + 4096]);
     // Keep the bytes the shim wrote before the pool is used again.
     var detail = text.handle(top, 0);
     if n > 0 {
@@ -67,14 +67,14 @@ fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu
 
 // The Metal device program uses apple-m-series target instead of nvidia-ada
 fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), prog: int, l: int, got: int, sizes: int) -> [ffi("libmetalgpu")] int {
-    if metal.lxg_open(ffi) < 0 {
+    if metal.cgpu_open(ffi) < 0 {
         return device_fail(m, t, ffi, "opening the device");
     }
-    let compiled_mod = metal.lxg_compile(ffi, text.bytes(t, m[l + 1]));
+    let compiled_mod = metal.cgpu_compile(ffi, text.bytes(t, m[l + 1]));
     if compiled_mod < 0 {
         return device_fail(m, t, ffi, "compiling the kernel");
     }
-    let func = metal.lxg_function(ffi, compiled_mod, text.bytes(t, m[l]));
+    let func = metal.cgpu_function(ffi, compiled_mod, text.bytes(t, m[l]));
     if func < 0 {
         return device_fail(m, t, ffi, "finding the entry point");
     }
@@ -84,21 +84,21 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         let g = mem.get(m, got, i);
         let bytes = m[g + 3] * kinds.size_bytes(m[g]);
         mem.push(m, sizes, bytes);
-        let buf = metal.lxg_alloc(ffi, bytes);
+        let buf = metal.cgpu_alloc(ffi, bytes);
         if buf < 0 {
             return device_fail(m, t, ffi, "allocating a buffer");
         }
         let at = encode(m, t, fm, g);
-        if metal.lxg_upload(ffi, buf, t[at..at + bytes]) < 0 {
+        if metal.cgpu_upload(ffi, buf, t[at..at + bytes]) < 0 {
             return device_fail(m, t, ffi, "uploading an input");
         }
-        if metal.lxg_arg(ffi, buf) < 0 {
+        if metal.cgpu_arg(ffi, buf) < 0 {
             return device_fail(m, t, ffi, "binding an argument");
         }
         mem.push(m, bufs, buf);
         i = i + 1;
     }
-    if metal.lxg_launch(ffi, func, m[l + 2], m[l + 3], m[l + 4]) < 0 {
+    if metal.cgpu_launch(ffi, func, m[l + 2], m[l + 3], m[l + 4]) < 0 {
         return device_fail(m, t, ffi, "launching the kernel");
     }
     let ps = ir.p_params(m, prog);
@@ -108,14 +108,14 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             let g = mem.get(m, got, i);
             let bytes = m[g + 3] * kinds.size_bytes(m[g]);
             let at = reserve(m, bytes);
-            if metal.lxg_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
+            if metal.cgpu_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
                 return device_fail(m, t, ffi, "reading an output back");
             }
             decode(m, t, fm, g, at);
         }
         i = i + 1;
     }
-    metal.lxg_close(ffi);
+    metal.cgpu_close(ffi);
     return 0;
 }
 

@@ -39,7 +39,7 @@ while read -r file rest; do
   rm -f "$WORK/log"
   status=0
   # shellcheck disable=SC2086
-  LEXGPU_LIBCUDA=$MOCK/libcuda_mock.so LEXGPU_LIBNVRTC=$MOCK/libnvrtc_mock.so LEXGPU_MOCK_LOG=$WORK/log \
+  CANCHOGPU_LIBCUDA=$MOCK/libcuda_mock.so CANCHOGPU_LIBNVRTC=$MOCK/libnvrtc_mock.so CANCHOGPU_MOCK_LOG=$WORK/log \
     "$BIN" run "$ROOT/$file" $rest >"$WORK/out" 2>"$WORK/err" || status=$?
   want="launch $entry grid $grid block $threads args $params bytes"
   if ! grep -q "^compile --gpu-architecture=compute_89" "$WORK/log"; then
@@ -64,12 +64,12 @@ CASES
 # The byte sizes, for one kernel, by hand: x f16[128, 64], wq i8[128, 32],
 # ws i8[128, 4], wg f32[128], y f32[128, 128].
 rm -f "$WORK/log"
-LEXGPU_LIBCUDA=$MOCK/libcuda_mock.so LEXGPU_LIBNVRTC=$MOCK/libnvrtc_mock.so LEXGPU_MOCK_LOG=$WORK/log \
+CANCHOGPU_LIBCUDA=$MOCK/libcuda_mock.so CANCHOGPU_LIBNVRTC=$MOCK/libnvrtc_mock.so CANCHOGPU_MOCK_LOG=$WORK/log \
   "$BIN" run "$ROOT/tests/lx/lex-gpu/gemm_fp4.lx" m=128 n=128 k=64 >/dev/null 2>&1 || true
 grep -q 'bytes 16384,4096,512,512,65536$' "$WORK/log" || { echo "gemm_fp4: wrong buffer sizes: $(cat "$WORK/log")"; fail=1; }
 # No driver: a refusal, not a trap.
 status=0
-LEXGPU_LIBCUDA=$WORK/nothing.so "$BIN" run "$ROOT/tests/lx/lex-gpu/silu_mul.lx" >/dev/null 2>"$WORK/err" || status=$?
+CANCHOGPU_LIBCUDA=$WORK/nothing.so "$BIN" run "$ROOT/tests/lx/lex-gpu/silu_mul.lx" >/dev/null 2>"$WORK/err" || status=$?
 if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]: opening the device: no CUDA driver' "$WORK/err"; then
   echo "no driver: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
 fi

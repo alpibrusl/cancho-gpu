@@ -29,7 +29,7 @@ while read -r file rest; do
   rm -f "$WORK/log"
   status=0
   # shellcheck disable=SC2086
-  LEXGPU_METAL_FRAMEWORK=$MOCK/libmetalgpu.so LEXGPU_METAL_MOCK_LOG=$WORK/log \
+  CANCHOGPU_METAL_FRAMEWORK=$MOCK/libmetalgpu.so CANCHOGPU_METAL_MOCK_LOG=$WORK/log \
     "$BIN" run "$ROOT/$file" $rest >"$WORK/out" 2>"$WORK/err" || status=$?
   
   # Check that the mock was called
@@ -54,7 +54,7 @@ CASES
 
 # No driver: a refusal, not a trap.
 status=0
-LEXGPU_METAL_FRAMEWORK=$WORK/nothing.so "$BIN" run "$ROOT/tests/lx/softmax.lx" r=4 n=64 >/dev/null 2>"$WORK/err" || status=$?
+CANCHOGPU_METAL_FRAMEWORK=$WORK/nothing.so "$BIN" run "$ROOT/tests/lx/softmax.lx" r=4 n=64 >/dev/null 2>"$WORK/err" || status=$?
 if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]' "$WORK/err"; then
   echo "no driver: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
 fi
