@@ -1,0 +1,38 @@
+gguf v3 tensors=6 kv=31 alignment=32
+kv arr.bools array n=3 [bool true, bool false, bool true]
+kv arr.empty array n=0 []
+kv arr.floats array n=2 [float 0x3fe0000000000000, float 0xc000000000000000]
+kv arr.ints array n=7 [int -3, int 997, int 1997, int 2997, ...]
+kv arr.nested array n=3 [array n=2 [int 1, int 2], array n=1 [str "x"], array n=0 []]
+kv arr.strs array n=5 [str "a", str "bb", str "ccc", str "", ...]
+kv bool.f bool false
+kv bool.t bool true
+kv f32.inf float 0x7ff0000000000000
+kv f32.max float 0x47efffffe0000000
+kv f32.neg0 float 0x8000000000000000
+kv f32.ninf float 0xfff0000000000000
+kv f32.one float 0x3ff0000000000000
+kv f32.qnan float 0x7ff8000000000000
+kv f32.sub float 0x36a0000000000000
+kv f32.sub2 float 0x380fffffc0000000
+kv f32.third float 0x3fd5555560000000
+kv f64.pi float 0x400921fb54442d18
+kv general.alignment int 32
+kv general.architecture str "llama"
+kv i16 int -32768
+kv i32 int -2147483648
+kv i64 int -9223372036854775808
+kv i8 int -5
+kv str.empty str ""
+kv str.escapes str "q\"uote \\ back\x09tab\x0a\x01 \xc3\xb1 end"
+kv str.plain str "hello"
+kv u16 int 65535
+kv u32 int 4294967295
+kv u64.big int -1
+kv u8 int 200
+tensor blk.0.attn_norm.weight type=F16 dims=[8] bytes=16 sum=4c6e0d75
+tensor blk.0.ffn.weight type=Q8_0 dims=[64] bytes=68 sum=40d93799
+tensor output.weight type=Q4_K dims=[256] bytes=144 sum=5cfbd8e5
+tensor rope.freqs type=BF16 dims=[2,2] bytes=8 sum=df8c14b5
+tensor token_embd.weight type=F32 dims=[4,3] bytes=48 sum=3c685f05
+tensor unknown.kind type=other(99) dims=[5] bytes=unsupported

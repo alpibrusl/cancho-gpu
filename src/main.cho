@@ -4,6 +4,7 @@ edition 5;
 //
 //     cancho-gpu emit  <file.lx> <dir> [name=value ...] [--run]
 //     cancho-gpu check <file.lx> [name=value ...] [--run]
+//     cancho-gpu gguf  <file.gguf> [--sum]
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
@@ -13,6 +14,11 @@ edition 5;
 // the program on the CPU over made-up inputs first and prints what it
 // writes, as `emit_lx --run` does (`docs/design.md` §10). The directory must
 // exist: cancho has no way to make one.
+//
+// `gguf` prints the header of a GGUF file -- its metadata and its tensor
+// directory -- as the canonical text `tests/gguf.sh` compares with the
+// Rust's (`docs/runtime.md`); `--sum` adds a checksum of each tensor's
+// bytes. It reads the first 32 MiB, which is more than any header.
 //
 // Exit status: 0, or 1 with every refusal on standard error as
 // `error[<rule>]: <message>`, or 2 for a usage mistake.
@@ -30,6 +36,8 @@ import dialect;
 import lower;
 import interp;
 import cli;
+import gguf;
+import gguf_dump;
 
 fn words() -> [] int {
     return 8000000;
@@ -45,7 +53,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n");
     return 2;
 }
 
@@ -90,11 +98,53 @@ fn one_target[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], unit: in
     return mem.rec2(m, l, ran);
 }
 
+// The most of a model file `gguf` reads: a header is kilobytes to a few
+// megabytes (a tokenizer's vocabulary is the bulk of it).
+fn gguf_cap() -> [] int {
+    return 33554432;
+}
+
+fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), args] int {
+    let file = arg(args, 2);
+    let top = m[mem.text_slot()];
+    let got = fs_read(fs, file, t[top..top + gguf_cap()]);
+    if got < 0 {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, file);
+        io.error_all(io, "\n");
+        return 1;
+    }
+    m[mem.text_slot()] = top + got;
+    var with_sum = false;
+    var ai = 3;
+    while ai < arg_count(args) {
+        if text.is(t, text.from_bytes(m, t, arg(args, ai)), "--sum") {
+            with_sum = true;
+        } else {
+            return usage(io);
+        }
+        ai = ai + 1;
+    }
+    let g = gguf.parse(m, t, top, top + got);
+    if g < 0 {
+        return cli.report(m, t, io);
+    }
+    let out = gguf_dump.dump(m, t, g, with_sum);
+    if out < 0 {
+        return cli.report(m, t, io);
+    }
+    io.write_all(io, text.bytes(t, out));
+    return 0;
+}
+
 fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), args] int {
     if arg_count(args) < 3 {
         return usage(io);
     }
     let cmd = text.from_bytes(m, t, arg(args, 1));
+    if text.is(t, cmd, "gguf") {
+        return run_gguf(m, t, io, fs, args);
+    }
     let emit = text.is(t, cmd, "emit");
     if !emit && !text.is(t, cmd, "check") {
         return usage(io);

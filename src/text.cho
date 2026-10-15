@@ -49,7 +49,7 @@ pub fn at[&t](t: &!t [byte], h: int, i: int) -> [] int {
 }
 
 // Append one byte at the end of the pool.
-fn put_byte[&m, &t](m: &!m [int], t: &!t [byte], b: byte) -> [] int {
+pub fn put_byte[&m, &t](m: &!m [int], t: &!t [byte], b: byte) -> [] int {
     let top = m[mem.text_slot()];
     t[top] = b;
     m[mem.text_slot()] = top + 1;
@@ -69,7 +69,7 @@ fn put_lit[&m, &t](m: &!m [int], t: &!t [byte], s: &static [byte]) -> [] int {
 }
 
 // Append a copy of an existing string at the end of the pool.
-fn put_str[&m, &t](m: &!m [int], t: &!t [byte], h: int) -> [] int {
+pub fn put_str[&m, &t](m: &!m [int], t: &!t [byte], h: int) -> [] int {
     let top = m[mem.text_slot()];
     let n = size(h);
     copy_within(t, top, start(h), n);
@@ -77,11 +77,11 @@ fn put_str[&m, &t](m: &!m [int], t: &!t [byte], h: int) -> [] int {
     return 0;
 }
 
-fn begin[&m](m: &!m [int]) -> [] int {
+pub fn begin[&m](m: &!m [int]) -> [] int {
     return m[mem.text_slot()];
 }
 
-fn finish[&m](m: &!m [int], from: int) -> [] int {
+pub fn finish[&m](m: &!m [int], from: int) -> [] int {
     return handle(from, m[mem.text_slot()] - from);
 }
 

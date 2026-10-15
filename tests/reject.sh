@@ -37,7 +37,7 @@ for rule in $(grep -ho 'fail(m, t, "[a-z-]*"\|diag(m, t, c, "[a-z-]*"\|bad(m, t,
   # name outside its block; the surface has no way to write one (a
   # binding in a loop body is not in the outer environment at all, so it
   # is `unbound` first). Kept, as the Rust keeps it, and exempt here.
-  case "$rule" in usage|no-schedule|scope) continue ;; esac
+  case "$rule" in usage|no-schedule|scope|gguf-*) continue ;; esac
   if [ ! -f "$ROOT/tests/reject/$rule.lx" ]; then
     echo "rule \`$rule\` has no fixture in tests/reject/"; fail=1
   fi
