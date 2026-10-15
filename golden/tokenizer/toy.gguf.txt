@@ -1,0 +1,75 @@
+tokenizer ids=864
+ids 7: 72 101 399 111 44 723 33
+dec "Hello, world!"
+ids 19: 84 104 101 754 817 789 32 106 117 109 391 758 315 32 330 122 121 798 46
+dec "The quick brown fox jumps over the lazy dog."
+ids 45: 73 39 109 737 784 39 115 791 59 725 39 326 739 32 119 101 39 399 32 103 111 44 32 121 111 117 415 823 46 32 68 79 78 416 828 44 32 73 39 408 32 78 79 84 46
+dec "I'm sure it's fine; they've said we'll go, you'd agree. DON'T SHOUT, I'LL NOT."
+ids 34: 49 50 51 52 53 32 54 55 56 57 48 32 51 46 49 52 49 53 57 32 49 44 48 48 48 44 48 48 48 32 48 48 52 50
+dec "12345 67890 3.14159 1,000,000 0042"
+ids 10: 97 32 321 32 32 284 32 32 32 358
+dec "a  b   c    d"
+ids 9: 116 307 105 292 291 349 32 32 32
+dec "trailing spaces   "
+ids 9: 32 32 32 310 97 100 105 291 349
+dec "   leading spaces"
+ids 18: 116 337 115 9 97 282 9 9 116 337 115 9 32 9 109 105 120 403
+dec "tabs\x09and\x09\x09tabs\x09 \x09mixed"
+ids 23: 309 759 10 309 730 13 10 309 729 10 10 10 97 332 293 820 32 309 115 13 10 13 10
+dec "line one\x0aline two\x0d\x0aline three\x0a\x0a\x0aafter blank lines\x0d\x0a\x0d\x0a"
+ids 5: 32 262 32 262 317
+dec "  \x0a  \x0a x"
+ids 43: 413 46 417 417 45 45 61 61 43 43 42 42 38 38 32 32 40 40 281 275 403 41 41 32 32 91 406 99 331 116 115 93 32 123 406 333 125 32 60 97 291 310 62
+dec "...!?!?--==++**&&  ((nested))  [brackets] {braces} <angle>"
+ids 31: 115 110 97 331 95 405 803 32 331 98 337 45 405 837 95 67 65 83 69 32 390 47 387 47 102 105 310 46 116 120 116
+dec "snake_case camelCase kebab-case SCREAMING_CASE path/to/file.txt"
+ids 16: 99 97 102 195 169 804 195 169 32 195 521 32 195 521 768 768
+dec "caf\xc3\xa9 caf\xc3\xa9 \xc3\x85ngstr\xc3\xb6m \xc3\x85ngstr\xc3\xb6m na\xc3\xafve na\xc3\xafve"
+ids 13: 195 133 712 355 304 204 135 352 187 153 352 187 135
+dec "\xc3\x85 \xe1\xba\x9b\xcc\xa3 q\xcc\xa3\xcc\x87 \xe1\xbb\x99 \xe1\xbb\x87"
+ids 13: 234 176 129 32 370 156 32 234 176 129 32 370 449
+dec "\xea\xb0\x81 \xed\x95\x9c \xea\xb0\x81 \xed\x95\x9c\xea\xb8\x80"
+ids 19: 228 189 424 367 140 228 184 150 231 149 140 367 129 32 301 484 32 236 467
+dec "\xe4\xbd\xa0\xe5\xa5\xbd\xef\xbc\x8c\xe4\xb8\x96\xe7\x95\x8c\xef\xbc\x81 \xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf \xec\x95\x88\xeb\x85\x95\xed\x95\x98\xec\x84\xb8\xec\x9a\x94"
+ids 24: 208 191 379 380 208 178 208 181 209 130 32 208 188 380 379 32 206 494 32 215 169 215 453 713
+dec "\xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xbc\xd0\xb8\xd1\x80 \xce\x91\xce\xb8\xce\xae\xce\xbd\xce\xb1 \xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d \xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7"
+ids 19: 302 185 302 191 302 384 510 32 376 167 286 177 376 475 32 378 471 377 141
+dec "\xe0\xa4\xb9\xe0\xa4\xbf\xe0\xa4\xa8\xe0\xa5\x8d\xe0\xa4\xa6\xe0\xa5\x80 \xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5 \xe0\xae\x95\xe0\xaf\x86\xe0\xae\xa9\xe0\xaf\x8d"
+ids 16: 101 109 111 106 105 705 706 316 502 369 322 140 136 351 445 369
+dec "emoji \xf0\x9f\x98\x80 \xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7 \xf0\x9f\x8f\xb3\xef\xb8\x8f\xe2\x80\x8d\xf0\x9f\x8c\x88 \xe2\x9d\xa4\xef\xb8\x8f"
+ids 23: 372 160 372 161 32 194 189 32 194 178 32 217 163 217 164 709 32 289 167 289 168 289 169
+dec "\xe2\x91\xa0\xe2\x91\xa1 \xc2\xbd \xc2\xb2 \xd9\xa3\xd9\xa4 \xe2\x85\xa7 \xe0\xa5\xa7\xe0\xa5\xa8\xe0\xa5\xa9"
+ids 24: 857 117 115 293 10 87 400 116 787 32 50 43 50 63 858 10 857 334 105 290 329 10 52 858
+dec "<|im_start|>user\x0aWhat is 2+2?<|im_end|>\x0a<|im_start|>assistant\x0a4<|im_end|>"
+ids 6: 856 856 735 32 857 857
+dec "<|endoftext|><|endoftext|> text <|im_start|><|im_start|>"
+ids 16: 860 728 32 859 821 32 271 97 385 32 861 32 271 276 95 294
+dec "<|a|b|> then <|a|> and <|a|b <|im|> <|im_end"
+ids 20: 97 194 437 279 131 99 227 128 128 100 32 323 122 293 111 323 386 100 327 323
+dec "a\xc2\xa0b\xe2\x80\x83c\xe3\x80\x80d \xe2\x80\x8bzero\xe2\x80\x8bwidth\xe2\x80\x8b"
+ids 19: 1 2 810 32 127 813 32 0 761 32 366 51 49 109 280 100 366 48 109
+dec "\x01\x02 control \x7f chars \x00 nul \x1b[31mred\x1b[0m"
+ids 12: 239 191 189 748 32 244 501 783 718 717 284 49
+dec "\xef\xbf\xbd replacement \xf4\x8f\xbf\xbf max \xc2\x80 \xc2\x9f c1"
+ids 5: 325 325 270 263 257
+dec "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+ids 122: 259 100 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 261 32
+dec "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+ids 9: 337 196 135 303 303 269 265 264 404
+dec "ab\xc4\x87\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81\xcc\x81def"
+ids 0: 
+dec ""
+ids 1: 10
+dec "\x0a"
+ids 1: 32
+dec " "
+ids 1: 39
+dec "'"
+ids 19: 39 115 39 83 416 39 116 280 39 86 69 39 109 39 408 415 39 120 39
+dec "'s'S'T'tre'VE'm'LL'd'x'"
+ids 16: 49 194 178 50 194 179 317 373 361 373 79 32 49 48 226 526
+dec "1\xc2\xb22\xc2\xb3 x\xe2\x82\x82 H\xe2\x82\x82O 10\xe2\x81\xb4"
+ids 32: 404 320 40 120 41 58 10 32 32 32 743 317 32 42 32 50 32 32 35 733 10 10 99 108 334 362 58 10 9 112 334 10
+dec "def f(x):\x0a    return x * 2  # twice\x0a\x0aclass A:\x0a\x09pass\x0a"
+ids 44: 104 116 116 391 58 47 47 311 97 109 112 310 46 99 111 109 47 390 63 113 117 293 121 61 49 38 98 61 50 35 102 307 103 771 58 97 46 98 64 99 46 111 114 103
+dec "https://example.com/path?query=1&b=2#frag mailto:a.b@c.org"
