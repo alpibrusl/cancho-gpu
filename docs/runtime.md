@@ -1,9 +1,9 @@
 # The runtime core: reading a model (slice 9a)
 
-> **Status: stage 1 of 4 built and measured (GGUF headers, §2–§5), on
-> fixtures and on five real models.**
-> Safetensors headers, the BPE tokenizer and the sampler are not started
-> (§6). Issue [#5](https://github.com/alpibrusl/cancho-gpu/issues/5).
+> **Status: stages 1 and 2 of 4 built and measured: GGUF headers (§2–§5)
+> and safetensors headers (§7–§8), each on fixtures and on real files.**
+> The BPE tokenizer and the sampler are not started (§6). Issue
+> [#5](https://github.com/alpibrusl/cancho-gpu/issues/5).
 
 Slice 9a ports the model-facing core of lex-gpu's `lex-rt` into cancho:
 the part that reads a checkpoint and turns text into tokens and logits
@@ -17,7 +17,7 @@ Order, as the issue gives it, each stage its own pull request with its own
 fixtures and gate:
 
 1. GGUF headers: metadata and the tensor directory. *(built)*
-2. Safetensors headers.
+2. Safetensors headers. *(built)*
 3. The BPE tokenizer.
 4. The sampler.
 
@@ -135,10 +135,91 @@ example into the checkout for the build and removes it).
 
 | Stage | What | Oracle |
 |---|---|---|
-| 2 | Safetensors: the JSON header (names, dtypes, shapes, offsets), refusals for overlapping or out-of-range tensors | `lex-rt` / the safetensors format |
-| 3 | BPE tokenizer: vocabulary and merges from the metadata, pre-tokenisation, byte fallback, special tokens, round-trip | `lex-rt/src/tokenizer.rs` |
+| 3 | BPE tokenizer: vocabulary and merges from the GGUF metadata and from `tokenizer.json`, pre-tokenisation, byte fallback, special tokens, round-trip | `lex-rt/src/tokenizer.rs` |
 | 4 | Sampler: greedy, temperature, top-k, top-p, with `lex-rt`'s generator | `lex-rt/src/sample.rs` |
 
 Loading the tensors' *values* (dequantising Q8_0, Q4_K and Q6_K to what
 the kernels take) belongs to the model adapters of slice 12 (issue #10),
 which need the tensor directory this stage builds.
+
+## 7. The safetensors reader (stage 2)
+
+`src/safetensors.cho`. A file is an 8-byte little-endian length N, N bytes
+of JSON, then the tensor bytes: for each tensor a dtype, a shape and a
+`data_offsets` pair, and an optional `__metadata__` object of strings. Both
+Qwen3.8 27B layouts on this machine have it: three 5 GB shards from
+Hugging Face (`mlx-community/Qwen3.8-27B-4bit`, 2,180 tensors in all), and
+Ollama's one-blob-per-tensor store (`lex-rt/src/qwen.rs`).
+
+**The oracle is the `safetensors` library**, whose Rust reader validates a
+file as the format defines it, not `lex-rt`: `qwen.rs` takes five dtypes
+and checks no range. The format's checks are made here too: the length
+fits the file, the header is JSON starting with `{`, every dtype is one of
+the 15 of library version 0.5.3, a shape is non-negative integers, the byte range
+of a tensor is exactly its element count times the dtype's size, and the
+ranges, taken in order, **tile the data section**: no hole, no overlap, no
+byte left after the last (`st-hole`, `st-overlap`, `st-data-short`,
+`st-data-long`).
+
+The JSON is `std.json`'s tape parser, strict (RFC 8259), into a tape in
+`m`; names and metadata are decoded (escapes, surrogate pairs) into the
+text pool. Nothing else is copied.
+
+**The file's size.** cancho has no `file_size` and no positioned read
+(`cancho/docs/large-files.md`, a design, nothing built), so the reader sees
+the first 32 MiB. A file shorter than that is read whole and its size is
+known; a longer one needs `size=<bytes>` on the command line (from `stat`)
+for the checks that compare the tensors with the file's end, and without it
+the dump says `data=unknown` and those two checks are not made. The
+tensor bytes cannot be read at all yet; that is the gap `large-files.md`
+names, and the reason this stage reads headers only.
+
+Where it differs from the library (each has a rule tag and a fixture):
+
+| Rule | This reader | The library (0.5.3) |
+|---|---|---|
+| `st-header-size` | refuses a header over 1 MiB (the tape is three words a byte) | up to 100,000,000 |
+| `st-duplicate` | refuses a tensor name twice | the later replaces the earlier |
+
+Fields in an entry that the format does not define are ignored, as the
+library does (`extra-field.safetensors`).
+
+Like the GGUF reader it has no input that traps: the header length is
+checked before the header is read, and the tape is sized by
+`json.tape_len`. `tests/safetensors/fuzz.py` runs every prefix of a file
+and 1,000 mutated copies of its header (1,541 files): each answers a dump
+or `error[st-…]`, none traps or hangs.
+
+## 8. The dump, and how it is held to the oracle
+
+```
+safetensors header=312 tensors=4 data=224
+meta format "mlx"
+tensor layer.scales F16 shape=[8,1] range=[128,144]
+```
+
+`cancho-gpu safetensors <file> [size=<bytes>]` and
+`tools/safetensors_dump.py` print it; names and metadata are sorted
+byte-wise. The shapes and dtypes come from the library, and the byte
+ranges, which it does not expose, from Python's `json` over the raw header.
+`tests/safetensors.sh` (in the gate) compares them on the three fixtures
+(`golden/safetensors/`, recorded from the library, version in `ORACLE`),
+and each of 21 hostile fixtures is refused with the rule its name starts
+with.
+
+`tests/safetensors/differential.py` (not in the gate: it needs the library
+and torch) runs the mutated files through both and compares verdicts and
+dumps: on 941 files (every prefix and 400 mutations) there was no file one
+reader accepted and the other refused, and the 10 both accepted dumped
+identically. Mutations rarely leave a valid file, so this is evidence for
+the refusals more than for the dump.
+
+### Measured on real files
+
+* **Five real files, byte-identical with the library**, with `size=` from
+  `stat`: `Qwen2.5-0.5B-Instruct` (290 tensors) and `Qwen2.5-1.5B-Instruct`
+  (338), and the three shards of `mlx-community/Qwen3.8-27B-4bit` (847, 720
+  and 613 tensors; headers of 104,654, 94,306 and 80,125 bytes). Each takes
+  under 10 ms, though the files are 1 to 5 GB: only the first 32 MiB is read.
+* Ollama's `qwen3.8:27b-mlx` blobs: see §9.
+* Not measured: reading a tensor's bytes, and any model run.

@@ -22,5 +22,6 @@ tests/golden.sh
 tests/reject.sh
 CANCHO="$CANCHO" tests/device.sh
 tests/gguf.sh
+tests/safetensors.sh
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"
