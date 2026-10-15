@@ -1,12 +1,12 @@
 # The decode kernels of an attention layer (slice 9b)
 
-> **Status: four kernels written in `.lx`, held to lex-gpu's emitter and
+> **Status: four kernels written in `.chx`, held to lex-gpu's emitter and
 > interpreter, and checked against a reference for what they compute; the
 > long-context split-KV attention is not built, and §4 says precisely why.**
 > Issue [#6](https://github.com/alpibrusl/cancho-gpu/issues/6).
 
 Slice 9b of cancho#251 asked for "the transformer kernel set (softmax, rope,
-attention, KV cache)" in the `.lx` surface. `softmax.lx` was the first part
+attention, KV cache)" in the `.chx` surface. `softmax.chx` was the first part
 (with the `exp` and `log` unops, `design.md` §10). This is the rest of what one
 **full-attention layer of Qwen3.8-27B** needs for one decode step. From the
 checkpoint's `config.json` (read, not run): 64 layers, every fourth a full
@@ -20,10 +20,10 @@ not here.
 
 | File | What it computes | Shapes (Qwen3.8) |
 |---|---|---|
-| `tests/lx/rope.lx` | `[x1 c - x2 s, x2 c + x1 s, rest]`: the "rotate half" form on the first 2h dimensions of each row, the rest passed through | `r=24` (or 4) rows, `h=32`, `p=192` |
-| `tests/lx/kv_append.lx` | one position of every head's key and value cache, `cache[i * tmax + pos] = new[i]` | `nkv=4`, `d=256`, `tmax`, `pos` |
-| `tests/lx/attention.lx` | (`d` must be 256: see below) for each key/value head `i`, `softmax(q k^T / 16 + mask) v` for its `g` query heads over the first `t` cached positions | `nkv=4`, `g=6`, `d=256`, `t <= 1364` (§3) |
-| `tests/lx/attn_gate.lx` | `o * sigmoid(gate)` | `r=24`, `n=256` |
+| `tests/chx/rope.chx` | `[x1 c - x2 s, x2 c + x1 s, rest]`: the "rotate half" form on the first 2h dimensions of each row, the rest passed through | `r=24` (or 4) rows, `h=32`, `p=192` |
+| `tests/chx/kv_append.chx` | one position of every head's key and value cache, `cache[i * tmax + pos] = new[i]` | `nkv=4`, `d=256`, `tmax`, `pos` |
+| `tests/chx/attention.chx` | (`d` must be 256: see below) for each key/value head `i`, `softmax(q k^T / 16 + mask) v` for its `g` query heads over the first `t` cached positions | `nkv=4`, `g=6`, `d=256`, `t <= 1364` (§3) |
+| `tests/chx/attn_gate.chx` | `o * sigmoid(gate)` | `r=24`, `n=256` |
 
 `rope`'s tables are one position's, `[1, h]`, shared by every row; the angles are
 a table lookup the host writes (lex-gpu's runtime does the same), not arithmetic a
@@ -34,7 +34,7 @@ parameters, so a different head dimension is a different file, and **`d` must
 be 256**: any other value is accepted and scaled wrongly, which the file's
 comment says and the cases all respect (an earlier case with `d=32` shared the
 reference's 0.0625 and so hid it). The queries'
-and keys' RMSNorm per head is `rmsnorm.lx`, already there; the projections are
+and keys' RMSNorm per head is `rmsnorm.chx`, already there; the projections are
 the existing matrix kernels.
 
 ## 2. How they are held to something
@@ -49,14 +49,14 @@ the existing matrix kernels.
 * **The interpreter.** The `--run` summaries of the ten `--run` cases are
   byte-identical with the Rust interpreter's.
 * **What they compute** (`tests/kernels.py`, in the gate). Byte-identity with
-  lex-gpu says the two compilers agree, not that `attention.lx` is attention. The
+  lex-gpu says the two compilers agree, not that `attention.chx` is attention. The
   script runs each kernel with `--run` on the interpreter's own made-up inputs
   (an LCG, `design.md` §10), runs the same inputs through plain Python written
   from the mathematics in the table above, and requires the printed mean and
   peak (four decimals) and the first four values (1e-5) to agree, for both
   targets' summaries: 14 checks on each, all agree. They are not vacuous, with a caveat that was found by review: the summary
 is a mean, a peak and four values, so a displaced row is invisible when the
-four values are zeros. Mutating `attention.lx` (the scale changed to 0.07, the
+four values are zeros. Mutating `attention.chx` (the scale changed to 0.07, the
 output written to the wrong place, the mask's sign flipped) fails two checks
 each, and dropping the mask is refused by the compiler itself (`error[leak]:
 `mask.5` is never consumed`), the linear discipline doing what it is for. For
@@ -67,7 +67,7 @@ placement (`kc[i + pos * nkv]`), which the larger cases cannot.
 
 ## 3. The limit that was found
 
-`attention.lx` keeps one head's scores, `[g, t]` floats, in one tile. A tile
+`attention.chx` keeps one head's scores, `[g, t]` floats, in one tile. A tile
 lives in threadgroup memory, which is capped at 32 KiB on Metal and 48 KiB (static)
 on CUDA, and both compilers say so identically:
 
@@ -81,7 +81,7 @@ on CUDA, and both compilers say so identically:
 Qwen3.8 has a 262,144-token context. A decode step over more than 1364
 positions needs the cache split into chunks, each chunk's partial softmax
 computed on its own threadgroup, and the partials merged: the split-KV scheme
-lex-gpu's Rust-built kernels use. It cannot be written in `.lx` today.
+lex-gpu's Rust-built kernels use. It cannot be written in `.chx` today.
 
 ## 4. What the surface lacks for split-KV attention
 

@@ -1,7 +1,7 @@
 edition 5;
 module ir;
 
-// The typed tile program: `lex_front::ir`, the part a `.lx` file can
+// The typed tile program: `lex_front::ir`, the part a `.chx` file can
 // produce. Values are SSA variables numbered from 0; every record below
 // lives in `m` (`docs/design.md` §5 has the layouts).
 //

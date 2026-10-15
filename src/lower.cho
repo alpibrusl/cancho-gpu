@@ -2,7 +2,7 @@ edition 5;
 module lower;
 
 // Lower a checked program to one kernel's source: `lex_msl::program`,
-// ported (`lower_sched` and `Gen::op` for the ops a `.lx` file makes;
+// ported (`lower_sched` and `Gen::op` for the ops a `.chx` file makes;
 // the products on threads are in `matmul.cho`).
 //
 // The contract is the Rust's: the same text, byte for byte, for every

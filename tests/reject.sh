@@ -13,7 +13,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail=0
 count=0
-for f in "$ROOT"/tests/reject/*.lx; do
+for f in "$ROOT"/tests/reject/*.chx; do
   count=$((count + 1))
   rule=$(sed -n '1s|^// RULE ||p' "$f")
   args=$(sed -n '2s|^// ARGS ||p' "$f")
@@ -38,18 +38,18 @@ for rule in $(grep -ho 'fail(m, t, "[a-z-]*"\|diag(m, t, c, "[a-z-]*"\|bad(m, t,
   # binding in a loop body is not in the outer environment at all, so it
   # is `unbound` first). Kept, as the Rust keeps it, and exempt here.
   case "$rule" in usage|no-schedule|scope|gguf-*|st-*|tok-*) continue ;; esac
-  if [ ! -f "$ROOT/tests/reject/$rule.lx" ]; then
+  if [ ! -f "$ROOT/tests/reject/$rule.chx" ]; then
     echo "rule \`$rule\` has no fixture in tests/reject/"; fail=1
   fi
 done
 # The command line's own refusals.
 status=0; "$BIN" >/dev/null 2>&1 || status=$?
 [ "$status" -eq 2 ] || { echo "no arguments: exit $status, expected 2"; fail=1; }
-status=0; "$BIN" emit "$ROOT/tests/lx/matvec.lx" "$WORK" n=x k=8 >/dev/null 2>"$WORK/err" || status=$?
+status=0; "$BIN" emit "$ROOT/tests/chx/matvec.chx" "$WORK" n=x k=8 >/dev/null 2>"$WORK/err" || status=$?
 grep -q '^error\[usage\]' "$WORK/err" || { echo "a bad constant: expected error[usage]"; fail=1; }
-status=0; "$BIN" emit "$ROOT/tests/reject/missing.lx" "$WORK" >/dev/null 2>"$WORK/err" || status=$?
+status=0; "$BIN" emit "$ROOT/tests/reject/missing.chx" "$WORK" >/dev/null 2>"$WORK/err" || status=$?
 grep -q '^error\[io\]' "$WORK/err" || { echo "a missing file: expected error[io]"; fail=1; }
-status=0; "$BIN" check "$ROOT/tests/reject/no-schedule.lx.txt" >/dev/null 2>"$WORK/err" || status=$?
+status=0; "$BIN" check "$ROOT/tests/reject/no-schedule.chx.txt" >/dev/null 2>"$WORK/err" || status=$?
 grep -q '^error\[no-schedule\]' "$WORK/err" || { echo "no schedule: expected error[no-schedule]"; fail=1; }
 echo "$count refusal fixtures checked"
 exit $fail

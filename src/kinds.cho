@@ -236,7 +236,7 @@ pub fn s_yield() -> [] int {
     return 43;
 }
 
-// --- IR ops (`ir::Op`, the ones a `.lx` program can produce)
+// --- IR ops (`ir::Op`, the ones a `.chx` program can produce)
 pub fn op_fill() -> [] int {
     return 1;
 }

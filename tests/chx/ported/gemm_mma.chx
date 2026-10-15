@@ -1,6 +1,6 @@
 // y = a w^T on the matrix units.
 //
-// The same algorithm as `gemm.lx` -- a loop over the inner dimension adding a
+// The same algorithm as `gemm.chx` -- a loop over the inner dimension adding a
 // product into an accumulator -- with three things said about where tiles
 // live. `@shared` puts the two operand windows in threadgroup memory, where a
 // matrix unit reads them; `@frag` makes the accumulator a matrix-unit

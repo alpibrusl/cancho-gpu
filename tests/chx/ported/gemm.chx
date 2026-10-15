@@ -1,6 +1,6 @@
 // y = a w^T: a tiled matrix product, `[m, k] x [n, k]^T -> [m, n]`.
 //
-// This is the first `.lx` kernel with loops, and it is what the hand-written
+// This is the first `.chx` kernel with loops, and it is what the hand-written
 // GEMMs of `lex_msl::gemm` compute. Everything a machine decides is a `tile`
 // extent -- how big a piece of y one instance owns (`bm`, `bn`) and how many
 // of the inner dimension it takes at a time (`bk`) -- and the schedules

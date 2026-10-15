@@ -1,4 +1,4 @@
-// y = x w^T + r with NVFP4 weights: `gemm_fp4.lx` with the residual stream
+// y = x w^T + r with NVFP4 weights: `gemm_fp4.chx` with the residual stream
 // added on the way out, as the model's `down` and `out_proj` matmuls do.
 //
 // `add_window` adds the accumulator-shaped window of `r` into the fragment

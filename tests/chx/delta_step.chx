@@ -7,7 +7,7 @@
 // is independent for each value row, so a threadgroup takes br of the 128 rows
 // of each of the three heads (a whole state would be 64 KiB of threadgroup
 // memory). q and k are the normalised rows of qk_norm; v is the value part of the
-// convolution's output; g and beta are rows of 128 copies (gates.lx) and, as the
+// convolution's output; g and beta are rows of 128 copies (gates.chx) and, as the
 // per-value vectors the broadcasts need, beta and v are read flat.
 algo delta_step(nk)
   in  s:  f32[nk * 384, 128]

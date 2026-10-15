@@ -6,7 +6,7 @@
 
 ```sh
 CANCHO=$CANCHO scripts/build-run.sh
-build/cancho-gpu-run <model dir> tests/lx "The capital of France is" 12
+build/cancho-gpu-run <model dir> tests/chx "The capital of France is" 12
 # " Paris. It is the largest city in Europe and the third"
 ```
 
@@ -18,28 +18,28 @@ chosen points and the five largest logits at every sampled position) and `--timi
 
 ## 1. What is on the GPU, and what is not
 
-Everything a token costs but four small things runs as `.lx` kernels, compiled
+Everything a token costs but four small things runs as `.chx` kernels, compiled
 by this repository's compiler at start-up for `apple-m-series` and launched
 through the Metal shim (`docs/device.md`). Per layer, in order:
 
 | Kernel | What | Constants (Qwen2.5-0.5B) |
 |---|---|---|
-| `lex-gpu/rmsnorm.lx` | RMSNorm | `n=896 eps=1e-6` |
-| `matvec_bias_f16.lx` | q, k and v projections with their biases (f16 weights) | `n=896/128/128 k=896` |
-| `rope.lx` | rotary embedding, full width (`p=0`) | `r=14` (q), `r=2` (k), `h=32` |
-| `attention_d64.lx` | softmax attention, 14 query heads over 2 KV heads | `nkv=2 g=7 d=64 t=tmax=256` |
-| `kv_write.lx` | the new key and value into the cache, one position, no launch constant | `nkv=2 tmax=256 d=64` |
-| `matvec_res_f16.lx` | o_proj and down_proj, added to the residual stream | `n=896 k=896/4864` |
-| `matvec_rows_f16.lx` | gate and up projections; the tied output projection | `n=4864 k=896`; `n=151936` |
-| `swiglu.lx` | `silu(gate) * up` | `n=4864` |
+| `ported/rmsnorm.chx` | RMSNorm | `n=896 eps=1e-6` |
+| `matvec_bias_f16.chx` | q, k and v projections with their biases (f16 weights) | `n=896/128/128 k=896` |
+| `rope.chx` | rotary embedding, full width (`p=0`) | `r=14` (q), `r=2` (k), `h=32` |
+| `attention_d64.chx` | softmax attention, 14 query heads over 2 KV heads | `nkv=2 g=7 d=64 t=tmax=256` |
+| `kv_write.chx` | the new key and value into the cache, one position, no launch constant | `nkv=2 tmax=256 d=64` |
+| `matvec_res_f16.chx` | o_proj and down_proj, added to the residual stream | `n=896 k=896/4864` |
+| `matvec_rows_f16.chx` | gate and up projections; the tied output projection | `n=4864 k=896`; `n=151936` |
+| `swiglu.chx` | `silu(gate) * up` | `n=4864` |
 
 On the host, in cancho: the embedding row of the token (one `file_pread` of
 1,792 bytes from the checkpoint), the rotary tables for the position
 (`cos` and `sin` of `pos * theta^(-2j/64)`, computed in binary64 and rounded to
 f32), the attention mask (opened one position at a time), a one-hot `sel` and its
 complement `keep` for the cache write, and the sampling of the logits
-(`sampler.cho`). `kv_append.lx` takes its position as a launch constant, so it
-would need a kernel per position; `kv_write.lx` takes the position as data (`cache * keep + new * sel`
+(`sampler.cho`). `kv_append.chx` takes its position as a launch constant, so it
+would need a kernel per position; `kv_write.chx` takes the position as data (`cache * keep + new * sel`
 over each head's cache, 32 K floats), so one compiled kernel serves them all and
 the cache never leaves the device.
 

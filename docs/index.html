@@ -135,11 +135,11 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
   <div>
     <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model on a Metal GPU</a>
     <h1>A GPU kernel compiler that says what it can do.</h1>
-    <p class="lead">lex-gpu's <code>.lx</code> tile-kernel compiler, written in cancho. It checks a typed tile program and lowers it to <b>CUDA C</b> and <b>Metal</b>, byte-for-byte what lex-gpu's Rust emitter writes. It links nothing but libc, and its authority report, checked in CI, names the files it may touch and no network and no foreign code.</p>
+    <p class="lead">lex-gpu's <code>.chx</code> tile-kernel compiler, written in cancho. It checks a typed tile program and lowers it to <b>CUDA C</b> and <b>Metal</b>, byte-for-byte what lex-gpu's Rust emitter writes. It links nothing but libc, and its authority report, checked in CI, names the files it may touch and no network and no foreign code.</p>
     <div class="cta"><a class="btn primary" href="#start">Try it</a><a class="btn ghost" href="#proof">See the evidence</a></div>
   </div>
   <div class="term" role="img" aria-label="Emitting a kernel and the authority report"><div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="c">$</span> cancho-gpu emit gemm_fp4.lx out m=128 n=128 k=64
+<pre><span class="c">$</span> cancho-gpu emit gemm_fp4.chx out m=128 n=128 k=64
 <span class="g">out/gemm_fp4_128_128_64_128_128_64.cu</span>: 256 threads,
   grid 1x1, 36864 B of tiles
 <span class="g">out/gemm_fp4_128_128_64_64_128_32.metal</span>: 256 threads,
@@ -189,7 +189,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
   <h2>Where it fits.</h2>
   <div class="cols">
     <div><h3>Use it for</h3><ul>
-      <li>Compiling <code>.lx</code> tile kernels to CUDA C and Metal with a small, auditable toolchain</li>
+      <li>Compiling <code>.chx</code> tile kernels to CUDA C and Metal with a small, auditable toolchain</li>
       <li>Checking a kernel on the CPU before a GPU is involved</li>
       <li>Trying a cancho program that drives a GPU through a thin C shim</li>
     </ul></div>
@@ -212,8 +212,8 @@ REV=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)
 export CANCHO=$PWD/../cancho/target/release/cancho
 $CANCHO build
 mkdir -p out
-build/cancho-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64</pre>
-  <p class="note">Other commands: <code>cancho-gpu check &lt;file.lx&gt; [name=value ...] [--run]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
+build/cancho-gpu emit tests/chx/ported/gemm_fp4.chx out m=128 n=128 k=64</pre>
+  <p class="note">Other commands: <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
 </section>
 
 <section class="status" id="status">

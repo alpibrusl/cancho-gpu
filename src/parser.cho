@@ -5,7 +5,7 @@ module parser;
 // ported. A node is a record `[kind, a, b, c, d, e]` (`kinds.cho` names
 // the kinds); a list of nodes is a `mem` list. Names are text handles.
 //
-// The grammar, and every refusal's wording, is the Rust's: a `.lx` file
+// The grammar, and every refusal's wording, is the Rust's: a `.chx` file
 // it accepts is accepted here and one it refuses is refused with the
 // same sentence (rule `syntax`).
 
@@ -580,7 +580,7 @@ pub fn algo_name[&m](m: &!m [int], unit: int) -> [] int {
     return m[m[unit]];
 }
 
-// Parse one `.lx` file (the source as a handle). Answers the unit, or -1
+// Parse one `.chx` file (the source as a handle). Answers the unit, or -1
 // with the refusal recorded.
 pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], src: int) -> [] int {
     let toks = lexer.tokens(m, t, src);

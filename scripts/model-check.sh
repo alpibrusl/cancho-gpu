@@ -14,7 +14,7 @@ NEW=${2:-12}
 fail=0
 for prompt in "The capital of France is" "def fibonacci(n):
     " "Once upon a time, in a land far away,"; do
-  ours=$("$ROOT/build/cancho-gpu-run" "$MODEL" "$ROOT/tests/lx" "$prompt" "$NEW" --trace)
+  ours=$("$ROOT/build/cancho-gpu-run" "$MODEL" "$ROOT/tests/chx" "$prompt" "$NEW" --trace)
   ref=$(python3 "$ROOT/tests/model/reference.py" "$MODEL" "$NEW" "$prompt" 2>/dev/null)
   ids=$(echo "$ours" | sed -n 's/^tokens: //p')
   follow=$(python3 "$ROOT/tests/model/reference.py" --follow "$ids" "$MODEL" 0 "$prompt" 2>/dev/null)

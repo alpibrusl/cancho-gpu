@@ -1,7 +1,7 @@
 edition 5;
 module check;
 
-// The type checker: `lex_front::check`, for the programs a `.lx` file
+// The type checker: `lex_front::check`, for the programs a `.chx` file
 // can produce. Linearity (every tile consumed exactly once), borrows
 // against moves within one op, region-scoped consumption in loop
 // bodies, loop-invariant carries, shapes, implicit narrowing, bounds of
@@ -9,7 +9,7 @@ module check;
 // against the target.
 //
 // What is not here is what no surface program reaches: futures, arrays,
-// pipes and roles. A `.lx` file has no syntax that makes one.
+// pipes and roles. A `.chx` file has no syntax that makes one.
 //
 // Diagnostics are `[kind, message]` with the Rust `Kind` as the rule
 // tag in kebab case (`use-after-move`, `leak`, `consume-outer`, ...).

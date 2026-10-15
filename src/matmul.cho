@@ -3,7 +3,7 @@ module matmul;
 
 // Matrix products on the threads, not the matrix units: the `MatMulNT`
 // and `MatMul` arms of `lex_msl::program::Gen::op` and its
-// `batched_rows`, ported -- for the operands a `.lx` file can produce.
+// `batched_rows`, ported -- for the operands a `.chx` file can produce.
 // A lazy NVFP4 dequantisation is the one packed weight format the
 // surface has (`dequant_fp4`); the other packings of the Rust
 // (`Pairs`, `Six`, ternary) come from builders the surface has no

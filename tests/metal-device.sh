@@ -47,14 +47,14 @@ while read -r file rest; do
     fail=1
   fi
 done <<CASES
-tests/lx/lex-gpu/silu_mul.lx
-tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64
-tests/lx/softmax.lx r=4 n=64
+tests/chx/ported/silu_mul.chx
+tests/chx/ported/gemm_fp4.chx m=128 n=128 k=64
+tests/chx/softmax.chx r=4 n=64
 CASES
 
 # No driver: a refusal, not a trap.
 status=0
-CANCHOGPU_METAL_FRAMEWORK=$WORK/nothing.so "$BIN" run "$ROOT/tests/lx/softmax.lx" r=4 n=64 >/dev/null 2>"$WORK/err" || status=$?
+CANCHOGPU_METAL_FRAMEWORK=$WORK/nothing.so "$BIN" run "$ROOT/tests/chx/softmax.chx" r=4 n=64 >/dev/null 2>"$WORK/err" || status=$?
 if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]' "$WORK/err"; then
   echo "no driver: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
 fi

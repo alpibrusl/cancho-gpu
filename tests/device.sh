@@ -54,22 +54,22 @@ while read -r file rest; do
     echo "$name: missing a summary"; fail=1
   fi
 done <<CASES
-tests/lx/lex-gpu/silu_mul.lx
-tests/lx/lex-gpu/rmsnorm.lx n=4096 eps=1e-5
-tests/lx/lex-gpu/gemm.lx m=64 n=32 k=256
-tests/lx/lex-gpu/gemm_mma.lx m=128 n=128 k=64
-tests/lx/lex-gpu/gemm_fp4.lx m=128 n=128 k=64
-tests/lx/lex-gpu/gemm_fp4_res.lx m=128 n=128 k=64
+tests/chx/ported/silu_mul.chx
+tests/chx/ported/rmsnorm.chx n=4096 eps=1e-5
+tests/chx/ported/gemm.chx m=64 n=32 k=256
+tests/chx/ported/gemm_mma.chx m=128 n=128 k=64
+tests/chx/ported/gemm_fp4.chx m=128 n=128 k=64
+tests/chx/ported/gemm_fp4_res.chx m=128 n=128 k=64
 CASES
 # The byte sizes, for one kernel, by hand: x f16[128, 64], wq i8[128, 32],
 # ws i8[128, 4], wg f32[128], y f32[128, 128].
 rm -f "$WORK/log"
 CANCHOGPU_LIBCUDA=$MOCK/libcuda_mock.so CANCHOGPU_LIBNVRTC=$MOCK/libnvrtc_mock.so CANCHOGPU_MOCK_LOG=$WORK/log \
-  "$BIN" run "$ROOT/tests/lx/lex-gpu/gemm_fp4.lx" m=128 n=128 k=64 >/dev/null 2>&1 || true
+  "$BIN" run "$ROOT/tests/chx/ported/gemm_fp4.chx" m=128 n=128 k=64 >/dev/null 2>&1 || true
 grep -q 'bytes 16384,4096,512,512,65536$' "$WORK/log" || { echo "gemm_fp4: wrong buffer sizes: $(cat "$WORK/log")"; fail=1; }
 # No driver: a refusal, not a trap.
 status=0
-CANCHOGPU_LIBCUDA=$WORK/nothing.so "$BIN" run "$ROOT/tests/lx/lex-gpu/silu_mul.lx" >/dev/null 2>"$WORK/err" || status=$?
+CANCHOGPU_LIBCUDA=$WORK/nothing.so "$BIN" run "$ROOT/tests/chx/ported/silu_mul.chx" >/dev/null 2>"$WORK/err" || status=$?
 if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]: opening the device: no CUDA driver' "$WORK/err"; then
   echo "no driver: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
 fi
