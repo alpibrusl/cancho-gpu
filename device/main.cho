@@ -14,7 +14,7 @@ edition 5;
 // usage mistake.
 //
 // A second program, so `cancho-gpu` itself links nothing but libc; this
-// one links `shim/lexgpu.c` (`scripts/build-device.sh`).
+// one links `shim/canchogpu.c` (`scripts/build-device.sh`).
 
 import std.io;
 import mem;
@@ -51,9 +51,9 @@ fn usage[&i](io: &!i Io) -> [err_write] int {
 }
 
 // The shim's last failure, as a `device` refusal.
-fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("liblexgpu"), what: &static [byte]) -> [ffi("liblexgpu")] int {
+fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libcanchogpu"), what: &static [byte]) -> [ffi("libcanchogpu")] int {
     let top = m[mem.text_slot()];
-    let n = cuda.lxg_error(ffi, t[top..top + 4096]);
+    let n = cuda.cgpu_error(ffi, t[top..top + 4096]);
     // Keep the bytes the shim wrote before the pool is used again.
     var detail = text.handle(top, 0);
     if n > 0 {
@@ -168,15 +168,15 @@ fn compare[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], prog: int, 
 
 // Upload every parameter, launch, and read the writable ones back into
 // `got` (fresh inputs, overwritten). Answers 0, or -1 with a refusal.
-fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("liblexgpu"), prog: int, l: int, got: int, sizes: int) -> [ffi("liblexgpu")] int {
-    if cuda.lxg_open(ffi) < 0 {
+fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libcanchogpu"), prog: int, l: int, got: int, sizes: int) -> [ffi("libcanchogpu")] int {
+    if cuda.cgpu_open(ffi) < 0 {
         return device_fail(m, t, ffi, "opening the device");
     }
-    let compiled_mod = cuda.lxg_compile(ffi, text.bytes(t, m[l + 1]));
+    let compiled_mod = cuda.cgpu_compile(ffi, text.bytes(t, m[l + 1]));
     if compiled_mod < 0 {
         return device_fail(m, t, ffi, "compiling the kernel");
     }
-    let func = cuda.lxg_function(ffi, compiled_mod, text.bytes(t, m[l]));
+    let func = cuda.cgpu_function(ffi, compiled_mod, text.bytes(t, m[l]));
     if func < 0 {
         return device_fail(m, t, ffi, "finding the entry point");
     }
@@ -186,21 +186,21 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         let g = mem.get(m, got, i);
         let bytes = m[g + 3] * kinds.size_bytes(m[g]);
         mem.push(m, sizes, bytes);
-        let buf = cuda.lxg_alloc(ffi, bytes);
+        let buf = cuda.cgpu_alloc(ffi, bytes);
         if buf < 0 {
             return device_fail(m, t, ffi, "allocating a buffer");
         }
         let at = encode(m, t, fm, g);
-        if cuda.lxg_upload(ffi, buf, t[at..at + bytes]) < 0 {
+        if cuda.cgpu_upload(ffi, buf, t[at..at + bytes]) < 0 {
             return device_fail(m, t, ffi, "uploading an input");
         }
-        if cuda.lxg_arg(ffi, buf) < 0 {
+        if cuda.cgpu_arg(ffi, buf) < 0 {
             return device_fail(m, t, ffi, "binding an argument");
         }
         mem.push(m, bufs, buf);
         i = i + 1;
     }
-    if cuda.lxg_launch(ffi, func, m[l + 2], m[l + 3], m[l + 4]) < 0 {
+    if cuda.cgpu_launch(ffi, func, m[l + 2], m[l + 3], m[l + 4]) < 0 {
         return device_fail(m, t, ffi, "launching the kernel");
     }
     let ps = ir.p_params(m, prog);
@@ -210,18 +210,18 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             let g = mem.get(m, got, i);
             let bytes = m[g + 3] * kinds.size_bytes(m[g]);
             let at = reserve(m, bytes);
-            if cuda.lxg_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
+            if cuda.cgpu_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
                 return device_fail(m, t, ffi, "reading an output back");
             }
             decode(m, t, fm, g, at);
         }
         i = i + 1;
     }
-    cuda.lxg_close(ffi);
+    cuda.cgpu_close(ffi);
     return 0;
 }
 
-fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("liblexgpu")) -> [io_write, err_write, fs_read(""), args, ffi("liblexgpu")] int {
+fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libcanchogpu")) -> [io_write, err_write, fs_read(""), args, ffi("libcanchogpu")] int {
     if arg_count(args) < 3 {
         return usage(io);
     }
@@ -293,7 +293,7 @@ fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock } = split(world);
     release(net);
     release(clock);
-    let gpu = narrow(ffi, "liblexgpu");
+    let gpu = narrow(ffi, "libcanchogpu");
     var status = 0;
     borrow mut heap as &!h in {
         var mb = box_slice(h, words(), 0);

@@ -14,7 +14,7 @@ before writing cancho.
 - **Every refusal has a rule tag** and a fixture in `tests/reject/`
   (`tests/reject.sh` fails on a tag without one). No input reaches a trap.
 - **Two programs.** `cancho-gpu` (from `cancho.toml`) links only libc;
-  `cancho-gpu-device` (`scripts/build-device.sh`) links `shim/lexgpu.c`.
+  `cancho-gpu-device` (`scripts/build-device.sh`) links `shim/canchogpu.c`.
   Nothing reachable from `src/main.cho` may call the shim.
 - **No source file over 2,000 lines** (`tests/files.sh`). Split by concern.
 - **Design before code**, in `docs/`, with claims measured; a claim that

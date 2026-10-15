@@ -4,12 +4,12 @@
 Implement Metal GPU device support for cancho-gpu to enable running kernels on Apple Silicon GPUs. This is slice 10 of the roadmap and addresses issue alpibrusl/cancho-gpu#8.
 
 ## Background
-The current cancho-gpu implementation supports CUDA GPUs through `shim/lexgpu.c` and the `device/` directory. We need to add equivalent Metal GPU support for Apple Silicon Macs.
+The current cancho-gpu implementation supports CUDA GPUs through `shim/canchogpu.c` and the `device/` directory. We need to add equivalent Metal GPU support for Apple Silicon Macs.
 
 ## Tasks
 
-### 1. Metal Shim Implementation (`shim/lexgpu-metal.c`)
-- [ ] Create `shim/lexgpu-metal.c` following the same pattern as `shim/lexgpu.c`
+### 1. Metal Shim Implementation (`shim/canchogpu-metal.c`)
+- [ ] Create `shim/canchogpu-metal.c` following the same pattern as `shim/canchogpu.c`
 - [ ] Implement Metal device initialization: `MTLCreateSystemDefaultDevice`
 - [ ] Implement Metal shader compilation: `newLibraryWithSource` for emitted .metal source
 - [ ] Implement compute pipeline creation: `newComputePipelineState`
@@ -48,7 +48,7 @@ The current cancho-gpu implementation supports CUDA GPUs through `shim/lexgpu.c`
 - [ ] Update PR status to ready-for-review when oracle patch lands in lex-gpu
 
 ## Deliverables
-- [ ] `shim/lexgpu-metal.c` + its mock
+- [ ] `shim/canchogpu-metal.c` + its mock
 - [ ] `device/` extension for apple-m-series target
 - [ ] Updated `docs/device.md` with real measurement numbers
 - [ ] PR comments on #11 with validation results

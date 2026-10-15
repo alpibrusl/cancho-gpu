@@ -1,7 +1,7 @@
 /* A stand-in for the CUDA driver, for tests/device.sh (docs/device.md
  * section 5). It cannot run a kernel; it checks the plumbing. Memory is
  * host memory, so an upload then a download gives the bytes back; a
- * launch writes nothing and appends one line to $LEXGPU_MOCK_LOG:
+ * launch writes nothing and appends one line to $CANCHOGPU_MOCK_LOG:
  *
  *     launch <entry> grid <gx>x<gy> block <threads> args <n> bytes <b0>,<b1>,...
  *
@@ -76,7 +76,7 @@ static size_t size_of(CUdeviceptr p) {
 CUresult cuLaunchKernel(void *f, unsigned gx, unsigned gy, unsigned gz, unsigned bx, unsigned by,
                         unsigned bz, unsigned shared, void *stream, void **params, void **extra) {
     (void)gz; (void)by; (void)bz; (void)shared; (void)stream; (void)extra;
-    const char *path = getenv("LEXGPU_MOCK_LOG");
+    const char *path = getenv("CANCHOGPU_MOCK_LOG");
     FILE *log = path ? fopen(path, "a") : NULL;
     if (!log) {
         return 1;

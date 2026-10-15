@@ -1,6 +1,6 @@
 /* A stand-in for NVRTC (docs/device.md section 5): "compiling" yields the
  * source itself as the PTX, so the mock driver can see which entries it
- * defines. Records the options it was given in $LEXGPU_MOCK_LOG. */
+ * defines. Records the options it was given in $CANCHOGPU_MOCK_LOG. */
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +19,7 @@ nvrtcResult nvrtcCreateProgram(void **p, const char *src, const char *name, int 
 }
 nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
     (void)p;
-    const char *path = getenv("LEXGPU_MOCK_LOG");
+    const char *path = getenv("CANCHOGPU_MOCK_LOG");
     FILE *log = path ? fopen(path, "a") : NULL;
     if (log) {
         fprintf(log, "compile");

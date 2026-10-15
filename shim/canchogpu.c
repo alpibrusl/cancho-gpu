@@ -1,4 +1,4 @@
-/* lexgpu -- the CUDA driver and NVRTC, as cancho can call them.
+/* canchogpu -- the CUDA driver and NVRTC, as cancho can call them.
  *
  * docs/device.md is the design. cancho's `extern fn` passes 64-bit
  * integers and, as the last parameter, a byte slice as a pointer and a
@@ -7,11 +7,11 @@
  * in tables, and cancho holds indices: every entry point takes
  * `int64_t`s and at most one trailing `(const char *, int64_t)` buffer,
  * and answers an `int64_t` -- a handle or a count when >= 0, a failure
- * when < 0, whose text `lxg_error` copies out.
+ * when < 0, whose text `cgpu_error` copies out.
  *
  * The driver and NVRTC are `dlopen`ed, as lex-gpu's `lex-cuda` does, so
  * this builds and links anywhere and a machine without them gets an
- * answer instead of a link error. LEXGPU_LIBCUDA and LEXGPU_LIBNVRTC
+ * answer instead of a link error. CANCHOGPU_LIBCUDA and CANCHOGPU_LIBNVRTC
  * name other libraries (the mock in tests/mock/ does).
  */
 #include <dlfcn.h>
@@ -123,18 +123,18 @@ static void *open_first(const char *env, const char *const *names) {
         }                                                                   \
     } while (0)
 
-int64_t lxg_open(void) {
+int64_t cgpu_open(void) {
     static const char *const cu_names[] = {"libcuda.so.1", "libcuda.so", NULL};
     static const char *const rtc_names[] = {"libnvrtc.so", "libnvrtc.so.12",
                                             "/usr/local/cuda/lib64/libnvrtc.so", NULL};
     if (g.ctx) {
         return 0;
     }
-    g.cu_lib = open_first("LEXGPU_LIBCUDA", cu_names);
+    g.cu_lib = open_first("CANCHOGPU_LIBCUDA", cu_names);
     if (!g.cu_lib) {
         return fail("no CUDA driver", dlerror());
     }
-    g.rtc_lib = open_first("LEXGPU_LIBNVRTC", rtc_names);
+    g.rtc_lib = open_first("CANCHOGPU_LIBNVRTC", rtc_names);
     if (!g.rtc_lib) {
         return fail("no NVRTC", dlerror());
     }
@@ -199,16 +199,16 @@ static int include_flags(char flags[][512], int max) {
     return n;
 }
 
-int64_t lxg_compile(const char *src_p, int64_t src_n) {
+int64_t cgpu_compile(const char *src_p, int64_t src_n) {
     if (!g.ctx) {
-        return fail("lxg_compile", "the device is not open");
+        return fail("cgpu_compile", "the device is not open");
     }
     if (g.n_modules == MAX_MODULES) {
-        return fail("lxg_compile", "too many modules");
+        return fail("cgpu_compile", "too many modules");
     }
     char *src = cstr(src_p, src_n);
     if (!src) {
-        return fail("lxg_compile", "out of memory");
+        return fail("cgpu_compile", "out of memory");
     }
     nvrtcProgram prog = NULL;
     if (g.nvrtcCreateProgram(&prog, src, "kernel.cu", 0, NULL, NULL)) {
@@ -243,7 +243,7 @@ int64_t lxg_compile(const char *src_p, int64_t src_n) {
     if (!ptx) {
         g.nvrtcDestroyProgram(&prog);
         free(src);
-        return fail("lxg_compile", "out of memory");
+        return fail("cgpu_compile", "out of memory");
     }
     g.nvrtcGetPTX(prog, ptx);
     ptx[n] = 0;
@@ -259,16 +259,16 @@ int64_t lxg_compile(const char *src_p, int64_t src_n) {
     return g.n_modules++;
 }
 
-int64_t lxg_function(int64_t module, const char *name_p, int64_t name_n) {
+int64_t cgpu_function(int64_t module, const char *name_p, int64_t name_n) {
     if (module < 0 || module >= g.n_modules) {
-        return fail("lxg_function", "no such module");
+        return fail("cgpu_function", "no such module");
     }
     if (g.n_functions == MAX_FUNCTIONS) {
-        return fail("lxg_function", "too many functions");
+        return fail("cgpu_function", "too many functions");
     }
     char *name = cstr(name_p, name_n);
     if (!name) {
-        return fail("lxg_function", "out of memory");
+        return fail("cgpu_function", "out of memory");
     }
     CUfunction f = NULL;
     CUresult r = g.cuModuleGetFunction(&f, g.modules[module], name);
@@ -280,12 +280,12 @@ int64_t lxg_function(int64_t module, const char *name_p, int64_t name_n) {
     return g.n_functions++;
 }
 
-int64_t lxg_alloc(int64_t bytes) {
+int64_t cgpu_alloc(int64_t bytes) {
     if (!g.ctx) {
-        return fail("lxg_alloc", "the device is not open");
+        return fail("cgpu_alloc", "the device is not open");
     }
     if (g.n_buffers == MAX_BUFFERS || bytes <= 0) {
-        return fail("lxg_alloc", bytes <= 0 ? "an empty buffer" : "too many buffers");
+        return fail("cgpu_alloc", bytes <= 0 ? "an empty buffer" : "too many buffers");
     }
     CUdeviceptr p = 0;
     CUresult r = g.cuMemAlloc_v2(&p, (size_t)bytes);
@@ -307,37 +307,37 @@ static int64_t buffer_ok(int64_t buf, int64_t n, const char *what) {
     return 0;
 }
 
-int64_t lxg_upload(int64_t buf, const char *p, int64_t n) {
-    if (buffer_ok(buf, n, "lxg_upload")) {
+int64_t cgpu_upload(int64_t buf, const char *p, int64_t n) {
+    if (buffer_ok(buf, n, "cgpu_upload")) {
         return -1;
     }
     CUresult r = g.cuMemcpyHtoD_v2(g.buffers[buf], p, (size_t)n);
     return r ? cu_fail("cuMemcpyHtoD", r) : n;
 }
 
-int64_t lxg_download(int64_t buf, char *p, int64_t n) {
-    if (buffer_ok(buf, n, "lxg_download")) {
+int64_t cgpu_download(int64_t buf, char *p, int64_t n) {
+    if (buffer_ok(buf, n, "cgpu_download")) {
         return -1;
     }
     CUresult r = g.cuMemcpyDtoH_v2(p, g.buffers[buf], (size_t)n);
     return r ? cu_fail("cuMemcpyDtoH", r) : n;
 }
 
-int64_t lxg_arg(int64_t buf) {
+int64_t cgpu_arg(int64_t buf) {
     if (buf < 0 || buf >= g.n_buffers) {
-        return fail("lxg_arg", "no such buffer");
+        return fail("cgpu_arg", "no such buffer");
     }
     if (g.n_args == MAX_ARGS) {
-        return fail("lxg_arg", "too many arguments");
+        return fail("cgpu_arg", "too many arguments");
     }
     g.args[g.n_args] = g.buffers[buf];
     return g.n_args++;
 }
 
-int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
+int64_t cgpu_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     if (fn < 0 || fn >= g.n_functions) {
         g.n_args = 0;
-        return fail("lxg_launch", "no such function");
+        return fail("cgpu_launch", "no such function");
     }
     /* Slots past the arguments point at a zero, so a reader that
      * expects more than were bound (the mock counts from the kernel's
@@ -357,7 +357,7 @@ int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     return r ? cu_fail("cuCtxSynchronize", r) : 0;
 }
 
-int64_t lxg_error(char *out, int64_t n) {
+int64_t cgpu_error(char *out, int64_t n) {
     int64_t len = (int64_t)strlen(g.error);
     if (len > n) {
         len = n;
@@ -366,7 +366,7 @@ int64_t lxg_error(char *out, int64_t n) {
     return len;
 }
 
-int64_t lxg_close(void) {
+int64_t cgpu_close(void) {
     if (!g.ctx) {
         return 0;
     }

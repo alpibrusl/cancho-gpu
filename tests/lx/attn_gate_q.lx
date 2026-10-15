@@ -1,0 +1,15 @@
+// y = o * sigmoid(gate) where the gate is the second half of each head's row of
+// q_proj's output (a [q, gate] pair of n a head): the output gate of an attention layer.
+algo attn_gate_q(r, n)
+  in  o:  f32[r, n]
+  in  qg: f32[r, 2 * n]
+  out y:  f32[r, n]
+{
+  let ot = load o
+  let gt = load qg[0, n ; r, n]
+  let sg = sigmoid gt
+  store ot * sg -> y
+}
+
+schedule attn_gate_q for apple-m-series { threads 256 }
+schedule attn_gate_q for nvidia-ada     { threads 256 }

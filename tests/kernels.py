@@ -140,6 +140,130 @@ def swiglu(n):
     return [a / (1 + math.exp(-a)) * b for a, b in zip(g, u)]
 
 
+def e2m1(code):
+    v = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)[code & 7]
+    return -v if code & 8 else v
+
+
+def e4m3(b):
+    e, m = b >> 3 & 15, b & 7
+    v = m * 2.0 ** -9 if e == 0 else (1 + m / 8) * 2.0 ** (e - 7)
+    return -v if b & 128 else v
+
+
+def fp4_weights(n, k):
+    """The interpreter's made-up NVFP4 weights: code bytes and scale bytes 0x30 + i % 8."""
+    w = []
+    for row in range(n):
+        for c in range(k):
+            byte = 48 + (row * (k // 2) + c // 2) % 8
+            code = byte & 15 if c % 2 == 0 else byte >> 4
+            scale = e4m3(48 + (row * (k // 16) + c // 16) % 8)
+            w.append((code, scale))
+    return w
+
+
+def matvec_fp4(n, k, residual=False):
+    sizes = [k, n] + ([n] if residual else [])
+    x, g = lcg(sizes)[:2]
+    r = lcg(sizes)[2] if residual else None
+    w = fp4_weights(n, k)
+    y = [sum(x[c] * e2m1(w[row * k + c][0]) * w[row * k + c][1] * g[row] for c in range(k)) for row in range(n)]
+    return [a + b for a, b in zip(y, r)] if residual else y
+
+
+def matvec_fp4_swiglu(n, k):
+    x, g1, g2 = lcg([k, n, n])
+    w = fp4_weights(n, k)
+    def dot(row, g):
+        return sum(x[c] * e2m1(w[row * k + c][0]) * w[row * k + c][1] * g[row] for c in range(k))
+    return [silu_(dot(row, g1)) * dot(row, g2) for row in range(n)]
+
+
+def silu_(x):
+    return x / (1 + math.exp(-x))
+
+
+def conv_step(c):
+    x, cs, cw = lcg([c, 3 * c, 4 * c])
+    y = [silu_(cs[j] * cw[j] + cs[c + j] * cw[c + j] + cs[2 * c + j] * cw[2 * c + j] + x[j] * cw[3 * c + j]) for j in range(c)]
+    return y, cs[c:] + x
+
+
+def qk_norm(nk, rows):
+    (c,) = lcg([rows * 128])
+    def norm(r, scale):
+        v = c[r * 128:(r + 1) * 128]
+        rs = 1 / math.sqrt(sum(a * a for a in v) / 128 + 1e-6)
+        return [a * rs * scale for a in v]
+    return ([x for r in range(nk) for x in norm(r, 0.0078125)],
+            [x for r in range(nk) for x in norm(nk + r, 0.08838834764831845)])
+
+
+def softplus_(x):
+    return math.log1p(math.exp(-abs(x))) + max(x, 0.0)
+
+
+def gates(h):
+    a, b, aa, dtb = lcg([h] * 4)
+    g = [math.exp(-aa[i] * softplus_(a[i] + dtb[i])) for i in range(h)]
+    bt = [1 / (1 + math.exp(-x)) for x in b]
+    return [g[i] for i in range(h) for _ in range(128)], [bt[i] for i in range(h) for _ in range(128)]
+
+
+def qnorm(r, n):
+    x, w = lcg([r * 2 * n, n])
+    out = []
+    for i in range(r):
+        v = x[i * 2 * n:i * 2 * n + n]
+        rs = 1 / math.sqrt(sum(a * a for a in v) / n + 1e-6)
+        out += [v[j] * rs * w[j] for j in range(n)]
+    return out
+
+
+def attn_gate_q(r, n):
+    o, qg = lcg([r * n, r * 2 * n])
+    return [o[i * n + j] / (1 + math.exp(-qg[i * 2 * n + n + j])) for i in range(r) for j in range(n)]
+
+
+def delta_step(nk):
+    s, q, k, v, g, bt = lcg([nk * 384 * 128, nk * 128, nk * 128, nk * 384, nk * 3 * 128, nk * 384])
+    so, y = [0.0] * len(s), [0.0] * len(v)
+    for i in range(nk):
+        kb, qb = k[i * 128:(i + 1) * 128], q[i * 128:(i + 1) * 128]
+        for j in range(3):
+            gj = g[(i * 3 + j) * 128:(i * 3 + j + 1) * 128]
+            for r in range(128):
+                row = i * 384 + j * 128 + r
+                sg = [s[row * 128 + c] * gj[c] for c in range(128)]
+                kvm = sum(sg[c] * kb[c] for c in range(128))
+                e = (v[row] - kvm) * bt[row]
+                sn = [sg[c] + kb[c] * e for c in range(128)]
+                so[row * 128:(row + 1) * 128] = sn
+                y[row] = sum(sn[c] * qb[c] for c in range(128))
+    return so, y
+
+
+def rmsnorm_rows(r, n):
+    x, w = lcg([r * n, n])
+    out = []
+    for i in range(r):
+        v = x[i * n:(i + 1) * n]
+        rs = 1 / math.sqrt(sum(a * a for a in v) / n + 1e-6)
+        out += [v[j] * rs * w[j] for j in range(n)]
+    return out
+
+
+def gated_norm(h, n):
+    x, z, w = lcg([h * n, h * n, n])
+    out = []
+    for i in range(h):
+        v = x[i * n:(i + 1) * n]
+        rs = 1 / math.sqrt(sum(a * a for a in v) / n + 1e-6)
+        out += [v[j] * rs * w[j] * silu_(z[i * n + j]) for j in range(n)]
+    return out
+
+
 ok = True
 for r, h, p in ((24, 32, 192), (3, 4, 2)):
     ok &= check(f"rope r={r} h={h} p={p}", run("rope", [f"r={r}", f"h={h}", f"p={p}"])["y"], rope(r, h, p))
@@ -158,7 +282,33 @@ for kernel, n, k, extra in (("matvec_rows", 64, 96, None), ("matvec_bias", 64, 9
 for kernel, extra in (("matvec_rows_f16", None), ("matvec_bias_f16", "bias"), ("matvec_res_f16", "res")):
     ok &= check(f"{kernel} n=64 k=96", run(kernel, ["n=64", "k=96"])["y"], matvec16(64, 96, extra))
 ok &= check("kv_write nkv=2 tmax=8 d=4", run("kv_write", ["nkv=2", "tmax=8", "d=4"])["y"], kv_write(2, 8, 4))
+(nw,) = lcg([2 * 4])
+want = [nw[i * 4 + col] if r == 0 else 0.0 for i in range(2) for r in range(8) for col in range(4)]
+ok &= check("kv_row nkv=2 tmax=8 d=4", run("kv_row", ["nkv=2", "tmax=8", "d=4"])["y"], want)
 ok &= check("swiglu n=100", run("swiglu", ["n=100"])["y"], swiglu(100))
 got = run("attention_d64", ["nkv=2", "g=7", "t=32", "d=64", "tmax=40"])["o"]
 ok &= check("attention_d64 nkv=2 g=7 t=32 d=64 tmax=40", got, attention(2, 7, 32, 64, 40, 0.125))
+ok &= check("matvec_fp4_rows n=16 k=64", run("matvec_fp4_rows", ["n=16", "k=64"])["y"], matvec_fp4(16, 64))
+ok &= check("matvec_fp4_swiglu n=16 k=64", run("matvec_fp4_swiglu", ["n=16", "k=64"])["y"], matvec_fp4_swiglu(16, 64))
+ok &= check("matvec_fp4_res n=16 k=64", run("matvec_fp4_res", ["n=16", "k=64"])["y"], matvec_fp4(16, 64, True))
+got = run("conv_step", ["c=512"])
+want_y, want_ns = conv_step(512)
+ok &= check("conv_step y c=512", got["y"], want_y)
+ok &= check("conv_step ns c=512", got["ns"], want_ns)
+got = run("qk_norm", ["nk=2", "rows=6"])
+want_q, want_k = qk_norm(2, 6)
+ok &= check("qk_norm qn nk=2", got["qn"], want_q)
+ok &= check("qk_norm kn nk=2", got["kn"], want_k)
+got = run("gates", ["h=3"])
+want_g, want_b = gates(3)
+ok &= check("gates g h=3", got["g"], want_g)
+ok &= check("gates bt h=3", got["bt"], want_b)
+got = run("delta_step", ["nk=2"])
+want_so, want_y = delta_step(2)
+ok &= check("delta_step so nk=2", got["so"], want_so)
+ok &= check("delta_step y nk=2", got["y"], want_y)
+ok &= check("qnorm r=3 n=8", run("qnorm", ["r=3", "n=8", "eps=1e-6"])["y"], qnorm(3, 8))
+ok &= check("attn_gate_q r=3 n=8", run("attn_gate_q", ["r=3", "n=8"])["y"], attn_gate_q(3, 8))
+ok &= check("rmsnorm_rows r=3 n=16", run("rmsnorm_rows", ["r=3", "n=16", "eps=1e-6"])["y"], rmsnorm_rows(3, 16))
+ok &= check("gated_norm h=3 n=16", run("gated_norm", ["h=3", "n=16", "eps=1e-6"])["y"], gated_norm(3, 16))
 sys.exit(0 if ok else 1)

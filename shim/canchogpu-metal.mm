@@ -1,4 +1,4 @@
-/* lexgpu-metal -- the Metal device path, as cancho can call it.
+/* canchogpu-metal -- the Metal device path, as cancho can call it.
  *
  * This is an Objective-C++ file that provides a C interface to Metal.
  * It bridges between the C interface that cancho expects and the
@@ -33,11 +33,16 @@ static struct {
     int64_t sizes[MAX_BUFFERS];
     int64_t n_buffers;
     id<MTLBuffer> args[MAX_ARGS];
+    int64_t arg_offsets[MAX_ARGS];
     int64_t n_args;
-    /* The command buffer and encoder that `lxg_launch_async` fills until `lxg_sync`. */
+    /* The command buffer and encoder that `cgpu_launch_async` fills until `cgpu_sync`. */
     id<MTLCommandBuffer> cmd;
     id<MTLComputeCommandEncoder> enc;
-    /* The last command buffer committed, which `lxg_sync` waits for. */
+    /* The encoder dispatches concurrently: a launch waits for the ones before it (a
+     * buffer barrier) unless `cgpu_overlap` said it does not depend on them. */
+    int overlap;
+    int fresh;
+    /* The last command buffer committed, which `cgpu_sync` waits for. */
     id<MTLCommandBuffer> last;
     char error[4096];
 } g;
@@ -57,7 +62,7 @@ static char *cstr(const char *p, int64_t n) {
     return s;
 }
 
-int64_t lxg_open(void) {
+int64_t cgpu_open(void) {
     if (g.device) {
         return 0;
     }
@@ -75,24 +80,24 @@ int64_t lxg_open(void) {
     return 0;
 }
 
-int64_t lxg_compile(const char *src_p, int64_t src_n) {
+int64_t cgpu_compile(const char *src_p, int64_t src_n) {
     if (!g.device) {
-        return fail("lxg_compile", "the device is not open");
+        return fail("cgpu_compile", "the device is not open");
     }
     if (g.n_libraries == MAX_MODULES) {
-        return fail("lxg_compile", "too many modules");
+        return fail("cgpu_compile", "too many modules");
     }
     
     char *src = cstr(src_p, src_n);
     if (!src) {
-        return fail("lxg_compile", "out of memory");
+        return fail("cgpu_compile", "out of memory");
     }
     
     NSString *srcString = [NSString stringWithUTF8String:src];
     free(src);
     
     if (!srcString) {
-        return fail("lxg_compile", "failed to create NSString from source");
+        return fail("cgpu_compile", "failed to create NSString from source");
     }
     
     NSError *error = nil;
@@ -109,29 +114,32 @@ int64_t lxg_compile(const char *src_p, int64_t src_n) {
     return g.n_libraries++;
 }
 
-int64_t lxg_function(int64_t module, const char *name_p, int64_t name_n) {
+static char prof_name[4096][72];
+
+int64_t cgpu_function(int64_t module, const char *name_p, int64_t name_n) {
     if (module < 0 || module >= g.n_libraries) {
-        return fail("lxg_function", "no such module");
+        return fail("cgpu_function", "no such module");
     }
     if (g.n_functions == MAX_FUNCTIONS) {
-        return fail("lxg_function", "too many functions");
+        return fail("cgpu_function", "too many functions");
     }
     
     char *name = cstr(name_p, name_n);
     if (!name) {
-        return fail("lxg_function", "out of memory");
+        return fail("cgpu_function", "out of memory");
     }
     
     NSString *funcName = [NSString stringWithUTF8String:name];
+    snprintf(prof_name[g.n_functions], sizeof prof_name[0], "%s", name);
     free(name);
     
     if (!funcName) {
-        return fail("lxg_function", "failed to create function name string");
+        return fail("cgpu_function", "failed to create function name string");
     }
     
     id<MTLFunction> function = [g.libraries[module] newFunctionWithName:funcName];
     if (!function) {
-        return fail("lxg_function", "function not found in library");
+        return fail("cgpu_function", "function not found in library");
     }
     
     NSError *error = nil;
@@ -148,17 +156,17 @@ int64_t lxg_function(int64_t module, const char *name_p, int64_t name_n) {
     return g.n_functions++;
 }
 
-int64_t lxg_alloc(int64_t bytes) {
+int64_t cgpu_alloc(int64_t bytes) {
     if (!g.device) {
-        return fail("lxg_alloc", "the device is not open");
+        return fail("cgpu_alloc", "the device is not open");
     }
     if (g.n_buffers == MAX_BUFFERS || bytes <= 0) {
-        return fail("lxg_alloc", bytes <= 0 ? "an empty buffer" : "too many buffers");
+        return fail("cgpu_alloc", bytes <= 0 ? "an empty buffer" : "too many buffers");
     }
     
     id<MTLBuffer> buffer = [g.device newBufferWithLength:(NSUInteger)bytes options:MTLResourceStorageModeShared];
     if (!buffer) {
-        return fail("lxg_alloc", "failed to allocate buffer");
+        return fail("cgpu_alloc", "failed to allocate buffer");
     }
     
     g.buffers[g.n_buffers] = buffer;
@@ -176,14 +184,14 @@ static int64_t buffer_ok(int64_t buf, int64_t n, const char *what) {
     return 0;
 }
 
-int64_t lxg_upload(int64_t buf, const char *p, int64_t n) {
-    if (buffer_ok(buf, n, "lxg_upload")) {
+int64_t cgpu_upload(int64_t buf, const char *p, int64_t n) {
+    if (buffer_ok(buf, n, "cgpu_upload")) {
         return -1;
     }
     
     void *bufferContents = [g.buffers[buf] contents];
     if (!bufferContents) {
-        return fail("lxg_upload", "failed to get buffer contents");
+        return fail("cgpu_upload", "failed to get buffer contents");
     }
     
     memcpy(bufferContents, p, (size_t)n);
@@ -197,23 +205,23 @@ int64_t lxg_upload(int64_t buf, const char *p, int64_t n) {
 // Write `n` bytes into a buffer at `offset`: a model's weights go up a chunk at
 // a time, and the activations a token at a time, so a whole-buffer upload is
 // not enough.
-int64_t lxg_upload_at(int64_t buf, int64_t offset, const char *p, int64_t n) {
+int64_t cgpu_upload_at(int64_t buf, int64_t offset, const char *p, int64_t n) {
     if (buf < 0 || buf >= g.n_buffers) {
-        return fail("lxg_upload_at", "no such buffer");
+        return fail("cgpu_upload_at", "no such buffer");
     }
     if (offset < 0 || n < 0 || offset > g.sizes[buf] - n) {
-        return fail("lxg_upload_at", "the bytes run past the end of the buffer");
+        return fail("cgpu_upload_at", "the bytes run past the end of the buffer");
     }
     char *contents = (char *)[g.buffers[buf] contents];
     if (!contents) {
-        return fail("lxg_upload_at", "failed to get buffer contents");
+        return fail("cgpu_upload_at", "failed to get buffer contents");
     }
     memcpy(contents + offset, p, (size_t)n);
     return n;
 }
 
-int64_t lxg_download(int64_t buf, char *p, int64_t n) {
-    if (buffer_ok(buf, n, "lxg_download")) {
+int64_t cgpu_download(int64_t buf, char *p, int64_t n) {
+    if (buffer_ok(buf, n, "cgpu_download")) {
         return -1;
     }
     
@@ -224,7 +232,7 @@ int64_t lxg_download(int64_t buf, char *p, int64_t n) {
     // Get the buffer contents directly (this works for CPU-accessible buffers)
     void *bufferContents = [g.buffers[buf] contents];
     if (!bufferContents) {
-        return fail("lxg_download", "failed to get buffer contents");
+        return fail("cgpu_download", "failed to get buffer contents");
     }
     
     memcpy(p, bufferContents, (size_t)n);
@@ -232,52 +240,114 @@ int64_t lxg_download(int64_t buf, char *p, int64_t n) {
     return n;
 }
 
-int64_t lxg_arg(int64_t buf) {
+int64_t cgpu_arg(int64_t buf) {
     if (buf < 0 || buf >= g.n_buffers) {
-        return fail("lxg_arg", "no such buffer");
+        return fail("cgpu_arg", "no such buffer");
     }
     if (g.n_args == MAX_ARGS) {
-        return fail("lxg_arg", "too many arguments");
+        return fail("cgpu_arg", "too many arguments");
     }
     g.args[g.n_args] = g.buffers[buf];
+    g.arg_offsets[g.n_args] = 0;
+    return g.n_args++;
+}
+
+/* Bind a buffer from a byte offset: a kernel that reads a part of one (the value part
+ * of a convolution's output, say) is given just that part as its parameter. */
+int64_t cgpu_arg_at(int64_t buf, int64_t offset) {
+    if (buf < 0 || buf >= g.n_buffers) {
+        return fail("cgpu_arg_at", "no such buffer");
+    }
+    if (offset < 0 || offset >= g.sizes[buf] || offset % 4 != 0) {
+        return fail("cgpu_arg_at", "the offset is outside the buffer or not a multiple of 4");
+    }
+    if (g.n_args == MAX_ARGS) {
+        return fail("cgpu_arg_at", "too many arguments");
+    }
+    g.args[g.n_args] = g.buffers[buf];
+    g.arg_offsets[g.n_args] = offset;
     return g.n_args++;
 }
 
 /* Encode a dispatch into the pending command buffer, without waiting: a token's
  * hundreds of kernels then cost one commit instead of one each. Metal orders
- * dispatches that use the same buffers; `lxg_sync` commits and waits. */
-int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
+ * dispatches that use the same buffers; `cgpu_sync` commits and waits. */
+static double prof_ns[4096];
+static int64_t prof_n[4096];
+int64_t cgpu_prof_dump(void);
+
+int64_t cgpu_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     if (fn < 0 || fn >= g.n_functions) {
         g.n_args = 0;
-        return fail("lxg_launch_async", "no such function");
+        return fail("cgpu_launch_async", "no such function");
     }
     if (!g.cmd) {
         g.cmd = [g.queue commandBuffer];
         if (!g.cmd) {
             g.n_args = 0;
-            return fail("lxg_launch_async", "failed to create command buffer");
+            return fail("cgpu_launch_async", "failed to create command buffer");
         }
-        g.enc = [g.cmd computeCommandEncoder];
+        g.enc = [g.cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        g.fresh = 1;
         if (!g.enc) {
             g.cmd = nil;
             g.n_args = 0;
-            return fail("lxg_launch_async", "failed to create compute encoder");
+            return fail("cgpu_launch_async", "failed to create compute encoder");
         }
     }
+    if (getenv("CANCHOGPU_SKIP") && strstr(prof_name[fn], getenv("CANCHOGPU_SKIP"))) {
+        /* Ablation for timing only: leave this kernel out (the outputs are then wrong). */
+        g.n_args = 0;
+        return 0;
+    }
+    if (!g.fresh && !g.overlap) {
+        [g.enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    g.fresh = 0;
+    g.overlap = 0;
     [g.enc setComputePipelineState:g.functions[fn]];
     for (int64_t i = 0; i < g.n_args; i++) {
-        [g.enc setBuffer:g.args[i] offset:0 atIndex:i];
+        [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
     }
     [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
           threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
     g.n_args = 0;
+    if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
+        /* Per-kernel breakdown: run each launch in a buffer of its own and
+         * add up its GPU time by function. Slower than the real schedule. */
+        [g.enc endEncoding];
+        [g.cmd commit];
+        [g.cmd waitUntilCompleted];
+        prof_ns[fn] += ([g.cmd GPUEndTime] - [g.cmd GPUStartTime]) * 1e9;
+        prof_n[fn] += 1;
+        g.cmd = nil;
+        g.enc = nil;
+    }
     return 0;
 }
 
-/* Commit what `lxg_launch_async` encoded, without waiting: the GPU starts on it
+/* Commit what `cgpu_launch_async` encoded, without waiting: the GPU starts on it
  * while the CPU goes on encoding the next. The queue runs command buffers in
- * order, so a later `lxg_sync` need only wait for the last. */
-int64_t lxg_flush(void) {
+ * order, so a later `cgpu_sync` need only wait for the last. */
+int64_t cgpu_prof_dump(void) {
+    for (int i = 0; i < 4096; i++) {
+        if (prof_n[i]) {
+            fprintf(stderr, "prof %-44s %4lld launches %8.3f ms\n", prof_name[i], (long long)prof_n[i], prof_ns[i] / 1e6);
+            prof_ns[i] = 0;
+            prof_n[i] = 0;
+        }
+    }
+    return 0;
+}
+
+/* The next `cgpu_launch_async` does not depend on the one before it (nor on any
+ * since the last barrier): the GPU may run them together. */
+int64_t cgpu_overlap(void) {
+    g.overlap = 1;
+    return 0;
+}
+
+int64_t cgpu_flush(void) {
     if (!g.cmd) {
         return 0;
     }
@@ -291,9 +361,12 @@ int64_t lxg_flush(void) {
 
 /* Commit what is pending and wait for everything submitted: the GPU time of
  * the last command buffer, in nanoseconds (0 if nothing was submitted). */
-int64_t lxg_sync(void) {
-    lxg_flush();
+int64_t cgpu_sync(void) {
+    cgpu_flush();
     if (!g.last) {
+        if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
+            cgpu_prof_dump();
+        }
         return 0;
     }
     struct timespec t0, t1;
@@ -301,35 +374,38 @@ int64_t lxg_sync(void) {
     [g.last waitUntilCompleted];
     clock_gettime(CLOCK_MONOTONIC, &t1);
     int64_t ns = (int64_t)(([g.last GPUEndTime] - [g.last GPUStartTime]) * 1e9);
-    if (getenv("LEXGPU_PROFILE")) {
+    if (getenv("CANCHOGPU_PROFILE")) {
         double wall = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
         fprintf(stderr, "sync: waited %.3f ms, last buffer gpu %.3f ms\n", wall, ns / 1e6);
     }
     g.last = nil;
+    if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
+        cgpu_prof_dump();
+    }
     return ns;
 }
 
-int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
+int64_t cgpu_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     if (g.cmd) {
-        lxg_sync();
+        cgpu_sync();
     }
     if (fn < 0 || fn >= g.n_functions) {
         g.n_args = 0;
-        return fail("lxg_launch", "no such function");
+        return fail("cgpu_launch", "no such function");
     }
     
     // Create command buffer
     id<MTLCommandBuffer> commandBuffer = [g.queue commandBuffer];
     if (!commandBuffer) {
         g.n_args = 0;
-        return fail("lxg_launch", "failed to create command buffer");
+        return fail("cgpu_launch", "failed to create command buffer");
     }
     
     id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
     if (!computeEncoder) {
         [commandBuffer commit];
         g.n_args = 0;
-        return fail("lxg_launch", "failed to create compute encoder");
+        return fail("cgpu_launch", "failed to create compute encoder");
     }
     
     // Set the compute pipeline state
@@ -337,7 +413,7 @@ int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     
     // Set the arguments
     for (int64_t i = 0; i < g.n_args; i++) {
-        [computeEncoder setBuffer:g.args[i] offset:0 atIndex:i];
+        [computeEncoder setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
     }
     
     // Dispatch the compute kernel
@@ -357,7 +433,7 @@ int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     return 0;
 }
 
-int64_t lxg_error(char *out, int64_t n) {
+int64_t cgpu_error(char *out, int64_t n) {
     int64_t len = (int64_t)strlen(g.error);
     if (len > n) {
         len = n;
@@ -366,7 +442,7 @@ int64_t lxg_error(char *out, int64_t n) {
     return len;
 }
 
-int64_t lxg_close(void) {
+int64_t cgpu_close(void) {
     if (!g.device) {
         return 0;
     }
