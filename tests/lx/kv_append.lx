@@ -1,0 +1,22 @@
+// Write one position's keys and values into the cache.
+//
+// The cache holds nkv heads of tmax positions, head i at rows i * tmax; the
+// new key and value are one row for each head. `pos` is the position being
+// written, a constant of the launch like every other extent. The rest of the
+// cache is not touched, which is the point of an append: the parameters are
+// writable, and a kernel's output is only what it stores.
+algo kv_append(nkv, tmax, d, pos)
+  in  kn: f32[nkv, d]
+  in  vn: f32[nkv, d]
+  out kc: f32[nkv * tmax, d]
+  out vc: f32[nkv * tmax, d]
+{
+  grid i over nkv
+  let kt = load kn[i, 0 ; 1, d]
+  let vt = load vn[i, 0 ; 1, d]
+  store kt -> kc[i * tmax + pos, 0]
+  store vt -> vc[i * tmax + pos, 0]
+}
+
+schedule kv_append for apple-m-series { threads 128 }
+schedule kv_append for nvidia-ada     { threads 128 }

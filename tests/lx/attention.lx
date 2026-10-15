@@ -1,0 +1,42 @@
+// One decode step of attention for every key/value head: for head i, the g
+// query heads that share it attend over the first t positions of its cache,
+//
+//     o = softmax(q k^T / 16 + mask) v        (1/16 = 1/sqrt(256))
+//
+// with head dimension d = 256 (Qwen3.8's) and a cache of tmax positions per
+// head. mask is added to the scores: 0 for a position in use and a large
+// negative number for one that is not, so t is a capacity and the number of
+// positions in use is whatever the mask lets through.
+//
+// The scores of a head are one [g, t] tile, so t is bounded by the
+// threadgroup memory a tile may take: 32 KiB on Metal, 48 KiB static on CUDA
+// (`docs/kernels.md`). Longer contexts need the scores split across
+// threadgroups and merged, which this surface cannot yet say (same document).
+// d MUST be 256: the surface has no scalar parameter, so 1/sqrt(d) is the
+// literal 0.0625 below and any other d would be scaled wrongly without error.
+algo attention(nkv, g, t, d, tmax)
+  in  q:    f32[nkv * g, d]
+  in  k:    f32[nkv * tmax, d]
+  in  v:    f32[nkv * tmax, d]
+  in  mask: f32[1, t]
+  out o:    f32[nkv * g, d]
+{
+  grid i over nkv
+  let qt = load q[i * g, 0 ; g, d]
+  let kt = load k[i * tmax, 0 ; t, d]
+  let s  = matmul_nt qt kt
+  let sc = s * 0.0625
+  let mk = load mask
+  let sm = sc + mk
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / z
+  let vt = load v[i * tmax, 0 ; t, d]
+  let r  = matmul p vt
+  store r -> o[i * g, 0]
+}
+
+schedule attention for apple-m-series { threads 256 }
+schedule attention for nvidia-ada     { threads 256 }

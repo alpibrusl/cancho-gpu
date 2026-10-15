@@ -25,5 +25,6 @@ tests/gguf.sh
 tests/safetensors.sh
 tests/tokenizer.sh
 tests/sampler.sh
+python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"
