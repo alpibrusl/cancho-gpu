@@ -48,7 +48,7 @@ fn put_lit[&m, &t](m: &!m [int], t: &!t [byte], s: &static [byte]) -> [] int {
     return 0;
 }
 
-fn quoted[&m, &t](m: &!m [int], t: &!t [byte], p: int, n: int) -> [] int {
+pub fn quoted[&m, &t](m: &!m [int], t: &!t [byte], p: int, n: int) -> [] int {
     let from = text.begin(m);
     text.put_byte(m, t, byte_of(34));
     var i = 0;

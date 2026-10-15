@@ -1,0 +1,72 @@
+edition 5;
+module safetensors_dump;
+
+// `safetensors_dump` -- the canonical text of a safetensors header, the
+// form `tools/safetensors_dump.py` prints from the `safetensors` library
+// (`docs/runtime.md` §8):
+//
+//     safetensors header=312 tensors=4 data=224
+//     meta format "mlx"
+//     tensor layer.scales F16 shape=[8,1] range=[128,144]
+//
+// Metadata and tensors are sorted by name, byte-wise. `data=` is the size
+// of the data section, or `unknown` when the file was longer than what was
+// read and no size was given.
+
+import mem;
+import text;
+import gguf;
+import gguf_dump;
+import safetensors;
+
+// The records of `list` ordered by the string handle in word `at`.
+fn sorted[&m, &t](m: &!m [int], t: &!t [byte], list: int) -> [] int {
+    let out = mem.copy(m, list);
+    var a = 1;
+    while a < mem.size(m, out) {
+        let x = mem.get(m, out, a);
+        var b = a;
+        while b > 0 && gguf.less(t, text.start(m[x]), text.size(m[x]), text.start(m[mem.get(m, out, b - 1)]), text.size(m[mem.get(m, out, b - 1)])) {
+            mem.set(m, out, b, mem.get(m, out, b - 1));
+            b = b - 1;
+        }
+        mem.set(m, out, b, x);
+        a = a + 1;
+    }
+    return out;
+}
+
+pub fn dump[&m, &t](m: &!m [int], t: &!t [byte], g: int) -> [] int {
+    let lines = mem.list(m);
+    var data = text.lit(m, t, "unknown");
+    if m[g + safetensors.f_size()] >= 0 {
+        data = text.num(m, t, m[g + safetensors.f_size()] - 8 - m[g + safetensors.f_header()]);
+    }
+    mem.push(m, lines, text.f3(m, t, "safetensors header=$ tensors=$ data=$\n", text.num(m, t, m[g + safetensors.f_header()]), text.num(m, t, m[g + safetensors.f_tensors()]), data));
+    let metas = sorted(m, t, m[g + safetensors.f_meta()]);
+    var i = 0;
+    while i < mem.size(m, metas) {
+        let r = mem.get(m, metas, i);
+        let value = gguf_dump.quoted(m, t, text.start(m[r + 1]), text.size(m[r + 1]));
+        mem.push(m, lines, text.f2(m, t, "meta $ $\n", m[r], value));
+        i = i + 1;
+    }
+    let tensors = sorted(m, t, m[g + safetensors.f_list()]);
+    var j = 0;
+    while j < mem.size(m, tensors) {
+        let r = mem.get(m, tensors, j);
+        let dims = mem.list(m);
+        var d = 0;
+        while d < mem.size(m, m[r + 2]) {
+            mem.push(m, dims, text.num(m, t, mem.get(m, m[r + 2], d)));
+            d = d + 1;
+        }
+        let shape = text.joined(m, t, dims, ",");
+        let kind = safetensors.dtype_name(m, t, m[r + 1]);
+        let lo = text.num(m, t, m[r + 3]);
+        let hi = text.num(m, t, m[r + 4]);
+        mem.push(m, lines, text.fmt(m, t, "tensor $ $ shape=[$] range=[$,$]\n", mem.of5(m, m[r], kind, shape, lo, hi)));
+        j = j + 1;
+    }
+    return text.joined(m, t, lines, "");
+}

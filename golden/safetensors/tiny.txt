@@ -1,0 +1,10 @@
+safetensors header=480 tensors=7 data=53
+meta format "pt"
+meta note "q\"uote \\ back \xc3\xa9"
+tensor empty U8 shape=[0] range=[45,45]
+tensor scalar F16 shape=[] range=[40,42]
+tensor w.bf16 BF16 shape=[4] range=[24,32]
+tensor w.f32 F32 shape=[2,3] range=[0,24]
+tensor w.f64 F64 shape=[1] range=[45,53]
+tensor w.i8 I8 shape=[3,1] range=[42,45]
+tensor w.u32 U32 shape=[2] range=[32,40]

@@ -1,0 +1,429 @@
+edition 5;
+module safetensors;
+
+// `safetensors` -- a safetensors header reader (slice 9a, stage 2 of
+// cancho#251, issue #5; `docs/runtime.md` §7).
+//
+// A safetensors file is an 8-byte little-endian length N, N bytes of JSON
+// (the header: for each tensor its dtype, shape and `data_offsets`, plus an
+// optional `__metadata__` object of strings), then the tensor bytes. Both
+// Qwen checkpoints this is for have it, whole (Hugging Face) or one
+// tensor at a time (Ollama's blobs).
+//
+// The oracle is the `safetensors` library, whose Rust reader validates a
+// file as the format defines it; `lex-rt` has no such reader (its `qwen.rs`
+// takes five dtypes and checks nothing). The JSON is `std.json`'s tape
+// parser, strict (RFC 8259), into a tape in `m`; names and metadata are
+// decoded into the text pool; nothing else is copied.
+//
+// It has no input that traps: the header length is checked before the
+// header is read, every offset and every product is checked against its
+// bound, and the tape cannot overflow (it is sized by `json.tape_len`).
+
+import std.json;
+import mem;
+import text;
+import err;
+import gguf;
+
+// The largest header this reader takes. The format allows 100,000,000
+// bytes; the real ones are 30 to 105 KB (`docs/runtime.md` §7), and the
+// tape is three words a byte in `m`.
+pub fn max_header() -> [] int {
+    return 1048576;
+}
+
+// The record `parse` answers, in `m`.
+pub fn f_header() -> [] int {
+    return 0;
+}
+
+pub fn f_tensors() -> [] int {
+    return 1;
+}
+
+// The list of `[key, value]` handles of `__metadata__`.
+pub fn f_meta() -> [] int {
+    return 2;
+}
+
+// The list of tensor records `[name, dtype, shape list, begin, end]`.
+pub fn f_list() -> [] int {
+    return 3;
+}
+
+// The file's size, or -1 when it was not known.
+pub fn f_size() -> [] int {
+    return 4;
+}
+
+// The dtypes of the format, by index, with their byte sizes.
+pub fn dtype_name[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
+    if d == 0 {
+        return text.lit(m, t, "BOOL");
+    }
+    if d == 1 {
+        return text.lit(m, t, "U8");
+    }
+    if d == 2 {
+        return text.lit(m, t, "I8");
+    }
+    if d == 3 {
+        return text.lit(m, t, "F8_E5M2");
+    }
+    if d == 4 {
+        return text.lit(m, t, "F8_E4M3");
+    }
+    if d == 5 {
+        return text.lit(m, t, "I16");
+    }
+    if d == 6 {
+        return text.lit(m, t, "U16");
+    }
+    if d == 7 {
+        return text.lit(m, t, "F16");
+    }
+    if d == 8 {
+        return text.lit(m, t, "BF16");
+    }
+    if d == 9 {
+        return text.lit(m, t, "I32");
+    }
+    if d == 10 {
+        return text.lit(m, t, "U32");
+    }
+    if d == 11 {
+        return text.lit(m, t, "F32");
+    }
+    if d == 12 {
+        return text.lit(m, t, "F64");
+    }
+    if d == 13 {
+        return text.lit(m, t, "I64");
+    }
+    return text.lit(m, t, "U64");
+}
+
+pub fn dtype_bytes(d: int) -> [] int {
+    if d <= 4 {
+        return 1;
+    }
+    if d <= 8 {
+        return 2;
+    }
+    if d <= 11 {
+        return 4;
+    }
+    return 8;
+}
+
+// The index of the dtype named `s`, or -1.
+fn dtype_of[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+    var d = 0;
+    while d < 15 {
+        if text.eq(t, s, dtype_name(m, t, d)) {
+            return d;
+        }
+        d = d + 1;
+    }
+    return 0 - 1;
+}
+
+// ---------------------------------------------------------------------
+// Strings of the tape, decoded into the text pool
+// ---------------------------------------------------------------------
+
+fn hex_value(c: int) -> [] int {
+    if c >= 48 && c <= 57 {
+        return c - 48;
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87;
+    }
+    return c - 55;
+}
+
+fn four_hex[&t](t: &!t [byte], p: int) -> [] int {
+    return hex_value(int_of(t[p])) * 4096 + hex_value(int_of(t[p + 1])) * 256 + hex_value(int_of(t[p + 2])) * 16 + hex_value(int_of(t[p + 3]));
+}
+
+fn put_utf8[&m, &t](m: &!m [int], t: &!t [byte], cp: int) -> [] int {
+    if cp < 128 {
+        return text.put_byte(m, t, byte_of(cp));
+    }
+    if cp < 2048 {
+        text.put_byte(m, t, byte_of(192 + cp / 64));
+        return text.put_byte(m, t, byte_of(128 + cp % 64));
+    }
+    if cp < 65536 {
+        text.put_byte(m, t, byte_of(224 + cp / 4096));
+        text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
+        return text.put_byte(m, t, byte_of(128 + cp % 64));
+    }
+    text.put_byte(m, t, byte_of(240 + cp / 262144));
+    text.put_byte(m, t, byte_of(128 + cp / 4096 % 64));
+    text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
+    return text.put_byte(m, t, byte_of(128 + cp % 64));
+}
+
+// The string whose body (inside the quotes, still escaped, already
+// validated by `std.json`) is `t[from..to]`, decoded, as a text handle.
+fn decode[&m, &t](m: &!m [int], t: &!t [byte], from: int, to: int) -> [] int {
+    let start = text.begin(m);
+    var p = from;
+    while p < to {
+        let c = int_of(t[p]);
+        if c != 92 {
+            text.put_byte(m, t, byte_of(c));
+            p = p + 1;
+        } else {
+            let e = int_of(t[p + 1]);
+            if e == 117 {
+                var cp = four_hex(t, p + 2);
+                p = p + 6;
+                if cp >= 55296 && cp < 56320 {
+                    // A high surrogate; `std.json` guarantees the low half.
+                    let low = four_hex(t, p + 2);
+                    cp = 65536 + (cp - 55296) * 1024 + (low - 56320);
+                    p = p + 6;
+                }
+                put_utf8(m, t, cp);
+            } else {
+                var b = e;
+                if e == 98 {
+                    b = 8;
+                } else if e == 102 {
+                    b = 12;
+                } else if e == 110 {
+                    b = 10;
+                } else if e == 114 {
+                    b = 13;
+                } else if e == 116 {
+                    b = 9;
+                }
+                text.put_byte(m, t, byte_of(b));
+                p = p + 2;
+            }
+        }
+    }
+    return text.finish(m, start);
+}
+
+// ---------------------------------------------------------------------
+// The header
+// ---------------------------------------------------------------------
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], rule: &static [byte], msg: &static [byte]) -> [] int {
+    return err.fail(m, t, rule, text.lit(m, t, msg));
+}
+
+// Parse the file whose bytes are `t[base..end]`; `size` is its length if
+// known, else -1 (a file longer than what was read). The record, or -1.
+pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], base: int, end: int, size: int) -> [] int {
+    if end - base < 8 {
+        return bad(m, t, "st-truncated", "a safetensors file is at least 8 bytes");
+    }
+    let n = gguf.le(t, base, 8);
+    if n < 0 || n > max_header() {
+        return err.fail(m, t, "st-header-size", text.n1(m, t, "header length $ is past the 1 MiB this reader takes (the format allows 100 MB)", n));
+    }
+    if size >= 0 && 8 + n > size {
+        return bad(m, t, "st-header-length", "the header length runs past the end of the file");
+    }
+    if 8 + n > end - base {
+        return bad(m, t, "st-truncated", "the header runs past the bytes read");
+    }
+    let hs = base + 8;
+    if n == 0 || t[hs] != byte_of('{') {
+        return bad(m, t, "st-json-brace", "the header does not start with `{`");
+    }
+    let tape_words = json.tape_len(t[hs..hs + n]);
+    let tape_at = mem.grab(m, tape_words);
+    let nodes = json.parse(t[hs..hs + n], m[tape_at..tape_at + tape_words]);
+    if nodes < 0 {
+        let code = json.error_code(nodes);
+        return err.fail(m, t, "st-json", text.f1(m, t, "the header is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
+    }
+    let g = mem.rec(m, 5);
+    let metas = mem.list(m);
+    let tensors = mem.list(m);
+    m[g + f_header()] = n;
+    m[g + f_meta()] = metas;
+    m[g + f_list()] = tensors;
+    m[g + f_size()] = size;
+    let pairs = json.count(m[tape_at..tape_at + tape_words], 0);
+    var k = 1;
+    var i = 0;
+    while i < pairs {
+        let v = k + 1;
+        let kstart = hs + m[tape_at + 3 * k + 1];
+        let kend = hs + m[tape_at + 3 * k + 2];
+        let name = decode(m, t, kstart, kend);
+        if text.is(t, name, "__metadata__") {
+            if !json.is_object(m[tape_at..tape_at + tape_words], v) {
+                return bad(m, t, "st-metadata-type", "__metadata__ is not an object");
+            }
+            var mk = v + 1;
+            var j = 0;
+            while j < json.count(m[tape_at..tape_at + tape_words], v) {
+                let mv = mk + 1;
+                if !json.is_string(m[tape_at..tape_at + tape_words], mv) {
+                    return bad(m, t, "st-metadata", "a __metadata__ value is not a string");
+                }
+                let key = decode(m, t, hs + m[tape_at + 3 * mk + 1], hs + m[tape_at + 3 * mk + 2]);
+                let text_of_value = decode(m, t, hs + m[tape_at + 3 * mv + 1], hs + m[tape_at + 3 * mv + 2]);
+                mem.push(m, metas, mem.rec2(m, key, text_of_value));
+                mk = json.skip(m[tape_at..tape_at + tape_words], mv);
+                j = j + 1;
+            }
+        } else {
+            let rec = entry(m, t, tape_at, tape_words, hs, n, v, name);
+            if rec < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, tensors, rec);
+        }
+        k = json.skip(m[tape_at..tape_at + tape_words], v);
+        i = i + 1;
+    }
+    m[g + f_tensors()] = mem.size(m, tensors);
+    if duplicate_names(m, t, tensors) {
+        return bad(m, t, "st-duplicate", "a tensor name appears twice");
+    }
+    if layout(m, t, g) < 0 {
+        return 0 - 1;
+    }
+    return g;
+}
+
+// One tensor's record from the object at node `v`, or -1.
+fn entry[&m, &t](m: &!m [int], t: &!t [byte], tape_at: int, words: int, hs: int, n: int, v: int, name: int) -> [] int {
+    if !json.is_object(m[tape_at..tape_at + words], v) {
+        return err.fail(m, t, "st-entry", text.f1(m, t, "`$` is not an object", name));
+    }
+    let src = t[hs..hs + n];
+    let dnode = json.get(src, m[tape_at..tape_at + words], v, "dtype");
+    let snode = json.get(src, m[tape_at..tape_at + words], v, "shape");
+    let onode = json.get(src, m[tape_at..tape_at + words], v, "data_offsets");
+    if dnode < 0 || snode < 0 || onode < 0 {
+        return err.fail(m, t, "st-entry", text.f1(m, t, "`$` lacks dtype, shape or data_offsets", name));
+    }
+    if !json.is_string(m[tape_at..tape_at + words], dnode) {
+        return err.fail(m, t, "st-dtype", text.f1(m, t, "`$` has a dtype that is not a string", name));
+    }
+    let dname = decode(m, t, hs + m[tape_at + 3 * dnode + 1], hs + m[tape_at + 3 * dnode + 2]);
+    let dtype = dtype_of(m, t, dname);
+    if dtype < 0 {
+        return err.fail(m, t, "st-dtype", text.f2(m, t, "`$` has an unknown dtype `$`", name, dname));
+    }
+    if !json.is_array(m[tape_at..tape_at + words], snode) || !json.is_array(m[tape_at..tape_at + words], onode) {
+        return err.fail(m, t, "st-entry", text.f1(m, t, "`$` has a shape or data_offsets that is not an array", name));
+    }
+    let shape = mem.list(m);
+    var numel = 1;
+    var d = 0;
+    var cur = snode + 1;
+    while d < json.count(m[tape_at..tape_at + words], snode) {
+        if !json.is_int(m[tape_at..tape_at + words], cur) || !json.fits_int(src, m[tape_at..tape_at + words], cur) || json.to_int(src, m[tape_at..tape_at + words], cur) < 0 {
+            return err.fail(m, t, "st-shape", text.f1(m, t, "`$` has a dimension that is not a non-negative integer", name));
+        }
+        let dim = json.to_int(src, m[tape_at..tape_at + words], cur);
+        // 2^62 elements is far past any file, and keeps the products in range.
+        if dim > 0 && numel > 4611686018427387904 / dim / dtype_bytes(dtype) {
+            return err.fail(m, t, "st-numel", text.f1(m, t, "`$` has more than 2^62 bytes of elements", name));
+        }
+        numel = numel * dim;
+        mem.push(m, shape, dim);
+        cur = json.skip(m[tape_at..tape_at + words], cur);
+        d = d + 1;
+    }
+    if json.count(m[tape_at..tape_at + words], onode) != 2 {
+        return err.fail(m, t, "st-offsets-count", text.f1(m, t, "`$` data_offsets is not two numbers", name));
+    }
+    let b = onode + 1;
+    let e = json.skip(m[tape_at..tape_at + words], b);
+    if !json.is_int(m[tape_at..tape_at + words], b) || !json.fits_int(src, m[tape_at..tape_at + words], b) || !json.is_int(m[tape_at..tape_at + words], e) || !json.fits_int(src, m[tape_at..tape_at + words], e) {
+        return err.fail(m, t, "st-offsets-count", text.f1(m, t, "`$` data_offsets is not two integers", name));
+    }
+    let begin = json.to_int(src, m[tape_at..tape_at + words], b);
+    let stop = json.to_int(src, m[tape_at..tape_at + words], e);
+    if begin < 0 || stop < begin {
+        return err.fail(m, t, "st-offsets-order", text.f1(m, t, "`$` has data_offsets that are negative or end before they begin", name));
+    }
+    if stop - begin != numel * dtype_bytes(dtype) {
+        return err.fail(m, t, "st-size", text.f1(m, t, "`$` has a byte range that is not its element count times the dtype's size", name));
+    }
+    let rec = mem.rec(m, 5);
+    m[rec] = name;
+    m[rec + 1] = dtype;
+    m[rec + 2] = shape;
+    m[rec + 3] = begin;
+    m[rec + 4] = stop;
+    return rec;
+}
+
+fn duplicate_names[&m, &t](m: &!m [int], t: &!t [byte], list: int) -> [] bool {
+    let count = mem.size(m, list);
+    var i = 0;
+    while i < count {
+        let a = mem.get(m, list, i);
+        var j = i + 1;
+        while j < count {
+            if text.eq(t, m[a], m[mem.get(m, list, j)]) {
+                return true;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The tensors, taken in order of their bytes, must tile the data section
+// with no hole and no overlap, and fill it when its size is known.
+fn layout[&m, &t](m: &!m [int], t: &!t [byte], g: int) -> [] int {
+    let sorted = mem.copy(m, m[g + f_list()]);
+    var a = 1;
+    while a < mem.size(m, sorted) {
+        let x = mem.get(m, sorted, a);
+        var b = a;
+        while b > 0 && before(m, x, mem.get(m, sorted, b - 1)) {
+            mem.set(m, sorted, b, mem.get(m, sorted, b - 1));
+            b = b - 1;
+        }
+        mem.set(m, sorted, b, x);
+        a = a + 1;
+    }
+    var expect = 0;
+    var i = 0;
+    while i < mem.size(m, sorted) {
+        let r = mem.get(m, sorted, i);
+        if m[r + 3] > expect {
+            return err.fail(m, t, "st-hole", text.f1(m, t, "there is a hole in the data before `$`", m[r]));
+        }
+        if m[r + 3] < expect {
+            return err.fail(m, t, "st-overlap", text.f1(m, t, "`$` overlaps the tensor before it", m[r]));
+        }
+        expect = m[r + 4];
+        i = i + 1;
+    }
+    let size = m[g + f_size()];
+    if size >= 0 {
+        let data = size - 8 - m[g + f_header()];
+        if expect < data {
+            return bad(m, t, "st-data-long", "the file has bytes after the last tensor");
+        }
+        if expect > data {
+            return bad(m, t, "st-data-short", "the last tensor runs past the end of the file");
+        }
+    }
+    return 0;
+}
+
+// Order by begin, then end, so an empty tensor precedes the one at its offset.
+fn before[&m](m: &!m [int], a: int, b: int) -> [] bool {
+    if m[a + 3] != m[b + 3] {
+        return m[a + 3] < m[b + 3];
+    }
+    return m[a + 4] < m[b + 4];
+}
