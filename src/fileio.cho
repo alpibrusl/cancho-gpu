@@ -79,3 +79,24 @@ pub fn prefix[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: 
     }
     return (start, got, size);
 }
+
+// `want` bytes of `path` from byte `offset`, into `t[to..]`: the count read
+// (less than `want` only at the end of the file), or -1. The file is opened
+// and closed by the call, so a caller that reads one tensor at a time holds
+// no handle between reads.
+pub fn read_at[&t, &f, &p](t: &!t [byte], fs: &f Fs(""), path: &p [byte], offset: int, to: int, want: int) -> [fs_read(""), file_read] int {
+    var got = 0 - 1;
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return 0 - 1;
+        }
+        Opened::Ok(opened) => {
+            var h = opened;
+            borrow mut h as &!hr in {
+                got = fill(t, hr, offset, to, want);
+            }
+            file_close(h);
+        }
+    }
+    return got;
+}

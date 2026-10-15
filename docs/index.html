@@ -133,7 +133,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
 
 <div class="hero" id="top">
   <div>
-    <a class="badge" href="#status"><i></i>Alpha &middot; the compiler and device path are built, the runtime is under way</a>
+    <a class="badge" href="#status"><i></i>Alpha &middot; runs a small model on a Metal GPU</a>
     <h1>A GPU kernel compiler that says what it can do.</h1>
     <p class="lead">lex-gpu's <code>.lx</code> tile-kernel compiler, written in cancho. It checks a typed tile program and lowers it to <b>CUDA C</b> and <b>Metal</b>, byte-for-byte what lex-gpu's Rust emitter writes. It links nothing but libc, and its authority report, checked in CI, names the files it may touch and no network and no foreign code.</p>
     <div class="cta"><a class="btn primary" href="#start">Try it</a><a class="btn ghost" href="#proof">See the evidence</a></div>
@@ -168,7 +168,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
       <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
       <tr><th>How do I know the output is right?</th><td>The Rust emitter is the oracle: goldens are recorded from it, never from this compiler, and a live differential runs the same cases against a build of it. A CPU interpreter checks what a kernel computes, and a device program compares the GPU against it.</td></tr>
       <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
-      <tr><th>Is it an inference runtime?</th><td>Not yet. It reads GGUF and safetensors headers, tokenizes, samples, and has the decode kernels of an attention layer; no tensor values are read and there is no decode loop, so no model runs. Serving is an open issue.</td></tr>
+      <tr><th>Is it an inference runtime?</th><td>A small one. <code>cancho-gpu-run</code> loads Qwen2.5-0.5B, tokenizes a prompt, runs every layer as compiled kernels on a Metal GPU and samples: the same 12 greedy tokens as Hugging Face transformers on three prompts, every top-5 logit within 1e-4, in 6 to 12 ms a token (the spread between runs). Larger models and serving are open.</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -195,7 +195,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
     </ul></div>
     <div class="no"><h3>Not yet</h3><ul>
       <li>CUDA on real hardware, Hopper, AMD</li>
-      <li>Serving, model adapters, a decode loop</li>
+      <li>Qwen3.8-27B (it needs NVFP4 weights and linear-attention kernels), serving</li>
       <li>Attention over more than 1364 positions (it needs a change to the language)</li>
       <li>Speed: reach and agreement are measured, timing is not</li>
     </ul></div>
@@ -219,9 +219,9 @@ build/cancho-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64</pre>
 <section class="status" id="status">
   <h2>Status: alpha</h2>
   <ul>
-    <li>Built: the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, and rope, kv_append, attention and gate kernels.</li>
+    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, and rope, kv_append, attention and gate kernels.</li>
     <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), serving (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>).</li>
-    <li>Unproven: CUDA on a real GPU; reading tensor values (the readers read headers only); the kernels' speed.</li>
+    <li>Unproven: CUDA on a real GPU; the kernels' speed beyond one small model (6 to 12 ms a token).</li>
   </ul>
 </section>
 

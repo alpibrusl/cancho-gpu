@@ -1,0 +1,15 @@
+// a = silu(g) * u over a row of n: the gated activation of a SwiGLU MLP.
+algo swiglu(n)
+  in  g: f32[1, n]
+  in  u: f32[1, n]
+  out y: f32[1, n]
+{
+  let gt = load g
+  let ut = load u
+  let sg = sigmoid &gt
+  let a  = gt * sg
+  store a * ut -> y
+}
+
+schedule swiglu for apple-m-series { threads 256 }
+schedule swiglu for nvidia-ada     { threads 256 }

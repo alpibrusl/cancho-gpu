@@ -1,0 +1,27 @@
+// Write one position into the cache without a launch constant for the
+// position: for each key/value head i, rows of its cache are kept where
+// `keep` is 1 and replaced by the new row where `sel` is 1 (the host writes a
+// one-hot `sel` and its complement `keep`), so one compiled kernel serves every
+// position. y may be the same buffer as c: each element is read and written by
+// the thread that owns it.
+algo kv_write(nkv, tmax, d)
+  in  c:    f32[nkv * tmax, d]
+  in  nw:   f32[nkv, d]
+  in  sel:  f32[tmax]
+  in  keep: f32[tmax]
+  out y:    f32[nkv * tmax, d]
+{
+  grid i over nkv
+  let ct = load c[i * tmax, 0 ; tmax, d]
+  let nt = load nw[i, 0 ; 1, d]
+  let st = load sel
+  let kt = load keep
+  let a  = ct * kt
+  let z  = zeros f32[tmax, d]
+  let nb = z + nt
+  let b  = nb * st
+  store a + b -> y[i * tmax, 0]
+}
+
+schedule kv_write for apple-m-series { threads 256 }
+schedule kv_write for nvidia-ada     { threads 256 }

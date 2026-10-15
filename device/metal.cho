@@ -24,3 +24,15 @@ extern fn lxg_launch[&f](ffi: &f Ffi("libmetalgpu"), func: int, gx: int, gy: int
 extern fn lxg_error[&f, &s](ffi: &f Ffi("libmetalgpu"), out: &!s [byte]) -> [ffi("libmetalgpu")] int;
 
 extern fn lxg_close[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
+
+// Write `data` into buffer `buf` from byte `offset`.
+extern fn lxg_upload_at[&f, &s](ffi: &f Ffi("libmetalgpu"), buf: int, offset: int, data: &s [byte]) -> [ffi("libmetalgpu")] int;
+
+// Encode a launch without waiting; `lxg_sync` commits what is pending and waits,
+// answering the GPU time in nanoseconds.
+extern fn lxg_launch_async[&f](ffi: &f Ffi("libmetalgpu"), func: int, gx: int, gy: int, threads: int) -> [ffi("libmetalgpu")] int;
+
+extern fn lxg_sync[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
+
+// Commit what is pending without waiting: the GPU starts while the CPU encodes more.
+extern fn lxg_flush[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;

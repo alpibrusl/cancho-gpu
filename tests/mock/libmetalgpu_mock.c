@@ -50,6 +50,14 @@ int64_t lxg_upload(int64_t buf, const char *s, int64_t n) {
     return n;
 }
 
+int64_t lxg_upload_at(int64_t buf, int64_t offset, const char *s, int64_t n) {
+    if (buf < 0 || buf >= n_blocks || offset < 0 || n < 0) {
+        return -1;
+    }
+    memcpy((char *)blocks[buf].p + offset, s, (size_t)n);
+    return n;
+}
+
 int64_t lxg_download(int64_t buf, char *d, int64_t n) {
     if (buf < 0 || buf >= n_blocks) {
         return -1;
@@ -61,6 +69,15 @@ int64_t lxg_download(int64_t buf, char *d, int64_t n) {
 int64_t lxg_arg(int64_t buf) {
     (void)buf;
     /* Just record that an argument was bound */
+    return 0;
+}
+
+int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads);
+int64_t lxg_flush(void) {
+    return 0;
+}
+
+int64_t lxg_sync(void) {
     return 0;
 }
 
@@ -93,4 +110,7 @@ int64_t lxg_close(void) {
     }
     n_blocks = 0;
     return 0;
+}
+int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
+    return lxg_launch(fn, gx, gy, threads);
 }
