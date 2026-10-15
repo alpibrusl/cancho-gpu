@@ -50,9 +50,9 @@ for r in $rules; do
   done
   [ "$ok" = 1 ] || { echo "rule \`$r\` has no fixture in tests/safetensors/reject/"; fail=1; }
 done
-# The size option: a file read whole needs none; a bad one is a usage error.
-status=0; "$BIN" safetensors "$ROOT/tests/safetensors/tiny.safetensors" size=abc >/dev/null 2>"$WORK/err" || status=$?
-[ "$status" -eq 2 ] || { echo "size=abc: exit $status, expected 2"; fail=1; }
+# An extra argument is a usage error.
+status=0; "$BIN" safetensors "$ROOT/tests/safetensors/tiny.safetensors" size=1 >/dev/null 2>"$WORK/err" || status=$?
+[ "$status" -eq 2 ] || { echo "an extra argument: exit $status, expected 2"; fail=1; }
 status=0; "$BIN" safetensors "$ROOT/tests/safetensors/nothing.safetensors" >/dev/null 2>"$WORK/err" || status=$?
 grep -q '^error\[io\]' "$WORK/err" || { echo "a missing file: expected error[io]"; fail=1; }
 python3 "$ROOT/tests/safetensors/fuzz.py" "$BIN" "$ROOT/tests/safetensors/tiny.safetensors" 1000 || fail=1

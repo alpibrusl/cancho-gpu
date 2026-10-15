@@ -165,14 +165,17 @@ The JSON is `std.json`'s tape parser, strict (RFC 8259), into a tape in
 `m`; names and metadata are decoded (escapes, surrogate pairs) into the
 text pool. Nothing else is copied.
 
-**The file's size.** cancho has no `file_size` and no positioned read
-(`cancho/docs/large-files.md`, a design, nothing built), so the reader sees
-the first 32 MiB. A file shorter than that is read whole and its size is
-known; a longer one needs `size=<bytes>` on the command line (from `stat`)
-for the checks that compare the tensors with the file's end, and without it
-the dump says `data=unknown` and those two checks are not made. The
-tensor bytes cannot be read at all yet; that is the gap `large-files.md`
-names, and the reason this stage reads headers only.
+**The file's size, and reading part of a file.** `src/fileio.cho` opens
+the file (`open_read`), asks its size (`file_size`) and reads the first
+32 MiB with `file_pread`, which takes an offset and leaves no cursor. So a
+15 GB shard costs what a small file does, its size is exact, and the checks
+that compare the tensors with the file's end are always made. (An earlier
+version of this stage read with `fs_read` and needed `size=<bytes>` for
+files over 32 MiB, on the belief that cancho had no `file_size` and no
+positioned read: `cancho/docs/large-files.md` says so, and it is stale;
+both verbs are in the pinned compiler, measured against Python on a 988 MB
+file. The tensor *bytes* can now be read by offset too; this stage does
+not do it yet.)
 
 Where it differs from the library (each has a rule tag and a fixture):
 
@@ -198,7 +201,7 @@ meta format "mlx"
 tensor layer.scales F16 shape=[8,1] range=[128,144]
 ```
 
-`cancho-gpu safetensors <file> [size=<bytes>]` and
+`cancho-gpu safetensors <file>` and
 `tools/safetensors_dump.py` print it; names and metadata are sorted
 byte-wise. The shapes and dtypes come from the library, and the byte
 ranges, which it does not expose, from Python's `json` over the raw header.
@@ -216,11 +219,13 @@ the refusals more than for the dump.
 
 ### Measured on real files
 
-* **Five real files, byte-identical with the library**, with `size=` from
-  `stat`: `Qwen2.5-0.5B-Instruct` (290 tensors) and `Qwen2.5-1.5B-Instruct`
+* **Five real files, byte-identical with the library**, with the size from
+  `file_size`: `Qwen2.5-0.5B-Instruct` (290 tensors) and `Qwen2.5-1.5B-Instruct`
   (338), and the three shards of `mlx-community/Qwen3.8-27B-4bit` (847, 720
   and 613 tensors; headers of 104,654, 94,306 and 80,125 bytes). Each takes
   under 10 ms, though the files are 1 to 5 GB: only the first 32 MiB is read.
+  (Measured twice: first with `size=` from `stat`, then with the size from
+  `file_size`; the dumps are the same.)
 * **Ollama's `qwen3.8:27b-mlx`, every blob** (1,207 named layers, 18.2 GB):
   the 1,199 tensor blobs are **byte-identical with the library**, and the 8
   JSON files of the manifest (`config.json`, `tokenizer.json`, ...) are
