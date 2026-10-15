@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cancho-gpu</title>
-<meta name="description" content="lex-gpu's tile-kernel compiler, written in cancho: CUDA C and Metal byte-identical with the Rust emitter, a CPU interpreter, a GPU device path, and an authority report that says it never touches the network or foreign code.">
+<meta name="description" content="A tile-kernel compiler written in cancho: CUDA C and Metal output checked byte-for-byte against an independent implementation, a CPU interpreter, a GPU device path, and an authority report that says it never touches the network or foreign code.">
 <meta property="og:title" content="cancho-gpu: a GPU kernel compiler that says what it can do">
-<meta property="og:description" content="Typed tile programs to CUDA C and Metal, byte-for-byte what lex-gpu writes, from a compiler that links only libc.">
+<meta property="og:description" content="Typed tile programs to CUDA C and Metal, checked byte-for-byte against an independent implementation, from a compiler that links only libc.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://alpibrusl.github.io/cancho-gpu/og.png">
@@ -135,7 +135,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
   <div>
     <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model on a Metal GPU</a>
     <h1>A GPU kernel compiler that says what it can do.</h1>
-    <p class="lead">lex-gpu's <code>.chx</code> tile-kernel compiler, written in cancho. It checks a typed tile program and lowers it to <b>CUDA C</b> and <b>Metal</b>, byte-for-byte what lex-gpu's Rust emitter writes. It links nothing but libc, and its authority report, checked in CI, names the files it may touch and no network and no foreign code.</p>
+    <p class="lead">A compiler for typed tile kernels (the <code>.chx</code> language), written in cancho. It checks a program and lowers it to <b>CUDA C</b> and <b>Metal</b>, byte-for-byte what an independent Rust implementation of the language writes. It links nothing but libc, and its authority report, checked in CI, names the files it may touch and no network and no foreign code.</p>
     <div class="cta"><a class="btn primary" href="#start">Try it</a><a class="btn ghost" href="#proof">See the evidence</a></div>
   </div>
   <div class="term" role="img" aria-label="Emitting a kernel and the authority report"><div class="bar"><i></i><i></i><i></i></div>
@@ -154,7 +154,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
 </div>
 
 <div class="three">
-  <div><h3>The same bytes as the Rust</h3><p>CUDA C and Metal for 133 emitting cases, identical to lex-gpu's emitter; 26 more refused by both, each with a named rule.</p></div>
+  <div><h3>The same bytes as the Rust</h3><p>CUDA C and Metal for 182 emitting cases, identical to the reference implementation's; 26 more refused by both, each with a named rule.</p></div>
   <div><h3>Checked before it is lowered</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal says which rule.</p></div>
   <div><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code, the device driver, says so.</p></div>
 </div>
@@ -177,7 +177,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
   <h2>Every claim has a measurement, or says it has none.</h2>
   <p class="sub">The oracle is external, so "it works" is a comparison, not an opinion. Where a claim turned out false, the design document was corrected in place.</p>
   <div class="stats">
-    <div><b>159</b><span>cases byte-identical with lex-gpu's Rust emitter: 133 emit, 26 refused by both</span></div>
+    <div><b>208</b><span>cases byte-identical with the reference implementation: 182 emit, 26 refused by both</span></div>
     <div><b>24</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
     <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
     <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
@@ -212,7 +212,7 @@ REV=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)
 export CANCHO=$PWD/../cancho/target/release/cancho
 $CANCHO build
 mkdir -p out
-build/cancho-gpu emit tests/chx/ported/gemm_fp4.chx out m=128 n=128 k=64</pre>
+build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
   <p class="note">Other commands: <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
 </section>
 
@@ -230,7 +230,6 @@ build/cancho-gpu emit tests/chx/ported/gemm_fp4.chx out m=128 n=128 k=64</pre>
   <span>cancho-gpu &middot; EUPL-1.2</span>
   <a href="https://github.com/alpibrusl/cancho-gpu">GitHub</a>
   <a href="https://github.com/alpibrusl/cancho">cancho</a>
-  <a href="https://github.com/alpibrusl/lex-gpu">lex-gpu</a>
   <a href="llms.txt">llms.txt</a>
 </div></footer>
 </body>
