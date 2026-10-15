@@ -213,7 +213,7 @@ tests/lx/matvec_fp4_rows.lx n=16 k=64 --run
 tests/lx/matvec_fp4_res.lx n=5120 k=17408
 tests/lx/matvec_fp4_res.lx n=16 k=64 --run
 tests/lx/conv_step.lx c=10240
-tests/lx/conv_step.lx c=64 --run
+tests/lx/conv_step.lx c=512 --run
 tests/lx/qk_norm.lx nk=16 rows=80
 tests/lx/qk_norm.lx nk=2 rows=6 --run
 tests/lx/gates.lx h=48
@@ -225,6 +225,8 @@ tests/lx/rmsnorm_rows.lx r=3 n=16 eps=1e-6 --run
 tests/lx/gated_norm.lx h=48 n=128 eps=1e-6
 tests/lx/gated_norm.lx h=3 n=16 eps=1e-6 --run
 tests/lx/kv_write.lx nkv=4 tmax=1024 d=256
+tests/lx/kv_row.lx nkv=4 tmax=256 d=256
+tests/lx/kv_row.lx nkv=2 tmax=8 d=4 --run
 tests/lx/attention.lx nkv=4 g=6 t=1024 d=256 tmax=1024
 tests/lx/qnorm.lx r=24 n=256 eps=1e-6
 tests/lx/qnorm.lx r=3 n=8 eps=1e-6 --run

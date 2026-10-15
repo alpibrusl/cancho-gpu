@@ -110,6 +110,8 @@ int64_t lxg_compile(const char *src_p, int64_t src_n) {
     return g.n_libraries++;
 }
 
+static char prof_name[4096][72];
+
 int64_t lxg_function(int64_t module, const char *name_p, int64_t name_n) {
     if (module < 0 || module >= g.n_libraries) {
         return fail("lxg_function", "no such module");
@@ -124,6 +126,7 @@ int64_t lxg_function(int64_t module, const char *name_p, int64_t name_n) {
     }
     
     NSString *funcName = [NSString stringWithUTF8String:name];
+    snprintf(prof_name[g.n_functions], sizeof prof_name[0], "%s", name);
     free(name);
     
     if (!funcName) {
@@ -265,6 +268,10 @@ int64_t lxg_arg_at(int64_t buf, int64_t offset) {
 /* Encode a dispatch into the pending command buffer, without waiting: a token's
  * hundreds of kernels then cost one commit instead of one each. Metal orders
  * dispatches that use the same buffers; `lxg_sync` commits and waits. */
+static double prof_ns[4096];
+static int64_t prof_n[4096];
+int64_t lxg_prof_dump(void);
+
 int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     if (fn < 0 || fn >= g.n_functions) {
         g.n_args = 0;
@@ -290,12 +297,34 @@ int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
           threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
     g.n_args = 0;
+    if (getenv("LEXGPU_PROFILE") && getenv("LEXGPU_PROFILE")[0] == '2') {
+        /* Per-kernel breakdown: run each launch in a buffer of its own and
+         * add up its GPU time by function. Slower than the real schedule. */
+        [g.enc endEncoding];
+        [g.cmd commit];
+        [g.cmd waitUntilCompleted];
+        prof_ns[fn] += ([g.cmd GPUEndTime] - [g.cmd GPUStartTime]) * 1e9;
+        prof_n[fn] += 1;
+        g.cmd = nil;
+        g.enc = nil;
+    }
     return 0;
 }
 
 /* Commit what `lxg_launch_async` encoded, without waiting: the GPU starts on it
  * while the CPU goes on encoding the next. The queue runs command buffers in
  * order, so a later `lxg_sync` need only wait for the last. */
+int64_t lxg_prof_dump(void) {
+    for (int i = 0; i < 4096; i++) {
+        if (prof_n[i]) {
+            fprintf(stderr, "prof %-44s %4lld launches %8.3f ms\n", prof_name[i], (long long)prof_n[i], prof_ns[i] / 1e6);
+            prof_ns[i] = 0;
+            prof_n[i] = 0;
+        }
+    }
+    return 0;
+}
+
 int64_t lxg_flush(void) {
     if (!g.cmd) {
         return 0;
@@ -313,6 +342,9 @@ int64_t lxg_flush(void) {
 int64_t lxg_sync(void) {
     lxg_flush();
     if (!g.last) {
+        if (getenv("LEXGPU_PROFILE") && getenv("LEXGPU_PROFILE")[0] == '2') {
+            lxg_prof_dump();
+        }
         return 0;
     }
     struct timespec t0, t1;
@@ -325,6 +357,9 @@ int64_t lxg_sync(void) {
         fprintf(stderr, "sync: waited %.3f ms, last buffer gpu %.3f ms\n", wall, ns / 1e6);
     }
     g.last = nil;
+    if (getenv("LEXGPU_PROFILE") && getenv("LEXGPU_PROFILE")[0] == '2') {
+        lxg_prof_dump();
+    }
     return ns;
 }
 

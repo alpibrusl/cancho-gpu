@@ -119,6 +119,6 @@ encode launches without waiting (`lxg_launch_async`, `lxg_flush`, `lxg_sync`).
 ## 6. Qwen3.8-27B
 
 It runs: see `docs/qwen35.md` (the layers, the NVFP4 and gated-delta kernels, the Ollama-store weights loader,
-a runner checked against the reference's golden log-probabilities, about 19 tokens a second). What it still
+a runner checked against the reference's golden log-probabilities, about 22 tokens a second). What it still
 needs is speed, a longer context (split-KV attention cannot be written in the surface yet, `docs/kernels.md` §4),
 a chat template and a batched prefill.

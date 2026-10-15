@@ -1,0 +1,16 @@
+// Write one position's row for each head into a cache, with the position
+// carried by the launch rather than by a constant: the host binds y at the
+// byte offset pos * d * 4 into the cache, so row i * tmax of y is row
+// i * tmax + pos of the cache. One compiled kernel serves every position and
+// the rest of the cache is not read or written (kv_write.lx rewrites all of it).
+algo kv_row(nkv, tmax, d)
+  in  nw: f32[nkv, d]
+  out y:  f32[nkv * tmax, d]
+{
+  grid i over nkv
+  let nt = load nw[i, 0 ; 1, d]
+  store nt -> y[i * tmax, 0]
+}
+
+schedule kv_row for apple-m-series { threads 256 }
+schedule kv_row for nvidia-ada     { threads 256 }

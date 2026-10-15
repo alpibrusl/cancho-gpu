@@ -274,15 +274,18 @@ for kernel, n, k, extra in (("matvec_rows", 64, 96, None), ("matvec_bias", 64, 9
 for kernel, extra in (("matvec_rows_f16", None), ("matvec_bias_f16", "bias"), ("matvec_res_f16", "res")):
     ok &= check(f"{kernel} n=64 k=96", run(kernel, ["n=64", "k=96"])["y"], matvec16(64, 96, extra))
 ok &= check("kv_write nkv=2 tmax=8 d=4", run("kv_write", ["nkv=2", "tmax=8", "d=4"])["y"], kv_write(2, 8, 4))
+(nw,) = lcg([2 * 4])
+want = [nw[i * 4 + col] if r == 0 else 0.0 for i in range(2) for r in range(8) for col in range(4)]
+ok &= check("kv_row nkv=2 tmax=8 d=4", run("kv_row", ["nkv=2", "tmax=8", "d=4"])["y"], want)
 ok &= check("swiglu n=100", run("swiglu", ["n=100"])["y"], swiglu(100))
 got = run("attention_d64", ["nkv=2", "g=7", "t=32", "d=64", "tmax=40"])["o"]
 ok &= check("attention_d64 nkv=2 g=7 t=32 d=64 tmax=40", got, attention(2, 7, 32, 64, 40, 0.125))
 ok &= check("matvec_fp4_rows n=16 k=64", run("matvec_fp4_rows", ["n=16", "k=64"])["y"], matvec_fp4(16, 64))
 ok &= check("matvec_fp4_res n=16 k=64", run("matvec_fp4_res", ["n=16", "k=64"])["y"], matvec_fp4(16, 64, True))
-got = run("conv_step", ["c=64"])
-want_y, want_ns = conv_step(64)
-ok &= check("conv_step y c=64", got["y"], want_y)
-ok &= check("conv_step ns c=64", got["ns"], want_ns)
+got = run("conv_step", ["c=512"])
+want_y, want_ns = conv_step(512)
+ok &= check("conv_step y c=512", got["y"], want_y)
+ok &= check("conv_step ns c=512", got["ns"], want_ns)
 got = run("qk_norm", ["nk=2", "rows=6"])
 want_q, want_k = qk_norm(2, 6)
 ok &= check("qk_norm qn nk=2", got["qn"], want_q)

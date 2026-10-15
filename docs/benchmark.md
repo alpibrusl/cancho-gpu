@@ -30,9 +30,9 @@ Runtimes ran one at a time with the others idle; Ollama's models were unloaded f
 
 | runtime | load s | prefill tok/s | decode tok/s | peak memory GB | agrees with reference |
 |---|---|---|---|---|---|
-| Ollama (Metal) | 1.5 | 166.8 (166.8-166.8) | 42.3 (42.2-43.6) | - | reference |
-| MLX-LM (Metal) | 3.5 | 137.5 (124.7-139.8) | 26.4 (25.3-28.3) | 15.5 | 38 of 602 characters |
-| cancho-gpu (Metal) | 2.2 | 18.5 (18.1-18.5) | 19.2 (19.0-19.3) | 14.6 | 57 of 602 characters |
+| Ollama (Metal) | 2.5 | 167.6 (167.6-167.6) | 41.8 (40.7-41.9) | - | reference |
+| MLX-LM (Metal) | 3.6 | 136.4 (134.2-137.7) | 23.1 (23.1-23.6) | 15.5 | 38 of 602 characters |
+| cancho-gpu (Metal) | 3.5 | 21.2 (21.1-21.9) | 22.4 (21.5-22.4) | 14.6 | 57 of 602 characters |
 
 * Ollama (Metal): Ollama caches the prompt between requests, so its prefill rate is that of the first, cold request (one measurement, not a median); memory is not reported by the API.
 * cancho-gpu (Metal): memory is the process's resident set; the weights live in Metal buffers that are not counted; Qwen3.8 weights are NVFP4 read from Ollama's store.

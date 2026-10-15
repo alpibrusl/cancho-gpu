@@ -1,7 +1,7 @@
 # Qwen3.8-27B in `.lx`
 
 > **Status: Qwen3.8-27B runs on a Metal GPU in cancho and agrees with the reference
-> implementation's golden log-probabilities (§4); about 19 tokens a second, against the
+> implementation's golden log-probabilities (§4); about 22 tokens a second, against the
 > reference runtime's 25 and Ollama's 42 on this machine (§5).**
 
 The model is `qwen3.8:27b-mlx`: 64 layers, hidden 5120, NVFP4 weights (4-bit E2M1 codes,
@@ -34,8 +34,8 @@ gated one; the host adds 1 when it loads them.
 | `matvec_fp4_rows.lx`, `matvec_fp4_res.lx` | `x w^T` over NVFP4 weights, and added to the residual | `n=17408 k=5120` (gate, up), `n=5120 k=17408` (down), `n=248320 k=5120` (head), ... |
 | `rmsnorm.lx` | the layer norms | `n=5120` |
 | `rmsnorm_rows.lx` | the per-head norm of q and k | `r=24` and `4`, `n=256` |
-| `rope.lx`, `kv_write.lx`, `attention.lx`, `attn_gate.lx` | partial RoPE, the cache write, attention, the output gate | `h=32 p=192`; `nkv=4 d=256`; `g=6` |
-| `conv_step.lx` | the four-tap convolution and silu, rewriting its window | `c=10240` |
+| `rope.lx`, `kv_row.lx`, `attention.lx`, `attn_gate.lx` | partial RoPE, the cache write, attention, the output gate | `h=32 p=192`; `nkv=4 d=256`; `g=6` |
+| `conv_step.lx` | the four-tap convolution and silu, rewriting its window; 256 channels to a threadgroup | `c=10240` |
 | `qk_norm.lx` | the queries' and keys' RMS normalisation and scaling | `nk=16 rows=80` |
 | `gates.lx` | `beta = sigmoid(b)`, `g = exp(-A softplus(a + dt_bias))` | `h=48` |
 | `delta_step.lx` | the delta rule for the three value heads of each key head | `nk=16` |
@@ -93,18 +93,23 @@ model and no other.
 ## 5. Speed
 
 Steady decode on this machine (M4 Max, one run of 120 tokens, the weights read from the page cache):
-**52 ms a token, 19 tokens a second**; the weights take 2.2 s to load. Prefill is the same token by token
-(about 18 tokens a second). In the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same
-weights at about 42 tokens a second and MLX-LM (a different 4-bit quantisation) at about 26; the
+**45 ms a token, 22 tokens a second**; the weights take 2.2 s to load. Prefill is the same token by token
+(about 21 tokens a second). In the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same
+weights at about 42 tokens a second and MLX-LM (a different 4-bit quantisation) at about 23; the
 reference runtime measured 25 (39 ms a token) when it was run for its tokens. Those other runtimes are
 the target, not a comparison to be proud of: this one reads the weights with kernels the compiler lowers
 one thread to a product, and a profile (`LEXGPU_PROFILE=1`) shows the CPU waiting for the GPU.
+`LEXGPU_PROFILE=2` runs every launch in a buffer of its own and prints the GPU time per kernel; it found the
+cache write (7.7 ms a token, rewriting the whole cache) and the convolution (6.6 ms, one threadgroup), which
+`kv_row.lx` (0.1 ms) and a convolution spread over threadgroups (0.3 ms) replaced: 52 ms to 45. A sweep of
+threads and rows per threadgroup for the NVFP4 matvec changed nothing (the same 212 µs for 17408x5120 in all
+nine): its speed is set by the code the emitter writes, which loads every byte and every `x` separately.
 
 ## 6. Limits and what is left
 
 * **Speed**: 14.6 GB are read a token, so the floor at the copy bandwidth is about 32 ms; the kernels are
-  at 52. The NVFP4 matvec is the thing to tune (the reference runtime's decode trick, two codes of a byte
-  at once on vector arithmetic, is described in its notes), and a batched prefill.
+  at 45. The NVFP4 matvec is the thing to tune, and needs vector loads from the emitter (the reference
+  runtime's decode trick, two codes of a byte at once, is described in its notes), and a batched prefill.
 * **Context**: 256 positions (a constant of the compiled kernels), and attention's one-tile scores cap it at
   1364 on Metal (`docs/kernels.md` §4). The model's context is 262,144.
 * **Raw text** only: no chat template, no thinking-mode handling, greedy by default.

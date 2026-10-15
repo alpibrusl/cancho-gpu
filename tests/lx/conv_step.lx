@@ -2,21 +2,24 @@
 // four taps over [the last three inputs, this one], then silu. cs holds the
 // three previous inputs (rows 0 to 2, oldest first) and is rewritten as the
 // last three including this one; cw holds the four taps a channel, tap-major.
+// The channels are spread over threadgroups, bc to each.
 algo conv_step(c)
   in  x:  f32[1, c]
   in  cs: f32[3, c]
   in  cw: f32[4, c]
   out y:  f32[1, c]
   out ns: f32[3, c]
+  tile bc
 {
-  let s0 = load cs[0, 0 ; 1, c]
-  let s1 = load cs[1, 0 ; 1, c]
-  let s2 = load cs[2, 0 ; 1, c]
-  let xt = load x
-  let w0 = load cw[0, 0 ; 1, c]
-  let w1 = load cw[1, 0 ; 1, c]
-  let w2 = load cw[2, 0 ; 1, c]
-  let w3 = load cw[3, 0 ; 1, c]
+  grid i over c / bc
+  let s0 = load cs[0, i * bc ; 1, bc]
+  let s1 = load cs[1, i * bc ; 1, bc]
+  let s2 = load cs[2, i * bc ; 1, bc]
+  let xt = load x[0, i * bc ; 1, bc]
+  let w0 = load cw[0, i * bc ; 1, bc]
+  let w1 = load cw[1, i * bc ; 1, bc]
+  let w2 = load cw[2, i * bc ; 1, bc]
+  let w3 = load cw[3, i * bc ; 1, bc]
   let a  = s0 * w0
   let b  = &s1 * w1
   let d  = &s2 * w2
@@ -25,11 +28,11 @@ algo conv_step(c)
   let de = d + e
   let t  = ab + de
   let sg = sigmoid &t
-  store t * sg -> y
-  store s1 -> ns[0, 0]
-  store s2 -> ns[1, 0]
-  store xt -> ns[2, 0]
+  store t * sg -> y[0, i * bc]
+  store s1 -> ns[0, i * bc]
+  store s2 -> ns[1, i * bc]
+  store xt -> ns[2, i * bc]
 }
 
-schedule conv_step for apple-m-series { threads 256 }
-schedule conv_step for nvidia-ada     { threads 256 }
+schedule conv_step for apple-m-series { threads 256 bc 256 }
+schedule conv_step for nvidia-ada     { threads 256 bc 256 }

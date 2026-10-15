@@ -669,7 +669,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let k_knorm = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.lx", cv(m, t, c2(m, t, "r", 4, "n", 256), "eps", f32.round(0.000001)));
     let k_ropeq = compile_kernel(m, t, ffi, fs, kdir, "rope.lx", cv(m, t, c2(m, t, "r", 24, "h", 32), "p", 192.0));
     let k_ropek = compile_kernel(m, t, ffi, fs, kdir, "rope.lx", cv(m, t, c2(m, t, "r", 4, "h", 32), "p", 192.0));
-    let k_kvw = compile_kernel(m, t, ffi, fs, kdir, "kv_write.lx", cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0));
+    let k_kvw = compile_kernel(m, t, ffi, fs, kdir, "kv_row.lx", cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0));
     let k_attn = compile_kernel(m, t, ffi, fs, kdir, "attention.lx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(tmax())), "d", 256.0), "tmax", float_of(tmax())));
     let k_attn_gate = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.lx", c2(m, t, "r", 24, "n", 256));
     if err.failed(m) {
@@ -752,8 +752,6 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let b_cos = metal.lxg_alloc(ffi, 4 * 32);
     let b_sin = metal.lxg_alloc(ffi, 4 * 32);
     let b_mask = metal.lxg_alloc(ffi, 4 * tmax());
-    let b_sel = metal.lxg_alloc(ffi, 4 * tmax());
-    let b_keep = metal.lxg_alloc(ffi, 4 * tmax());
     // Per layer: a linear layer's convolution window (two, taken in turn) and its
     // delta state; an attention layer's key and value caches. All start at zero.
     let st1 = mem.list(m);
@@ -814,19 +812,6 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         let zero = reserve(m, 4);
         put_f32(t, zero, 0);
         metal.lxg_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
-        let sk = reserve(m, 8 * tmax());
-        var zz = 0;
-        while zz < tmax() {
-            var is_pos = 0;
-            if zz == pos {
-                is_pos = 1;
-            }
-            put_f32(t, sk + 4 * zz, f32.bits32(float_of(is_pos)));
-            put_f32(t, sk + 4 * tmax() + 4 * zz, f32.bits32(float_of(1 - is_pos)));
-            zz = zz + 1;
-        }
-        metal.lxg_upload_at(ffi, b_sel, 0, t[sk..sk + 4 * tmax()]);
-        metal.lxg_upload_at(ffi, b_keep, 0, t[sk + 4 * tmax()..sk + 8 * tmax()]);
         let tab = reserve(m, 256);
         var jj = 0;
         while jj < 32 {
@@ -855,8 +840,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
                 go(m, ffi, k_knorm, b_k, mem.get(m, w, 5), b_k2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_ropeq, b_q2, b_cos, b_sin, b_qr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_ropek, b_k2, b_cos, b_sin, b_kr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                go(m, ffi, k_kvw, mem.get(m, st1, l), b_kr, b_sel, b_keep, mem.get(m, st1, l), 0 - 1, 0 - 1, 0 - 1);
-                go(m, ffi, k_kvw, mem.get(m, st2, l), b_v, b_sel, b_keep, mem.get(m, st2, l), 0 - 1, 0 - 1, 0 - 1);
+                go(m, ffi, k_kvw, b_kr, at(mem.get(m, st1, l), 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                go(m, ffi, k_kvw, b_v, at(mem.get(m, st2, l), 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_attn, b_qr, mem.get(m, st1, l), mem.get(m, st2, l), b_mask, b_o, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 fp4_res(m, ffi, k_out, b_og, mem.get(m, w, 6), cur, nxt);
