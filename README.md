@@ -13,7 +13,7 @@
 * **The same bytes as the Rust.** CUDA C and Metal for every emitting case of `tests/cases.txt` (140 cases: 116 emit, 24 are refused by both compilers) are byte-identical with lex-gpu's emitter, and a refusal names its rule ([`docs/rules.md`](docs/rules.md)). The goldens are recorded from the Rust, never from this compiler.
 * **A reference interpreter.** `--run` interprets a kernel on the CPU and prints the same summary as the Rust's, f32 order included (14 runs).
 * **A way to drive a GPU.** A C shim and a device program compile the emitted kernel with NVRTC (CUDA) or `newLibraryWithSource` (Metal), upload the interpreter's inputs, launch, and compare ([`docs/device.md`](docs/device.md)).
-* **A model reader, in progress.** `cancho-gpu gguf <file>` reads a GGUF header (metadata and tensor directory) and refuses hostile bytes with a rule tag; its dump matches lex-rt's reader on every fixture ([`docs/runtime.md`](docs/runtime.md)).
+* **A model reader, in progress.** `cancho-gpu gguf <file>` reads a GGUF header (metadata and tensor directory) and refuses hostile bytes with a rule tag; its dump matches lex-rt's reader on every fixture and on five real models ([`docs/runtime.md`](docs/runtime.md)).
 * **An authority you can read.** The compiler performs `args`, `err_write`, `fs_read`, `fs_write`, `heap`, `io_write` and nothing else; the device program is the one that calls foreign code, and says so.
 
 How it is built, what it cost and what the language made hard: [`docs/design.md`](docs/design.md).
@@ -139,7 +139,7 @@ docs/              design, rules, device, runtime, and the project page
 
 ## Limitations
 
-CUDA is verified against a mock driver, not a GPU; Metal's speed is not measured (reach and numerical agreement are). The lowering is Ada's for NVIDIA (no Hopper) and there is no AMD path yet. The GGUF reader is checked on synthetic fixtures, not yet on a real multi-gigabyte model, and reads only the first 32 MiB of a file. There is no tokenizer, sampler or serving layer yet. `cancho-gpu` is a compiler and a reader; it is not an inference runtime.
+CUDA is verified against a mock driver, not a GPU; Metal's speed is not measured (reach and numerical agreement are). The lowering is Ada's for NVIDIA (no Hopper) and there is no AMD path yet. The GGUF reader is checked on synthetic fixtures and on five real models (headers only; it reads the first 32 MiB of a file, so tensor values are not read yet). There is no tokenizer, sampler or serving layer yet. `cancho-gpu` is a compiler and a reader; it is not an inference runtime.
 
 ## Contributing
 

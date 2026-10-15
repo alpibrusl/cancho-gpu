@@ -12,7 +12,7 @@
 <meta property="og:image" content="https://alpibrusl.github.io/cancho-gpu/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="cancho-gpu: a chip on a stack of two boulders on a blue disc, and the words cancho-gpu.">
+<meta property="og:image:alt" content="cancho-gpu: a granite outcrop with circuit traces on a blue disc, and the words cancho-gpu.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <meta property="og:url" content="https://alpibrusl.github.io/cancho-gpu/">
@@ -160,7 +160,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
 </div>
 
 <section id="why">
-  <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a chip on a stack of two boulders on a blue disc" width="512" height="512" style="margin-bottom:2rem">
+  <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a granite outcrop with circuit traces on a blue disc" width="512" height="512" style="margin-bottom:2rem">
   <h2>A kernel compiler should be small enough to audit.</h2>
   <div class="fitwrap"><table class="fit">
     <thead><tr><th>Question</th><th>What cancho-gpu does</th></tr></thead>
@@ -180,7 +180,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
     <div><b>140</b><span>cases byte-identical with lex-gpu's Rust emitter: 116 emit, 24 refused by both</span></div>
     <div><b>14</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
     <div><b>2,696</b><span>hostile GGUF files, none traps or hangs the reader; 17 more refused with their rule</span></div>
-    <div><b>0</b><span>differences from lex-rt's GGUF dump on three fixtures: scalars, strings, nested arrays, every tensor type</span></div>
+    <div><b>0</b><span>differences from lex-rt's GGUF dump on three fixtures and on five real models (llama3.2, qwen3, qwen3.5, ministral-3)</span></div>
   </div>
   <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where the GGUF reader is stricter than lex-rt.</p>
 </section>
@@ -220,7 +220,7 @@ build/cancho-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64</pre>
   <ul>
     <li>Built: the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF header reader.</li>
     <li>Open: the safetensors reader, BPE tokenizer and sampler (<a href="https://github.com/alpibrusl/cancho-gpu/issues/5">#5</a>), serving (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>).</li>
-    <li>Unproven: CUDA on a real GPU; the GGUF reader on a real multi-gigabyte model.</li>
+    <li>Unproven: CUDA on a real GPU; reading tensor values (the GGUF reader reads headers only).</li>
   </ul>
 </section>
 
