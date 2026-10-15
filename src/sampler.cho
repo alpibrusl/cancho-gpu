@@ -1,0 +1,320 @@
+edition 5;
+module sampler;
+
+// `sampler` -- picking the next token (slice 9a, stage 4 of cancho#251,
+// issue #5; `docs/runtime.md` §10).
+//
+// `lex-rt/src/sample.rs` is the oracle: temperature, then top-k, then
+// top-p renormalised, drawn with a xorshift64* stream seeded through
+// splitmix64. Temperature 0 (or top-k 1) is the argmax.
+//
+// Two facts about the language shape it. `int` multiplication traps on
+// overflow, so the 64-bit generator does its wrapping products and sums in
+// 16- and 32-bit limbs. And there is no f32: every value is a binary64 that
+// holds an f32 exactly, each operation rounded once to f32 (`f32.cho`).
+// One thing cannot be matched bit for bit: `exp`. lex-rt calls the
+// platform's `expf`; this computes the correctly rounded f32 of the exact
+// value, and on 60 million inputs in [-40, 0] macOS's `expf` differs from it
+// in 372,569 (0.6%), by one unit in the last place. So the draw is the same
+// and the probabilities agree to a few units in the last place, not to the bit
+// (`docs/runtime.md` §10 says how it is compared).
+//
+// Logits are f32 bit patterns, read where they lie: nothing is copied but
+// the `k` that survive top-k.
+
+import mem;
+import text;
+import f32;
+import gguf;
+
+// ---------------------------------------------------------------------
+// 64-bit arithmetic that wraps
+// ---------------------------------------------------------------------
+
+// `a + b` modulo 2^64.
+fn add64(a: int, b: int) -> [] int {
+    let lo = (a & 4294967295) + (b & 4294967295);
+    let hi = (a >> 32 & 4294967295) + (b >> 32 & 4294967295) + (lo >> 32);
+    return (hi & 4294967295) << 32 | lo & 4294967295;
+}
+
+// `a * b` modulo 2^64, by schoolbook over 16-bit limbs.
+fn mul64(a: int, b: int) -> [] int {
+    let a0 = a & 65535;
+    let a1 = a >> 16 & 65535;
+    let a2 = a >> 32 & 65535;
+    let a3 = a >> 48 & 65535;
+    let b0 = b & 65535;
+    let b1 = b >> 16 & 65535;
+    let b2 = b >> 32 & 65535;
+    let b3 = b >> 48 & 65535;
+    let c0 = a0 * b0;
+    let c1 = a0 * b1 + a1 * b0 + (c0 >> 16);
+    let c2 = a0 * b2 + a1 * b1 + a2 * b0 + (c1 >> 16);
+    let c3 = a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0 + (c2 >> 16);
+    return (c3 & 65535) << 48 | (c2 & 65535) << 32 | (c1 & 65535) << 16 | c0 & 65535;
+}
+
+// `x >> n` as an unsigned shift, 1 <= n <= 63.
+fn shr64(x: int, n: int) -> [] int {
+    return x >> n & (1 << 64 - n) - 1;
+}
+
+// splitmix64 as the oracle uses it: a seed to a state, never zero.
+fn mix(seed: int) -> [] int {
+    var z = add64(seed, 0 - 7046029254386353131);
+    z = mul64(z ^ shr64(z, 30), 0 - 4658895280553007687);
+    z = mul64(z ^ shr64(z, 27), 0 - 7723592293110705685);
+    return z ^ shr64(z, 31) | 1;
+}
+
+// ---------------------------------------------------------------------
+// The sampler record, in `m`
+// ---------------------------------------------------------------------
+
+// `[temperature bits, top_p bits, top_k, state]`; the floats are f32 bit
+// patterns.
+pub fn f_temperature() -> [] int {
+    return 0;
+}
+
+pub fn f_top_p() -> [] int {
+    return 1;
+}
+
+pub fn f_top_k() -> [] int {
+    return 2;
+}
+
+pub fn f_state() -> [] int {
+    return 3;
+}
+
+// `Sampler::new`: temperature 0 is greedy; `top_k` below 1 is 1. The seed is
+// below 2^63 (the oracle's `u64` has one more bit).
+pub fn new[&m](m: &!m [int], temperature: float, top_p: float, top_k: int, seed: int) -> [] int {
+    let s = mem.rec(m, 4);
+    m[s + f_temperature()] = f32.bits32(temperature);
+    m[s + f_top_p()] = f32.bits32(top_p);
+    var k = top_k;
+    if k < 1 {
+        k = 1;
+    }
+    m[s + f_top_k()] = k;
+    m[s + f_state()] = mix(seed);
+    return s;
+}
+
+// The next value of the xorshift64* stream, in [0, 1], as an f32.
+fn next_unit[&m](m: &!m [int], s: int) -> [] float {
+    var x = m[s + f_state()];
+    x = x ^ shr64(x, 12);
+    x = x ^ x << 25;
+    x = x ^ shr64(x, 27);
+    m[s + f_state()] = x;
+    let v = shr64(mul64(x, 2685821657736338717), 11);
+    return f32.div(f32.round(float_of(v)), 9007199254740992.0);
+}
+
+// ---------------------------------------------------------------------
+// The nucleus
+// ---------------------------------------------------------------------
+
+// `f32::total_cmp` as an integer key: the order of two f32 bit patterns.
+fn key(bits: int) -> [] int {
+    var signed = bits;
+    if bits >= 2147483648 {
+        signed = bits - 4294967296;
+        return signed ^ 2147483647;
+    }
+    return signed;
+}
+
+fn logit_bits[&t](t: &!t [byte], base: int, i: int) -> [] int {
+    return gguf.le(t, base + 4 * i, 4);
+}
+
+// The `k` largest logits' indices, largest first, equal logits in index
+// order, as a list. For `k <= 64` one pass keeps the best so far; above it
+// the whole row is sorted (a merge sort) and cut.
+fn top_k_indices[&m, &t](m: &!m [int], t: &!t [byte], base: int, n: int, k: int) -> [] int {
+    let out = mem.list(m);
+    if k > 64 {
+        var a = mem.grab(m, n);
+        var b = mem.grab(m, n);
+        var i = 0;
+        while i < n {
+            m[a + i] = i;
+            i = i + 1;
+        }
+        var width = 1;
+        while width < n {
+            var lo = 0;
+            while lo < n {
+                var mid = lo + width;
+                if mid > n {
+                    mid = n;
+                }
+                var hi = lo + 2 * width;
+                if hi > n {
+                    hi = n;
+                }
+                var l = lo;
+                var r = mid;
+                var o = lo;
+                while o < hi {
+                    var take_left = false;
+                    if l < mid {
+                        if r >= hi {
+                            take_left = true;
+                        } else {
+                            let kl = key(logit_bits(t, base, m[a + l]));
+                            let kr = key(logit_bits(t, base, m[a + r]));
+                            // Descending by value; equal values keep index order.
+                            take_left = kl > kr || kl == kr && m[a + l] < m[a + r];
+                        }
+                    }
+                    if take_left {
+                        m[b + o] = m[a + l];
+                        l = l + 1;
+                    } else {
+                        m[b + o] = m[a + r];
+                        r = r + 1;
+                    }
+                    o = o + 1;
+                }
+                lo = lo + 2 * width;
+            }
+            let swap = a;
+            a = b;
+            b = swap;
+            width = width * 2;
+        }
+        var j = 0;
+        while j < k {
+            mem.push(m, out, m[a + j]);
+            j = j + 1;
+        }
+        return out;
+    }
+    var i = 0;
+    while i < n {
+        let ki = key(logit_bits(t, base, i));
+        let have = mem.size(m, out);
+        var skip = false;
+        if have == k {
+            skip = ki <= key(logit_bits(t, base, mem.get(m, out, k - 1)));
+        }
+        if !skip {
+            // After every entry at least as large.
+            var at = 0;
+            while at < have && key(logit_bits(t, base, mem.get(m, out, at))) >= ki {
+                at = at + 1;
+            }
+            mem.push(m, out, i);
+            var j = mem.size(m, out) - 1;
+            while j > at {
+                mem.set(m, out, j, mem.get(m, out, j - 1));
+                j = j - 1;
+            }
+            mem.set(m, out, at, i);
+            if mem.size(m, out) > k {
+                mem.pop(m, out);
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// `(ids, probabilities)` of the tokens this sampler can draw from the row
+// of `n` f32 logits at `t[base..]`, most likely first, as two lists (the
+// probabilities as f32 bit patterns): temperature, top-k, top-p, then
+// renormalised. Greedy is the one-token nucleus.
+pub fn nucleus[&m, &t](m: &!m [int], t: &!t [byte], s: int, base: int, n: int) -> [] (int, int) {
+    let ids = mem.list(m);
+    let probs = mem.list(m);
+    let temperature = f32.from_bits32(m[s + f_temperature()]);
+    if temperature <= 0.0 || m[s + f_top_k()] == 1 {
+        // The last of the largest, as `Iterator::max_by` takes it.
+        var best = 0;
+        var i = 1;
+        while i < n {
+            if key(logit_bits(t, base, i)) >= key(logit_bits(t, base, best)) {
+                best = i;
+            }
+            i = i + 1;
+        }
+        mem.push(m, ids, best);
+        mem.push(m, probs, f32.bits32(1.0));
+        return (ids, probs);
+    }
+    var k = m[s + f_top_k()];
+    if k > n {
+        k = n;
+    }
+    let order = top_k_indices(m, t, base, n, k);
+    let top = f32.from_bits32(logit_bits(t, base, mem.get(m, order, 0)));
+    var sum = 0.0;
+    var j = 0;
+    while j < k {
+        let l = f32.from_bits32(logit_bits(t, base, mem.get(m, order, j)));
+        let p = f32.exp32(f32.div(f32.sub(l, top), temperature));
+        mem.push(m, probs, f32.bits32(p));
+        sum = f32.add(sum, p);
+        j = j + 1;
+    }
+    j = 0;
+    while j < k {
+        mem.set(m, probs, j, f32.bits32(f32.div(f32.from_bits32(mem.get(m, probs, j)), sum)));
+        j = j + 1;
+    }
+    // Top-p over the same, already sorted, list: at least one survives.
+    let top_p = f32.from_bits32(m[s + f_top_p()]);
+    var cut = k;
+    var run = 0.0;
+    j = 0;
+    var found = false;
+    while j < k && !found {
+        run = f32.add(run, f32.from_bits32(mem.get(m, probs, j)));
+        if run >= top_p {
+            cut = j + 1;
+            found = true;
+        }
+        j = j + 1;
+    }
+    var kept = 0.0;
+    j = 0;
+    while j < cut {
+        kept = f32.add(kept, f32.from_bits32(mem.get(m, probs, j)));
+        j = j + 1;
+    }
+    j = 0;
+    while j < cut {
+        mem.push(m, ids, mem.get(m, order, j));
+        j = j + 1;
+    }
+    let out = mem.list(m);
+    j = 0;
+    while j < cut {
+        mem.push(m, out, f32.bits32(f32.div(f32.from_bits32(mem.get(m, probs, j)), kept)));
+        j = j + 1;
+    }
+    return (ids, out);
+}
+
+// One draw from a nucleus.
+pub fn draw[&m](m: &!m [int], s: int, ids: int, probs: int) -> [] int {
+    let r = next_unit(m, s);
+    var acc = 0.0;
+    var j = 0;
+    while j < mem.size(m, probs) {
+        acc = f32.add(acc, f32.from_bits32(mem.get(m, probs, j)));
+        if acc > r {
+            return mem.get(m, ids, j);
+        }
+        j = j + 1;
+    }
+    // Rounding can leave the sum a hair under 1.
+    return mem.last(m, ids);
+}

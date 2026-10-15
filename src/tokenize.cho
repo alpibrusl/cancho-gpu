@@ -1,0 +1,120 @@
+edition 5;
+module tokenize;
+
+// `tokenize` -- the `cancho-gpu tokenize <tokenizer> <corpus>` command: the
+// ids and the decoded text of each record of a corpus, in the canonical
+// form `tools/tokenizer_dump.rs` prints from lex-rt's tokenizer
+// (`docs/runtime.md` §9).
+//
+// `<tokenizer>` is a `tokenizer.json` or a GGUF (told by its first four
+// bytes). The corpus is records separated by a line holding only `%%`
+// (the bytes `\n%%\n`); the first record starts at the start of the file,
+// and the last may end in a newline, which is part of its text.
+//
+//     tokenizer ids=151936
+//     ids 3: 9707 11 1879
+//     dec "Hello, world"
+
+import std.io;
+import mem;
+import text;
+import err;
+import gguf;
+import gguf_dump;
+import bpe;
+import cli;
+import fileio;
+
+fn cap() -> [] int {
+    return 100663296;
+}
+
+// Where the separator `\n%%\n` next starts in `t[from..to]`, or -1.
+fn next_separator[&t](t: &!t [byte], from: int, to: int) -> [] int {
+    var p = from;
+    while p + 4 <= to {
+        if t[p] == byte_of(10) && t[p + 1] == byte_of('%') && t[p + 2] == byte_of('%') && t[p + 3] == byte_of(10) {
+            return p;
+        }
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+fn record_text[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) -> [] int {
+    let ids = bpe.encode(m, t, tk, from, to);
+    if ids < 0 {
+        return 0 - 1;
+    }
+    let numbers = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, ids) {
+        mem.push(m, numbers, text.num(m, t, mem.get(m, ids, i)));
+        i = i + 1;
+    }
+    let (ds, dn) = bpe.decode(m, t, tk, ids);
+    let line = text.f2(m, t, "ids $: $\n", text.num(m, t, mem.size(m, ids)), text.joined(m, t, numbers, " "));
+    return text.f2(m, t, "$dec $\n", line, gguf_dump.quoted(m, t, ds, dn));
+}
+
+pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let (top, got, size) = fileio.prefix(m, t, fs, arg(args, 2), cap());
+    if top < 0 {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, arg(args, 2));
+        io.error_all(io, "\n");
+        return 1;
+    }
+    var tk = 0 - 1;
+    // A GGUF is gigabytes and its tokenizer is in the first megabytes; a
+    // tokenizer.json is read whole or not at all.
+    let is_gguf = got >= 4 && t[top] == byte_of('G') && t[top + 1] == byte_of('G') && t[top + 2] == byte_of('U') && t[top + 3] == byte_of('F');
+    if !is_gguf && size > got {
+        io.error_all(io, "error[io]: ");
+        io.error_all(io, arg(args, 2));
+        io.error_all(io, " is over 96 MiB\n");
+        return 1;
+    }
+    if is_gguf {
+        let g = gguf.parse(m, t, top, top + got);
+        if g < 0 {
+            return cli.report(m, t, io);
+        }
+        tk = bpe.from_gguf(m, t, g);
+    } else {
+        tk = bpe.from_json(m, t, top, got);
+    }
+    if tk < 0 {
+        return cli.report(m, t, io);
+    }
+    let (cstart, cgot, csize) = fileio.prefix(m, t, fs, arg(args, 3), cap());
+    if cstart < 0 || csize > cgot {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, arg(args, 3));
+        io.error_all(io, " (or it is over 96 MiB)\n");
+        return 1;
+    }
+    let lines = mem.list(m);
+    mem.push(m, lines, text.n1(m, t, "tokenizer ids=$\n", m[tk + bpe.f_ids()]));
+    var from = cstart;
+    let end = cstart + cgot;
+    var more = true;
+    while more {
+        var to = next_separator(t, from, end);
+        var next = end;
+        if to < 0 {
+            to = end;
+            more = false;
+        } else {
+            next = to + 4;
+        }
+        let line = record_text(m, t, tk, from, to);
+        if line < 0 {
+            return cli.report(m, t, io);
+        }
+        mem.push(m, lines, line);
+        from = next;
+    }
+    io.write_all(io, text.bytes(t, text.joined(m, t, lines, "")));
+    return 0;
+}

@@ -1,0 +1,20 @@
+row 0 pick 57 nucleus 3: 49=3eaaaaaa 57=3eaaaaaa 63=3eaaaaaa
+row 1 pick 165 nucleus 1: 165=3f800000
+row 2 pick 183 nucleus 1: 183=3f800000
+row 3 pick 109 nucleus 1: 109=3f800000
+row 4 pick 168 nucleus 2: 168=3f1a19a4 107=3ecbccb7
+row 5 pick 46 nucleus 2: 59=3f0742e0 46=3ef17a40
+row 6 pick 176 nucleus 1: 176=3f800000
+row 7 pick 77 nucleus 2: 126=3f2519ac 77=3eb5cca7
+row 8 pick 81 nucleus 2: 11=3f17ab57 81=3ed0a953
+row 9 pick 97 nucleus 1: 97=3f800000
+row 10 pick 70 nucleus 2: 42=3f000000 70=3f000000
+row 11 pick 122 nucleus 2: 122=3f0e02ed 101=3ee3fa28
+row 12 pick 50 nucleus 1: 50=3f800000
+row 13 pick 28 nucleus 1: 28=3f800000
+row 14 pick 188 nucleus 1: 188=3f800000
+row 15 pick 171 nucleus 1: 171=3f800000
+row 16 pick 169 nucleus 1: 169=3f800000
+row 17 pick 43 nucleus 1: 43=3f800000
+row 18 pick 172 nucleus 1: 172=3f800000
+row 19 pick 183 nucleus 2: 183=3f262d69 145=3eb3a52c

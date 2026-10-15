@@ -1,0 +1,2 @@
+safetensors header=64 tensors=1 data=4
+tensor a F32 shape=[1] range=[0,4]

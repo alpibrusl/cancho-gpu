@@ -5,6 +5,9 @@ edition 5;
 //     cancho-gpu emit  <file.lx> <dir> [name=value ...] [--run]
 //     cancho-gpu check <file.lx> [name=value ...] [--run]
 //     cancho-gpu gguf  <file.gguf> [--sum]
+//     cancho-gpu safetensors <file>
+//     cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>
+//     cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
@@ -19,6 +22,11 @@ edition 5;
 // directory -- as the canonical text `tests/gguf.sh` compares with the
 // Rust's (`docs/runtime.md`); `--sum` adds a checksum of each tensor's
 // bytes. It reads the first 32 MiB, which is more than any header.
+//
+// `safetensors` prints the header of a safetensors file (the same text
+// `tools/safetensors_dump.py` prints from the `safetensors` library). It
+// asks the file its size and reads the first 32 MiB, so a 15 GB shard costs
+// the same as a small file and its tensors are checked against its end.
 //
 // Exit status: 0, or 1 with every refusal on standard error as
 // `error[<rule>]: <message>`, or 2 for a usage mistake.
@@ -38,13 +46,18 @@ import interp;
 import cli;
 import gguf;
 import gguf_dump;
+import safetensors;
+import safetensors_dump;
+import fileio;
+import tokenize;
+import sample;
 
 fn words() -> [] int {
-    return 8000000;
+    return 100000000;
 }
 
 fn bytes_cap() -> [] int {
-    return 64000000;
+    return 268435456;
 }
 
 // Floats for `--run`: untouched pages cost nothing.
@@ -53,7 +66,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
     return 2;
 }
 
@@ -104,17 +117,15 @@ fn gguf_cap() -> [] int {
     return 33554432;
 }
 
-fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), args] int {
+fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
     let file = arg(args, 2);
-    let top = m[mem.text_slot()];
-    let got = fs_read(fs, file, t[top..top + gguf_cap()]);
-    if got < 0 {
+    let (top, got, whole) = fileio.prefix(m, t, fs, file, gguf_cap());
+    if top < 0 {
         io.error_all(io, "error[io]: cannot read ");
         io.error_all(io, file);
         io.error_all(io, "\n");
         return 1;
     }
-    m[mem.text_slot()] = top + got;
     var with_sum = false;
     var ai = 3;
     while ai < arg_count(args) {
@@ -137,13 +148,42 @@ fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f 
     return 0;
 }
 
-fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), args] int {
+fn run_safetensors[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let file = arg(args, 2);
+    if arg_count(args) > 3 {
+        return usage(io);
+    }
+    let (top, got, size) = fileio.prefix(m, t, fs, file, gguf_cap());
+    if top < 0 {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, file);
+        io.error_all(io, "\n");
+        return 1;
+    }
+    let g = safetensors.parse(m, t, top, top + got, size);
+    if g < 0 {
+        return cli.report(m, t, io);
+    }
+    io.write_all(io, text.bytes(t, safetensors_dump.dump(m, t, g)));
+    return 0;
+}
+
+fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), file_read, args] int {
     if arg_count(args) < 3 {
         return usage(io);
     }
     let cmd = text.from_bytes(m, t, arg(args, 1));
     if text.is(t, cmd, "gguf") {
         return run_gguf(m, t, io, fs, args);
+    }
+    if text.is(t, cmd, "safetensors") {
+        return run_safetensors(m, t, io, fs, args);
+    }
+    if text.is(t, cmd, "sample") && arg_count(args) == 8 {
+        return sample.run(m, t, io, fs, args);
+    }
+    if text.is(t, cmd, "tokenize") && arg_count(args) == 4 {
+        return tokenize.run(m, t, io, fs, args);
     }
     let emit = text.is(t, cmd, "emit");
     if !emit && !text.is(t, cmd, "check") {

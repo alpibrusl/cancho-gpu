@@ -148,3 +148,29 @@ tests/lx/softmax.lx r=4 n=64
 tests/lx/softmax.lx r=16 n=256
 tests/lx/softmax.lx r=3 n=7
 tests/lx/softmax.lx r=4 n=64 --run
+
+# Slice 9b: the kernels of one Qwen3.8 full-attention layer's decode step.
+# rope: partial rotary (a quarter of a 256-wide head), the tables shared by the rows.
+tests/lx/rope.lx r=24 h=32 p=192
+tests/lx/rope.lx r=4 h=32 p=192
+tests/lx/rope.lx r=24 h=32 p=192 --run
+tests/lx/rope.lx r=3 h=4 p=2 --run
+# kv_append: one position of every head's cache.
+tests/lx/kv_append.lx nkv=4 tmax=256 d=256 pos=17
+tests/lx/kv_append.lx nkv=4 tmax=64 d=256 pos=17 --run
+tests/lx/kv_append.lx nkv=2 tmax=8 d=16 pos=0 --run
+# Small enough that the printed first four values are the whole cache, so a displaced row shows.
+tests/lx/kv_append.lx nkv=2 tmax=2 d=1 pos=1 --run
+tests/lx/kv_append.lx nkv=4 tmax=1 d=1 pos=0 --run
+# attention: the scores of a head are one tile, so t has a ceiling (Metal's 32 KiB at t = 1365 for g = 6).
+tests/lx/attention.lx nkv=4 g=6 t=64 d=256 tmax=128
+tests/lx/attention.lx nkv=4 g=6 t=1024 d=256 tmax=2048
+tests/lx/attention.lx nkv=4 g=6 t=1364 d=256 tmax=2048
+tests/lx/attention.lx nkv=4 g=6 t=1365 d=256 tmax=2048
+tests/lx/attention.lx nkv=4 g=6 t=2048 d=256 tmax=2048
+tests/lx/attention.lx nkv=2 g=6 t=64 d=256 tmax=96 --run
+tests/lx/attention.lx nkv=3 g=2 t=16 d=256 tmax=20 --run
+# attn_gate: the layer's output gate.
+tests/lx/attn_gate.lx r=24 n=256
+tests/lx/attn_gate.lx r=24 n=256 --run
+tests/lx/attn_gate.lx r=3 n=7 --run

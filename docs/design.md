@@ -1,7 +1,8 @@
 # cancho-gpu: design
 
-> **Status: slices 1–8, 9b (part 1) and 10 of cancho#251 built and
-> measured** (driving a GPU: CUDA against a mock driver only, Metal also on
+> **Status: slices 1–8, 9b (`exp`/`log`, `softmax` and the decode kernels of an
+> attention layer: [`kernels.md`](kernels.md); split-KV for long contexts is not
+> built) and 10 of cancho#251 built and measured** (driving a GPU: CUDA against a mock driver only, Metal also on
 > Apple Silicon, [`device.md`](device.md); the first stage of the model
 > reader, [`runtime.md`](runtime.md)). The `.lx`
 > front end, checker and both emitters of

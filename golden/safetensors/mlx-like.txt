@@ -1,0 +1,6 @@
+safetensors header=312 tensors=4 data=224
+meta format "mlx"
+tensor layer.biases F16 shape=[8,1] range=[144,160]
+tensor layer.scales F16 shape=[8,1] range=[128,144]
+tensor layer.weight U32 shape=[8,4] range=[0,128]
+tensor norm.weight BF16 shape=[32] range=[160,224]

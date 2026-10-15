@@ -1,0 +1,16 @@
+// The output gate of Qwen3.8's attention layers: y = o * sigmoid(gate), where
+// the layer's query projection produced the gate next to the queries.
+algo attn_gate(r, n)
+  in  o:    f32[r, n]
+  in  gate: f32[r, n]
+  out y:    f32[r, n]
+{
+  let ot = load o
+  let gt = load gate
+  let sg = sigmoid gt
+  let yt = ot * sg
+  store yt -> y
+}
+
+schedule attn_gate for apple-m-series { threads 256 }
+schedule attn_gate for nvidia-ada     { threads 256 }

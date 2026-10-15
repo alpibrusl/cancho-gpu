@@ -1,0 +1,115 @@
+edition 5;
+module sample;
+
+// `sample` -- the `cancho-gpu sample <logits> <vocab> <temperature> <top_p>
+// <top_k> <seed>` command: for each row of `<vocab>` little-endian f32
+// logits in the file, the nucleus and the draw, in the form
+// `tools/sampler_dump.rs` prints from lex-rt's sampler (`docs/runtime.md`
+// §10). The stream of draws runs across the rows, as it does in generation.
+//
+//     row 0 pick 17 nucleus 3: 17=3f000000 5=3e800000 9=3e800000
+//
+// A probability is its f32 bits in hex, or `nan`.
+
+import std.io;
+import mem;
+import text;
+import err;
+import f32;
+import gguf;
+import cli;
+import fileio;
+import sampler;
+
+fn cap() -> [] int {
+    return 134217728;
+}
+
+fn hex8[&m, &t](m: &!m [int], t: &!t [byte], bits: int) -> [] int {
+    let from = text.begin(m);
+    var k = 7;
+    while k >= 0 {
+        let d = bits >> 4 * k & 15;
+        if d < 10 {
+            text.put_byte(m, t, byte_of(48 + d));
+        } else {
+            text.put_byte(m, t, byte_of(87 + d));
+        }
+        k = k - 1;
+    }
+    return text.finish(m, from);
+}
+
+fn prob_text[&m, &t](m: &!m [int], t: &!t [byte], bits: int) -> [] int {
+    // An f32 NaN: exponent all ones, a fraction.
+    if bits >> 23 & 255 == 255 && bits & 8388607 != 0 {
+        return text.lit(m, t, "nan");
+    }
+    return hex8(m, t, bits);
+}
+
+// A decimal number that fits an f32 argument, or `ok = false`.
+fn number[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] (bool, float) {
+    let (ok, v) = f32.parse(m, t, s);
+    return (ok, f32.round(v));
+}
+
+// A whole decimal number, 0 to 2^63 - 1, or -1.
+fn natural[&t](t: &!t [byte], s: int) -> [] int {
+    let n = text.size(s);
+    if n == 0 || n > 19 {
+        return 0 - 1;
+    }
+    var v = 0;
+    var i = 0;
+    while i < n {
+        let c = text.at(t, s, i);
+        if c < 48 || c > 57 || v > (9223372036854775807 - (c - 48)) / 10 {
+            return 0 - 1;
+        }
+        v = v * 10 + c - 48;
+        i = i + 1;
+    }
+    return v;
+}
+
+pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let vocab = natural(t, text.from_bytes(m, t, arg(args, 3)));
+    let (okt, temperature) = number(m, t, text.from_bytes(m, t, arg(args, 4)));
+    let (okp, top_p) = number(m, t, text.from_bytes(m, t, arg(args, 5)));
+    let top_k = natural(t, text.from_bytes(m, t, arg(args, 6)));
+    let seed = natural(t, text.from_bytes(m, t, arg(args, 7)));
+    if vocab < 1 || !okt || !okp || top_k < 0 || seed < 0 {
+        io.error_all(io, "usage: cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
+        return 2;
+    }
+    let (top, got, size) = fileio.prefix(m, t, fs, arg(args, 2), cap());
+    if top < 0 || size > got {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, arg(args, 2));
+        io.error_all(io, " (or it is over 256 MiB)\n");
+        return 1;
+    }
+    if got % (4 * vocab) != 0 || got == 0 {
+        io.error_all(io, "error[sample-rows]: the file is not a whole number of rows of <vocab> f32\n");
+        return 1;
+    }
+    let s = sampler.new(m, temperature, top_p, top_k, seed);
+    let lines = mem.list(m);
+    var row = 0;
+    while row < got / (4 * vocab) {
+        let base = top + row * 4 * vocab;
+        let (ids, probs) = sampler.nucleus(m, t, s, base, vocab);
+        let pick = sampler.draw(m, s, ids, probs);
+        let parts = mem.list(m);
+        var j = 0;
+        while j < mem.size(m, ids) {
+            mem.push(m, parts, text.f2(m, t, "$=$", text.num(m, t, mem.get(m, ids, j)), prob_text(m, t, mem.get(m, probs, j))));
+            j = j + 1;
+        }
+        mem.push(m, lines, text.fmt(m, t, "row $ pick $ nucleus $: $\n", mem.of4(m, text.num(m, t, row), text.num(m, t, pick), text.num(m, t, mem.size(m, ids)), text.joined(m, t, parts, " "))));
+        row = row + 1;
+    }
+    io.write_all(io, text.bytes(t, text.joined(m, t, lines, "")));
+    return 0;
+}

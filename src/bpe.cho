@@ -1,0 +1,972 @@
+edition 5;
+module bpe;
+
+// `bpe` -- a byte-level BPE tokenizer (slice 9a, stage 3 of cancho#251,
+// issue #5; `docs/runtime.md` §9).
+//
+// `lex-rt/src/tokenizer.rs` is the oracle, and what is here is what it
+// does, including the places it is narrow: the split before merging is the
+// one hand-written GPT-4-shaped pattern (`split`), whatever the file's
+// `pre_tokenizer` says; a GGUF is accepted only when its `tokenizer.ggml.pre`
+// is `qwen35`; `\p{M}` is the blocks that appear in text. A tokenizer that
+// disagreed would tokenise wrongly without an error, so the narrowness is
+// kept and tested, not widened.
+//
+// Everything is positions in the text pool and records in `m`. A token's
+// text is `(start, length)` in the pool: in place in the file where it is
+// plain (a GGUF string, a JSON string without an escape), decoded once
+// where it is not. The vocabulary and the merge ranks are open-addressing
+// hash tables in `m` over those positions, so a 248,000-token vocabulary
+// with 247,000 merges is about four million words and no copies.
+
+import std.json;
+import mem;
+import text;
+import err;
+import gguf;
+import jstr;
+import unicode;
+
+// ---------------------------------------------------------------------
+// The tokenizer record, in `m`
+// ---------------------------------------------------------------------
+
+// How many ids there are (the length of the text table).
+pub fn f_ids() -> [] int {
+    return 0;
+}
+
+// Address in `m` of `start[id]`, then `len[id]`: each id's text.
+pub fn f_start() -> [] int {
+    return 1;
+}
+
+pub fn f_len() -> [] int {
+    return 2;
+}
+
+// The vocabulary: a table from token text to id.
+pub fn f_vocab() -> [] int {
+    return 3;
+}
+
+// The merges: a table from a pair of texts to its rank.
+pub fn f_pairs() -> [] int {
+    return 4;
+}
+
+// The added tokens, longest first: a list of `[start, length, id]`.
+pub fn f_added() -> [] int {
+    return 5;
+}
+
+pub fn f_ignore() -> [] int {
+    return 6;
+}
+
+// Address of 256 words: the scalar value of the character a byte becomes.
+pub fn f_byte_char() -> [] int {
+    return 7;
+}
+
+// Address of 68 words: the bytes that are lifted, in order.
+pub fn f_lifted() -> [] int {
+    return 8;
+}
+
+// ---------------------------------------------------------------------
+// Hash tables
+// ---------------------------------------------------------------------
+
+fn fnv_step(h: int, b: int) -> [] int {
+    return (h ^ b) * 16777619 & 4294967295;
+}
+
+fn hash_bytes[&t](t: &!t [byte], p: int, n: int, seed: int) -> [] int {
+    var h = seed;
+    var i = 0;
+    while i < n {
+        h = fnv_step(h, int_of(t[p + i]));
+        i = i + 1;
+    }
+    return h;
+}
+
+fn offset_basis() -> [] int {
+    return 2166136261;
+}
+
+fn same[&t](t: &!t [byte], a: int, b: int, n: int) -> [] bool {
+    var i = 0;
+    while i < n {
+        if t[a + i] != t[b + i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A table of `cap` entries at most: `[slots, mask, count, keys, values]`,
+// where `keys` is `[a start, a length, b start, b length]` per entry (the
+// second string is empty for a vocabulary) and `values` one word each.
+fn table_new[&m](m: &!m [int], cap: int) -> [] int {
+    var size = 16;
+    while size < cap * 2 {
+        size = size * 2;
+    }
+    let tb = mem.rec(m, 5);
+    m[tb] = mem.grab(m, size);
+    m[tb + 1] = size - 1;
+    m[tb + 2] = 0;
+    m[tb + 3] = mem.grab(m, cap * 4);
+    m[tb + 4] = mem.grab(m, cap);
+    return tb;
+}
+
+fn table_hash[&t](t: &!t [byte], a: int, an: int, b: int, bn: int) -> [] int {
+    var h = hash_bytes(t, a, an, offset_basis());
+    if bn > 0 {
+        h = fnv_step(h, 255);
+        h = hash_bytes(t, b, bn, h);
+    }
+    return h;
+}
+
+// The entry index of the key, or -1.
+fn table_find[&m, &t](m: &!m [int], t: &!t [byte], tb: int, a: int, an: int, b: int, bn: int) -> [] int {
+    var i = table_hash(t, a, an, b, bn) & m[tb + 1];
+    var found = 0 - 1;
+    var scanning = true;
+    while scanning {
+        let e = m[m[tb] + i];
+        if e == 0 {
+            scanning = false;
+        } else {
+            let k = m[tb + 3] + (e - 1) * 4;
+            if m[k + 1] == an && m[k + 3] == bn && same(t, m[k], a, an) && same(t, m[k + 2], b, bn) {
+                found = e - 1;
+                scanning = false;
+            } else {
+                i = i + 1 & m[tb + 1];
+            }
+        }
+    }
+    return found;
+}
+
+// Insert a key. An existing key keeps its first value unless `replace`.
+fn table_put[&m, &t](m: &!m [int], t: &!t [byte], tb: int, a: int, an: int, b: int, bn: int, value: int, replace: bool) -> [] int {
+    let at = table_find(m, t, tb, a, an, b, bn);
+    if at >= 0 {
+        if replace {
+            m[m[tb + 4] + at] = value;
+        }
+        return 0;
+    }
+    let n = m[tb + 2];
+    let k = m[tb + 3] + n * 4;
+    m[k] = a;
+    m[k + 1] = an;
+    m[k + 2] = b;
+    m[k + 3] = bn;
+    m[m[tb + 4] + n] = value;
+    m[tb + 2] = n + 1;
+    var i = table_hash(t, a, an, b, bn) & m[tb + 1];
+    while m[m[tb] + i] != 0 {
+        i = i + 1 & m[tb + 1];
+    }
+    m[m[tb] + i] = n + 1;
+    return 0;
+}
+
+fn table_get[&m, &t](m: &!m [int], t: &!t [byte], tb: int, a: int, an: int, b: int, bn: int) -> [] int {
+    let at = table_find(m, t, tb, a, an, b, bn);
+    if at < 0 {
+        return 0 - 1;
+    }
+    return m[m[tb + 4] + at];
+}
+
+// ---------------------------------------------------------------------
+// The byte-level alphabet
+// ---------------------------------------------------------------------
+
+// Each of the 256 bytes becomes one character: the printable Latin-1 ones
+// stand for themselves and the other 68 are lifted to U+0100 upward, in
+// byte order.
+fn alphabet[&m](m: &!m [int], tk: int) -> [] int {
+    let chars = mem.grab(m, 256);
+    let lifted = mem.grab(m, 68);
+    var spare = 0;
+    var b = 0;
+    while b < 256 {
+        let printable = b >= 33 && b <= 126 || b >= 161 && b <= 172 || b >= 174;
+        if printable {
+            m[chars + b] = b;
+        } else {
+            m[chars + b] = 256 + spare;
+            m[lifted + spare] = b;
+            spare = spare + 1;
+        }
+        b = b + 1;
+    }
+    m[tk + f_byte_char()] = chars;
+    m[tk + f_lifted()] = lifted;
+    return 0;
+}
+
+// The byte a character stands for, or -1.
+fn char_byte[&m](m: &!m [int], tk: int, cp: int) -> [] int {
+    if cp >= 33 && cp <= 126 || cp >= 161 && cp <= 172 || cp >= 174 && cp <= 255 {
+        return cp;
+    }
+    if cp >= 256 && cp < 324 {
+        return m[m[tk + f_lifted()] + cp - 256];
+    }
+    return 0 - 1;
+}
+
+// ---------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], rule: &static [byte], msg: &static [byte]) -> [] int {
+    return err.fail(m, t, rule, text.lit(m, t, msg));
+}
+
+// Record that id `id` has the text `(start, n)`.
+fn set_text[&m](m: &!m [int], tk: int, id: int, start: int, n: int) -> [] int {
+    m[m[tk + f_start()] + id] = start;
+    m[m[tk + f_len()] + id] = n;
+    return 0;
+}
+
+fn new_record[&m](m: &!m [int], ids: int, merges: int, vocab_cap: int) -> [] int {
+    let tk = mem.rec(m, 9);
+    m[tk + f_ids()] = ids;
+    m[tk + f_start()] = mem.grab(m, ids + 1);
+    m[tk + f_len()] = mem.grab(m, ids + 1);
+    m[tk + f_vocab()] = table_new(m, vocab_cap);
+    m[tk + f_pairs()] = table_new(m, merges);
+    m[tk + f_added()] = mem.list(m);
+    alphabet(m, tk);
+    return tk;
+}
+
+// The longest first, ties in the order they came (a stable insertion sort).
+fn sort_added[&m](m: &!m [int], list: int) -> [] int {
+    var a = 1;
+    while a < mem.size(m, list) {
+        let x = mem.get(m, list, a);
+        var b = a;
+        while b > 0 && m[mem.get(m, list, b - 1) + 1] < m[x + 1] {
+            mem.set(m, list, b, mem.get(m, list, b - 1));
+            b = b - 1;
+        }
+        mem.set(m, list, b, x);
+        a = a + 1;
+    }
+    return 0;
+}
+
+// A merge stored as its two halves joined by one space: the left side is
+// the shortest prefix ending in a space whose two sides are both tokens.
+// The position of the split (the space), or -1.
+fn split_joined[&m, &t](m: &!m [int], t: &!t [byte], tk: int, s: int, n: int) -> [] int {
+    var i = 1;
+    while i <= n {
+        if t[s + i - 1] == byte_of(' ') {
+            let left = table_get(m, t, m[tk + f_vocab()], s, i - 1, 0, 0);
+            let right = table_get(m, t, m[tk + f_vocab()], s + i, n - i, 0, 0);
+            if left >= 0 && right >= 0 {
+                return i - 1;
+            }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The text of a string node of the tape over `t[hs..]`: `(start, length)`,
+// in place when it has no escape, decoded into the pool when it has.
+fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] (int, int) {
+    let from = hs + m[tape + 3 * i + 1];
+    let to = hs + m[tape + 3 * i + 2];
+    if json.string_plain(m[tape..tape + 3 * i + 3], i) {
+        return (from, to - from);
+    }
+    let h = jstr.decode(m, t, from, to);
+    return (text.start(h), text.size(h));
+}
+
+// Load a `tokenizer.json` whose bytes are `t[hs..hs + n]`: the record, or -1.
+pub fn from_json[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        let code = json.error_code(nodes);
+        return err.fail(m, t, "tok-json", text.f1(m, t, "tokenizer.json is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
+    }
+    let src = t[hs..hs + n];
+    let root = json.get(src, m[tape..tape + words], 0, "model");
+    if root < 0 || !json.is_object(m[tape..tape + words], root) {
+        return bad(m, t, "tok-model", "tokenizer.json has no `model`");
+    }
+    let kind = json.get(src, m[tape..tape + words], root, "type");
+    if kind < 0 || !json.is_string(m[tape..tape + words], kind) || !json.string_equals(src, m[tape..tape + words], kind, "BPE") {
+        return bad(m, t, "tok-model", "unsupported tokenizer model: only BPE");
+    }
+    let vocab = json.get(src, m[tape..tape + words], root, "vocab");
+    if vocab < 0 || !json.is_object(m[tape..tape + words], vocab) {
+        return bad(m, t, "tok-vocab", "the model has no `vocab`");
+    }
+    let nv = json.count(m[tape..tape + words], vocab);
+    // The largest id, over the vocabulary and the added tokens.
+    var top = 0 - 1;
+    var k = vocab + 1;
+    var i = 0;
+    while i < nv {
+        let v = k + 1;
+        if !json.is_int(m[tape..tape + words], v) || !json.fits_int(src, m[tape..tape + words], v) || json.to_int(src, m[tape..tape + words], v) < 0 || json.to_int(src, m[tape..tape + words], v) > 16777215 {
+            return bad(m, t, "tok-vocab", "a vocab entry is not an id (0 to 2^24)");
+        }
+        let id = json.to_int(src, m[tape..tape + words], v);
+        if id > top {
+            top = id;
+        }
+        k = json.skip(m[tape..tape + words], v);
+        i = i + 1;
+    }
+    let added = json.get(src, m[tape..tape + words], 0, "added_tokens");
+    var na = 0;
+    if added >= 0 && json.is_array(m[tape..tape + words], added) {
+        na = json.count(m[tape..tape + words], added);
+        var a = added + 1;
+        var j = 0;
+        while j < na {
+            let content = json.get(src, m[tape..tape + words], a, "content");
+            let idn = json.get(src, m[tape..tape + words], a, "id");
+            if content >= 0 && json.is_string(m[tape..tape + words], content) && idn >= 0 && json.is_int(m[tape..tape + words], idn) && json.fits_int(src, m[tape..tape + words], idn) {
+                let id = json.to_int(src, m[tape..tape + words], idn);
+                if id < 0 || id > 16777215 {
+                    return bad(m, t, "tok-added", "an added token's id is not 0 to 2^24");
+                }
+                if id > top {
+                    top = id;
+                }
+            }
+            a = json.skip(m[tape..tape + words], a);
+            j = j + 1;
+        }
+    }
+    let merges = json.get(src, m[tape..tape + words], root, "merges");
+    var nm = 0;
+    if merges >= 0 && json.is_array(m[tape..tape + words], merges) {
+        nm = json.count(m[tape..tape + words], merges);
+    }
+    let tk = new_record(m, top + 1, nm, nv);
+    // The vocabulary; a repeated key takes its last id, a repeated id its last key.
+    k = vocab + 1;
+    i = 0;
+    while i < nv {
+        let v = k + 1;
+        let (ks, kn) = node_text(m, t, tape, hs, k);
+        let id = json.to_int(src, m[tape..tape + words], v);
+        set_text(m, tk, id, ks, kn);
+        table_put(m, t, m[tk + f_vocab()], ks, kn, 0, 0, id, true);
+        k = json.skip(m[tape..tape + words], v);
+        i = i + 1;
+    }
+    // The merges: `["a", "b"]` or `"a b"`; the first of a repeated pair wins.
+    if nm > 0 {
+        var e = merges + 1;
+        var r = 0;
+        while r < nm {
+            if json.is_array(m[tape..tape + words], e) && json.count(m[tape..tape + words], e) == 2 {
+                let x = e + 1;
+                let y = json.skip(m[tape..tape + words], x);
+                if !json.is_string(m[tape..tape + words], x) || !json.is_string(m[tape..tape + words], y) {
+                    return err.fail(m, t, "tok-merge", text.n1(m, t, "merge $ is not a pair of strings", r));
+                }
+                let (xs, xn) = node_text(m, t, tape, hs, x);
+                let (ys, yn) = node_text(m, t, tape, hs, y);
+                table_put(m, t, m[tk + f_pairs()], xs, xn, ys, yn, r, false);
+            } else {
+                if !json.is_string(m[tape..tape + words], e) {
+                    return err.fail(m, t, "tok-merge", text.n1(m, t, "merge $ is not a string", r));
+                }
+                let (ss, sn) = node_text(m, t, tape, hs, e);
+                let cut = split_joined(m, t, tk, ss, sn);
+                if cut < 0 {
+                    return err.fail(m, t, "tok-merge", text.n1(m, t, "merge $ splits into no two tokens", r));
+                }
+                table_put(m, t, m[tk + f_pairs()], ss, cut, ss + cut + 1, sn - cut - 1, r, false);
+            }
+            e = json.skip(m[tape..tape + words], e);
+            r = r + 1;
+        }
+    }
+    // The added tokens: literal text, matched before anything else.
+    if na > 0 {
+        var a = added + 1;
+        var j = 0;
+        while j < na {
+            let content = json.get(src, m[tape..tape + words], a, "content");
+            let idn = json.get(src, m[tape..tape + words], a, "id");
+            if content >= 0 && json.is_string(m[tape..tape + words], content) && idn >= 0 && json.is_int(m[tape..tape + words], idn) && json.fits_int(src, m[tape..tape + words], idn) {
+                let (cs, cn) = node_text(m, t, tape, hs, content);
+                if cn == 0 {
+                    return bad(m, t, "tok-added", "an added token has empty content");
+                }
+                let id = json.to_int(src, m[tape..tape + words], idn);
+                mem.push(m, m[tk + f_added()], mem.rec3(m, cs, cn, id));
+                set_text(m, tk, id, cs, cn);
+            }
+            a = json.skip(m[tape..tape + words], a);
+            j = j + 1;
+        }
+    }
+    sort_added(m, m[tk + f_added()]);
+    let ig = json.get(src, m[tape..tape + words], root, "ignore_merges");
+    if ig >= 0 && json.to_bool(m[tape..tape + words], ig) {
+        m[tk + f_ignore()] = 1;
+    }
+    return tk;
+}
+
+// ---------------------------------------------------------------------
+// Encoding
+// ---------------------------------------------------------------------
+
+fn is_letter(cp: int) -> [] bool {
+    return unicode.is_alphabetic(cp) || unicode.is_mark(cp);
+}
+
+fn is_newline(cp: int) -> [] bool {
+    return cp == 13 || cp == 10;
+}
+
+// The contraction tail (`s`, `t`, `re`, `ve`, `m`, `ll`, `d`, any case)
+// after the apostrophe at `i`: its length in characters, or 0.
+fn contraction[&m](m: &!m [int], cps: int, i: int) -> [] int {
+    let n = mem.size(m, cps);
+    var hit = 0;
+    var s = 0;
+    while s < 7 {
+        var k = 1;
+        if s == 2 || s == 3 || s == 5 {
+            k = 2;
+        }
+        if i + 1 + k <= n && k > hit {
+            var ok = true;
+            var j = 0;
+            while j < k {
+                var c = mem.get(m, cps, i + 1 + j);
+                if c >= 65 && c <= 90 {
+                    c = c + 32;
+                }
+                var want = 115;
+                if s == 1 {
+                    want = 116;
+                } else if s == 2 {
+                    want = 114;
+                    if j == 1 {
+                        want = 101;
+                    }
+                } else if s == 3 {
+                    want = 118;
+                    if j == 1 {
+                        want = 101;
+                    }
+                } else if s == 4 {
+                    want = 109;
+                } else if s == 5 {
+                    want = 108;
+                } else if s == 6 {
+                    want = 100;
+                }
+                if c != want {
+                    ok = false;
+                }
+                j = j + 1;
+            }
+            if ok {
+                hit = k;
+            }
+        }
+        s = s + 1;
+    }
+    return hit;
+}
+
+// The pre-tokenizer's split of the scalar values `cps` whose byte offsets
+// are `at` (one more than `cps`): a list of `[from, to)` character
+// indices, two words a piece. See `tokenizer.rs`, `split`.
+fn pieces_of[&m](m: &!m [int], cps: int) -> [] int {
+    let n = mem.size(m, cps);
+    let out = mem.list(m);
+    var i = 0;
+    while i < n {
+        let start = i;
+        let c = mem.get(m, cps, i);
+        var done = false;
+        // 1. A contraction.
+        if c == 39 && i + 1 < n {
+            let hit = contraction(m, cps, i);
+            if hit > 0 {
+                i = i + 1 + hit;
+                mem.push(m, out, start);
+                mem.push(m, out, i);
+                done = true;
+            }
+        }
+        // 2. An optional lead-in, then a run of letters.
+        if !done {
+            var lead = 0;
+            if !is_letter(c) && !unicode.is_numeric(c) && !is_newline(c) {
+                lead = 1;
+            }
+            if i + lead < n && is_letter(mem.get(m, cps, i + lead)) {
+                i = i + lead;
+                while i < n && is_letter(mem.get(m, cps, i)) {
+                    i = i + 1;
+                }
+                mem.push(m, out, start);
+                mem.push(m, out, i);
+                done = true;
+            }
+        }
+        // 3. One digit.
+        if !done && unicode.is_numeric(c) {
+            i = i + 1;
+            mem.push(m, out, start);
+            mem.push(m, out, i);
+            done = true;
+        }
+        // 4. An optional space, a run of punctuation, then newlines.
+        if !done {
+            var lead = 0;
+            if c == 32 {
+                lead = 1;
+            }
+            var hit = false;
+            if i + lead < n {
+                let d = mem.get(m, cps, i + lead);
+                hit = !unicode.is_whitespace(d) && !is_letter(d) && !unicode.is_numeric(d);
+            }
+            if hit {
+                i = i + lead;
+                while i < n && !unicode.is_whitespace(mem.get(m, cps, i)) && !is_letter(mem.get(m, cps, i)) && !unicode.is_numeric(mem.get(m, cps, i)) {
+                    i = i + 1;
+                }
+                while i < n && is_newline(mem.get(m, cps, i)) {
+                    i = i + 1;
+                }
+                mem.push(m, out, start);
+                mem.push(m, out, i);
+                done = true;
+            }
+        }
+        // 5-7. Whitespace.
+        if !done && unicode.is_whitespace(c) {
+            var j = i;
+            while j < n && unicode.is_whitespace(mem.get(m, cps, j)) && !is_newline(mem.get(m, cps, j)) {
+                j = j + 1;
+            }
+            if j < n && is_newline(mem.get(m, cps, j)) {
+                while j < n && is_newline(mem.get(m, cps, j)) {
+                    j = j + 1;
+                }
+                mem.push(m, out, i);
+                mem.push(m, out, j);
+                i = j;
+                done = true;
+            } else {
+                // Whitespace with something after it keeps its last
+                // space for that something.
+                j = i;
+                while j < n && unicode.is_whitespace(mem.get(m, cps, j)) {
+                    j = j + 1;
+                }
+                var end = j;
+                if j < n && j > i {
+                    end = j - 1;
+                }
+                if end > i {
+                    mem.push(m, out, i);
+                    mem.push(m, out, end);
+                    i = end;
+                } else {
+                    i = j;
+                    mem.push(m, out, start);
+                    mem.push(m, out, i);
+                }
+                done = true;
+            }
+        }
+        // Nothing matched: one character.
+        if !done {
+            i = i + 1;
+            mem.push(m, out, start);
+            mem.push(m, out, i);
+        }
+    }
+    return out;
+}
+
+// BPE within one piece, whose byte-level characters are the UTF-8 at
+// `s[0..sn]` (scratch space at the end of the pool): repeatedly join the
+// adjacent pair of lowest rank (the leftmost of equals), then look up what
+// is left. Ids go to `out`.
+fn merge[&m, &t](m: &!m [int], t: &!t [byte], tk: int, s: int, sn: int, out: int) -> [] int {
+    // The parts: `[start, length]` pairs, contiguous in `s`.
+    let parts = mem.list(m);
+    var p = 0;
+    while p < sn {
+        let (cp, w) = unicode.decode(t, s + p, s + sn);
+        mem.push(m, parts, s + p);
+        mem.push(m, parts, w);
+        p = p + w;
+    }
+    var live = true;
+    while live {
+        var best = 0 - 1;
+        var at = 0 - 1;
+        var i = 0;
+        let np = mem.size(m, parts) / 2;
+        while i + 1 < np {
+            let r = table_get(m, t, m[tk + f_pairs()], mem.get(m, parts, 2 * i), mem.get(m, parts, 2 * i + 1), mem.get(m, parts, 2 * i + 2), mem.get(m, parts, 2 * i + 3));
+            if r >= 0 && (best < 0 || r < best) {
+                best = r;
+                at = i;
+            }
+            i = i + 1;
+        }
+        if at < 0 {
+            live = false;
+        } else {
+            // Join parts `at` and `at + 1`: they are adjacent in `s`.
+            mem.set(m, parts, 2 * at + 1, mem.get(m, parts, 2 * at + 1) + mem.get(m, parts, 2 * at + 3));
+            var j = at + 1;
+            while j + 1 < np {
+                mem.set(m, parts, 2 * j, mem.get(m, parts, 2 * j + 2));
+                mem.set(m, parts, 2 * j + 1, mem.get(m, parts, 2 * j + 3));
+                j = j + 1;
+            }
+            mem.pop(m, parts);
+            mem.pop(m, parts);
+        }
+    }
+    var q = 0;
+    while q < mem.size(m, parts) / 2 {
+        let id = table_get(m, t, m[tk + f_vocab()], mem.get(m, parts, 2 * q), mem.get(m, parts, 2 * q + 1), 0, 0);
+        if id >= 0 {
+            mem.push(m, out, id);
+        }
+        q = q + 1;
+    }
+    return 0;
+}
+
+// The ids of the well-formed text `t[from..to]` split into pieces (the
+// text has no added token in it): appended to `out`.
+fn encode_ordinary[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int, out: int) -> [] int {
+    let cps = unicode.scalars(m, t, from, to);
+    let pieces = pieces_of(m, cps);
+    // Byte offset of each scalar value.
+    let at = mem.list(m);
+    var p = from;
+    var c = 0;
+    while c < mem.size(m, cps) {
+        mem.push(m, at, p);
+        let (cp, w) = unicode.decode(t, p, to);
+        p = p + w;
+        c = c + 1;
+    }
+    mem.push(m, at, p);
+    var k = 0;
+    while k < mem.size(m, pieces) / 2 {
+        let b0 = mem.get(m, at, mem.get(m, pieces, 2 * k));
+        let b1 = mem.get(m, at, mem.get(m, pieces, 2 * k + 1));
+        // The piece's bytes as characters, built past the end of the pool
+        // and given back by not moving the pool's end.
+        let scratch = m[mem.text_slot()];
+        var w = scratch;
+        var b = b0;
+        while b < b1 {
+            let cp = m[m[tk + f_byte_char()] + int_of(t[b])];
+            if cp < 128 {
+                t[w] = byte_of(cp);
+                w = w + 1;
+            } else {
+                t[w] = byte_of(192 + cp / 64);
+                t[w + 1] = byte_of(128 + cp % 64);
+                w = w + 2;
+            }
+            b = b + 1;
+        }
+        var whole = 0 - 1;
+        if m[tk + f_ignore()] == 1 {
+            whole = table_get(m, t, m[tk + f_vocab()], scratch, w - scratch, 0, 0);
+        }
+        if whole >= 0 {
+            mem.push(m, out, whole);
+        } else {
+            merge(m, t, tk, scratch, w - scratch, out);
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// The first place an added token occurs in `t[from..to]`, the longest of
+// those at that place: `(position, token record)` or `(-1, 0)`.
+fn first_added[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) -> [] (int, int) {
+    var best = 0 - 1;
+    var rec = 0;
+    var a = 0;
+    let list = m[tk + f_added()];
+    while a < mem.size(m, list) {
+        let r = mem.get(m, list, a);
+        let n = m[r + 1];
+        var p = from;
+        var found = 0 - 1;
+        while found < 0 && p + n <= to && (best < 0 || p <= best) {
+            if same(t, p, m[r], n) {
+                found = p;
+            }
+            p = p + 1;
+        }
+        if found >= 0 && (best < 0 || found < best || found == best && n > m[rec + 1]) {
+            best = found;
+            rec = r;
+        }
+        a = a + 1;
+    }
+    return (best, rec);
+}
+
+// Text to ids: the ids of the UTF-8 text `t[from..to]` as a list, or -1
+// with a refusal (`tok-utf8`).
+pub fn encode[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) -> [] int {
+    let cps = unicode.scalars(m, t, from, to);
+    if cps < 0 {
+        return err.fail(m, t, "tok-utf8", text.lit(m, t, "the text is not well-formed UTF-8"));
+    }
+    // NFC, written back into the pool.
+    let norm = unicode.nfc(m, cps);
+    let ns = m[mem.text_slot()];
+    var x = 0;
+    while x < mem.size(m, norm) {
+        unicode.put_cp(m, t, mem.get(m, norm, x));
+        x = x + 1;
+    }
+    let ne = m[mem.text_slot()];
+    let out = mem.list(m);
+    var rest = ns;
+    var scanning = true;
+    while scanning && rest < ne {
+        let (at, rec) = first_added(m, t, tk, rest, ne);
+        if at < 0 {
+            encode_ordinary(m, t, tk, rest, ne, out);
+            scanning = false;
+        } else {
+            encode_ordinary(m, t, tk, rest, at, out);
+            mem.push(m, out, m[rec + 2]);
+            rest = at + m[rec + 1];
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------
+// Decoding
+// ---------------------------------------------------------------------
+
+// Ids back to text: the bytes of each token (the byte-level characters
+// back to bytes, anything else as the UTF-8 it is), then decoded lossily
+// as UTF-8 -- once, over all of them, because a token can end in the
+// middle of a character. `(start, length)` in the pool.
+pub fn decode[&m, &t](m: &!m [int], t: &!t [byte], tk: int, ids: int) -> [] (int, int) {
+    let raw = m[mem.text_slot()];
+    var i = 0;
+    while i < mem.size(m, ids) {
+        let id = mem.get(m, ids, i);
+        if id >= 0 && id < m[tk + f_ids()] {
+            let s = m[m[tk + f_start()] + id];
+            let n = m[m[tk + f_len()] + id];
+            var p = s;
+            while p < s + n {
+                let (cp, w) = unicode.decode(t, p, s + n);
+                if cp < 0 {
+                    // Not UTF-8 itself (a GGUF's own bytes): lossy, as
+                    // the oracle reads a GGUF string.
+                    let (skip, whole) = unicode.lossy_step(t, p, s + n);
+                    unicode.put_cp(m, t, 65533);
+                    p = p + skip;
+                } else {
+                    let b = char_byte(m, tk, cp);
+                    if b >= 0 {
+                        text.put_byte(m, t, byte_of(b));
+                    } else {
+                        unicode.put_cp(m, t, cp);
+                    }
+                    p = p + w;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    let raw_end = m[mem.text_slot()];
+    let start = raw_end;
+    var q = raw;
+    while q < raw_end {
+        let (n, whole) = unicode.lossy_step(t, q, raw_end);
+        if whole {
+            var k = 0;
+            while k < n {
+                text.put_byte(m, t, t[q + k]);
+                k = k + 1;
+            }
+        } else {
+            unicode.put_cp(m, t, 65533);
+        }
+        q = q + n;
+    }
+    return (start, m[mem.text_slot()] - start);
+}
+
+// ---------------------------------------------------------------------
+// Loading from a GGUF
+// ---------------------------------------------------------------------
+
+// The kv record `name` holding a string equal to `want`?
+fn kv_is_string[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte], want: &static [byte]) -> [] bool {
+    let r = gguf.find_kv(m, t, g, name);
+    if r < 0 || m[r + 2] != 8 {
+        return false;
+    }
+    let n = gguf.le(t, m[r + 3], 8);
+    if n != len(want) {
+        return false;
+    }
+    var i = 0;
+    while i < n {
+        if t[m[r + 3] + 8 + i] != want[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The strings of an array kv as `[start, length]` pairs in a list, or -1
+// with a refusal when the key is missing or is not an array of strings.
+fn string_array[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte]) -> [] int {
+    let r = gguf.find_kv(m, t, g, name);
+    if r < 0 || m[r + 2] != 9 || gguf.le(t, m[r + 3], 4) != 8 && gguf.le(t, m[r + 3] + 4, 8) > 0 {
+        return err.fail(m, t, "tok-gguf-missing", text.f1(m, t, "GGUF has no array of strings `$`", text.from_bytes(m, t, name)));
+    }
+    let n = gguf.le(t, m[r + 3] + 4, 8);
+    let out = mem.list(m);
+    var p = m[r + 3] + 12;
+    var i = 0;
+    while i < n {
+        let size = gguf.le(t, p, 8);
+        mem.push(m, out, p + 8);
+        mem.push(m, out, size);
+        p = p + 8 + size;
+        i = i + 1;
+    }
+    return out;
+}
+
+// The tokenizer of a parsed GGUF header `g`: the record, or -1. Only a
+// byte-level BPE (`gpt2`) with the `qwen35` pre-tokenizer, as the oracle.
+pub fn from_gguf[&m, &t](m: &!m [int], t: &!t [byte], g: int) -> [] int {
+    if !kv_is_string(m, t, g, "tokenizer.ggml.model", "gpt2") {
+        return bad(m, t, "tok-gguf-model", "the GGUF tokenizer is not byte-level BPE (tokenizer.ggml.model gpt2)");
+    }
+    if !kv_is_string(m, t, g, "tokenizer.ggml.pre", "qwen35") {
+        return bad(m, t, "tok-gguf-pre", "only the qwen35 pre-tokenizer has been checked against this splitter");
+    }
+    let tokens = string_array(m, t, g, "tokenizer.ggml.tokens");
+    if tokens < 0 {
+        return 0 - 1;
+    }
+    let merges = string_array(m, t, g, "tokenizer.ggml.merges");
+    if merges < 0 {
+        return 0 - 1;
+    }
+    let n = mem.size(m, tokens) / 2;
+    let nm = mem.size(m, merges) / 2;
+    let tk = new_record(m, n, nm, n);
+    // The token types: control (3) and user-defined (4) tokens are matched
+    // whole before anything else, unused (5) ones are padding; a missing
+    // array is all ordinary. A types array shorter than the tokens leaves
+    // the rest out of the vocabulary, as the oracle's `zip` does.
+    var nk = n;
+    var kinds = 0 - 1;
+    let kr = gguf.find_kv(m, t, g, "tokenizer.ggml.token_type");
+    if kr >= 0 && m[kr + 2] == 9 {
+        let et = gguf.le(t, m[kr + 3], 4);
+        nk = gguf.le(t, m[kr + 3] + 4, 8);
+        if gguf.is_int(et) {
+            kinds = m[kr + 3] + 12;
+        }
+        if nk < 0 {
+            nk = 0;
+        }
+    }
+    var i = 0;
+    while i < n {
+        set_text(m, tk, i, mem.get(m, tokens, 2 * i), mem.get(m, tokens, 2 * i + 1));
+        i = i + 1;
+    }
+    var limit = n;
+    if nk < limit {
+        limit = nk;
+    }
+    i = 0;
+    while i < limit {
+        var kind = 1;
+        if kinds >= 0 {
+            let et = gguf.le(t, m[kr + 3], 4);
+            var w = 8;
+            if et == 0 || et == 1 {
+                w = 1;
+            } else if et == 2 || et == 3 {
+                w = 2;
+            } else if et == 4 || et == 5 {
+                w = 4;
+            }
+            kind = gguf.int_at(t, kinds + i * w, et);
+        }
+        let s = mem.get(m, tokens, 2 * i);
+        let sn = mem.get(m, tokens, 2 * i + 1);
+        if kind == 3 || kind == 4 {
+            if sn == 0 {
+                return bad(m, t, "tok-added", "a control or user-defined token has empty text");
+            }
+            mem.push(m, m[tk + f_added()], mem.rec3(m, s, sn, i));
+        } else if kind != 5 {
+            table_put(m, t, m[tk + f_vocab()], s, sn, 0, 0, i, true);
+        }
+        i = i + 1;
+    }
+    var r = 0;
+    while r < nm {
+        let s = mem.get(m, merges, 2 * r);
+        let sn = mem.get(m, merges, 2 * r + 1);
+        let cut = split_joined(m, t, tk, s, sn);
+        if cut < 0 {
+            return err.fail(m, t, "tok-merge", text.n1(m, t, "merge $ splits into no two tokens", r));
+        }
+        table_put(m, t, m[tk + f_pairs()], s, cut, s + cut + 1, sn - cut - 1, r, false);
+        r = r + 1;
+    }
+    sort_added(m, m[tk + f_added()]);
+    return tk;
+}
