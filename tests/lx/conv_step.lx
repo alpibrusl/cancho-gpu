@@ -1,0 +1,35 @@
+// The causal depthwise convolution of a gated-delta layer, for one token: the
+// four taps over [the last three inputs, this one], then silu. cs holds the
+// three previous inputs (rows 0 to 2, oldest first) and is rewritten as the
+// last three including this one; cw holds the four taps a channel, tap-major.
+algo conv_step(c)
+  in  x:  f32[1, c]
+  in  cs: f32[3, c]
+  in  cw: f32[4, c]
+  out y:  f32[1, c]
+  out ns: f32[3, c]
+{
+  let s0 = load cs[0, 0 ; 1, c]
+  let s1 = load cs[1, 0 ; 1, c]
+  let s2 = load cs[2, 0 ; 1, c]
+  let xt = load x
+  let w0 = load cw[0, 0 ; 1, c]
+  let w1 = load cw[1, 0 ; 1, c]
+  let w2 = load cw[2, 0 ; 1, c]
+  let w3 = load cw[3, 0 ; 1, c]
+  let a  = s0 * w0
+  let b  = &s1 * w1
+  let d  = &s2 * w2
+  let e  = &xt * w3
+  let ab = a + b
+  let de = d + e
+  let t  = ab + de
+  let sg = sigmoid &t
+  store t * sg -> y
+  store s1 -> ns[0, 0]
+  store s2 -> ns[1, 0]
+  store xt -> ns[2, 0]
+}
+
+schedule conv_step for apple-m-series { threads 256 }
+schedule conv_step for nvidia-ada     { threads 256 }

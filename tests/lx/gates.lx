@@ -1,0 +1,27 @@
+// The two per-head gates of a gated-delta layer from its in_proj_a and
+// in_proj_b outputs: beta = sigmoid(b) and g = exp(-A softplus(a + dt_bias)),
+// A = exp(A_log) formed when the weights are loaded. Each is written as a row
+// of 128 copies, which is the shape the delta step broadcasts.
+algo gates(h)
+  in  a:   f32[h, 128]
+  in  b:   f32[h, 128]
+  in  aa:  f32[h, 128]
+  in  dtb: f32[h, 128]
+  out g:   f32[h, 128]
+  out bt:  f32[h, 128]
+{
+  let at = load a
+  let dt = load dtb
+  let s  = at + dt
+  let sp = softplus s
+  let ax = load aa
+  let m  = ax * sp
+  let z  = zeros f32[h, 128]
+  let ng = z - m
+  store exp ng -> g
+  let bb = load b
+  store sigmoid bb -> bt
+}
+
+schedule gates for apple-m-series { threads 128 }
+schedule gates for nvidia-ada     { threads 128 }

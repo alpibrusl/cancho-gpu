@@ -1,0 +1,29 @@
+// The normalisation of a gated-delta layer's queries and keys: each head's
+// vector divided by its root mean square, the queries scaled by 1/dk and the
+// keys by 1/sqrt(dk), dk = 128 (the two literals). c is the convolution's
+// output as rows of 128: the queries are the first nk rows, the keys the next nk.
+algo qk_norm(nk, rows)
+  in  c:  f32[rows, 128]
+  out qn: f32[nk, 128]
+  out kn: f32[nk, 128]
+{
+  let q  = load c[0, 0 ; nk, 128]
+  let qq = &q * &q
+  let qs = rowsum qq
+  let qm = qs * 0.0078125
+  let qe = qm + 0.000001
+  let qr = rsqrt qe
+  let qx = q * qr
+  store qx * 0.0078125 -> qn
+  let k  = load c[nk, 0 ; nk, 128]
+  let kk = &k * &k
+  let ks = rowsum kk
+  let km = ks * 0.0078125
+  let ke = km + 0.000001
+  let kr = rsqrt ke
+  let kx = k * kr
+  store kx * 0.08838834764831845 -> kn
+}
+
+schedule qk_norm for apple-m-series { threads 128 }
+schedule qk_norm for nvidia-ada     { threads 128 }

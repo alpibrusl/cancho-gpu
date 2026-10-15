@@ -1,0 +1,77 @@
+// One token of the delta rule for the three value heads that share key head
+// i (the surface cannot divide a grid index, so the three are written out):
+//
+//     S = S g;   S += (v - S k) beta  k^T;   y = S q
+//
+// S is a head's [128 value, 128 key] f32 state, rewritten in place. The rule
+// is independent for each value row, so a threadgroup takes br of the 128 rows
+// of each of the three heads (a whole state would be 64 KiB of threadgroup
+// memory). q and k are the normalised rows of qk_norm; v is the value part of the
+// convolution's output; g and beta are rows of 128 copies (gates.lx) and, as the
+// per-value vectors the broadcasts need, beta and v are read flat.
+algo delta_step(nk)
+  in  s:  f32[nk * 384, 128]
+  in  q:  f32[nk, 128]
+  in  k:  f32[nk, 128]
+  in  v:  f32[nk * 384]
+  in  g:  f32[nk * 3, 128]
+  in  bt: f32[nk * 384]
+  out so: f32[nk * 384, 128]
+  out y:  f32[nk * 384]
+  tile br
+{
+  grid i over nk, r over 128 / br
+  let kb  = load k[i, 0 ; 1, 128]
+  let qb  = load q[i, 0 ; 1, 128]
+  let s0  = load s[i * 384 + 0 + r * br, 0 ; br, 128]
+  let g0  = load g[i * 3 + 0, 0 ; 1, 128]
+  let sg0 = s0 * g0
+  let p0  = &sg0 * &kb
+  let m0  = rowsum p0
+  let v0  = load v[i * 384 + 0 + r * br ; br]
+  let d0  = v0 - m0
+  let b0  = load bt[i * 384 + 0 + r * br ; br]
+  let e0  = d0 * b0
+  let z0  = zeros f32[br, 128]
+  let k0  = z0 + &kb
+  let u0  = k0 * e0
+  let sn0 = sg0 + u0
+  let y0  = &sn0 * &qb
+  store rowsum y0 -> y[i * 384 + 0 + r * br]
+  store sn0 -> so[i * 384 + 0 + r * br, 0]
+  let s1  = load s[i * 384 + 128 + r * br, 0 ; br, 128]
+  let g1  = load g[i * 3 + 1, 0 ; 1, 128]
+  let sg1 = s1 * g1
+  let p1  = &sg1 * &kb
+  let m1  = rowsum p1
+  let v1  = load v[i * 384 + 128 + r * br ; br]
+  let d1  = v1 - m1
+  let b1  = load bt[i * 384 + 128 + r * br ; br]
+  let e1  = d1 * b1
+  let z1  = zeros f32[br, 128]
+  let k1  = z1 + &kb
+  let u1  = k1 * e1
+  let sn1 = sg1 + u1
+  let y1  = &sn1 * &qb
+  store rowsum y1 -> y[i * 384 + 128 + r * br]
+  store sn1 -> so[i * 384 + 128 + r * br, 0]
+  let s2  = load s[i * 384 + 256 + r * br, 0 ; br, 128]
+  let g2  = load g[i * 3 + 2, 0 ; 1, 128]
+  let sg2 = s2 * g2
+  let p2  = &sg2 * &kb
+  let m2  = rowsum p2
+  let v2  = load v[i * 384 + 256 + r * br ; br]
+  let d2  = v2 - m2
+  let b2  = load bt[i * 384 + 256 + r * br ; br]
+  let e2  = d2 * b2
+  let z2  = zeros f32[br, 128]
+  let k2  = z2 + kb
+  let u2  = k2 * e2
+  let sn2 = sg2 + u2
+  let y2  = &sn2 * qb
+  store rowsum y2 -> y[i * 384 + 256 + r * br]
+  store sn2 -> so[i * 384 + 256 + r * br, 0]
+}
+
+schedule delta_step for apple-m-series { threads 128 br 32 }
+schedule delta_step for nvidia-ada     { threads 128 br 32 }

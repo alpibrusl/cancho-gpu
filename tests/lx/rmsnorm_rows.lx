@@ -1,0 +1,20 @@
+// y = x * rsqrt(mean(x^2) + eps) * w for each of r rows of n, with one weight row
+// shared by all of them: the per-head norm of a query or a key.
+algo rmsnorm_rows(r, n, eps)
+  in  x: f32[r, n]
+  in  w: f32[1, n]
+  out y: f32[r, n]
+{
+  let x  = load x
+  let sq = &x * &x
+  let ss = rowsum sq
+  let ms = ss * (1 / n)
+  let t  = ms + eps
+  let rs = rsqrt t
+  let xn = x * rs
+  let w  = load w
+  store xn * w -> y
+}
+
+schedule rmsnorm_rows for apple-m-series { threads 256 }
+schedule rmsnorm_rows for nvidia-ada     { threads 256 }
