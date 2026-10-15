@@ -1,0 +1,81 @@
+edition 5;
+module fileio;
+
+// `fileio` -- reading the start of a file whose size is not the program's
+// to guess (docs/runtime.md §7).
+//
+// `fs_read` fills one slice from the start and says nothing of the file's
+// length; a model file is gigabytes and its header kilobytes. `open_read`,
+// `file_size` and `file_pread` (the file-handle verbs, label `file_read`)
+// give both: the exact size, and a read of just the part wanted, at any
+// offset.
+
+import mem;
+import text;
+
+// Read `want` bytes of the open file `hr` from `at` into `t[to..]`: the
+// count read, which is less than `want` only at the end of the file, or -1.
+fn fill[&t, &h](t: &!t [byte], hr: &!h File, at: int, to: int, want: int) -> [file_read] int {
+    var got = 0;
+    var failed = false;
+    var over = false;
+    while got < want && !failed && !over {
+        match file_pread(hr, at + got, t[to + got..to + want]) {
+            Read::Got(n) => {
+                got = got + n;
+            }
+            Read::End => {
+                over = true;
+            }
+            Read::Failed(e) => {
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        return 0 - 1;
+    }
+    return got;
+}
+
+// The first `min(size, cap)` bytes of `path`, appended to the text pool:
+// `(position of the first byte, bytes read, the file's size)`, or
+// `(-1, 0, 0)` when the file cannot be opened or read.
+pub fn prefix[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: &p [byte], cap: int) -> [fs_read(""), file_read] (int, int, int) {
+    let top = m[mem.text_slot()];
+    var start = 0 - 1;
+    var got = 0;
+    var size = 0;
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return (0 - 1, 0, 0);
+        }
+        Opened::Ok(opened) => {
+            var h = opened;
+            borrow mut h as &!hr in {
+                match file_size(hr) {
+                    Done::Ok(n) => {
+                        size = n;
+                        var want = n;
+                        if want > cap {
+                            want = cap;
+                        }
+                        let read = fill(t, hr, 0, top, want);
+                        if read >= 0 {
+                            start = top;
+                            got = read;
+                        }
+                    }
+                    Done::Failed(e) => {
+                        start = 0 - 1;
+                    }
+                }
+            }
+            file_close(h);
+        }
+    }
+    if start >= 0 {
+        m[mem.text_slot()] = top + got;
+    }
+    return (start, got, size);
+}

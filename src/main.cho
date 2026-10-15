@@ -5,7 +5,7 @@ edition 5;
 //     cancho-gpu emit  <file.lx> <dir> [name=value ...] [--run]
 //     cancho-gpu check <file.lx> [name=value ...] [--run]
 //     cancho-gpu gguf  <file.gguf> [--sum]
-//     cancho-gpu safetensors <file> [size=<bytes>]
+//     cancho-gpu safetensors <file>
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
@@ -23,8 +23,8 @@ edition 5;
 //
 // `safetensors` prints the header of a safetensors file (the same text
 // `tools/safetensors_dump.py` prints from the `safetensors` library). It
-// reads the first 32 MiB; a file longer than that needs `size=<bytes>` for
-// the checks that compare the tensors with the file's end.
+// asks the file its size and reads the first 32 MiB, so a 15 GB shard costs
+// the same as a small file and its tensors are checked against its end.
 //
 // Exit status: 0, or 1 with every refusal on standard error as
 // `error[<rule>]: <message>`, or 2 for a usage mistake.
@@ -46,6 +46,7 @@ import gguf;
 import gguf_dump;
 import safetensors;
 import safetensors_dump;
+import fileio;
 
 fn words() -> [] int {
     return 8000000;
@@ -61,7 +62,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file> [size=<bytes>]\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n");
     return 2;
 }
 
@@ -112,17 +113,15 @@ fn gguf_cap() -> [] int {
     return 33554432;
 }
 
-fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), args] int {
+fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
     let file = arg(args, 2);
-    let top = m[mem.text_slot()];
-    let got = fs_read(fs, file, t[top..top + gguf_cap()]);
-    if got < 0 {
+    let (top, got, whole) = fileio.prefix(m, t, fs, file, gguf_cap());
+    if top < 0 {
         io.error_all(io, "error[io]: cannot read ");
         io.error_all(io, file);
         io.error_all(io, "\n");
         return 1;
     }
-    m[mem.text_slot()] = top + got;
     var with_sum = false;
     var ai = 3;
     while ai < arg_count(args) {
@@ -145,50 +144,17 @@ fn run_gguf[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f 
     return 0;
 }
 
-// A decimal number of at most 18 digits, or -1.
-fn natural[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
-    let n = text.size(s);
-    if n == 0 || n > 18 {
-        return 0 - 1;
-    }
-    var v = 0;
-    var i = 0;
-    while i < n {
-        let c = text.at(t, s, i);
-        if c < 48 || c > 57 {
-            return 0 - 1;
-        }
-        v = v * 10 + c - 48;
-        i = i + 1;
-    }
-    return v;
-}
-
-fn run_safetensors[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), args] int {
+fn run_safetensors[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
     let file = arg(args, 2);
-    var size = 0 - 1;
     if arg_count(args) > 3 {
-        let opt = text.from_bytes(m, t, arg(args, 3));
-        if arg_count(args) > 4 || !text.starts_with(t, opt, "size=") {
-            return usage(io);
-        }
-        size = natural(m, t, text.sub(opt, 5, text.size(opt)));
-        if size < 0 {
-            return usage(io);
-        }
+        return usage(io);
     }
-    let top = m[mem.text_slot()];
-    let got = fs_read(fs, file, t[top..top + gguf_cap()]);
-    if got < 0 {
+    let (top, got, size) = fileio.prefix(m, t, fs, file, gguf_cap());
+    if top < 0 {
         io.error_all(io, "error[io]: cannot read ");
         io.error_all(io, file);
         io.error_all(io, "\n");
         return 1;
-    }
-    m[mem.text_slot()] = top + got;
-    // A file shorter than the buffer was read whole.
-    if got < gguf_cap() {
-        size = got;
     }
     let g = safetensors.parse(m, t, top, top + got, size);
     if g < 0 {
@@ -198,7 +164,7 @@ fn run_safetensors[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, 
     return 0;
 }
 
-fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), args] int {
+fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), file_read, args] int {
     if arg_count(args) < 3 {
         return usage(io);
     }

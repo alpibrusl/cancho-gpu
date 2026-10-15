@@ -1,6 +1,6 @@
 #!/bin/sh
 # What `cancho-gpu` may do is part of its contract (README, "Authority"):
-# it reads and writes files, prints, and allocates. It never touches the
+# it reads and writes files (by path, or by offset through an open handle), prints, and allocates. It never touches the
 # network, signals, other programs or foreign code, and the GGUF reader
 # (src/gguf*.cho) added no capability. `cancho authority` says so; this
 # holds the report to it, so a change that widens it fails the gate.
@@ -14,6 +14,7 @@ report=$(sed -n '/^performs/,/^provably pure/p' "${TMPDIR:-/tmp}/cancho-gpu-auth
 want='performs
     args
     err_write
+    file_read
     fs_read("")
     fs_write("")
     heap
@@ -26,4 +27,4 @@ never touches
 if [ "$report" != "$want" ]; then
   echo "authority changed:"; echo "$report"; exit 1
 fi
-echo "authority: args, err_write, fs_read, fs_write, heap, io_write; no network, no foreign code"
+echo "authority: args, err_write, file_read, fs_read, fs_write, heap, io_write; no network, no foreign code"
