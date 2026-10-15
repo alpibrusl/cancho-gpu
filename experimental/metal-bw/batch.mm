@@ -176,6 +176,118 @@ inline void mma_rows(device const float *x, device const char *wq, device const 
 KM_(m1_1, 1, 1) KM_(m2_1, 1, 2) KM_(m3_1, 1, 3) KM_(m4_1, 1, 4) KM_(m8_1, 1, 8)
 KM_(m1_2, 2, 1) KM_(m2_2, 2, 2) KM_(m4_2, 2, 4) KM_(m8_2, 2, 8)
 KM_(m4_4, 4, 4) KM_(m8_4, 4, 8)
+
+// Half weights: the half2 the decode trick produces (value * 2^-14, exact) is multiplied by the
+// group's scale in half (an E4M3 times an E2M1 has 5 significant bits: exact), and goes to the matrix
+// unit as a half operand against the activations' float fragment: no per-weight float conversion.
+template <int T>
+inline void mma_rows_h(device const float *x, device const char *wq, device const char *ws,
+                       device const float *wg, device float *y, uint tid, uint tgx, int M) {
+    const uint lane = tid % 32u;
+    const uint qid = lane / 4u;
+    const uint fm = (qid & 4u) + ((lane / 2u) % 4u);
+    const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;
+    const uint g = fn / 2u;
+    const uint rowbase = (tgx * 8u + tid / 32u) * 8u * T;
+    simdgroup_float8x8 C[T];
+    for (int t = 0; t < T; t++) C[t] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    for (uint blk0 = 0; blk0 < K / 32u; blk0 += 8u) {
+        float xs[8][4][2];
+        for (uint u = 0; u < 8u; u++) {
+            const uint kk = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u);
+            for (uint s = 0; s < 4u; s++) {
+                xs[u][s][0] = (int)fn < M ? x[fn * K + kk + 2u * s] : 0.0f;
+                xs[u][s][1] = (int)(fn + 1u) < M ? x[(fn + 1u) * K + kk + 2u * s] : 0.0f;
+            }
+        }
+        for (int t = 0; t < T; t++) {
+            const uint row = rowbase + t * 8u + fm;
+            uint w[8];
+            half sgv[8];
+            for (uint u = 0; u < 8u; u++) {
+                const uint blk = blk0 + u;
+                w[u] = *(device const uint *)(wq + row * (K / 2u) + blk * 16u + g * 4u);
+                sgv[u] = (half)fp8_e4m3((uint)(uchar)ws[row * (K / 16u) + blk * 2u + g / 2u]);
+            }
+            for (uint u = 0; u < 8u; u++)
+                for (uint s = 0; s < 4u; s++) {
+                    simdgroup_half8x8 A;
+                    simdgroup_float8x8 B;
+                    const uint b = (w[u] >> (8u * s)) & 0xFFu;
+                    const uint ww = b | (b << 12u);
+                    const half2 q = as_type<half2>(((ww & 0x00070007u) << 9u) | ((ww & 0x00080008u) << 12u)) * sgv[u];
+                    A.thread_elements()[0] = q.x; A.thread_elements()[1] = q.y;
+                    B.thread_elements()[0] = xs[u][s][0]; B.thread_elements()[1] = xs[u][s][1];
+                    simdgroup_multiply_accumulate(C[t], A, B, C[t]);
+                }
+        }
+    }
+    for (int t = 0; t < T; t++) {
+        const uint row = rowbase + t * 8u + fm;
+        const float rs = wg[row] * 16384.0f;
+        if ((int)fn < M) y[fn * N + row] = C[t].thread_elements()[0] * rs;
+        if ((int)(fn + 1u) < M) y[(fn + 1u) * N + row] = C[t].thread_elements()[1] * rs;
+    }
+}
+#define KH_(NAME, T, M) kernel void NAME(device const float *x [[buffer(0)]], device const char *wq [[buffer(1)]], \
+    device const char *ws [[buffer(2)]], device const float *wg [[buffer(3)]], device float *y [[buffer(4)]], \
+    uint tid [[thread_index_in_threadgroup]], uint3 tg [[threadgroup_position_in_grid]]) { mma_rows_h<T>(x, wq, ws, wg, y, tid, tg.x, M); }
+KH_(h1_1, 1, 1) KH_(h3_1, 1, 3) KH_(h8_1, 1, 8) KH_(h8_2, 2, 8)
+
+// All half: the activations as half too (prepared once a layer), so a step is a half2 multiply by the scale,
+// two half loads and a half x half matrix multiply with float accumulation.
+template <int T>
+inline void mma_rows_hh(device const half *x, device const char *wq, device const char *ws,
+                        device const float *wg, device float *y, uint tid, uint tgx, int M) {
+    const uint lane = tid % 32u;
+    const uint qid = lane / 4u;
+    const uint fm = (qid & 4u) + ((lane / 2u) % 4u);
+    const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;
+    const uint g = fn / 2u;
+    const uint rowbase = (tgx * 8u + tid / 32u) * 8u * T;
+    simdgroup_float8x8 C[T];
+    for (int t = 0; t < T; t++) C[t] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    for (uint blk0 = 0; blk0 < K / 32u; blk0 += 8u) {
+        half xs[8][4][2];
+        for (uint u = 0; u < 8u; u++) {
+            const uint kk = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u);
+            for (uint s = 0; s < 4u; s++) {
+                xs[u][s][0] = (int)fn < M ? x[fn * K + kk + 2u * s] : (half)0.0h;
+                xs[u][s][1] = (int)(fn + 1u) < M ? x[(fn + 1u) * K + kk + 2u * s] : (half)0.0h;
+            }
+        }
+        for (int t = 0; t < T; t++) {
+            const uint row = rowbase + t * 8u + fm;
+            uint w[8];
+            half sgv[8];
+            for (uint u = 0; u < 8u; u++) {
+                const uint blk = blk0 + u;
+                w[u] = *(device const uint *)(wq + row * (K / 2u) + blk * 16u + g * 4u);
+                sgv[u] = (half)fp8_e4m3((uint)(uchar)ws[row * (K / 16u) + blk * 2u + g / 2u]);
+            }
+            for (uint u = 0; u < 8u; u++)
+                for (uint s = 0; s < 4u; s++) {
+                    simdgroup_half8x8 A, B;
+                    const uint b = (w[u] >> (8u * s)) & 0xFFu;
+                    const uint ww = b | (b << 12u);
+                    const half2 q = as_type<half2>(((ww & 0x00070007u) << 9u) | ((ww & 0x00080008u) << 12u)) * sgv[u];
+                    A.thread_elements()[0] = q.x; A.thread_elements()[1] = q.y;
+                    B.thread_elements()[0] = xs[u][s][0]; B.thread_elements()[1] = xs[u][s][1];
+                    simdgroup_multiply_accumulate(C[t], A, B, C[t]);
+                }
+        }
+    }
+    for (int t = 0; t < T; t++) {
+        const uint row = rowbase + t * 8u + fm;
+        const float rs = wg[row] * 16384.0f;
+        if ((int)fn < M) y[fn * N + row] = C[t].thread_elements()[0] * rs;
+        if ((int)(fn + 1u) < M) y[(fn + 1u) * N + row] = C[t].thread_elements()[1] * rs;
+    }
+}
+#define KHH_(NAME, T, M) kernel void NAME(device const half *x [[buffer(0)]], device const char *wq [[buffer(1)]], \
+    device const char *ws [[buffer(2)]], device const float *wg [[buffer(3)]], device float *y [[buffer(4)]], \
+    uint tid [[thread_index_in_threadgroup]], uint3 tg [[threadgroup_position_in_grid]]) { mma_rows_hh<T>(x, wq, ws, wg, y, tid, tg.x, M); }
+KHH_(g1_1, 1, 1) KHH_(g3_1, 1, 3) KHH_(g8_1, 1, 8) KHH_(g8_2, 2, 8)
 )MSL";
 
 static float fp4v[16] = {0, .5f, 1, 1.5f, 2, 3, 4, 6, -0.f, -.5f, -1, -1.5f, -2, -3, -4, -6};
@@ -207,6 +319,8 @@ int main() {
             bss.push_back([dev newBufferWithBytes:ws.data() length:ns options:0]);
         }
         id<MTLBuffer> bx = [dev newBufferWithBytes:x.data() length:x.size() * 4 options:0];
+        std::vector<__fp16> xh(x.size()); for (size_t i = 0; i < x.size(); i++) xh[i] = (__fp16)x[i];
+        id<MTLBuffer> bxh = [dev newBufferWithBytes:xh.data() length:xh.size() * 2 options:0];
         id<MTLBuffer> bg = [dev newBufferWithBytes:wg.data() length:N * 4 options:0];
         id<MTLBuffer> by = [dev newBufferWithLength:(size_t)MAXM * N * 4 options:0];
         // the first 256 rows, every token, in double precision
@@ -227,16 +341,18 @@ int main() {
             {"k4_1", 4, 1}, {"k4_2", 4, 2}, {"k4_4", 4, 4}, {"k4_8", 4, 8},
             {"k6_2", 6, 2}, {"k6_4", 6, 4}, {"k8_1", 8, 1}, {"k8_2", 8, 2}, {"k8_4", 8, 4},
             {"w1_2", 1, 2}, {"w2_2", 2, 2}, {"w3_2", 3, 2}, {"w3_4", 3, 4}, {"w4_2", 4, 2}, {"w4_4", 4, 4}, {"w6_4", 6, 4}, {"w8_2", 8, 2}, {"w8_4", 8, 4}, {"w8_8", 8, 8},
-            {"m1_1", 1, 64}, {"m2_1", 2, 64}, {"m3_1", 3, 64}, {"m4_1", 4, 64}, {"m8_1", 8, 64}, {"m1_2", 1, 128}, {"m2_2", 2, 128}, {"m4_2", 4, 128}, {"m8_2", 8, 128}, {"m4_4", 4, 256}, {"m8_4", 8, 256}};
+            {"m1_1", 1, 64}, {"m2_1", 2, 64}, {"m3_1", 3, 64}, {"m4_1", 4, 64}, {"m8_1", 8, 64}, {"m1_2", 1, 128}, {"m2_2", 2, 128}, {"m4_2", 4, 128}, {"m8_2", 8, 128}, {"m4_4", 4, 256}, {"m8_4", 8, 256},
+            {"h1_1", 1, 64}, {"h3_1", 3, 64}, {"h8_1", 8, 64}, {"h8_2", 8, 128},
+            {"g1_1", 1, 64}, {"g3_1", 3, 64}, {"g8_1", 8, 64}, {"g8_2", 8, 128}};
         for (auto &v : vs) {
             id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:[NSString stringWithUTF8String:v.fn]] error:&err];
             if (!ps) { NSLog(@"%s: %@", v.fn, err); continue; }
-            const int rpt = v.fn[0] == 'm' ? v.R : 8 * v.R;
+            const int rpt = (v.fn[0] == 'm' || v.fn[0] == 'h' || v.fn[0] == 'g') ? v.R : 8 * v.R;
             auto launch = [&](int reps) {
                 id<MTLCommandBuffer> cb = [q commandBuffer];
                 id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
                 [e setComputePipelineState:ps];
-                [e setBuffer:bx offset:0 atIndex:0]; [e setBuffer:bg offset:0 atIndex:3]; [e setBuffer:by offset:0 atIndex:4];
+                [e setBuffer:(v.fn[0] == 'g' ? bxh : bx) offset:0 atIndex:0]; [e setBuffer:bg offset:0 atIndex:3]; [e setBuffer:by offset:0 atIndex:4];
                 for (int i = 0; i < reps; i++) {
                     [e setBuffer:bqs[i % COPIES] offset:0 atIndex:1]; [e setBuffer:bss[i % COPIES] offset:0 atIndex:2];
                     [e dispatchThreadgroups:MTLSizeMake(N / rpt, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
