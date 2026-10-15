@@ -115,6 +115,7 @@ CANCHO=$CANCHO scripts/gate.sh               # format, file budget, build, unit 
 scripts/differential.sh ../lex-gpu           # the same cases against a live build of the Rust
 scripts/regen-golden.sh ../lex-gpu           # golden/ from the Rust, never from this compiler
 scripts/regen-gguf-golden.sh ../lex-gpu      # golden/gguf/ from lex-rt's reader (also regen-tokenizer-golden.sh, regen-sampler-golden.sh, regen-safetensors-golden.sh, regen-unicode-data.sh)
+python3 bench/bench.py --markdown docs/benchmark.md  # the benchmark (needs a Mac, MLX, Ollama, torch)
 CANCHO=$CANCHO scripts/model-check.sh <model dir>  # run a checkpoint on the Metal GPU and compare with transformers (needs a Mac, torch)
 CANCHO=$CANCHO scripts/metal-kernels.sh      # the 9b kernels on a Metal GPU against the interpreter (needs a Mac)
 ```
@@ -146,6 +147,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | [docs/device.md](docs/device.md) | driving a GPU: the shim, the authority it reports, the mock, what stays unproven |
 | [docs/runtime.md](docs/runtime.md) | reading a model: the GGUF and safetensors readers, the tokenizer and the sampler, where each differs from its oracle, how each is held to it |
 | [docs/inference.md](docs/inference.md) | running a model on a Metal GPU: what is on the GPU and what is not, how it is checked against transformers, speed, limits, and what Qwen3.8-27B still needs |
+| [docs/benchmark.md](docs/benchmark.md) | cancho-gpu against MLX-LM, Ollama and transformers on the same checkpoints (`bench/bench.py`): what is measured, the numbers, and why not to compare them across runs |
 | [docs/kernels.md](docs/kernels.md) | the decode kernels of an attention layer, what they are checked against, the context limit and why split-KV cannot be written yet |
 | [The project page](https://alpibrusl.github.io/cancho-gpu/) | the summary |
 
