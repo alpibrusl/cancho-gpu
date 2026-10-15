@@ -2,7 +2,7 @@
 // kernel : gates_48
 // target : nvidia-ada
 // launch : 1 threadgroups x 128 threads
-// tg mem : 0 B tiles + 0 B scratch of 101376 B
+// tg mem : 0 B tiles + 192 B scratch of 101376 B
 
 #include <cuda_fp16.h>
 
@@ -23,58 +23,103 @@ extern "C" __global__ void gates_48(
 {
     const uint tid = threadIdx.x;
     const uint gid = blockIdx.x;
-    float v3[48];
-    for (uint k = 0; k < 48u; ++k) {
+    __shared__ float scratch[48];
+    float v3[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 6144u) {
-            v3[k] = float(fmaxf(float(float((float(float(p0_a[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 128u + (uint)(0) * 1u + ((e))]))))), 0.0f) + logf(1.0f + expf(-fabsf(float(float((float(float(p0_a[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])))))))));
+        if (e < 48u) {
+            v3[k] = float(fmaxf(float(float((float(float(p0_a[(uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 1u + ((e))]))))), 0.0f) + logf(1.0f + expf(-fabsf(float(float((float(float(p0_a[(uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 1u + ((e))])))))))));
         }
     }
-    float v5[48];
-    for (uint k = 0; k < 48u; ++k) {
+    float v5[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 6144u) {
-            v5[k] = float(float(float(p2_aa[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])) * float(v3[k]));
+        if (e < 48u) {
+            v5[k] = float(float(float(p2_aa[(uint)(0) * 1u + ((e))])) * float(v3[k]));
         }
     }
-    float v6[48];
-    for (uint k = 0; k < 48u; ++k) {
+    float v6[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 6144u) {
+        if (e < 48u) {
             v6[k] = float(0.0f);
         }
     }
-    float v7[48];
-    for (uint k = 0; k < 48u; ++k) {
+    float v7[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 6144u) {
+        if (e < 48u) {
             v7[k] = float(float(v6[k]) - float(v5[k]));
         }
     }
-    float v8[48];
-    for (uint k = 0; k < 48u; ++k) {
+    float v8[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 6144u) {
+        if (e < 48u) {
             v8[k] = float(expf(float(v7[k])));
         }
     }
+    float v9[48];
     for (uint k = 0; k < 48u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 6144u) {
-            p4_g[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v8[k]));
+            v9[k] = float(0.0f);
         }
     }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 48u) {
+            scratch[0 + e] = float(v8[k]);
+        }
+    }
+    __syncthreads();
     float v10[48];
     for (uint k = 0; k < 48u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 6144u) {
-            v10[k] = float(1.0f / (1.0f + expf(-float(float(p1_b[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])))));
+            v10[k] = float(float(v9[k]) + float((scratch + 0)[e / 128u]));
         }
     }
     for (uint k = 0; k < 48u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 6144u) {
-            p5_bt[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v10[k]));
+            p4_g[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v10[k]));
+        }
+    }
+    float v12[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 48u) {
+            v12[k] = float(1.0f / (1.0f + expf(-float(float(p1_b[(uint)(0) * 1u + ((e))])))));
+        }
+    }
+    float v13[48];
+    for (uint k = 0; k < 48u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 6144u) {
+            v13[k] = float(0.0f);
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 48u) {
+            scratch[0 + e] = float(v12[k]);
+        }
+    }
+    __syncthreads();
+    float v14[48];
+    for (uint k = 0; k < 48u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 6144u) {
+            v14[k] = float(float(v13[k]) + float((scratch + 0)[e / 128u]));
+        }
+    }
+    for (uint k = 0; k < 48u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 6144u) {
+            p5_bt[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v14[k]));
         }
     }
 }

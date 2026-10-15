@@ -226,3 +226,7 @@ tests/lx/gated_norm.lx h=48 n=128 eps=1e-6
 tests/lx/gated_norm.lx h=3 n=16 eps=1e-6 --run
 tests/lx/kv_write.lx nkv=4 tmax=1024 d=256
 tests/lx/attention.lx nkv=4 g=6 t=1024 d=256 tmax=1024
+tests/lx/qnorm.lx r=24 n=256 eps=1e-6
+tests/lx/qnorm.lx r=3 n=8 eps=1e-6 --run
+tests/lx/attn_gate_q.lx r=24 n=256
+tests/lx/attn_gate_q.lx r=3 n=8 --run

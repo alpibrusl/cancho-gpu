@@ -2,7 +2,7 @@
 
 > **Status: Qwen2.5-0.5B-Instruct runs on a Metal GPU, written in cancho, agrees
 > with Hugging Face transformers and decodes in a few milliseconds a token;
-> Qwen3.8-27B does not run yet (§6).**
+> Qwen3.8-27B runs too (§6).**
 
 ```sh
 CANCHO=$CANCHO scripts/build-run.sh
@@ -116,24 +116,9 @@ into a buffer at an offset and hold a few thousand of them (`lxg_upload_at`, the
 buffer limit raised from 256: this model has 290 weight tensors), and that can
 encode launches without waiting (`lxg_launch_async`, `lxg_flush`, `lxg_sync`).
 
-## 6. Toward Qwen3.8-27B
+## 6. Qwen3.8-27B
 
-What is missing, in the order it blocks:
-
-1. **The weights' format.** The 15 GB Hugging Face checkpoint is MLX affine 4-bit
-   (scales and biases per group), which the `.lx` surface has no dequantisation
-   for; Ollama's `qwen3.8:27b-mlx` is NVFP4, one safetensors blob a tensor, which
-   it does (`dequant_fp4`, `matvec_fp4.lx`). So: read the Ollama store (a manifest
-   of digests) and a `matvec` over NVFP4 codes with their scales.
-2. **48 of its 64 layers are linear attention** (a gated delta rule over a state
-   matrix with a short causal convolution): kernels not yet written, and the state
-   to keep between tokens.
-3. **The 16 attention layers**: `rope.lx`, `kv_append.lx`, `attention.lx` and
-   `attn_gate.lx` exist (`docs/kernels.md`); the per-head RMSNorm of q and k is
-   `rmsnorm.lx` over heads; the "1 + w" norm convention and `A_log` handling are
-   host-side changes at load.
-4. **Context.** `attention.lx` holds a head's scores in one tile (1364 positions on
-   Metal); longer needs split-KV, which cannot be written in the surface yet
-   (`docs/kernels.md` §4).
-5. **Memory and speed**: 15 to 18 GB of weights on the device, and the launch
-   overhead of §3 multiplied by 64 layers.
+It runs: see `docs/qwen35.md` (the layers, the NVFP4 and gated-delta kernels, the Ollama-store weights loader,
+a runner checked against the reference's golden log-probabilities, about 19 tokens a second). What it still
+needs is speed, a longer context (split-KV attention cannot be written in the surface yet, `docs/kernels.md` §4),
+a chat template and a batched prefill.

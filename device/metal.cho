@@ -36,3 +36,6 @@ extern fn lxg_sync[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
 
 // Commit what is pending without waiting: the GPU starts while the CPU encodes more.
 extern fn lxg_flush[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
+
+// Bind buffer `buf` from byte `offset` as the next argument.
+extern fn lxg_arg_at[&f](ffi: &f Ffi("libmetalgpu"), buf: int, offset: int) -> [ffi("libmetalgpu")] int;

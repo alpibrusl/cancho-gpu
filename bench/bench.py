@@ -46,16 +46,18 @@ MODELS = {
         "title": "Qwen2.5-0.5B-Instruct (bf16, 0.49 B parameters)",
         "dir": snapshot("Qwen/Qwen2.5-0.5B-Instruct"),
         "runtimes": ["cancho-gpu", "mlx-lm", "transformers-cpu"],
+        "cancho": "run",
         "reference": "transformers-cpu",
     },
     "qwen3.8-27b": {
-        "title": "Qwen3.8-27B (4-bit)",
+        "title": "Qwen3.8-27B (4-bit; NVFP4 in Ollama and cancho-gpu, affine in MLX-LM)",
         "dir": snapshot("mlx-community/Qwen3.8-27B-4bit"),
         "ollama": "qwen3.8:27b-mlx",
+        "cancho": "run35",
         "runtimes": ["ollama", "mlx-lm", "cancho-gpu"],
-        # Not the same weights (Ollama's are NVFP4, MLX's affine 4-bit): the column is only how far two
-        # 4-bit versions of one model agree.
-        "reference": "mlx-lm",
+        # Ollama and cancho-gpu read the same NVFP4 weights; MLX-LM's are a different 4-bit
+        # quantisation of the model, so it may legitimately diverge from them.
+        "reference": "ollama",
     },
 }
 
@@ -74,17 +76,22 @@ def median(xs):
 # ---------------------------------------------------------------------------
 
 def run_cancho(model, new, runs):
-    binary = os.path.join(ROOT, "build", "cancho-gpu-run")
-    if model["dir"] is None or not os.path.exists(binary):
-        return {"skipped": "build/cancho-gpu-run is missing (scripts/build-run.sh) or the checkpoint is"}
-    if "qwen2.5-0.5b" not in model["dir"].lower() and "Qwen2.5-0.5B" not in model["dir"]:
-        return {"skipped": "not supported yet: the runner handles the Qwen2 architecture; Qwen3.8 needs NVFP4 weights and "
-                           "linear-attention kernels (docs/inference.md section 6)"}
+    which = model.get("cancho")
+    binary = os.path.join(ROOT, "build", "cancho-gpu-" + which)
+    if not os.path.exists(binary):
+        return {"skipped": f"build/cancho-gpu-{which} is missing (scripts/build-{which}.sh)"}
+    if which == "run35":
+        store = os.path.expanduser("~/.ollama/models")
+        cmd = [binary, store, os.path.join(ROOT, "tests", "lx"), PROMPT, str(new), "--timing"]
+    elif model["dir"] is None:
+        return {"skipped": "the checkpoint is not in the Hugging Face cache"}
+    else:
+        cmd = [binary, model["dir"], os.path.join(ROOT, "tests", "lx"), PROMPT, str(new), "--timing"]
     out, loads = [], []
     for i in range(runs + 1):
-        r = sh(["/usr/bin/time", "-l", binary, model["dir"], os.path.join(ROOT, "tests", "lx"), PROMPT, str(new), "--timing"])
+        r = sh(["/usr/bin/time", "-l"] + cmd)
         if r.returncode != 0:
-            return {"skipped": f"cancho-gpu-run failed: {r.stderr.strip().splitlines()[:2]}"}
+            return {"skipped": f"cancho-gpu-{which} failed: {r.stderr.strip().splitlines()[:2]}"}
         text, _, rest = r.stdout.partition("\ntokens: ")
         ids = [int(x) for x in rest.splitlines()[0].split()]
         t = dict(re.findall(r"(\w+)=(\d+)", rest.splitlines()[1]))
@@ -97,7 +104,8 @@ def run_cancho(model, new, runs):
                     "mem_gb": rss / 1e9, "text": text.lstrip("\n"), "ids": ids,
                     "prefill_tokens": int(t["prefill_tokens"]), "decode_tokens": int(t["decode_tokens"])})
     return {"load_s": median(loads), "runs": out,
-            "note": "memory is the process's resident set; the weights live in Metal buffers that may not be counted"}
+            "note": "memory is the process's resident set; the weights live in Metal buffers that are not counted"
+                    + ("; Qwen3.8 weights are NVFP4 read from Ollama's store" if which == "run35" else "")}
 
 
 def run_python(script, model, new, runs, timeout):
@@ -160,7 +168,7 @@ def run_ollama(model, new, runs):
 
 
 RUNNERS = {"cancho-gpu": run_cancho, "mlx-lm": run_mlx, "transformers-cpu": run_hf, "ollama": run_ollama}
-LABELS = {"cancho-gpu": "cancho-gpu (Metal, f16 matrices)", "mlx-lm": "MLX-LM (Metal)",
+LABELS = {"cancho-gpu": "cancho-gpu (Metal)", "mlx-lm": "MLX-LM (Metal)",
           "transformers-cpu": "transformers (CPU, float32)", "ollama": "Ollama (Metal)"}
 
 
@@ -267,7 +275,10 @@ def markdown(results, args, mach):
             "* Accuracy beyond the agreement column: `scripts/model-check.sh` holds cancho-gpu's logits to transformers'.",
             "* Long contexts: cancho-gpu's context is 256 positions.",
             "* Batched or concurrent requests; energy; a second machine.",
-            "* cancho-gpu on Qwen3.8-27B: it does not run it yet (`docs/inference.md` section 6)."]
+            "* Why the generated texts diverge: greedy decoding over a long open-ended continuation flips at the first "
+            "near-tie, and runtimes that add in a different order or hold activations in a different precision reach "
+            "one sooner or later. `scripts/qwen35-check.sh` and `scripts/model-check.sh` compare logits step by step "
+            "instead, which is the test that a divergence is arithmetic and not a bug."]
     return "\n".join(out) + "\n"
 
 

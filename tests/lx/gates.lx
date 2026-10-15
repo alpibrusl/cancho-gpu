@@ -1,12 +1,12 @@
-// The two per-head gates of a gated-delta layer from its in_proj_a and
-// in_proj_b outputs: beta = sigmoid(b) and g = exp(-A softplus(a + dt_bias)),
-// A = exp(A_log) formed when the weights are loaded. Each is written as a row
-// of 128 copies, which is the shape the delta step broadcasts.
+// The two per-head gates of a gated-delta layer from its in_proj_a and in_proj_b
+// outputs (one value a head): beta = sigmoid(b) and g = exp(-A softplus(a + dt_bias)),
+// A = exp(A_log) formed when the weights are loaded. Each is written as a row of
+// 128 copies per head, which is the shape the delta step broadcasts.
 algo gates(h)
-  in  a:   f32[h, 128]
-  in  b:   f32[h, 128]
-  in  aa:  f32[h, 128]
-  in  dtb: f32[h, 128]
+  in  a:   f32[h]
+  in  b:   f32[h]
+  in  aa:  f32[h]
+  in  dtb: f32[h]
   out g:   f32[h, 128]
   out bt:  f32[h, 128]
 {
@@ -16,11 +16,15 @@ algo gates(h)
   let sp = softplus s
   let ax = load aa
   let m  = ax * sp
-  let z  = zeros f32[h, 128]
-  let ng = z - m
-  store exp ng -> g
+  let z1 = zeros f32[h]
+  let ng = z1 - m
+  let ge = exp ng
+  let z2 = zeros f32[h, 128]
+  store z2 + ge -> g
   let bb = load b
-  store sigmoid bb -> bt
+  let sb = sigmoid bb
+  let z3 = zeros f32[h, 128]
+  store z3 + sb -> bt
 }
 
 schedule gates for apple-m-series { threads 128 }

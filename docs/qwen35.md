@@ -1,9 +1,8 @@
 # Qwen3.8-27B in `.lx`
 
-> **Status: every kernel of the model's decode step is written in `.lx`, held to the
-> reference compiler and to a plain-Python model of what it computes; the runner that
-> strings them together on a Metal GPU is next (§4).** Nothing here has run the
-> model yet.
+> **Status: Qwen3.8-27B runs on a Metal GPU in cancho and agrees with the reference
+> implementation's golden log-probabilities (§4); about 19 tokens a second, against the
+> reference runtime's 25 and Ollama's 42 on this machine (§5).**
 
 The model is `qwen3.8:27b-mlx`: 64 layers, hidden 5120, NVFP4 weights (4-bit E2M1 codes,
 an E4M3 scale per 16 values, one f32 scale per tensor), `model_type: qwen3_5`. It
@@ -62,17 +61,52 @@ twice and moved on the third use.
   (`e2m1 * e4m3 * global`, the low nibble first): 20 more checks, all agree, on both
   targets' summaries.
 
-## 4. What is left
+## 4. The runner and how it is checked
 
-1. **The weights**: the Ollama store (a manifest of digests, one safetensors blob a tensor,
-   `U32` codes with a `.scale` and a `.global_scale`), read with `file_pread` and uploaded as
-   the codes' bytes, the scale bytes and the tensor's scale spread over its rows; the
-   BF16 `in_proj_a`/`in_proj_b`, convolution (transposed to tap-major), `A_log`
-   (exponentiated), `dt_bias` and norms as f32; the embedding row dequantised on the host.
-2. **The runner**: the per-layer launch sequence for both layer kinds, the states and
-   caches, sampling (`device/run-main.cho` is the Qwen2 one).
-3. **Checking it** against the reference's golden log-probabilities and the reference
-   runtime's tokens, layer by layer where they disagree.
-4. **Speed and context**: 14.5 GB read a token against the 5 to 9 ms a token of the 0.5B
-   model's profile; and attention's one-tile scores cap the context at 1364 positions on Metal
-   (`docs/kernels.md` §4).
+`device/run35-main.cho` (`scripts/build-run35.sh`, `build/cancho-gpu-run35 <ollama store> tests/lx
+"<prompt>" <new tokens> [--trace] [--timing]`) reads Ollama's manifest and runs the 64 layers as the
+kernels above on a Metal GPU. The dimensions are the model's own, written as constants, so it runs this
+model and no other.
+
+* **Weights.** An NVFP4 tensor's codes and scales go up as they lie in the blob (16 MiB at a time with
+  `file_pread`; the layout is the one the kernels read: low nibble first), and its one f32 scale is written
+  once for each row. The bf16 norms are read as f32 with 1 added (all but the gated one), `A_log` is
+  exponentiated, the convolution weight is transposed to tap-major, `in_proj_a` and `in_proj_b` go up as f16.
+  The embedding is bf16: one row is read and widened per token. 14.6 GB are resident.
+* **A token**: per layer a norm; for a gated-delta layer the `qkv`, `z`, `a`, `b` projections, the
+  convolution (its window ping-pongs between two buffers), `qk_norm`, `gates`, the delta step (in place on
+  the layer's 3 MB state, reading the convolution's value part through a buffer offset, the shim's
+  `lxg_arg_at`), the gated norm and `out_proj` added to the residual; for an attention layer `q`, `k`, `v`,
+  the per-head norms, RoPE, the cache write, attention, the gate and `o_proj`; then the norm and the SwiGLU
+  MLP. One command buffer a layer, committed without waiting; the CPU waits once, for the logits.
+* **Checked** (`scripts/qwen35-check.sh <reference checkout>`, not in the gate: it needs the model and a Mac):
+  against the reference's golden fixture for three prompts, **eight steps each give the same token, the
+  same five tokens at the top, and logit gaps within 1e-4 of the reference's log-probability gaps** (its
+  own f32 reference; the fixture's tolerance for the reference runtime is 0.02). On `The capital of France
+  is`, twelve greedy tokens (` Paris`, `.`, newline, `The`, ` capital`, ` of`, ` Germany`, ` is`, ...) are the
+  reference runtime's, token for token.
+* **Found on the way**: the embedding is not quantised (it is bf16, 2.5 GB); an attention layer's
+  weight list must be padded to the gated-delta layer's width so the MLP's slots line up (a trap, not a wrong
+  answer, which is how it was found); and the `tokenizer.json` layer of the store is plain JSON, not a
+  safetensors blob.
+
+## 5. Speed
+
+Steady decode on this machine (M4 Max, one run of 120 tokens, the weights read from the page cache):
+**52 ms a token, 19 tokens a second**; the weights take 2.2 s to load. Prefill is the same token by token
+(about 18 tokens a second). In the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same
+weights at about 42 tokens a second and MLX-LM (a different 4-bit quantisation) at about 26; the
+reference runtime measured 25 (39 ms a token) when it was run for its tokens. Those other runtimes are
+the target, not a comparison to be proud of: this one reads the weights with kernels the compiler lowers
+one thread to a product, and a profile (`LEXGPU_PROFILE=1`) shows the CPU waiting for the GPU.
+
+## 6. Limits and what is left
+
+* **Speed**: 14.6 GB are read a token, so the floor at the copy bandwidth is about 32 ms; the kernels are
+  at 52. The NVFP4 matvec is the thing to tune (the reference runtime's decode trick, two codes of a byte
+  at once on vector arithmetic, is described in its notes), and a batched prefill.
+* **Context**: 256 positions (a constant of the compiled kernels), and attention's one-tile scores cap it at
+  1364 on Metal (`docs/kernels.md` §4). The model's context is 262,144.
+* **Raw text** only: no chat template, no thinking-mode handling, greedy by default.
+* **Positions**: text positions only (the model's interleaved m-RoPE reduces to plain RoPE when the three
+  position streams are equal, which is all this feeds it); the multi-token-prediction head is not used.

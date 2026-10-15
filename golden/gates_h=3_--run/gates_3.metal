@@ -2,7 +2,7 @@
 // kernel : gates_3
 // target : apple-m-series
 // launch : 1 threadgroups x 128 threads
-// tg mem : 0 B tiles + 0 B scratch of 32768 B
+// tg mem : 0 B tiles + 12 B scratch of 32768 B
 
 #include <metal_stdlib>
 using namespace metal;
@@ -18,58 +18,103 @@ kernel void gates_3(
     uint3 tgpos [[threadgroup_position_in_grid]])
 {
     const uint gid = tgpos.x;
-    float v3[3];
-    for (uint k = 0; k < 3u; ++k) {
+    threadgroup float scratch[3];
+    float v3[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 384u) {
-            v3[k] = float(max(float(float((float(float(p0_a[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 128u + (uint)(0) * 1u + ((e))]))))), 0.0f) + precise::log(1.0f + precise::exp(-fabs(float(float((float(float(p0_a[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])))))))));
+        if (e < 3u) {
+            v3[k] = float(max(float(float((float(float(p0_a[(uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 1u + ((e))]))))), 0.0f) + precise::log(1.0f + precise::exp(-fabs(float(float((float(float(p0_a[(uint)(0) * 1u + ((e))])) + float(float(p3_dtb[(uint)(0) * 1u + ((e))])))))))));
         }
     }
-    float v5[3];
-    for (uint k = 0; k < 3u; ++k) {
+    float v5[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 384u) {
-            v5[k] = float(float(float(p2_aa[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])) * float(v3[k]));
+        if (e < 3u) {
+            v5[k] = float(float(float(p2_aa[(uint)(0) * 1u + ((e))])) * float(v3[k]));
         }
     }
-    float v6[3];
-    for (uint k = 0; k < 3u; ++k) {
+    float v6[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 384u) {
+        if (e < 3u) {
             v6[k] = float(0.0f);
         }
     }
-    float v7[3];
-    for (uint k = 0; k < 3u; ++k) {
+    float v7[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 384u) {
+        if (e < 3u) {
             v7[k] = float(float(v6[k]) - float(v5[k]));
         }
     }
-    float v8[3];
-    for (uint k = 0; k < 3u; ++k) {
+    float v8[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 384u) {
+        if (e < 3u) {
             v8[k] = float(precise::exp(float(v7[k])));
         }
     }
+    float v9[3];
     for (uint k = 0; k < 3u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 384u) {
-            p4_g[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v8[k]));
+            v9[k] = float(0.0f);
         }
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 3u) {
+            scratch[0 + e] = float(v8[k]);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     float v10[3];
     for (uint k = 0; k < 3u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 384u) {
-            v10[k] = float(1.0f / (1.0f + precise::exp(-float(float(p1_b[(uint)(0) * 128u + (uint)(0) * 1u + ((e))])))));
+            v10[k] = float(float(v9[k]) + float((scratch + 0)[e / 128u]));
         }
     }
     for (uint k = 0; k < 3u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 384u) {
-            p5_bt[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v10[k]));
+            p4_g[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v10[k]));
+        }
+    }
+    float v12[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 3u) {
+            v12[k] = float(1.0f / (1.0f + precise::exp(-float(float(p1_b[(uint)(0) * 1u + ((e))])))));
+        }
+    }
+    float v13[3];
+    for (uint k = 0; k < 3u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 384u) {
+            v13[k] = float(0.0f);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 3u) {
+            scratch[0 + e] = float(v12[k]);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float v14[3];
+    for (uint k = 0; k < 3u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 384u) {
+            v14[k] = float(float(v13[k]) + float((scratch + 0)[e / 128u]));
+        }
+    }
+    for (uint k = 0; k < 3u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 384u) {
+            p5_bt[(uint)(0) * 128u + (uint)(0) * 1u + (e)] = float(float(v14[k]));
         }
     }
 }

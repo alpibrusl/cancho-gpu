@@ -197,9 +197,25 @@ def softplus_(x):
 
 
 def gates(h):
-    a, b, aa, dtb = lcg([h * 128] * 4)
-    return ([math.exp(-aa[i] * softplus_(a[i] + dtb[i])) for i in range(h * 128)],
-            [1 / (1 + math.exp(-x)) for x in b])
+    a, b, aa, dtb = lcg([h] * 4)
+    g = [math.exp(-aa[i] * softplus_(a[i] + dtb[i])) for i in range(h)]
+    bt = [1 / (1 + math.exp(-x)) for x in b]
+    return [g[i] for i in range(h) for _ in range(128)], [bt[i] for i in range(h) for _ in range(128)]
+
+
+def qnorm(r, n):
+    x, w = lcg([r * 2 * n, n])
+    out = []
+    for i in range(r):
+        v = x[i * 2 * n:i * 2 * n + n]
+        rs = 1 / math.sqrt(sum(a * a for a in v) / n + 1e-6)
+        out += [v[j] * rs * w[j] for j in range(n)]
+    return out
+
+
+def attn_gate_q(r, n):
+    o, qg = lcg([r * n, r * 2 * n])
+    return [o[i * n + j] / (1 + math.exp(-qg[i * 2 * n + n + j])) for i in range(r) for j in range(n)]
 
 
 def delta_step(nk):
@@ -279,6 +295,8 @@ got = run("delta_step", ["nk=2"])
 want_so, want_y = delta_step(2)
 ok &= check("delta_step so nk=2", got["so"], want_so)
 ok &= check("delta_step y nk=2", got["y"], want_y)
+ok &= check("qnorm r=3 n=8", run("qnorm", ["r=3", "n=8", "eps=1e-6"])["y"], qnorm(3, 8))
+ok &= check("attn_gate_q r=3 n=8", run("attn_gate_q", ["r=3", "n=8"])["y"], attn_gate_q(3, 8))
 ok &= check("rmsnorm_rows r=3 n=16", run("rmsnorm_rows", ["r=3", "n=16", "eps=1e-6"])["y"], rmsnorm_rows(3, 16))
 ok &= check("gated_norm h=3 n=16", run("gated_norm", ["h=3", "n=16", "eps=1e-6"])["y"], gated_norm(3, 16))
 sys.exit(0 if ok else 1)

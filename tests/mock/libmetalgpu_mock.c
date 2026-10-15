@@ -81,6 +81,11 @@ int64_t lxg_sync(void) {
     return 0;
 }
 
+int64_t lxg_arg_at(int64_t buf, int64_t offset) {
+    (void)offset;
+    return lxg_arg(buf);
+}
+
 int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     (void)fn;
     const char *path = getenv("LEXGPU_METAL_MOCK_LOG");

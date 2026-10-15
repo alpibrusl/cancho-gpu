@@ -33,6 +33,7 @@ static struct {
     int64_t sizes[MAX_BUFFERS];
     int64_t n_buffers;
     id<MTLBuffer> args[MAX_ARGS];
+    int64_t arg_offsets[MAX_ARGS];
     int64_t n_args;
     /* The command buffer and encoder that `lxg_launch_async` fills until `lxg_sync`. */
     id<MTLCommandBuffer> cmd;
@@ -240,6 +241,24 @@ int64_t lxg_arg(int64_t buf) {
         return fail("lxg_arg", "too many arguments");
     }
     g.args[g.n_args] = g.buffers[buf];
+    g.arg_offsets[g.n_args] = 0;
+    return g.n_args++;
+}
+
+/* Bind a buffer from a byte offset: a kernel that reads a part of one (the value part
+ * of a convolution's output, say) is given just that part as its parameter. */
+int64_t lxg_arg_at(int64_t buf, int64_t offset) {
+    if (buf < 0 || buf >= g.n_buffers) {
+        return fail("lxg_arg_at", "no such buffer");
+    }
+    if (offset < 0 || offset >= g.sizes[buf] || offset % 4 != 0) {
+        return fail("lxg_arg_at", "the offset is outside the buffer or not a multiple of 4");
+    }
+    if (g.n_args == MAX_ARGS) {
+        return fail("lxg_arg_at", "too many arguments");
+    }
+    g.args[g.n_args] = g.buffers[buf];
+    g.arg_offsets[g.n_args] = offset;
     return g.n_args++;
 }
 
@@ -266,7 +285,7 @@ int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     }
     [g.enc setComputePipelineState:g.functions[fn]];
     for (int64_t i = 0; i < g.n_args; i++) {
-        [g.enc setBuffer:g.args[i] offset:0 atIndex:i];
+        [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
     }
     [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
           threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
@@ -337,7 +356,7 @@ int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     
     // Set the arguments
     for (int64_t i = 0; i < g.n_args; i++) {
-        [computeEncoder setBuffer:g.args[i] offset:0 atIndex:i];
+        [computeEncoder setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
     }
     
     // Dispatch the compute kernel
