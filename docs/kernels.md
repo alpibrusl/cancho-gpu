@@ -100,9 +100,13 @@ changing the language is the maintainer's call and the second is a real design.
 
 ## 5. Not measured
 
-* **No GPU.** These kernels were never run on a device. `docs/device.md`'s Metal
-  path can run one against the interpreter; that was not done (the GPU is the
-  user's, and this is a CPU-only session).
+* **A GPU, once, for correctness.** The Metal device path of `docs/device.md`
+  (`build/cancho-gpu-metal-device run`) ran all four kernels on this machine's
+  Apple GPU (8 cases: rope at 24 and 3 rows, kv_append, attention at three
+  sizes up to `t = 1364`, the Metal ceiling, and attn_gate at two) and compared
+  every output with the interpreter's: the worst difference is 6.7e-8 on an
+  output whose peak is 0.0285 (rope and kv_append: exactly 0). Not run on CUDA.
+  Not in the gate (it needs a GPU).
 * **Speed.** The lowering reports `0 B of tiles` for all of them: each element
   is computed by one thread from device memory, with no staging in threadgroup
   memory. They are correct; whether they are fast is a separate measurement.
