@@ -22,7 +22,7 @@ not here.
 |---|---|---|
 | `tests/lx/rope.lx` | `[x1 c - x2 s, x2 c + x1 s, rest]`: the "rotate half" form on the first 2h dimensions of each row, the rest passed through | `r=24` (or 4) rows, `h=32`, `p=192` |
 | `tests/lx/kv_append.lx` | one position of every head's key and value cache, `cache[i * tmax + pos] = new[i]` | `nkv=4`, `d=256`, `tmax`, `pos` |
-| `tests/lx/attention.lx` | for each key/value head `i`, `softmax(q k^T / 16 + mask) v` for its `g` query heads over the first `t` cached positions | `nkv=4`, `g=6`, `d=256`, `t <= 1364` (§3) |
+| `tests/lx/attention.lx` | (`d` must be 256: see below) for each key/value head `i`, `softmax(q k^T / 16 + mask) v` for its `g` query heads over the first `t` cached positions | `nkv=4`, `g=6`, `d=256`, `t <= 1364` (§3) |
 | `tests/lx/attn_gate.lx` | `o * sigmoid(gate)` | `r=24`, `n=256` |
 
 `rope`'s tables are one position's, `[1, h]`, shared by every row; the angles are
@@ -30,32 +30,40 @@ a table lookup the host writes (lex-gpu's runtime does the same), not arithmetic
 kernel needs. `attention`'s `mask` is added to the scores, 0 for a position in
 use and a large negative number for one that is not, so `t` is a capacity. The
 `1/16` is `1/sqrt(256)`, written as a literal: the surface has no scalar
-parameters, so a different head dimension is a different file. The queries'
+parameters, so a different head dimension is a different file, and **`d` must
+be 256**: any other value is accepted and scaled wrongly, which the file's
+comment says and the cases all respect (an earlier case with `d=32` shared the
+reference's 0.0625 and so hid it). The queries'
 and keys' RMSNorm per head is `rmsnorm.lx`, already there; the projections are
 the existing matrix kernels.
 
 ## 2. How they are held to something
 
-* **The emitters.** Every case of `tests/cases.txt` for these kernels (17 of the
-  157 now) writes CUDA C and Metal **byte-identical with lex-gpu's Rust
+* **The emitters.** Every case of `tests/cases.txt` for these kernels (19 of the
+  159 now) writes CUDA C and Metal **byte-identical with lex-gpu's Rust
   emitter's**, or is refused where the Rust refuses (`tests/golden.sh`,
   goldens recorded from the Rust, lex-gpu `851497d`). A refusal can be partial:
   an over-budget attention is accepted for CUDA and refused for Metal, and the
   golden keeps the CUDA file the Rust wrote before it refused
   (`scripts/regen-golden.sh`, `tests/golden.sh` learned this here).
-* **The interpreter.** The `--run` summaries of the eight `--run` cases are
+* **The interpreter.** The `--run` summaries of the ten `--run` cases are
   byte-identical with the Rust interpreter's.
 * **What they compute** (`tests/kernels.py`, in the gate). Byte-identity with
   lex-gpu says the two compilers agree, not that `attention.lx` is attention. The
   script runs each kernel with `--run` on the interpreter's own made-up inputs
   (an LCG, `design.md` §10), runs the same inputs through plain Python written
   from the mathematics in the table above, and requires the printed mean and
-  peak (four decimals) and the first four values (1e-5) to agree: 10 checks,
-  all agree. They are not vacuous: with the attention scale changed from 0.0625
-  to 0.07, with the output written to the wrong place, or with the mask's sign
-  flipped, two checks fail each; with the mask dropped the compiler refuses
-  the kernel itself (`error[leak]: `mask.5` is never consumed`), the linear
-  discipline doing what it is for.
+  peak (four decimals) and the first four values (1e-5) to agree, for both
+  targets' summaries: 14 checks on each, all agree. They are not vacuous, with a caveat that was found by review: the summary
+is a mean, a peak and four values, so a displaced row is invisible when the
+four values are zeros. Mutating `attention.lx` (the scale changed to 0.07, the
+output written to the wrong place, the mask's sign flipped) fails two checks
+each, and dropping the mask is refused by the compiler itself (`error[leak]:
+`mask.5` is never consumed`), the linear discipline doing what it is for. For
+`kv_append` the `pos=17` case alone passed a mutation that wrote one row late;
+two cases small enough that the four printed values are the whole cache
+(`nkv=2 tmax=2 d=1 pos=1`, `nkv=4 tmax=1 d=1 pos=0`) now catch a transposed
+placement (`kc[i + pos * nkv]`), which the larger cases cannot.
 
 ## 3. The limit that was found
 
@@ -100,13 +108,13 @@ changing the language is the maintainer's call and the second is a real design.
 
 ## 5. Not measured
 
-* **A GPU, once, for correctness.** The Metal device path of `docs/device.md`
-  (`build/cancho-gpu-metal-device run`) ran all four kernels on this machine's
-  Apple GPU (8 cases: rope at 24 and 3 rows, kv_append, attention at three
-  sizes up to `t = 1364`, the Metal ceiling, and attn_gate at two) and compared
-  every output with the interpreter's: the worst difference is 6.7e-8 on an
-  output whose peak is 0.0285 (rope and kv_append: exactly 0). Not run on CUDA.
-  Not in the gate (it needs a GPU).
+* **A GPU, once, for correctness.** `scripts/metal-kernels.sh` (needs an Apple
+  GPU, so not in the gate) runs eight cases on the Metal device path of
+  `docs/device.md` (rope at 24 and 3 rows, kv_append, attention at three sizes up
+  to `t = 1364`, the Metal ceiling, and attn_gate at two) and compares every
+  output with the interpreter's. On this machine's Apple M4 Max the worst
+  relative difference is 2.4e-6 (attention at `t = 1364`); rope and kv_append are
+  exactly equal. Not run on CUDA.
 * **Speed.** The lowering reports `0 B of tiles` for all of them: each element
   is computed by one thread from device memory, with no staging in threadgroup
   memory. They are correct; whether they are fast is a separate measurement.

@@ -14,14 +14,15 @@ LEX_GPU=${1:?usage: regen-golden.sh <lex-gpu checkout>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 (cd "$LEX_GPU" && cargo build -q -p lex-msl --example emit_lx)
 THEIRS=$LEX_GPU/target/debug/examples/emit_lx
-# Only the case directories: golden/gguf, safetensors, tokenizer and sampler
-# are other oracles' (their own regen scripts).
+# Only the directories of this file's cases are rebuilt (below): the other
+# oracles' goldens (gguf, safetensors, tokenizer, sampler) are theirs. A case
+# removed from tests/cases.txt leaves its directory to be deleted by hand.
 mkdir -p "$ROOT/golden"
-find "$ROOT/golden" -mindepth 1 -maxdepth 1 -type d ! -name gguf ! -name safetensors ! -name tokenizer ! -name sampler -exec rm -rf {} +
 git -C "$LEX_GPU" rev-parse HEAD > "$ROOT/golden/LEX_GPU"
 while read -r file rest; do
   case "$file" in ''|'#'*) continue ;; esac
   dir=$ROOT/golden/$("$ROOT/scripts/case-name.sh" "$file" $rest)
+  rm -rf "$dir"
   mkdir -p "$dir"
   # shellcheck disable=SC2086
   if "$THEIRS" "$ROOT/$file" "$dir" $rest >"$dir/.stdout" 2>/dev/null; then

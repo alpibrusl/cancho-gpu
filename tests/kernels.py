@@ -37,11 +37,12 @@ def run(kernel, consts):
     r = subprocess.run([BIN, "check", f"tests/lx/{kernel}.lx"] + consts + ["--run"], capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"{kernel} {consts}: {r.stderr.strip()}")
+    # {output: {target: (mean, peak, first four)}}: both targets are printed.
     out = {}
     for line in r.stdout.splitlines():
-        m = re.match(r"nvidia-ada: (\w+) \[[^\]]*\] = mean (-?[\d.]+), peak (-?[\d.]+), first \[(.*)\]", line)
+        m = re.match(r"(nvidia-ada|apple-m-series): (\w+) \[[^\]]*\] = mean (-?[\d.]+), peak (-?[\d.]+), first \[(.*)\]", line)
         if m:
-            out[m.group(1)] = (float(m.group(2)), float(m.group(3)), [float(x) for x in m.group(4).split(", ")])
+            out.setdefault(m.group(2), {})[m.group(1)] = (float(m.group(3)), float(m.group(4)), [float(x) for x in m.group(5).split(", ")])
     return out
 
 
@@ -49,14 +50,16 @@ def summary(values):
     return sum(values) / len(values), max(abs(x) for x in values), values[:4]
 
 
-def check(name, got, want):
+def check(name, per_target, want):
     mean, peak, first = summary(want)
-    gm, gp, gf = got
-    ok = abs(gm - mean) <= 6e-5 and abs(gp - peak) <= 6e-5 and all(abs(a - b) <= 1e-5 for a, b in zip(gf, first))
-    print(f"{'ok  ' if ok else 'FAIL'} {name}: kernel mean {gm} peak {gp}; reference mean {mean:.4f} peak {peak:.4f}")
-    if not ok:
-        print(f"     first four: kernel {gf}, reference {first}")
-    return ok
+    ok = True
+    for target, (gm, gp, gf) in sorted(per_target.items()):
+        good = abs(gm - mean) <= 6e-5 and abs(gp - peak) <= 6e-5 and all(abs(a - b) <= 1e-5 for a, b in zip(gf, first))
+        print(f"{'ok  ' if good else 'FAIL'} {name} [{target}]: kernel mean {gm} peak {gp}; reference mean {mean:.4f} peak {peak:.4f}")
+        if not good:
+            print(f"     first four: kernel {gf}, reference {first}")
+        ok &= good
+    return ok and len(per_target) == 2
 
 
 def rope(r, h, p):
@@ -79,12 +82,13 @@ def attention(nkv, g, t, d, tmax):
             s = []
             for pos in range(t):
                 kr = k[(i * tmax + pos) * d:(i * tmax + pos + 1) * d]
-                s.append(sum(a * b for a, b in zip(qr, kr)) * 0.0625 + mask[pos])
+                s.append(sum(a * b for a, b in zip(qr, kr)) * 0.0625 + mask[pos])  # d is 256: tests/lx/attention.lx
             mx = max(s)
             e = [math.exp(x - mx) for x in s]
             z = sum(e)
+            w = [x / z for x in e]
             for col in range(d):
-                out.append(sum(e[pos] / z * v[(i * tmax + pos) * d + col] for pos in range(t)))
+                out.append(sum(w[pos] * v[(i * tmax + pos) * d + col] for pos in range(t)))
     return out
 
 
@@ -106,10 +110,10 @@ def attn_gate(r, n):
 ok = True
 for r, h, p in ((24, 32, 192), (3, 4, 2)):
     ok &= check(f"rope r={r} h={h} p={p}", run("rope", [f"r={r}", f"h={h}", f"p={p}"])["y"], rope(r, h, p))
-for nkv, g, t, d, tmax in ((2, 6, 64, 256, 96), (3, 2, 16, 32, 20)):
+for nkv, g, t, d, tmax in ((2, 6, 64, 256, 96), (3, 2, 16, 256, 20)):
     got = run("attention", [f"nkv={nkv}", f"g={g}", f"t={t}", f"d={d}", f"tmax={tmax}"])["o"]
     ok &= check(f"attention nkv={nkv} g={g} t={t} d={d} tmax={tmax}", got, attention(nkv, g, t, d, tmax))
-for nkv, tmax, d, pos in ((4, 64, 256, 17), (2, 8, 16, 0)):
+for nkv, tmax, d, pos in ((4, 64, 256, 17), (2, 8, 16, 0), (2, 2, 1, 1), (4, 1, 1, 0)):
     got = run("kv_append", [f"nkv={nkv}", f"tmax={tmax}", f"d={d}", f"pos={pos}"])
     kc, vc = kv_append(nkv, tmax, d, pos)
     ok &= check(f"kv_append kc nkv={nkv} tmax={tmax} d={d} pos={pos}", got["kc"], kc)

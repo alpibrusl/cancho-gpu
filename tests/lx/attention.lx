@@ -12,6 +12,8 @@
 // threadgroup memory a tile may take: 32 KiB on Metal, 48 KiB static on CUDA
 // (`docs/kernels.md`). Longer contexts need the scores split across
 // threadgroups and merged, which this surface cannot yet say (same document).
+// d MUST be 256: the surface has no scalar parameter, so 1/sqrt(d) is the
+// literal 0.0625 below and any other d would be scaled wrongly without error.
 algo attention(nkv, g, t, d, tmax)
   in  q:    f32[nkv * g, d]
   in  k:    f32[nkv * tmax, d]
