@@ -221,5 +221,10 @@ the refusals more than for the dump.
   (338), and the three shards of `mlx-community/Qwen3.8-27B-4bit` (847, 720
   and 613 tensors; headers of 104,654, 94,306 and 80,125 bytes). Each takes
   under 10 ms, though the files are 1 to 5 GB: only the first 32 MiB is read.
-* Ollama's `qwen3.8:27b-mlx` blobs: see §9.
+* **Ollama's `qwen3.8:27b-mlx`, every blob** (1,207 named layers, 18.2 GB):
+  the 1,199 tensor blobs are **byte-identical with the library**, and the 8
+  JSON files of the manifest (`config.json`, `tokenizer.json`, ...) are
+  refused by both, as they are not safetensors. This is the format
+  `lex-rt/src/qwen.rs` reads (NVFP4 codes as `U32`, scales as `U8`, a
+  global scale as `F32`).
 * Not measured: reading a tensor's bytes, and any model run.
