@@ -190,6 +190,12 @@ pub fn fp4_group_store[&m, &t](m: &!m [int], t: &!t [byte], d: int, dst: int, w:
 }
 
 // Whether a lane's run of loads is spelled as explicit wide loads.
+// Whether the dialect has the matrix unit's register fragments (Metal's
+// `simdgroup_float8x8`): the `frag` path of src/matmul.cho needs them.
+pub fn fragments(d: int) -> [] bool {
+    return !is_cuda(d);
+}
+
 pub fn wide_loads(d: int) -> [] bool {
     return is_cuda(d);
 }

@@ -83,7 +83,7 @@ fn compile_kernel[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
     if check.check(m, t, prog, tg) < 0 {
         return 0 - 1;
     }
-    let l = lower.lower(m, t, prog, tg, dialect.msl(), m[s + 1], m[s + 3], m[s + 4], m[s + 5]);
+    let l = lower.lower(m, t, prog, tg, dialect.msl(), m[s + 1], m[s + 3], m[s + 4], m[s + 5], m[s + 7]);
     if l < 0 {
         return 0 - 1;
     }

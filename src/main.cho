@@ -104,7 +104,7 @@ fn one_target[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], unit: in
     if !lower_it {
         return mem.rec2(m, 0, ran);
     }
-    let l = lower.lower(m, t, prog, tg, d, m[s + 1], m[s + 3], m[s + 4], m[s + 5]);
+    let l = lower.lower(m, t, prog, tg, d, m[s + 1], m[s + 3], m[s + 4], m[s + 5], m[s + 7]);
     if l < 0 {
         return 0 - 1;
     }
