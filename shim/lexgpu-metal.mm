@@ -34,6 +34,11 @@ static struct {
     int64_t n_buffers;
     id<MTLBuffer> args[MAX_ARGS];
     int64_t n_args;
+    /* The command buffer and encoder that `lxg_launch_async` fills until `lxg_sync`. */
+    id<MTLCommandBuffer> cmd;
+    id<MTLComputeCommandEncoder> enc;
+    /* The last command buffer committed, which `lxg_sync` waits for. */
+    id<MTLCommandBuffer> last;
     char error[4096];
 } g;
 
@@ -238,7 +243,76 @@ int64_t lxg_arg(int64_t buf) {
     return g.n_args++;
 }
 
+/* Encode a dispatch into the pending command buffer, without waiting: a token's
+ * hundreds of kernels then cost one commit instead of one each. Metal orders
+ * dispatches that use the same buffers; `lxg_sync` commits and waits. */
+int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
+    if (fn < 0 || fn >= g.n_functions) {
+        g.n_args = 0;
+        return fail("lxg_launch_async", "no such function");
+    }
+    if (!g.cmd) {
+        g.cmd = [g.queue commandBuffer];
+        if (!g.cmd) {
+            g.n_args = 0;
+            return fail("lxg_launch_async", "failed to create command buffer");
+        }
+        g.enc = [g.cmd computeCommandEncoder];
+        if (!g.enc) {
+            g.cmd = nil;
+            g.n_args = 0;
+            return fail("lxg_launch_async", "failed to create compute encoder");
+        }
+    }
+    [g.enc setComputePipelineState:g.functions[fn]];
+    for (int64_t i = 0; i < g.n_args; i++) {
+        [g.enc setBuffer:g.args[i] offset:0 atIndex:i];
+    }
+    [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
+          threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
+    g.n_args = 0;
+    return 0;
+}
+
+/* Commit what `lxg_launch_async` encoded, without waiting: the GPU starts on it
+ * while the CPU goes on encoding the next. The queue runs command buffers in
+ * order, so a later `lxg_sync` need only wait for the last. */
+int64_t lxg_flush(void) {
+    if (!g.cmd) {
+        return 0;
+    }
+    [g.enc endEncoding];
+    [g.cmd commit];
+    g.last = g.cmd;
+    g.cmd = nil;
+    g.enc = nil;
+    return 0;
+}
+
+/* Commit what is pending and wait for everything submitted: the GPU time of
+ * the last command buffer, in nanoseconds (0 if nothing was submitted). */
+int64_t lxg_sync(void) {
+    lxg_flush();
+    if (!g.last) {
+        return 0;
+    }
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    [g.last waitUntilCompleted];
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    int64_t ns = (int64_t)(([g.last GPUEndTime] - [g.last GPUStartTime]) * 1e9);
+    if (getenv("LEXGPU_PROFILE")) {
+        double wall = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        fprintf(stderr, "sync: waited %.3f ms, last buffer gpu %.3f ms\n", wall, ns / 1e6);
+    }
+    g.last = nil;
+    return ns;
+}
+
 int64_t lxg_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
+    if (g.cmd) {
+        lxg_sync();
+    }
     if (fn < 0 || fn >= g.n_functions) {
         g.n_args = 0;
         return fail("lxg_launch", "no such function");

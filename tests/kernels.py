@@ -116,6 +116,25 @@ def matvec(n, k, extra=None):
     return y
 
 
+def f16(x):
+    import struct
+    return struct.unpack("<e", struct.pack("<e", x))[0]
+
+
+def matvec16(n, k, extra=None):
+    x, w = lcg([k, n * k])[:2]
+    third = lcg([k, n * k, n])[2] if extra else None
+    y = [sum(x[j] * f16(w[i * k + j]) for j in range(k)) for i in range(n)]
+    if extra:
+        y = [a + b for a, b in zip(y, third)]
+    return y
+
+
+def kv_write(nkv, tmax, d):
+    c, nw, sel, keep = lcg([nkv * tmax * d, nkv * d, tmax, tmax])
+    return [c[(i * tmax + r) * d + col] * keep[r] + nw[i * d + col] * sel[r] for i in range(nkv) for r in range(tmax) for col in range(d)]
+
+
 def swiglu(n):
     g, u = lcg([n, n])
     return [a / (1 + math.exp(-a)) * b for a, b in zip(g, u)]
@@ -136,6 +155,9 @@ for r, n in ((24, 256), (3, 7)):
     ok &= check(f"attn_gate r={r} n={n}", run("attn_gate", [f"r={r}", f"n={n}"])["y"], attn_gate(r, n))
 for kernel, n, k, extra in (("matvec_rows", 64, 96, None), ("matvec_bias", 64, 96, "bias"), ("matvec_res", 64, 96, "res")):
     ok &= check(f"{kernel} n={n} k={k}", run(kernel, [f"n={n}", f"k={k}"])["y"], matvec(n, k, extra))
+for kernel, extra in (("matvec_rows_f16", None), ("matvec_bias_f16", "bias"), ("matvec_res_f16", "res")):
+    ok &= check(f"{kernel} n=64 k=96", run(kernel, ["n=64", "k=96"])["y"], matvec16(64, 96, extra))
+ok &= check("kv_write nkv=2 tmax=8 d=4", run("kv_write", ["nkv=2", "tmax=8", "d=4"])["y"], kv_write(2, 8, 4))
 ok &= check("swiglu n=100", run("swiglu", ["n=100"])["y"], swiglu(100))
 got = run("attention_d64", ["nkv=2", "g=7", "t=32", "d=64", "tmax=40"])["o"]
 ok &= check("attention_d64 nkv=2 g=7 t=32 d=64 tmax=40", got, attention(2, 7, 32, 64, 40, 0.125))

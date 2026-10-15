@@ -11,7 +11,7 @@
 - Device paths: Metal has run on Apple Silicon (reach and numerical agreement, not speed). CUDA is verified against a mock driver only; no real NVIDIA GPU run yet.
 - `gguf` reads the first 32 MiB of a file: metadata and tensor directory, never tensor values. It refuses hostile input with a rule tag (gguf-truncated, gguf-version, gguf-duplicate, ...).
 - Kernels: rope, kv_append, attention (head dimension 256; at most 1364 positions on Metal) and attn_gate in tests/lx/. Split-KV attention for longer contexts cannot be written in the surface yet.
-- Model runner: `cancho-gpu-run <model dir> tests/lx "<prompt>" <new tokens>` for Qwen2-architecture bf16 checkpoints (256-position context, no chat template), about 35 ms a token untuned. Qwen3.8-27B does not run yet.
+- Model runner: `cancho-gpu-run <model dir> tests/lx "<prompt>" <new tokens>` for Qwen2-architecture bf16 checkpoints (256-position context, no chat template), 6 to 12 ms a token. Qwen3.8-27B does not run yet.
 - Not implemented: serving, quantised weights, linear attention, AMD, Hopper.
 
 ## Optional

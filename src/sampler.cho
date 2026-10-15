@@ -236,12 +236,16 @@ pub fn nucleus[&m, &t](m: &!m [int], t: &!t [byte], s: int, base: int, n: int) -
     let probs = mem.list(m);
     let temperature = f32.from_bits32(m[s + f_temperature()]);
     if temperature <= 0.0 || m[s + f_top_k()] == 1 {
-        // The last of the largest, as `Iterator::max_by` takes it.
+        // The last of the largest, as `Iterator::max_by` takes it: one pass,
+        // keeping the best key (a row of 150,000 logits is read every token).
         var best = 0;
+        var best_key = key(logit_bits(t, base, 0));
         var i = 1;
         while i < n {
-            if key(logit_bits(t, base, i)) >= key(logit_bits(t, base, best)) {
+            let ki = key(logit_bits(t, base, i));
+            if ki >= best_key {
                 best = i;
+                best_key = ki;
             }
             i = i + 1;
         }

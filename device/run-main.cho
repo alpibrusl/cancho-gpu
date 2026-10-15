@@ -126,7 +126,7 @@ fn run_kernel[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, b0: int,
     if !ok {
         return 0 - 1;
     }
-    return metal.lxg_launch(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
+    return metal.lxg_launch_async(ffi, m[k], m[k + 1], m[k + 2], m[k + 3]);
 }
 
 // ---------------------------------------------------------------------
@@ -153,6 +153,47 @@ fn widen_bf16[&t](t: &!t [byte], from: int, to: int, n: int) -> [] int {
     return 0;
 }
 
+// bf16 to f16: exact for every value in f16's range (a bf16 has 8 significant
+// bits, an f16 has 11), a flush to zero below its subnormals and to infinity
+// above 65504. `n` values from `from` become `2 n` bytes at `to`.
+fn narrow_bf16_to_f16[&t](t: &!t [byte], from: int, to: int, n: int) -> [] int {
+    var i = 0;
+    while i < n {
+        let b = int_of(t[from + 2 * i]) | int_of(t[from + 2 * i + 1]) << 8;
+        let sign = b >> 15 & 1;
+        let e = b >> 7 & 255;
+        let mant = b & 127;
+        var h = 0;
+        if e == 255 {
+            h = 31744;
+            if mant != 0 {
+                h = 32256;
+            }
+        } else if e != 0 {
+            let e16 = e - 112;
+            if e16 >= 31 {
+                h = 31744;
+            } else if e16 >= 1 {
+                h = e16 << 10 | mant << 3;
+            } else if e > 102 {
+                // A subnormal: (128 + mant) * 2^(e - 110) in units of 2^-24.
+                let full = 128 + mant;
+                if e >= 110 {
+                    h = full << e - 110;
+                } else {
+                    let shift = 110 - e;
+                    h = (full >> shift) + (full >> shift - 1 & 1);
+                }
+            }
+        }
+        h = h | sign << 15;
+        t[to + 2 * i] = byte_of(h & 255);
+        t[to + 2 * i + 1] = byte_of(h >> 8 & 255);
+        i = i + 1;
+    }
+    return 0;
+}
+
 // The tensor record named `name` of a parsed safetensors header, or -1.
 fn find_tensor[&m, &t](m: &!m [int], t: &!t [byte], st: int, name: int) -> [] int {
     let list = m[st + safetensors.f_list()];
@@ -169,7 +210,7 @@ fn find_tensor[&m, &t](m: &!m [int], t: &!t [byte], st: int, name: int) -> [] in
 
 // A weight as an f32 device buffer, streamed in chunks of 4M values: the
 // buffer, or -1. `elems` is checked against the file's shape.
-fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, st: int, data: int, name: int, elems: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, st: int, data: int, name: int, elems: int, half: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     let rec = find_tensor(m, t, st, name);
     if rec < 0 {
         return 0 - 1;
@@ -177,7 +218,11 @@ fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
     if m[rec + 1] != 8 || mem.product(m, m[rec + 2]) != elems {
         return err.fail(m, t, "weights", text.f1(m, t, "`$` is not a bf16 tensor of the expected size", name));
     }
-    let buf = metal.lxg_alloc(ffi, elems * 4);
+    var width = 4;
+    if half {
+        width = 2;
+    }
+    let buf = metal.lxg_alloc(ffi, elems * width);
     if buf < 0 {
         return device_fail(m, t, ffi, "allocating a weight");
     }
@@ -193,9 +238,13 @@ fn load_weight[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
         if got != 2 * n {
             return err.fail(m, t, "weights", text.f1(m, t, "short read of `$`", name));
         }
-        let out = reserve(m, 4 * n);
-        widen_bf16(t, raw, out, n);
-        if metal.lxg_upload_at(ffi, buf, 4 * done, t[out..out + 4 * n]) < 0 {
+        let out = reserve(m, width * n);
+        if half {
+            narrow_bf16_to_f16(t, raw, out, n);
+        } else {
+            widen_bf16(t, raw, out, n);
+        }
+        if metal.lxg_upload_at(ffi, buf, width * done, t[out..out + width * n]) < 0 {
             return device_fail(m, t, ffi, "uploading a weight");
         }
         m[mem.text_slot()] = mark;
@@ -215,6 +264,7 @@ fn layer_name[&m, &t](m: &!m [int], t: &!t [byte], l: int, suffix: &static [byte
 // The first four values and the mean absolute value of the f32 buffer `buf` of
 // `n` values, as a line, for `--trace`.
 fn peek[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), buf: int, n: int, label: &static [byte]) -> [ffi("libmetalgpu")] int {
+    metal.lxg_sync(ffi);
     let mark = m[mem.text_slot()];
     let at = reserve(m, 4 * n);
     if metal.lxg_download(ffi, buf, t[at..at + 4 * n]) < 0 {
@@ -435,16 +485,17 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         return cli.report(m, t, io);
     }
     let k_rms = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "lex-gpu/rmsnorm.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "eps", f32.round(from_bits_f64(m[cfg + 6]))));
-    let k_qb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
-    let k_kvb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(kv_dim)), "k", float_of(hidden)));
-    let k_oproj = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
-    let k_gate = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(inter)), "k", float_of(hidden)));
-    let k_down = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(inter)));
-    let k_head = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(vocab)), "k", float_of(hidden)));
+    let k_qb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
+    let k_kvb = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_bias_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(kv_dim)), "k", float_of(hidden)));
+    let k_oproj = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(hidden)));
+    let k_gate = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(inter)), "k", float_of(hidden)));
+    let k_down = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_res_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(hidden)), "k", float_of(inter)));
+    let k_head = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "matvec_rows_f16.lx"), cv(m, t, cv(m, t, mem.list(m), "n", float_of(vocab)), "k", float_of(hidden)));
     let k_swiglu = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "swiglu.lx"), cv(m, t, mem.list(m), "n", float_of(inter)));
     let k_ropeq = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(heads)), "h", float_of(half)), "p", 0.0));
     let k_ropek = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "rope.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "r", float_of(kv_heads)), "h", float_of(half)), "p", 0.0));
     let k_attn = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "attention_d64.lx"), cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "g", float_of(group)), "t", float_of(tmax)), "d", float_of(head_dim)), "tmax", float_of(tmax)));
+    let k_kvw = compile_kernel(m, t, ffi, fs, kernel_file(m, t, kdir, "kv_write.lx"), cv(m, t, cv(m, t, cv(m, t, mem.list(m), "nkv", float_of(kv_heads)), "tmax", float_of(tmax)), "d", float_of(head_dim)));
     if err.failed(m) {
         return cli.report(m, t, io);
     }
@@ -452,25 +503,25 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     let wb = mem.list(m);
     var l = 0;
     while l < layers {
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "input_layernorm.weight"), hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.q_proj.weight"), hidden * hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.q_proj.bias"), hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.k_proj.weight"), kv_dim * hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.k_proj.bias"), kv_dim));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.v_proj.weight"), kv_dim * hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.v_proj.bias"), kv_dim));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.o_proj.weight"), hidden * hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "post_attention_layernorm.weight"), hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.gate_proj.weight"), inter * hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.up_proj.weight"), inter * hidden));
-        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.down_proj.weight"), hidden * inter));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "input_layernorm.weight"), hidden, false));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.q_proj.weight"), hidden * hidden, true));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.q_proj.bias"), hidden, false));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.k_proj.weight"), kv_dim * hidden, true));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.k_proj.bias"), kv_dim, false));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.v_proj.weight"), kv_dim * hidden, true));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.v_proj.bias"), kv_dim, false));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "self_attn.o_proj.weight"), hidden * hidden, true));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "post_attention_layernorm.weight"), hidden, false));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.gate_proj.weight"), inter * hidden, true));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.up_proj.weight"), inter * hidden, true));
+        mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, layer_name(m, t, l, "mlp.down_proj.weight"), hidden * inter, true));
         if err.failed(m) {
             return cli.report(m, t, io);
         }
         l = l + 1;
     }
-    mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, text.lit(m, t, "model.norm.weight"), hidden));
-    mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, text.lit(m, t, "model.embed_tokens.weight"), vocab * hidden));
+    mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, text.lit(m, t, "model.norm.weight"), hidden, false));
+    mem.push(m, wb, load_weight(m, t, ffi, fs, st_path, st, data, text.lit(m, t, "model.embed_tokens.weight"), vocab * hidden, true));
     if err.failed(m) {
         return cli.report(m, t, io);
     }
@@ -492,6 +543,8 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     let b_cos = metal.lxg_alloc(ffi, 4 * half);
     let b_sin = metal.lxg_alloc(ffi, 4 * half);
     let b_mask = metal.lxg_alloc(ffi, 4 * tmax);
+    let b_sel = metal.lxg_alloc(ffi, 4 * tmax);
+    let b_keep = metal.lxg_alloc(ffi, 4 * tmax);
     let kc = mem.list(m);
     let vc = mem.list(m);
     l = 0;
@@ -518,6 +571,7 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     let smp = sampler.new(m, temperature, top_p, top_k, seed);
     let out_ids = mem.list(m);
     var pos = 0;
+    var gpu_ns = 0;
     var token = mem.get(m, ids, 0);
     var done = false;
     let step_total = n_prompt + new_tokens - 1;
@@ -533,6 +587,19 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         let zero = reserve(m, 4);
         put_f32(t, zero, 0);
         metal.lxg_upload_at(ffi, b_mask, 4 * pos, t[zero..zero + 4]);
+        let sk = reserve(m, 8 * tmax);
+        var zz = 0;
+        while zz < tmax {
+            var is_pos = 0;
+            if zz == pos {
+                is_pos = 1;
+            }
+            put_f32(t, sk + 4 * zz, f32.bits32(float_of(is_pos)));
+            put_f32(t, sk + 4 * tmax + 4 * zz, f32.bits32(float_of(1 - is_pos)));
+            zz = zz + 1;
+        }
+        metal.lxg_upload_at(ffi, b_sel, 0, t[sk..sk + 4 * tmax]);
+        metal.lxg_upload_at(ffi, b_keep, 0, t[sk + 4 * tmax..sk + 8 * tmax]);
         let tab = reserve(m, 8 * half);
         var jj = 0;
         while jj < half {
@@ -558,20 +625,9 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
             run_kernel(m, ffi, k_kvb, b_n, mem.get(m, wb, w + 5), mem.get(m, wb, w + 6), b_v, 0 - 1);
             run_kernel(m, ffi, k_ropeq, b_q, b_cos, b_sin, b_qr, 0 - 1);
             run_kernel(m, ffi, k_ropek, b_k, b_cos, b_sin, b_kr, 0 - 1);
-            // The new key and value go into the cache, a row for each head.
-            let kv_mark = m[mem.text_slot()];
-            let kb = reserve(m, 4 * kv_dim);
-            let vb = reserve(m, 4 * kv_dim);
-            metal.lxg_download(ffi, b_kr, t[kb..kb + 4 * kv_dim]);
-            metal.lxg_download(ffi, b_v, t[vb..vb + 4 * kv_dim]);
-            var h2 = 0;
-            while h2 < kv_heads {
-                let row = 4 * ((h2 * tmax + pos) * head_dim);
-                metal.lxg_upload_at(ffi, mem.get(m, kc, l), row, t[kb + 4 * h2 * head_dim..kb + 4 * (h2 + 1) * head_dim]);
-                metal.lxg_upload_at(ffi, mem.get(m, vc, l), row, t[vb + 4 * h2 * head_dim..vb + 4 * (h2 + 1) * head_dim]);
-                h2 = h2 + 1;
-            }
-            m[mem.text_slot()] = kv_mark;
+            // The new key and value go into the cache, on the device.
+            run_kernel(m, ffi, k_kvw, mem.get(m, kc, l), b_kr, b_sel, b_keep, mem.get(m, kc, l));
+            run_kernel(m, ffi, k_kvw, mem.get(m, vc, l), b_v, b_sel, b_keep, mem.get(m, vc, l));
             run_kernel(m, ffi, k_attn, b_qr, mem.get(m, kc, l), mem.get(m, vc, l), b_mask, b_o);
             run_kernel(m, ffi, k_oproj, b_o, mem.get(m, wb, w + 7), cur, nxt, 0 - 1);
             run_kernel(m, ffi, k_rms, nxt, mem.get(m, wb, w + 8), b_n, 0 - 1, 0 - 1);
@@ -582,11 +638,13 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
             if trace && l % 6 == 5 {
                 io.write_all(io, text.bytes(t, peek(m, t, ffi, cur, hidden, "layer output")));
             }
+            metal.lxg_flush(ffi);
             l = l + 1;
         }
         // The final norm and the tied output projection.
         run_kernel(m, ffi, k_rms, cur, mem.get(m, wb, layers * 12), b_n, 0 - 1, 0 - 1);
         run_kernel(m, ffi, k_head, b_n, mem.get(m, wb, layers * 12 + 1), b_logits, 0 - 1, 0 - 1);
+        gpu_ns = gpu_ns + metal.lxg_sync(ffi);
         if pos + 1 >= n_prompt {
             let lg = reserve(m, 4 * vocab);
             if metal.lxg_download(ffi, b_logits, t[lg..lg + 4 * vocab]) < 0 {
@@ -619,6 +677,9 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         q2 = q2 + 1;
     }
     io.write_all(io, text.bytes(t, text.f1(m, t, "tokens: $\n", text.joined(m, t, numbers, " "))));
+    if trace {
+        io.write_all(io, text.bytes(t, text.f2(m, t, "gpu: $ ms over $ steps\n", text.num(m, t, gpu_ns / 1000000), text.num(m, t, pos))));
+    }
     metal.lxg_close(ffi);
     if err.failed(m) {
         return cli.report(m, t, io);
