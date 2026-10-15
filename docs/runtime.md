@@ -1,8 +1,9 @@
 # The runtime core: reading a model (slice 9a)
 
-> **Status: stages 1 to 3 of 4 built and measured: GGUF headers (§2–§5),
-> safetensors headers (§7–§8) and the BPE tokenizer (§9), each on fixtures
-> and on real files.** The sampler is not started (§6). Issue
+> **Status: all four stages built and measured: GGUF headers (§2–§5),
+> safetensors headers (§7–§8), the BPE tokenizer (§9) and the sampler
+> (§10), each on fixtures and, where there are real files, on those.** What
+> is left is §6. Issue
 > [#5](https://github.com/alpibrusl/cancho-gpu/issues/5).
 
 Slice 9a ports the model-facing core of lex-gpu's `lex-rt` into cancho:
@@ -19,7 +20,7 @@ fixtures and gate:
 1. GGUF headers: metadata and the tensor directory. *(built)*
 2. Safetensors headers. *(built)*
 3. The BPE tokenizer. *(built)*
-4. The sampler.
+4. The sampler. *(built)*
 
 ## 1. Why headers first, and what a header is
 
@@ -133,9 +134,10 @@ example into the checkout for the build and removes it).
 
 ## 6. What is left of the slice
 
-| Stage | What | Oracle |
-|---|---|---|
-| 4 | Sampler: greedy, temperature, top-k, top-p, with `lex-rt`'s generator | `lex-rt/src/sample.rs` |
+The four stages are built. Not ported, on purpose: `verify_draft` and
+`verify_proposal`, the accept/reject rules of speculative decoding, which
+belong with a decode loop that drafts (they are written over `nucleus` and
+`draw`, which are here). Not in this slice: the tensors' *values*, below.
 
 Loading the tensors' *values* (dequantising Q8_0, Q4_K and Q6_K to what
 the kernels take) belongs to the model adapters of slice 12 (issue #10),
@@ -309,3 +311,54 @@ They are `static` items built at compile time from hex strings.
 * Not covered: a tokenizer whose `pre_tokenizer` differs (neither reads it), a
   `tokenizer.json` in a format other than `BPE`, and invalid UTF-8 inside a
   GGUF token.
+
+## 10. The sampler (stage 4)
+
+`src/sampler.cho`; the command is `cancho-gpu sample <logits.f32> <vocab>
+<temperature> <top_p> <top_k> <seed>`, which reads rows of little-endian f32
+logits and prints, for each, the nucleus and the draw, the sampler's stream
+running across the rows as it does in generation. The oracle is
+`lex-rt/src/sample.rs`: temperature, then top-k, then top-p, renormalised;
+a xorshift64* stream seeded through splitmix64; temperature 0 or top-k 1 is
+the argmax (the last of equal maxima, as `max_by` takes it).
+
+**What the language made of it.** `int` multiplication traps on overflow
+(measured: exit 132), so the generator's wrapping products are schoolbook over
+16-bit limbs and its sums over 32-bit halves, with unsigned shifts by masking.
+There is no f32, so each operation is done in binary64 and rounded once to f32
+(`f32.cho`, which is exact for `+ - * /`). The logits stay as the bytes they
+arrived in, read where they lie: only the `k` that survive top-k are touched
+again. `f32::total_cmp` is an integer key on the bit pattern, so NaN, infinities
+and signed zeros order as the oracle orders them. Above `k = 64` lex-rt selects
+and sorts; here the row is merge-sorted and cut, which gives the same list
+because the order (value descending, index ascending) is total.
+
+**What cannot be bit-exact, and why.** lex-rt's `exp` is the platform's
+`expf`. cancho computes the correctly rounded f32 of the exact value. Measured
+with a Rust program over 60,000,000 inputs in [-40, 0], macOS's `expf` differs
+from that in **372,569 (0.62%)**, by one unit in the last place. So the picks and
+the nuclei's ids are the same, and the probabilities agree to a few units in
+the last place rather than to the bit. The goldens are the oracle's on this
+platform (`golden/sampler/PLATFORM`); another platform's `expf` would differ
+from them in the same few places, and this program would not change.
+`tests/sampler/compare.py` requires the picks and ids to be equal and the
+probabilities to be within 8 ulps.
+
+**Differences.** A seed is below 2^63 (the oracle's `u64` has one more bit); a
+NaN probability prints as `nan`, because its bits are not portable; `top_k` 0
+is 1, as the oracle's `max(1)` has it.
+
+**Measured.**
+
+* 75 cases (`tests/sampler/cases.txt`) over ordinary, flat, tied, peaked and
+  "special" rows (infinities, NaN, signed zeros, subnormals, the largest f32,
+  all `-inf`), temperatures from 0 to 5, `top_p` from 0 to 1, `top_k` from 0
+  to 100,000 across the 64 boundary, six seeds, vocabularies of 1, 2, 40 to
+  5,000: **2,269 rows, every pick and every nucleus id identical with
+  lex-rt's; of 191,630 probabilities 190,372 (99.3%) are bit-identical and the
+  worst differs by 3 ulps.**
+* Three runs of 20,000 rows each (vocabulary 50; not in the gate): the same,
+  with the worst difference 5 ulps (60,000 rows, 1.34 million probabilities,
+  98.8 to 99.4% bit-identical).
+* Not measured: a real model's logits (there is no decode loop here yet); the
+  speculative rules; a seed of 2^63 or more.

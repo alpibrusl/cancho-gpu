@@ -7,6 +7,7 @@ edition 5;
 //     cancho-gpu gguf  <file.gguf> [--sum]
 //     cancho-gpu safetensors <file>
 //     cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>
+//     cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
@@ -49,6 +50,7 @@ import safetensors;
 import safetensors_dump;
 import fileio;
 import tokenize;
+import sample;
 
 fn words() -> [] int {
     return 100000000;
@@ -64,7 +66,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.lx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
     return 2;
 }
 
@@ -176,6 +178,9 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
     }
     if text.is(t, cmd, "safetensors") {
         return run_safetensors(m, t, io, fs, args);
+    }
+    if text.is(t, cmd, "sample") && arg_count(args) == 8 {
+        return sample.run(m, t, io, fs, args);
     }
     if text.is(t, cmd, "tokenize") && arg_count(args) == 4 {
         return tokenize.run(m, t, io, fs, args);

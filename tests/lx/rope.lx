@@ -1,0 +1,33 @@
+// Rotary position embedding, on the first 2h dims of each row of x and the
+// rest passed through: y = [x1 c - x2 s, x2 c + x1 s, rest], where x1 and x2
+// are the two halves of the rotated part (the "rotate half" form).
+//
+// A row is one head: r is the number of heads, h half the rotary width and p
+// the width that is not rotated, so Qwen3.8's partial rotary of a quarter of
+// a 256-wide head is h = 32, p = 192. The tables are for one position and
+// are shared by every row, which is why they are [1, h]; they are written by
+// the host (the angles are a table lookup, not arithmetic a kernel needs).
+algo rope(r, h, p)
+  in  x:  f32[r, 2 * h + p]
+  in  cs: f32[1, h]
+  in  sn: f32[1, h]
+  out y:  f32[r, 2 * h + p]
+{
+  let x1   = load x[0, 0 ; r, h]
+  let x2   = load x[0, h ; r, h]
+  let c    = load cs
+  let s    = load sn
+  let a    = &x1 * &c
+  let b    = &x2 * &s
+  let lo   = a - b
+  let d    = x2 * c
+  let e    = x1 * s
+  let hi   = d + e
+  let rest = load x[0, 2 * h ; r, p]
+  store lo   -> y[0, 0]
+  store hi   -> y[0, h]
+  store rest -> y[0, 2 * h]
+}
+
+schedule rope for apple-m-series { threads 128 }
+schedule rope for nvidia-ada     { threads 128 }

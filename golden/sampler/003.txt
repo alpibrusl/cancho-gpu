@@ -1,0 +1,40 @@
+row 0 pick 683 nucleus 1: 683=3f800000
+row 1 pick 966 nucleus 2: 552=3f242568 966=3eb7b530
+row 2 pick 366 nucleus 1: 366=3f800000
+row 3 pick 659 nucleus 3: 659=3eb7900f 161=3ea88499 247=3e9feb58
+row 4 pick 697 nucleus 2: 306=3f1ff59f 697=3ec014c2
+row 5 pick 484 nucleus 2: 484=3f17eda0 427=3ed024c0
+row 6 pick 465 nucleus 1: 465=3f800000
+row 7 pick 497 nucleus 1: 497=3f800000
+row 8 pick 905 nucleus 1: 905=3f800000
+row 9 pick 583 nucleus 1: 583=3f800000
+row 10 pick 286 nucleus 2: 286=3f1fa2f7 628=3ec0ba13
+row 11 pick 357 nucleus 1: 357=3f800000
+row 12 pick 744 nucleus 1: 744=3f800000
+row 13 pick 110 nucleus 3: 110=3eb0856f 616=3ead52e0 803=3ea227af
+row 14 pick 723 nucleus 1: 723=3f800000
+row 15 pick 860 nucleus 1: 860=3f800000
+row 16 pick 19 nucleus 1: 19=3f800000
+row 17 pick 190 nucleus 2: 190=3f1828e1 516=3ecfae3e
+row 18 pick 318 nucleus 2: 420=3f334e7c 318=3e996307
+row 19 pick 542 nucleus 1: 542=3f800000
+row 20 pick 589 nucleus 1: 589=3f800000
+row 21 pick 210 nucleus 1: 210=3f800000
+row 22 pick 916 nucleus 2: 587=3f332044 916=3e99bf78
+row 23 pick 799 nucleus 2: 278=3f157107 799=3ed51df1
+row 24 pick 170 nucleus 1: 170=3f800000
+row 25 pick 708 nucleus 3: 708=3ed7fa5b 141=3ea7c416 163=3e80418f
+row 26 pick 360 nucleus 2: 485=3f2b176d 360=3ea9d126
+row 27 pick 990 nucleus 2: 990=3f164fca 965=3ed3606b
+row 28 pick 353 nucleus 3: 353=3ebccabf 269=3eb2c60d 651=3e906f35
+row 29 pick 862 nucleus 1: 862=3f800000
+row 30 pick 740 nucleus 1: 740=3f800000
+row 31 pick 626 nucleus 3: 626=3ebe94e2 796=3eac0016 210=3e956b08
+row 32 pick 292 nucleus 1: 292=3f800000
+row 33 pick 58 nucleus 2: 775=3f07df6c 58=3ef04128
+row 34 pick 707 nucleus 1: 707=3f800000
+row 35 pick 784 nucleus 2: 784=3f102ac7 914=3edfaa71
+row 36 pick 763 nucleus 1: 763=3f800000
+row 37 pick 540 nucleus 3: 323=3edac6c4 540=3e9e0b19 294=3e872e23
+row 38 pick 534 nucleus 1: 534=3f800000
+row 39 pick 827 nucleus 1: 827=3f800000

@@ -1,0 +1,4 @@
+nvidia-ada: kc [4, 1] = mean -0.2408, peak 0.4835, first [0.0, -0.47959733, 0.0, -0.4834522]
+nvidia-ada: vc [4, 1] = mean 0.0445, peak 0.1349, first [0.0, 0.04315579, 0.0, 0.13490403]
+apple-m-series: kc [4, 1] = mean -0.2408, peak 0.4835, first [0.0, -0.47959733, 0.0, -0.4834522]
+apple-m-series: vc [4, 1] = mean 0.0445, peak 0.1349, first [0.0, 0.04315579, 0.0, 0.13490403]

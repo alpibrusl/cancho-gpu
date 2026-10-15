@@ -1,0 +1,24 @@
+row 0 pick 19 nucleus 20: 0=nan 1=nan 2=nan 3=nan 4=nan 5=nan 6=nan 7=nan 8=nan 9=nan 10=nan 11=nan 12=nan 13=nan 14=nan 15=nan 16=nan 17=nan 18=nan 19=nan
+row 1 pick 31 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 2 pick 13 nucleus 20: 3=nan 27=nan 31=nan 15=nan 39=nan 34=nan 17=nan 35=nan 23=nan 29=nan 4=nan 12=nan 37=nan 11=nan 18=nan 32=nan 22=nan 21=nan 5=nan 13=nan
+row 3 pick 21 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 4 pick 29 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 5 pick 19 nucleus 20: 0=nan 1=nan 2=nan 3=nan 4=nan 5=nan 6=nan 7=nan 8=nan 9=nan 10=nan 11=nan 12=nan 13=nan 14=nan 15=nan 16=nan 17=nan 18=nan 19=nan
+row 6 pick 5 nucleus 20: 7=nan 3=nan 27=nan 31=nan 15=nan 39=nan 34=nan 17=nan 35=nan 23=nan 29=nan 4=nan 12=nan 37=nan 11=nan 18=nan 32=nan 22=nan 21=nan 5=nan
+row 7 pick 13 nucleus 20: 7=nan 27=nan 31=nan 15=nan 39=nan 34=nan 17=nan 35=nan 23=nan 29=nan 4=nan 12=nan 37=nan 11=nan 18=nan 32=nan 22=nan 21=nan 5=nan 13=nan
+row 8 pick 5 nucleus 20: 7=nan 3=nan 27=nan 31=nan 15=nan 39=nan 34=nan 17=nan 35=nan 23=nan 29=nan 4=nan 12=nan 37=nan 11=nan 18=nan 32=nan 22=nan 21=nan 5=nan
+row 9 pick 31 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 10 pick 19 nucleus 20: 0=nan 1=nan 2=nan 3=nan 4=nan 5=nan 6=nan 7=nan 8=nan 9=nan 10=nan 11=nan 12=nan 13=nan 14=nan 15=nan 16=nan 17=nan 18=nan 19=nan
+row 11 pick 35 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 12 pick 23 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 13 pick 18 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 14 pick 3 nucleus 1: 3=3f800000
+row 15 pick 19 nucleus 20: 0=nan 1=nan 2=nan 3=nan 4=nan 5=nan 6=nan 7=nan 8=nan 9=nan 10=nan 11=nan 12=nan 13=nan 14=nan 15=nan 16=nan 17=nan 18=nan 19=nan
+row 16 pick 13 nucleus 20: 3=nan 27=nan 31=nan 15=nan 39=nan 34=nan 17=nan 35=nan 23=nan 29=nan 4=nan 12=nan 37=nan 11=nan 18=nan 32=nan 22=nan 21=nan 5=nan 13=nan
+row 17 pick 18 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 18 pick 5 nucleus 20: 3=nan 7=nan 27=nan 31=nan 15=nan 39=nan 34=nan 17=nan 35=nan 23=nan 29=nan 4=nan 12=nan 37=nan 11=nan 18=nan 32=nan 22=nan 21=nan 5=nan
+row 19 pick 7 nucleus 1: 7=3f800000
+row 20 pick 19 nucleus 20: 0=nan 1=nan 2=nan 3=nan 4=nan 5=nan 6=nan 7=nan 8=nan 9=nan 10=nan 11=nan 12=nan 13=nan 14=nan 15=nan 16=nan 17=nan 18=nan 19=nan
+row 21 pick 27 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af
+row 22 pick 3 nucleus 1: 3=3f800000
+row 23 pick 11 nucleus 18: 27=3e1cbb49 31=3dcd1e36 15=3d9c2e99 39=3d8de44f 34=3d8453ea 17=3d7ecb0a 35=3d78e7a4 23=3d6d325f 29=3d301900 4=3d2681f3 12=3d22d0c6 37=3d1dfa81 11=3d1b8dd5 18=3d111116 32=3d04944d 22=3d009e22 21=3cf290c3 5=3cdd47af

@@ -1,0 +1,15 @@
+row 0 pick 1806 nucleus 1: 1806=3f800000
+row 1 pick 1033 nucleus 1: 1033=3f800000
+row 2 pick 796 nucleus 1: 796=3f800000
+row 3 pick 624 nucleus 1: 624=3f800000
+row 4 pick 884 nucleus 1: 884=3f800000
+row 5 pick 1122 nucleus 1: 1122=3f800000
+row 6 pick 453 nucleus 1: 453=3f800000
+row 7 pick 59 nucleus 1: 59=3f800000
+row 8 pick 8 nucleus 1: 8=3f800000
+row 9 pick 1372 nucleus 1: 1372=3f800000
+row 10 pick 1965 nucleus 1: 1965=3f800000
+row 11 pick 1590 nucleus 1: 1590=3f800000
+row 12 pick 1634 nucleus 1: 1634=3f800000
+row 13 pick 1981 nucleus 1: 1981=3f800000
+row 14 pick 326 nucleus 1: 326=3f800000

@@ -1,0 +1,15 @@
+row 0 pick 1806 nucleus 2: 1806=3f04ded9 1857=3ef6424e
+row 1 pick 1033 nucleus 2: 1033=3f03db42 363=3ef8497c
+row 2 pick 796 nucleus 2: 796=3f01a811 165=3efcafde
+row 3 pick 1930 nucleus 2: 624=3f038ab1 1930=3ef8ea9e
+row 4 pick 1855 nucleus 2: 884=3f0a223f 1855=3eebbb84
+row 5 pick 1655 nucleus 2: 1122=3f069b92 1655=3ef2c8dd
+row 6 pick 453 nucleus 2: 453=3f00c1a1 1348=3efe7cbf
+row 7 pick 1957 nucleus 2: 59=3f00d006 1957=3efe5ff3
+row 8 pick 1097 nucleus 2: 8=3f049b52 1097=3ef6c95b
+row 9 pick 1372 nucleus 2: 1372=3f07415e 1188=3ef17d44
+row 10 pick 1965 nucleus 2: 1965=3f01c94c 815=3efc6d68
+row 11 pick 1590 nucleus 2: 1590=3f009faf 98=3efec0a3
+row 12 pick 768 nucleus 2: 1634=3f00a05d 768=3efebf46
+row 13 pick 1981 nucleus 2: 1981=3f00c022 709=3efe7fbe
+row 14 pick 1118 nucleus 2: 326=3f04bb2b 1118=3ef689ab
