@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cancho-gpu</title>
+<title>cancho-gpu: GPU kernels that say what they can do</title>
 <meta name="description" content="A tile-kernel compiler written in cancho: CUDA C and Metal output checked byte-for-byte against an independent implementation, a CPU interpreter, a GPU device path, and an authority report that says it never touches the network or foreign code.">
 <meta property="og:title" content="cancho-gpu: a GPU kernel compiler that says what it can do">
 <meta property="og:description" content="Typed tile programs to CUDA C and Metal, checked byte-for-byte against an independent implementation, from a compiler that links only libc.">
@@ -117,6 +117,42 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
 
 .hero-logo { display: block; width: min(100%, 21rem); height: auto; margin: 0 auto; border-radius: 16px; }
 .brand img { height: 1.7rem; width: 1.7rem; vertical-align: middle; margin-right: .5rem; border-radius: 6px; }
+
+/* the landing layout shared with cancho-code's page: a centred hero over a recording, cards, a flow, an explorer */
+.hero2 { padding: 3.6rem 0 1.6rem; text-align: center; }
+.hero2 h1 { margin: 0 auto 1rem; max-width: 20ch; }
+.hero2 .lead { margin: 0 auto; max-width: 38rem; }
+.hero2 .cta { justify-content: center; }
+figure.video { margin: 1.6rem auto 0; max-width: 60rem; }
+figure.video .frame { background: #0d1117; border: 1px solid #262c36; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 50px -24px rgba(20, 30, 70, .55); }
+figure.video video { display: block; width: 100%; height: auto; background: #0d1117; }
+figure.video figcaption, .caption { color: var(--muted); font-size: .88rem; margin: .8rem auto 0; max-width: 52rem; text-align: center; }
+details.transcript { max-width: 52rem; margin: .8rem auto 0; color: var(--muted); font-size: .9rem; }
+details.transcript summary { cursor: pointer; text-align: center; }
+details.transcript pre { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: .9rem 1rem; overflow-x: auto; font: .8rem/1.5 var(--mono); color: var(--fg); }
+.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 2rem; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1.2rem; }
+.card p { color: var(--muted); font-size: .94rem; margin: 0; }
+.center { text-align: center; } .center .sub { margin-left: auto; margin-right: auto; }
+.flow { max-width: 56rem; margin: 2rem auto 0; }
+.flow svg { width: 100%; height: auto; display: block; }
+.flow text { fill: var(--fg); font: 600 14px var(--font); } .flow .sm { font: 12.5px var(--font); fill: var(--muted); font-weight: 400; }
+.flow .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; } .flow .hot { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+.flow .ok { fill: var(--surface); stroke: var(--good); stroke-width: 2; } .flow .no { fill: var(--surface); stroke: var(--bad); stroke-width: 2; }
+.flow .ar { stroke: var(--muted); stroke-width: 1.7; fill: none; marker-end: url(#ah); } .flow .ar.bad { stroke: var(--bad); stroke-dasharray: 5 4; }
+.explorer { max-width: 56rem; margin: 2rem auto 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.explorer .tabs { display: flex; gap: .4rem; padding: .5rem; border-bottom: 1px solid var(--line); background: var(--soft); flex-wrap: wrap; }
+.explorer .tabs button { font: 600 .85rem var(--font); padding: .4rem .8rem; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.explorer .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.explorer pre { margin: 0; padding: 1rem 1.1rem; overflow-x: auto; font: .82rem/1.55 var(--mono); min-height: 15rem; }
+.explorer pre[hidden] { display: none; }
+.explorer .about { padding: .6rem 1.1rem .9rem; color: var(--muted); font-size: .9rem; border-top: 1px solid var(--line); }
+.bars { max-width: 44rem; margin: 2rem auto 0; display: grid; gap: .7rem; }
+.bar { display: grid; grid-template-columns: 8.5rem 1fr 5rem; gap: .8rem; align-items: center; font-size: .93rem; }
+.bar .track { height: 1.3rem; background: var(--soft); border-radius: 6px; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--line); } .bar.us .fill { background: var(--accent); }
+.bar b { text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 36rem) { .bar { grid-template-columns: 6rem 1fr 4.2rem; } }
 </style>
 </head>
 <body>
@@ -124,40 +160,266 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
 <header class="top"><div class="wrap">
   <a class="brand" href="#top"><img src="assets/cancho-gpu-logo-256.png" alt="">cancho-gpu</a>
   <nav aria-label="Sections">
-    <a href="#why" class="opt">Why</a><a href="#proof" class="opt">Evidence</a><a href="#fit" class="opt">Where it fits</a><a href="#start">Try it</a>
+    <a href="#how" class="opt">How it works</a><a href="#kernel" class="opt">A kernel</a><a href="#model" class="opt">The model</a><a href="#proof" class="opt">Evidence</a><a href="#fit" class="opt">Where it fits</a><a href="#start">Try it</a>
     <a href="https://github.com/alpibrusl/cancho-gpu">GitHub</a>
   </nav>
 </div></header>
 
 <main id="main" class="wrap">
 
-<div class="hero" id="top">
-  <div>
-    <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model on a Metal GPU</a>
-    <h1>A GPU kernel compiler that says what it can do.</h1>
-    <p class="lead">A compiler for typed tile kernels (the <code>.chx</code> language), written in cancho. It checks a program and lowers it to <b>CUDA C</b> and <b>Metal</b>, byte-for-byte what an independent Rust implementation of the language writes. It links nothing but libc, and its authority report, checked in CI, names the files it may touch and no network and no foreign code.</p>
-    <div class="cta"><a class="btn primary" href="#start">Try it</a><a class="btn ghost" href="#proof">See the evidence</a></div>
-  </div>
-  <div class="term" role="img" aria-label="Emitting a kernel and the authority report"><div class="bar"><i></i><i></i><i></i></div>
-<pre><span class="c">$</span> cancho-gpu emit gemm_fp4.chx out m=128 n=128 k=64
-<span class="g">out/gemm_fp4_128_128_64_128_128_64.cu</span>: 256 threads,
-  grid 1x1, 36864 B of tiles
-<span class="g">out/gemm_fp4_128_128_64_64_128_32.metal</span>: 256 threads,
-  grid 2x1, 12288 B of tiles
-
-<span class="c">$</span> cancho authority --std src/*.cho
-<span class="b">performs:</span> args, err_write, fs_read(""), fs_write(""),
-  heap, io_write
-<span class="g">never touches:</span> the network, signals, other programs,
-  foreign code</pre>
-  </div>
+<div class="hero2" id="top">
+  <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model on a Metal GPU</a>
+  <h1>GPU kernels that say what they can do.</h1>
+  <p class="lead">Write a tile kernel once. The compiler checks it, refuses what is wrong and names the rule, and writes <b>CUDA C</b> and <b>Metal</b>. The same kernels run Qwen3.8&#8209;27B on a Mac's GPU.</p>
+  <div class="cta"><a class="btn primary" href="#start">Try it</a><a class="btn ghost" href="#proof">See the evidence</a></div>
 </div>
 
-<div class="three">
-  <div><h3>The same bytes as the Rust</h3><p>CUDA C and Metal for 182 emitting cases, identical to the reference implementation's; 26 more refused by both, each with a named rule.</p></div>
-  <div><h3>Checked before it is lowered</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal says which rule.</p></div>
-  <div><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code, the device driver, says so.</p></div>
+<figure class="video">
+  <div class="frame"><video controls preload="metadata" playsinline poster="demo-poster.png" aria-label="A recorded terminal session: a kernel is compiled to Metal, a wrong kernel is refused, and a 27B model generates text on the GPU">
+    <source src="demo.mp4" type="video/mp4"><source src="demo.webm" type="video/webm">
+    Your browser cannot play the video; the transcript below has the same session.
+  </video></div>
+  <figcaption>A real session, recorded: the commands run for real, only the typing is simulated. Kernel compiled and a wrong one refused, then Qwen3.8-27B (NVFP4, weights from Ollama's store) generating 64 tokens, greedy, no chat template, on an Apple M4 Max.</figcaption>
+  <details class="transcript"><summary>Transcript</summary><pre id="transcript"># cancho-gpu: typed tile kernels, one source for CUDA C and Metal
+
+$ cat swiglu.chx
+// a = silu(g) * u over a row of n: the gated activation of a SwiGLU MLP.
+algo swiglu(n)
+  in  g: f32[1, n]
+  in  u: f32[1, n]
+  out y: f32[1, n]
+{
+  let gt = load g
+  let ut = load u
+  let sg = sigmoid &amp;gt
+  let a  = gt * sg
+  store a * ut -&gt; y
+}
+
+schedule swiglu for apple-m-series { threads 256 }
+schedule swiglu for nvidia-ada     { threads 256 }
+
+$ cancho-gpu emit swiglu.chx out n=17408
+swiglu_17408.cu: 256 threads, grid 1x1, 0 B of tiles
+swiglu_17408.metal: 256 threads, grid 1x1, 0 B of tiles
+
+# what it writes for Apple GPUs (the CUDA C is written next to it)
+$ sed -n '/kernel void/,/^}/p' out/swiglu_17408.metal | head -22
+kernel void swiglu_17408(
+    device const float* p0_g [[buffer(0)]],
+    device const float* p1_u [[buffer(1)]],
+    device float* p2_y [[buffer(2)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint3 tgpos [[threadgroup_position_in_grid]])
+{
+    const uint gid = tgpos.x;
+    float v2[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v2[k] = float(1.0f / (1.0f + precise::exp(-float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])))));
+        }
+    }
+    float v3[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v3[k] = float(float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])) * float(v2[k]));
+        }
+    }
+
+# a wrong program is refused, with the rule it broke
+$ cat leak.chx
+algo k(n)
+  in  x: f32[1, n]
+  in  w: f32[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  let b = load w
+  store sigmoid a -&gt; y
+}
+schedule k for nvidia-ada { threads 32 }
+
+$ cancho-gpu check leak.chx n=8
+error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op
+
+# and the kernels run a 27B model on this Mac's GPU
+$ cancho-gpu-run35 ~/.ollama/models kernels "Q: Why is the sky blue?\nA:" 64 --stream --timing
+
+The sky appears blue due to a phenomenon called **Rayleigh scattering**.
+
+When sunlight enters the Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). Sunlight is composed of all colors of the visible spectrum, which have different wavelengths. Shorter wavelengths (like blue and violet) scatter
+timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms=2808</pre></details>
+</figure>
+
+<div class="cards">
+  <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
+  <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, byte-for-byte what the independent Rust implementation writes: 182 emitting cases, 26 refused by both.</p></div>
+  <div class="card"><h3>Held to an oracle</h3><p>Goldens come from the Rust, never from this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
+  <div class="card"><h3>Runs a real model</h3><p>Qwen3.8-27B decodes at 24 tokens a second on a Metal GPU, with the same tokens and top five as a reference's log-probabilities.</p></div>
+  <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, speed on the 27B is about half of Ollama's, and attention stops at 1364 positions. Each is in the status section, with its issue.</p></div>
+  <div class="card"><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code says so.</p></div>
 </div>
+
+<section id="how">
+  <div class="center"><h2>How it works.</h2>
+  <p class="sub">A kernel is checked before it is lowered; a refusal never reaches a GPU. The interpreter is the reference for what a kernel computes.</p></div>
+  <div class="flow">
+  <svg viewBox="0 0 780 330" role="img" aria-label="Flow: a .chx kernel is checked; a refusal names its rule; a pass is lowered to CUDA C and Metal; the device path compiles and runs it; the CPU interpreter checks the result; a model runner uses the kernels for every layer.">
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs>
+    <rect class="box" x="8" y="26" width="132" height="62" rx="10"/><text x="74" y="52" text-anchor="middle">.chx kernel</text><text class="sm" x="74" y="72" text-anchor="middle">typed tiles</text>
+    <rect class="hot" x="190" y="26" width="170" height="62" rx="10"/><text x="275" y="52" text-anchor="middle">Check</text><text class="sm" x="275" y="72" text-anchor="middle">bounds · shapes · budget</text>
+    <path class="ar" d="M140 57H188"/>
+    <rect class="hot" x="410" y="26" width="120" height="62" rx="10"/><text x="470" y="52" text-anchor="middle">Lower</text><text class="sm" x="470" y="72" text-anchor="middle">per target</text>
+    <path class="ar" d="M360 57H408"/>
+    <rect class="ok" x="580" y="8" width="192" height="46" rx="10"/><text x="676" y="36" text-anchor="middle">CUDA C</text>
+    <rect class="ok" x="580" y="64" width="192" height="46" rx="10"/><text x="676" y="92" text-anchor="middle">Metal</text>
+    <path class="ar" d="M530 45L578 31"/><path class="ar" d="M530 70L578 87"/>
+    <rect class="no" x="190" y="140" width="170" height="54" rx="10"/><text x="275" y="164" text-anchor="middle">Refused</text><text class="sm" x="275" y="182" text-anchor="middle">the rule it broke, by name</text>
+    <path class="ar bad" d="M275 88V138"/>
+    <rect class="box" x="400" y="140" width="170" height="54" rx="10"/><text x="485" y="164" text-anchor="middle">Interpreter (CPU)</text><text class="sm" x="485" y="182" text-anchor="middle">the GPU is compared with it</text>
+    <path class="ar" d="M470 88V138"/>
+    <rect class="hot" x="580" y="150" width="192" height="62" rx="10"/><text x="676" y="176" text-anchor="middle">Device path</text><text class="sm" x="676" y="196" text-anchor="middle">compiles and runs it</text>
+    <path class="ar" d="M676 110V148"/>
+    <rect class="box" x="8" y="246" width="250" height="64" rx="10"/><text x="133" y="272" text-anchor="middle">Weights and text</text><text class="sm" x="133" y="292" text-anchor="middle">GGUF · safetensors · BPE · sampler</text>
+    <rect class="hot" x="300" y="246" width="250" height="64" rx="10"/><text x="425" y="272" text-anchor="middle">Model runner</text><text class="sm" x="425" y="292" text-anchor="middle">every layer is a compiled kernel</text>
+    <path class="ar" d="M258 278H298"/>
+    <path class="ar" d="M550 278H620Q676 278 676 214"/>
+  </svg>
+  </div>
+</section>
+
+<section id="kernel">
+  <div class="center"><h2>Look at one kernel.</h2>
+  <p class="sub">The real source of <code>swiglu.chx</code>, what the compiler writes for each target, and what it says to a program that breaks a rule.</p></div>
+  <div class="explorer">
+    <div class="tabs" role="tablist" aria-label="Kernel views">
+      <button type="button" role="tab" aria-selected="true" data-p="k0">Source (.chx)</button>
+      <button type="button" role="tab" aria-selected="false" data-p="k1">Metal</button>
+      <button type="button" role="tab" aria-selected="false" data-p="k2">CUDA C</button>
+      <button type="button" role="tab" aria-selected="false" data-p="k3">A refusal</button>
+    </div>
+    <pre id="k0" tabindex="0">// a = silu(g) * u over a row of n: the gated activation of a SwiGLU MLP.
+algo swiglu(n)
+  in  g: f32[1, n]
+  in  u: f32[1, n]
+  out y: f32[1, n]
+{
+  let gt = load g
+  let ut = load u
+  let sg = sigmoid &amp;gt
+  let a  = gt * sg
+  store a * ut -&gt; y
+}
+
+schedule swiglu for apple-m-series { threads 256 }
+schedule swiglu for nvidia-ada     { threads 256 }</pre>
+    <pre id="k1" tabindex="0" hidden>kernel void swiglu_17408(
+    device const float* p0_g [[buffer(0)]],
+    device const float* p1_u [[buffer(1)]],
+    device float* p2_y [[buffer(2)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint3 tgpos [[threadgroup_position_in_grid]])
+{
+    const uint gid = tgpos.x;
+    float v2[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v2[k] = float(1.0f / (1.0f + precise::exp(-float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])))));
+        }
+    }
+    float v3[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v3[k] = float(float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])) * float(v2[k]));
+        }
+    }
+    float v4[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v4[k] = float(float(v3[k]) * float(float(p1_u[(uint)(0) * 17408u + (uint)(0) * 1u + ((e / 1u))])));
+        }
+    }
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            p2_y[(uint)(0) * 17408u + (uint)(0) * 1u + (e)] = float(float(v4[k]));
+        }
+    }
+}</pre>
+    <pre id="k2" tabindex="0" hidden>extern "C" __global__ void swiglu_17408(
+    const float* __restrict__ p0_g,
+    const float* __restrict__ p1_u,
+    float* __restrict__ p2_y
+)
+{
+    const uint tid = threadIdx.x;
+    const uint gid = blockIdx.x;
+    float v2[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v2[k] = float(1.0f / (1.0f + expf(-float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])))));
+        }
+    }
+    float v3[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v3[k] = float(float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])) * float(v2[k]));
+        }
+    }
+    float v4[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v4[k] = float(float(v3[k]) * float(float(p1_u[(uint)(0) * 17408u + (uint)(0) * 1u + ((e / 1u))])));
+        }
+    }
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            p2_y[(uint)(0) * 17408u + (uint)(0) * 1u + (e)] = float(float(v4[k]));
+        }
+    }
+}</pre>
+    <pre id="k3" tabindex="0" hidden>$ cancho-gpu check leak.chx n=8
+error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op
+
+algo k(n)
+  in  x: f32[1, n]
+  in  w: f32[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  let b = load w
+  store sigmoid a -&gt; y
+}
+schedule k for nvidia-ada { threads 32 }</pre>
+    <div class="about" id="kabout">Fifteen lines. Every tile is a value that must be consumed once; the schedule says how many threads a threadgroup has.</div>
+  </div>
+  <p class="caption">The Metal and CUDA text is the compiler's actual output for <code>n=17408</code> (<code>cancho-gpu emit tests/chx/swiglu.chx out n=17408</code>), the kernel function only; the refusal is <code>tests/reject/leak.chx</code>.</p>
+</section>
+
+<section id="model">
+  <div class="center"><h2>A real model on the same kernels.</h2>
+  <p class="sub">Qwen3.8-27B (NVFP4, 48 gated-delta layers) reads Ollama's store and runs on a Metal GPU. It is not the fastest way to run this model, and the page says so.</p></div>
+  <div class="bars" role="img" aria-label="Decode speed on the same machine: Ollama 42.1 tokens a second, MLX-LM 27.6, cancho-gpu 24.2">
+    <div class="bar"><span>Ollama</span><div class="track"><div class="fill" style="width:100%"></div></div><b>42.1</b></div>
+    <div class="bar"><span>MLX-LM</span><div class="track"><div class="fill" style="width:65.6%"></div></div><b>27.6</b></div>
+    <div class="bar us"><span>cancho-gpu</span><div class="track"><div class="fill" style="width:57.5%"></div></div><b>24.2</b></div>
+  </div>
+  <p class="caption">Decode speed, tokens a second, greedy, 128 tokens, five runs each, one machine (Apple M4 Max, 64 GB), one invocation (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">docs/benchmark.md</a>). Ollama decodes this model with speculative decoding from the model's own draft head, about two tokens a pass; cancho-gpu does not yet (<a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>). MLX-LM uses a different 4-bit quantisation. Prompt processing takes eight tokens at a time: a 49-token prompt in 0.65 s, against 2.2 s a token at a time (one run each).</p>
+  <div class="cards">
+    <div class="card"><h3>Correct, not just fast</h3><p>Three prompts, eight steps each: the same token and top five as the reference's golden log-probabilities, logit gaps within 1e-4.</p></div>
+    <div class="card"><h3>Small first</h3><p>Qwen2.5-0.5B gives the same greedy tokens as Hugging Face transformers in float32, every top-5 logit within 1e-4, at about 6 ms a token.</p></div>
+    <div class="card"><h3>Measured, with the misses</h3><p>An experiment that looked like a win and was a bug, and one that did not move the pipeline at all, are in <a href="https://github.com/alpibrusl/cancho-gpu/issues/24">#24</a> and <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>.</p></div>
+  </div>
+</section>
 
 <section id="why">
   <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a granite outcrop with circuit traces on a blue disc" width="512" height="512" style="margin-bottom:2rem">
@@ -232,5 +494,28 @@ build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
   <a href="https://github.com/alpibrusl/cancho">cancho</a>
   <a href="llms.txt">llms.txt</a>
 </div></footer>
+
+<script>
+(function () {
+  var about = {
+    k0: "Fifteen lines. Every tile is a value that must be consumed once; the schedule says how many threads a threadgroup has.",
+    k1: "What the compiler writes for Apple GPUs: one thread owns elements of the row, nothing is staged in threadgroup memory.",
+    k2: "The same kernel for NVIDIA GPUs (checked against a mock driver here; no machine in this project has an NVIDIA GPU).",
+    k3: "A program that loads a tile it never uses. The refusal names the rule (leak) and the tile; nothing is lowered."
+  };
+  var tabs = document.querySelectorAll(".explorer .tabs button");
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].addEventListener("click", function () {
+      var id = this.getAttribute("data-p");
+      for (var j = 0; j < tabs.length; j++) {
+        var on = tabs[j] === this;
+        tabs[j].setAttribute("aria-selected", on ? "true" : "false");
+        document.getElementById(tabs[j].getAttribute("data-p")).hidden = !on;
+      }
+      document.getElementById("kabout").textContent = about[id];
+    });
+  }
+})();
+</script>
 </body>
 </html>

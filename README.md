@@ -6,6 +6,8 @@
 
 **A GPU kernel compiler that says what it can do.** A compiler for typed tile kernels (the `.chx` language), written in [cancho](https://github.com/alpibrusl/cancho): it checks a program (every tile consumed exactly once, bounds, shapes, the threadgroup budget) and lowers it to **CUDA C** and **Metal**, byte-for-byte what an independent Rust implementation of the same language writes (see [History](#history)). It links nothing but libc, and `cancho authority`, checked in CI, names what it may do: read and write files, print, allocate; never the network, never foreign code. The [project page](https://alpibrusl.github.io/cancho-gpu/) has the summary.
 
+**Demo:** a recorded terminal session (a kernel compiled to Metal, a wrong one refused, Qwen3.8-27B generating on the GPU) is on [the project page](https://alpibrusl.github.io/cancho-gpu/) and in [`docs/demo.mp4`](docs/demo.mp4); `scripts/make-demo.sh` records it again.
+
 **Status: it runs language models on a Metal GPU, Qwen2.5-0.5B (agreeing with Hugging Face transformers) and Qwen3.8-27B (agreeing with a reference implementation's golden log-probabilities, about 24 tokens a second); the compiler, the device path, the model-reading core and the decode kernels are built; speed, long contexts, serving and AMD are open.** CUDA has been run only against a mock driver (no machine here has an NVIDIA GPU); Metal has run on Apple Silicon. Slice 9a is complete: GGUF and safetensors headers, a BPE tokenizer and a sampler, each held to an oracle on fixtures and real files. Slice 9b has rope, kv_append, attention and an output gate in `.chx`; attention over more than 1364 cached positions (split-KV) cannot be written in the surface yet (below).
 
 ## What you get
