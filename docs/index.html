@@ -154,7 +154,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
 </div>
 
 <div class="three">
-  <div><h3>The same bytes as the Rust</h3><p>CUDA C and Metal for 116 emitting cases, identical to lex-gpu's emitter; 24 more refused by both, each with a named rule.</p></div>
+  <div><h3>The same bytes as the Rust</h3><p>CUDA C and Metal for 133 emitting cases, identical to lex-gpu's emitter; 26 more refused by both, each with a named rule.</p></div>
   <div><h3>Checked before it is lowered</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal says which rule.</p></div>
   <div><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code, the device driver, says so.</p></div>
 </div>
@@ -168,7 +168,7 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
       <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
       <tr><th>How do I know the output is right?</th><td>The Rust emitter is the oracle: goldens are recorded from it, never from this compiler, and a live differential runs the same cases against a build of it. A CPU interpreter checks what a kernel computes, and a device program compares the GPU against it.</td></tr>
       <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
-      <tr><th>Is it an inference runtime?</th><td>Not yet. It reads a GGUF header today (and refuses hostile bytes with a rule tag); the tokenizer, the sampler and the serving layer are open issues.</td></tr>
+      <tr><th>Is it an inference runtime?</th><td>Not yet. It reads GGUF and safetensors headers, tokenizes, samples, and has the decode kernels of an attention layer; no tensor values are read and there is no decode loop, so no model runs. Serving is an open issue.</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -177,12 +177,12 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
   <h2>Every claim has a measurement, or says it has none.</h2>
   <p class="sub">The oracle is external, so "it works" is a comparison, not an opinion. Where a claim turned out false, the design document was corrected in place.</p>
   <div class="stats">
-    <div><b>140</b><span>cases byte-identical with lex-gpu's Rust emitter: 116 emit, 24 refused by both</span></div>
-    <div><b>14</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
-    <div><b>2,696</b><span>hostile GGUF files, none traps or hangs the reader; 17 more refused with their rule</span></div>
-    <div><b>0</b><span>differences from lex-rt's GGUF dump on three fixtures and on five real models (llama3.2, qwen3, qwen3.5, ministral-3)</span></div>
+    <div><b>159</b><span>cases byte-identical with lex-gpu's Rust emitter: 133 emit, 26 refused by both</span></div>
+    <div><b>24</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
+    <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
+    <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
   </div>
-  <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where the GGUF reader is stricter than lex-rt.</p>
+  <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where each reader differs from its oracle, and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">the kernels document</a> the context limit.</p>
 </section>
 
 <section id="fit">
@@ -195,7 +195,8 @@ table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us
     </ul></div>
     <div class="no"><h3>Not yet</h3><ul>
       <li>CUDA on real hardware, Hopper, AMD</li>
-      <li>Tokenizer, sampler, serving, model adapters</li>
+      <li>Serving, model adapters, a decode loop</li>
+      <li>Attention over more than 1364 positions (it needs a change to the language)</li>
       <li>Speed: reach and agreement are measured, timing is not</li>
     </ul></div>
   </div>
@@ -218,9 +219,9 @@ build/cancho-gpu emit tests/lx/lex-gpu/gemm_fp4.lx out m=128 n=128 k=64</pre>
 <section class="status" id="status">
   <h2>Status: alpha</h2>
   <ul>
-    <li>Built: the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF header reader.</li>
-    <li>Open: the safetensors reader, BPE tokenizer and sampler (<a href="https://github.com/alpibrusl/cancho-gpu/issues/5">#5</a>), serving (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>).</li>
-    <li>Unproven: CUDA on a real GPU; reading tensor values (the GGUF reader reads headers only).</li>
+    <li>Built: the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, and rope, kv_append, attention and gate kernels.</li>
+    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), serving (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>).</li>
+    <li>Unproven: CUDA on a real GPU; reading tensor values (the readers read headers only); the kernels' speed.</li>
   </ul>
 </section>
 

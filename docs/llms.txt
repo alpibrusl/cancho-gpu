@@ -1,19 +1,21 @@
 # cancho-gpu
 
-> lex-gpu's .lx tile-kernel compiler, written in cancho: it checks a typed tile program (linearity, bounds, shapes, the threadgroup budget) and lowers it to CUDA C and Metal, byte-identical with lex-gpu's Rust emitter on 140 cases (116 emit, 24 refused by both). It links only libc; its authority report names what it may do (args, stderr, file read and write, heap, stdout) and no network or foreign code. Alpha: the compiler and device path are built; the inference runtime is under way.
+> lex-gpu's .lx tile-kernel compiler, written in cancho: it checks a typed tile program (linearity, bounds, shapes, the threadgroup budget) and lowers it to CUDA C and Metal, byte-identical with lex-gpu's Rust emitter on 159 cases (133 emit, 26 refused by both). It links only libc; its authority report names what it may do (args, stderr, file read and write, heap, stdout) and no network or foreign code. Alpha: the compiler, device path, model-reading core (GGUF, safetensors, BPE tokenizer, sampler) and the decode kernels of an attention layer are built; no tensor values are read and no model is run.
 
 ## Use it
 - [Quick start](https://github.com/alpibrusl/cancho-gpu#quick-start): build the compiler at the pinned revision, emit a kernel.
-- Commands: `cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]`, `cancho-gpu check <file.lx> [name=value ...] [--run]`, `cancho-gpu gguf <file.gguf> [--sum]`. A refusal is `error[<rule>]: <message>` on stderr, exit 1; a usage mistake is exit 2.
+- Commands: `cancho-gpu emit <file.lx> <dir> [name=value ...] [--run]`, `cancho-gpu check <file.lx> [name=value ...] [--run]`, `cancho-gpu gguf <file.gguf> [--sum]`, `cancho-gpu safetensors <file>`, `cancho-gpu tokenize <tokenizer.json|model.gguf> <corpus>`, `cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>`. A refusal is `error[<rule>]: <message>` on stderr, exit 1; a usage mistake is exit 2.
 
 ## Facts that matter when calling it
 - Targets: nvidia-ada (CUDA C) and apple-m-series (Metal), each from the file's schedule. amd-cdna3 is a schedule row with no emitter.
 - Device paths: Metal has run on Apple Silicon (reach and numerical agreement, not speed). CUDA is verified against a mock driver only; no real NVIDIA GPU run yet.
 - `gguf` reads the first 32 MiB of a file: metadata and tensor directory, never tensor values. It refuses hostile input with a rule tag (gguf-truncated, gguf-version, gguf-duplicate, ...).
-- Not implemented: tokenizer, sampler, serving layer, model adapters, AMD, Hopper.
+- Kernels: rope, kv_append, attention (head dimension 256; at most 1364 positions on Metal) and attn_gate in tests/lx/. Split-KV attention for longer contexts cannot be written in the surface yet.
+- Not implemented: tensor value reading, a decode loop, serving, model adapters, AMD, Hopper.
 
 ## Optional
 - [Design](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md): how the compiler is built and every difference from the Rust.
 - [Device](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md): driving a GPU, and what stays unproven.
-- [Runtime](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md): the GGUF reader and the rest of slice 9a.
+- [Runtime](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md): the GGUF and safetensors readers, the tokenizer and the sampler.
+- [Kernels](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md): the attention-layer decode kernels and the context limit.
 - [Issues](https://github.com/alpibrusl/cancho-gpu/issues): the open slices.
