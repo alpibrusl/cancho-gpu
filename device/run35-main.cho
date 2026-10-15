@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-run35` -- run Qwen3.8-27B (`qwen3.8:27b-mlx`, NVFP4) on a Metal GPU
 // (`docs/qwen35.md`).
 //
-//     cancho-gpu-run35 <ollama store> <kernel dir> "<prompt>" <new tokens> [--trace] [--timing]
+//     cancho-gpu-run35 <ollama store> <kernel dir> "<prompt>" <new tokens> [--trace] [--timing] [--single]
 //
 // The store is Ollama's (`~/.ollama/models`): a manifest of digests and one
 // safetensors blob a tensor. The dimensions are the model's own and written here
@@ -43,7 +43,7 @@ fn bytes_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-run35 <ollama store> <kernel dir> \"<prompt>\" <new tokens> [--trace] [--timing]\n");
+    io.error_all(io, "usage: cancho-gpu-run35 <ollama store> <kernel dir> \"<prompt>\" <new tokens> [--trace] [--timing] [--single]\n");
     return 2;
 }
 
@@ -68,6 +68,11 @@ fn vocab() -> [] int {
 }
 
 // The context the caches and the mask hold.
+// Tokens a prefill chunk takes at once (the batch kernels are compiled for this many rows).
+fn mb() -> [] int {
+    return 8;
+}
+
 fn tmax() -> [] int {
     return 256;
 }
@@ -615,6 +620,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     }
     var trace = false;
     var timing = false;
+    var batched = true;
     var ai = 5;
     while ai < arg_count(args) {
         let flag = text.from_bytes(m, t, arg(args, ai));
@@ -622,6 +628,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             trace = true;
         } else if text.is(t, flag, "--timing") {
             timing = true;
+        } else if text.is(t, flag, "--single") {
+            batched = false;
         }
         ai = ai + 1;
     }
@@ -679,6 +687,21 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let k_ropeq = compile_kernel(m, t, ffi, fs, kdir, "rope.chx", cv(m, t, c2(m, t, "r", 24, "h", 32), "p", 192.0));
     let k_ropek = compile_kernel(m, t, ffi, fs, kdir, "rope.chx", cv(m, t, c2(m, t, "r", 4, "h", 32), "p", 192.0));
     let k_kvw = compile_kernel(m, t, ffi, fs, kdir, "kv_row.chx", cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0));
+    // The batch kernels: the same products for `mb()` tokens at once, and the row-stacked forms of the
+    // per-row ones (a row is a head, so the heads of all the tokens are just more rows).
+    let nb = float_of(mb());
+    let k_qkvb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nb));
+    let k_zb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nb));
+    let k_qgb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nb));
+    let k_kvb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nb));
+    let k_outb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nb));
+    let k_downb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nb));
+    let k_gateupb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_batch.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nb));
+    let k_rmsb = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", mb(), "n", h), "eps", f32.round(0.000001)));
+    let k_qnormb = compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", cv(m, t, c2(m, t, "r", 24 * mb(), "n", 256), "eps", f32.round(0.000001)));
+    let k_knormb = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", 4 * mb(), "n", 256), "eps", f32.round(0.000001)));
+    let k_attn_gateb = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24 * mb(), "n", 256));
+    let k_gnormb = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", cv(m, t, c2(m, t, "h", 48 * mb(), "n", 128), "eps", f32.round(0.000001)));
     let k_attn = compile_kernel(m, t, ffi, fs, kdir, "attention.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(tmax())), "d", 256.0), "tmax", float_of(tmax())));
     let k_attn_gate = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24, "n", 256));
     if err.failed(m) {
@@ -759,6 +782,34 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let b_cos = metal.cgpu_alloc(ffi, 4 * 32);
     let b_sin = metal.cgpu_alloc(ffi, 4 * 32);
     let b_mask = metal.cgpu_alloc(ffi, 4 * tmax());
+    // Batch buffers: `mb()` rows of each activation.
+    let b_xs = metal.cgpu_alloc(ffi, 4 * mb() * h);
+    let b_xs2 = metal.cgpu_alloc(ffi, 4 * mb() * h);
+    let b_ns = metal.cgpu_alloc(ffi, 4 * mb() * h);
+    let b_qkvs = metal.cgpu_alloc(ffi, 4 * mb() * 10240);
+    let b_zs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_as = metal.cgpu_alloc(ffi, 4 * mb() * 48);
+    let b_bs = metal.cgpu_alloc(ffi, 4 * mb() * 48);
+    let b_convs = metal.cgpu_alloc(ffi, 4 * mb() * 10240);
+    let b_qns = metal.cgpu_alloc(ffi, 4 * mb() * 2048);
+    let b_kns = metal.cgpu_alloc(ffi, 4 * mb() * 2048);
+    let b_gs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_bts = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_ys = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_gns = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_qgs = metal.cgpu_alloc(ffi, 4 * mb() * 12288);
+    let b_ks = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
+    let b_vs = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
+    let b_q2s = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_k2s = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
+    let b_qrs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_krs = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
+    let b_os = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_ogs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
+    let b_acts = metal.cgpu_alloc(ffi, 4 * mb() * inter());
+    let b_coss = metal.cgpu_alloc(ffi, 4 * mb() * 32);
+    let b_sins = metal.cgpu_alloc(ffi, 4 * mb() * 32);
+    let b_masks = metal.cgpu_alloc(ffi, 4 * mb() * tmax());
     // Per layer: a linear layer's convolution window (two, taken in turn) and its
     // delta state; an attention layer's key and value caches. All start at zero.
     let st1 = mem.list(m);
@@ -800,6 +851,134 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     var token = mem.get(m, ids, 0);
     var finished = false;
     let step_total = n_prompt + new_tokens - 1;
+    // Prefill in chunks of `mb()` tokens while at least that many prompt tokens remain before the last
+    // (whose logits are wanted): the weights are read once for the chunk, not once a token.
+    while batched && pos + mb() <= n_prompt - 1 {
+        let chunk_mark = m[mem.text_slot()];
+        var tk_i = 0;
+        while tk_i < mb() {
+            let tok = mem.get(m, ids, pos + tk_i);
+            let raw_c = reserve(m, 2 * h);
+            fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + 2 * h * tok, raw_c, 2 * h);
+            let wide = reserve(m, 4 * h);
+            var col = 0;
+            while col < h {
+                put_f32(t, wide + 4 * col, 0);
+                t[wide + 4 * col + 2] = t[raw_c + 2 * col];
+                t[wide + 4 * col + 3] = t[raw_c + 2 * col + 1];
+                col = col + 1;
+            }
+            metal.cgpu_upload_at(ffi, b_xs, 4 * h * tk_i, t[wide..wide + 4 * h]);
+            // The rotary tables and the causal mask of this token's position.
+            let tab = reserve(m, 256);
+            var jj = 0;
+            while jj < 32 {
+                let inv = math.pow(10000000.0, 0.0 - float_of(jj) / 32.0);
+                let ang = float_of(pos + tk_i) * inv;
+                put_f32(t, tab + 4 * jj, f32.bits32(f32.round(math.cos(ang))));
+                put_f32(t, tab + 128 + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
+                jj = jj + 1;
+            }
+            metal.cgpu_upload_at(ffi, b_coss, 128 * tk_i, t[tab..tab + 128]);
+            metal.cgpu_upload_at(ffi, b_sins, 128 * tk_i, t[tab + 128..tab + 256]);
+            let mrow = reserve(m, 4 * tmax());
+            var zc = 0;
+            while zc < tmax() {
+                if zc <= pos + tk_i {
+                    put_f32(t, mrow + 4 * zc, 0);
+                } else {
+                    put_f32(t, mrow + 4 * zc, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
+                }
+                zc = zc + 1;
+            }
+            metal.cgpu_upload_at(ffi, b_masks, 4 * tmax() * tk_i, t[mrow..mrow + 4 * tmax()]);
+            tk_i = tk_i + 1;
+        }
+        var cur = b_xs;
+        var nxt = b_xs2;
+        l = 0;
+        while l < layers() {
+            let w = mem.get(m, lw, l);
+            go(m, ffi, k_rmsb, cur, mem.get(m, w, 0), b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            if is_attention(l) {
+                fp4(m, ffi, k_qgb, b_ns, mem.get(m, w, 1), b_qgs);
+                ov(ffi);
+                fp4(m, ffi, k_kvb, b_ns, mem.get(m, w, 2), b_ks);
+                ov(ffi);
+                fp4(m, ffi, k_kvb, b_ns, mem.get(m, w, 3), b_vs);
+                go(m, ffi, k_qnormb, b_qgs, mem.get(m, w, 4), b_q2s, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
+                go(m, ffi, k_knormb, b_ks, mem.get(m, w, 5), b_k2s, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                var tt = 0;
+                while tt < mb() {
+                    go(m, ffi, k_ropeq, at(b_q2s, 4 * 6144 * tt), at(b_coss, 128 * tt), at(b_sins, 128 * tt), at(b_qrs, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ov(ffi);
+                    go(m, ffi, k_ropek, at(b_k2s, 4 * 1024 * tt), at(b_coss, 128 * tt), at(b_sins, 128 * tt), at(b_krs, 4 * 1024 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    tt = tt + 1;
+                }
+                tt = 0;
+                while tt < mb() {
+                    go(m, ffi, k_kvw, at(b_krs, 4 * 1024 * tt), at(mem.get(m, st1, l), 1024 * (pos + tt)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ov(ffi);
+                    go(m, ffi, k_kvw, at(b_vs, 4 * 1024 * tt), at(mem.get(m, st2, l), 1024 * (pos + tt)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    tt = tt + 1;
+                }
+                tt = 0;
+                while tt < mb() {
+                    go(m, ffi, k_attn, at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1);
+                    tt = tt + 1;
+                }
+                go(m, ffi, k_attn_gateb, b_os, b_qgs, b_ogs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                fp4_res(m, ffi, k_outb, b_ogs, mem.get(m, w, 6), cur, nxt);
+            } else {
+                fp4(m, ffi, k_qkvb, b_ns, mem.get(m, w, 1), b_qkvs);
+                ov(ffi);
+                fp4(m, ffi, k_zb, b_ns, mem.get(m, w, 2), b_zs);
+                var tt = 0;
+                while tt < mb() {
+                    ov(ffi);
+                    go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 3), at(b_as, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ov(ffi);
+                    go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 4), at(b_bs, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    tt = tt + 1;
+                }
+                tt = 0;
+                while tt < mb() {
+                    var cs_now = mem.get(m, st1, l);
+                    var cs_next = mem.get(m, st2, l);
+                    if (pos + tt) % 2 == 1 {
+                        cs_now = mem.get(m, st2, l);
+                        cs_next = mem.get(m, st1, l);
+                    }
+                    go(m, ffi, k_conv, at(b_qkvs, 4 * 10240 * tt), cs_now, mem.get(m, w, 5), at(b_convs, 4 * 10240 * tt), cs_next, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, k_qknorm, at(b_convs, 4 * 10240 * tt), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ov(ffi);
+                    go(m, ffi, k_gates, at(b_as, 4 * 48 * tt), at(b_bs, 4 * 48 * tt), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), 0 - 1, 0 - 1);
+                    go(m, ffi, k_delta, mem.get(m, st3, l), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), mem.get(m, st3, l), at(b_ys, 4 * 6144 * tt));
+                    tt = tt + 1;
+                }
+                go(m, ffi, k_gnormb, b_ys, b_zs, mem.get(m, w, 8), b_gns, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                fp4_res(m, ffi, k_outb, b_gns, mem.get(m, w, 9), cur, nxt);
+            }
+            go(m, ffi, k_rmsb, nxt, mem.get(m, w, 10), b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            fp4_swiglu(m, ffi, k_gateupb, b_ns, mem.get(m, w, 11), mem.get(m, w, 12), b_acts);
+            fp4_res(m, ffi, k_downb, b_acts, mem.get(m, w, 13), nxt, cur);
+            metal.cgpu_flush(ffi);
+            l = l + 1;
+        }
+        metal.cgpu_sync(ffi);
+        // The single-token path opens one mask position a step; open this chunk's.
+        let open = reserve(m, 4 * mb());
+        var oc = 0;
+        while oc < mb() {
+            put_f32(t, open + 4 * oc, 0);
+            oc = oc + 1;
+        }
+        metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * mb()]);
+        m[mem.text_slot()] = chunk_mark;
+        pos = pos + mb();
+        token = mem.get(m, ids, pos);
+    }
     while pos < step_total && !finished {
         let step_mark = m[mem.text_slot()];
         // The embedding row of `token`: bf16, widened to f32.
