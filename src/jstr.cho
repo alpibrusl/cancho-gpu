@@ -1,0 +1,107 @@
+edition 5;
+module jstr;
+
+// `jstr` -- the strings of a `std.json` tape, decoded into the text pool.
+//
+// `std.json` keeps a string as the byte range inside its quotes, escapes
+// and all, and decodes only on request into a slice the caller owns. The
+// text pool is one slice that is also read from (the document is in it), so
+// strings are decoded here, by index: `\uXXXX`, surrogate pairs and the
+// single-character escapes. `std.json` has already validated the string,
+// so this does not.
+
+import text;
+
+fn hex_value(c: int) -> [] int {
+    if c >= 48 && c <= 57 {
+        return c - 48;
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87;
+    }
+    return c - 55;
+}
+
+fn four_hex[&t](t: &!t [byte], p: int) -> [] int {
+    return hex_value(int_of(t[p])) * 4096 + hex_value(int_of(t[p + 1])) * 256 + hex_value(int_of(t[p + 2])) * 16 + hex_value(int_of(t[p + 3]));
+}
+
+fn put_utf8[&m, &t](m: &!m [int], t: &!t [byte], cp: int) -> [] int {
+    if cp < 128 {
+        return text.put_byte(m, t, byte_of(cp));
+    }
+    if cp < 2048 {
+        text.put_byte(m, t, byte_of(192 + cp / 64));
+        return text.put_byte(m, t, byte_of(128 + cp % 64));
+    }
+    if cp < 65536 {
+        text.put_byte(m, t, byte_of(224 + cp / 4096));
+        text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
+        return text.put_byte(m, t, byte_of(128 + cp % 64));
+    }
+    text.put_byte(m, t, byte_of(240 + cp / 262144));
+    text.put_byte(m, t, byte_of(128 + cp / 4096 % 64));
+    text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
+    return text.put_byte(m, t, byte_of(128 + cp % 64));
+}
+
+// The string whose body (inside the quotes, still escaped, already
+// validated by `std.json`) is `t[from..to]`, decoded, as a text handle.
+pub fn decode[&m, &t](m: &!m [int], t: &!t [byte], from: int, to: int) -> [] int {
+    let start = text.begin(m);
+    var p = from;
+    while p < to {
+        let c = int_of(t[p]);
+        if c != 92 {
+            text.put_byte(m, t, byte_of(c));
+            p = p + 1;
+        } else {
+            let e = int_of(t[p + 1]);
+            if e == 117 {
+                var cp = four_hex(t, p + 2);
+                p = p + 6;
+                if cp >= 55296 && cp < 56320 {
+                    // A high surrogate; `std.json` guarantees the low half.
+                    let low = four_hex(t, p + 2);
+                    cp = 65536 + (cp - 55296) * 1024 + (low - 56320);
+                    p = p + 6;
+                }
+                put_utf8(m, t, cp);
+            } else {
+                var b = e;
+                if e == 98 {
+                    b = 8;
+                } else if e == 102 {
+                    b = 12;
+                } else if e == 110 {
+                    b = 10;
+                } else if e == 114 {
+                    b = 13;
+                } else if e == 116 {
+                    b = 9;
+                }
+                text.put_byte(m, t, byte_of(b));
+                p = p + 2;
+            }
+        }
+    }
+    return text.finish(m, start);
+}
+
+// An upper bound on the nodes of the JSON document `t[from..to]`: every
+// value and every key follows a `[`, `{`, `,` or `:`, or is the root, so
+// their number bounds the nodes (a string holding those bytes only raises
+// it). `json.tape_len` allows a node per byte, which for a 20 MB
+// `tokenizer.json` is sixty million words of `m` and mostly unused.
+pub fn node_bound[&t](t: &!t [byte], from: int, to: int) -> [] int {
+    var n = 1;
+    var p = from;
+    while p < to {
+        let c = int_of(t[p]);
+        if c == 44 || c == 58 || c == 91 || c == 123 {
+            n = n + 1;
+        }
+        p = p + 1;
+    }
+    return n;
+}

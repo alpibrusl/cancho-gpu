@@ -25,6 +25,7 @@ import mem;
 import text;
 import err;
 import gguf;
+import jstr;
 
 // The largest header this reader takes. The format allows 100,000,000
 // bytes; the real ones are 30 to 105 KB (`docs/runtime.md` §7), and the
@@ -133,82 +134,6 @@ fn dtype_of[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
 // Strings of the tape, decoded into the text pool
 // ---------------------------------------------------------------------
 
-fn hex_value(c: int) -> [] int {
-    if c >= 48 && c <= 57 {
-        return c - 48;
-    }
-    if c >= 97 && c <= 102 {
-        return c - 87;
-    }
-    return c - 55;
-}
-
-fn four_hex[&t](t: &!t [byte], p: int) -> [] int {
-    return hex_value(int_of(t[p])) * 4096 + hex_value(int_of(t[p + 1])) * 256 + hex_value(int_of(t[p + 2])) * 16 + hex_value(int_of(t[p + 3]));
-}
-
-fn put_utf8[&m, &t](m: &!m [int], t: &!t [byte], cp: int) -> [] int {
-    if cp < 128 {
-        return text.put_byte(m, t, byte_of(cp));
-    }
-    if cp < 2048 {
-        text.put_byte(m, t, byte_of(192 + cp / 64));
-        return text.put_byte(m, t, byte_of(128 + cp % 64));
-    }
-    if cp < 65536 {
-        text.put_byte(m, t, byte_of(224 + cp / 4096));
-        text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
-        return text.put_byte(m, t, byte_of(128 + cp % 64));
-    }
-    text.put_byte(m, t, byte_of(240 + cp / 262144));
-    text.put_byte(m, t, byte_of(128 + cp / 4096 % 64));
-    text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
-    return text.put_byte(m, t, byte_of(128 + cp % 64));
-}
-
-// The string whose body (inside the quotes, still escaped, already
-// validated by `std.json`) is `t[from..to]`, decoded, as a text handle.
-fn decode[&m, &t](m: &!m [int], t: &!t [byte], from: int, to: int) -> [] int {
-    let start = text.begin(m);
-    var p = from;
-    while p < to {
-        let c = int_of(t[p]);
-        if c != 92 {
-            text.put_byte(m, t, byte_of(c));
-            p = p + 1;
-        } else {
-            let e = int_of(t[p + 1]);
-            if e == 117 {
-                var cp = four_hex(t, p + 2);
-                p = p + 6;
-                if cp >= 55296 && cp < 56320 {
-                    // A high surrogate; `std.json` guarantees the low half.
-                    let low = four_hex(t, p + 2);
-                    cp = 65536 + (cp - 55296) * 1024 + (low - 56320);
-                    p = p + 6;
-                }
-                put_utf8(m, t, cp);
-            } else {
-                var b = e;
-                if e == 98 {
-                    b = 8;
-                } else if e == 102 {
-                    b = 12;
-                } else if e == 110 {
-                    b = 10;
-                } else if e == 114 {
-                    b = 13;
-                } else if e == 116 {
-                    b = 9;
-                }
-                text.put_byte(m, t, byte_of(b));
-                p = p + 2;
-            }
-        }
-    }
-    return text.finish(m, start);
-}
-
 // ---------------------------------------------------------------------
 // The header
 // ---------------------------------------------------------------------
@@ -258,7 +183,7 @@ pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], base: int, end: int, size: int
         let v = k + 1;
         let kstart = hs + m[tape_at + 3 * k + 1];
         let kend = hs + m[tape_at + 3 * k + 2];
-        let name = decode(m, t, kstart, kend);
+        let name = jstr.decode(m, t, kstart, kend);
         if text.is(t, name, "__metadata__") {
             if !json.is_object(m[tape_at..tape_at + tape_words], v) {
                 return bad(m, t, "st-metadata-type", "__metadata__ is not an object");
@@ -270,8 +195,8 @@ pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], base: int, end: int, size: int
                 if !json.is_string(m[tape_at..tape_at + tape_words], mv) {
                     return bad(m, t, "st-metadata", "a __metadata__ value is not a string");
                 }
-                let key = decode(m, t, hs + m[tape_at + 3 * mk + 1], hs + m[tape_at + 3 * mk + 2]);
-                let text_of_value = decode(m, t, hs + m[tape_at + 3 * mv + 1], hs + m[tape_at + 3 * mv + 2]);
+                let key = jstr.decode(m, t, hs + m[tape_at + 3 * mk + 1], hs + m[tape_at + 3 * mk + 2]);
+                let text_of_value = jstr.decode(m, t, hs + m[tape_at + 3 * mv + 1], hs + m[tape_at + 3 * mv + 2]);
                 mem.push(m, metas, mem.rec2(m, key, text_of_value));
                 mk = json.skip(m[tape_at..tape_at + tape_words], mv);
                 j = j + 1;
@@ -311,7 +236,7 @@ fn entry[&m, &t](m: &!m [int], t: &!t [byte], tape_at: int, words: int, hs: int,
     if !json.is_string(m[tape_at..tape_at + words], dnode) {
         return err.fail(m, t, "st-dtype", text.f1(m, t, "`$` has a dtype that is not a string", name));
     }
-    let dname = decode(m, t, hs + m[tape_at + 3 * dnode + 1], hs + m[tape_at + 3 * dnode + 2]);
+    let dname = jstr.decode(m, t, hs + m[tape_at + 3 * dnode + 1], hs + m[tape_at + 3 * dnode + 2]);
     let dtype = dtype_of(m, t, dname);
     if dtype < 0 {
         return err.fail(m, t, "st-dtype", text.f2(m, t, "`$` has an unknown dtype `$`", name, dname));

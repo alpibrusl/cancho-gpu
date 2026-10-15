@@ -1,0 +1,297 @@
+edition 5;
+module unicode;
+
+// `unicode` -- what the tokenizer asks of text (slice 9a, stage 3;
+// `docs/runtime.md` §9): UTF-8 in and out, the character classes the
+// pre-tokenizer's split uses, and NFC.
+//
+// The classes are exactly those of the oracle: `unicode_data.cho` is
+// generated from `char::is_alphabetic`, `is_numeric` and `is_whitespace`
+// of the Rust that builds lex-rt, and from lex-rt's own NFC tables, so the
+// two cannot disagree on a scalar value.
+
+import unicode_data;
+import mem;
+import text;
+
+// Is `cp` inside one of the `lo hi` pairs of `table`?
+fn in_ranges(table: &static [int], cp: int) -> [] bool {
+    var lo = 0;
+    var hi = len(table) / 2;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if cp < table[mid * 2] {
+            hi = mid;
+        } else if cp > table[mid * 2 + 1] {
+            lo = mid + 1;
+        } else {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn is_alphabetic(cp: int) -> [] bool {
+    if cp < 128 {
+        return cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122;
+    }
+    return in_ranges(unicode_data.alphabetic(), cp);
+}
+
+pub fn is_numeric(cp: int) -> [] bool {
+    if cp < 128 {
+        return cp >= 48 && cp <= 57;
+    }
+    return in_ranges(unicode_data.numeric(), cp);
+}
+
+pub fn is_whitespace(cp: int) -> [] bool {
+    if cp < 128 {
+        return cp == 32 || cp >= 9 && cp <= 13;
+    }
+    return in_ranges(unicode_data.whitespace(), cp);
+}
+
+// `\p{M}` as lex-rt writes it: the blocks that appear in text, not every
+// combining mark (`tokenizer.rs`, `is_mark`).
+pub fn is_mark(cp: int) -> [] bool {
+    return cp >= 768 && cp <= 879 || cp >= 1155 && cp <= 1161 || cp >= 1425 && cp <= 1469 || cp == 1471 || cp >= 1473 && cp <= 1474 || cp >= 1476 && cp <= 1477 || cp == 1479 || cp >= 1552 && cp <= 1562 || cp >= 1611 && cp <= 1631 || cp == 1648 || cp >= 1750 && cp <= 1756 || cp >= 1759 && cp <= 1764 || cp >= 1767 && cp <= 1768 || cp >= 1770 && cp <= 1773 || cp >= 2304 && cp <= 2307 || cp >= 2362 && cp <= 2383 || cp >= 2385 && cp <= 2391 || cp == 3633 || cp >= 3636 && cp <= 3642 || cp >= 3655 && cp <= 3662 || cp >= 6832 && cp <= 6911 || cp >= 7616 && cp <= 7679 || cp >= 8400 && cp <= 8432 || cp >= 12441 && cp <= 12442 || cp >= 65024 && cp <= 65039 || cp >= 65056 && cp <= 65071 || cp >= 917760 && cp <= 917999;
+}
+
+// ---------------------------------------------------------------------
+// UTF-8
+// ---------------------------------------------------------------------
+
+fn cont[&t](t: &!t [byte], p: int, end: int) -> [] bool {
+    return p < end && int_of(t[p]) & 192 == 128;
+}
+
+// The scalar value at `p` and the bytes it takes, or `(-1, 0)` where the
+// bytes are not well-formed UTF-8 (an overlong form, a surrogate, past
+// U+10FFFF, a cut sequence): what makes a Rust `&str`.
+pub fn decode[&t](t: &!t [byte], p: int, end: int) -> [] (int, int) {
+    let b0 = int_of(t[p]);
+    if b0 < 128 {
+        return (b0, 1);
+    }
+    if b0 >= 194 && b0 <= 223 && cont(t, p + 1, end) {
+        return ((b0 & 31) * 64 + (int_of(t[p + 1]) & 63), 2);
+    }
+    if b0 >= 224 && b0 <= 239 && cont(t, p + 1, end) && cont(t, p + 2, end) {
+        let cp = (b0 & 15) * 4096 + (int_of(t[p + 1]) & 63) * 64 + (int_of(t[p + 2]) & 63);
+        if cp >= 2048 && !(cp >= 55296 && cp <= 57343) {
+            return (cp, 3);
+        }
+    }
+    if b0 >= 240 && b0 <= 244 && cont(t, p + 1, end) && cont(t, p + 2, end) && cont(t, p + 3, end) {
+        let cp = (b0 & 7) * 262144 + (int_of(t[p + 1]) & 63) * 4096 + (int_of(t[p + 2]) & 63) * 64 + (int_of(t[p + 3]) & 63);
+        if cp >= 65536 && cp <= 1114111 {
+            return (cp, 4);
+        }
+    }
+    return (0 - 1, 0);
+}
+
+// How many bytes of a well-formed sequence start at `p`, taking the
+// maximal prefix that is valid so far (Unicode 3-7, as Rust's lossy
+// decoding does): at least one.
+fn valid_prefix[&t](t: &!t [byte], p: int, end: int) -> [] int {
+    let b0 = int_of(t[p]);
+    var need = 0;
+    var lo = 128;
+    var hi = 191;
+    if b0 >= 194 && b0 <= 223 {
+        need = 1;
+    } else if b0 >= 224 && b0 <= 239 {
+        need = 2;
+        if b0 == 224 {
+            lo = 160;
+        }
+        if b0 == 237 {
+            hi = 159;
+        }
+    } else if b0 >= 240 && b0 <= 244 {
+        need = 3;
+        if b0 == 240 {
+            lo = 144;
+        }
+        if b0 == 244 {
+            hi = 143;
+        }
+    } else {
+        return 1;
+    }
+    var n = 1;
+    while n <= need {
+        if p + n >= end {
+            return n;
+        }
+        let c = int_of(t[p + n]);
+        if c < lo || c > hi {
+            return n;
+        }
+        lo = 128;
+        hi = 191;
+        n = n + 1;
+    }
+    return n;
+}
+
+// How many bytes the next unit of lossy decoding takes at `p`, and whether
+// it is a whole scalar value: `(bytes, true)`, or `(bytes, false)` for the
+// ill-formed piece that one U+FFFD stands for.
+pub fn lossy_step[&t](t: &!t [byte], p: int, end: int) -> [] (int, bool) {
+    let (cp, n) = decode(t, p, end);
+    if cp >= 0 {
+        return (n, true);
+    }
+    return (valid_prefix(t, p, end), false);
+}
+
+// ---------------------------------------------------------------------
+// NFC
+// ---------------------------------------------------------------------
+
+// Canonical combining class: 0 for everything that is not a mark.
+pub fn ccc(cp: int) -> [] int {
+    let table = unicode_data.ccc();
+    var lo = 0;
+    var hi = len(table) / 2;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if cp < table[mid * 2] {
+            hi = mid;
+        } else if cp > table[mid * 2] {
+            lo = mid + 1;
+        } else {
+            return table[mid * 2 + 1];
+        }
+    }
+    return 0;
+}
+
+// The composite of an adjacent pair, or -1. Hangul is arithmetic, as in
+// the oracle; the rest is its table.
+pub fn compose(a: int, b: int) -> [] int {
+    if a >= 4352 && a < 4371 && b >= 4449 && b < 4470 {
+        return 44032 + ((a - 4352) * 21 + (b - 4449)) * 28;
+    }
+    if a >= 44032 && a < 55204 && (a - 44032) % 28 == 0 && b >= 4520 && b < 4547 {
+        return a + (b - 4519);
+    }
+    let table = unicode_data.comp();
+    var lo = 0;
+    var hi = len(table) / 3;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let x = table[mid * 3];
+        let y = table[mid * 3 + 1];
+        if a < x || a == x && b < y {
+            hi = mid;
+        } else if a > x || a == x && b > y {
+            lo = mid + 1;
+        } else {
+            return table[mid * 3 + 2];
+        }
+    }
+    return 0 - 1;
+}
+
+// Append the UTF-8 of the scalar value `cp` to the text pool.
+pub fn put_cp[&m, &t](m: &!m [int], t: &!t [byte], cp: int) -> [] int {
+    if cp < 128 {
+        return text.put_byte(m, t, byte_of(cp));
+    }
+    if cp < 2048 {
+        text.put_byte(m, t, byte_of(192 + cp / 64));
+        return text.put_byte(m, t, byte_of(128 + cp % 64));
+    }
+    if cp < 65536 {
+        text.put_byte(m, t, byte_of(224 + cp / 4096));
+        text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
+        return text.put_byte(m, t, byte_of(128 + cp % 64));
+    }
+    text.put_byte(m, t, byte_of(240 + cp / 262144));
+    text.put_byte(m, t, byte_of(128 + cp / 4096 % 64));
+    text.put_byte(m, t, byte_of(128 + cp / 64 % 64));
+    return text.put_byte(m, t, byte_of(128 + cp % 64));
+}
+
+// The scalar values of the well-formed UTF-8 in `t[from..to]` as a list,
+// or -1 (nothing recorded) where it is not well-formed.
+pub fn scalars[&m, &t](m: &!m [int], t: &!t [byte], from: int, to: int) -> [] int {
+    let out = mem.list(m);
+    var p = from;
+    while p < to {
+        let (cp, n) = decode(t, p, to);
+        if cp < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, out, cp);
+        p = p + n;
+    }
+    return out;
+}
+
+// NFC of the scalar values in `cps`, the way the oracle does it: canonical
+// ordering of marks, then composition; no decomposition. The result is a
+// list.
+pub fn nfc[&m](m: &!m [int], cps: int) -> [] int {
+    let out = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, cps) {
+        let c = mem.get(m, cps, i);
+        let k = ccc(c);
+        var at = mem.size(m, out);
+        if k != 0 {
+            var scanning = true;
+            while at > 0 && scanning {
+                let prev = ccc(mem.get(m, out, at - 1));
+                if prev == 0 || prev <= k {
+                    scanning = false;
+                } else {
+                    at = at - 1;
+                }
+            }
+        }
+        // Insert at `at`: push, then shift the tail up one.
+        mem.push(m, out, c);
+        var j = mem.size(m, out) - 1;
+        while j > at {
+            mem.set(m, out, j, mem.get(m, out, j - 1));
+            j = j - 1;
+        }
+        mem.set(m, out, at, c);
+        i = i + 1;
+    }
+    let composed = mem.list(m);
+    var starter = 0 - 1;
+    var last = 0;
+    var x = 0;
+    while x < mem.size(m, out) {
+        let c = mem.get(m, out, x);
+        let k = ccc(c);
+        var merged = false;
+        if starter >= 0 {
+            let blocked = k != 0 && last >= k;
+            if !blocked {
+                let j = compose(mem.get(m, composed, starter), c);
+                if j >= 0 {
+                    mem.set(m, composed, starter, j);
+                    merged = true;
+                }
+            }
+        }
+        if !merged {
+            if k == 0 {
+                starter = mem.size(m, composed);
+                last = 0;
+            } else {
+                last = k;
+            }
+            mem.push(m, composed, c);
+        }
+        x = x + 1;
+    }
+    return composed;
+}

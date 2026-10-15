@@ -1,8 +1,8 @@
 # The runtime core: reading a model (slice 9a)
 
-> **Status: stages 1 and 2 of 4 built and measured: GGUF headers (§2–§5)
-> and safetensors headers (§7–§8), each on fixtures and on real files.**
-> The BPE tokenizer and the sampler are not started (§6). Issue
+> **Status: stages 1 to 3 of 4 built and measured: GGUF headers (§2–§5),
+> safetensors headers (§7–§8) and the BPE tokenizer (§9), each on fixtures
+> and on real files.** The sampler is not started (§6). Issue
 > [#5](https://github.com/alpibrusl/cancho-gpu/issues/5).
 
 Slice 9a ports the model-facing core of lex-gpu's `lex-rt` into cancho:
@@ -18,7 +18,7 @@ fixtures and gate:
 
 1. GGUF headers: metadata and the tensor directory. *(built)*
 2. Safetensors headers. *(built)*
-3. The BPE tokenizer.
+3. The BPE tokenizer. *(built)*
 4. The sampler.
 
 ## 1. Why headers first, and what a header is
@@ -135,7 +135,6 @@ example into the checkout for the build and removes it).
 
 | Stage | What | Oracle |
 |---|---|---|
-| 3 | BPE tokenizer: vocabulary and merges from the GGUF metadata and from `tokenizer.json`, pre-tokenisation, byte fallback, special tokens, round-trip | `lex-rt/src/tokenizer.rs` |
 | 4 | Sampler: greedy, temperature, top-k, top-p, with `lex-rt`'s generator | `lex-rt/src/sample.rs` |
 
 Loading the tensors' *values* (dequantising Q8_0, Q4_K and Q6_K to what
@@ -233,3 +232,80 @@ the refusals more than for the dump.
   `lex-rt/src/qwen.rs` reads (NVFP4 codes as `U32`, scales as `U8`, a
   global scale as `F32`).
 * Not measured: reading a tensor's bytes, and any model run.
+
+## 9. The BPE tokenizer (stage 3)
+
+`src/bpe.cho`, `src/unicode.cho`, `src/jstr.cho`; the command is
+`cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>`. The oracle is
+`lex-rt/src/tokenizer.rs`, and what is ported is what it does, **including
+where it is narrow**; a tokenizer that disagreed would tokenise wrongly
+without an error, so the narrowness is kept and tested, not widened:
+
+* the split before merging is the one hand-written GPT-4-shaped pattern
+  (contractions, `[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+`, a single digit, punctuation
+  runs, whitespace with the `(?!\S)` special case), **whatever the file's
+  `pre_tokenizer` says**;
+* a GGUF is accepted only with `tokenizer.ggml.model = gpt2` and
+  `tokenizer.ggml.pre = qwen35` (`tok-gguf-model`, `tok-gguf-pre`);
+* `\p{M}` is the blocks that appear in text, not every combining mark;
+* NFC is canonical ordering and composition without decomposition, so a
+  singleton such as U+212B stays as it is.
+
+**How it is built.** A token's text is `(start, length)` in the text pool: in
+place in the file where it is plain (a GGUF string, a JSON string with no
+escape), decoded once where it is not (`jstr.cho`). The vocabulary and the
+merge ranks are open-addressing hash tables in `m` over those positions, so
+248,000 tokens and 247,000 merges cost about four million words and no copies.
+A merge is looked up by its two halves' bytes; the pieces of a word are
+contiguous ranges of one scratch string, so joining two is adding two lengths.
+The `std.json` tape is sized by a count of the bytes that start a node
+(`jstr.node_bound`), not by `tape_len`'s node-per-byte bound, which for the 20 MB
+Qwen3.8 file was sixty million words of `m`.
+
+**The Unicode tables are the oracle's own.** `src/unicode_data.cho` is
+generated (`scripts/regen-unicode-data.sh`, from `tools/unicode_tables.rs`) from
+`char::is_alphabetic`, `is_numeric` and `is_whitespace` of the Rust that builds
+lex-rt (1.98.1) over every scalar value, and from lex-rt's own `nfc_table`; the
+two cannot disagree on a scalar value, and a Rust upgrade is a regeneration.
+They are `static` items built at compile time from hex strings.
+
+**Differences from lex-rt**, each with a tag and a fixture where it refuses:
+
+| | This reader | lex-rt |
+|---|---|---|
+| JSON | `std.json`, strict (RFC 8259): a trailing comma or `NaN` is `tok-json` | lenient |
+| an added token with empty content | `tok-added` | loops forever in `encode` |
+| a vocab id that is not an integer in 0..2^24 | `tok-vocab` | `5.0` is accepted, a huge id allocates |
+| text that is not UTF-8 | `tok-utf8` | cannot be given one (`&str`) |
+| a GGUF token that is not UTF-8 | its bytes, kept | replaced by U+FFFD when read |
+| an id with no token (a hole in the vocabulary) | dropped silently | dropped, with a line on stderr |
+
+**Measured.**
+
+* Four tokenizers made by `tests/tokenizer/make_fixtures.py` (a toy BPE trained
+  on the corpus: merges as pairs, as strings with `ignore_merges`, every key
+  `\uXXXX`-escaped, and a GGUF with control, user-defined and unused tokens) give
+  **exactly lex-rt's ids and decoded text** over a hand-written corpus (37
+  records: contractions, every kind of space, composed and decomposed accents,
+  Hangul jamo, CJK, Arabic, Devanagari, Thai, emoji and ZWJ sequences, the added
+  tokens and their prefixes, control bytes, very long words) and over 500 random
+  records (47,757 tokens) built from the places the split and NFC care about.
+* **Four real tokenizers, identical with lex-rt's over 3,811 records (about
+  830,000 to 875,000 tokens each)**: `Qwen2.5-0.5B-Instruct`'s `tokenizer.json`
+  (151,665 ids), `Qwen3.8-27B-4bit`'s (248,077 ids, 20 MB, merges as pairs),
+  Ollama's own `tokenizer.json` for `qwen3.8:27b-mlx` (a different 12.8 MB
+  serialisation, same ids), and the GGUFs of `qwen3.5:4b` and `:9b` (248,320
+  ids). The corpus (`scripts/tokenizer-real.sh`) is prose and source from the
+  neighbouring repositories cut into records, a record of very long text, and
+  3,000 random records. The GGUFs of `llama3.2:1b`, `qwen3:8b` and
+  `ministral-3:3b` are refused by both, for the `pre` they carry.
+* 750 hostile files (mutated tokenizers, GGUFs and corpora): no trap, no hang;
+  12 hostile fixtures refused with their rule, and text that is not UTF-8.
+* **Speed, one run each**: loading the 20 MB Qwen3.8 `tokenizer.json` and
+  tokenizing the 3,811 records takes 0.64 s and 565 MB resident; lex-rt's
+  *release* build takes 51.8 s for the same (nearly all of it loading the
+  JSON). That is one machine and one run, and a statement about this oracle's
+  loader, not about Rust.
+* Not covered: a tokenizer whose `pre_tokenizer` differs (neither reads it), a
+  `tokenizer.json` in a format other than `BPE`, and invalid UTF-8 inside a
+  GGUF token.
