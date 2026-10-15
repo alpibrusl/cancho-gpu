@@ -13,7 +13,7 @@ build/cancho-gpu-run <model dir> tests/lx "The capital of France is" 12
 A model dir is a Hugging Face checkpoint of the **Qwen2** architecture
 (`config.json`, `tokenizer.json`, `model.safetensors`, bf16). Arguments after
 the new-token count: `--trace` (print the residual stream's first values at
-chosen points and the five largest logits at every sampled position), then
+chosen points and the five largest logits at every sampled position) and `--timing` (a last line with the load, prefill and decode times in milliseconds, which `bench/bench.py` reads), then
 `temperature top_p top_k seed` for sampling (greedy by default).
 
 ## 1. What is on the GPU, and what is not
