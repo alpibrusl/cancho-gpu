@@ -150,6 +150,11 @@ fn bind_arg[&g](ffi: &g Ffi("libmetalgpu"), a: int) -> [ffi("libmetalgpu")] bool
     return metal.lxg_arg_at(ffi, a % 4096, a / 4096) >= 0;
 }
 
+// The next launch does not depend on the one before it: let the GPU run them together.
+fn ov[&g](ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
+    return metal.lxg_overlap(ffi);
+}
+
 // Bind up to eight arguments (-1 is none) and encode the launch.
 fn go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, a0: int, a1: int, a2: int, a3: int, a4: int, a5: int, a6: int, a7: int) -> [ffi("libmetalgpu")] int {
     var ok = bind_arg(ffi, a0);
@@ -183,6 +188,11 @@ fn go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, a0: int, a1: int
 // A matrix-vector product over an NVFP4 weight `w` (its three buffers).
 fn fp4[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, x: int, w: int, y: int) -> [ffi("libmetalgpu")] int {
     return go(m, ffi, k, x, mem.get(m, w, 0), mem.get(m, w, 1), mem.get(m, w, 2), y, 0 - 1, 0 - 1, 0 - 1);
+}
+
+// The gate and up projections and the activation, one launch.
+fn fp4_swiglu[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), k: int, x: int, wg: int, wu: int, y: int) -> [ffi("libmetalgpu")] int {
+    return go(m, ffi, k, x, mem.get(m, wg, 0), mem.get(m, wg, 1), mem.get(m, wg, 2), mem.get(m, wu, 0), mem.get(m, wu, 1), mem.get(m, wu, 2), y);
 }
 
 // The same, added to the residual `r`.
@@ -654,10 +664,9 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let k_z = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", 6144, "k", h));
     let k_ab = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16.lx", c2(m, t, "n", 48, "k", h));
     let k_out = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res.lx", c2(m, t, "n", h, "k", 6144));
-    let k_gate = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", inter(), "k", h));
     let k_down = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res.lx", c2(m, t, "n", h, "k", inter()));
     let k_head = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.lx", c2(m, t, "n", vocab(), "k", h));
-    let k_swiglu = compile_kernel(m, t, ffi, fs, kdir, "swiglu.lx", c1(m, t, "n", inter()));
+    let k_gateup = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu.lx", c2(m, t, "n", inter(), "k", h));
     let k_conv = compile_kernel(m, t, ffi, fs, kdir, "conv_step.lx", c1(m, t, "c", 10240));
     let k_qknorm = compile_kernel(m, t, ffi, fs, kdir, "qk_norm.lx", c2(m, t, "nk", 16, "rows", 80));
     let k_gates = compile_kernel(m, t, ffi, fs, kdir, "gates.lx", c1(m, t, "h", 48));
@@ -745,8 +754,6 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let b_kr = metal.lxg_alloc(ffi, 4 * 1024);
     let b_o = metal.lxg_alloc(ffi, 4 * 6144);
     let b_og = metal.lxg_alloc(ffi, 4 * 6144);
-    let b_gt = metal.lxg_alloc(ffi, 4 * inter());
-    let b_up = metal.lxg_alloc(ffi, 4 * inter());
     let b_act = metal.lxg_alloc(ffi, 4 * inter());
     let b_logits = metal.lxg_alloc(ffi, 4 * vocab());
     let b_cos = metal.lxg_alloc(ffi, 4 * 32);
@@ -834,21 +841,29 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             go(m, ffi, k_rms, cur, mem.get(m, w, 0), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             if is_attention(l) {
                 fp4(m, ffi, k_qg, b_n, mem.get(m, w, 1), b_qg);
+                ov(ffi);
                 fp4(m, ffi, k_kv, b_n, mem.get(m, w, 2), b_k);
+                ov(ffi);
                 fp4(m, ffi, k_kv, b_n, mem.get(m, w, 3), b_v);
                 go(m, ffi, k_qnorm, b_qg, mem.get(m, w, 4), b_q2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
                 go(m, ffi, k_knorm, b_k, mem.get(m, w, 5), b_k2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_ropeq, b_q2, b_cos, b_sin, b_qr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
                 go(m, ffi, k_ropek, b_k2, b_cos, b_sin, b_kr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_kvw, b_kr, at(mem.get(m, st1, l), 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
                 go(m, ffi, k_kvw, b_v, at(mem.get(m, st2, l), 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_attn, b_qr, mem.get(m, st1, l), mem.get(m, st2, l), b_mask, b_o, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 fp4_res(m, ffi, k_out, b_og, mem.get(m, w, 6), cur, nxt);
             } else {
                 fp4(m, ffi, k_qkv, b_n, mem.get(m, w, 1), b_qkv);
+                ov(ffi);
                 fp4(m, ffi, k_z, b_n, mem.get(m, w, 2), b_z);
+                ov(ffi);
                 go(m, ffi, k_ab, b_n, mem.get(m, w, 3), b_a, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
                 go(m, ffi, k_ab, b_n, mem.get(m, w, 4), b_b, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 var cs_now = mem.get(m, st1, l);
                 var cs_next = mem.get(m, st2, l);
@@ -858,15 +873,14 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
                 }
                 go(m, ffi, k_conv, b_qkv, cs_now, mem.get(m, w, 5), b_conv, cs_next, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_qknorm, b_conv, b_qn, b_kn, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
                 go(m, ffi, k_gates, b_a, b_b, mem.get(m, w, 6), mem.get(m, w, 7), b_g, b_bt, 0 - 1, 0 - 1);
                 go(m, ffi, k_delta, mem.get(m, st3, l), b_qn, b_kn, at(b_conv, 4 * 4096), b_g, b_bt, mem.get(m, st3, l), b_y);
                 go(m, ffi, k_gnorm, b_y, b_z, mem.get(m, w, 8), b_gn, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 fp4_res(m, ffi, k_out, b_gn, mem.get(m, w, 9), cur, nxt);
             }
             go(m, ffi, k_rms, nxt, mem.get(m, w, 10), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-            fp4(m, ffi, k_gate, b_n, mem.get(m, w, 11), b_gt);
-            fp4(m, ffi, k_gate, b_n, mem.get(m, w, 12), b_up);
-            go(m, ffi, k_swiglu, b_gt, b_up, b_act, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            fp4_swiglu(m, ffi, k_gateup, b_n, mem.get(m, w, 11), mem.get(m, w, 12), b_act);
             fp4_res(m, ffi, k_down, b_act, mem.get(m, w, 13), nxt, cur);
             metal.lxg_flush(ffi);
             if trace && l % 8 == 7 {

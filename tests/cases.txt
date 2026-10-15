@@ -212,6 +212,8 @@ tests/lx/matvec_fp4_rows.lx n=248320 k=5120
 tests/lx/matvec_fp4_rows.lx n=16 k=64 --run
 tests/lx/matvec_fp4_res.lx n=5120 k=17408
 tests/lx/matvec_fp4_res.lx n=16 k=64 --run
+tests/lx/matvec_fp4_swiglu.lx n=17408 k=5120
+tests/lx/matvec_fp4_swiglu.lx n=16 k=64 --run
 tests/lx/conv_step.lx c=10240
 tests/lx/conv_step.lx c=512 --run
 tests/lx/qk_norm.lx nk=16 rows=80

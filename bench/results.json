@@ -2115,27 +2115,27 @@
     },
     "qwen3.8-27b": {
       "ollama": {
-        "load_s": 2.527439542,
+        "load_s": 1.623070417,
         "runs": [
           {
-            "prefill_tps": 167.59747854997684,
-            "decode_tps": 41.84657150712716,
+            "prefill_tps": 171.94380148087336,
+            "decode_tps": 44.155778602254095,
             "mem_gb": null,
             "text": " hide thousands of machine instructions, and the compiler is the machine that performs that hiding.\n\nThis is the story of how that machine works.\n\n## 1.1 What a compiler actually does\n\nA compiler is a program that reads one program and produces another. The input is source code written in a high-level language. The output is machine code that a processor can execute. In between, the compiler performs a sequence of transformations, each one taking the program from one representation to another.\n\nThe overall shape of a modern compiler looks like this:\n\n```text\nSource code\n    |\n    v\n[ Front End ]\n",
             "prefill_tokens": 49,
             "decode_tokens": 128
           },
           {
-            "prefill_tps": 167.59747854997684,
-            "decode_tps": 40.70077406096221,
+            "prefill_tps": 171.94380148087336,
+            "decode_tps": 41.74142735663936,
             "mem_gb": null,
             "text": " hide thousands of machine instructions, and the compiler is the machine that performs that hiding.\n\nThis book is about that machine. It is a tour of the ideas that make modern compilers possible, told through the lens of a single language, a small but complete one called Tiny. Tiny is not a toy. It has functions, closures, objects, exceptions, and a type system. It is just small enough that you can hold the whole thing in your head, which is the point.\n\nThe tour has three parts. The first is the theory: the mathematical foundations that make compilation a science rather than an art. The second is the practice",
             "prefill_tokens": 49,
             "decode_tokens": 128
           },
           {
-            "prefill_tps": 167.59747854997684,
-            "decode_tps": 41.86423967188512,
+            "prefill_tps": 171.94380148087336,
+            "decode_tps": 42.090159505674094,
             "mem_gb": null,
             "text": " hide thousands of machine instructions, and the compiler is the machine that performs that hiding.\n\nThis book is about that machine. It is a tour of the ideas that make modern compilers possible, told through the lens of a single language, a small but complete one called Tiny. Tiny is not a toy. It has functions, closures, objects, exceptions, and a type system. It is just small enough that you can hold the whole thing in your head, which is the point.\n\nThe tour has three parts. The first is the theory: the mathematical foundations that make compilation a science rather than an art. The second is the practice",
             "prefill_tokens": 49,
@@ -2145,10 +2145,10 @@
         "note": "Ollama caches the prompt between requests, so its prefill rate is that of the first, cold request (one measurement, not a median); memory is not reported by the API"
       },
       "mlx-lm": {
-        "load_s": 3.55941104888916,
+        "load_s": 3.3450167179107666,
         "runs": [
           {
-            "decode_tps": 23.13911291803891,
+            "decode_tps": 27.82448528248107,
             "prompt_tokens": 49,
             "decode_tokens": 128,
             "ids": [
@@ -2282,11 +2282,11 @@
               198
             ],
             "text": "hide thousands of machine instructions. The next frontier is not a faster CPU or a smaller transistor. It is a new kind of abstraction: one that lets a person describe intent, and lets a machine figure out the rest.\n\nThat is the promise of generative AI. And it is also the source of a great deal of confusion.\n\n## The Abstraction Ladder\n\nEvery major leap in computing has followed the same pattern. The machine gets more capable, the abstraction gets higher, and the person doing the work stops thinking about the details.\n\n-   **1950s:** Programmers wrote binary or machine code.\n",
-            "prefill_tps": 136.3745317934765,
+            "prefill_tps": 141.61917939150865,
             "mem_gb": 15.495826584
           },
           {
-            "decode_tps": 23.081066640115377,
+            "decode_tps": 26.999331003605334,
             "prompt_tokens": 49,
             "decode_tokens": 128,
             "ids": [
@@ -2420,11 +2420,11 @@
               198
             ],
             "text": "hide thousands of machine instructions. The next frontier is not a faster CPU or a smaller transistor. It is a new kind of abstraction: one that lets a person describe intent, and lets a machine figure out the rest.\n\nThat is the promise of generative AI. And it is also the source of a great deal of confusion.\n\n## The Abstraction Ladder\n\nEvery major leap in computing has followed the same pattern. The machine gets more capable, the abstraction gets higher, and the person doing the work stops thinking about the details.\n\n-   **1950s:** Programmers wrote binary or machine code.\n",
-            "prefill_tps": 137.7130455114568,
-            "mem_gb": 15.495842968
+            "prefill_tps": 145.6889629393922,
+            "mem_gb": 15.495826584
           },
           {
-            "decode_tps": 23.560304347611808,
+            "decode_tps": 27.569049269245912,
             "prompt_tokens": 49,
             "decode_tokens": 128,
             "ids": [
@@ -2558,18 +2558,18 @@
               198
             ],
             "text": "hide thousands of machine instructions. The next frontier is not a faster CPU or a smaller transistor. It is a new kind of abstraction: one that lets a person describe intent, and lets a machine figure out the rest.\n\nThat is the promise of generative AI. And it is also the source of a great deal of confusion.\n\n## The Abstraction Ladder\n\nEvery major leap in computing has followed the same pattern. The machine gets more capable, the abstraction gets higher, and the person doing the work stops thinking about the details.\n\n-   **1950s:** Programmers wrote binary or machine code.\n",
-            "prefill_tps": 134.2414723028663,
-            "mem_gb": 15.495842968
+            "prefill_tps": 143.1753741118422,
+            "mem_gb": 15.495875736
           }
         ]
       },
       "cancho-gpu": {
-        "load_s": 3.509,
+        "load_s": 2.823,
         "runs": [
           {
-            "prefill_tps": 21.11158983196898,
-            "decode_tps": 21.474467365573215,
-            "mem_gb": 14.63001088,
+            "prefill_tps": 22.854477611940297,
+            "decode_tps": 24.24126741744608,
+            "mem_gb": 14.633910272,
             "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
             "ids": [
               9959,
@@ -2705,9 +2705,9 @@
             "decode_tokens": 127
           },
           {
-            "prefill_tps": 21.9435736677116,
-            "decode_tps": 22.410446444326805,
-            "mem_gb": 14.629486592,
+            "prefill_tps": 22.10193955796121,
+            "decode_tps": 24.167459562321596,
+            "mem_gb": 14.633009152,
             "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
             "ids": [
               9959,
@@ -2843,9 +2843,9 @@
             "decode_tokens": 127
           },
           {
-            "prefill_tps": 21.23050259965338,
-            "decode_tps": 22.39858906525573,
-            "mem_gb": 14.629797888,
+            "prefill_tps": 23.660067600193145,
+            "decode_tps": 24.14448669201521,
+            "mem_gb": 14.633517056,
             "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
             "ids": [
               9959,

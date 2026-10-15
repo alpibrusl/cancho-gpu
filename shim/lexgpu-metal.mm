@@ -38,6 +38,10 @@ static struct {
     /* The command buffer and encoder that `lxg_launch_async` fills until `lxg_sync`. */
     id<MTLCommandBuffer> cmd;
     id<MTLComputeCommandEncoder> enc;
+    /* The encoder dispatches concurrently: a launch waits for the ones before it (a
+     * buffer barrier) unless `lxg_overlap` said it does not depend on them. */
+    int overlap;
+    int fresh;
     /* The last command buffer committed, which `lxg_sync` waits for. */
     id<MTLCommandBuffer> last;
     char error[4096];
@@ -283,13 +287,24 @@ int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
             g.n_args = 0;
             return fail("lxg_launch_async", "failed to create command buffer");
         }
-        g.enc = [g.cmd computeCommandEncoder];
+        g.enc = [g.cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        g.fresh = 1;
         if (!g.enc) {
             g.cmd = nil;
             g.n_args = 0;
             return fail("lxg_launch_async", "failed to create compute encoder");
         }
     }
+    if (getenv("LEXGPU_SKIP") && strstr(prof_name[fn], getenv("LEXGPU_SKIP"))) {
+        /* Ablation for timing only: leave this kernel out (the outputs are then wrong). */
+        g.n_args = 0;
+        return 0;
+    }
+    if (!g.fresh && !g.overlap) {
+        [g.enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    g.fresh = 0;
+    g.overlap = 0;
     [g.enc setComputePipelineState:g.functions[fn]];
     for (int64_t i = 0; i < g.n_args; i++) {
         [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
@@ -322,6 +337,13 @@ int64_t lxg_prof_dump(void) {
             prof_n[i] = 0;
         }
     }
+    return 0;
+}
+
+/* The next `lxg_launch_async` does not depend on the one before it (nor on any
+ * since the last barrier): the GPU may run them together. */
+int64_t lxg_overlap(void) {
+    g.overlap = 1;
     return 0;
 }
 

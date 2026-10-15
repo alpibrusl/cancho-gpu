@@ -172,6 +172,14 @@ def matvec_fp4(n, k, residual=False):
     return [a + b for a, b in zip(y, r)] if residual else y
 
 
+def matvec_fp4_swiglu(n, k):
+    x, g1, g2 = lcg([k, n, n])
+    w = fp4_weights(n, k)
+    def dot(row, g):
+        return sum(x[c] * e2m1(w[row * k + c][0]) * w[row * k + c][1] * g[row] for c in range(k))
+    return [silu_(dot(row, g1)) * dot(row, g2) for row in range(n)]
+
+
 def silu_(x):
     return x / (1 + math.exp(-x))
 
@@ -281,6 +289,7 @@ ok &= check("swiglu n=100", run("swiglu", ["n=100"])["y"], swiglu(100))
 got = run("attention_d64", ["nkv=2", "g=7", "t=32", "d=64", "tmax=40"])["o"]
 ok &= check("attention_d64 nkv=2 g=7 t=32 d=64 tmax=40", got, attention(2, 7, 32, 64, 40, 0.125))
 ok &= check("matvec_fp4_rows n=16 k=64", run("matvec_fp4_rows", ["n=16", "k=64"])["y"], matvec_fp4(16, 64))
+ok &= check("matvec_fp4_swiglu n=16 k=64", run("matvec_fp4_swiglu", ["n=16", "k=64"])["y"], matvec_fp4_swiglu(16, 64))
 ok &= check("matvec_fp4_res n=16 k=64", run("matvec_fp4_res", ["n=16", "k=64"])["y"], matvec_fp4(16, 64, True))
 got = run("conv_step", ["c=512"])
 want_y, want_ns = conv_step(512)

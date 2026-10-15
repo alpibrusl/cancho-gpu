@@ -92,24 +92,36 @@ model and no other.
 
 ## 5. Speed
 
-Steady decode on this machine (M4 Max, one run of 120 tokens, the weights read from the page cache):
-**45 ms a token, 22 tokens a second**; the weights take 2.2 s to load. Prefill is the same token by token
-(about 21 tokens a second). In the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same
-weights at about 42 tokens a second and MLX-LM (a different 4-bit quantisation) at about 23; the
-reference runtime measured 25 (39 ms a token) when it was run for its tokens. Those other runtimes are
-the target, not a comparison to be proud of: this one reads the weights with kernels the compiler lowers
-one thread to a product, and a profile (`LEXGPU_PROFILE=1`) shows the CPU waiting for the GPU.
-`LEXGPU_PROFILE=2` runs every launch in a buffer of its own and prints the GPU time per kernel; it found the
-cache write (7.7 ms a token, rewriting the whole cache) and the convolution (6.6 ms, one threadgroup), which
-`kv_row.lx` (0.1 ms) and a convolution spread over threadgroups (0.3 ms) replaced: 52 ms to 45. A sweep of
-threads and rows per threadgroup for the NVFP4 matvec changed nothing (the same 212 µs for 17408x5120 in all
-nine): its speed is set by the code the emitter writes, which loads every byte and every `x` separately.
+Steady decode on this machine (M4 Max, the weights read from the page cache): **41 ms a token, 24 tokens a
+second**; the weights take 2.8 s to load. Prefill is the same token by token (about 23 tokens a second). In
+the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weights at about 42 tokens a
+second and MLX-LM (a different 4-bit quantisation) at about 28; the reference runtime measured 25 (39 ms a
+token) when it was run for its tokens.
+
+Where a token goes, measured by leaving kernels out of the real, pipelined run (`LEXGPU_SKIP=<name>`, which
+makes the output wrong and the timing true; `LEXGPU_PROFILE=2` times each kernel alone, which adds about 60
+us of launch overhead to each and so overstates small kernels): the NVFP4 matrix-vector products are about
+31 of the 41 ms and already read at about 430 GB/s, against 546 for the chip; the rest is some 900 small
+launches at about 10 us each. What brought it from 52 ms to 41, all in `.lx` and the runner:
+
+* `kv_row.lx` writes only the new cache row (the position is the cache buffer's byte offset) instead of
+  rewriting the whole cache (7.7 ms a token down to 0.1), and `conv_step.lx` spreads its channels over
+  threadgroups (6.6 ms down to 0.3);
+* `matvec_fp4_swiglu.lx` does the gate and up projections and the activation in one launch;
+* the encoder dispatches concurrently and a barrier separates launches that depend on each other
+  (`lxg_overlap` marks the ones that do not: the q/k/v and the qkv/z/a/b projections and so on).
+
+What did not help: threads or rows per threadgroup (nine schedules, the same time), and the emitter's
+wide-load text on Metal (faster for one kernel alone, 450 against 340 GB/s, slower in the run). A
+hand-written Metal kernel (`experimental/metal-bw/bw.mm`) reaches about 450 GB/s at best on the 17408x5120
+shape, a few percent over the emitted text in the run, so the matvec is within about 20% of the chip's
+bandwidth and no emitter change is planned for it (issue 24).
 
 ## 6. Limits and what is left
 
-* **Speed**: 14.6 GB are read a token, so the floor at the copy bandwidth is about 32 ms; the kernels are
-  at 45. The NVFP4 matvec is the thing to tune, and needs vector loads from the emitter (the reference
-  runtime's decode trick, two codes of a byte at once, is described in its notes), and a batched prefill.
+* **Speed**: 14.6 GB are read a token, so the floor at the copy bandwidth is about 27 ms; the kernels are
+  at 41. What is left is the 900 small launches (more fusion, or fewer kernels per layer) and a batched prefill;
+  the matvec itself is near what the chip gives (§5).
 * **Context**: 256 positions (a constant of the compiled kernels), and attention's one-tile scores cap it at
   1364 on Metal (`docs/kernels.md` §4). The model's context is 262,144.
 * **Raw text** only: no chat template, no thinking-mode handling, greedy by default.

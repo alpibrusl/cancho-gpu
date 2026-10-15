@@ -73,6 +73,10 @@ int64_t lxg_arg(int64_t buf) {
 }
 
 int64_t lxg_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads);
+int64_t lxg_overlap(void) {
+    return 0;
+}
+
 int64_t lxg_flush(void) {
     return 0;
 }
