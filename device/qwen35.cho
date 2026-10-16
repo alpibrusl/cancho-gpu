@@ -823,21 +823,27 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     var b_logitsb = 0 - 1;
     let st3b = mem.list(m);
     let st3c = mem.list(m);
+    let st3d = mem.list(m);
+    let stx = mem.list(m);
     if mtp_on == 1 {
-        b_logitsb = metal.cgpu_alloc(ffi, 4 * 2 * vocab());
+        b_logitsb = metal.cgpu_alloc(ffi, 4 * 3 * vocab());
         l = 0;
         while l < layers() {
             if is_attention(l) {
                 mem.push(m, st3b, 0 - 1);
                 mem.push(m, st3c, 0 - 1);
+                mem.push(m, st3d, 0 - 1);
+                mem.push(m, stx, 0 - 1);
             } else {
                 mem.push(m, st3b, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
                 mem.push(m, st3c, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
+                mem.push(m, st3d, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
+                mem.push(m, stx, metal.cgpu_alloc(ffi, 4 * 3 * 10240));
             }
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 132);
+    let eng = mem.grab(m, 140);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -855,6 +861,8 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 129] = b_logitsb;
     m[eng + 130] = st3b;
     m[eng + 131] = st3c;
+    m[eng + 138] = st3d;
+    m[eng + 139] = stx;
     m[eng + 99] = k_attn1;
     m[eng + 100] = k_attn2;
     m[eng + 0] = k_rms;
@@ -957,7 +965,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 97] = kdir;
     m[eng + 98] = 0;
     if mtp_on == 1 {
-        if compile_few(m, t, ffi, fs, eng, kdir, 2) < 0 {
+        if compile_few(m, t, ffi, fs, eng, kdir, 3) < 0 {
             return 0 - 1;
         }
     }
@@ -1077,6 +1085,8 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     let b_logitsb = m[eng + 129];
     let st3b = m[eng + 130];
     let st3c = m[eng + 131];
+    let st3d = m[eng + 138];
+    let stx = m[eng + 139];
     let final_norm = m[eng + 90];
     let head = m[eng + 91];
     let b_mask = m[eng + 61];
@@ -1208,6 +1218,10 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                     cs_now = mem.get(m, st2, l);
                     cs_next = mem.get(m, st1, l);
                 }
+                if set == 1 && tt == 2 {
+                    // the window two tokens ago must survive a rejection, so the third row writes aside
+                    cs_next = mem.get(m, stx, l);
+                }
                 go(m, ffi, k_conv, at(b_qkvs, 4 * 10240 * tt), cs_now, mem.get(m, w, 5), at(b_convs, 4 * 10240 * tt), cs_next, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_qknorm, at(b_convs, 4 * 10240 * tt), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 ov(ffi);
@@ -1217,9 +1231,12 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 if set == 1 {
                     if tt == 0 {
                         s_out = mem.get(m, st3b, l);
-                    } else {
+                    } else if tt == 1 {
                         s_in = mem.get(m, st3b, l);
                         s_out = mem.get(m, st3c, l);
+                    } else {
+                        s_in = mem.get(m, st3c, l);
+                        s_out = mem.get(m, st3d, l);
                     }
                 }
                 go(m, ffi, k_delta, s_in, at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), s_out, at(b_ys, 4 * 6144 * tt));
@@ -1245,13 +1262,18 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
         }
     }
     // The single-token path opens one mask position a step; open this chunk's.
+    // (A verify opens only its first: `commit` opens the ones it keeps.)
+    var nopen = rows;
+    if set == 1 {
+        nopen = 1;
+    }
     let open = reserve(m, 4 * rows);
     var oc = 0;
-    while oc < rows {
+    while oc < nopen {
         put_f32(t, open + 4 * oc, 0);
         oc = oc + 1;
     }
-    metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * rows]);
+    metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * nopen]);
     m[mem.text_slot()] = chunk_mark;
     return 0;
 }
@@ -1492,6 +1514,15 @@ pub fn hidden_buf[&m](m: &!m [int], eng: int) -> [] int {
     return m[eng + 36];
 }
 
+// What the draft head left after its last step, for a second step to take as its hidden state: `raw` 0 is
+// the output of its final norm, 1 the residual before it.
+pub fn head_hidden[&m](m: &!m [int], eng: int, raw: int) -> [] int {
+    if raw == 1 {
+        return m[eng + 109];
+    }
+    return m[eng + 36];
+}
+
 pub fn has_head[&m](m: &!m [int], eng: int) -> [] bool {
     return m[eng + 114] == 1;
 }
@@ -1623,25 +1654,46 @@ pub fn mtp_step[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
     return 0;
 }
 
-// After a verify (`feed_rows` with set 1): keep the delta states after both tokens (`accepted`) or after the
-// first only. Three buffers rotate, so nothing is copied: the committed one, and two spares the verify wrote.
-pub fn commit[&m](m: &!m [int], eng: int, accepted: bool) -> [] int {
+// After a verify of three (`feed_rows` with set 1, first position `pos`): keep the first `kept` rows (1 to 3).
+// The delta state after row `kept - 1` becomes the committed one: its buffer is swapped into the committed
+// slot and the old committed one takes its place as a spare, so nothing is copied. The convolution windows
+// alternate by position parity; the third row wrote aside, and is swapped in when all three are kept. The
+// positions of the kept rows are opened in the mask (the first already is).
+pub fn commit[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, kept: int, pos: int) -> [ffi("libmetalgpu")] int {
+    let st1 = m[eng + 93];
+    let st2 = m[eng + 94];
     let st3 = m[eng + 95];
-    let st3b = m[eng + 130];
-    let st3c = m[eng + 131];
+    let stx = m[eng + 139];
+    var spare = m[eng + 130];
+    if kept == 2 {
+        spare = m[eng + 131];
+    } else if kept == 3 {
+        spare = m[eng + 138];
+    }
+    // the list holding the window that was `next` for the first row
+    var nxt = st2;
+    if pos % 2 == 1 {
+        nxt = st1;
+    }
     var l = 0;
     while l < layers() {
         if !is_attention(l) {
             let old = mem.get(m, st3, l);
-            if accepted {
-                mem.set(m, st3, l, mem.get(m, st3c, l));
-                mem.set(m, st3c, l, old);
-            } else {
-                mem.set(m, st3, l, mem.get(m, st3b, l));
-                mem.set(m, st3b, l, old);
+            mem.set(m, st3, l, mem.get(m, spare, l));
+            mem.set(m, spare, l, old);
+            if kept == 3 {
+                let w = mem.get(m, nxt, l);
+                mem.set(m, nxt, l, mem.get(m, stx, l));
+                mem.set(m, stx, l, w);
             }
         }
         l = l + 1;
+    }
+    if kept > 1 {
+        let open = reserve(m, 4 * 2);
+        put_f32(t, open, 0);
+        put_f32(t, open + 4, 0);
+        metal.cgpu_upload_at(ffi, m[eng + 61], 4 * (pos + 1), t[open..open + 4 * (kept - 1)]);
     }
     return 0;
 }
@@ -1682,7 +1734,7 @@ fn compile_few[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
 // hidden state the head will draft from, that hidden state (a device buffer reference), and the one or two
 // tokens the last round chose. Make it after the prompt has been fed with logits and the first token drawn.
 pub fn spec_init[&m](m: &!m [int], eng: int, last: int, pos: int) -> [] int {
-    let sp = mem.grab(m, 6);
+    let sp = mem.grab(m, 7);
     m[sp] = last;
     m[sp + 1] = pos;
     m[sp + 2] = hidden_buf(m, eng);
@@ -1693,7 +1745,7 @@ pub fn spec_last[&m](m: &!m [int], sp: int) -> [] int {
     return m[sp];
 }
 
-// The position the next draft is made at: the caller keeps it below `tmax() - 3`.
+// The position the next draft is made at: the caller keeps it below `tmax() - 4`.
 pub fn spec_pos[&m](m: &!m [int], sp: int) -> [] int {
     return m[sp + 1];
 }
@@ -1703,12 +1755,12 @@ pub fn spec_token[&m](m: &!m [int], sp: int, i: int) -> [] int {
     return m[sp + 3 + i];
 }
 
-// One round: the head drafts the token after `last`; the model checks [last, draft] in one pass over the
-// weights; `smp` (the request's sampler) draws the token after `last` from the first row, and, when that is
-// the draft, the token after it from the second, for free. Answers how many tokens the round chose (1 or 2).
-// Drawing from the model's own rows with the request's sampler makes the output distributed as if no draft
-// had been made; `gsmp` (greedy) only picks the draft. `lgd` is a pool region of one vocabulary of f32 and
-// `rows` one of two, for the logits.
+// One round: the head drafts the token after `last` and, from its own output, the one after that; the model
+// checks [last, d1, d2] in one pass over the weights; `smp` (the request's sampler) draws the token after
+// `last` from the first row and, while a draft is the token drawn, the next one from the following row, for
+// free. Answers how many tokens the round chose (1 to 3). Drawing from the model's own rows with the
+// request's sampler makes the output distributed as if no draft had been made; `gsmp` (greedy) only picks
+// the drafts. `lgd` is a pool region of one vocabulary of f32 and `rows` one of three, for the logits.
 pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, sp: int, lgd: int, rows: int, smp: int, gsmp: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     let v = vocab();
     let last = m[sp];
@@ -1718,34 +1770,52 @@ pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         return 0 - 1;
     }
     let (dn, dp) = sampler.nucleus(m, t, gsmp, lgd, v);
-    let d = sampler.draw(m, gsmp, dn, dp);
-    let two = mem.list(m);
-    mem.push(m, two, last);
-    mem.push(m, two, d);
-    if feed_rows(m, t, ffi, fs, eng, two, 0, pos + 1, 2, 1, rows) < 0 {
+    let d1 = sampler.draw(m, gsmp, dn, dp);
+    // the second draft: the head again, on its own output and the token it just drafted
+    if mtp_step(m, t, ffi, fs, eng, head_hidden(m, eng, 0), d1, pos + 1, lgd) < 0 {
+        return 0 - 1;
+    }
+    let (en, ep) = sampler.nucleus(m, t, gsmp, lgd, v);
+    let d2 = sampler.draw(m, gsmp, en, ep);
+    let three = mem.list(m);
+    mem.push(m, three, last);
+    mem.push(m, three, d1);
+    mem.push(m, three, d2);
+    if feed_rows(m, t, ffi, fs, eng, three, 0, pos + 1, 3, 1, rows) < 0 {
         return 0 - 1;
     }
     let (an, ap) = sampler.nucleus(m, t, smp, rows, v);
     let t1 = sampler.draw(m, smp, an, ap);
     m[sp + 3] = t1;
-    if t1 == d && !is_stop(t1) {
+    var kept = 1;
+    if t1 == d1 && !is_stop(t1) {
         let (bn, bp) = sampler.nucleus(m, t, smp, rows + 4 * v, v);
-        m[sp + 4] = sampler.draw(m, smp, bn, bp);
-        commit(m, eng, true);
-        // the head's cache at `pos + 1` pairs the model's state there with the draft that was right
-        if mtp_step(m, t, ffi, fs, eng, hidden_row(m, eng, 0), d, pos + 1, 0 - 1) < 0 {
+        let t2 = sampler.draw(m, smp, bn, bp);
+        m[sp + 4] = t2;
+        kept = 2;
+        if t2 == d2 && !is_stop(t2) {
+            let (cn, cp) = sampler.nucleus(m, t, smp, rows + 8 * v, v);
+            m[sp + 5] = sampler.draw(m, smp, cn, cp);
+            kept = 3;
+        }
+    }
+    commit(m, t, ffi, eng, kept, pos + 1);
+    // the head's cache at `pos + j` pairs the model's state there with the draft that was right
+    var j = 1;
+    while j < kept {
+        var dj = d1;
+        if j == 2 {
+            dj = d2;
+        }
+        if mtp_step(m, t, ffi, fs, eng, hidden_row(m, eng, j - 1), dj, pos + j, 0 - 1) < 0 {
             return 0 - 1;
         }
-        m[sp] = m[sp + 4];
-        m[sp + 1] = pos + 2;
-        m[sp + 2] = hidden_row(m, eng, 1);
-        return 2;
+        j = j + 1;
     }
-    commit(m, eng, false);
-    m[sp] = t1;
-    m[sp + 1] = pos + 1;
-    m[sp + 2] = hidden_row(m, eng, 0);
-    return 1;
+    m[sp] = m[sp + 2 + kept];
+    m[sp + 1] = pos + kept;
+    m[sp + 2] = hidden_row(m, eng, kept - 1);
+    return kept;
 }
 
 pub fn tokenizer[&m](m: &!m [int], eng: int) -> [] int {

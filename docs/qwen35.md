@@ -136,9 +136,9 @@ A plain step is at the memory floor, so more tokens a second has to mean more to
 a multi-token-prediction head (`mtp.*`, 239 MB: `fc` over `[norm(embedding), norm(hidden)]`, one attention layer of
 the model's own shape, `mtp.norm`, and the model's `lm_head`). It reads the model's final-normed hidden state and
 the token chosen from it, and drafts the token after that. `cancho-gpu-run35 --spec` (and the server, unless
-`--no-spec`) runs rounds of: draft with the head; check `[last, draft]` in one pass over the weights (two rows);
-draw the token after `last` from the first row with the request's sampler, and, when it is the draft, the token
-after it from the second row for free. Drawing from the model's own rows with the request's sampler leaves the
+`--no-spec`) runs rounds of: draft with the head; check `[last, draft, draft]` in one pass over the weights (three rows);
+draw the token after `last` from the first row with the request's sampler, and, while each is the draft, the next
+one from the following row for free (up to three tokens a round). Drawing from the model's own rows with the request's sampler leaves the
 output distributed as if no draft had been made: at temperature 0 the tokens are exactly those of plain decoding.
 
 * **Acceptance** (`--mtp-accept`, greedy, 64 tokens): 95.2% on prose, 96.8% on code; in `--spec` runs 46 of 49
@@ -158,6 +158,12 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
 * **Speed:** 33-35 tokens a second through the server (31 at temperature 1) against 24 without the head; a round
   is about 5 ms of draft, 47 of verify and 2.6 of sampling on the CPU for 1.9 tokens. The head's cache is warmed
   through prefill (without it acceptance falls from about 0.9 to about 0.5): a position costs about 1 ms more.
+* **A second draft** (a chain: the head again, on its own final-normed output and the token it just drafted) is
+  accepted, given the first, 53% of the time on prose, 67% on an explanation, 92% on code (`--mtp-accept`
+  prints it; the raw residual instead of the normed output is 1-3 points worse). Checking three rows gives 2.2-2.9
+  tokens a round for 3.3 rounds in 2.5; but a round then costs about 25% more (the third row adds about 10 ms
+  to the verify, the second draft about 6, and a warm step per kept row), so the net speed is -1% on prose and
+  +9% on code (alternating runs, 96 tokens, five each). The tokens are the same as plain greedy.
 * **Costs:** 0.8 GB more memory (the head 239 MB, two spare delta states 600 MB) and about 2 s more to start (the
   few-row kernels are compiled at load).
 

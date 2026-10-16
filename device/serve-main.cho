@@ -376,7 +376,7 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
         sp = qwen35.spec_init(m, eng, first_tok, n_prompt - 1);
     }
     while m[st + 4] == 0 && m[st + 6] == 1 {
-        if spec && qwen35.spec_pos(m, sp) + 3 >= qwen35.tmax() {
+        if spec && qwen35.spec_pos(m, sp) + 4 >= qwen35.tmax() {
             // the context is nearly full: finish with single steps
             last = qwen35.spec_last(m, sp);
             at = qwen35.spec_pos(m, sp) + 1;
