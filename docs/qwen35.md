@@ -145,27 +145,40 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   rounds on a question, 42 of 52 on random words. Two things about the head are inferred, not documented
   (`lex-gpu/docs/qwen.md`): every norm of it is stored as a delta from 1, and the embedding comes first in the
   concatenation into `fc`; the wrong choice accepts 0.4%.
-* **The check costs 1.15 passes** for two tokens (47 ms against 41 for one): the few-row kernels
-  (`matvec_fp4_*_few.chx`, 256 threads, 32 weight rows) read the weights once. Their schedule was chosen inside
-  the running verify: one kernel timed alone pointed to 1024 threads, which made the verify 30% slower.
-* **Rollback is a pointer swap.** The 48 delta layers' memory is a state updated in place, so the verify writes
-  token 0's state and token 1's into two spare buffers and `commit` keeps one of the three (nothing copied); an
-  attention layer needs nothing (positions are overwritten) and the convolution window already alternates between
-  two buffers by position.
-* **Equivalence:** `scripts/spec-check.sh` requires the same tokens as plain greedy decoding, in the same order,
-  on seven prompts (96 tokens each: prose, code, a chat turn, random words); they are the same, at 1.28-1.46x the
-  speed. `tests/serve_check.py` holds the server's speculative answers to the engine's.
-* **Speed:** 33-35 tokens a second through the server (31 at temperature 1) against 24 without the head; a round
-  is about 5 ms of draft, 47 of verify and 2.6 of sampling on the CPU for 1.9 tokens. The head's cache is warmed
-  through prefill (without it acceptance falls from about 0.9 to about 0.5): a position costs about 1 ms more.
-* **A second draft** (a chain: the head again, on its own final-normed output and the token it just drafted) is
+* **The check** reads the weights once for three rows (the few-row kernels, `matvec_fp4_*_few.chx`, 256 threads,
+  32 weight rows; their schedule was chosen inside the running verify, since one kernel timed alone pointed to
+  1024 threads, which made the verify 30% slower). The GPU time of a whole round (two drafts, the verify, three
+  argmaxes) is about 57 ms on the code prompt, against 41 for one plain token.
+* **A chain of two drafts.** The head drafts the token after `last`, and then, on its own final-normed output and
+  the token it just drafted, the one after that; the model checks `[last, d1, d2]`. The second draft is
   accepted, given the first, 53% of the time on prose, 67% on an explanation, 92% on code (`--mtp-accept`
-  prints it; the raw residual instead of the normed output is 1-3 points worse). Checking three rows gives 2.2-2.9
-  tokens a round for 3.3 rounds in 2.5; but a round then costs about 25% more (the third row adds about 10 ms
-  to the verify, the second draft about 6, and a warm step per kept row), so the net speed is -1% on prose and
-  +9% on code (alternating runs, 96 tokens, five each). The tokens are the same as plain greedy.
-* **Costs:** 0.8 GB more memory (the head 239 MB, two spare delta states 600 MB) and about 2 s more to start (the
-  few-row kernels are compiled at load).
+  prints it; the head's raw residual instead of its normed output is 1-3 points worse): 2.2 to 2.9 tokens a
+  round.
+* **Nothing between the steps goes to the CPU.** A round is encoded and run as one command buffer and one wait:
+  the head's steps and the verify are launches over device buffers, the token one step chose (a hand-written
+  Metal argmax, `tests/chx/head_ops.metal`) is the next step's input (a hand-written gather over the embedding
+  table, which is on the device, 2.5 GB) and the verify's rows 1 and 2; with a greedy sampler the verify's three
+  rows are argmaxed there too and only 32 bytes come back. The surface has no index-valued load and no argmax,
+  hence the two kernels in Metal; they are the first thing to go when it has. The head's cache entries for the
+  rows a round kept are written at the start of the next round, in the same buffer.
+* **Rollback is a pointer swap.** The 48 delta layers' memory is a state updated in place, so the verify writes
+  the state after each row into three spare buffers and `commit` keeps one of the four (nothing copied); an
+  attention layer needs nothing (positions are overwritten), the convolution window alternates between two
+  buffers by position and the third row's goes to a spare, swapped in when all three rows are kept; the mask
+  opens only the kept positions.
+* **Equivalence:** `scripts/spec-check.sh` requires the same tokens as plain greedy decoding, in the same order,
+  on seven prompts (96 tokens each: prose, code, a chat turn, random words); they are the same, at 1.4-1.8x the
+  speed. `tests/serve_check.py` holds the server's speculative answers to the engine's. (A greedy tie is
+  broken to the last of the equals on the CPU and on the device alike.)
+* **Speed** (interleaved runs on this M4 Max, 96 tokens, the best of four, against the two-row round this
+  replaces, with other jobs loading the machine): in one session 2698 against 2840 ms on prose (-5%), 2264
+  against 2596 on code (-13%), 2617 against 2825 on an explanation (-7%); in a busier one 2691 against 3069
+  (-12%), 2266 against 2889 (-22%), 2659 against 3114 (-15%). The gain is larger the busier the CPU, since the
+  old round did more of its work there; only same-session pairs compare. The head's cache is warmed through
+  prefill (without it acceptance falls from about 0.9 to about 0.5): a position costs about 1 ms more.
+* **Costs:** 2.7 GB more resident memory (14.1 to 16.7 GB for the server, measured: the embedding table on the
+  device 2.5 GB, the head 239 MB; the spare delta states are allocated but only touched when a round runs) and
+  about 3 s more to start (the table is read once; the few-row kernels are compiled at load).
 
 ## 6. Limits and what is left
 
@@ -176,6 +189,6 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   them and uses the smallest that covers the conversation), and attention's one-tile scores cap it at 1364 on
   Metal (`docs/kernels.md` §4). The model's context is 262,144.
 * **`cancho-gpu-run35` takes raw text**, greedy; the chat template, thinking mode and sampling are the server's
-  (`docs/serving.md`), over the same engine (`device/qwen35.cho`: `load`, `reset`, `feed`, `feed_one`).
+  (`docs/serving.md`), over the same engine (`device/qwen35.cho`: `load`, `reset`, `feed_one`; the draft head and the rounds, with `feed`, are `device/qwen35spec.cho`).
 * **Positions**: text positions only (the model's interleaved m-RoPE reduces to plain RoPE when the three
   position streams are equal, which is all this feeds it); the multi-token-prediction head is used only as above.
