@@ -40,5 +40,9 @@ jobs:
           mkdir -p ~/cancho-bin
           cp target/release/cancho ~/cancho-bin/
 
+      # tests/chat.sh renders the model's chat template through jinja2 as its oracle.
+      - name: jinja2
+        run: sudo apt-get install -y python3-jinja2
+
       - name: Gate
         run: CANCHO=~/cancho-bin/cancho scripts/gate.sh

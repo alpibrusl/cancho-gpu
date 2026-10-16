@@ -50,6 +50,7 @@ import safetensors;
 import safetensors_dump;
 import fileio;
 import tokenize;
+import chat;
 import sample;
 
 fn words() -> [] int {
@@ -66,7 +67,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.chx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.chx> [name=value ...] [--run]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu chat <request.json>\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>\n");
     return 2;
 }
 
@@ -181,6 +182,9 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
     }
     if text.is(t, cmd, "sample") && arg_count(args) == 8 {
         return sample.run(m, t, io, fs, args);
+    }
+    if text.is(t, cmd, "chat") && arg_count(args) == 3 {
+        return chat.run(m, t, io, fs, args);
     }
     if text.is(t, cmd, "tokenize") && arg_count(args) == 4 {
         return tokenize.run(m, t, io, fs, args);

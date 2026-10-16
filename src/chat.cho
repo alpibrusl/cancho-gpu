@@ -1,0 +1,527 @@
+edition 5;
+module chat;
+
+// `chat` -- an OpenAI-style chat-completions request, the model's chat template and the JSON answers.
+//
+// The template is Qwen3.8's own (`chat_template` of its `tokenizer_config.json`), written out for the
+// requests this server takes: text messages (a string, or parts of type text), a system message first,
+// the model's `<think>` blocks, and the reasoning instructions. Tool calls and images are refused by name
+// rather than rendered wrongly. `tests/chat.sh` holds `render` to the real template run through jinja2 on
+// a corpus of requests, byte for byte.
+//
+// A request is a record (`parse`): the rendered prompt and the sampling parameters. Floats are kept in
+// thousandths so the record stays integers.
+
+import std.io;
+import std.json;
+import mem;
+import text;
+import err;
+import jstr;
+import cli;
+import fileio;
+
+pub fn f_prompt() -> [] int {
+    return 0;
+}
+
+pub fn f_max_tokens() -> [] int {
+    return 1;
+}
+
+pub fn f_temperature() -> [] int {
+    return 2;
+}
+
+pub fn f_top_p() -> [] int {
+    return 3;
+}
+
+pub fn f_top_k() -> [] int {
+    return 4;
+}
+
+pub fn f_seed() -> [] int {
+    return 5;
+}
+
+pub fn f_stream() -> [] int {
+    return 6;
+}
+
+pub fn f_think() -> [] int {
+    return 7;
+}
+
+pub fn f_model() -> [] int {
+    return 8;
+}
+
+pub fn f_usage() -> [] int {
+    return 9;
+}
+
+// The text of a string node of the tape over `t[hs..]`: `(start, length)`, in place when it has no
+// escape, decoded into the pool when it has.
+fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] (int, int) {
+    let from = hs + m[tape + 3 * i + 1];
+    let to = hs + m[tape + 3 * i + 2];
+    if json.string_plain(m[tape..tape + 3 * i + 3], i) {
+        return (from, to - from);
+    }
+    let h = jstr.decode(m, t, from, to);
+    return (text.start(h), text.size(h));
+}
+
+fn is_space(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12;
+}
+
+// `h` without leading and trailing whitespace (Jinja's `trim`).
+fn trim[&t](t: &!t [byte], h: int) -> [] int {
+    var a = text.start(h);
+    var b = text.start(h) + text.size(h);
+    while a < b && is_space(int_of(t[a])) {
+        a = a + 1;
+    }
+    while b > a && is_space(int_of(t[b - 1])) {
+        b = b - 1;
+    }
+    return text.handle(a, b - a);
+}
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: &static [byte]) -> [] int {
+    return err.fail(m, t, "invalid-request", text.lit(m, t, msg));
+}
+
+// The message text of a `content` node: a string, or an array of parts of type text. Trimmed. -1 with the
+// refusal recorded for anything else (images, audio, a missing text).
+fn content_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, node: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    if node < 0 || json.is_null(m[tape..tape + words], node) {
+        return text.empty();
+    }
+    if json.is_string(m[tape..tape + words], node) {
+        let (s, l) = node_text(m, t, tape, hs, node);
+        return trim(t, text.handle(s, l));
+    }
+    if !json.is_array(m[tape..tape + words], node) {
+        return bad(m, t, "message content must be a string or an array of text parts");
+    }
+    let parts = mem.list(m);
+    let k = json.count(m[tape..tape + words], node);
+    var j = 0;
+    var item = json.at(m[tape..tape + words], node, 0);
+    while j < k {
+        if !json.is_object(m[tape..tape + words], item) {
+            return bad(m, t, "a content part must be an object");
+        }
+        let img = json.get(t[hs..hs + n], m[tape..tape + words], item, "image_url");
+        let img2 = json.get(t[hs..hs + n], m[tape..tape + words], item, "image");
+        let vid = json.get(t[hs..hs + n], m[tape..tape + words], item, "video");
+        let aud = json.get(t[hs..hs + n], m[tape..tape + words], item, "input_audio");
+        if img >= 0 || img2 >= 0 || vid >= 0 || aud >= 0 {
+            return bad(m, t, "images, video and audio are not supported");
+        }
+        let tx = json.get(t[hs..hs + n], m[tape..tape + words], item, "text");
+        if tx < 0 || !json.is_string(m[tape..tape + words], tx) {
+            return bad(m, t, "a content part needs a text");
+        }
+        let (s, l) = node_text(m, t, tape, hs, tx);
+        mem.push(m, parts, text.handle(s, l));
+        item = json.skip(m[tape..tape + words], item);
+        j = j + 1;
+    }
+    return trim(t, text.joined(m, t, parts, ""));
+}
+
+fn instructions[&m, &t](m: &!m [int], t: &!t [byte], effort: int) -> [] int {
+    if text.is(t, effort, "xhigh") {
+        return text.lit(m, t, "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.");
+    }
+    if text.is(t, effort, "low") {
+        return text.lit(m, t, "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.");
+    }
+    return text.empty();
+}
+
+// The prompt of the request in the tape over `t[hs..hs + n]`: the template rendered for `think` (whether
+// the model reasons first) and `effort` (a text handle: xhigh, medium or low). -1 with the refusal recorded.
+pub fn render[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, think: bool, effort: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let msgs = json.get(t[hs..hs + n], m[tape..tape + words], 0, "messages");
+    if msgs < 0 || !json.is_array(m[tape..tape + words], msgs) || json.count(m[tape..tape + words], msgs) == 0 {
+        return bad(m, t, "messages must be a non-empty array");
+    }
+    let total = json.count(m[tape..tape + words], msgs);
+    var instr = text.empty();
+    if think {
+        instr = instructions(m, t, effort);
+    }
+    let parts = mem.list(m);
+    // The first message, when it is the system message, carries the reasoning instructions.
+    var first = json.at(m[tape..tape + words], msgs, 0);
+    var role0 = 0 - 1;
+    let r0 = json.get(t[hs..hs + n], m[tape..tape + words], first, "role");
+    if r0 >= 0 && json.is_string(m[tape..tape + words], r0) {
+        role0 = r0;
+    }
+    var has_system = false;
+    if role0 >= 0 && json.string_equals(t[hs..hs + n], m[tape..tape + words], role0, "system") {
+        has_system = true;
+    }
+    var sys = text.empty();
+    if has_system {
+        let c = json.get(t[hs..hs + n], m[tape..tape + words], first, "content");
+        sys = content_of(m, t, tape, hs, n, c);
+        if sys < 0 {
+            return 0 - 1;
+        }
+    }
+    if text.size(sys) > 0 || text.size(instr) > 0 {
+        mem.push(m, parts, text.lit(m, t, "<|im_start|>system\n"));
+        if text.size(instr) > 0 {
+            mem.push(m, parts, instr);
+            if text.size(sys) > 0 {
+                mem.push(m, parts, text.lit(m, t, "\n\n"));
+            }
+        }
+        mem.push(m, parts, sys);
+        mem.push(m, parts, text.lit(m, t, "<|im_end|>\n"));
+    }
+    var users = 0;
+    var i = 0;
+    var msg = first;
+    while i < total {
+        let rn = json.get(t[hs..hs + n], m[tape..tape + words], msg, "role");
+        if rn < 0 || !json.is_string(m[tape..tape + words], rn) {
+            return bad(m, t, "every message needs a role");
+        }
+        let c = json.get(t[hs..hs + n], m[tape..tape + words], msg, "content");
+        if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "system") {
+            if i != 0 {
+                return bad(m, t, "a system message must be the first message");
+            }
+        } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "user") {
+            let body = content_of(m, t, tape, hs, n, c);
+            if body < 0 {
+                return 0 - 1;
+            }
+            users = users + 1;
+            mem.push(m, parts, text.lit(m, t, "<|im_start|>user\n"));
+            mem.push(m, parts, body);
+            mem.push(m, parts, text.lit(m, t, "<|im_end|>\n"));
+        } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "assistant") {
+            let calls = json.get(t[hs..hs + n], m[tape..tape + words], msg, "tool_calls");
+            if calls >= 0 && json.is_array(m[tape..tape + words], calls) && json.count(m[tape..tape + words], calls) > 0 {
+                return bad(m, t, "tool calls are not supported");
+            }
+            let body = content_of(m, t, tape, hs, n, c);
+            if body < 0 {
+                return 0 - 1;
+            }
+            var reasoning = text.empty();
+            let rc = json.get(t[hs..hs + n], m[tape..tape + words], msg, "reasoning_content");
+            if rc >= 0 && json.is_string(m[tape..tape + words], rc) {
+                let (s, l) = node_text(m, t, tape, hs, rc);
+                reasoning = trim(t, text.handle(s, l));
+            }
+            mem.push(m, parts, text.lit(m, t, "<|im_start|>assistant\n<think>\n"));
+            mem.push(m, parts, reasoning);
+            mem.push(m, parts, text.lit(m, t, "\n</think>\n\n"));
+            mem.push(m, parts, body);
+            mem.push(m, parts, text.lit(m, t, "<|im_end|>\n"));
+        } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "tool") {
+            return bad(m, t, "tool messages are not supported");
+        } else {
+            return bad(m, t, "unexpected message role");
+        }
+        msg = json.skip(m[tape..tape + words], msg);
+        i = i + 1;
+    }
+    if users == 0 {
+        return bad(m, t, "no user query found in messages");
+    }
+    mem.push(m, parts, text.lit(m, t, "<|im_start|>assistant\n"));
+    if think {
+        mem.push(m, parts, text.lit(m, t, "<think>\n"));
+    } else {
+        mem.push(m, parts, text.lit(m, t, "<think>\n\n</think>\n\n"));
+    }
+    return text.joined(m, t, parts, "");
+}
+
+// A number node as thousandths (a float or an integer), or `dflt` when the key is absent or null.
+fn milli[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return dflt;
+    }
+    if json.is_int(m[tape..tape + words], v) && json.fits_int(t[hs..hs + n], m[tape..tape + words], v) {
+        return 1000 * json.to_int(t[hs..hs + n], m[tape..tape + words], v);
+    }
+    if json.is_number(m[tape..tape + words], v) {
+        return truncate(json.to_float(t[hs..hs + n], m[tape..tape + words], v) * 1000.0 + 0.5);
+    }
+    return err.fail(m, t, "invalid-request", text.f1(m, t, "`$` must be a number", text.lit(m, t, key)));
+}
+
+fn integer[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return dflt;
+    }
+    if json.is_int(m[tape..tape + words], v) && json.fits_int(t[hs..hs + n], m[tape..tape + words], v) {
+        return json.to_int(t[hs..hs + n], m[tape..tape + words], v);
+    }
+    return err.fail(m, t, "invalid-request", text.f1(m, t, "`$` must be an integer", text.lit(m, t, key)));
+}
+
+fn flag[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return dflt;
+    }
+    if json.is_bool(m[tape..tape + words], v) {
+        if json.to_bool(m[tape..tape + words], v) {
+            return 1;
+        }
+        return 0;
+    }
+    return err.fail(m, t, "invalid-request", text.f1(m, t, "`$` must be a boolean", text.lit(m, t, key)));
+}
+
+// Parse the request body `t[hs..hs + n]`: the record described above, or -1 with the refusal recorded.
+// `default_think` is whether the model reasons when the request does not say (`enable_thinking`, `think` or
+// `reasoning_effort`). `ctx` bounds `max_tokens` with the prompt.
+pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int, default_think: bool) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        let code = json.error_code(nodes);
+        return err.fail(m, t, "invalid-json", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
+    }
+    if !json.is_object(m[tape..tape + words], 0) {
+        return bad(m, t, "the body must be a JSON object");
+    }
+    let tools = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tools");
+    if tools >= 0 && json.is_array(m[tape..tape + words], tools) && json.count(m[tape..tape + words], tools) > 0 {
+        return bad(m, t, "tools are not supported");
+    }
+    var think = default_think;
+    // The template's own default effort, when thinking is on and none is named.
+    var effort = text.lit(m, t, "xhigh");
+    let et = flag(m, t, tape, hs, n, 0, "enable_thinking", 2);
+    if et < 0 {
+        return 0 - 1;
+    }
+    if et == 1 {
+        think = true;
+    } else if et == 0 {
+        think = false;
+    }
+    let th = json.get(t[hs..hs + n], m[tape..tape + words], 0, "think");
+    if th >= 0 && json.is_bool(m[tape..tape + words], th) {
+        think = json.to_bool(m[tape..tape + words], th);
+    } else if th >= 0 && json.is_string(m[tape..tape + words], th) {
+        think = true;
+        let (s, l) = node_text(m, t, tape, hs, th);
+        effort = text.handle(s, l);
+    }
+    let re = json.get(t[hs..hs + n], m[tape..tape + words], 0, "reasoning_effort");
+    if re >= 0 && json.is_string(m[tape..tape + words], re) {
+        let (s, l) = node_text(m, t, tape, hs, re);
+        effort = text.handle(s, l);
+        if et == 2 && !(th >= 0) {
+            think = true;
+        }
+    }
+    // OpenAI's names for the efforts: `high` is the model's `xhigh`.
+    if text.is(t, effort, "high") {
+        effort = text.lit(m, t, "xhigh");
+    }
+    if !(text.is(t, effort, "xhigh") || text.is(t, effort, "medium") || text.is(t, effort, "low")) {
+        return bad(m, t, "reasoning_effort must be low, medium or high");
+    }
+    let prompt = render(m, t, tape, hs, n, think, effort);
+    if prompt < 0 {
+        return 0 - 1;
+    }
+    let nchoices = integer(m, t, tape, hs, n, 0, "n", 1);
+    if nchoices != 1 {
+        if nchoices > 0 {
+            return bad(m, t, "only n = 1 is supported");
+        }
+        return 0 - 1;
+    }
+    var max_tokens = integer(m, t, tape, hs, n, 0, "max_completion_tokens", 0 - 1);
+    if max_tokens == 0 - 1 {
+        max_tokens = integer(m, t, tape, hs, n, 0, "max_tokens", 0 - 1);
+    }
+    if max_tokens == 0 {
+        return bad(m, t, "max_tokens must be positive");
+    }
+    let temperature = milli(m, t, tape, hs, n, 0, "temperature", 1000);
+    let top_p = milli(m, t, tape, hs, n, 0, "top_p", 950);
+    let top_k = integer(m, t, tape, hs, n, 0, "top_k", 20);
+    let seed = integer(m, t, tape, hs, n, 0, "seed", 0 - 1);
+    let stream = flag(m, t, tape, hs, n, 0, "stream", 0);
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    if temperature < 0 || top_p <= 0 || top_p > 1000 || top_k < 0 {
+        return bad(m, t, "temperature, top_p and top_k are out of range");
+    }
+    var usage = 0;
+    let so = json.get(t[hs..hs + n], m[tape..tape + words], 0, "stream_options");
+    if so >= 0 && json.is_object(m[tape..tape + words], so) {
+        usage = flag(m, t, tape, hs, n, so, "include_usage", 0);
+    }
+    var model = 0;
+    let mo = json.get(t[hs..hs + n], m[tape..tape + words], 0, "model");
+    if mo >= 0 && json.is_string(m[tape..tape + words], mo) {
+        let (s, l) = node_text(m, t, tape, hs, mo);
+        model = text.handle(s, l);
+    }
+    let r = mem.grab(m, 10);
+    m[r + f_prompt()] = prompt;
+    m[r + f_max_tokens()] = max_tokens;
+    m[r + f_temperature()] = temperature;
+    m[r + f_top_p()] = top_p;
+    m[r + f_top_k()] = top_k;
+    m[r + f_seed()] = seed;
+    m[r + f_stream()] = stream;
+    var thinking = 0;
+    if think {
+        thinking = 1;
+    }
+    m[r + f_think()] = thinking;
+    m[r + f_model()] = model;
+    m[r + f_usage()] = usage;
+    return r;
+}
+
+// ---------------------------------------------------------------------
+// The answers
+// ---------------------------------------------------------------------
+
+// `h` as the inside of a JSON string.
+pub fn escape[&m, &t](m: &!m [int], t: &!t [byte], h: int) -> [] int {
+    let from = text.begin(m);
+    var p = text.start(h);
+    let to = text.start(h) + text.size(h);
+    while p < to {
+        let c = int_of(t[p]);
+        if c == 34 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(34));
+        } else if c == 92 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(92));
+        } else if c == 10 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(110));
+        } else if c == 13 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(114));
+        } else if c == 9 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(116));
+        } else if c < 32 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(117));
+            text.put_byte(m, t, byte_of(48));
+            text.put_byte(m, t, byte_of(48));
+            text.put_byte(m, t, byte_of(48 + c / 16));
+            let lo = c % 16;
+            if lo < 10 {
+                text.put_byte(m, t, byte_of(48 + lo));
+            } else {
+                text.put_byte(m, t, byte_of(87 + lo));
+            }
+        } else {
+            text.put_byte(m, t, byte_of(c));
+        }
+        p = p + 1;
+    }
+    return text.finish(m, from);
+}
+
+// How many bytes of t[start..start + len] end on a code point boundary: a token may stop in the middle of a
+// character, and a stream must not send half of one.
+pub fn utf8_prefix[&t](t: &!t [byte], start: int, len: int) -> [] int {
+    var back = 0;
+    while back < 3 && back < len {
+        let c = int_of(t[start + len - 1 - back]);
+        if c < 128 {
+            return len;
+        }
+        if c >= 192 {
+            var need = 2;
+            if c >= 240 {
+                need = 4;
+            } else if c >= 224 {
+                need = 3;
+            }
+            if back + 1 >= need {
+                return len;
+            }
+            return len - 1 - back;
+        }
+        back = back + 1;
+    }
+    return len;
+}
+
+pub fn error_json[&m, &t](m: &!m [int], t: &!t [byte], message: int, kind: &static [byte]) -> [] int {
+    return text.f2(m, t, "{\"error\":{\"message\":\"$\",\"type\":\"$\",\"param\":null,\"code\":null}}", escape(m, t, message), text.lit(m, t, kind));
+}
+
+// A non-streaming answer. `reasoning` is -1 when the model did not reason.
+pub fn completion_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int, model: int, reasoning: int, content: int, finish: int, prompt_tokens: int, completion_tokens: int) -> [] int {
+    var think = text.empty();
+    if reasoning >= 0 {
+        think = text.f1(m, t, ",\"reasoning_content\":\"$\"", escape(m, t, reasoning));
+    }
+    let message = text.f2(m, t, "{\"role\":\"assistant\",\"content\":\"$\"$}", escape(m, t, content), think);
+    let head = text.f3(m, t, "{\"id\":\"$\",\"object\":\"chat.completion\",\"created\":$,\"model\":\"$\"", id, text.num(m, t, created), escape(m, t, model));
+    let choice = text.f2(m, t, ",\"choices\":[{\"index\":0,\"message\":$,\"finish_reason\":\"$\"}]", message, finish);
+    let usage = text.f3(m, t, ",\"usage\":{\"prompt_tokens\":$,\"completion_tokens\":$,\"total_tokens\":$}}", text.num(m, t, prompt_tokens), text.num(m, t, completion_tokens), text.num(m, t, prompt_tokens + completion_tokens));
+    return text.cat3(m, t, head, choice, usage);
+}
+
+// One server-sent event of a streaming answer: `delta` is the inside of the delta object (already JSON),
+// `finish` a text handle or -1 for null.
+pub fn chunk_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int, model: int, delta: int, finish: int) -> [] int {
+    var fin = text.lit(m, t, "null");
+    if finish >= 0 {
+        fin = text.f1(m, t, "\"$\"", finish);
+    }
+    return text.f5(m, t, "data: {\"id\":\"$\",\"object\":\"chat.completion.chunk\",\"created\":$,\"model\":\"$\",\"choices\":[{\"index\":0,\"delta\":{$},\"finish_reason\":$}]}\n\n", id, text.num(m, t, created), escape(m, t, model), delta, fin);
+}
+
+pub fn delta_text[&m, &t](m: &!m [int], t: &!t [byte], field: &static [byte], value: int) -> [] int {
+    return text.f2(m, t, "\"$\":\"$\"", text.lit(m, t, field), escape(m, t, value));
+}
+
+// `cancho-gpu chat <request.json>`: the prompt the server would feed the model for that request, to stdout,
+// byte for byte (a refusal is an error and exit 1). What `tests/chat.sh` compares with the real template.
+pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let (top, got, size) = fileio.prefix(m, t, fs, arg(args, 2), 1048576);
+    if top < 0 || size > got {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, arg(args, 2));
+        io.error_all(io, " (a request is at most 1 MiB)\n");
+        return 1;
+    }
+    let r = parse(m, t, top, got, false);
+    if r < 0 {
+        return cli.report(m, t, io);
+    }
+    io.write_all(io, text.bytes(t, m[r + f_prompt()]));
+    return 0;
+}
