@@ -15,6 +15,7 @@ what says the summaries are *right*.
 """
 import math
 import re
+import struct
 import subprocess
 import sys
 
@@ -285,6 +286,27 @@ def gated_norm(h, n):
     return out
 
 
+def bf16(x):
+    b = struct.unpack("<I", struct.pack("<f", x))[0]
+    b = (b + 0x7FFF + ((b >> 16) & 1)) & 0xFFFF0000
+    return struct.unpack("<f", struct.pack("<I", b))[0]
+
+
+def gather_bf16(vocab, hid):
+    # The interpreter's i32 inputs are 1 + i % 2, so the row is 1.
+    (table,) = lcg([vocab * hid])
+    return [bf16(v) for v in table[hid:2 * hid]]
+
+
+def argmax_last(row):
+    return float(max(range(len(row)), key=lambda i: (row[i], i)))
+
+
+def argmax_rows(r, n):
+    (x,) = lcg([r * n])
+    return [argmax_last(x[i * n:(i + 1) * n]) for i in range(r)]
+
+
 ok = True
 for r, h, p in ((24, 32, 192), (3, 4, 2)):
     ok &= check(f"rope r={r} h={h} p={p}", run("rope", [f"r={r}", f"h={h}", f"p={p}"])["y"], rope(r, h, p))
@@ -335,4 +357,12 @@ ok &= check("qnorm r=3 n=8", run("qnorm", ["r=3", "n=8", "eps=1e-6"])["y"], qnor
 ok &= check("attn_gate_q r=3 n=8", run("attn_gate_q", ["r=3", "n=8"])["y"], attn_gate_q(3, 8))
 ok &= check("rmsnorm_rows r=3 n=16", run("rmsnorm_rows", ["r=3", "n=16", "eps=1e-6"])["y"], rmsnorm_rows(3, 16))
 ok &= check("gated_norm h=3 n=16", run("gated_norm", ["h=3", "n=16", "eps=1e-6"])["y"], gated_norm(3, 16))
+ok &= check("gather_bf16 vocab=8 hid=64", run("gather_bf16", ["vocab=8", "hid=64"])["dst"], gather_bf16(8, 64))
+ok &= check("gather_bf16 vocab=3 hid=5", run("gather_bf16", ["vocab=3", "hid=5"])["dst"], gather_bf16(3, 5))
+for n in (1, 7, 300, 5000):
+    ok &= check(f"argmax_f32 n={n}", run("argmax_f32", [f"n={n}"])["out"], argmax_rows(1, n))
+for r, n in ((3, 100), (4, 1024), (2, 5)):
+    ok &= check(f"argmax_rows r={r} n={n}", run("argmax_rows", [f"r={r}", f"n={n}"])["out"], argmax_rows(r, n))
+for n in (1, 64, 300):
+    ok &= check(f"argmax_ties n={n}", run("argmax_ties", [f"n={n}"])["out"], [float(n - 1)])
 sys.exit(0 if ok else 1)

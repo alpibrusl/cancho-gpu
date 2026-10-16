@@ -1,0 +1,11 @@
+// RULE type
+// ARGS n=8
+algo k(n)
+  in  x: f32[1, n]
+  out y: i32[1]
+{
+  let a = load x
+  let i = rowargmax a
+  store sigmoid i -> y[0]
+}
+schedule k for nvidia-ada { threads 32 }

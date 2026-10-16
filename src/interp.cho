@@ -45,6 +45,12 @@ fn round_to(dt: int, x: float) -> [] float {
     if dt == kinds.i8() {
         return f32.round_i8(x);
     }
+    if dt == kinds.bf16() {
+        return f32.round_bf16(x);
+    }
+    if dt == kinds.i32() {
+        return f32.trunc_i32(x);
+    }
     return x;
 }
 
@@ -93,18 +99,29 @@ fn index_value[&m](m: &!m [int], it: int, v: int) -> [] int {
     return m[m[it + 2] + v];
 }
 
-fn eval[&m](m: &!m [int], it: int, e: int) -> [] int {
+// A data term's value: the element of an i32 parameter.
+fn data_value[&m, &f](m: &!m [int], fm: &!f [float], it: int, v: int) -> [] int {
+    let g = tensor_of(m, it, ir.data_param(v));
+    return truncate(fm[m[g + 2] + ir.data_elem(v)]);
+}
+
+fn eval[&m, &f](m: &!m [int], fm: &!f [float], it: int, e: int) -> [] int {
     var x = ir.idx_constant(m, e);
     var i = 0;
     while i < ir.idx_count(m, e) {
-        x = x + ir.idx_coeff(m, e, i) * index_value(m, it, ir.idx_var(m, e, i));
+        let v = ir.idx_var(m, e, i);
+        if ir.is_data(v) {
+            x = x + ir.idx_coeff(m, e, i) * data_value(m, fm, it, v);
+        } else {
+            x = x + ir.idx_coeff(m, e, i) * index_value(m, it, v);
+        }
         i = i + 1;
     }
     return x;
 }
 
 // A view's offsets, evaluated and bounds-checked: a list, or -1.
-fn offsets[&m, &t](m: &!m [int], t: &!t [byte], it: int, vw: int) -> [] int {
+fn offsets[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, vw: int) -> [] int {
     let p = ir.param(m, m[it], ir.view_param(m, vw));
     let dims = ir.param_shape(m, p);
     let shape = ir.view_shape(m, vw);
@@ -112,7 +129,7 @@ fn offsets[&m, &t](m: &!m [int], t: &!t [byte], it: int, vw: int) -> [] int {
     let out = mem.list(m);
     var d = 0;
     while d < mem.size(m, offs) {
-        let o = eval(m, it, mem.get(m, offs, d));
+        let o = eval(m, fm, it, mem.get(m, offs, d));
         if o < 0 || o + mem.get(m, shape, d) > mem.get(m, dims, d) {
             return fail(m, t, text.n2(m, t, "view out of bounds on dim $: $", d, o));
         }
@@ -248,7 +265,7 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
         return tile;
     }
     if k == kinds.op_load() {
-        let off = offsets(m, t, it, m[o + 1]);
+        let off = offsets(m, t, fm, it, m[o + 1]);
         if off < 0 {
             return 0 - 1;
         }
@@ -260,7 +277,7 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
             return 0 - 1;
         }
         let vw = m[o + 2];
-        let off = offsets(m, t, it, vw);
+        let off = offsets(m, t, fm, it, vw);
         if off < 0 {
             return 0 - 1;
         }
@@ -279,7 +296,7 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
             return 0 - 1;
         }
         let vw = m[o + 2];
-        let off = offsets(m, t, it, vw);
+        let off = offsets(m, t, fm, it, vw);
         if off < 0 {
             return 0 - 1;
         }
@@ -384,25 +401,39 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
         }
         let sa = ir.shape(m, m[a]);
         let (rows, n) = (mem.get(m, sa, 0), mem.get(m, sa, 1));
-        let out = reg_tile(m, t, fm, ir.dtype(m, m[a]), mem.of1(m, rows));
+        var odt = ir.dtype(m, m[a]);
+        if m[o + 1] == kinds.r_argmax() {
+            odt = kinds.i32();
+        }
+        let out = reg_tile(m, t, fm, odt, mem.of1(m, rows));
         if out < 0 {
             return 0 - 1;
         }
         var i = 0;
         while i < rows {
             var s = -0.0;
-            if m[o + 1] == kinds.r_max() {
+            if m[o + 1] != kinds.r_sum() {
                 s = -f32.infinity();
             }
+            var best = 0;
             var j = 0;
             while j < n {
                 let v = fm[m[a + 1] + i * n + j];
                 if m[o + 1] == kinds.r_max() {
                     s = f32.max(s, v);
+                } else if m[o + 1] == kinds.r_argmax() {
+                    // The last of the equals: `>=`, as the CPU's greedy pick.
+                    if v >= s {
+                        s = v;
+                        best = j;
+                    }
                 } else {
                     s = f32.add(s, v);
                 }
                 j = j + 1;
+            }
+            if m[o + 1] == kinds.r_argmax() {
+                s = float_of(best);
             }
             fm[m[out + 1] + i] = s;
             i = i + 1;
@@ -580,7 +611,8 @@ fn stmt[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, s: in
 
 // The made-up inputs: one tensor per parameter, `[dtype, shape, offset,
 // length]`, or -1. Floats in [-0.5, 0.5) from the Rust's LCG, I8 codes
-// `0x30 + i % 8`, writable parameters zero.
+// `0x30 + i % 8`, i32 ones `1 + i % 2` (a row id that most tables have),
+// writable parameters zero.
 pub fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int) -> [] int {
     let out = mem.list(m);
     var seed = 12345;
@@ -600,6 +632,8 @@ pub fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: in
             var v = 0.0;
             if dt == kinds.i8() {
                 v = float_of(48 + j % 8);
+            } else if dt == kinds.i32() && !ir.param_writable(m, p) {
+                v = float_of(1 + j % 2);
             } else if !ir.param_writable(m, p) {
                 seed = (seed * 1664525 + 1013904223) % 4294967296;
                 // `(seed >> 9) as f32 / 2^23 - 0.5`: both steps exact or

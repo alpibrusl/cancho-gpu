@@ -74,7 +74,7 @@ fn reserve[&m](m: &!m [int], n: int) -> [] int {
 }
 
 // A tensor's bytes as the device holds them: f32 and f16 as IEEE words,
-// I8 as two's-complement bytes, little-endian. Answers where they start.
+// bf16 as the top half of an f32, i32 and I8 as two's complement, little-endian. Answers where they start.
 fn encode[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], g: int) -> [] int {
     let dt = m[g];
     let size = kinds.size_bytes(dt);
@@ -88,6 +88,10 @@ fn encode[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], g: int) -> [
             word = f32.bits32(v);
         } else if dt == kinds.f16() {
             word = f32.bits16(v);
+        } else if dt == kinds.bf16() {
+            word = f32.bits32(v) >> 16;
+        } else if dt == kinds.i32() {
+            word = truncate(v) & 4294967295;
         } else {
             word = truncate(v) & 255;
         }
@@ -117,6 +121,14 @@ fn decode[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], g: int, from
             fm[at + i] = f32.from_bits32(word);
         } else if dt == kinds.f16() {
             fm[at + i] = f32.from_bits16(word);
+        } else if dt == kinds.bf16() {
+            fm[at + i] = f32.from_bits32(word << 16);
+        } else if dt == kinds.i32() {
+            var v = word;
+            if v >= 2147483648 {
+                v = v - 4294967296;
+            }
+            fm[at + i] = float_of(v);
         } else {
             var v = word;
             if v >= 128 {

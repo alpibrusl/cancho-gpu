@@ -51,6 +51,12 @@ pub fn scalar_lit(d: int, dt: int) -> [] &static [byte] {
         if dt == 1 {
             return "float";
         }
+        if dt == 3 {
+            return "int";
+        }
+        if dt == 4 {
+            return "unsigned short";
+        }
         return "char";
     }
     if dt == 0 {
@@ -58,6 +64,12 @@ pub fn scalar_lit(d: int, dt: int) -> [] &static [byte] {
     }
     if dt == 1 {
         return "float";
+    }
+    if dt == 3 {
+        return "int";
+    }
+    if dt == 4 {
+        return "ushort";
     }
     return "char";
 }
@@ -120,6 +132,14 @@ pub fn fmax[&m, &t](m: &!m [int], t: &!t [byte], d: int, a: int, b: int) -> [] i
         return text.f2(m, t, "fmaxf($, $)", a, b);
     }
     return text.f2(m, t, "max($, $)", a, b);
+}
+
+// An f32 from the bits of a bf16, which are the top half of an f32.
+pub fn bf16_widen[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
+    if is_cuda(d) {
+        return text.f1(m, t, "__uint_as_float(((uint)($)) << 16)", x);
+    }
+    return text.f1(m, t, "as_type<float>(((uint)($)) << 16)", x);
 }
 
 pub fn convert[&m, &t](m: &!m [int], t: &!t [byte], d: int, dt: int, x: int) -> [] int {

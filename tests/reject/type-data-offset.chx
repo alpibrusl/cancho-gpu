@@ -1,0 +1,11 @@
+// RULE type
+// ARGS n=8
+algo k(n)
+  in  t: f32[n, n]
+  in  r: f32[1]
+  out y: f32[1, n]
+{
+  let a = load t[r[0], 0 ; 1, n]
+  store a -> y[0, 0]
+}
+schedule k for nvidia-ada { threads 32 }

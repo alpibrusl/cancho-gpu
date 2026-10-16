@@ -1,0 +1,13 @@
+// The index of the largest of a row of logits, the last of the equals (as the
+// CPU's greedy pick takes it): one threadgroup of 1024 reduces the row.
+algo argmax_f32(n)
+  in  x:   f32[1, n]
+  out out: i32[1]
+{
+  let x = load x
+  let i = rowargmax x
+  store i -> out[0]
+}
+
+schedule argmax_f32 for apple-m-series { threads 1024 }
+schedule argmax_f32 for nvidia-ada     { threads 1024 }

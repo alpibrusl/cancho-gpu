@@ -1,0 +1,2 @@
+nvidia-ada: out [3] = mean 18.0000, peak 20.0000, first [20.0, 16.0, 18.0]
+apple-m-series: out [3] = mean 18.0000, peak 20.0000, first [20.0, 16.0, 18.0]
