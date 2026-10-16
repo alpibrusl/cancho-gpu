@@ -120,6 +120,15 @@ fn check_interpreter_math[&m, &t](m: &!m [int], t: &!t [byte]) -> [] bool {
     ok = ok && shows(m, t, f32.e4m3(127), "NaN");
     ok = ok && shows(m, t, f32.e4m3(184), "-1.0");
     ok = ok && shows(m, t, f32.max(f32.infinity() - f32.infinity(), 1.0), "1.0");
+    // bf16 is the top half of an f32, rounded to nearest, ties to even.
+    ok = ok && shows(m, t, f32.round_bf16(f32.round(0.1)), "0.100097656");
+    ok = ok && shows(m, t, f32.round_bf16(f32.round(0.00411069393157959)), "0.004119873");
+    ok = ok && shows(m, t, f32.round_bf16(1.00390625), "1.0");
+    ok = ok && shows(m, t, f32.round_bf16(1.01171875), "1.015625");
+    ok = ok && shows(m, t, f32.round_bf16(-3.0), "-3.0");
+    ok = ok && shows(m, t, f32.round_bf16(f32.infinity()), "inf");
+    ok = ok && shows(m, t, f32.trunc_i32(-2.9), "-2.0");
+    ok = ok && shows(m, t, f32.trunc_i32(f32.infinity() - f32.infinity()), "0.0");
     // `{:.4}` and friends: exact, ties to even, the sign kept.
     ok = ok && text.is(t, f32.fixed(m, t, 0.25, 1), "0.2");
     ok = ok && text.is(t, f32.fixed(m, t, 0.375, 2), "0.38");

@@ -126,6 +126,38 @@ pub fn idx_scaled[&m](m: &!m [int], v: int, coeff: int, c: int) -> [] int {
     return mem.rec2(m, c, mem.of2(m, v, coeff));
 }
 
+// A data term: the variable of a term that is not an index but element
+// `elem` (flat, row-major) of parameter `param`, read when the kernel
+// runs. It is a number below -2, so no index, `index_ty()` or `none()`
+// can be mistaken for it.
+pub fn data_var(param: int, elem: int) -> [] int {
+    return 0 - 3 - param * 1048576 - elem;
+}
+
+pub fn is_data(v: int) -> [] bool {
+    return v <= 0 - 3;
+}
+
+pub fn data_param(v: int) -> [] int {
+    return (0 - 3 - v) / 1048576;
+}
+
+pub fn data_elem(v: int) -> [] int {
+    return (0 - 3 - v) % 1048576;
+}
+
+// Does the expression read an element of a parameter?
+pub fn idx_has_data[&m](m: &!m [int], e: int) -> [] bool {
+    var i = 0;
+    while i < mem.size(m, m[e + 1]) / 2 {
+        if is_data(mem.get(m, m[e + 1], 2 * i)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
 pub fn idx_constant[&m](m: &!m [int], e: int) -> [] int {
     return m[e];
 }

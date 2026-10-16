@@ -1,0 +1,16 @@
+// The embedding row of a token that is data on the device, widened to f32.
+//
+// `tok[0]` is an offset the kernel reads when it runs, so the row is
+// chosen by the previous step's argmax with no round trip to the host. The
+// table is bf16 (a storage type: the load widens it to f32).
+algo gather_bf16(vocab, hid)
+  in  table: bf16[vocab, hid]
+  in  tok:   i32[1]
+  out dst:   f32[1, hid]
+{
+  let r = load table[tok[0], 0 ; 1, hid]
+  store r -> dst[0, 0]
+}
+
+schedule gather_bf16 for apple-m-series { threads 256 }
+schedule gather_bf16 for nvidia-ada     { threads 256 }
