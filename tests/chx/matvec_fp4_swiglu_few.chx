@@ -30,5 +30,5 @@ algo matvec_fp4_swiglu_few(m, n, k)
   store a * ut -> y[0, i * bn]
 }
 
-schedule matvec_fp4_swiglu_few for apple-m-series { threads 512 bn 32 }
+schedule matvec_fp4_swiglu_few for apple-m-series { threads 256 bn 32 }
 schedule matvec_fp4_swiglu_few for nvidia-ada     { threads 256 bn 8 }

@@ -148,17 +148,26 @@ fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs:
     var hid = hb;
     var rounds = 0;
     var accepted = 0;
+    var ms_draft = 0;
+    var ms_verify = 0;
+    var ms_warm = 0;
+    var ms_sample = 0;
     var finished = qwen35.is_stop(last) || n >= new_tokens;
     while !finished {
         if pos + 3 >= qwen35.tmax() {
             finished = true;
         } else {
             // draft the token after `last`: the head at position `pos`
+            let c0 = clock_ms(clock);
             if qwen35.mtp_step(m, t, ffi, fs, eng, hid, last, pos, lgd) < 0 {
                 return cli.report(m, t, io);
             }
+            let cs = clock_ms(clock);
             let (dn, dp) = sampler.nucleus(m, t, smp, lgd, v);
             let d = sampler.draw(m, smp, dn, dp);
+            ms_sample = ms_sample + clock_ms(clock) - cs;
+            let c1 = clock_ms(clock);
+            ms_draft = ms_draft + c1 - c0;
             // check [last, draft] at positions pos + 1, pos + 2 in one pass
             let two = mem.list(m);
             mem.push(m, two, last);
@@ -167,6 +176,7 @@ fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs:
                 return cli.report(m, t, io);
             }
             rounds = rounds + 1;
+            ms_verify = ms_verify + clock_ms(clock) - c1;
             let (an, ap) = sampler.nucleus(m, t, smp, rows, v);
             let t1 = sampler.draw(m, smp, an, ap);
             mem.push(m, out_ids, t1);
@@ -179,9 +189,11 @@ fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs:
                 n = n + 1;
                 accepted = accepted + 1;
                 qwen35.commit(m, eng, true);
+                let c2 = clock_ms(clock);
                 if qwen35.mtp_step(m, t, ffi, fs, eng, qwen35.hidden_row(m, eng, 0), d, pos + 1, 0 - 1) < 0 {
                     return cli.report(m, t, io);
                 }
+                ms_warm = ms_warm + clock_ms(clock) - c2;
                 last = t2;
                 hid = qwen35.hidden_row(m, eng, 1);
                 pos = pos + 2;
@@ -209,6 +221,7 @@ fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs:
     }
     io.write_all(io, text.bytes(t, text.f1(m, t, "tokens: $\n", text.joined(m, t, numbers, " "))));
     io.write_all(io, text.bytes(t, text.f3(m, t, "spec: $ rounds, $ drafts accepted, $ tokens\n", text.num(m, t, rounds), text.num(m, t, accepted), text.num(m, t, n))));
+    io.write_all(io, text.bytes(t, text.f3(m, t, "spec time: draft $ ms (of it, sampling $), verify $ ms\n", text.num(m, t, ms_draft), text.num(m, t, ms_sample), text.num(m, t, ms_verify))));
     if timing {
         io.write_all(io, text.bytes(t, text.fmt(m, t, "timing: load_ms=$ prefill_tokens=$ prefill_ms=$ decode_tokens=$ decode_ms=$\n", mem.of5(m, text.num(m, t, t_loaded - t_start), text.num(m, t, n_prompt), text.num(m, t, t_first - t_loaded), text.num(m, t, n - 1), text.num(m, t, t_end - t_first)))));
     }

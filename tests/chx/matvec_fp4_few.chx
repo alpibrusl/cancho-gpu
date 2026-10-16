@@ -1,5 +1,5 @@
 // y = x w^T for a few rows of x, NVFP4 weights read once: the tokens a speculative step checks (2 to 4). The generic batched
-// product on the plain scalar path with 512 threads and 32 weight rows to a threadgroup: measured on the
+// product on the plain scalar path with 256 threads and 32 weight rows to a threadgroup. Measured inside the running verify (49.9 ms with 512 threads, 47.1 with 256, 61.5 with 1024: isolated timings of one kernel pointed the other way); on the
 // 17408x5120 gate matrix, 111 / 121 / 142 us for 1 / 2 / 3 rows against 209 / 270 / 296 us at 256 threads and
 // 8 rows (issue 26). The `_batch` kernels are the matrix-unit ones, for prefill chunks of 8.
 algo matvec_fp4_few(m, n, k)
@@ -19,5 +19,5 @@ algo matvec_fp4_few(m, n, k)
   store matmul_nt xt w -> y[0, i * bn]
 }
 
-schedule matvec_fp4_few for apple-m-series { threads 512 bn 32 }
+schedule matvec_fp4_few for apple-m-series { threads 256 bn 32 }
 schedule matvec_fp4_few for nvidia-ada     { threads 256 bn 8 }
