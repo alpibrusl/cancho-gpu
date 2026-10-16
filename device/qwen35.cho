@@ -588,7 +588,7 @@ pub fn top5[&m, &t](m: &!m [int], t: &!t [byte], lg: int, pos: int) -> [] int {
 // Load the model: the kernels, the weights (from `store`, Ollama's directory, to Metal buffers) and
 // the buffers of one conversation. Answers the engine (a record; the functions below take it), or -1
 // with the error recorded.
-pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), store: int, kdir: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), store: int, kdir: int, with_mtp: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     let manifest = read_manifest(m, t, fs, text.f1(m, t, "$/manifests/registry.ollama.ai/library/qwen3.8/27b-mlx", store));
     if manifest < 0 {
         return 0 - 1;
@@ -685,6 +685,41 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     if err.failed(m) {
         return 0 - 1;
     }
+    // The draft head, when asked for: the checkpoint's `mtp.*` (239 MB): `fc` over [norm(embedding),
+    // norm(hidden)], then one attention layer of the model's own shape with its feed-forward, then `mtp.norm`
+    // (and the model's `lm_head`). Every one of its norms is stored as a delta from 1, like the model's.
+    var k_fc = 0 - 1;
+    var m_fc = 0 - 1;
+    var m_pre_h = 0 - 1;
+    var m_pre_e = 0 - 1;
+    var m_norm = 0 - 1;
+    let mw = mem.list(m);
+    var mtp_on = 0;
+    if with_mtp {
+        k_fc = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_rows.chx", c2(m, t, "n", h, "k", 2 * h));
+        m_fc = weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.fc.weight"), h, 2 * h);
+        m_pre_h = weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.pre_fc_norm_hidden.weight"), h, 1);
+        m_pre_e = weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.pre_fc_norm_embedding.weight"), h, 1);
+        m_norm = weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.norm.weight"), h, 1);
+        mem.push(m, mw, weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.input_layernorm.weight"), h, 1));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.self_attn.q_proj.weight"), 12288, h));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.self_attn.k_proj.weight"), 1024, h));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.self_attn.v_proj.weight"), 1024, h));
+        mem.push(m, mw, weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.self_attn.q_norm.weight"), 256, 1));
+        mem.push(m, mw, weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.self_attn.k_norm.weight"), 256, 1));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.self_attn.o_proj.weight"), h, 6144));
+        mem.push(m, mw, 0 - 1);
+        mem.push(m, mw, 0 - 1);
+        mem.push(m, mw, 0 - 1);
+        mem.push(m, mw, weight_bf16(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.post_attention_layernorm.weight"), h, 1));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.mlp.gate_proj.weight"), inter(), h));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.mlp.up_proj.weight"), inter(), h));
+        mem.push(m, mw, weight_fp4(m, t, ffi, fs, store, manifest, text.lit(m, t, "mtp.layers.0.mlp.down_proj.weight"), h, inter()));
+        if err.failed(m) {
+            return 0 - 1;
+        }
+        mtp_on = 1;
+    }
     // Activations, states and caches.
     let b_x = metal.cgpu_alloc(ffi, 4 * h);
     let b_x2 = metal.cgpu_alloc(ffi, 4 * h);
@@ -764,7 +799,41 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         device_fail(m, t, ffi, "allocating the activations");
         return 0 - 1;
     }
-    let eng = mem.grab(m, 101);
+    var b_emb = 0 - 1;
+    var b_fused = 0 - 1;
+    var b_mz = 0 - 1;
+    var b_mz2 = 0 - 1;
+    var mc1 = 0 - 1;
+    var mc2 = 0 - 1;
+    var b_mmask = 0 - 1;
+    if mtp_on == 1 {
+        b_emb = metal.cgpu_alloc(ffi, 4 * h);
+        b_fused = metal.cgpu_alloc(ffi, 4 * 2 * h);
+        b_mz = metal.cgpu_alloc(ffi, 4 * h);
+        b_mz2 = metal.cgpu_alloc(ffi, 4 * h);
+        mc1 = metal.cgpu_alloc(ffi, 4 * 4 * tmax() * 256);
+        mc2 = metal.cgpu_alloc(ffi, 4 * 4 * tmax() * 256);
+        b_mmask = metal.cgpu_alloc(ffi, 4 * tmax());
+        if b_mmask < 0 || mc2 < 0 {
+            device_fail(m, t, ffi, "allocating the draft head's cache");
+            return 0 - 1;
+        }
+    }
+    let eng = mem.grab(m, 116);
+    m[eng + 101] = k_fc;
+    m[eng + 102] = m_fc;
+    m[eng + 103] = m_pre_h;
+    m[eng + 104] = m_pre_e;
+    m[eng + 105] = m_norm;
+    m[eng + 106] = mw;
+    m[eng + 107] = b_emb;
+    m[eng + 108] = b_fused;
+    m[eng + 109] = b_mz;
+    m[eng + 110] = b_mz2;
+    m[eng + 111] = mc1;
+    m[eng + 112] = mc2;
+    m[eng + 113] = b_mmask;
+    m[eng + 114] = mtp_on;
     m[eng + 99] = k_attn1;
     m[eng + 100] = k_attn2;
     m[eng + 0] = k_rms;
@@ -936,6 +1005,9 @@ pub fn reset[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu")
         z = z + 1;
     }
     metal.cgpu_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax()]);
+    if m[eng + 114] == 1 {
+        metal.cgpu_upload_at(ffi, m[eng + 113], 0, t[mk..mk + 4 * tmax()]);
+    }
     m[mem.text_slot()] = mark0;
     return 0;
 }
@@ -1320,6 +1392,145 @@ fn attn_kernel[&m](m: &!m [int], eng: int, upto: int) -> [] int {
         return m[eng + 99];
     }
     return m[eng + 100];
+}
+
+// ---------------------------------------------------------------------
+// The draft head
+// ---------------------------------------------------------------------
+
+// The model's hidden state after the last step, through its final norm (what `lm_head` reads): a device
+// buffer, and what the draft head takes as its input.
+pub fn hidden_buf[&m](m: &!m [int], eng: int) -> [] int {
+    return m[eng + 36];
+}
+
+pub fn has_head[&m](m: &!m [int], eng: int) -> [] bool {
+    return m[eng + 114] == 1;
+}
+
+// The embedding row of `token` (bf16 in the store) as f32 into device buffer `dst`.
+fn embed_into[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, token: int, dst: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let h = hidden();
+    let embed = m[eng + 89];
+    let raw_c = reserve(m, 2 * h);
+    fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + 2 * h * token, raw_c, 2 * h);
+    let wide = reserve(m, 4 * h);
+    var col = 0;
+    while col < h {
+        put_f32(t, wide + 4 * col, 0);
+        t[wide + 4 * col + 2] = t[raw_c + 2 * col];
+        t[wide + 4 * col + 3] = t[raw_c + 2 * col + 1];
+        col = col + 1;
+    }
+    return metal.cgpu_upload_at(ffi, dst, 0, t[wide..wide + 4 * h]);
+}
+
+// The rotary tables of position `pos` (theta 10^7, the first 64 dimensions of a head).
+fn rope_tables_for[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, pos: int) -> [ffi("libmetalgpu")] int {
+    let tab = reserve(m, 256);
+    var jj = 0;
+    while jj < 32 {
+        let inv = math.pow(10000000.0, 0.0 - float_of(jj) / 32.0);
+        let ang = float_of(pos) * inv;
+        put_f32(t, tab + 4 * jj, f32.bits32(f32.round(math.cos(ang))));
+        put_f32(t, tab + 128 + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
+        jj = jj + 1;
+    }
+    metal.cgpu_upload_at(ffi, m[eng + 59], 0, t[tab..tab + 128]);
+    metal.cgpu_upload_at(ffi, m[eng + 60], 0, t[tab + 128..tab + 256]);
+    return 0;
+}
+
+// One step of the draft head. `hid` is the model's hidden state at position `pos` (a device buffer, through
+// the final norm); `token` the token that follows it. The head's cache gets position `pos`. With `lg` >= 0 it
+// also answers the logits of the token after `token` (its draft) into t[lg..lg + 4 * vocab()]; with `lg` = -1
+// it only fills its cache (a prompt's positions, whose drafts nobody asks for), which is the embedding and
+// hidden norms, `fc`, and the key and value of its layer.
+pub fn mtp_step[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, hid: int, token: int, pos: int, lg: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let h = hidden();
+    let k_rms = m[eng + 0];
+    let k_out = m[eng + 4];
+    let k_down = m[eng + 5];
+    let k_head = m[eng + 6];
+    let k_gateup = m[eng + 7];
+    let k_qg = m[eng + 13];
+    let k_kv = m[eng + 14];
+    let k_qnorm = m[eng + 15];
+    let k_knorm = m[eng + 16];
+    let k_ropeq = m[eng + 17];
+    let k_ropek = m[eng + 18];
+    let k_kvw = m[eng + 19];
+    let k_attn_gate = m[eng + 21];
+    let b_n = m[eng + 36];
+    let b_qg = m[eng + 48];
+    let b_k = m[eng + 49];
+    let b_v = m[eng + 50];
+    let b_q2 = m[eng + 51];
+    let b_k2 = m[eng + 52];
+    let b_qr = m[eng + 53];
+    let b_kr = m[eng + 54];
+    let b_o = m[eng + 55];
+    let b_og = m[eng + 56];
+    let b_act = m[eng + 57];
+    let b_logits = m[eng + 58];
+    let b_cos = m[eng + 59];
+    let b_sin = m[eng + 60];
+    let head = m[eng + 91];
+    let k_fc = m[eng + 101];
+    let m_fc = m[eng + 102];
+    let m_pre_h = m[eng + 103];
+    let m_pre_e = m[eng + 104];
+    let m_norm = m[eng + 105];
+    let mw = m[eng + 106];
+    let b_emb = m[eng + 107];
+    let b_fused = m[eng + 108];
+    let b_mz = m[eng + 109];
+    let b_mz2 = m[eng + 110];
+    let mc1 = m[eng + 111];
+    let mc2 = m[eng + 112];
+    let b_mmask = m[eng + 113];
+    let step_mark = m[mem.text_slot()];
+    embed_into(m, t, ffi, fs, eng, token, b_emb);
+    rope_tables_for(m, t, ffi, eng, pos);
+    let zero = reserve(m, 4);
+    put_f32(t, zero, 0);
+    metal.cgpu_upload_at(ffi, b_mmask, 4 * pos, t[zero..zero + 4]);
+    // z = fc([norm(embedding), norm(hidden)]): the embedding comes first.
+    go(m, ffi, k_rms, b_emb, m_pre_e, b_fused, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    ov(ffi);
+    go(m, ffi, k_rms, hid, m_pre_h, at(b_fused, 4 * h), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    fp4(m, ffi, k_fc, b_fused, m_fc, b_mz);
+    go(m, ffi, k_rms, b_mz, mem.get(m, mw, 0), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    fp4(m, ffi, k_kv, b_n, mem.get(m, mw, 2), b_k);
+    ov(ffi);
+    fp4(m, ffi, k_kv, b_n, mem.get(m, mw, 3), b_v);
+    go(m, ffi, k_knorm, b_k, mem.get(m, mw, 5), b_k2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, k_ropek, b_k2, b_cos, b_sin, b_kr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, k_kvw, b_kr, at(mc1, 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    ov(ffi);
+    go(m, ffi, k_kvw, b_v, at(mc2, 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    if lg < 0 {
+        metal.cgpu_flush(ffi);
+        m[mem.text_slot()] = step_mark;
+        return 0;
+    }
+    fp4(m, ffi, k_qg, b_n, mem.get(m, mw, 1), b_qg);
+    go(m, ffi, k_qnorm, b_qg, mem.get(m, mw, 4), b_q2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, k_ropeq, b_q2, b_cos, b_sin, b_qr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, attn_kernel(m, eng, pos + 1), b_qr, mc1, mc2, b_mmask, b_o, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    fp4_res(m, ffi, k_out, b_og, mem.get(m, mw, 6), b_mz, b_mz2);
+    go(m, ffi, k_rms, b_mz2, mem.get(m, mw, 10), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    fp4_swiglu(m, ffi, k_gateup, b_n, mem.get(m, mw, 11), mem.get(m, mw, 12), b_act);
+    fp4_res(m, ffi, k_down, b_act, mem.get(m, mw, 13), b_mz2, b_mz);
+    go(m, ffi, k_rms, b_mz, m_norm, b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    fp4(m, ffi, k_head, b_n, head, b_logits);
+    metal.cgpu_sync(ffi);
+    if metal.cgpu_download(ffi, b_logits, t[lg..lg + 4 * vocab()]) < 0 {
+        return device_fail(m, t, ffi, "reading the draft's logits back");
+    }
+    m[mem.text_slot()] = step_mark;
+    return 0;
 }
 
 pub fn tokenizer[&m](m: &!m [int], eng: int) -> [] int {

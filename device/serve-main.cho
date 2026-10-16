@@ -529,7 +529,7 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     }
     io.error_all(io, "loading the model...\n");
     let t0 = clock_ms(clock);
-    let eng = qwen35.load(m, t, ffi, fs, store, kdir);
+    let eng = qwen35.load(m, t, ffi, fs, store, kdir, false);
     if eng < 0 {
         return cli.report(m, t, io);
     }
