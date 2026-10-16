@@ -76,6 +76,23 @@ pub fn grab[&m](m: &!m [int], n: int) -> [] int {
     return at;
 }
 
+// Give back everything allocated since `mark` (a value of `top_slot` taken earlier): the words are zeroed again,
+// because `grab` promises zeroed memory, and the error list is made anew (its storage may have been grown
+// above the mark). For a server, which handles one request after another in the same memory; a compile never
+// calls this. Nothing allocated before `mark` may hold a handle to what is given back.
+pub fn release_to[&m](m: &!m [int], mark: int) -> [] int {
+    var i = mark;
+    let top = m[top_slot()];
+    while i < top {
+        m[i] = 0;
+        i = i + 1;
+    }
+    m[top_slot()] = mark;
+    m[err_count_slot()] = 0;
+    m[err_list_slot()] = list(m);
+    return 0;
+}
+
 // A record of `n` words.
 pub fn rec[&m](m: &!m [int], n: int) -> [] int {
     return grab(m, n);

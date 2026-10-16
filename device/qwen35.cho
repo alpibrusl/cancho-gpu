@@ -873,6 +873,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
 }
 
 // Compile the batch kernels (seconds: only when a prompt is long enough to use them).
+// A kernel is a record in `m`: a caller that gives memory back after a task (the server) calls this first.
 pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     if m[eng + 98] == 1 {
         return 0;

@@ -1,0 +1,639 @@
+edition 5;
+
+// `cancho-gpu-serve` -- an OpenAI-compatible chat endpoint over Qwen3.8-27B on a Metal GPU
+// (`docs/serving.md`).
+//
+//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think]
+//
+//     GET  /health                 {"status":"ok"}
+//     GET  /v1/models              the one model
+//     POST /v1/chat/completions    messages in, a completion out; "stream": true for server-sent events
+//
+// The engine of `device/qwen35.cho` is loaded once; each request resets it and runs on the same GPU, one at a
+// time (one conversation's states and cache fit; a second request waits in the listen queue). The chat
+// template and the request and response JSON are `src/chat.cho`. A connection carries one request
+// (`Connection: close`).
+//
+// It listens on every address of the host (`tcp_listen` binds them all), so give it `--api-key` when the host
+// is on a network: with a key, every request but `/health` needs `Authorization: Bearer <key>`.
+//
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-serve.sh`).
+
+import std.io;
+import mem;
+import text;
+import err;
+import cli;
+import bpe;
+import sampler;
+import metal;
+import chat;
+import qwen35;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 536870912;
+}
+
+// The largest request taken, in bytes: a conversation of the whole context is a few thousand.
+fn max_request() -> [] int {
+    return 1048576;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think]\n");
+    return 2;
+}
+
+fn number_of[&t](t: &!t [byte], h: int) -> [] int {
+    var n = 0;
+    var i = 0;
+    while i < text.size(h) {
+        let c = text.at(t, h, i);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + c - 48;
+        i = i + 1;
+    }
+    if text.size(h) == 0 {
+        return 0 - 1;
+    }
+    return n;
+}
+
+fn lower(c: int) -> [] int {
+    if c >= 65 && c <= 90 {
+        return c + 32;
+    }
+    return c;
+}
+
+// The value of header `name` (lower case) in the head t[from..to) of a request: a text handle with leading
+// and trailing blanks removed, or -1.
+fn header[&t](t: &!t [byte], from: int, to: int, name: &static [byte]) -> [] int {
+    var p = from;
+    // skip the request line
+    while p < to && t[p] != byte_of(10) {
+        p = p + 1;
+    }
+    p = p + 1;
+    while p < to {
+        var q = p;
+        while q < to && t[q] != byte_of(10) {
+            q = q + 1;
+        }
+        // the line is t[p..q); the name runs to the colon
+        var k = 0;
+        var same = true;
+        while k < len(name) {
+            if p + k >= q || lower(int_of(t[p + k])) != int_of(name[k]) {
+                same = false;
+                k = len(name);
+            } else {
+                k = k + 1;
+            }
+        }
+        if same && p + len(name) < q && t[p + len(name)] == byte_of(58) {
+            var a = p + len(name) + 1;
+            var b = q;
+            while a < b && (t[a] == byte_of(32) || t[a] == byte_of(9)) {
+                a = a + 1;
+            }
+            while b > a && (t[b - 1] == byte_of(32) || t[b - 1] == byte_of(9) || t[b - 1] == byte_of(13)) {
+                b = b - 1;
+            }
+            return text.handle(a, b - a);
+        }
+        p = q + 1;
+    }
+    return 0 - 1;
+}
+
+// The offset of "\r\n\r\n" in t[from..to), or -1.
+fn head_end[&t](t: &!t [byte], from: int, to: int) -> [] int {
+    var p = from;
+    while p + 3 < to {
+        if t[p] == byte_of(13) && t[p + 1] == byte_of(10) && t[p + 2] == byte_of(13) && t[p + 3] == byte_of(10) {
+            return p;
+        }
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+// Send all of `h`; -1 when the peer is gone.
+fn send_all[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, h: int) -> [conn_write] int {
+    var off = 0;
+    let n = text.size(h);
+    while off < n {
+        match conn_write(ch, text.bytes(t, text.handle(text.start(h) + off, n - off))) {
+            Sent::Wrote(k) => {
+                off = off + k;
+            }
+            Sent::Again => {
+                return 0 - 1;
+            }
+            Sent::Failed(e) => {
+                return 0 - 1;
+            }
+        }
+    }
+    return 0;
+}
+
+fn reason(code: int) -> [] &static [byte] {
+    if code == 200 {
+        return "OK";
+    }
+    if code == 400 {
+        return "Bad Request";
+    }
+    if code == 401 {
+        return "Unauthorized";
+    }
+    if code == 404 {
+        return "Not Found";
+    }
+    if code == 405 {
+        return "Method Not Allowed";
+    }
+    if code == 413 {
+        return "Payload Too Large";
+    }
+    return "Internal Server Error";
+}
+
+// A whole answer: the status line, the headers and the JSON body.
+fn respond[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, body: int) -> [conn_write] int {
+    let head = text.f3(m, t, "HTTP/1.1 $ $\r\nContent-Type: application/json\r\nContent-Length: $\r\nConnection: close\r\n\r\n", text.num(m, t, code), text.from_bytes(m, t, reason(code)), text.num(m, t, text.size(body)));
+    if send_all(m, t, ch, head) < 0 {
+        return 0 - 1;
+    }
+    return send_all(m, t, ch, body);
+}
+
+fn refuse[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, message: int, kind: &static [byte]) -> [conn_write] int {
+    return respond(m, t, ch, code, chat.error_json(m, t, message, kind));
+}
+
+// The message of the last refusal recorded, then forget them.
+fn last_error[&m, &t](m: &!m [int], t: &!t [byte]) -> [] int {
+    var msg = text.lit(m, t, "the request could not be processed");
+    let n = err.count(m);
+    if n > 0 {
+        let (rule, message) = err.nth(m, n - 1);
+        msg = message;
+    }
+    err.clear(m);
+    return msg;
+}
+
+// The tokens ids[from..) decoded as one text, in the pool.
+fn decode_from[&m, &t](m: &!m [int], t: &!t [byte], tk: int, ids: int, from: int) -> [] int {
+    let part = mem.list(m);
+    var i = from;
+    while i < mem.size(m, ids) {
+        mem.push(m, part, mem.get(m, ids, i));
+        i = i + 1;
+    }
+    let (s, n) = bpe.decode(m, t, tk, part);
+    return text.handle(s, n);
+}
+
+fn trimmed[&t](t: &!t [byte], h: int) -> [] int {
+    var a = text.start(h);
+    var b = text.start(h) + text.size(h);
+    while a < b && (t[a] == byte_of(32) || t[a] == byte_of(10) || t[a] == byte_of(13) || t[a] == byte_of(9)) {
+        a = a + 1;
+    }
+    while b > a && (t[b - 1] == byte_of(32) || t[b - 1] == byte_of(10) || t[b - 1] == byte_of(13) || t[b - 1] == byte_of(9)) {
+        b = b - 1;
+    }
+    return text.handle(a, b - a);
+}
+
+// What of a phase's text (decoded from `toks`) is ready to send: from the first byte not yet sent to the last
+// whole character that is not trailing whitespace (which waits for what follows). Answers `(start, end)`
+// handles into the pool, `emitted` being how many bytes of the phase were sent; the new `emitted` is `end`.
+fn ready[&m, &t](m: &!m [int], t: &!t [byte], tk: int, toks: int, emitted: int, final: bool) -> [] (int, int) {
+    let full = decode_from(m, t, tk, toks, 0);
+    let s = text.start(full);
+    var n = text.size(full);
+    if !final {
+        n = chat.utf8_prefix(t, s, n);
+    }
+    var end = n;
+    while end > 0 && (t[s + end - 1] == byte_of(32) || t[s + end - 1] == byte_of(10) || t[s + end - 1] == byte_of(13) || t[s + end - 1] == byte_of(9)) {
+        end = end - 1;
+    }
+    var lead = 0;
+    while lead < n && (t[s + lead] == byte_of(32) || t[s + lead] == byte_of(10) || t[s + lead] == byte_of(13) || t[s + lead] == byte_of(9)) {
+        lead = lead + 1;
+    }
+    var from = emitted;
+    if lead > from {
+        from = lead;
+    }
+    if end <= from {
+        return (0 - 1, emitted);
+    }
+    return (text.handle(s + from, end - from), end);
+}
+
+// One chat completion on the engine: the request record `r` (src/chat.cho), the connection to answer on.
+// Answers the number of tokens generated, or -1.
+fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
+    let tk = qwen35.tokenizer(m, eng);
+    let prompt = m[r + chat.f_prompt()];
+    let ids = bpe.encode(m, t, tk, text.start(prompt), text.start(prompt) + text.size(prompt));
+    if ids < 0 {
+        refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
+        return 0 - 1;
+    }
+    let n_prompt = mem.size(m, ids);
+    let room = qwen35.tmax() - n_prompt;
+    if room < 1 {
+        refuse(m, t, ch, 400, text.f2(m, t, "this model's context is $ tokens and the prompt has $", text.num(m, t, qwen35.tmax()), text.num(m, t, n_prompt)), "invalid_request_error");
+        return 0 - 1;
+    }
+    var max_new = m[r + chat.f_max_tokens()];
+    if max_new < 0 || max_new > room {
+        max_new = room;
+    }
+    let think = m[r + chat.f_think()] == 1;
+    let stream = m[r + chat.f_stream()] == 1;
+    let id = text.f2(m, t, "chatcmpl-$-$", text.num(m, t, serial), text.num(m, t, clock_unix_ms(clock) % 1000000));
+    let created = clock_unix_ms(clock) / 1000;
+    // A new conversation, the prompt in, the first logits out.
+    qwen35.reset(m, t, ffi, eng);
+    let lg = qwen35.reserve(m, 4 * qwen35.vocab());
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true) < 0 {
+        refuse(m, t, ch, 500, last_error(m, t), "server_error");
+        return 0 - 1;
+    }
+    var seed = m[r + chat.f_seed()];
+    if seed < 0 {
+        seed = clock_unix_ms(clock) % 2147483647 + serial;
+    }
+    let smp = sampler.new(m, float_of(m[r + chat.f_temperature()]) / 1000.0, float_of(m[r + chat.f_top_p()]) / 1000.0, m[r + chat.f_top_k()], seed);
+    let f_stop = text.lit(m, t, "stop");
+    let f_length = text.lit(m, t, "length");
+    let f_error = text.lit(m, t, "error");
+    let after = m[mem.text_slot()];
+    // The generated tokens: those before </think> (when the model reasons) and those after.
+    let reasoning = mem.list(m);
+    let content = mem.list(m);
+    var in_reasoning = think;
+    var sent_r = 0;
+    var sent_c = 0;
+    var alive = true;
+    if stream {
+        let head = text.lit(m, t, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
+        if send_all(m, t, ch, head) < 0 {
+            return 0 - 1;
+        }
+        let first = chat.chunk_json(m, t, id, created, model, text.lit(m, t, "\"role\":\"assistant\",\"content\":\"\""), 0 - 1);
+        if send_all(m, t, ch, first) < 0 {
+            return 0 - 1;
+        }
+    }
+    var n = 0;
+    var pos = n_prompt;
+    var finish = f_length;
+    var done = false;
+    while !done && alive {
+        let (nids, nprobs) = sampler.nucleus(m, t, smp, lg, qwen35.vocab());
+        let pick = sampler.draw(m, smp, nids, nprobs);
+        n = n + 1;
+        if qwen35.is_stop(pick) {
+            finish = f_stop;
+            done = true;
+        } else {
+            if in_reasoning && pick == 248069 {
+                in_reasoning = false;
+            } else if in_reasoning {
+                mem.push(m, reasoning, pick);
+            } else {
+                mem.push(m, content, pick);
+            }
+            if stream && !(pick == 248069) {
+                var which = content;
+                var sent = sent_c;
+                var field = "content";
+                if in_reasoning {
+                    which = reasoning;
+                    sent = sent_r;
+                    field = "reasoning_content";
+                }
+                let (piece, upto) = ready(m, t, tk, which, sent, false);
+                if in_reasoning {
+                    sent_r = upto;
+                } else {
+                    sent_c = upto;
+                }
+                if piece >= 0 {
+                    let ev = chat.chunk_json(m, t, id, created, model, chat.delta_text(m, t, field, piece), 0 - 1);
+                    if send_all(m, t, ch, ev) < 0 {
+                        alive = false;
+                    }
+                }
+            }
+            if n >= max_new {
+                done = true;
+            } else if alive {
+                if qwen35.feed_one(m, t, ffi, fs, eng, pick, pos, lg) < 0 {
+                    done = true;
+                    finish = f_error;
+                }
+                pos = pos + 1;
+            }
+        }
+        // what a step allocated is not needed again: keep the logits and the lists
+        m[mem.text_slot()] = after;
+    }
+    if !alive {
+        return n;
+    }
+    if stream {
+        let end = chat.chunk_json(m, t, id, created, model, text.empty(), finish);
+        send_all(m, t, ch, end);
+        if m[r + chat.f_usage()] == 1 {
+            let usage = text.f6(m, t, "data: {\"id\":\"$\",\"object\":\"chat.completion.chunk\",\"created\":$,\"model\":\"$\",\"choices\":[],\"usage\":{\"prompt_tokens\":$,\"completion_tokens\":$,\"total_tokens\":$}}\n\n", id, text.num(m, t, created), chat.escape(m, t, model), text.num(m, t, n_prompt), text.num(m, t, n), text.num(m, t, n_prompt + n));
+            send_all(m, t, ch, usage);
+        }
+        send_all(m, t, ch, text.lit(m, t, "data: [DONE]\n\n"));
+        return n;
+    }
+    var rtext = 0 - 1;
+    if think {
+        rtext = trimmed(t, decode_from(m, t, tk, reasoning, 0));
+    }
+    let ctext = trimmed(t, decode_from(m, t, tk, content, 0));
+    respond(m, t, ch, 200, chat.completion_json(m, t, id, created, model, rtext, ctext, finish, n_prompt, n));
+    return n;
+}
+
+fn handle[&m, &t, &i, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, cfg: int, serial: int) -> [err_write, ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_read, conn_write] int {
+    let t0 = clock_ms(clock);
+    let cap = max_request();
+    let buf = qwen35.reserve(m, cap);
+    var got = 0;
+    var he = 0 - 1;
+    var need = 0 - 1;
+    var open = true;
+    while open {
+        match conn_read(ch, t[buf + got..buf + cap]) {
+            Received::Data(k2) => {
+                got = got + k2;
+            }
+            Received::End => {
+                open = false;
+            }
+            Received::Again => {
+                open = false;
+            }
+            Received::Failed(e) => {
+                open = false;
+                got = 0 - 1;
+            }
+        }
+        if got < 0 {
+            return 0 - 1;
+        }
+        if open && he < 0 {
+            he = head_end(t, buf, buf + got);
+            if he >= 0 {
+                let cl = header(t, buf, he, "content-length");
+                need = he + 4 - buf;
+                if cl >= 0 {
+                    let v = number_of(t, cl);
+                    if v < 0 {
+                        refuse(m, t, ch, 400, text.lit(m, t, "bad Content-Length"), "invalid_request_error");
+                        return 0 - 1;
+                    }
+                    need = need + v;
+                }
+                if need > cap {
+                    refuse(m, t, ch, 413, text.lit(m, t, "the request is too large"), "invalid_request_error");
+                    return 0 - 1;
+                }
+            }
+        }
+        if open && he >= 0 && got >= need {
+            open = false;
+        }
+        if open && got >= cap {
+            refuse(m, t, ch, 413, text.lit(m, t, "the request is too large"), "invalid_request_error");
+            return 0 - 1;
+        }
+    }
+    if he < 0 {
+        refuse(m, t, ch, 400, text.lit(m, t, "no complete request head"), "invalid_request_error");
+        return 0 - 1;
+    }
+    // The request line: METHOD SP path[?query] SP HTTP/1.x
+    var p = buf;
+    while p < he && t[p] != byte_of(32) {
+        p = p + 1;
+    }
+    let method = text.handle(buf, p - buf);
+    var q = p + 1;
+    while q < he && t[q] != byte_of(32) && t[q] != byte_of(63) {
+        q = q + 1;
+    }
+    let path = text.handle(p + 1, q - p - 1);
+    var status = 200;
+    var tokens = 0;
+    let key = m[cfg + 3];
+    let is_health = text.is(t, path, "/health");
+    var allowed = true;
+    if key >= 0 && !is_health {
+        let auth = header(t, buf, he, "authorization");
+        allowed = false;
+        if auth >= 0 && text.starts_with(t, auth, "Bearer ") && text.eq(t, text.sub(auth, 7, text.size(auth)), key) {
+            allowed = true;
+        }
+    }
+    let model = m[cfg + 1];
+    if !allowed {
+        status = 401;
+        refuse(m, t, ch, 401, text.lit(m, t, "a valid API key is required (Authorization: Bearer <key>)"), "authentication_error");
+    } else if is_health {
+        respond(m, t, ch, 200, text.lit(m, t, "{\"status\":\"ok\"}"));
+    } else if text.is(t, path, "/v1/models") {
+        respond(m, t, ch, 200, text.f2(m, t, "{\"object\":\"list\",\"data\":[{\"id\":\"$\",\"object\":\"model\",\"created\":$,\"owned_by\":\"cancho-gpu\"}]}", chat.escape(m, t, model), text.num(m, t, clock_unix_ms(clock) / 1000)));
+    } else if text.is(t, path, "/v1/chat/completions") {
+        if !text.is(t, method, "POST") {
+            status = 405;
+            refuse(m, t, ch, 405, text.lit(m, t, "use POST"), "invalid_request_error");
+        } else {
+            let r = chat.parse(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            if r < 0 {
+                status = 400;
+                refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
+            } else {
+                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial);
+                if tokens < 0 {
+                    status = 500;
+                }
+            }
+        }
+    } else {
+        status = 404;
+        refuse(m, t, ch, 404, text.lit(m, t, "no such route"), "invalid_request_error");
+    }
+    io.error_all(io, text.bytes(t, text.fmt(m, t, "$ $ $ tokens=$ $ ms\n", mem.of5(m, method, path, text.num(m, t, status), text.num(m, t, tokens), text.num(m, t, clock_ms(clock) - t0)))));
+    return 0;
+}
+
+fn serve[&m, &t, &i, &f, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, lh: &!l Listener, cfg: int) -> [err_write, ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_accept, conn_read, conn_write] int {
+    // What the load allocated stays; what a request allocated is given back after it.
+    let mark_m = m[mem.top_slot()];
+    let mark_t = m[mem.text_slot()];
+    var serial = 0;
+    var failures = 0;
+    while failures < 100 {
+        match tcp_accept(lh) {
+            Accepted::Ok(conn) => {
+                failures = 0;
+                serial = serial + 1;
+                var c = conn;
+                borrow mut c as &!ch in {
+                    handle(m, t, io, ffi, fs, clock, eng, ch, cfg, serial);
+                }
+                conn_close(c);
+            }
+            Accepted::Again => {
+            }
+            Accepted::Failed(e) => {
+                failures = failures + 1;
+            }
+        }
+        mem.release_to(m, mark_m);
+        m[mem.text_slot()] = mark_t;
+    }
+    io.error_all(io, "error[accept]: the listening socket keeps failing\n");
+    return 1;
+}
+
+fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &k Clock, lh: &!l Listener, port: int, cfg: int) -> [err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock, conn_accept, conn_read, conn_write] int {
+    let store = text.from_bytes(m, t, arg(args, 1));
+    let kdir = text.from_bytes(m, t, arg(args, 2));
+    if metal.cgpu_open(ffi) < 0 {
+        qwen35.device_fail(m, t, ffi, "opening the device");
+        return cli.report(m, t, io);
+    }
+    io.error_all(io, "loading the model...\n");
+    let t0 = clock_ms(clock);
+    let eng = qwen35.load(m, t, ffi, fs, store, kdir);
+    if eng < 0 {
+        return cli.report(m, t, io);
+    }
+    // The batch kernels are compiled on first use otherwise, and a kernel is a record in `m`: one made while
+    // handling a request would be given back with the request's memory.
+    if qwen35.ensure_batch(m, t, ffi, fs, eng) < 0 {
+        return cli.report(m, t, io);
+    }
+    io.error_all(io, text.bytes(t, text.f2(m, t, "ready on port $ (loaded in $ ms)\n", text.num(m, t, port), text.num(m, t, clock_ms(clock) - t0))));
+    if m[cfg + 3] < 0 {
+        io.error_all(io, "warning: no --api-key, and this listens on every address of the host\n");
+    }
+    let status = serve(m, t, io, ffi, fs, clock, eng, lh, cfg);
+    metal.cgpu_close(ffi);
+    return status;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    var port = 8080;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                // cfg: 0 port, 1 model name, 2 think by default, 3 API key (a text handle, or -1)
+                let cfg = mem.grab(m, 4);
+                m[cfg + 1] = text.lit(m, t, "qwen3.8:27b-mlx");
+                m[cfg + 3] = 0 - 1;
+                var ok = true;
+                borrow args as &a in {
+                    if arg_count(a) < 3 {
+                        ok = false;
+                    }
+                    var ai = 3;
+                    while ok && ai < arg_count(a) {
+                        let flag = text.from_bytes(m, t, arg(a, ai));
+                        if text.is(t, flag, "--think") {
+                            m[cfg + 2] = 1;
+                        } else if ai + 1 < arg_count(a) && text.is(t, flag, "--port") {
+                            port = number_of(t, text.from_bytes(m, t, arg(a, ai + 1)));
+                            ai = ai + 1;
+                        } else if ai + 1 < arg_count(a) && text.is(t, flag, "--model") {
+                            m[cfg + 1] = text.from_bytes(m, t, arg(a, ai + 1));
+                            ai = ai + 1;
+                        } else if ai + 1 < arg_count(a) && text.is(t, flag, "--api-key") {
+                            m[cfg + 3] = text.from_bytes(m, t, arg(a, ai + 1));
+                            ai = ai + 1;
+                        } else {
+                            ok = false;
+                        }
+                        ai = ai + 1;
+                    }
+                }
+                m[cfg] = port;
+                if !ok || port < 1 || port > 65535 {
+                    borrow mut io as &!i in {
+                        status = usage(i);
+                    }
+                } else {
+                    borrow net as &nn in {
+                        match tcp_listen(nn, port, 16, 0) {
+                            Listening::Ok(l) => {
+                                var listener = l;
+                                borrow mut listener as &!lh in {
+                                    borrow mut io as &!i in {
+                                        borrow fs as &f in {
+                                            borrow args as &a in {
+                                                borrow gpu as &g in {
+                                                    borrow clock as &c in {
+                                                        status = run(m, t, i, f, a, g, c, lh, port, cfg);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                listener_close(listener);
+                            }
+                            Listening::Failed(e) => {
+                                borrow mut io as &!i in {
+                                    io.error_all(i, "error[listen]: cannot listen on that port\n");
+                                }
+                                status = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(net);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    release(clock);
+    return status;
+}
