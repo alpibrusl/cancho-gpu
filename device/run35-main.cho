@@ -82,7 +82,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     }
     let n_prompt = mem.size(m, ids);
     if n_prompt + new_tokens > qwen35.tmax() || n_prompt == 0 {
-        io.error_all(io, "error[context]: the prompt and the new tokens must fit in 256 positions and the prompt must not be empty\n");
+        io.error_all(io, "error[context]: the prompt and the new tokens must fit in the context (1024 positions) and the prompt must not be empty\n");
         return 1;
     }
     let t_loaded = clock_ms(clock);

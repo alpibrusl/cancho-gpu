@@ -56,7 +56,7 @@ pub fn mb() -> [] int {
 }
 
 pub fn tmax() -> [] int {
-    return 256;
+    return 1024;
 }
 
 // Every fourth layer is attention.
@@ -632,7 +632,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     let k_ropeq = compile_kernel(m, t, ffi, fs, kdir, "rope.chx", cv(m, t, c2(m, t, "r", 24, "h", 32), "p", 192.0));
     let k_ropek = compile_kernel(m, t, ffi, fs, kdir, "rope.chx", cv(m, t, c2(m, t, "r", 4, "h", 32), "p", 192.0));
     let k_kvw = compile_kernel(m, t, ffi, fs, kdir, "kv_row.chx", cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0));
-    let k_attn = compile_kernel(m, t, ffi, fs, kdir, "attention.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(tmax())), "d", 256.0), "tmax", float_of(tmax())));
+    let k_attn = compile_kernel(m, t, ffi, fs, kdir, "attention.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(256)), "d", 256.0), "tmax", float_of(tmax())));
+    let k_attn1 = compile_kernel(m, t, ffi, fs, kdir, "attention.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(512)), "d", 256.0), "tmax", float_of(tmax())));
+    let k_attn2 = compile_kernel(m, t, ffi, fs, kdir, "attention.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", float_of(1024)), "d", 256.0), "tmax", float_of(tmax())));
     let k_attn_gate = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24, "n", 256));
     if err.failed(m) {
         return 0 - 1;
@@ -762,7 +764,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         device_fail(m, t, ffi, "allocating the activations");
         return 0 - 1;
     }
-    let eng = mem.grab(m, 99);
+    let eng = mem.grab(m, 101);
+    m[eng + 99] = k_attn1;
+    m[eng + 100] = k_attn2;
     m[eng + 0] = k_rms;
     m[eng + 1] = k_qkv;
     m[eng + 2] = k_z;
@@ -948,7 +952,6 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
     let k_ropeq = m[eng + 17];
     let k_ropek = m[eng + 18];
     let k_kvw = m[eng + 19];
-    let k_attn = m[eng + 20];
     let k_qkvb = m[eng + 22];
     let k_zb = m[eng + 23];
     let k_qgb = m[eng + 24];
@@ -1065,7 +1068,7 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
             }
             tt = 0;
             while tt < mb() {
-                go(m, ffi, k_attn, at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1);
+                go(m, ffi, attn_kernel(m, eng, pos + mb()), at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1);
                 tt = tt + 1;
             }
             go(m, ffi, k_attn_gateb, b_os, b_qgs, b_ogs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
@@ -1143,7 +1146,6 @@ pub fn feed_one[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
     let k_ropeq = m[eng + 17];
     let k_ropek = m[eng + 18];
     let k_kvw = m[eng + 19];
-    let k_attn = m[eng + 20];
     let k_attn_gate = m[eng + 21];
     let b_x = m[eng + 34];
     let b_x2 = m[eng + 35];
@@ -1230,7 +1232,7 @@ pub fn feed_one[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
             go(m, ffi, k_kvw, b_kr, at(mem.get(m, st1, l), 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             ov(ffi);
             go(m, ffi, k_kvw, b_v, at(mem.get(m, st2, l), 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-            go(m, ffi, k_attn, b_qr, mem.get(m, st1, l), mem.get(m, st2, l), b_mask, b_o, 0 - 1, 0 - 1, 0 - 1);
+            go(m, ffi, attn_kernel(m, eng, pos + 1), b_qr, mem.get(m, st1, l), mem.get(m, st2, l), b_mask, b_o, 0 - 1, 0 - 1, 0 - 1);
             go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             fp4_res(m, ffi, k_out, b_og, mem.get(m, w, 6), cur, nxt);
         } else {
@@ -1305,6 +1307,18 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         pos = pos + 1;
     }
     return 0;
+}
+
+// The attention kernel for positions 0..upto: compiled for 256, 512 and 1024 positions of the cache, so a short
+// conversation does not scan a long one's cache.
+fn attn_kernel[&m](m: &!m [int], eng: int, upto: int) -> [] int {
+    if upto <= 256 {
+        return m[eng + 20];
+    }
+    if upto <= 512 {
+        return m[eng + 99];
+    }
+    return m[eng + 100];
 }
 
 pub fn tokenizer[&m](m: &!m [int], eng: int) -> [] int {
