@@ -807,6 +807,11 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     var mc1 = 0 - 1;
     var mc2 = 0 - 1;
     var b_mmask = 0 - 1;
+    var b_mmask2 = 0 - 1;
+    var b_etab = 0 - 1;
+    var b_toks = 0 - 1;
+    var b_hcos = 0 - 1;
+    var b_hsin = 0 - 1;
     if mtp_on == 1 {
         b_emb = metal.cgpu_alloc(ffi, 4 * h);
         b_fused = metal.cgpu_alloc(ffi, 4 * 2 * h);
@@ -815,7 +820,12 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         mc1 = metal.cgpu_alloc(ffi, 4 * 4 * tmax() * 256);
         mc2 = metal.cgpu_alloc(ffi, 4 * 4 * tmax() * 256);
         b_mmask = metal.cgpu_alloc(ffi, 4 * tmax());
-        if b_mmask < 0 || mc2 < 0 {
+        b_mmask2 = metal.cgpu_alloc(ffi, 4 * tmax());
+        b_etab = metal.cgpu_alloc(ffi, 2 * vocab() * h);
+        b_toks = metal.cgpu_alloc(ffi, 32);
+        b_hcos = metal.cgpu_alloc(ffi, 4 * 32 * 8);
+        b_hsin = metal.cgpu_alloc(ffi, 4 * 32 * 8);
+        if b_mmask < 0 || mc2 < 0 || b_etab < 0 || b_hsin < 0 {
             device_fail(m, t, ffi, "allocating the draft head's cache");
             return 0 - 1;
         }
@@ -823,21 +833,27 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     var b_logitsb = 0 - 1;
     let st3b = mem.list(m);
     let st3c = mem.list(m);
+    let st3d = mem.list(m);
+    let stx = mem.list(m);
     if mtp_on == 1 {
-        b_logitsb = metal.cgpu_alloc(ffi, 4 * 2 * vocab());
+        b_logitsb = metal.cgpu_alloc(ffi, 4 * 3 * vocab());
         l = 0;
         while l < layers() {
             if is_attention(l) {
                 mem.push(m, st3b, 0 - 1);
                 mem.push(m, st3c, 0 - 1);
+                mem.push(m, st3d, 0 - 1);
+                mem.push(m, stx, 0 - 1);
             } else {
                 mem.push(m, st3b, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
                 mem.push(m, st3c, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
+                mem.push(m, st3d, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
+                mem.push(m, stx, metal.cgpu_alloc(ffi, 4 * 3 * 10240));
             }
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 132);
+    let eng = mem.grab(m, 150);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -855,6 +871,8 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 129] = b_logitsb;
     m[eng + 130] = st3b;
     m[eng + 131] = st3c;
+    m[eng + 138] = st3d;
+    m[eng + 139] = stx;
     m[eng + 99] = k_attn1;
     m[eng + 100] = k_attn2;
     m[eng + 0] = k_rms;
@@ -957,7 +975,20 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 97] = kdir;
     m[eng + 98] = 0;
     if mtp_on == 1 {
-        if compile_few(m, t, ffi, fs, eng, kdir, 2) < 0 {
+        if compile_few(m, t, ffi, fs, eng, kdir, 3) < 0 {
+            return 0 - 1;
+        }
+        m[eng + 140] = b_etab;
+        m[eng + 141] = b_toks;
+        m[eng + 142] = b_hcos;
+        m[eng + 143] = b_hsin;
+        m[eng + 144] = b_mmask2;
+        m[eng + 145] = load_msl(m, t, ffi, fs, kdir, "head_ops.metal", "gather_bf16", 20, 256);
+        m[eng + 146] = load_msl(m, t, ffi, fs, kdir, "head_ops.metal", "argmax_f32", 1, 1024);
+        if err.failed(m) {
+            return 0 - 1;
+        }
+        if upload_embedding(m, t, ffi, fs, embed, b_etab) < 0 {
             return 0 - 1;
         }
     }
@@ -1033,6 +1064,7 @@ pub fn reset[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu")
     metal.cgpu_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax()]);
     if m[eng + 114] == 1 {
         metal.cgpu_upload_at(ffi, m[eng + 113], 0, t[mk..mk + 4 * tmax()]);
+        metal.cgpu_upload_at(ffi, m[eng + 144], 0, t[mk..mk + 4 * tmax()]);
     }
     m[mem.text_slot()] = mark0;
     return 0;
@@ -1046,7 +1078,7 @@ pub fn reset[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu")
 // after the first token or the one after the second can be kept (`commit`). With `final_lg` >= 0 the final
 // norm and `lm_head` run for every row and the logits (rows x vocabulary) go to t[final_lg..]; the normalised
 // hidden rows stay in the batch buffers (`hidden_row`).
-pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, ifrom: int, pos: int, rows: int, set: int, final_lg: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, ifrom: int, pos: int, rows: int, set: int, final_lg: int, gather: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     let h = hidden();
     var l = 0;
     let k_ab = m[eng + 3];
@@ -1077,6 +1109,8 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     let b_logitsb = m[eng + 129];
     let st3b = m[eng + 130];
     let st3c = m[eng + 131];
+    let st3d = m[eng + 138];
+    let stx = m[eng + 139];
     let final_norm = m[eng + 90];
     let head = m[eng + 91];
     let b_mask = m[eng + 61];
@@ -1115,18 +1149,23 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     let chunk_mark = m[mem.text_slot()];
     var tk_i = 0;
     while tk_i < rows {
-        let tok = mem.get(m, ids, ifrom + tk_i);
-        let raw_c = reserve(m, 2 * h);
-        fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + 2 * h * tok, raw_c, 2 * h);
-        let wide = reserve(m, 4 * h);
-        var col = 0;
-        while col < h {
-            put_f32(t, wide + 4 * col, 0);
-            t[wide + 4 * col + 2] = t[raw_c + 2 * col];
-            t[wide + 4 * col + 3] = t[raw_c + 2 * col + 1];
-            col = col + 1;
+        if gather == 1 && tk_i >= 1 {
+            // a token the draft head chose, which only the device knows
+            go(m, ffi, m[eng + 145], m[eng + 140], at(m[eng + 141], 4 * tk_i), at(b_xs, 4 * h * tk_i), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+        } else {
+            let tok = mem.get(m, ids, ifrom + tk_i);
+            let raw_c = reserve(m, 2 * h);
+            fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + 2 * h * tok, raw_c, 2 * h);
+            let wide = reserve(m, 4 * h);
+            var col = 0;
+            while col < h {
+                put_f32(t, wide + 4 * col, 0);
+                t[wide + 4 * col + 2] = t[raw_c + 2 * col];
+                t[wide + 4 * col + 3] = t[raw_c + 2 * col + 1];
+                col = col + 1;
+            }
+            metal.cgpu_upload_at(ffi, b_xs, 4 * h * tk_i, t[wide..wide + 4 * h]);
         }
-        metal.cgpu_upload_at(ffi, b_xs, 4 * h * tk_i, t[wide..wide + 4 * h]);
         // The rotary tables and the causal mask of this token's position.
         let tab = reserve(m, 256);
         var jj = 0;
@@ -1208,6 +1247,10 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                     cs_now = mem.get(m, st2, l);
                     cs_next = mem.get(m, st1, l);
                 }
+                if set == 1 && tt == 2 {
+                    // the window two tokens ago must survive a rejection, so the third row writes aside
+                    cs_next = mem.get(m, stx, l);
+                }
                 go(m, ffi, k_conv, at(b_qkvs, 4 * 10240 * tt), cs_now, mem.get(m, w, 5), at(b_convs, 4 * 10240 * tt), cs_next, 0 - 1, 0 - 1, 0 - 1);
                 go(m, ffi, k_qknorm, at(b_convs, 4 * 10240 * tt), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 ov(ffi);
@@ -1217,9 +1260,12 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 if set == 1 {
                     if tt == 0 {
                         s_out = mem.get(m, st3b, l);
-                    } else {
+                    } else if tt == 1 {
                         s_in = mem.get(m, st3b, l);
                         s_out = mem.get(m, st3c, l);
+                    } else {
+                        s_in = mem.get(m, st3c, l);
+                        s_out = mem.get(m, st3d, l);
                     }
                 }
                 go(m, ffi, k_delta, s_in, at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), s_out, at(b_ys, 4 * 6144 * tt));
@@ -1234,9 +1280,20 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
         metal.cgpu_flush(ffi);
         l = l + 1;
     }
-    if final_lg >= 0 {
+    if final_lg >= 0 || final_lg == 0 - 2 {
         go(m, ffi, k_rmsb, cur, final_norm, b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
         fp4(m, ffi, k_headb, b_ns, head, b_logitsb);
+    }
+    if final_lg == 0 - 2 {
+        // the device picks each row's largest logit into the token buffer's slots 5.. (a greedy sampler)
+        var ar = 0;
+        while ar < rows {
+            if ar > 0 {
+                ov(ffi);
+            }
+            go(m, ffi, m[eng + 146], at(b_logitsb, 4 * vocab() * ar), at(m[eng + 141], 4 * (5 + ar)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            ar = ar + 1;
+        }
     }
     metal.cgpu_sync(ffi);
     if final_lg >= 0 {
@@ -1245,20 +1302,25 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
         }
     }
     // The single-token path opens one mask position a step; open this chunk's.
+    // (A verify opens only its first: `commit` opens the ones it keeps.)
+    var nopen = rows;
+    if set == 1 {
+        nopen = 1;
+    }
     let open = reserve(m, 4 * rows);
     var oc = 0;
-    while oc < rows {
+    while oc < nopen {
         put_f32(t, open + 4 * oc, 0);
         oc = oc + 1;
     }
-    metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * rows]);
+    metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * nopen]);
     m[mem.text_slot()] = chunk_mark;
     return 0;
 }
 
 // A prefill chunk: `mb()` tokens, no logits.
 pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, pos: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    return feed_rows(m, t, ffi, fs, eng, ids, pos, pos, mb(), 0, 0 - 1);
+    return feed_rows(m, t, ffi, fs, eng, ids, pos, pos, mb(), 0, 0 - 1, 0);
 }
 
 // One token at position `pos`. With `lg` >= 0, also the logits of the vocabulary into t[lg..lg + 4 * vocab()].
@@ -1416,63 +1478,9 @@ pub fn feed_one[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
     return 0;
 }
 
-// Feed ids[from..to) at positions from..to - 1, in chunks of `mb()` where `batched` allows; the last
-// token's logits go to t[lg..] when `lg` >= 0 (the chunks then stop short of it).
-// Feed ids[from..to) at positions from..to - 1, in chunks of `mb()` where `batched` allows; the last
-// token's logits go to t[lg..] when `lg` >= 0 (the chunks then stop short of it). With `warm` the draft head's
-// cache is filled alongside: for each position but the last, the head sees the model's hidden state there and
-// the token after it. (The last position's pair needs the token the model is about to choose; that is the
-// first draft.)
-pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, from: int, to: int, lg: int, batched: bool, warm: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    var pos = from;
-    var limit = to;
-    if lg >= 0 {
-        limit = to - 1;
-    }
-    if batched && limit - pos >= mb() {
-        if ensure_batch(m, t, ffi, fs, eng) < 0 {
-            return 0 - 1;
-        }
-        while pos + mb() <= limit {
-            if feed_chunk(m, t, ffi, fs, eng, ids, pos) < 0 {
-                return 0 - 1;
-            }
-            if warm {
-                // The chunk's last row pairs with ids[pos + mb()], which exists: a chunk stops short of `to`.
-                let h = hidden();
-                go(m, ffi, m[eng + 29], m[eng + 62], m[eng + 90], m[eng + 64], 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                var r = 0;
-                while r < mb() {
-                    if mtp_step(m, t, ffi, fs, eng, at(m[eng + 64], 4 * h * r), mem.get(m, ids, pos + r + 1), pos + r, 0 - 1) < 0 {
-                        return 0 - 1;
-                    }
-                    r = r + 1;
-                }
-            }
-            pos = pos + mb();
-        }
-    }
-    while pos < to {
-        var want = 0 - 1;
-        if lg >= 0 && pos == to - 1 {
-            want = lg;
-        }
-        if feed_one(m, t, ffi, fs, eng, mem.get(m, ids, pos), pos, want) < 0 {
-            return 0 - 1;
-        }
-        if warm && pos < to - 1 {
-            if mtp_step(m, t, ffi, fs, eng, hidden_buf(m, eng), mem.get(m, ids, pos + 1), pos, 0 - 1) < 0 {
-                return 0 - 1;
-            }
-        }
-        pos = pos + 1;
-    }
-    return 0;
-}
-
 // The attention kernel for positions 0..upto: compiled for 256, 512 and 1024 positions of the cache, so a short
 // conversation does not scan a long one's cache.
-fn attn_kernel[&m](m: &!m [int], eng: int, upto: int) -> [] int {
+pub fn attn_kernel[&m](m: &!m [int], eng: int, upto: int) -> [] int {
     if upto <= 256 {
         return m[eng + 20];
     }
@@ -1492,163 +1500,46 @@ pub fn hidden_buf[&m](m: &!m [int], eng: int) -> [] int {
     return m[eng + 36];
 }
 
-pub fn has_head[&m](m: &!m [int], eng: int) -> [] bool {
-    return m[eng + 114] == 1;
+// A hand-written Metal kernel from `kdir`, with its launch geometry: the record `compile_kernel` makes.
+fn load_msl[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), kdir: int, file: &static [byte], entry: &static [byte], gx: int, threads: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let path = text.f2(m, t, "$/$", kdir, text.lit(m, t, file));
+    let (top, got, size) = fileio.prefix(m, t, fs, text.bytes(t, path), 1048576);
+    if top < 0 {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", path));
+    }
+    let lib = metal.cgpu_compile(ffi, text.bytes(t, text.handle(top, got)));
+    if lib < 0 {
+        return device_fail(m, t, ffi, "compiling a hand-written kernel");
+    }
+    let func = metal.cgpu_function(ffi, lib, text.bytes(t, text.lit(m, t, entry)));
+    if func < 0 {
+        return device_fail(m, t, ffi, "finding a hand-written kernel's entry point");
+    }
+    return mem.rec4(m, func, gx, 1, threads);
 }
 
-// The embedding row of `token` (bf16 in the store) as f32 into device buffer `dst`.
-fn embed_into[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, token: int, dst: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    let h = hidden();
-    let embed = m[eng + 89];
-    let raw_c = reserve(m, 2 * h);
-    fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + 2 * h * token, raw_c, 2 * h);
-    let wide = reserve(m, 4 * h);
-    var col = 0;
-    while col < h {
-        put_f32(t, wide + 4 * col, 0);
-        t[wide + 4 * col + 2] = t[raw_c + 2 * col];
-        t[wide + 4 * col + 3] = t[raw_c + 2 * col + 1];
-        col = col + 1;
-    }
-    return metal.cgpu_upload_at(ffi, dst, 0, t[wide..wide + 4 * h]);
-}
-
-// The rotary tables of position `pos` (theta 10^7, the first 64 dimensions of a head).
-fn rope_tables_for[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, pos: int) -> [ffi("libmetalgpu")] int {
-    let tab = reserve(m, 256);
-    var jj = 0;
-    while jj < 32 {
-        let inv = math.pow(10000000.0, 0.0 - float_of(jj) / 32.0);
-        let ang = float_of(pos) * inv;
-        put_f32(t, tab + 4 * jj, f32.bits32(f32.round(math.cos(ang))));
-        put_f32(t, tab + 128 + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
-        jj = jj + 1;
-    }
-    metal.cgpu_upload_at(ffi, m[eng + 59], 0, t[tab..tab + 128]);
-    metal.cgpu_upload_at(ffi, m[eng + 60], 0, t[tab + 128..tab + 256]);
-    return 0;
-}
-
-// One step of the draft head. `hid` is the model's hidden state at position `pos` (a device buffer, through
-// the final norm); `token` the token that follows it. The head's cache gets position `pos`. With `lg` >= 0 it
-// also answers the logits of the token after `token` (its draft) into t[lg..lg + 4 * vocab()]; with `lg` = -1
-// it only fills its cache (a prompt's positions, whose drafts nobody asks for), which is the embedding and
-// hidden norms, `fc`, and the key and value of its layer.
-pub fn mtp_step[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, hid: int, token: int, pos: int, lg: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    let h = hidden();
-    let k_rms = m[eng + 0];
-    let k_out = m[eng + 4];
-    let k_down = m[eng + 5];
-    let k_head = m[eng + 6];
-    let k_gateup = m[eng + 7];
-    let k_qg = m[eng + 13];
-    let k_kv = m[eng + 14];
-    let k_qnorm = m[eng + 15];
-    let k_knorm = m[eng + 16];
-    let k_ropeq = m[eng + 17];
-    let k_ropek = m[eng + 18];
-    let k_kvw = m[eng + 19];
-    let k_attn_gate = m[eng + 21];
-    let b_n = m[eng + 36];
-    let b_qg = m[eng + 48];
-    let b_k = m[eng + 49];
-    let b_v = m[eng + 50];
-    let b_q2 = m[eng + 51];
-    let b_k2 = m[eng + 52];
-    let b_qr = m[eng + 53];
-    let b_kr = m[eng + 54];
-    let b_o = m[eng + 55];
-    let b_og = m[eng + 56];
-    let b_act = m[eng + 57];
-    let b_logits = m[eng + 58];
-    let b_cos = m[eng + 59];
-    let b_sin = m[eng + 60];
-    let head = m[eng + 91];
-    let k_fc = m[eng + 101];
-    let m_fc = m[eng + 102];
-    let m_pre_h = m[eng + 103];
-    let m_pre_e = m[eng + 104];
-    let m_norm = m[eng + 105];
-    let mw = m[eng + 106];
-    let b_emb = m[eng + 107];
-    let b_fused = m[eng + 108];
-    let b_mz = m[eng + 109];
-    let b_mz2 = m[eng + 110];
-    let mc1 = m[eng + 111];
-    let mc2 = m[eng + 112];
-    let b_mmask = m[eng + 113];
-    let step_mark = m[mem.text_slot()];
-    embed_into(m, t, ffi, fs, eng, token, b_emb);
-    rope_tables_for(m, t, ffi, eng, pos);
-    let zero = reserve(m, 4);
-    put_f32(t, zero, 0);
-    metal.cgpu_upload_at(ffi, b_mmask, 4 * pos, t[zero..zero + 4]);
-    // z = fc([norm(embedding), norm(hidden)]): the embedding comes first.
-    go(m, ffi, k_rms, b_emb, m_pre_e, b_fused, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    ov(ffi);
-    go(m, ffi, k_rms, hid, m_pre_h, at(b_fused, 4 * h), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    fp4(m, ffi, k_fc, b_fused, m_fc, b_mz);
-    go(m, ffi, k_rms, b_mz, mem.get(m, mw, 0), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    fp4(m, ffi, k_kv, b_n, mem.get(m, mw, 2), b_k);
-    ov(ffi);
-    fp4(m, ffi, k_kv, b_n, mem.get(m, mw, 3), b_v);
-    go(m, ffi, k_knorm, b_k, mem.get(m, mw, 5), b_k2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, k_ropek, b_k2, b_cos, b_sin, b_kr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, k_kvw, b_kr, at(mc1, 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    ov(ffi);
-    go(m, ffi, k_kvw, b_v, at(mc2, 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    if lg < 0 {
-        // Waits: the next step writes the embedding, the tables and the mask from the CPU into the buffers
-        // this one's kernels read.
-        metal.cgpu_sync(ffi);
-        m[mem.text_slot()] = step_mark;
-        return 0;
-    }
-    fp4(m, ffi, k_qg, b_n, mem.get(m, mw, 1), b_qg);
-    go(m, ffi, k_qnorm, b_qg, mem.get(m, mw, 4), b_q2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, k_ropeq, b_q2, b_cos, b_sin, b_qr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, attn_kernel(m, eng, pos + 1), b_qr, mc1, mc2, b_mmask, b_o, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    fp4_res(m, ffi, k_out, b_og, mem.get(m, mw, 6), b_mz, b_mz2);
-    go(m, ffi, k_rms, b_mz2, mem.get(m, mw, 10), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    fp4_swiglu(m, ffi, k_gateup, b_n, mem.get(m, mw, 11), mem.get(m, mw, 12), b_act);
-    fp4_res(m, ffi, k_down, b_act, mem.get(m, mw, 13), b_mz2, b_mz);
-    go(m, ffi, k_rms, b_mz, m_norm, b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    fp4(m, ffi, k_head, b_n, head, b_logits);
-    metal.cgpu_sync(ffi);
-    if metal.cgpu_download(ffi, b_logits, t[lg..lg + 4 * vocab()]) < 0 {
-        return device_fail(m, t, ffi, "reading the draft's logits back");
-    }
-    m[mem.text_slot()] = step_mark;
-    return 0;
-}
-
-// After a verify (`feed_rows` with set 1): keep the delta states after both tokens (`accepted`) or after the
-// first only. Three buffers rotate, so nothing is copied: the committed one, and two spares the verify wrote.
-pub fn commit[&m](m: &!m [int], eng: int, accepted: bool) -> [] int {
-    let st3 = m[eng + 95];
-    let st3b = m[eng + 130];
-    let st3c = m[eng + 131];
-    var l = 0;
-    while l < layers() {
-        if !is_attention(l) {
-            let old = mem.get(m, st3, l);
-            if accepted {
-                mem.set(m, st3, l, mem.get(m, st3c, l));
-                mem.set(m, st3c, l, old);
-            } else {
-                mem.set(m, st3, l, mem.get(m, st3b, l));
-                mem.set(m, st3b, l, old);
-            }
+// The embedding table (bf16, as the store has it) on the device, for the head's gather.
+fn upload_embedding[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), embed: int, dst: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let total = 2 * vocab() * hidden();
+    let step = 2097152;
+    let mark = m[mem.text_slot()];
+    let raw = reserve(m, step);
+    var done = 0;
+    while done < total {
+        var c = step;
+        if total - done < c {
+            c = total - done;
         }
-        l = l + 1;
+        if fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + done, raw, c) != c {
+            return err.fail(m, t, "io", text.lit(m, t, "cannot read the embedding table"));
+        }
+        if metal.cgpu_upload_at(ffi, dst, done, t[raw..raw + c]) < 0 {
+            return device_fail(m, t, ffi, "uploading the embedding table");
+        }
+        done = done + c;
     }
+    m[mem.text_slot()] = mark;
     return 0;
-}
-
-// Row `r` of the normalised hidden states the last verify left (a device buffer reference for `mtp_step`).
-pub fn hidden_row[&m](m: &!m [int], eng: int, r: int) -> [] int {
-    return at(m[eng + 64], 4 * hidden() * r);
 }
 
 // The few-row kernels for `rows` rows (the speculative verify) into the engine's second set of slots.
@@ -1677,82 +1568,3 @@ fn compile_few[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
 // ---------------------------------------------------------------------
 // Speculative decoding
 // ---------------------------------------------------------------------
-
-// The state of a speculative decode, a record: the last token chosen (not yet fed), the position of the
-// hidden state the head will draft from, that hidden state (a device buffer reference), and the one or two
-// tokens the last round chose. Make it after the prompt has been fed with logits and the first token drawn.
-pub fn spec_init[&m](m: &!m [int], eng: int, last: int, pos: int) -> [] int {
-    let sp = mem.grab(m, 6);
-    m[sp] = last;
-    m[sp + 1] = pos;
-    m[sp + 2] = hidden_buf(m, eng);
-    return sp;
-}
-
-pub fn spec_last[&m](m: &!m [int], sp: int) -> [] int {
-    return m[sp];
-}
-
-// The position the next draft is made at: the caller keeps it below `tmax() - 3`.
-pub fn spec_pos[&m](m: &!m [int], sp: int) -> [] int {
-    return m[sp + 1];
-}
-
-// The tokens a round chose, in order: `spec_token(sp, 0)` and, when the round answered 2, `spec_token(sp, 1)`.
-pub fn spec_token[&m](m: &!m [int], sp: int, i: int) -> [] int {
-    return m[sp + 3 + i];
-}
-
-// One round: the head drafts the token after `last`; the model checks [last, draft] in one pass over the
-// weights; `smp` (the request's sampler) draws the token after `last` from the first row, and, when that is
-// the draft, the token after it from the second, for free. Answers how many tokens the round chose (1 or 2).
-// Drawing from the model's own rows with the request's sampler makes the output distributed as if no draft
-// had been made; `gsmp` (greedy) only picks the draft. `lgd` is a pool region of one vocabulary of f32 and
-// `rows` one of two, for the logits.
-pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, sp: int, lgd: int, rows: int, smp: int, gsmp: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    let v = vocab();
-    let last = m[sp];
-    let pos = m[sp + 1];
-    let hid = m[sp + 2];
-    if mtp_step(m, t, ffi, fs, eng, hid, last, pos, lgd) < 0 {
-        return 0 - 1;
-    }
-    let (dn, dp) = sampler.nucleus(m, t, gsmp, lgd, v);
-    let d = sampler.draw(m, gsmp, dn, dp);
-    let two = mem.list(m);
-    mem.push(m, two, last);
-    mem.push(m, two, d);
-    if feed_rows(m, t, ffi, fs, eng, two, 0, pos + 1, 2, 1, rows) < 0 {
-        return 0 - 1;
-    }
-    let (an, ap) = sampler.nucleus(m, t, smp, rows, v);
-    let t1 = sampler.draw(m, smp, an, ap);
-    m[sp + 3] = t1;
-    if t1 == d && !is_stop(t1) {
-        let (bn, bp) = sampler.nucleus(m, t, smp, rows + 4 * v, v);
-        m[sp + 4] = sampler.draw(m, smp, bn, bp);
-        commit(m, eng, true);
-        // the head's cache at `pos + 1` pairs the model's state there with the draft that was right
-        if mtp_step(m, t, ffi, fs, eng, hidden_row(m, eng, 0), d, pos + 1, 0 - 1) < 0 {
-            return 0 - 1;
-        }
-        m[sp] = m[sp + 4];
-        m[sp + 1] = pos + 2;
-        m[sp + 2] = hidden_row(m, eng, 1);
-        return 2;
-    }
-    commit(m, eng, false);
-    m[sp] = t1;
-    m[sp + 1] = pos + 1;
-    m[sp + 2] = hidden_row(m, eng, 0);
-    return 1;
-}
-
-pub fn tokenizer[&m](m: &!m [int], eng: int) -> [] int {
-    return m[eng + 96];
-}
-
-// The tokens that end a turn: <|im_end|> and <|endoftext|>.
-pub fn is_stop(token: int) -> [] bool {
-    return token == 248044 || token == 248046;
-}

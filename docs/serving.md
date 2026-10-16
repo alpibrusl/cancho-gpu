@@ -18,7 +18,7 @@ curl localhost:8080/v1/chat/completions -H 'Authorization: Bearer secret' -H 'Co
 | `--api-key KEY` | every route but `/health` needs `Authorization: Bearer KEY` |
 | `--model NAME` | the id in answers and `/v1/models` (default `qwen3.8:27b-mlx`) |
 | `--think` | the model reasons first unless the request says otherwise |
-| `--no-spec` | no draft head: one token a pass (24 tok/s) and 0.8 GB less memory; by default the model's draft head is used (33-35 tok/s) |
+| `--no-spec` | no draft head: one token a pass (24 tok/s) and 2.7 GB less memory; by default the model's draft head is used (a chain of two drafts, three rows checked a pass) |
 
 **It listens on every address of the host** (`tcp_listen` binds them all; there is no way to ask for loopback),
 so on a network use `--api-key`; without one it says so at startup.
