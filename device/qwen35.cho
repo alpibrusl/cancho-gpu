@@ -29,6 +29,7 @@ import lower;
 import fileio;
 import safetensors;
 import bpe;
+import sampler;
 import metal;
 
 // ---------------------------------------------------------------------
@@ -1417,7 +1418,12 @@ pub fn feed_one[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
 
 // Feed ids[from..to) at positions from..to - 1, in chunks of `mb()` where `batched` allows; the last
 // token's logits go to t[lg..] when `lg` >= 0 (the chunks then stop short of it).
-pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, from: int, to: int, lg: int, batched: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+// Feed ids[from..to) at positions from..to - 1, in chunks of `mb()` where `batched` allows; the last
+// token's logits go to t[lg..] when `lg` >= 0 (the chunks then stop short of it). With `warm` the draft head's
+// cache is filled alongside: for each position but the last, the head sees the model's hidden state there and
+// the token after it. (The last position's pair needs the token the model is about to choose; that is the
+// first draft.)
+pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, from: int, to: int, lg: int, batched: bool, warm: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     var pos = from;
     var limit = to;
     if lg >= 0 {
@@ -1431,6 +1437,18 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             if feed_chunk(m, t, ffi, fs, eng, ids, pos) < 0 {
                 return 0 - 1;
             }
+            if warm {
+                // The chunk's last row pairs with ids[pos + mb()], which exists: a chunk stops short of `to`.
+                let h = hidden();
+                go(m, ffi, m[eng + 29], m[eng + 62], m[eng + 90], m[eng + 64], 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                var r = 0;
+                while r < mb() {
+                    if mtp_step(m, t, ffi, fs, eng, at(m[eng + 64], 4 * h * r), mem.get(m, ids, pos + r + 1), pos + r, 0 - 1) < 0 {
+                        return 0 - 1;
+                    }
+                    r = r + 1;
+                }
+            }
             pos = pos + mb();
         }
     }
@@ -1441,6 +1459,11 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         }
         if feed_one(m, t, ffi, fs, eng, mem.get(m, ids, pos), pos, want) < 0 {
             return 0 - 1;
+        }
+        if warm && pos < to - 1 {
+            if mtp_step(m, t, ffi, fs, eng, hidden_buf(m, eng), mem.get(m, ids, pos + 1), pos, 0 - 1) < 0 {
+                return 0 - 1;
+            }
         }
         pos = pos + 1;
     }
@@ -1575,7 +1598,9 @@ pub fn mtp_step[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
     ov(ffi);
     go(m, ffi, k_kvw, b_v, at(mc2, 1024 * pos), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
     if lg < 0 {
-        metal.cgpu_flush(ffi);
+        // Waits: the next step writes the embedding, the tables and the mask from the CPU into the buffers
+        // this one's kernels read.
+        metal.cgpu_sync(ffi);
         m[mem.text_slot()] = step_mark;
         return 0;
     }
@@ -1647,6 +1672,80 @@ fn compile_few[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
         return 0 - 1;
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------
+// Speculative decoding
+// ---------------------------------------------------------------------
+
+// The state of a speculative decode, a record: the last token chosen (not yet fed), the position of the
+// hidden state the head will draft from, that hidden state (a device buffer reference), and the one or two
+// tokens the last round chose. Make it after the prompt has been fed with logits and the first token drawn.
+pub fn spec_init[&m](m: &!m [int], eng: int, last: int, pos: int) -> [] int {
+    let sp = mem.grab(m, 6);
+    m[sp] = last;
+    m[sp + 1] = pos;
+    m[sp + 2] = hidden_buf(m, eng);
+    return sp;
+}
+
+pub fn spec_last[&m](m: &!m [int], sp: int) -> [] int {
+    return m[sp];
+}
+
+// The position the next draft is made at: the caller keeps it below `tmax() - 3`.
+pub fn spec_pos[&m](m: &!m [int], sp: int) -> [] int {
+    return m[sp + 1];
+}
+
+// The tokens a round chose, in order: `spec_token(sp, 0)` and, when the round answered 2, `spec_token(sp, 1)`.
+pub fn spec_token[&m](m: &!m [int], sp: int, i: int) -> [] int {
+    return m[sp + 3 + i];
+}
+
+// One round: the head drafts the token after `last`; the model checks [last, draft] in one pass over the
+// weights; `smp` (the request's sampler) draws the token after `last` from the first row, and, when that is
+// the draft, the token after it from the second, for free. Answers how many tokens the round chose (1 or 2).
+// Drawing from the model's own rows with the request's sampler makes the output distributed as if no draft
+// had been made; `gsmp` (greedy) only picks the draft. `lgd` is a pool region of one vocabulary of f32 and
+// `rows` one of two, for the logits.
+pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, sp: int, lgd: int, rows: int, smp: int, gsmp: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let v = vocab();
+    let last = m[sp];
+    let pos = m[sp + 1];
+    let hid = m[sp + 2];
+    if mtp_step(m, t, ffi, fs, eng, hid, last, pos, lgd) < 0 {
+        return 0 - 1;
+    }
+    let (dn, dp) = sampler.nucleus(m, t, gsmp, lgd, v);
+    let d = sampler.draw(m, gsmp, dn, dp);
+    let two = mem.list(m);
+    mem.push(m, two, last);
+    mem.push(m, two, d);
+    if feed_rows(m, t, ffi, fs, eng, two, 0, pos + 1, 2, 1, rows) < 0 {
+        return 0 - 1;
+    }
+    let (an, ap) = sampler.nucleus(m, t, smp, rows, v);
+    let t1 = sampler.draw(m, smp, an, ap);
+    m[sp + 3] = t1;
+    if t1 == d && !is_stop(t1) {
+        let (bn, bp) = sampler.nucleus(m, t, smp, rows + 4 * v, v);
+        m[sp + 4] = sampler.draw(m, smp, bn, bp);
+        commit(m, eng, true);
+        // the head's cache at `pos + 1` pairs the model's state there with the draft that was right
+        if mtp_step(m, t, ffi, fs, eng, hidden_row(m, eng, 0), d, pos + 1, 0 - 1) < 0 {
+            return 0 - 1;
+        }
+        m[sp] = m[sp + 4];
+        m[sp + 1] = pos + 2;
+        m[sp + 2] = hidden_row(m, eng, 1);
+        return 2;
+    }
+    commit(m, eng, false);
+    m[sp] = t1;
+    m[sp + 1] = pos + 1;
+    m[sp + 2] = hidden_row(m, eng, 0);
+    return 1;
 }
 
 pub fn tokenizer[&m](m: &!m [int], eng: int) -> [] int {

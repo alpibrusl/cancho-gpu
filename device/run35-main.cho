@@ -107,10 +107,9 @@ fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &
     return 0;
 }
 
-// `--spec`: greedy decoding with the draft head. Each round the head drafts the token after the last one chosen,
-// and the model checks the pair [last, draft] in a single pass over the weights (two rows): if its own choice
-// after `last` is the draft, both rows count and a second token comes free; if not, only the first row does and
-// the delta layers go back to their state after it. The tokens are the ones plain greedy decoding gives.
+// `--spec`: decoding with the draft head (`docs/serving.md`, issue 26). Each round the head drafts the token
+// after the last one chosen and the model checks the pair in one pass over the weights; the tokens are the
+// ones plain decoding gives. (`qwen35.spec_round`.)
 fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), ffi: &g Ffi("libmetalgpu"), clock: &c Clock, eng: int, tk: int, ids: int, new_tokens: int, timing: bool, t_start: int) -> [io_write, err_write, fs_read(""), file_read, ffi("libmetalgpu"), clock] int {
     let n_prompt = mem.size(m, ids);
     let v = qwen35.vocab();
@@ -119,92 +118,42 @@ fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs:
     let rows = qwen35.reserve(m, 8 * v);
     let base = m[mem.text_slot()];
     let smp = sampler.new(m, 0.0, 0.95, 20, 1);
+    let gsmp = sampler.new(m, 0.0, 0.95, 20, 1);
     let t_loaded = clock_ms(clock);
-    // The prompt, a token at a time, the head's cache warmed beside it.
-    let hb = qwen35.hidden_buf(m, eng);
-    var p = 0;
-    while p < n_prompt {
-        var want = 0 - 1;
-        if p == n_prompt - 1 {
-            want = lg;
-        }
-        if qwen35.feed_one(m, t, ffi, fs, eng, mem.get(m, ids, p), p, want) < 0 {
-            return cli.report(m, t, io);
-        }
-        if p < n_prompt - 1 {
-            if qwen35.mtp_step(m, t, ffi, fs, eng, hb, mem.get(m, ids, p + 1), p, 0 - 1) < 0 {
-                return cli.report(m, t, io);
-            }
-        }
-        p = p + 1;
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true, true) < 0 {
+        return cli.report(m, t, io);
     }
     let t_first = clock_ms(clock);
     let out_ids = mem.list(m);
     let (n0, p0) = sampler.nucleus(m, t, smp, lg, v);
-    var last = sampler.draw(m, smp, n0, p0);
-    mem.push(m, out_ids, last);
+    let first = sampler.draw(m, smp, n0, p0);
+    mem.push(m, out_ids, first);
     var n = 1;
-    var pos = n_prompt - 1;
-    var hid = hb;
+    let sp = qwen35.spec_init(m, eng, first, n_prompt - 1);
     var rounds = 0;
     var accepted = 0;
-    var ms_draft = 0;
-    var ms_verify = 0;
-    var ms_warm = 0;
-    var ms_sample = 0;
-    var finished = qwen35.is_stop(last) || n >= new_tokens;
+    var finished = qwen35.is_stop(first) || n >= new_tokens;
     while !finished {
-        if pos + 3 >= qwen35.tmax() {
+        if qwen35.spec_pos(m, sp) + 3 >= qwen35.tmax() {
             finished = true;
         } else {
-            // draft the token after `last`: the head at position `pos`
-            let c0 = clock_ms(clock);
-            if qwen35.mtp_step(m, t, ffi, fs, eng, hid, last, pos, lgd) < 0 {
-                return cli.report(m, t, io);
-            }
-            let cs = clock_ms(clock);
-            let (dn, dp) = sampler.nucleus(m, t, smp, lgd, v);
-            let d = sampler.draw(m, smp, dn, dp);
-            ms_sample = ms_sample + clock_ms(clock) - cs;
-            let c1 = clock_ms(clock);
-            ms_draft = ms_draft + c1 - c0;
-            // check [last, draft] at positions pos + 1, pos + 2 in one pass
-            let two = mem.list(m);
-            mem.push(m, two, last);
-            mem.push(m, two, d);
-            if qwen35.feed_rows(m, t, ffi, fs, eng, two, 0, pos + 1, 2, 1, rows) < 0 {
+            let got = qwen35.spec_round(m, t, ffi, fs, eng, sp, lgd, rows, smp, gsmp);
+            if got < 0 {
                 return cli.report(m, t, io);
             }
             rounds = rounds + 1;
-            ms_verify = ms_verify + clock_ms(clock) - c1;
-            let (an, ap) = sampler.nucleus(m, t, smp, rows, v);
-            let t1 = sampler.draw(m, smp, an, ap);
-            mem.push(m, out_ids, t1);
-            n = n + 1;
-            if t1 == d && !qwen35.is_stop(t1) && n < new_tokens {
-                // the draft was the model's own choice: the second row is the token after it
-                let (bn, bp) = sampler.nucleus(m, t, smp, rows + 4 * v, v);
-                let t2 = sampler.draw(m, smp, bn, bp);
-                mem.push(m, out_ids, t2);
+            var j = 0;
+            while j < got && !finished {
+                let tok = qwen35.spec_token(m, sp, j);
+                mem.push(m, out_ids, tok);
                 n = n + 1;
-                accepted = accepted + 1;
-                qwen35.commit(m, eng, true);
-                let c2 = clock_ms(clock);
-                if qwen35.mtp_step(m, t, ffi, fs, eng, qwen35.hidden_row(m, eng, 0), d, pos + 1, 0 - 1) < 0 {
-                    return cli.report(m, t, io);
+                if qwen35.is_stop(tok) || n >= new_tokens {
+                    finished = true;
                 }
-                ms_warm = ms_warm + clock_ms(clock) - c2;
-                last = t2;
-                hid = qwen35.hidden_row(m, eng, 1);
-                pos = pos + 2;
-            } else {
-                qwen35.commit(m, eng, false);
-                last = t1;
-                hid = qwen35.hidden_row(m, eng, 0);
-                pos = pos + 1;
+                j = j + 1;
             }
-            if qwen35.is_stop(last) || n >= new_tokens {
-                finished = true;
+            if got == 2 {
+                accepted = accepted + 1;
             }
         }
         m[mem.text_slot()] = base;
@@ -221,7 +170,6 @@ fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs:
     }
     io.write_all(io, text.bytes(t, text.f1(m, t, "tokens: $\n", text.joined(m, t, numbers, " "))));
     io.write_all(io, text.bytes(t, text.f3(m, t, "spec: $ rounds, $ drafts accepted, $ tokens\n", text.num(m, t, rounds), text.num(m, t, accepted), text.num(m, t, n))));
-    io.write_all(io, text.bytes(t, text.f3(m, t, "spec time: draft $ ms (of it, sampling $), verify $ ms\n", text.num(m, t, ms_draft), text.num(m, t, ms_sample), text.num(m, t, ms_verify))));
     if timing {
         io.write_all(io, text.bytes(t, text.fmt(m, t, "timing: load_ms=$ prefill_tokens=$ prefill_ms=$ decode_tokens=$ decode_ms=$\n", mem.of5(m, text.num(m, t, t_loaded - t_start), text.num(m, t, n_prompt), text.num(m, t, t_first - t_loaded), text.num(m, t, n - 1), text.num(m, t, t_end - t_first)))));
     }
@@ -299,7 +247,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     let lg = qwen35.reserve(m, 4 * qwen35.vocab());
     let after_lg = m[mem.text_slot()];
     // The prompt: all but its last token without logits, then the last with.
-    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, batched) < 0 {
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, batched, false) < 0 {
         return cli.report(m, t, io);
     }
     let t_first = clock_ms(clock);

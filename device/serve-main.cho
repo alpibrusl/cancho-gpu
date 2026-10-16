@@ -271,7 +271,7 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     // A new conversation, the prompt in, the first logits out.
     qwen35.reset(m, t, ffi, eng);
     let lg = qwen35.reserve(m, 4 * qwen35.vocab());
-    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true) < 0 {
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true, false) < 0 {
         refuse(m, t, ch, 500, last_error(m, t), "server_error");
         return 0 - 1;
     }
