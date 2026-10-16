@@ -55,7 +55,7 @@ waiting (`cgpu_launch_async`, `cgpu_flush`), and the CPU waits once, for the
 logits (`cgpu_sync`).
 
 The prompt is tokenized by `bpe.cho` and fed **one token at a time**, so
-prefill costs what decoding does. There is no chat template.
+prefill costs what decoding does. `cancho-gpu-run` takes raw text (the 27B's server has the chat template: `docs/serving.md`).
 
 ## 2. How it is held to something
 

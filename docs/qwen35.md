@@ -135,8 +135,10 @@ issue 26 needs the same pass over fewer tokens at about the cost of one, which t
 * **Speed**: 14.6 GB are read a token, so the floor at the copy bandwidth is about 27 ms; the kernels are
   at 41. What is left is the 900 small launches (more fusion, or fewer kernels per layer) and a faster batch kernel;
   the matvec itself is near what the chip gives (§5).
-* **Context**: 256 positions (a constant of the compiled kernels), and attention's one-tile scores cap it at
-  1364 on Metal (`docs/kernels.md` §4). The model's context is 262,144.
-* **Raw text** only: no chat template, no thinking-mode handling, greedy by default.
+* **Context**: 1024 positions (a constant of the compiled kernels; attention is compiled for 256, 512 and 1024 of
+  them and uses the smallest that covers the conversation), and attention's one-tile scores cap it at 1364 on
+  Metal (`docs/kernels.md` §4). The model's context is 262,144.
+* **`cancho-gpu-run35` takes raw text**, greedy; the chat template, thinking mode and sampling are the server's
+  (`docs/serving.md`), over the same engine (`device/qwen35.cho`: `load`, `reset`, `feed`, `feed_one`).
 * **Positions**: text positions only (the model's interleaved m-RoPE reduces to plain RoPE when the three
   position streams are equal, which is all this feeds it); the multi-token-prediction head is not used.

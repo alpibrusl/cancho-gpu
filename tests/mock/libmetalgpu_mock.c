@@ -73,6 +73,11 @@ int64_t cgpu_arg(int64_t buf) {
 }
 
 int64_t cgpu_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads);
+int64_t cgpu_zero(int64_t buf) {
+    (void)buf;
+    return 0;
+}
+
 int64_t cgpu_overlap(void) {
     return 0;
 }
