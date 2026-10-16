@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-run35` -- run Qwen3.8-27B (`qwen3.8:27b-mlx`, NVFP4) on a Metal GPU
 // (`docs/qwen35.md`).
 //
-//     cancho-gpu-run35 <ollama store> <kernel dir> "<prompt>" <new tokens> [--trace] [--timing] [--single] [--stream] [--mtp-accept]
+//     cancho-gpu-run35 <ollama store> <kernel dir> "<prompt>" <new tokens> [--trace] [--timing] [--single] [--stream] [--mtp-accept] [--spec]
 //
 // A raw prompt (no chat template: `cancho-gpu-serve` has one), greedy, fed through the engine of
 // `device/qwen35.cho`, which holds the model's dimensions and the kernels (`tests/chx/`).
@@ -29,7 +29,7 @@ fn bytes_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-run35 <ollama store> <kernel dir> \"<prompt>\" <new tokens> [--trace] [--timing] [--single] [--stream] [--mtp-accept]\n");
+    io.error_all(io, "usage: cancho-gpu-run35 <ollama store> <kernel dir> \"<prompt>\" <new tokens> [--trace] [--timing] [--single] [--stream] [--mtp-accept] [--spec]\n");
     return 2;
 }
 
@@ -107,6 +107,115 @@ fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &
     return 0;
 }
 
+// `--spec`: greedy decoding with the draft head. Each round the head drafts the token after the last one chosen,
+// and the model checks the pair [last, draft] in a single pass over the weights (two rows): if its own choice
+// after `last` is the draft, both rows count and a second token comes free; if not, only the first row does and
+// the delta layers go back to their state after it. The tokens are the ones plain greedy decoding gives.
+fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), ffi: &g Ffi("libmetalgpu"), clock: &c Clock, eng: int, tk: int, ids: int, new_tokens: int, timing: bool, t_start: int) -> [io_write, err_write, fs_read(""), file_read, ffi("libmetalgpu"), clock] int {
+    let n_prompt = mem.size(m, ids);
+    let v = qwen35.vocab();
+    let lg = qwen35.reserve(m, 4 * v);
+    let lgd = qwen35.reserve(m, 4 * v);
+    let rows = qwen35.reserve(m, 8 * v);
+    let base = m[mem.text_slot()];
+    let smp = sampler.new(m, 0.0, 0.95, 20, 1);
+    let t_loaded = clock_ms(clock);
+    // The prompt, a token at a time, the head's cache warmed beside it.
+    let hb = qwen35.hidden_buf(m, eng);
+    var p = 0;
+    while p < n_prompt {
+        var want = 0 - 1;
+        if p == n_prompt - 1 {
+            want = lg;
+        }
+        if qwen35.feed_one(m, t, ffi, fs, eng, mem.get(m, ids, p), p, want) < 0 {
+            return cli.report(m, t, io);
+        }
+        if p < n_prompt - 1 {
+            if qwen35.mtp_step(m, t, ffi, fs, eng, hb, mem.get(m, ids, p + 1), p, 0 - 1) < 0 {
+                return cli.report(m, t, io);
+            }
+        }
+        p = p + 1;
+    }
+    let t_first = clock_ms(clock);
+    let out_ids = mem.list(m);
+    let (n0, p0) = sampler.nucleus(m, t, smp, lg, v);
+    var last = sampler.draw(m, smp, n0, p0);
+    mem.push(m, out_ids, last);
+    var n = 1;
+    var pos = n_prompt - 1;
+    var hid = hb;
+    var rounds = 0;
+    var accepted = 0;
+    var finished = qwen35.is_stop(last) || n >= new_tokens;
+    while !finished {
+        if pos + 3 >= qwen35.tmax() {
+            finished = true;
+        } else {
+            // draft the token after `last`: the head at position `pos`
+            if qwen35.mtp_step(m, t, ffi, fs, eng, hid, last, pos, lgd) < 0 {
+                return cli.report(m, t, io);
+            }
+            let (dn, dp) = sampler.nucleus(m, t, smp, lgd, v);
+            let d = sampler.draw(m, smp, dn, dp);
+            // check [last, draft] at positions pos + 1, pos + 2 in one pass
+            let two = mem.list(m);
+            mem.push(m, two, last);
+            mem.push(m, two, d);
+            if qwen35.feed_rows(m, t, ffi, fs, eng, two, 0, pos + 1, 2, 1, rows) < 0 {
+                return cli.report(m, t, io);
+            }
+            rounds = rounds + 1;
+            let (an, ap) = sampler.nucleus(m, t, smp, rows, v);
+            let t1 = sampler.draw(m, smp, an, ap);
+            mem.push(m, out_ids, t1);
+            n = n + 1;
+            if t1 == d && !qwen35.is_stop(t1) && n < new_tokens {
+                // the draft was the model's own choice: the second row is the token after it
+                let (bn, bp) = sampler.nucleus(m, t, smp, rows + 4 * v, v);
+                let t2 = sampler.draw(m, smp, bn, bp);
+                mem.push(m, out_ids, t2);
+                n = n + 1;
+                accepted = accepted + 1;
+                qwen35.commit(m, eng, true);
+                if qwen35.mtp_step(m, t, ffi, fs, eng, qwen35.hidden_row(m, eng, 0), d, pos + 1, 0 - 1) < 0 {
+                    return cli.report(m, t, io);
+                }
+                last = t2;
+                hid = qwen35.hidden_row(m, eng, 1);
+                pos = pos + 2;
+            } else {
+                qwen35.commit(m, eng, false);
+                last = t1;
+                hid = qwen35.hidden_row(m, eng, 0);
+                pos = pos + 1;
+            }
+            if qwen35.is_stop(last) || n >= new_tokens {
+                finished = true;
+            }
+        }
+        m[mem.text_slot()] = base;
+    }
+    let t_end = clock_ms(clock);
+    let (ds, dn2) = bpe.decode(m, t, tk, out_ids);
+    io.write_all(io, text.bytes(t, text.handle(ds, dn2)));
+    io.write_all(io, "\n");
+    let numbers = mem.list(m);
+    var q2 = 0;
+    while q2 < mem.size(m, out_ids) {
+        mem.push(m, numbers, text.num(m, t, mem.get(m, out_ids, q2)));
+        q2 = q2 + 1;
+    }
+    io.write_all(io, text.bytes(t, text.f1(m, t, "tokens: $\n", text.joined(m, t, numbers, " "))));
+    io.write_all(io, text.bytes(t, text.f3(m, t, "spec: $ rounds, $ drafts accepted, $ tokens\n", text.num(m, t, rounds), text.num(m, t, accepted), text.num(m, t, n))));
+    if timing {
+        io.write_all(io, text.bytes(t, text.fmt(m, t, "timing: load_ms=$ prefill_tokens=$ prefill_ms=$ decode_tokens=$ decode_ms=$\n", mem.of5(m, text.num(m, t, t_loaded - t_start), text.num(m, t, n_prompt), text.num(m, t, t_first - t_loaded), text.num(m, t, n - 1), text.num(m, t, t_end - t_first)))));
+    }
+    metal.cgpu_close(ffi);
+    return 0;
+}
+
 fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &c Clock) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock] int {
     let t_start = clock_ms(clock);
     if arg_count(args) < 5 {
@@ -127,6 +236,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     var batched = true;
     var stream = false;
     var mtp_accept = false;
+    var spec = false;
     var ai = 5;
     while ai < arg_count(args) {
         let flag = text.from_bytes(m, t, arg(args, ai));
@@ -140,6 +250,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             stream = true;
         } else if text.is(t, flag, "--mtp-accept") {
             mtp_accept = true;
+        } else if text.is(t, flag, "--spec") {
+            spec = true;
         }
         ai = ai + 1;
     }
@@ -147,7 +259,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         qwen35.device_fail(m, t, ffi, "opening the device");
         return cli.report(m, t, io);
     }
-    let eng = qwen35.load(m, t, ffi, fs, store, kdir, mtp_accept);
+    let eng = qwen35.load(m, t, ffi, fs, store, kdir, mtp_accept || spec);
     if eng < 0 {
         return cli.report(m, t, io);
     }
@@ -161,6 +273,9 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     if n_prompt + new_tokens > qwen35.tmax() || n_prompt == 0 {
         io.error_all(io, "error[context]: the prompt and the new tokens must fit in the context (1024 positions) and the prompt must not be empty\n");
         return 1;
+    }
+    if spec {
+        return spec_run(m, t, io, fs, ffi, clock, eng, tk, ids, new_tokens, timing, t_start);
     }
     if mtp_accept {
         return accept_run(m, t, io, fs, ffi, eng, tk, ids, new_tokens);

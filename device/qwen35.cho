@@ -819,7 +819,24 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             return 0 - 1;
         }
     }
-    let eng = mem.grab(m, 116);
+    var b_logitsb = 0 - 1;
+    let st3b = mem.list(m);
+    let st3c = mem.list(m);
+    if mtp_on == 1 {
+        b_logitsb = metal.cgpu_alloc(ffi, 4 * 2 * vocab());
+        l = 0;
+        while l < layers() {
+            if is_attention(l) {
+                mem.push(m, st3b, 0 - 1);
+                mem.push(m, st3c, 0 - 1);
+            } else {
+                mem.push(m, st3b, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
+                mem.push(m, st3c, metal.cgpu_alloc(ffi, 4 * 48 * 128 * 128));
+            }
+            l = l + 1;
+        }
+    }
+    let eng = mem.grab(m, 132);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -834,6 +851,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 112] = mc2;
     m[eng + 113] = b_mmask;
     m[eng + 114] = mtp_on;
+    m[eng + 129] = b_logitsb;
+    m[eng + 130] = st3b;
+    m[eng + 131] = st3c;
     m[eng + 99] = k_attn1;
     m[eng + 100] = k_attn2;
     m[eng + 0] = k_rms;
@@ -935,6 +955,11 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 96] = tk;
     m[eng + 97] = kdir;
     m[eng + 98] = 0;
+    if mtp_on == 1 {
+        if compile_few(m, t, ffi, fs, eng, kdir, 2) < 0 {
+            return 0 - 1;
+        }
+    }
     if reset(m, t, ffi, eng) < 0 {
         return 0 - 1;
     }
@@ -1014,7 +1039,13 @@ pub fn reset[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu")
 
 // Eight (`mb()`) tokens at once, ids[pos..pos + 8): the weights are read once for the chunk. Needs the
 // batch kernels (`ensure_batch`). No logits.
-pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, pos: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+// `rows` tokens ids[ifrom..ifrom + rows) at positions pos.. at once, the weights read once. `set` 0 is the prefill chunk (the
+// matrix-unit kernels, `rows` = `mb()`); `set` 1 is a speculative verify of 2 (the few-row kernels), whose
+// delta layers write their states through two spare buffers instead of in place, so that either the state
+// after the first token or the one after the second can be kept (`commit`). With `final_lg` >= 0 the final
+// norm and `lm_head` run for every row and the logits (rows x vocabulary) go to t[final_lg..]; the normalised
+// hidden rows stay in the batch buffers (`hidden_row`).
+pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, ifrom: int, pos: int, rows: int, set: int, final_lg: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     let h = hidden();
     var l = 0;
     let k_ab = m[eng + 3];
@@ -1025,18 +1056,28 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
     let k_ropeq = m[eng + 17];
     let k_ropek = m[eng + 18];
     let k_kvw = m[eng + 19];
-    let k_qkvb = m[eng + 22];
-    let k_zb = m[eng + 23];
-    let k_qgb = m[eng + 24];
-    let k_kvb = m[eng + 25];
-    let k_outb = m[eng + 26];
-    let k_downb = m[eng + 27];
-    let k_gateupb = m[eng + 28];
-    let k_rmsb = m[eng + 29];
-    let k_qnormb = m[eng + 30];
-    let k_knormb = m[eng + 31];
-    let k_attn_gateb = m[eng + 32];
-    let k_gnormb = m[eng + 33];
+    var kb = 22;
+    if set == 1 {
+        kb = 116;
+    }
+    let k_qkvb = m[eng + kb];
+    let k_zb = m[eng + kb + 1];
+    let k_qgb = m[eng + kb + 2];
+    let k_kvb = m[eng + kb + 3];
+    let k_outb = m[eng + kb + 4];
+    let k_downb = m[eng + kb + 5];
+    let k_gateupb = m[eng + kb + 6];
+    let k_rmsb = m[eng + kb + 7];
+    let k_qnormb = m[eng + kb + 8];
+    let k_knormb = m[eng + kb + 9];
+    let k_attn_gateb = m[eng + kb + 10];
+    let k_gnormb = m[eng + kb + 11];
+    let k_headb = m[eng + 128];
+    let b_logitsb = m[eng + 129];
+    let st3b = m[eng + 130];
+    let st3c = m[eng + 131];
+    let final_norm = m[eng + 90];
+    let head = m[eng + 91];
     let b_mask = m[eng + 61];
     let b_xs = m[eng + 62];
     let b_xs2 = m[eng + 63];
@@ -1072,8 +1113,8 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
     let st3 = m[eng + 95];
     let chunk_mark = m[mem.text_slot()];
     var tk_i = 0;
-    while tk_i < mb() {
-        let tok = mem.get(m, ids, pos + tk_i);
+    while tk_i < rows {
+        let tok = mem.get(m, ids, ifrom + tk_i);
         let raw_c = reserve(m, 2 * h);
         fileio.read_at(t, fs, text.bytes(t, m[embed]), m[embed + 1] + m[embed + 5] + 2 * h * tok, raw_c, 2 * h);
         let wide = reserve(m, 4 * h);
@@ -1126,22 +1167,22 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
             ov(ffi);
             go(m, ffi, k_knormb, b_ks, mem.get(m, w, 5), b_k2s, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             var tt = 0;
-            while tt < mb() {
+            while tt < rows {
                 go(m, ffi, k_ropeq, at(b_q2s, 4 * 6144 * tt), at(b_coss, 128 * tt), at(b_sins, 128 * tt), at(b_qrs, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 ov(ffi);
                 go(m, ffi, k_ropek, at(b_k2s, 4 * 1024 * tt), at(b_coss, 128 * tt), at(b_sins, 128 * tt), at(b_krs, 4 * 1024 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 tt = tt + 1;
             }
             tt = 0;
-            while tt < mb() {
+            while tt < rows {
                 go(m, ffi, k_kvw, at(b_krs, 4 * 1024 * tt), at(mem.get(m, st1, l), 1024 * (pos + tt)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 ov(ffi);
                 go(m, ffi, k_kvw, at(b_vs, 4 * 1024 * tt), at(mem.get(m, st2, l), 1024 * (pos + tt)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 tt = tt + 1;
             }
             tt = 0;
-            while tt < mb() {
-                go(m, ffi, attn_kernel(m, eng, pos + mb()), at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1);
+            while tt < rows {
+                go(m, ffi, attn_kernel(m, eng, pos + rows), at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1);
                 tt = tt + 1;
             }
             go(m, ffi, k_attn_gateb, b_os, b_qgs, b_ogs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
@@ -1151,7 +1192,7 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
             ov(ffi);
             fp4(m, ffi, k_zb, b_ns, mem.get(m, w, 2), b_zs);
             var tt = 0;
-            while tt < mb() {
+            while tt < rows {
                 ov(ffi);
                 go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 3), at(b_as, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 ov(ffi);
@@ -1159,7 +1200,7 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
                 tt = tt + 1;
             }
             tt = 0;
-            while tt < mb() {
+            while tt < rows {
                 var cs_now = mem.get(m, st1, l);
                 var cs_next = mem.get(m, st2, l);
                 if (pos + tt) % 2 == 1 {
@@ -1170,7 +1211,17 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
                 go(m, ffi, k_qknorm, at(b_convs, 4 * 10240 * tt), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 ov(ffi);
                 go(m, ffi, k_gates, at(b_as, 4 * 48 * tt), at(b_bs, 4 * 48 * tt), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), 0 - 1, 0 - 1);
-                go(m, ffi, k_delta, mem.get(m, st3, l), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), mem.get(m, st3, l), at(b_ys, 4 * 6144 * tt));
+                var s_in = mem.get(m, st3, l);
+                var s_out = s_in;
+                if set == 1 {
+                    if tt == 0 {
+                        s_out = mem.get(m, st3b, l);
+                    } else {
+                        s_in = mem.get(m, st3b, l);
+                        s_out = mem.get(m, st3c, l);
+                    }
+                }
+                go(m, ffi, k_delta, s_in, at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), s_out, at(b_ys, 4 * 6144 * tt));
                 tt = tt + 1;
             }
             go(m, ffi, k_gnormb, b_ys, b_zs, mem.get(m, w, 8), b_gns, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
@@ -1182,17 +1233,31 @@ pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         metal.cgpu_flush(ffi);
         l = l + 1;
     }
+    if final_lg >= 0 {
+        go(m, ffi, k_rmsb, cur, final_norm, b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+        fp4(m, ffi, k_headb, b_ns, head, b_logitsb);
+    }
     metal.cgpu_sync(ffi);
+    if final_lg >= 0 {
+        if metal.cgpu_download(ffi, b_logitsb, t[final_lg..final_lg + 4 * rows * vocab()]) < 0 {
+            return device_fail(m, t, ffi, "reading the logits back");
+        }
+    }
     // The single-token path opens one mask position a step; open this chunk's.
-    let open = reserve(m, 4 * mb());
+    let open = reserve(m, 4 * rows);
     var oc = 0;
-    while oc < mb() {
+    while oc < rows {
         put_f32(t, open + 4 * oc, 0);
         oc = oc + 1;
     }
-    metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * mb()]);
+    metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * rows]);
     m[mem.text_slot()] = chunk_mark;
     return 0;
+}
+
+// A prefill chunk: `mb()` tokens, no logits.
+pub fn feed_chunk[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, pos: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    return feed_rows(m, t, ffi, fs, eng, ids, pos, pos, mb(), 0, 0 - 1);
 }
 
 // One token at position `pos`. With `lg` >= 0, also the logits of the vocabulary into t[lg..lg + 4 * vocab()].
@@ -1530,6 +1595,57 @@ pub fn mtp_step[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
         return device_fail(m, t, ffi, "reading the draft's logits back");
     }
     m[mem.text_slot()] = step_mark;
+    return 0;
+}
+
+// After a verify (`feed_rows` with set 1): keep the delta states after both tokens (`accepted`) or after the
+// first only. Three buffers rotate, so nothing is copied: the committed one, and two spares the verify wrote.
+pub fn commit[&m](m: &!m [int], eng: int, accepted: bool) -> [] int {
+    let st3 = m[eng + 95];
+    let st3b = m[eng + 130];
+    let st3c = m[eng + 131];
+    var l = 0;
+    while l < layers() {
+        if !is_attention(l) {
+            let old = mem.get(m, st3, l);
+            if accepted {
+                mem.set(m, st3, l, mem.get(m, st3c, l));
+                mem.set(m, st3c, l, old);
+            } else {
+                mem.set(m, st3, l, mem.get(m, st3b, l));
+                mem.set(m, st3b, l, old);
+            }
+        }
+        l = l + 1;
+    }
+    return 0;
+}
+
+// Row `r` of the normalised hidden states the last verify left (a device buffer reference for `mtp_step`).
+pub fn hidden_row[&m](m: &!m [int], eng: int, r: int) -> [] int {
+    return at(m[eng + 64], 4 * hidden() * r);
+}
+
+// The few-row kernels for `rows` rows (the speculative verify) into the engine's second set of slots.
+fn compile_few[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, kdir: int, rows: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let h = hidden();
+    let nb = float_of(rows);
+    m[eng + 116] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_few.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nb));
+    m[eng + 117] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_few.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nb));
+    m[eng + 118] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_few.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nb));
+    m[eng + 119] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_few.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nb));
+    m[eng + 120] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_few.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nb));
+    m[eng + 121] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_few.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nb));
+    m[eng + 122] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_few.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nb));
+    m[eng + 123] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", rows, "n", h), "eps", f32.round(0.000001)));
+    m[eng + 124] = compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", cv(m, t, c2(m, t, "r", 24 * rows, "n", 256), "eps", f32.round(0.000001)));
+    m[eng + 125] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", 4 * rows, "n", 256), "eps", f32.round(0.000001)));
+    m[eng + 126] = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24 * rows, "n", 256));
+    m[eng + 127] = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", cv(m, t, c2(m, t, "h", 48 * rows, "n", 128), "eps", f32.round(0.000001)));
+    m[eng + 128] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_few.chx", cv(m, t, c2(m, t, "n", vocab(), "k", h), "m", nb));
+    if err.failed(m) {
+        return 0 - 1;
+    }
     return 0;
 }
 
