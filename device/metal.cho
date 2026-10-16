@@ -41,5 +41,8 @@ extern fn cgpu_overlap[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] i
 // Commit what is pending without waiting: the GPU starts while the CPU encodes more.
 extern fn cgpu_flush[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
 
+// Fill buffer `buf` with zeros.
+extern fn cgpu_zero[&f](ffi: &f Ffi("libmetalgpu"), buf: int) -> [ffi("libmetalgpu")] int;
+
 // Bind buffer `buf` from byte `offset` as the next argument.
 extern fn cgpu_arg_at[&f](ffi: &f Ffi("libmetalgpu"), buf: int, offset: int) -> [ffi("libmetalgpu")] int;

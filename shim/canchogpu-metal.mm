@@ -220,6 +220,19 @@ int64_t cgpu_upload_at(int64_t buf, int64_t offset, const char *p, int64_t n) {
     return n;
 }
 
+/* Fill buffer `buf` with zeros: the states and caches of a model before a new conversation. */
+int64_t cgpu_zero(int64_t buf) {
+    if (buf < 0 || buf >= g.n_buffers) {
+        return fail("cgpu_zero", "no such buffer");
+    }
+    char *contents = (char *)[g.buffers[buf] contents];
+    if (!contents) {
+        return fail("cgpu_zero", "failed to get buffer contents");
+    }
+    memset(contents, 0, (size_t)g.sizes[buf]);
+    return 0;
+}
+
 int64_t cgpu_download(int64_t buf, char *p, int64_t n) {
     if (buffer_ok(buf, n, "cgpu_download")) {
         return -1;
