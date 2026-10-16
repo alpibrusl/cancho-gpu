@@ -126,9 +126,40 @@ parts that are sequential in the token (the convolution and the delta state, the
 are launched once a token with buffer offsets. A chunk of eight takes about 55 ms (a decode step is 41), so
 inside a chunk prefill runs at about 145 tokens a second; the last prompt tokens (up to eight, and the one whose
 logits are wanted) go one at a time. `--single` turns it off; `scripts/qwen35-batch-check.sh` holds the two to
-the same tokens and top-five logits (worst difference 1e-4 on a 49-token prompt). The speculative step of
-issue 26 needs the same pass over fewer tokens at about the cost of one, which these kernels do not yet deliver
-(an 8-token pass is ~63 ms), so the kernel's speed is the next thing.
+the same tokens and top-five logits (worst difference 1e-4 on a 49-token prompt). The speculative check (next section) needs a pass over two
+tokens at about the cost of one, which these matrix-unit kernels do not give (an 8-token pass is ~63 ms), so it
+has its own few-row kernels.
+
+### Speculative decoding
+
+A plain step is at the memory floor, so more tokens a second has to mean more tokens a pass. The checkpoint ships
+a multi-token-prediction head (`mtp.*`, 239 MB: `fc` over `[norm(embedding), norm(hidden)]`, one attention layer of
+the model's own shape, `mtp.norm`, and the model's `lm_head`). It reads the model's final-normed hidden state and
+the token chosen from it, and drafts the token after that. `cancho-gpu-run35 --spec` (and the server, unless
+`--no-spec`) runs rounds of: draft with the head; check `[last, draft]` in one pass over the weights (two rows);
+draw the token after `last` from the first row with the request's sampler, and, when it is the draft, the token
+after it from the second row for free. Drawing from the model's own rows with the request's sampler leaves the
+output distributed as if no draft had been made: at temperature 0 the tokens are exactly those of plain decoding.
+
+* **Acceptance** (`--mtp-accept`, greedy, 64 tokens): 95.2% on prose, 96.8% on code; in `--spec` runs 46 of 49
+  rounds on a question, 42 of 52 on random words. Two things about the head are inferred, not documented
+  (`lex-gpu/docs/qwen.md`): every norm of it is stored as a delta from 1, and the embedding comes first in the
+  concatenation into `fc`; the wrong choice accepts 0.4%.
+* **The check costs 1.15 passes** for two tokens (47 ms against 41 for one): the few-row kernels
+  (`matvec_fp4_*_few.chx`, 256 threads, 32 weight rows) read the weights once. Their schedule was chosen inside
+  the running verify: one kernel timed alone pointed to 1024 threads, which made the verify 30% slower.
+* **Rollback is a pointer swap.** The 48 delta layers' memory is a state updated in place, so the verify writes
+  token 0's state and token 1's into two spare buffers and `commit` keeps one of the three (nothing copied); an
+  attention layer needs nothing (positions are overwritten) and the convolution window already alternates between
+  two buffers by position.
+* **Equivalence:** `scripts/spec-check.sh` requires the same tokens as plain greedy decoding, in the same order,
+  on seven prompts (96 tokens each: prose, code, a chat turn, random words); they are the same, at 1.28-1.46x the
+  speed. `tests/serve_check.py` holds the server's speculative answers to the engine's.
+* **Speed:** 33-35 tokens a second through the server (31 at temperature 1) against 24 without the head; a round
+  is about 5 ms of draft, 47 of verify and 2.6 of sampling on the CPU for 1.9 tokens. The head's cache is warmed
+  through prefill (without it acceptance falls from about 0.9 to about 0.5): a position costs about 1 ms more.
+* **Costs:** 0.8 GB more memory (the head 239 MB, two spare delta states 600 MB) and about 2 s more to start (the
+  few-row kernels are compiled at load).
 
 ## 6. Limits and what is left
 
@@ -141,4 +172,4 @@ issue 26 needs the same pass over fewer tokens at about the cost of one, which t
 * **`cancho-gpu-run35` takes raw text**, greedy; the chat template, thinking mode and sampling are the server's
   (`docs/serving.md`), over the same engine (`device/qwen35.cho`: `load`, `reset`, `feed`, `feed_one`).
 * **Positions**: text positions only (the model's interleaved m-RoPE reduces to plain RoPE when the three
-  position streams are equal, which is all this feeds it); the multi-token-prediction head is not used.
+  position streams are equal, which is all this feeds it); the multi-token-prediction head is used only as above.

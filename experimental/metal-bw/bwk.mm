@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
             id<MTLCommandBuffer> cb = [q commandBuffer];
             id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
             [e setComputePipelineState:ps];
-            [e setBuffer:bx offset:0 atIndex:0]; [e setBuffer:bg offset:0 atIndex:3]; [e setBuffer:by offset:0 atIndex:4];
+            [e setBuffer:bx offset:0 atIndex:0]; [e setBuffer:bg offset:0 atIndex:3]; [e setBuffer:by offset:0 atIndex:4]; [e setBuffer:by offset:0 atIndex:5];
             for (int i = 0; i < reps; i++) {
                 [e setBuffer:bq[i % COPIES] offset:0 atIndex:1]; [e setBuffer:bs[i % COPIES] offset:0 atIndex:2];
                 [e dispatchThreadgroups:MTLSizeMake(N / RPT, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];

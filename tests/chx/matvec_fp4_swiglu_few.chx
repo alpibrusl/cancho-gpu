@@ -1,0 +1,35 @@
+// silu(x wg^T) * (x wu^T) for a few rows of x (the tokens a speculative step checks, 2 to 4), NVFP4 weights read once: the
+// generic batched product on the plain scalar path, 256 threads and 32 weight rows to a threadgroup. Chosen
+// inside the running verify: 47.1 ms a verify with this schedule, 49.9 at 512 threads, 61.5 at 1024. (One
+// kernel alone pointed elsewhere: 111 / 121 / 142 us for 1 / 2 / 3 rows at 512 threads, against 209 / 270 / 296
+// at 256 threads and 8 rows.) The `_batch` kernels are the matrix-unit ones, for prefill chunks of 8.
+algo matvec_fp4_swiglu_few(m, n, k)
+  in  x:   f32[m, k]
+  in  gq:  i8[n, k / 2]
+  in  gs:  i8[n, k / 16]
+  in  gg:  f32[n]
+  in  uq:  i8[n, k / 2]
+  in  us:  i8[n, k / 16]
+  in  ug:  f32[n]
+  out y:   f32[m, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let q1 = load gq[i * bn, 0 ; bn, k / 2]
+  let s1 = load gs[i * bn, 0 ; bn, k / 16]
+  let g1 = load gg[i * bn ; bn]
+  let q2 = load uq[i * bn, 0 ; bn, k / 2]
+  let s2 = load us[i * bn, 0 ; bn, k / 16]
+  let g2 = load ug[i * bn ; bn]
+  let w1 = dequant_fp4 q1 s1 g1 16
+  let w2 = dequant_fp4 q2 s2 g2 16
+  let gt = matmul_nt &xt w1
+  let ut = matmul_nt xt w2
+  let sg = sigmoid &gt
+  let a  = gt * sg
+  store a * ut -> y[0, i * bn]
+}
+
+schedule matvec_fp4_swiglu_few for apple-m-series { threads 256 bn 32 }
+schedule matvec_fp4_swiglu_few for nvidia-ada     { threads 256 bn 8 }

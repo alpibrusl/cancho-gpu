@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-serve` -- an OpenAI-compatible chat endpoint over Qwen3.8-27B on a Metal GPU
 // (`docs/serving.md`).
 //
-//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think]
+//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec]
 //
 //     GET  /health                 {"status":"ok"}
 //     GET  /v1/models              the one model
@@ -44,7 +44,7 @@ fn max_request() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think]\n");
+    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec]\n");
     return 2;
 }
 
@@ -244,10 +244,57 @@ fn ready[&m, &t](m: &!m [int], t: &!t [byte], tk: int, toks: int, emitted: int, 
     return (text.handle(s + from, end - from), end);
 }
 
+// The state of one completion, a record: 0 tokens so far, 1 in the reasoning phase, 2 and 3 bytes of the
+// reasoning and of the content already sent, 4 done, 5 the finish reason (a text handle), 6 the client is
+// still there, 7 and 8 the reasoning and content token lists, 9 streaming, 10 the most tokens to give, 11 id,
+// 12 created, 13 model, 14 tokenizer, 15 the "stop" text.
+fn take[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, st: int, tok: int) -> [conn_write] int {
+    m[st] = m[st] + 1;
+    if qwen35.is_stop(tok) {
+        m[st + 5] = m[st + 15];
+        m[st + 4] = 1;
+        return 0;
+    }
+    if m[st + 1] == 1 && tok == 248069 {
+        m[st + 1] = 0;
+    } else if m[st + 1] == 1 {
+        mem.push(m, m[st + 7], tok);
+    } else {
+        mem.push(m, m[st + 8], tok);
+    }
+    if m[st + 9] == 1 && !(tok == 248069) {
+        var which = m[st + 8];
+        var sent = m[st + 3];
+        var field = "content";
+        if m[st + 1] == 1 {
+            which = m[st + 7];
+            sent = m[st + 2];
+            field = "reasoning_content";
+        }
+        let (piece, upto) = ready(m, t, m[st + 14], which, sent, false);
+        if m[st + 1] == 1 {
+            m[st + 2] = upto;
+        } else {
+            m[st + 3] = upto;
+        }
+        if piece >= 0 {
+            let ev = chat.chunk_json(m, t, m[st + 11], m[st + 12], m[st + 13], chat.delta_text(m, t, field, piece), 0 - 1);
+            if send_all(m, t, ch, ev) < 0 {
+                m[st + 6] = 0;
+            }
+        }
+    }
+    if m[st] >= m[st + 10] {
+        m[st + 4] = 1;
+    }
+    return 0;
+}
+
 // One chat completion on the engine: the request record `r` (src/chat.cho), the connection to answer on.
 // Answers the number of tokens generated, or -1.
-fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
+fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int, use_spec: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
     let tk = qwen35.tokenizer(m, eng);
+    let spec_on = use_spec && qwen35.has_head(m, eng);
     let prompt = m[r + chat.f_prompt()];
     let ids = bpe.encode(m, t, tk, text.start(prompt), text.start(prompt) + text.size(prompt));
     if ids < 0 {
@@ -271,7 +318,7 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     // A new conversation, the prompt in, the first logits out.
     qwen35.reset(m, t, ffi, eng);
     let lg = qwen35.reserve(m, 4 * qwen35.vocab());
-    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true) < 0 {
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true, spec_on) < 0 {
         refuse(m, t, ch, 500, last_error(m, t), "server_error");
         return 0 - 1;
     }
@@ -283,14 +330,10 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     let f_stop = text.lit(m, t, "stop");
     let f_length = text.lit(m, t, "length");
     let f_error = text.lit(m, t, "error");
+    let lgd = qwen35.reserve(m, 4 * qwen35.vocab());
+    let rows = qwen35.reserve(m, 8 * qwen35.vocab());
+    let gsmp = sampler.new(m, 0.0, 0.95, 20, 1);
     let after = m[mem.text_slot()];
-    // The generated tokens: those before </think> (when the model reasons) and those after.
-    let reasoning = mem.list(m);
-    let content = mem.list(m);
-    var in_reasoning = think;
-    var sent_r = 0;
-    var sent_c = 0;
-    var alive = true;
     if stream {
         let head = text.lit(m, t, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
         if send_all(m, t, ch, head) < 0 {
@@ -301,60 +344,74 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
             return 0 - 1;
         }
     }
-    var n = 0;
-    var pos = n_prompt;
-    var finish = f_length;
-    var done = false;
-    while !done && alive {
-        let (nids, nprobs) = sampler.nucleus(m, t, smp, lg, qwen35.vocab());
-        let pick = sampler.draw(m, smp, nids, nprobs);
-        n = n + 1;
-        if qwen35.is_stop(pick) {
-            finish = f_stop;
-            done = true;
-        } else {
-            if in_reasoning && pick == 248069 {
-                in_reasoning = false;
-            } else if in_reasoning {
-                mem.push(m, reasoning, pick);
+    let st = mem.grab(m, 16);
+    m[st + 1] = 0;
+    if think {
+        m[st + 1] = 1;
+    }
+    m[st + 5] = f_length;
+    m[st + 6] = 1;
+    m[st + 7] = mem.list(m);
+    m[st + 8] = mem.list(m);
+    m[st + 9] = 0;
+    if stream {
+        m[st + 9] = 1;
+    }
+    m[st + 10] = max_new;
+    m[st + 11] = id;
+    m[st + 12] = created;
+    m[st + 13] = model;
+    m[st + 14] = tk;
+    m[st + 15] = f_stop;
+    // The first token is drawn from the prompt's logits; each later one comes from a round of the draft
+    // head and a two-row check (when the engine has the head), or from a single step.
+    let (n0, p0) = sampler.nucleus(m, t, smp, lg, qwen35.vocab());
+    let first_tok = sampler.draw(m, smp, n0, p0);
+    take(m, t, ch, st, first_tok);
+    var spec = spec_on;
+    var sp = 0;
+    var last = first_tok;
+    var at = n_prompt;
+    if spec {
+        sp = qwen35.spec_init(m, eng, first_tok, n_prompt - 1);
+    }
+    while m[st + 4] == 0 && m[st + 6] == 1 {
+        if spec && qwen35.spec_pos(m, sp) + 3 >= qwen35.tmax() {
+            // the context is nearly full: finish with single steps
+            last = qwen35.spec_last(m, sp);
+            at = qwen35.spec_pos(m, sp) + 1;
+            spec = false;
+        }
+        if spec {
+            let got = qwen35.spec_round(m, t, ffi, fs, eng, sp, lgd, rows, smp, gsmp);
+            if got < 0 {
+                m[st + 5] = f_error;
+                m[st + 4] = 1;
             } else {
-                mem.push(m, content, pick);
-            }
-            if stream && !(pick == 248069) {
-                var which = content;
-                var sent = sent_c;
-                var field = "content";
-                if in_reasoning {
-                    which = reasoning;
-                    sent = sent_r;
-                    field = "reasoning_content";
-                }
-                let (piece, upto) = ready(m, t, tk, which, sent, false);
-                if in_reasoning {
-                    sent_r = upto;
-                } else {
-                    sent_c = upto;
-                }
-                if piece >= 0 {
-                    let ev = chat.chunk_json(m, t, id, created, model, chat.delta_text(m, t, field, piece), 0 - 1);
-                    if send_all(m, t, ch, ev) < 0 {
-                        alive = false;
-                    }
+                var j = 0;
+                while j < got && m[st + 4] == 0 && m[st + 6] == 1 {
+                    take(m, t, ch, st, qwen35.spec_token(m, sp, j));
+                    j = j + 1;
                 }
             }
-            if n >= max_new {
-                done = true;
-            } else if alive {
-                if qwen35.feed_one(m, t, ffi, fs, eng, pick, pos, lg) < 0 {
-                    done = true;
-                    finish = f_error;
-                }
-                pos = pos + 1;
-            }
+        } else if qwen35.feed_one(m, t, ffi, fs, eng, last, at, lg) < 0 {
+            m[st + 5] = f_error;
+            m[st + 4] = 1;
+        } else {
+            let (nids, nprobs) = sampler.nucleus(m, t, smp, lg, qwen35.vocab());
+            let pick = sampler.draw(m, smp, nids, nprobs);
+            take(m, t, ch, st, pick);
+            last = pick;
+            at = at + 1;
         }
         // what a step allocated is not needed again: keep the logits and the lists
         m[mem.text_slot()] = after;
     }
+    let n = m[st];
+    let finish = m[st + 5];
+    let reasoning = m[st + 7];
+    let content = m[st + 8];
+    let alive = m[st + 6] == 1;
     if !alive {
         return n;
     }
@@ -476,7 +533,7 @@ fn handle[&m, &t, &i, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], io: &!i Io, f
                 status = 400;
                 refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
             } else {
-                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial);
+                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial, m[cfg + 4] == 1);
                 if tokens < 0 {
                     status = 500;
                 }
@@ -529,7 +586,7 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     }
     io.error_all(io, "loading the model...\n");
     let t0 = clock_ms(clock);
-    let eng = qwen35.load(m, t, ffi, fs, store, kdir);
+    let eng = qwen35.load(m, t, ffi, fs, store, kdir, m[cfg + 4] == 1);
     if eng < 0 {
         return cli.report(m, t, io);
     }
@@ -561,7 +618,8 @@ fn main(world: World) -> [] int {
                 let t = contents(tr);
                 mem.init(m);
                 // cfg: 0 port, 1 model name, 2 think by default, 3 API key (a text handle, or -1)
-                let cfg = mem.grab(m, 4);
+                let cfg = mem.grab(m, 5);
+                m[cfg + 4] = 1;
                 m[cfg + 1] = text.lit(m, t, "qwen3.8:27b-mlx");
                 m[cfg + 3] = 0 - 1;
                 var ok = true;
@@ -574,6 +632,8 @@ fn main(world: World) -> [] int {
                         let flag = text.from_bytes(m, t, arg(a, ai));
                         if text.is(t, flag, "--think") {
                             m[cfg + 2] = 1;
+                        } else if text.is(t, flag, "--no-spec") {
+                            m[cfg + 4] = 0;
                         } else if ai + 1 < arg_count(a) && text.is(t, flag, "--port") {
                             port = number_of(t, text.from_bytes(m, t, arg(a, ai + 1)));
                             ai = ai + 1;

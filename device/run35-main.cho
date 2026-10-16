@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-run35` -- run Qwen3.8-27B (`qwen3.8:27b-mlx`, NVFP4) on a Metal GPU
 // (`docs/qwen35.md`).
 //
-//     cancho-gpu-run35 <ollama store> <kernel dir> "<prompt>" <new tokens> [--trace] [--timing] [--single] [--stream]
+//     cancho-gpu-run35 <ollama store> <kernel dir> "<prompt>" <new tokens> [--trace] [--timing] [--single] [--stream] [--mtp-accept] [--spec]
 //
 // A raw prompt (no chat template: `cancho-gpu-serve` has one), greedy, fed through the engine of
 // `device/qwen35.cho`, which holds the model's dimensions and the kernels (`tests/chx/`).
@@ -29,8 +29,152 @@ fn bytes_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-run35 <ollama store> <kernel dir> \"<prompt>\" <new tokens> [--trace] [--timing] [--single] [--stream]\n");
+    io.error_all(io, "usage: cancho-gpu-run35 <ollama store> <kernel dir> \"<prompt>\" <new tokens> [--trace] [--timing] [--single] [--stream] [--mtp-accept] [--spec]\n");
     return 2;
+}
+
+// `--mtp-accept`: how often the draft head's guess is the token the model goes on to choose (greedy), the
+// number speculation is worth. The prompt is fed one token at a time, the head's cache warmed beside it; then
+// each step the head drafts the token after the one just chosen, before the model has seen it.
+fn max1(n: int) -> [] int {
+    if n < 1 {
+        return 1;
+    }
+    return n;
+}
+
+fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), ffi: &g Ffi("libmetalgpu"), eng: int, tk: int, ids: int, new_tokens: int) -> [io_write, err_write, fs_read(""), file_read, ffi("libmetalgpu")] int {
+    let n_prompt = mem.size(m, ids);
+    let lg = qwen35.reserve(m, 4 * qwen35.vocab());
+    let lg2 = qwen35.reserve(m, 4 * qwen35.vocab());
+    let base = m[mem.text_slot()];
+    let hid = qwen35.hidden_buf(m, eng);
+    let smp = sampler.new(m, 0.0, 0.95, 20, 1);
+    var p = 0;
+    while p < n_prompt {
+        var want = 0 - 1;
+        if p == n_prompt - 1 {
+            want = lg;
+        }
+        if qwen35.feed_one(m, t, ffi, fs, eng, mem.get(m, ids, p), p, want) < 0 {
+            return cli.report(m, t, io);
+        }
+        if p < n_prompt - 1 {
+            if qwen35.mtp_step(m, t, ffi, fs, eng, hid, mem.get(m, ids, p + 1), p, 0 - 1) < 0 {
+                return cli.report(m, t, io);
+            }
+        }
+        p = p + 1;
+    }
+    var pos = n_prompt - 1;
+    var pending = 0 - 1;
+    var drafts = 0;
+    var accepted = 0;
+    var n = 0;
+    let out_ids = mem.list(m);
+    var finished = false;
+    while !finished && n < new_tokens {
+        let (nids, nprobs) = sampler.nucleus(m, t, smp, lg, qwen35.vocab());
+        let pick = sampler.draw(m, smp, nids, nprobs);
+        if pending >= 0 {
+            drafts = drafts + 1;
+            if pending == pick {
+                accepted = accepted + 1;
+            }
+        }
+        mem.push(m, out_ids, pick);
+        n = n + 1;
+        if qwen35.is_stop(pick) || n == new_tokens {
+            finished = true;
+        } else {
+            if qwen35.mtp_step(m, t, ffi, fs, eng, hid, pick, pos, lg2) < 0 {
+                return cli.report(m, t, io);
+            }
+            let (dn, dp) = sampler.nucleus(m, t, smp, lg2, qwen35.vocab());
+            pending = sampler.draw(m, smp, dn, dp);
+            if qwen35.feed_one(m, t, ffi, fs, eng, pick, pos + 1, lg) < 0 {
+                return cli.report(m, t, io);
+            }
+            pos = pos + 1;
+        }
+        m[mem.text_slot()] = base;
+    }
+    let (ds, dn) = bpe.decode(m, t, tk, out_ids);
+    io.write_all(io, text.bytes(t, text.handle(ds, dn)));
+    io.write_all(io, "\n");
+    io.write_all(io, text.bytes(t, text.f3(m, t, "accept: $ of $ drafts ($ per mille)\n", text.num(m, t, accepted), text.num(m, t, drafts), text.num(m, t, accepted * 1000 / max1(drafts)))));
+    metal.cgpu_close(ffi);
+    return 0;
+}
+
+// `--spec`: decoding with the draft head (`docs/serving.md`, issue 26). Each round the head drafts the token
+// after the last one chosen and the model checks the pair in one pass over the weights; the tokens are the
+// ones plain decoding gives. (`qwen35.spec_round`.)
+fn spec_run[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), ffi: &g Ffi("libmetalgpu"), clock: &c Clock, eng: int, tk: int, ids: int, new_tokens: int, timing: bool, t_start: int) -> [io_write, err_write, fs_read(""), file_read, ffi("libmetalgpu"), clock] int {
+    let n_prompt = mem.size(m, ids);
+    let v = qwen35.vocab();
+    let lg = qwen35.reserve(m, 4 * v);
+    let lgd = qwen35.reserve(m, 4 * v);
+    let rows = qwen35.reserve(m, 8 * v);
+    let base = m[mem.text_slot()];
+    let smp = sampler.new(m, 0.0, 0.95, 20, 1);
+    let gsmp = sampler.new(m, 0.0, 0.95, 20, 1);
+    let t_loaded = clock_ms(clock);
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true, true) < 0 {
+        return cli.report(m, t, io);
+    }
+    let t_first = clock_ms(clock);
+    let out_ids = mem.list(m);
+    let (n0, p0) = sampler.nucleus(m, t, smp, lg, v);
+    let first = sampler.draw(m, smp, n0, p0);
+    mem.push(m, out_ids, first);
+    var n = 1;
+    let sp = qwen35.spec_init(m, eng, first, n_prompt - 1);
+    var rounds = 0;
+    var accepted = 0;
+    var finished = qwen35.is_stop(first) || n >= new_tokens;
+    while !finished {
+        if qwen35.spec_pos(m, sp) + 3 >= qwen35.tmax() {
+            finished = true;
+        } else {
+            let got = qwen35.spec_round(m, t, ffi, fs, eng, sp, lgd, rows, smp, gsmp);
+            if got < 0 {
+                return cli.report(m, t, io);
+            }
+            rounds = rounds + 1;
+            var j = 0;
+            while j < got && !finished {
+                let tok = qwen35.spec_token(m, sp, j);
+                mem.push(m, out_ids, tok);
+                n = n + 1;
+                if qwen35.is_stop(tok) || n >= new_tokens {
+                    finished = true;
+                }
+                j = j + 1;
+            }
+            if got == 2 {
+                accepted = accepted + 1;
+            }
+        }
+        m[mem.text_slot()] = base;
+    }
+    let t_end = clock_ms(clock);
+    let (ds, dn2) = bpe.decode(m, t, tk, out_ids);
+    io.write_all(io, text.bytes(t, text.handle(ds, dn2)));
+    io.write_all(io, "\n");
+    let numbers = mem.list(m);
+    var q2 = 0;
+    while q2 < mem.size(m, out_ids) {
+        mem.push(m, numbers, text.num(m, t, mem.get(m, out_ids, q2)));
+        q2 = q2 + 1;
+    }
+    io.write_all(io, text.bytes(t, text.f1(m, t, "tokens: $\n", text.joined(m, t, numbers, " "))));
+    io.write_all(io, text.bytes(t, text.f3(m, t, "spec: $ rounds, $ drafts accepted, $ tokens\n", text.num(m, t, rounds), text.num(m, t, accepted), text.num(m, t, n))));
+    if timing {
+        io.write_all(io, text.bytes(t, text.fmt(m, t, "timing: load_ms=$ prefill_tokens=$ prefill_ms=$ decode_tokens=$ decode_ms=$\n", mem.of5(m, text.num(m, t, t_loaded - t_start), text.num(m, t, n_prompt), text.num(m, t, t_first - t_loaded), text.num(m, t, n - 1), text.num(m, t, t_end - t_first)))));
+    }
+    metal.cgpu_close(ffi);
+    return 0;
 }
 
 fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &c Clock) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock] int {
@@ -52,6 +196,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     var timing = false;
     var batched = true;
     var stream = false;
+    var mtp_accept = false;
+    var spec = false;
     var ai = 5;
     while ai < arg_count(args) {
         let flag = text.from_bytes(m, t, arg(args, ai));
@@ -63,6 +209,10 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             batched = false;
         } else if text.is(t, flag, "--stream") {
             stream = true;
+        } else if text.is(t, flag, "--mtp-accept") {
+            mtp_accept = true;
+        } else if text.is(t, flag, "--spec") {
+            spec = true;
         }
         ai = ai + 1;
     }
@@ -70,7 +220,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         qwen35.device_fail(m, t, ffi, "opening the device");
         return cli.report(m, t, io);
     }
-    let eng = qwen35.load(m, t, ffi, fs, store, kdir);
+    let eng = qwen35.load(m, t, ffi, fs, store, kdir, mtp_accept || spec);
     if eng < 0 {
         return cli.report(m, t, io);
     }
@@ -85,13 +235,19 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         io.error_all(io, "error[context]: the prompt and the new tokens must fit in the context (1024 positions) and the prompt must not be empty\n");
         return 1;
     }
+    if spec {
+        return spec_run(m, t, io, fs, ffi, clock, eng, tk, ids, new_tokens, timing, t_start);
+    }
+    if mtp_accept {
+        return accept_run(m, t, io, fs, ffi, eng, tk, ids, new_tokens);
+    }
     let t_loaded = clock_ms(clock);
     let smp = sampler.new(m, 0.0, 0.95, 20, 1);
     let out_ids = mem.list(m);
     let lg = qwen35.reserve(m, 4 * qwen35.vocab());
     let after_lg = m[mem.text_slot()];
     // The prompt: all but its last token without logits, then the last with.
-    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, batched) < 0 {
+    if qwen35.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, batched, false) < 0 {
         return cli.report(m, t, io);
     }
     let t_first = clock_ms(clock);
