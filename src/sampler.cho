@@ -241,8 +241,15 @@ pub fn nucleus[&m, &t](m: &!m [int], t: &!t [byte], s: int, base: int, n: int) -
         var best = 0;
         var best_key = key(logit_bits(t, base, 0));
         var i = 1;
+        var p = base + 4;
         while i < n {
-            let ki = key(logit_bits(t, base, i));
+            let bits = int_of(t[p]) | int_of(t[p + 1]) << 8 | int_of(t[p + 2]) << 16 | int_of(t[p + 3]) << 24;
+            p = p + 4;
+            // `key`, written out: a negative f32 sorts below by its flipped bits.
+            var ki = bits;
+            if bits >= 2147483648 {
+                ki = (bits - 4294967296) ^ 2147483647;
+            }
             if ki >= best_key {
                 best = i;
                 best_key = ki;
