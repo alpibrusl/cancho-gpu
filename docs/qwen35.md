@@ -98,11 +98,23 @@ the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weig
 second and MLX-LM (a different 4-bit quantisation) at about 28; the reference runtime measured 25 (39 ms a
 token) when it was run for its tokens.
 
-Where a token goes, measured by leaving kernels out of the real, pipelined run (`CANCHOGPU_SKIP=<name>`, which
-makes the output wrong and the timing true; `CANCHOGPU_PROFILE=2` times each kernel alone, which adds about 60
-us of launch overhead to each and so overstates small kernels): the NVFP4 matrix-vector products are about
-31 of the 41 ms and already read at about 430 GB/s, against 546 for the chip; the rest is some 900 small
-launches at about 10 us each. What brought it from 52 ms to 41, all in `.chx` and the runner:
+Where a token goes, measured in the real, pipelined run by making kernels do nothing (`CANCHOGPU_NOOP=<name>`
+launches a kernel's grid and barriers but no work; `CANCHOGPU_SKIP=<name>` leaves it out; `CANCHOGPU_PROFILE=2`
+times each kernel alone, which adds about 60 us of launch overhead to each and so overstates small kernels;
+minimum of three runs, 23 tokens, one machine, 41 ms a token):
+
+| part | ms a token |
+|---|---|
+| launch floor: all ~930 launches as no-ops, with their barriers (about 8.7 us each) | 8.1 |
+| NVFP4 matrix-vector products: rows 7.7, residual 9.7, fused gate/up 13.5 (13.4 GB read: at the chip's 546 GB/s that is 24.5 ms) | ~25-30 |
+| the small kernels' own work: delta step 2.0, norms 1.3, RoPE 0.7, the rest under 0.7 each | ~7 |
+
+The matrix-vector products are at the memory-bandwidth floor, so what is left is the 8 ms of launches and 7 ms
+of small kernels. Serial dispatch in place of barriers lowers the launch floor by 1.6 ms but loses the overlap
+(net worse). Fusing the norms into the projections that follow them, the per-head norms into RoPE and the cache
+write, and the two small projections into one would remove about 250 of the ~930 launches: about 3 to 4 ms
+(under 10%), at the price of kernels the surface language makes awkward (a computed tile cannot be sliced), so it
+has not been done. What brought it from 52 ms to 41, all in `.chx` and the runner:
 
 * `kv_row.chx` writes only the new cache row (the position is the cache buffer's byte offset) instead of
   rewriting the whole cache (7.7 ms a token down to 0.1), and `conv_step.chx` spreads its channels over
@@ -111,11 +123,11 @@ launches at about 10 us each. What brought it from 52 ms to 41, all in `.chx` an
 * the encoder dispatches concurrently and a barrier separates launches that depend on each other
   (`cgpu_overlap` marks the ones that do not: the q/k/v and the qkv/z/a/b projections and so on).
 
-What did not help: threads or rows per threadgroup (nine schedules, the same time), and the emitter's
-wide-load text on Metal (faster for one kernel alone, 450 against 340 GB/s, slower in the run). A
-hand-written Metal kernel (`experimental/metal-bw/bw.mm`) reaches about 450 GB/s at best on the 17408x5120
-shape, a few percent over the emitted text in the run, so the matvec is within about 20% of the chip's
-bandwidth and no emitter change is planned for it (issue 24).
+What did not help: threads or rows per threadgroup (nine schedules, the same time), the emitter's wide-load text
+on Metal (faster for one kernel alone, slower in the run), and a hand-written Metal kernel 2x faster than the
+emitted one in isolation (no change in the run: isolated back-to-back timings serialise on their output and
+mislead; only numbers from inside the real token loop count). Past this the way to more tokens a second is more
+tokens a pass (speculative decoding, issue 26), not faster passes.
 
 ### Batched prefill
 

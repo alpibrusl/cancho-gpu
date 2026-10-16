@@ -287,7 +287,7 @@ int64_t cgpu_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
             g.n_args = 0;
             return fail("cgpu_launch_async", "failed to create command buffer");
         }
-        g.enc = [g.cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        g.enc = [g.cmd computeCommandEncoderWithDispatchType:(getenv("CANCHOGPU_SERIAL") ? MTLDispatchTypeSerial : MTLDispatchTypeConcurrent)];
         g.fresh = 1;
         if (!g.enc) {
             g.cmd = nil;
@@ -305,6 +305,24 @@ int64_t cgpu_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     }
     g.fresh = 0;
     g.overlap = 0;
+    if (getenv("CANCHOGPU_NOOP") && strstr(prof_name[fn], getenv("CANCHOGPU_NOOP"))) {
+        /* Ablation for timing only: launch this kernel's grid but do no work (outputs are wrong). Splits a
+         * kernel's cost into its launch and dependency latency (what is left) and its work (what goes). */
+        static id<MTLComputePipelineState> noop = nil;
+        if (!noop) {
+            NSError *ne = nil;
+            id<MTLLibrary> nl = [g.device newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void noop(device float *x [[buffer(0)]], uint t [[thread_position_in_grid]]) { if (t == 0xFFFFFFFFu) x[0] = 0.0f; }" options:nil error:&ne];
+            noop = [g.device newComputePipelineStateWithFunction:[nl newFunctionWithName:@"noop"] error:&ne];
+        }
+        [g.enc setComputePipelineState:noop];
+        for (int64_t i = 0; i < g.n_args; i++) {
+            [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
+        }
+        [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
+              threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
+        g.n_args = 0;
+        return 0;
+    }
     [g.enc setComputePipelineState:g.functions[fn]];
     for (int64_t i = 0; i < g.n_args; i++) {
         [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
