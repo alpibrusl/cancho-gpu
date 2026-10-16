@@ -91,7 +91,7 @@ fn trim[&t](t: &!t [byte], h: int) -> [] int {
 }
 
 fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: &static [byte]) -> [] int {
-    return err.fail(m, t, "invalid-request", text.lit(m, t, msg));
+    return err.fail(m, t, "chat-request", text.lit(m, t, msg));
 }
 
 // The message text of a `content` node: a string, or an array of parts of type text. Trimmed. -1 with the
@@ -264,7 +264,7 @@ fn milli[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: i
     if json.is_number(m[tape..tape + words], v) {
         return truncate(json.to_float(t[hs..hs + n], m[tape..tape + words], v) * 1000.0 + 0.5);
     }
-    return err.fail(m, t, "invalid-request", text.f1(m, t, "`$` must be a number", text.lit(m, t, key)));
+    return err.fail(m, t, "chat-request", text.f1(m, t, "`$` must be a number", text.lit(m, t, key)));
 }
 
 fn integer[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
@@ -276,7 +276,7 @@ fn integer[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj:
     if json.is_int(m[tape..tape + words], v) && json.fits_int(t[hs..hs + n], m[tape..tape + words], v) {
         return json.to_int(t[hs..hs + n], m[tape..tape + words], v);
     }
-    return err.fail(m, t, "invalid-request", text.f1(m, t, "`$` must be an integer", text.lit(m, t, key)));
+    return err.fail(m, t, "chat-request", text.f1(m, t, "`$` must be an integer", text.lit(m, t, key)));
 }
 
 fn flag[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
@@ -291,7 +291,7 @@ fn flag[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: in
         }
         return 0;
     }
-    return err.fail(m, t, "invalid-request", text.f1(m, t, "`$` must be a boolean", text.lit(m, t, key)));
+    return err.fail(m, t, "chat-request", text.f1(m, t, "`$` must be a boolean", text.lit(m, t, key)));
 }
 
 // Parse the request body `t[hs..hs + n]`: the record described above, or -1 with the refusal recorded.
@@ -303,7 +303,7 @@ pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int, default_think
     let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
     if nodes < 0 {
         let code = json.error_code(nodes);
-        return err.fail(m, t, "invalid-json", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
+        return err.fail(m, t, "chat-json", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
     }
     if !json.is_object(m[tape..tape + words], 0) {
         return bad(m, t, "the body must be a JSON object");

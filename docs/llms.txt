@@ -12,7 +12,8 @@
 - `gguf` reads the first 32 MiB of a file: metadata and tensor directory, never tensor values. It refuses hostile input with a rule tag (gguf-truncated, gguf-version, gguf-duplicate, ...).
 - Kernels: rope, kv_append, attention (head dimension 256; at most 1364 positions on Metal) and attn_gate in tests/chx/. Split-KV attention for longer contexts cannot be written in the surface yet.
 - Model runner: `cancho-gpu-run <model dir> tests/chx "<prompt>" <new tokens>` for Qwen2-architecture bf16 checkpoints (256-position context, no chat template), 6 to 12 ms a token. Qwen3.8-27B: `cancho-gpu-run35 <ollama store> tests/chx "<prompt>" <new tokens>` runs `qwen3.8:27b-mlx` (NVFP4, 48 gated-delta layers) at about 24 tokens a second, matching a reference's golden log-probabilities to 1e-4 (256-position context).
-- Not implemented: serving, quantised weights, linear attention, AMD, Hopper.
+- Serving: `cancho-gpu-serve <ollama store> tests/chx --port 8080 [--api-key K]` is an OpenAI-compatible `/v1/chat/completions` (streaming, the model's chat template held to jinja2, thinking mode) over Qwen3.8-27B, one request at a time, 1024-position context (docs/serving.md).
+- Not implemented: concurrent requests, tools, images, AMD, Hopper.
 
 ## Optional
 - [Design](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md): how the compiler is built and every difference from the Rust.
