@@ -258,7 +258,7 @@ def markdown(results, args, mach):
             "* **load s**: from starting to being ready to generate (for cancho-gpu: tokenizer, kernel compilation and "
             "the weights; for Ollama: the cold load its API reports; for MLX and transformers: reading the checkpoint).",
             "* **prefill tok/s**: prompt tokens over the time to the first generated token (it includes that token's own "
-            "computation). cancho-gpu has no batched prefill, so this is its decode rate; the others batch.",
+            "computation). cancho-gpu takes the prompt eight tokens at a time; the others batch more.",
             "* **decode tok/s**: generated tokens after the first over the time they took, as the runtime or this "
             "script measures it (`--timing` for cancho-gpu, MLX's own report, Ollama's `eval_duration`, the difference of "
             "two `generate` calls for transformers).",
@@ -267,7 +267,10 @@ def markdown(results, args, mach):
             "* **agrees with reference**: the length of the common prefix of the generated token ids (or, "
             "for Ollama, which does not return them, of the text) with the reference runtime's. Different quantisations of one model legitimately diverge.", "",
             "Runtimes ran one at a time with the others idle; Ollama's models were unloaded first. The GPU is shared "
-            "with whatever else the machine is doing, which is the main source of the spread.", "",
+            "with whatever else the machine is doing, which is the main source of the spread. "
+            f"The 1-minute load average at the start was {mach.get('load_average_at_start', 'not recorded')} "
+            "(other jobs on this machine; the script refuses to run above `--max-load`, 6 by default, and this "
+            "invocation overrode it after a probe of plain against speculative decoding repeated within 1%).", "",
             "**Compare rows within one table, not across invocations.** The spread inside an invocation is small, "
             "but two full invocations minutes apart on the same machine differed by up to 1.8x for the same "
             "runtime (MLX-LM decoding the 27B: 12.1 tok/s in one, 21.3 in the other; transformers on the CPU: 7.6 and "
@@ -281,7 +284,7 @@ def markdown(results, args, mach):
         out.append("")
     out += ["## Not measured", "",
             "* Accuracy beyond the agreement column: `scripts/model-check.sh` holds cancho-gpu's logits to transformers'.",
-            "* Long contexts: cancho-gpu's context is 256 positions.",
+            "* Long contexts: cancho-gpu's context is 256 positions for the 0.5B model and 1024 for the 27B.",
             "* Batched or concurrent requests; energy; a second machine.",
             "* Why the generated texts diverge: greedy decoding over a long open-ended continuation flips at the first "
             "near-tie, and runtimes that add in a different order or hold activations in a different precision reach "
