@@ -54,7 +54,7 @@ MODELS = {
         "dir": snapshot("mlx-community/Qwen3.8-27B-4bit"),
         "ollama": "qwen3.8:27b-mlx",
         "cancho": "run35",
-        "runtimes": ["ollama", "mlx-lm", "cancho-gpu"],
+        "runtimes": ["ollama", "mlx-lm", "cancho-gpu", "cancho-gpu-spec"],
         # Ollama and cancho-gpu read the same NVFP4 weights; MLX-LM's are a different 4-bit
         # quantisation of the model, so it may legitimately diverge from them.
         "reference": "ollama",
@@ -75,18 +75,18 @@ def median(xs):
 # or {"skipped": reason}.
 # ---------------------------------------------------------------------------
 
-def run_cancho(model, new, runs):
+def run_cancho(model, new, runs, extra=()):
     which = model.get("cancho")
     binary = os.path.join(ROOT, "build", "cancho-gpu-" + which)
     if not os.path.exists(binary):
         return {"skipped": f"build/cancho-gpu-{which} is missing (scripts/build-{which}.sh)"}
     if which == "run35":
         store = os.path.expanduser("~/.ollama/models")
-        cmd = [binary, store, os.path.join(ROOT, "tests", "lx"), PROMPT, str(new), "--timing"]
+        cmd = [binary, store, os.path.join(ROOT, "tests", "chx"), PROMPT, str(new), "--timing", *extra]
     elif model["dir"] is None:
         return {"skipped": "the checkpoint is not in the Hugging Face cache"}
     else:
-        cmd = [binary, model["dir"], os.path.join(ROOT, "tests", "lx"), PROMPT, str(new), "--timing"]
+        cmd = [binary, model["dir"], os.path.join(ROOT, "tests", "chx"), PROMPT, str(new), "--timing", *extra]
     out, loads = [], []
     for i in range(runs + 1):
         r = sh(["/usr/bin/time", "-l"] + cmd)
@@ -94,7 +94,7 @@ def run_cancho(model, new, runs):
             return {"skipped": f"cancho-gpu-{which} failed: {r.stderr.strip().splitlines()[:2]}"}
         text, _, rest = r.stdout.partition("\ntokens: ")
         ids = [int(x) for x in rest.splitlines()[0].split()]
-        t = dict(re.findall(r"(\w+)=(\d+)", rest.splitlines()[1]))
+        t = dict(re.findall(r"(\w+)=(\d+)", next(l for l in rest.splitlines() if l.startswith("timing:"))))
         rss = int(re.search(r"(\d+)\s+maximum resident set size", r.stderr).group(1))
         if i == 0:
             continue  # warm-up
@@ -167,8 +167,15 @@ def run_ollama(model, new, runs):
                     "(one measurement, not a median); memory is not reported by the API"}
 
 
-RUNNERS = {"cancho-gpu": run_cancho, "mlx-lm": run_mlx, "transformers-cpu": run_hf, "ollama": run_ollama}
-LABELS = {"cancho-gpu": "cancho-gpu (Metal)", "mlx-lm": "MLX-LM (Metal)",
+def run_cancho_spec(model, new, runs):
+    r = run_cancho(model, new, runs, ("--spec",))
+    if "note" in r:
+        r["note"] += "; speculative decoding with the model's own draft head (chain of two, three rows checked a pass), the same tokens as plain greedy"
+    return r
+
+
+RUNNERS = {"cancho-gpu": run_cancho, "cancho-gpu-spec": run_cancho_spec, "mlx-lm": run_mlx, "transformers-cpu": run_hf, "ollama": run_ollama}
+LABELS = {"cancho-gpu": "cancho-gpu (Metal)", "cancho-gpu-spec": "cancho-gpu, speculative (Metal)", "mlx-lm": "MLX-LM (Metal)",
           "transformers-cpu": "transformers (CPU, float32)", "ollama": "Ollama (Metal)"}
 
 
@@ -197,6 +204,7 @@ def machine():
     ver = sh(["ollama", "--version"]).stdout.strip().splitlines()
     return {"chip": chip, "ram_gib": round(ram), "macos": platform.mac_ver()[0], "python": platform.python_version(),
             "ollama": ver[-1] if ver else None, **versions,
+            "load_average_at_start": round(os.getloadavg()[0], 1),
             "cancho_gpu_commit": sh(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"]).stdout.strip()}
 
 
@@ -250,7 +258,7 @@ def markdown(results, args, mach):
             "* **load s**: from starting to being ready to generate (for cancho-gpu: tokenizer, kernel compilation and "
             "the weights; for Ollama: the cold load its API reports; for MLX and transformers: reading the checkpoint).",
             "* **prefill tok/s**: prompt tokens over the time to the first generated token (it includes that token's own "
-            "computation). cancho-gpu has no batched prefill, so this is its decode rate; the others batch.",
+            "computation). cancho-gpu takes the prompt eight tokens at a time; the others batch more.",
             "* **decode tok/s**: generated tokens after the first over the time they took, as the runtime or this "
             "script measures it (`--timing` for cancho-gpu, MLX's own report, Ollama's `eval_duration`, the difference of "
             "two `generate` calls for transformers).",
@@ -259,7 +267,10 @@ def markdown(results, args, mach):
             "* **agrees with reference**: the length of the common prefix of the generated token ids (or, "
             "for Ollama, which does not return them, of the text) with the reference runtime's. Different quantisations of one model legitimately diverge.", "",
             "Runtimes ran one at a time with the others idle; Ollama's models were unloaded first. The GPU is shared "
-            "with whatever else the machine is doing, which is the main source of the spread.", "",
+            "with whatever else the machine is doing, which is the main source of the spread. "
+            f"The 1-minute load average at the start was {mach.get('load_average_at_start', 'not recorded')} "
+            "(other jobs on this machine; the script refuses to run above `--max-load`, 6 by default, and this "
+            "invocation overrode it after a probe of plain against speculative decoding repeated within 1%).", "",
             "**Compare rows within one table, not across invocations.** The spread inside an invocation is small, "
             "but two full invocations minutes apart on the same machine differed by up to 1.8x for the same "
             "runtime (MLX-LM decoding the 27B: 12.1 tok/s in one, 21.3 in the other; transformers on the CPU: 7.6 and "
@@ -273,7 +284,7 @@ def markdown(results, args, mach):
         out.append("")
     out += ["## Not measured", "",
             "* Accuracy beyond the agreement column: `scripts/model-check.sh` holds cancho-gpu's logits to transformers'.",
-            "* Long contexts: cancho-gpu's context is 256 positions.",
+            "* Long contexts: cancho-gpu's context is 256 positions for the 0.5B model and 1024 for the 27B.",
             "* Batched or concurrent requests; energy; a second machine.",
             "* Why the generated texts diverge: greedy decoding over a long open-ended continuation flips at the first "
             "near-tie, and runtimes that add in a different order or hold activations in a different precision reach "
@@ -290,6 +301,8 @@ def main():
     ap.add_argument("--json")
     ap.add_argument("--markdown")
     ap.add_argument("--quick", action="store_true", help="2 runs of 32 tokens, to see that it works")
+    ap.add_argument("--max-load", type=float, default=6.0,
+                    help="refuse to run while the 1-minute load average is above this (other jobs change every runtime's numbers)")
     ap.add_argument("--from-json", help="render the markdown from a results file instead of running")
     args = ap.parse_args()
     if args.quick:
@@ -305,6 +318,10 @@ def main():
                 f.write(md)
         print(md)
         return
+    load0 = os.getloadavg()[0]
+    if load0 > args.max_load:
+        sys.exit(f"the machine is busy (load average {load0:.1f} > {args.max_load}): numbers taken now would not compare; "
+                 "wait, or pass --max-load to override and say so where they are published")
     ollama_stop_all()
     results = {}
     for mkey in args.models:
@@ -313,6 +330,7 @@ def main():
             runs = args.runs if mkey != "qwen3.8-27b" else min(args.runs, 3)
             print(f"[{mkey}] {rt} ...", file=sys.stderr, flush=True)
             results[mkey][rt] = RUNNERS[rt](MODELS[mkey], args.new, runs)
+            results[mkey][rt]["load_before"] = round(os.getloadavg()[0], 1)
             r = results[mkey][rt]
             print("   ", r["skipped"] if "skipped" in r else f"decode {span([x['decode_tps'] for x in r['runs']])} tok/s",
                   file=sys.stderr, flush=True)
