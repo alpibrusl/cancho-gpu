@@ -156,3 +156,25 @@ reviewed as text; what they compute is held by the interpreter, `tests/kernels.p
 A schedule that sets `frag` where the shapes do not fit (more than eight rows, a reduction that is not a
 multiple of 32, a group size other than 16, CUDA) lowers through the generic path, so the key is never wrong,
 only unused.
+
+## 7. i32, bf16, `rowargmax` and an offset read from data
+
+The draft head's gather and argmax were hand-written Metal (`head_ops.metal`) because the surface could not
+say them. They are `.chx` now (`gather_bf16.chx`, `argmax_f32.chx`), through four additions:
+
+* **`i32`** is an element type for parameters, loads, stores and `rowargmax` results. Arithmetic on an i32
+  tile is refused (`type`); it is an id, not a number.
+* **`bf16`** is a storage type: a load of a bf16 parameter gives an f32 tile (the bits are the top half of an
+  f32, so widening is a shift), and storing into one is refused. The interpreter rounds bf16 inputs to nearest, ties to even.
+* **`rowargmax x`** is the index of the largest of each row of a 2-d tile, an `i32` tile of `[rows]`; ties
+  go to the **last** of the equals, as the CPU's greedy pick. It lowers like `rowmax`: a strip a thread
+  (`>=`), a shuffle, then scratch, merging by (value, then larger index). Indices travel through float scratch,
+  exact to 2^24, so a longer row is a `lowering` refusal.
+* **`tok[0]` in an offset**: `load table[tok[0], 0 ; 1, hid]` reads element 0 of the i32 parameter `tok` when
+  the kernel runs, so the row is data on the device. Subscripts are constants; the parameter must be i32
+  (`type`) and the element inside it (`bounds`). The checker cannot bound such an offset; the interpreter
+  does (`error[interp]`), the compiled kernel does not, so the writer of the ids owns that.
+
+Held by: the interpreter and `tests/kernels.py` (including ties and several rows), `golden-self/` for both
+dialects (no oracle has these), `scripts/metal-kernels.sh` (GPU against the interpreter, exact) and
+`scripts/spec-check.sh` (same tokens with the hand-written file deleted).

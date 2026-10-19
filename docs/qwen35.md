@@ -167,11 +167,10 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   prints it; the head's raw residual instead of its normed output is 1-3 points worse): 2.2 to 2.9 tokens a
   round.
 * **Nothing between the steps goes to the CPU.** A round is encoded and run as one command buffer and one wait:
-  the head's steps and the verify are launches over device buffers, the token one step chose (a hand-written
-  Metal argmax, `tests/chx/head_ops.metal`) is the next step's input (a hand-written gather over the embedding
-  table, which is on the device, 2.5 GB) and the verify's rows 1 and 2; with a greedy sampler the verify's three
-  rows are argmaxed there too and only 32 bytes come back. The surface has no index-valued load and no argmax,
-  hence the two kernels in Metal; they are the first thing to go when it has. The head's cache entries for the
+  the head's steps and the verify are launches over device buffers, the token one step chose (`argmax_f32.chx`, a `rowargmax`) is the next step's input (`gather_bf16.chx`, a load whose row is `tok[0]`, an element of the device's token buffer, over the embedding
+  table, which is on the device, 2.5 GB, bf16 widened to f32 by the load) and the verify's rows 1 and 2; with a greedy sampler the verify's three
+  rows are argmaxed there too and only 32 bytes come back. Both kernels are compiled from `.chx` like the rest (`i32`, `bf16`, `rowargmax` and a
+  data-valued offset, `docs/kernels.md` section 7). The head's cache entries for the
   rows a round kept are written at the start of the next round, in the same buffer.
 * **Rollback is a pointer swap.** The 48 delta layers' memory is a state updated in place, so the verify writes
   the state after each row into three spare buffers and `commit` keeps one of the four (nothing copied); an

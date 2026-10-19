@@ -1,0 +1,14 @@
+// Every element equal: the index of the largest is the last of them, as the
+// CPU's greedy pick takes it. `0 * x` is all zeros whatever `x` is.
+algo argmax_ties(n)
+  in  x:   f32[1, n]
+  out out: i32[1]
+{
+  let x = load x
+  let z = 0 * x
+  let i = rowargmax z
+  store i -> out[0]
+}
+
+schedule argmax_ties for apple-m-series { threads 1024 }
+schedule argmax_ties for nvidia-ada     { threads 1024 }

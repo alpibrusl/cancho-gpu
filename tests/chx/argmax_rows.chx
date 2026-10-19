@@ -1,0 +1,14 @@
+// `rowargmax` over several rows: each row gets its share of the threads, so
+// the partial results of the lanes of one row meet in scratch, and the row
+// is told by its index among the outputs.
+algo argmax_rows(r, n)
+  in  x:   f32[r, n]
+  out out: i32[r]
+{
+  let x = load x
+  let i = rowargmax x
+  store i -> out
+}
+
+schedule argmax_rows for apple-m-series { threads 256 }
+schedule argmax_rows for nvidia-ada     { threads 256 }

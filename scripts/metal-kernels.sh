@@ -33,5 +33,11 @@ matvec_fp4_batch m=3 n=128 k=256
 matvec_fp4_batch m=8 n=128 k=1024
 matvec_fp4_res_batch m=4 n=128 k=512
 matvec_fp4_swiglu_batch m=4 n=128 k=512
+gather_bf16 vocab=8 hid=64
+argmax_f32 n=300
+argmax_f32 n=248320
+argmax_rows r=3 n=100
+argmax_rows r=4 n=1024
+argmax_ties n=64
 CASES
 exit $fail

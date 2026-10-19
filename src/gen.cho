@@ -410,19 +410,36 @@ pub fn vname[&m, &t](m: &!m [int], t: &!t [byte], v: int) -> [] int {
 
 // --- Indices and addresses
 
+// One term of an index expression: `k * name`, or `k * (uint)(p[elem])`
+// for a data term.
+fn idx_term[&m, &t](m: &!m [int], t: &!t [byte], g: int, e: int, i: int) -> [] int {
+    let v = ir.idx_var(m, e, i);
+    let k = text.num(m, t, ir.idx_coeff(m, e, i));
+    if ir.is_data(v) {
+        let p = ir.param(m, m[g], ir.data_param(v));
+        let pid = param_ident(m, t, ir.data_param(v), ir.param_name(m, p));
+        return text.f3(m, t, "$ * (uint)($[$])", k, pid, text.num(m, t, ir.data_elem(v)));
+    }
+    let l = loc(m, t, g, v);
+    if l < 0 {
+        return 0 - 1;
+    }
+    if m[l] != l_index() {
+        return err.fail(m, t, "lowering", text.lit(m, t, "index expression over a non-index"));
+    }
+    return text.f2(m, t, "$ * $", k, m[l + 1]);
+}
+
 // `(uint)(c + k * name + ...)`
 pub fn idx[&m, &t](m: &!m [int], t: &!t [byte], g: int, e: int) -> [] int {
     let parts = mem.of1(m, text.num(m, t, ir.idx_constant(m, e)));
     var i = 0;
     while i < ir.idx_count(m, e) {
-        let l = loc(m, t, g, ir.idx_var(m, e, i));
-        if l < 0 {
+        let term = idx_term(m, t, g, e, i);
+        if term < 0 {
             return 0 - 1;
         }
-        if m[l] != l_index() {
-            return err.fail(m, t, "lowering", text.lit(m, t, "index expression over a non-index"));
-        }
-        mem.push(m, parts, text.f2(m, t, "$ * $", text.num(m, t, ir.idx_coeff(m, e, i)), m[l + 1]));
+        mem.push(m, parts, term);
         i = i + 1;
     }
     return text.f1(m, t, "(uint)($)", text.joined(m, t, parts, " + "));
