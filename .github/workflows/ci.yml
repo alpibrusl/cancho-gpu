@@ -36,7 +36,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           cd cancho
-          cargo build --release -p cancho
+          scripts/install.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/cancho-release" && mkdir -p target/release && cp "$RUNNER_TEMP/cancho-release/bin/cancho" target/release/cancho
           mkdir -p ~/cancho-bin
           cp target/release/cancho ~/cancho-bin/
 
