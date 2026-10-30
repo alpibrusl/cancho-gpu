@@ -476,7 +476,7 @@ fn fp4_stage[&m, &t](m: &!m [int], t: &!t [byte], g: int, src: int, name: int, t
         ld = cols;
     }
     let off1 = mem.get(m, ir.view_offsets(m, qv), 1);
-    var bytes8 = rem8(ir.idx_constant(m, off1)) == 0;
+    var bytes8 = rem8(ir.idx_constant(m, off1)) == 0 && !ir.idx_has_data(m, off1);
     var i = 0;
     while i < ir.idx_count(m, off1) {
         if rem8(ir.idx_coeff(m, off1, i)) != 0 {
@@ -579,7 +579,7 @@ fn vector_copy[&m, &t](m: &!m [int], t: &!t [byte], g: int, vw: int, ty: int, na
     }
     let pshape = ir.param_shape(m, prm);
     let off1 = mem.get(m, ir.view_offsets(m, vw), 1);
-    var aligned = rem_euclid(ir.idx_constant(m, off1), width) == 0;
+    var aligned = rem_euclid(ir.idx_constant(m, off1), width) == 0 && !ir.idx_has_data(m, off1);
     var i = 0;
     while i < ir.idx_count(m, off1) {
         if rem_euclid(ir.idx_coeff(m, off1, i), width) != 0 {
@@ -606,13 +606,23 @@ fn vector_copy[&m, &t](m: &!m [int], t: &!t [byte], g: int, vw: int, ty: int, na
     return out;
 }
 
+// A loaded element, widened where the parameter is bf16.
+fn widened[&m, &t](m: &!m [int], t: &!t [byte], g: int, vw: int, elem: int) -> [] int {
+    let prm = ir.param(m, gen.prog(m, g), ir.view_param(m, vw));
+    if ir.param_dtype(m, prm) == kinds.bf16() {
+        return dialect.bf16_widen(m, t, gen.dia(m, g), elem);
+    }
+    return elem;
+}
+
 fn load[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     let (vw, ty) = (m[o + 1], m[o + 2]);
     let st = dialect.scalar(m, t, gen.dia(m, g), ir.dtype(m, ty));
-    let src = gen.addr_lit(m, t, g, vw, "e");
-    if src < 0 {
+    let at = gen.addr_lit(m, t, g, vw, "e");
+    if at < 0 {
         return 0 - 1;
     }
+    let src = widened(m, t, g, vw, at);
     if ir.space(m, ty) == kinds.threadgroup() {
         let name = gen.declare_tg(m, t, g, x, ty);
         gen.barrier(m, t, g);
@@ -638,10 +648,11 @@ fn load[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     }
     let prm = ir.param(m, gen.prog(m, g), ir.view_param(m, vw));
     if !ir.param_writable(m, prm) {
-        let a = gen.addr_lit(m, t, g, vw, "@I@");
-        if a < 0 {
+        let a0 = gen.addr_lit(m, t, g, vw, "@I@");
+        if a0 < 0 {
             return 0 - 1;
         }
+        let a = widened(m, t, g, vw, a0);
         gen.set_view(m, g, x, vw);
         gen.set_loc(m, g, x, gen.mk_loc(m, gen.l_lazy(), text.f2(m, t, "$($)", st, a), ty, 0));
         return 0;
@@ -839,6 +850,9 @@ fn unary[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int 
 fn row_reduce[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     let d = gen.dia(m, g);
     let (r, a) = (m[o + 1], m[o + 2]);
+    if r == kinds.r_argmax() {
+        return row_argmax(m, t, g, x, a);
+    }
     let ta = gen.arg_ty(m, t, g, a);
     if ta < 0 {
         return 0 - 1;
@@ -901,6 +915,74 @@ fn row_reduce[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> []
     mem.push(m, body, text.f1(m, t, "float s = $;", init));
     mem.push(m, body, text.f2(m, t, "for (uint j = 0; j < $u; ++j) $", n(m, t, nn), step));
     mem.push(m, body, text.f2(m, t, "$[k] = $;", name, dialect.convert(m, t, d, dt, s)));
+    return gen.owned(m, t, g, mm, body);
+}
+
+// `rowargmax`: the index of the largest of each row, the last of the
+// equals (`>=` along a thread's strip, then a value-then-index order when
+// the partials meet). Indices travel through scratch as floats, which hold
+// them exactly below 2^24.
+fn row_argmax[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, a: int) -> [] int {
+    let d = gen.dia(m, g);
+    let ta = gen.arg_ty(m, t, g, a);
+    if ta < 0 {
+        return 0 - 1;
+    }
+    let mm = mem.get(m, ir.shape(m, ta), 0);
+    let nn = mem.get(m, ir.shape(m, ta), 1);
+    if nn > 16777216 {
+        return fail(m, t, "rowargmax keeps indices in float scratch, which holds them to 2^24 elements");
+    }
+    let ops = gen.operands(m, t, g, mem.of1(m, a), gen.flags1(m, false), mm);
+    if ops < 0 {
+        return 0 - 1;
+    }
+    let neg_inf = text.lit(m, t, "(-INFINITY)");
+    let threads = gen.threads(m, g);
+    var lanes = 1;
+    while lanes * 2 <= threads / mm && lanes * 2 <= nn {
+        lanes = lanes * 2;
+    }
+    let dt = kinds.i32();
+    if lanes >= 2 {
+        let sgs = (lanes + 31) / 32;
+        let resv = gen.staged(m, g);
+        gen.need_scratch(m, g, resv + 2 * mm * sgs);
+        if gen.staged(m, g) == 0 {
+            gen.barrier(m, t, g);
+        }
+        let value = gen.read(m, t, mem.get(m, ops, 0), text.f1(m, t, "o * $u + j", n(m, t, nn)));
+        gen.line_lit(m, t, g, "{");
+        gen.depth_in(m, g);
+        gen.line(m, t, g, text.f2(m, t, "const uint o = tid / $u, lane = tid % $u;", n(m, t, lanes), n(m, t, lanes)));
+        gen.line(m, t, g, text.f1(m, t, "float s = $; uint si = 0u;", neg_inf));
+        gen.line(m, t, g, text.f4(m, t, "if (o < $u) for (uint j = lane; j < $u; j += $u) { const float v = $; if (v >= s) { s = v; si = j; } }", n(m, t, mm), n(m, t, nn), n(m, t, lanes), value));
+        var half = lanes;
+        if half > 32 {
+            half = 32;
+        }
+        let dv = dialect.shuffle_down(m, t, d, text.lit(m, t, "s"), text.lit(m, t, "d"));
+        let di = dialect.shuffle_down(m, t, d, text.lit(m, t, "si"), text.lit(m, t, "d"));
+        gen.line(m, t, g, text.f3(m, t, "for (uint d = $u; d > 0; d /= 2) { const float ov = $; const uint oi = $; if (ov > s || (ov == s && oi > si)) { s = ov; si = oi; } }", n(m, t, half / 2), dv, di));
+        gen.line(m, t, g, text.f5(m, t, "if (o < $u && lane % 32u == 0) { scratch[$ + o * $u + lane / 32u] = s; scratch[$ + o * $u + lane / 32u] = float(si); }", n(m, t, mm), n(m, t, resv), n(m, t, sgs), n(m, t, resv + mm * sgs), n(m, t, sgs)));
+        gen.depth_out(m, g);
+        gen.line_lit(m, t, g, "}");
+        gen.barrier(m, t, g);
+        let name = gen.declare_reg(m, t, g, x, reg(m, dt, mem.of1(m, mm)));
+        let body = mem.list(m);
+        mem.push(m, body, text.f1(m, t, "float s = $; uint si = 0u;", neg_inf));
+        let sv = text.f2(m, t, "scratch[$ + e * $u + q]", n(m, t, resv), n(m, t, sgs));
+        let sx = text.f2(m, t, "scratch[$ + e * $u + q]", n(m, t, resv + mm * sgs), n(m, t, sgs));
+        mem.push(m, body, text.f3(m, t, "for (uint q = 0; q < $u; ++q) { const float ov = $; const uint oi = (uint)$; if (ov > s || (ov == s && oi > si)) { s = ov; si = oi; } }", n(m, t, sgs), sv, sx));
+        mem.push(m, body, text.f2(m, t, "$[k] = $;", name, dialect.convert(m, t, d, dt, text.lit(m, t, "si"))));
+        return gen.owned(m, t, g, mm, body);
+    }
+    let value = gen.read(m, t, mem.get(m, ops, 0), text.f1(m, t, "e * $u + j", n(m, t, nn)));
+    let name = gen.declare_reg(m, t, g, x, reg(m, dt, mem.of1(m, mm)));
+    let body = mem.list(m);
+    mem.push(m, body, text.f1(m, t, "float s = $; uint si = 0u;", neg_inf));
+    mem.push(m, body, text.f2(m, t, "for (uint j = 0; j < $u; ++j) { const float v = $; if (v >= s) { s = v; si = j; } }", n(m, t, nn), value));
+    mem.push(m, body, text.f2(m, t, "$[k] = $;", name, dialect.convert(m, t, d, dt, text.lit(m, t, "si"))));
     return gen.owned(m, t, g, mm, body);
 }
 

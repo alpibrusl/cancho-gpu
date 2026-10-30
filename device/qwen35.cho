@@ -983,8 +983,8 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         m[eng + 142] = b_hcos;
         m[eng + 143] = b_hsin;
         m[eng + 144] = b_mmask2;
-        m[eng + 145] = load_msl(m, t, ffi, fs, kdir, "head_ops.metal", "gather_bf16", 20, 256);
-        m[eng + 146] = load_msl(m, t, ffi, fs, kdir, "head_ops.metal", "argmax_f32", 1, 1024);
+        m[eng + 145] = compile_kernel(m, t, ffi, fs, kdir, "gather_bf16.chx", c2(m, t, "vocab", vocab(), "hid", hidden()));
+        m[eng + 146] = compile_kernel(m, t, ffi, fs, kdir, "argmax_f32.chx", c1(m, t, "n", vocab()));
         if err.failed(m) {
             return 0 - 1;
         }
@@ -1498,24 +1498,6 @@ pub fn attn_kernel[&m](m: &!m [int], eng: int, upto: int) -> [] int {
 // buffer, and what the draft head takes as its input.
 pub fn hidden_buf[&m](m: &!m [int], eng: int) -> [] int {
     return m[eng + 36];
-}
-
-// A hand-written Metal kernel from `kdir`, with its launch geometry: the record `compile_kernel` makes.
-fn load_msl[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), kdir: int, file: &static [byte], entry: &static [byte], gx: int, threads: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    let path = text.f2(m, t, "$/$", kdir, text.lit(m, t, file));
-    let (top, got, size) = fileio.prefix(m, t, fs, text.bytes(t, path), 1048576);
-    if top < 0 {
-        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", path));
-    }
-    let lib = metal.cgpu_compile(ffi, text.bytes(t, text.handle(top, got)));
-    if lib < 0 {
-        return device_fail(m, t, ffi, "compiling a hand-written kernel");
-    }
-    let func = metal.cgpu_function(ffi, lib, text.bytes(t, text.lit(m, t, entry)));
-    if func < 0 {
-        return device_fail(m, t, ffi, "finding a hand-written kernel's entry point");
-    }
-    return mem.rec4(m, func, gx, 1, threads);
 }
 
 // The embedding table (bf16, as the store has it) on the device, for the head's gather.

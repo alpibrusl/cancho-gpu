@@ -160,6 +160,13 @@ fn ce_atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         return node(m, kinds.c_num(), m[tok + 2], 0, 0, 0, 0);
     }
     if lexer.kind(m, tok) == lexer.ident() {
+        if eat_punct(m, t, p, "[") {
+            let subs = ce_list(m, t, p, false);
+            if subs < 0 || want_punct(m, t, p, "]") < 0 {
+                return 0 - 1;
+            }
+            return node(m, kinds.c_elem(), lexer.spelling(m, tok), subs, 0, 0, 0);
+        }
         return node(m, kinds.c_name(), lexer.spelling(m, tok), 0, 0, 0, 0);
     }
     return err.fail(m, t, "syntax", text.f2(m, t, "$: expected a number or a name, found $", at, lexer.show(m, t, tok)));
@@ -210,6 +217,12 @@ fn dtype_of[&t](t: &!t [byte], s: int) -> [] int {
     }
     if text.is(t, s, "i8") {
         return 2;
+    }
+    if text.is(t, s, "i32") {
+        return 3;
+    }
+    if text.is(t, s, "bf16") {
+        return 4;
     }
     return 0 - 1;
 }
@@ -404,7 +417,7 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         return for_loop(m, t, p);
     }
     // A call is `name expr` with no parentheses: `rowsum sq`, `rsqrt t`.
-    if text.is(t, s, "rowsum") || text.is(t, s, "rowmax") || text.is(t, s, "rsqrt") || text.is(t, s, "sigmoid") || text.is(t, s, "softplus") || text.is(t, s, "exp") || text.is(t, s, "log") {
+    if text.is(t, s, "rowsum") || text.is(t, s, "rowmax") || text.is(t, s, "rowargmax") || text.is(t, s, "rsqrt") || text.is(t, s, "sigmoid") || text.is(t, s, "softplus") || text.is(t, s, "exp") || text.is(t, s, "log") {
         let e = atom(m, t, p);
         if e < 0 {
             return 0 - 1;

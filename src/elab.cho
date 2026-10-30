@@ -54,10 +54,11 @@ fn set_space[&m](m: &!m [int], cx: int, v: int, s: int) -> [] int {
     return 0;
 }
 
-// The context: `[vals, idx, spaces]` -- constants (name, f64 bits),
-// grid and loop indices (name, var), and every tile's memory space.
-fn cx_new[&m](m: &!m [int], vals: int, idx: int, spaces: int) -> [] int {
-    return mem.rec3(m, vals, idx, spaces);
+// The context: `[vals, idx, spaces, st]` -- constants (name, f64 bits),
+// grid and loop indices (name, var), every tile's memory space, and the
+// elaboration's state (-1 where only constants are being resolved).
+fn cx_new[&m](m: &!m [int], vals: int, idx: int, spaces: int, st: int) -> [] int {
+    return mem.rec4(m, vals, idx, spaces, st);
 }
 
 fn bad[&m, &t](m: &!m [int], t: &!t [byte], rule: &static [byte], msg: int) -> [] int {
@@ -77,6 +78,44 @@ fn scale_idx[&m](m: &!m [int], a: int, k: int) -> [] int {
         i = i + 1;
     }
     return mem.rec2(m, ir.idx_constant(m, a) * k, terms);
+}
+
+// `tok[0]`: element of an `i32` parameter, a term of an offset that is
+// known only when the kernel runs. Its subscripts are constants.
+fn data_term[&m, &t](m: &!m [int], t: &!t [byte], e: int, cx: int) -> [] int {
+    if m[cx + 3] < 0 {
+        return bad(m, t, "offset", text.lit(m, t, "an extent is a constant, not a parameter's element"));
+    }
+    let p = find_param(m, t, m[cx + 3], m[e + 1]);
+    if p < 0 {
+        return 0 - 1;
+    }
+    let (id, dims, dt) = (m[p + 1], m[p + 2], m[p + 3]);
+    if dt != kinds.i32() {
+        return bad(m, t, "type", text.f2(m, t, "`$`: an offset reads an i32 element, not $", m[e + 1], text.lit(m, t, kinds.dtype_name(dt))));
+    }
+    let subs = m[e + 2];
+    if mem.size(m, subs) != mem.size(m, dims) {
+        return bad(m, t, "shape", text.f2(m, t, "`$` has $ dimensions", m[e + 1], text.num(m, t, mem.size(m, dims))));
+    }
+    var flat = 0;
+    var d = 0;
+    while d < mem.size(m, subs) {
+        let a = affine(m, t, mem.get(m, subs, d), cx);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let at = ir.idx_constant(m, a);
+        if ir.idx_count(m, a) != 0 || at < 0 || at >= mem.get(m, dims, d) {
+            return bad(m, t, "bounds", text.f1(m, t, "`$`: the element of an offset is a constant inside the parameter", m[e + 1]));
+        }
+        flat = flat * mem.get(m, dims, d) + at;
+        d = d + 1;
+    }
+    if flat >= 1048576 {
+        return bad(m, t, "offset", text.lit(m, t, "the element of an offset lies within the first 2^20"));
+    }
+    return ir.idx_scaled(m, ir.data_var(id, flat), 1, 0);
 }
 
 // `c + sum(coeff * index)`, which is all an offset can be.
@@ -103,6 +142,9 @@ fn affine[&m, &t](m: &!m [int], t: &!t [byte], e: int, cx: int) -> [] int {
             }
         }
         return bad(m, t, "offset", text.f1(m, t, "`$` is neither an index nor an integer constant", s));
+    }
+    if k == kinds.c_elem() {
+        return data_term(m, t, e, cx);
     }
     let op = m[e + 1];
     let l = affine(m, t, m[e + 2], cx);
@@ -171,7 +213,7 @@ fn dim_of[&m, &t](m: &!m [int], t: &!t [byte], d: int, vals: int) -> [] int {
         }
         return f32.to_count(f32.from_bits(m[c + 1]));
     }
-    let cx = cx_new(m, vals, mem.list(m), mem.list(m));
+    let cx = cx_new(m, vals, mem.list(m), mem.list(m), 0 - 1);
     return constant(m, t, m[d + 1], cx);
 }
 
@@ -319,6 +361,15 @@ fn value[&m](m: &!m [int], v: int, shape: int, dt: int) -> [] int {
     return mem.rec3(m, v, shape, dt);
 }
 
+// What a load of a parameter of `dt` makes: bf16 is widened to f32 as it
+// is read, so no tile is bf16.
+fn tile_dtype(dt: int) -> [] int {
+    if dt == kinds.bf16() {
+        return kinds.f32();
+    }
+    return dt;
+}
+
 fn find_param[&m, &t](m: &!m [int], t: &!t [byte], st: int, name: int) -> [] int {
     let r = assoc_find(m, t, m[st + 1], name);
     if r < 0 {
@@ -349,7 +400,7 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
             return 0 - 1;
         }
         let shape = m[p + 2];
-        let dt = m[p + 3];
+        let dt = tile_dtype(m[p + 3]);
         let view = slice_view(m, m[st + 2], m[p + 1], shape);
         let o = ir.make_op(m, kinds.op_load(), view, ir.tile(m, dt, shape, kinds.reg()), 0, 0);
         let v = ir.emit(m, t, b, m[e + 1], o);
@@ -360,7 +411,7 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         if p < 0 {
             return 0 - 1;
         }
-        let dt = m[p + 3];
+        let dt = tile_dtype(m[p + 3]);
         let shape = dims_of(m, t, m[e + 3], vals);
         if shape < 0 {
             return 0 - 1;
@@ -524,17 +575,21 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         }
         let f = m[e + 1];
         let arg = arg_of(m, m[e + 2], m[a]);
-        if text.is(t, f, "rowsum") || text.is(t, f, "rowmax") {
+        if text.is(t, f, "rowsum") || text.is(t, f, "rowmax") || text.is(t, f, "rowargmax") {
             var r = kinds.r_max();
+            var dt = m[a + 2];
             if text.is(t, f, "rowsum") {
                 r = kinds.r_sum();
+            } else if text.is(t, f, "rowargmax") {
+                r = kinds.r_argmax();
+                dt = kinds.i32();
             }
             // A row reduction of `[rows, n]` gives `[rows]`.
             if mem.size(m, m[a + 1]) != 2 {
                 return bad(m, t, "shape", text.f2(m, t, "`$`: a row reduction takes a 2-d tile, found $", name, sd(m, t, m[a + 1])));
             }
             let v = ir.emit(m, t, b, name, ir.make_op(m, kinds.op_row_reduce(), r, arg, 0, 0));
-            return value(m, v, mem.of1(m, mem.get(m, m[a + 1], 0)), m[a + 2]);
+            return value(m, v, mem.of1(m, mem.get(m, m[a + 1], 0)), dt);
         }
         var u = 0 - 1;
         if text.is(t, f, "rsqrt") {
@@ -659,7 +714,7 @@ fn lower_for[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e:
     }
     let idx = mem.copy(m, m[cx + 1]);
     mem.push(m, idx, mem.rec2(m, index, m[opened]));
-    let inside = cx_new(m, m[cx], idx, m[cx + 2]);
+    let inside = cx_new(m, m[cx], idx, m[cx + 2], m[cx + 3]);
     let ys = lower_block(m, t, st, inner, inside, m[e + 5]);
     let yields = mem.list(m);
     var failed = ys < 0;
@@ -849,7 +904,7 @@ pub fn build[&m, &t](m: &!m [int], t: &!t [byte], algo: int, vals: int, chunk: i
             var j = 0;
             while j < mem.size(m, axes) {
                 let ax = mem.get(m, axes, j);
-                let cx = cx_new(m, vals, idx, spaces);
+                let cx = cx_new(m, vals, idx, spaces, 0 - 1);
                 let n = constant(m, t, m[ax + 1], cx);
                 if n < 0 {
                     return 0 - 1;
@@ -864,7 +919,7 @@ pub fn build[&m, &t](m: &!m [int], t: &!t [byte], algo: int, vals: int, chunk: i
                 j = j + 1;
             }
         } else {
-            let cx = cx_new(m, vals, idx, spaces);
+            let cx = cx_new(m, vals, idx, spaces, st);
             let r = lower_block(m, t, st, env, cx, mem.of1(m, s));
             if r < 0 {
                 return 0 - 1;

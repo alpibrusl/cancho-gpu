@@ -19,11 +19,22 @@ pub fn i8() -> [] int {
     return 2;
 }
 
+// A 32-bit integer: an id or an index. Tiles of it are made by `rowargmax`
+// and by loads; arithmetic on it is refused.
+pub fn i32() -> [] int {
+    return 3;
+}
+
+// A 16-bit brain float, a storage type only: a load widens it to f32.
+pub fn bf16() -> [] int {
+    return 4;
+}
+
 pub fn size_bytes(d: int) -> [] int {
-    if d == 0 {
+    if d == 0 || d == 4 {
         return 2;
     }
-    if d == 1 {
+    if d == 1 || d == 3 {
         return 4;
     }
     return 1;
@@ -35,6 +46,12 @@ pub fn dtype_name(d: int) -> [] &static [byte] {
     }
     if d == 1 {
         return "F32";
+    }
+    if d == 3 {
+        return "I32";
+    }
+    if d == 4 {
+        return "BF16";
     }
     return "I8";
 }
@@ -136,6 +153,11 @@ pub fn r_sum() -> [] int {
     return 1;
 }
 
+// The index of the largest, the last of the equals.
+pub fn r_argmax() -> [] int {
+    return 2;
+}
+
 // --- Syntax nodes: expressions
 pub fn e_load_at() -> [] int {
     return 1;
@@ -204,6 +226,11 @@ pub fn c_name() -> [] int {
 
 pub fn c_bin() -> [] int {
     return 22;
+}
+
+// `name[i, j]`: an element of a parameter, read when the kernel runs.
+pub fn c_elem() -> [] int {
+    return 23;
 }
 
 // --- Syntax nodes: dimensions

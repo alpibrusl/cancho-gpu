@@ -11,3 +11,13 @@ tests/chx/matvec_fp4_res_batch.chx m=4 n=5120 k=17408
 tests/chx/matvec_fp4_res_batch.chx m=2 n=64 k=128 --run
 tests/chx/matvec_fp4_swiglu_batch.chx m=4 n=17408 k=5120
 tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=64 k=128 --run
+# Language: i32, bf16, rowargmax and an offset read from an i32 parameter (issue 34),
+# the draft head's gather and argmax. The interpreter holds what they compute
+# (tests/kernels.py); the device check runs them on the GPU.
+tests/chx/gather_bf16.chx vocab=248320 hid=5120
+tests/chx/gather_bf16.chx vocab=8 hid=64 --run
+tests/chx/argmax_f32.chx n=248320
+tests/chx/argmax_f32.chx n=300 --run
+tests/chx/argmax_f32.chx n=1 --run
+tests/chx/argmax_rows.chx r=3 n=100 --run
+tests/chx/argmax_ties.chx n=64 --run

@@ -222,12 +222,15 @@ fn expr_range[&m, &t](m: &!m [int], t: &!t [byte], c: int, e: int) -> [] (bool, 
     var hi = lo;
     var i = 0;
     while i < ir.idx_count(m, e) {
-        let r = range_of(m, t, c, ir.idx_var(m, e, i));
-        if r < 0 {
-            return (false, 0, 0);
+        var r = 0 - 1;
+        if !ir.is_data(ir.idx_var(m, e, i)) {
+            r = range_of(m, t, c, ir.idx_var(m, e, i));
+            if r < 0 {
+                return (false, 0, 0);
+            }
         }
         // An empty loop never evaluates the view; any range will do.
-        if m[r] == 1 {
+        if r >= 0 && m[r] == 1 {
             let k = ir.idx_coeff(m, e, i);
             let (x, y) = (m[r + 1] * k, m[r + 2] * k);
             if x < y {
@@ -268,7 +271,9 @@ fn view[&m, &t](m: &!m [int], t: &!t [byte], c: int, vw: int, writing: bool) -> 
             return 0 - 1;
         }
         let ext = mem.get(m, shape, d);
-        if lo < 0 || hi + ext > mem.get(m, pshape, d) {
+        // A data term is known only when the kernel runs: the checker
+        // cannot bound it, the interpreter does.
+        if !ir.idx_has_data(m, mem.get(m, offs, d)) && (lo < 0 || hi + ext > mem.get(m, pshape, d)) {
             let msg = text.f5(m, t, "view of `$` dim $ spans $..$ over the loop, but the dim is $", ir.param_name(m, p), text.num(m, t, d), text.num(m, t, lo), text.num(m, t, hi + ext), text.num(m, t, mem.get(m, pshape, d)));
             return diag(m, t, c, "bounds", msg);
         }
@@ -278,6 +283,10 @@ fn view[&m, &t](m: &!m [int], t: &!t [byte], c: int, vw: int, writing: bool) -> 
 }
 
 fn numeric[&m, &t](m: &!m [int], t: &!t [byte], c: int, ty: int, what: &static [byte]) -> [] bool {
+    if ir.dtype(m, ty) == kinds.i32() {
+        diag(m, t, c, "type", text.f1(m, t, "$ is an i32 index; it can be stored, and nothing else", text.lit(m, t, what)));
+        return false;
+    }
     if ir.dtype(m, ty) == kinds.i8() {
         diag(m, t, c, "type", text.f1(m, t, "$ is quantised (I8); `dequant` it with its scales first", text.lit(m, t, what)));
         return false;
@@ -343,6 +352,9 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
         // a `[n, 1]` column as well as a `[1, n]` row.
         if !mem.same(m, squeeze(m, ir.shape(m, tl)), squeeze(m, m[vw + 1])) {
             return diag(m, t, c, "shape", text.f2(m, t, "store of $ into $", sd(m, t, ir.shape(m, tl)), sd(m, t, m[vw + 1])));
+        }
+        if m[vw] == kinds.bf16() {
+            return diag(m, t, c, "type", text.lit(m, t, "bf16 is read by loads, which widen it to f32; it is not stored"));
         }
         if !not_narrower(m, t, c, ir.dtype(m, tl), m[vw], "store") {
             return 0 - 1;
@@ -506,7 +518,11 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
         if mem.size(m, ir.shape(m, tl)) != 2 {
             return diag(m, t, c, "shape", text.lit(m, t, "row reduce needs a 2-d tile"));
         }
-        return reg(m, ir.dtype(m, tl), mem.of1(m, mem.get(m, ir.shape(m, tl), 0)));
+        var rdt = ir.dtype(m, tl);
+        if m[o + 1] == kinds.r_argmax() {
+            rdt = kinds.i32();
+        }
+        return reg(m, rdt, mem.of1(m, mem.get(m, ir.shape(m, tl), 0)));
     }
     // DequantFp4
     let tys = args(m, t, c, mem.of3(m, m[o + 1], m[o + 2], m[o + 3]));

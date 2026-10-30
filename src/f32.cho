@@ -525,6 +525,25 @@ pub fn round_i8(x: float) -> [] float {
     return r;
 }
 
+// `x` (an f32) as the nearest bf16, ties to even: the top half of its
+// word, rounded.
+pub fn round_bf16(x: float) -> [] float {
+    if is_nan(x) || !is_finite(x) {
+        return x;
+    }
+    let b = bits32(x);
+    let r = b + 32767 + (b >> 16 & 1) >> 16 << 16;
+    return from_bits32(r);
+}
+
+// An i32 tile's element: truncated toward zero, a NaN being 0.
+pub fn trunc_i32(x: float) -> [] float {
+    if is_nan(x) {
+        return 0.0;
+    }
+    return float_of(truncate(x));
+}
+
 // `f32::max`: the larger, and a NaN loses to anything.
 pub fn max(a: float, b: float) -> [] float {
     if is_nan(a) {
