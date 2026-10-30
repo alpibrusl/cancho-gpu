@@ -49,8 +49,11 @@ that, and whether the sibling projects (cancho-ml, cancho-opt) are a better home
 cancho-opt runs the objective as an external program: it writes the point on
 standard input and reads the value (and, for BFGS, the gradient) from standard
 output **[read, its README]**. A training step has that shape (parameters in,
-loss and gradient out), so a cancho-gpu program could be the objective with no
-change to either repository. The limits: BFGS holds an n-by-n matrix, so this is
+loss and gradient out), so a cancho-gpu program could be the objective, **if it could
+be given the parameters. It cannot today** (§6, step 2): neither `check --run` nor
+`cancho-gpu-device` takes input, only the interpreter's own made-up tensors
+(`device.md` §3: "the same inputs the interpreter used"; `cancho-gpu` prints
+its usage with no input option) **[measured: the usage; read: device.md]**. The limits: BFGS holds an n-by-n matrix, so this is
 for small, full-batch problems; and text on a pipe per evaluation will dominate
 for anything with millions of parameters **[open]**.
 
@@ -123,11 +126,20 @@ it.
 1. **Reference check. Done** (§4): the four kernels, their cases and goldens
    from the Rust, and `tests/kernels.py` checks that agree to 1e-5 on the
    interpreter and fail on a mutant.
-2. **A two-layer network, trained on the CPU interpreter** through cancho-opt:
-   `opt minimize --method bfgs` with a cancho-gpu program as the objective, on a
-   regression small enough to have a closed-form answer. Done when the loss
-   reaches the least-squares optimum and the number of objective calls is
-   recorded.
+2. **A model trained through cancho-opt. Half done.** `opt` side, built and
+   measured (cancho-opt `examples/train/`, `scripts/check_examples.py`): a
+   convex fit with BFGS (15 evaluations, within 7.6e-13 of a Newton solve), a
+   2-2-1 sigmoid network on XOR by backpropagation (**1 of 8 starts solves it;
+   7 of 8 report `converged` at a local minimum**), SPSA on a noisy loss, and
+   Nelder-Mead on a ReLU network, each as a program that prints the loss. The
+   backward of that network's sigmoid is `bwd_sigmoid.chx`'s arithmetic, but
+   the objective there is Python. **Not done: an objective computed by a
+   cancho-gpu kernel**, because a `.chx` kernel cannot be given parameters from a
+   command line. What it takes: an input path for `check --run` (a file or
+   standard input per `in` tensor, and all of an `out` tensor printed, not four
+   values), which is an extension of the Rust's `--run` and so a lex-gpu or a
+   cancho-gpu-only flag, a decision for this repository (the interpreter's
+   summary is held byte-for-byte to the Rust's; a new flag must not change it).
 3. **The same on a Metal GPU** through `cancho-gpu-device`, and the cost of the
    pipe per evaluation measured. This is where §3's worry is confirmed or not.
 4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
@@ -138,6 +150,10 @@ to it; this document touches only cancho-gpu.
 
 ## 7. Open
 
+* The input path of step 2 above, and whether it belongs in cancho-gpu only.
+* cancho-opt takes the program by the name given without searching `PATH`
+  (found writing its examples); the objective of a future cancho-gpu driver is
+  given as an absolute path.
 * Whether the summation order of a batch gradient can be pinned on a GPU, and
   at what cost.
 * A `matmul_tn` or transposing load (a lex-gpu change).
