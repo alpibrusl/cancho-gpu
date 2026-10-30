@@ -1,0 +1,138 @@
+# Training: whether cancho-gpu should, and what a first step costs
+
+> **Status: a design, nothing built. Recommendation: do not add training
+> to cancho-gpu yet; prototype two backward kernels and one driver first (§6)
+> and decide on what that measures.** Claims are marked **[measured]** (with
+> the command), **[read]** (from a document or the source, not run) or
+> **[open]**.
+
+## 1. The question
+
+cancho-gpu compiles typed tile kernels and, on top of the compiler, runs two
+language models for inference (`inference.md`, `qwen35.md`, `serving.md`). It
+has no backward pass, optimiser or loss **[read]**: `grep -i -E
+"train|backward|grad"` over `docs/` and `README.md` finds nothing.
+
+OpenNN (Artelnics) is a C++ library that trains dense, recurrent, convolutional
+and transformer models on CPU and CUDA, with mini-batch SGD with momentum and
+BFGS among its optimisers **[read, from opennn.net and its reference; versions
+and benchmarks not checked]**. The question was whether cancho-gpu should grow
+that, and whether the sibling projects (cancho-ml, cancho-opt) are a better home.
+
+## 2. Why not inside cancho-gpu, as it stands
+
+* **The oracle does not carry over.** The rule is byte-identity with lex-gpu's
+  emitter (`CLAUDE.md`). A new backward kernel emits through the same path, so
+  its *text* can still be held to the Rust, but "it computes the gradient" has
+  no Rust oracle. It needs an external reference (plain Python for the first
+  kernels, as `tests/kernels.py` does for attention; autograd for anything
+  larger) and a tolerance, which is a different kind of claim from the rest of
+  the repository.
+* **Determinism.** A weight gradient sums over the batch. The order of that sum
+  on a GPU decides the last bits, and nothing in the compiler pins it **[open]**.
+  cancho-ml's contract (exact sums, a stored summation order) is the opposite of
+  what a GPU training loop gives for free.
+* **Priorities.** The 27B decodes at 25 tok/s against Ollama's 43
+  (`benchmark.md`); CUDA has run only against a mock driver; split-KV
+  attention is unbuilt. Training competes with those.
+
+## 3. Where the pieces belong
+
+| Piece | Home | Reason |
+|---|---|---|
+| Forward and backward kernels | cancho-gpu | it is a kernel compiler |
+| Optimisers (SGD, Adam, L-BFGS) | cancho-opt | BFGS, Nelder-Mead and SPSA are there, each held to scipy or Qiskit |
+| A small network as a model type | cancho-ml, later | cancho-ml's `docs/status.md` lists "neural networks, GPU" as *not planned in v1*; its design leaves room for "a later cancho-gpu backend" |
+
+cancho-opt runs the objective as an external program: it writes the point on
+standard input and reads the value (and, for BFGS, the gradient) from standard
+output **[read, its README]**. A training step has that shape (parameters in,
+loss and gradient out), so a cancho-gpu program could be the objective with no
+change to either repository. The limits: BFGS holds an n-by-n matrix, so this is
+for small, full-batch problems; and text on a pipe per evaluation will dominate
+for anything with millions of parameters **[open]**.
+
+## 4. What `.chx` can express of a backward pass
+
+The surface has `matmul` (A B), `matmul_nt` (A B^T), `rowsum`, `rowmax`,
+`rsqrt`, `sigmoid`, `softplus`, `exp`, `log`, and `+ - * /` (`src/parser.cho`,
+the call and matmul cases **[read]**). Probes, compiled and interpreted with
+`check ... --run` against the pinned compiler (`a4572ea`), both targets:
+
+| Backward of | Written as | Result |
+|---|---|---|
+| `y = x w^T` w.r.t. `x` | `dx = matmul dy w` | **[measured]** compiles, runs |
+| `y = x w^T` w.r.t. `w` | `dw = matmul_nt dyt xt`, the host supplying `dY^T` and `X^T` | **[measured]** compiles, runs; with `r=256` too |
+| bias gradient | `db = matmul ones dy`, a row of ones | **[measured]** compiles, runs |
+| sigmoid | `dz = dy * (s - &s * &s)` | **[measured]** compiles, runs |
+| ReLU | needs `max` or a compare | **[measured]** refused: no such operation (`syntax`) |
+
+What the probes did **not** show: *that the values are right*. `--run`
+confirms the kernels compile and the interpreter runs them, not that `dw`
+equals `dY^T X`. That needs the Python reference check, and is the first
+deliverable of §6.
+
+Findings that shaped the table:
+
+* **There is no transposed-A product** (`A^T B`). `dW = dY^T X` is expressible
+  only by the host laying out transposed copies, an extra pass over memory the
+  forward does not need. A `matmul_tn`, or a transposing load, is a lex-gpu
+  change (the Rust is the oracle, `CLAUDE.md`), not a cancho-gpu one.
+* **Tiles are consumed once.** `s - s * s` is refused (`moved-while-borrowed`);
+  `s - &s * &s` is accepted. A backward pass that reuses forward activations
+  will spend borrows the way `softmax.chx` does.
+* **A constant has no shape of its own:** `1 - s` is refused
+  (`a constant needs something to take its shape from`), hence `s - s*s` above.
+* **ReLU has no derivative to write** because it has no forward. SiLU and
+  softplus are expressible (`sigmoid` is the softplus derivative), and are what
+  Qwen uses.
+* **No column reduction** (`colsum`); the ones-row product above stands in for
+  it at the cost of a matmul.
+* **No atomics** found in `src/` or `docs/` **[read; the grammar was not read in
+  full]**. Without them a batch reduction has to live inside one kernel's
+  reduction, which bounds the batch a kernel can sum over **[open]**.
+
+## 5. Comparison with OpenNN, honestly
+
+No benchmark against OpenNN is possible today: cancho-gpu cannot train, and
+OpenNN's strengths (a full training workflow, mixed precision, multi-GPU) are
+the part cancho-gpu lacks. What can be compared fairly is inference of a small
+dense network:
+
+1. A small MLP forward pass in both, the same weights, outputs compared.
+2. Latency of that forward pass, medians of several runs, in `bench/`'s style
+   (`benchmark.md`: same machine, one runtime at a time, load guard).
+3. Refusals: what each accepts that it should not, counted from
+   `tests/reject/`-style fixtures.
+
+Item 1 first: it needs only `matvec`-family kernels that exist. OpenNN's version
+and build, its CUDA path and its own numbers are **[open]** until someone runs
+it.
+
+## 6. Plan, each step ending at a number
+
+1. **Reference check.** `tests/kernels.py`-style plain-Python checks for the four
+   probes of §4 (`dx`, `dw`, `db`, sigmoid backward), added to `tests/chx/` and
+   `tests/cases.txt` with goldens from the Rust (`scripts/regen-golden.sh`).
+   Done when all agree to 1e-5 on the interpreter, and a mutated kernel fails.
+2. **A two-layer network, trained on the CPU interpreter** through cancho-opt:
+   `opt minimize --method bfgs` with a cancho-gpu program as the objective, on a
+   regression small enough to have a closed-form answer. Done when the loss
+   reaches the least-squares optimum and the number of objective calls is
+   recorded.
+3. **The same on a Metal GPU** through `cancho-gpu-device`, and the cost of the
+   pipe per evaluation measured. This is where §3's worry is confirmed or not.
+4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
+   type in cancho-ml, or stop.
+
+Each step is a separate change. Steps 2 and 3 touch cancho-opt and need access
+to it; this document touches only cancho-gpu.
+
+## 7. Open
+
+* Whether the summation order of a batch gradient can be pinned on a GPU, and
+  at what cost.
+* A `matmul_tn` or transposing load (a lex-gpu change).
+* ReLU (`max`) in the surface.
+* Atomics, or another way to reduce across thread groups.
+* OpenNN's current numbers, from running it rather than reading its pages.
