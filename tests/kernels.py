@@ -285,6 +285,75 @@ def gated_norm(h, n):
     return out
 
 
+def sigmoid_(x):
+    return 1 / (1 + math.exp(-x))
+
+
+def grad_formulas_agree(r=3, n=4, k=5, h=1e-6):
+    """The reference below is only a reference if its formulas are the
+    gradients of the forward they claim to be. Finite differences of
+    L = sum(g * y), y = sigmoid(x w^T + b), on a small case: dx, dw, db and
+    the sigmoid's own derivative against central differences (binary64)."""
+    x, w, b, g = lcg([r * k, n * k, n, r * n])
+
+    def loss(x, w, b):
+        tot = 0.0
+        for i in range(r):
+            for j in range(n):
+                z = sum(x[i * k + c] * w[j * k + c] for c in range(k)) + b[j]
+                tot += g[i * n + j] * sigmoid_(z)
+        return tot
+
+    dz = []
+    for i in range(r):
+        for j in range(n):
+            z = sum(x[i * k + c] * w[j * k + c] for c in range(k)) + b[j]
+            s = sigmoid_(z)
+            dz.append(g[i * n + j] * (s - s * s))
+    dx = [sum(dz[i * n + j] * w[j * k + c] for j in range(n)) for i in range(r) for c in range(k)]
+    dw = [sum(dz[i * n + j] * x[i * k + c] for i in range(r)) for j in range(n) for c in range(k)]
+    db = [sum(dz[i * n + j] for i in range(r)) for j in range(n)]
+    ok = True
+    for name, params, grads in (("x", x, dx), ("w", w, dw), ("b", b, db)):
+        for idx in range(len(params)):
+            up, dn = list(params), list(params)
+            up[idx] += h
+            dn[idx] -= h
+            args = {"x": x, "w": w, "b": b}
+            args[name] = up
+            lu = loss(args["x"], args["w"], args["b"])
+            args[name] = dn
+            ld = loss(args["x"], args["w"], args["b"])
+            if abs((lu - ld) / (2 * h) - grads[idx]) > 1e-7:
+                ok = False
+    print(f"{'ok  ' if ok else 'FAIL'} backward formulas against central differences (r={r} n={n} k={k})")
+    return ok
+
+
+def bwd_dx(r, n, k):
+    dy, w = lcg([r * n, n * k])
+    return [sum(dy[i * n + j] * w[j * k + c] for j in range(n)) for i in range(r) for c in range(k)]
+
+
+def bwd_dw(r, n, k):
+    dyt, xt = lcg([n * r, k * r])
+    return [sum(dyt[j * r + i] * xt[c * r + i] for i in range(r)) for j in range(n) for c in range(k)]
+
+
+def bwd_db(r, n):
+    ones, dy = lcg([r, r * n])
+    return [sum(ones[i] * dy[i * n + j] for i in range(r)) for j in range(n)]
+
+
+def bwd_sigmoid(r, n):
+    z, dy = lcg([r * n, r * n])
+    out = []
+    for a, g in zip(z, dy):
+        s = sigmoid_(a)
+        out.append(g * (s - s * s))
+    return out
+
+
 ok = True
 for r, h, p in ((24, 32, 192), (3, 4, 2)):
     ok &= check(f"rope r={r} h={h} p={p}", run("rope", [f"r={r}", f"h={h}", f"p={p}"])["y"], rope(r, h, p))
@@ -335,4 +404,11 @@ ok &= check("qnorm r=3 n=8", run("qnorm", ["r=3", "n=8", "eps=1e-6"])["y"], qnor
 ok &= check("attn_gate_q r=3 n=8", run("attn_gate_q", ["r=3", "n=8"])["y"], attn_gate_q(3, 8))
 ok &= check("rmsnorm_rows r=3 n=16", run("rmsnorm_rows", ["r=3", "n=16", "eps=1e-6"])["y"], rmsnorm_rows(3, 16))
 ok &= check("gated_norm h=3 n=16", run("gated_norm", ["h=3", "n=16", "eps=1e-6"])["y"], gated_norm(3, 16))
+ok &= grad_formulas_agree()
+for r, n, k in ((8, 32, 64), (1, 5, 7)):
+    ok &= check(f"bwd_dx r={r} n={n} k={k}", run("bwd_dx", [f"r={r}", f"n={n}", f"k={k}"])["dx"], bwd_dx(r, n, k))
+for r, n, k in ((8, 32, 64), (256, 32, 64)):
+    ok &= check(f"bwd_dw r={r} n={n} k={k}", run("bwd_dw", [f"r={r}", f"n={n}", f"k={k}"])["dw"], bwd_dw(r, n, k))
+ok &= check("bwd_db r=64 n=32", run("bwd_db", ["r=64", "n=32"])["db"], bwd_db(64, 32))
+ok &= check("bwd_sigmoid r=8 n=64", run("bwd_sigmoid", ["r=8", "n=64"])["dz"], bwd_sigmoid(8, 64))
 sys.exit(0 if ok else 1)

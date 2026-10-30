@@ -1,0 +1,19 @@
+// The backward of s = sigmoid(z): dz = dy * s * (1 - s), written
+// s - s*s because a constant has no shape of its own and a tile is
+// consumed once, so each use of s after the first is a borrow.
+algo bwd_sigmoid(r, n)
+  in  z:  f32[r, n]
+  in  dy: f32[r, n]
+  out dz: f32[r, n]
+{
+  let z = load z
+  let g = load dy
+  let s = sigmoid z
+  let q = &s * &s
+  let u = s - q
+  let o = g * u
+  store o -> dz
+}
+
+schedule bwd_sigmoid for apple-m-series { threads 128 }
+schedule bwd_sigmoid for nvidia-ada     { threads 128 }

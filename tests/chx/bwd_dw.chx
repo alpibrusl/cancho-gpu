@@ -1,0 +1,15 @@
+// The backward of y = x w^T with respect to w: dw = dy^T x. The surface
+// has no A^T B product (docs/training.md section 4), so the host supplies
+// dy^T and x^T and this is a `matmul_nt` over the batch r.
+algo bwd_dw(r, n, k)
+  in  dyt: f32[n, r]
+  in  xt:  f32[k, r]
+  out dw:  f32[n, k]
+{
+  let a = load dyt
+  let b = load xt
+  store matmul_nt a b -> dw
+}
+
+schedule bwd_dw for apple-m-series { threads 128 }
+schedule bwd_dw for nvidia-ada     { threads 128 }
