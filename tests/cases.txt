@@ -234,3 +234,14 @@ tests/chx/qnorm.chx r=24 n=256 eps=1e-6
 tests/chx/qnorm.chx r=3 n=8 eps=1e-6 --run
 tests/chx/attn_gate_q.chx r=24 n=256
 tests/chx/attn_gate_q.chx r=3 n=8 --run
+# The backward kernels of docs/training.md section 4: what a gradient step needs of the surface.
+tests/chx/bwd_dx.chx r=8 n=32 k=64
+tests/chx/bwd_dx.chx r=8 n=32 k=64 --run
+tests/chx/bwd_dx.chx r=1 n=5 k=7 --run
+tests/chx/bwd_dw.chx r=8 n=32 k=64
+tests/chx/bwd_dw.chx r=8 n=32 k=64 --run
+tests/chx/bwd_dw.chx r=256 n=32 k=64 --run
+tests/chx/bwd_db.chx r=64 n=32
+tests/chx/bwd_db.chx r=64 n=32 --run
+tests/chx/bwd_sigmoid.chx r=8 n=64
+tests/chx/bwd_sigmoid.chx r=8 n=64 --run

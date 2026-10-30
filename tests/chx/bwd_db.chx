@@ -1,0 +1,14 @@
+// The backward of a bias with respect to itself: db = sum over the batch
+// of dy, as a row of ones times dy (there is no column reduction).
+algo bwd_db(r, n)
+  in  ones: f32[1, r]
+  in  dy:   f32[r, n]
+  out db:   f32[1, n]
+{
+  let a = load ones
+  let b = load dy
+  store matmul a b -> db
+}
+
+schedule bwd_db for apple-m-series { threads 128 }
+schedule bwd_db for nvidia-ada     { threads 128 }

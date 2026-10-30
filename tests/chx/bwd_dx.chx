@@ -1,0 +1,15 @@
+// The backward of y = x w^T with respect to x: dx = dy w. The first
+// kernel of docs/training.md section 4; `matmul` is the product the
+// forward's `matmul_nt` is the transpose of.
+algo bwd_dx(r, n, k)
+  in  dy: f32[r, n]
+  in  w:  f32[n, k]
+  out dx: f32[r, k]
+{
+  let a = load dy
+  let b = load w
+  store matmul a b -> dx
+}
+
+schedule bwd_dx for apple-m-series { threads 128 }
+schedule bwd_dx for nvidia-ada     { threads 128 }

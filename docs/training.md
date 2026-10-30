@@ -1,8 +1,10 @@
 # Training: whether cancho-gpu should, and what a first step costs
 
-> **Status: a design, nothing built. Recommendation: do not add training
-> to cancho-gpu yet; prototype two backward kernels and one driver first (§6)
-> and decide on what that measures.** Claims are marked **[measured]** (with
+> **Status: a design, plus step 1 of §6 built: four backward kernels
+> (`tests/chx/bwd_*.chx`), held to the Rust's output and to a reference
+> that is itself checked against finite differences. Recommendation: do not
+> add training to cancho-gpu yet; take steps 2 and 3 of §6 and decide on what
+> they measure.** Claims are marked **[measured]** (with
 > the command), **[read]** (from a document or the source, not run) or
 > **[open]**.
 
@@ -67,10 +69,17 @@ the call and matmul cases **[read]**). Probes, compiled and interpreted with
 | sigmoid | `dz = dy * (s - &s * &s)` | **[measured]** compiles, runs |
 | ReLU | needs `max` or a compare | **[measured]** refused: no such operation (`syntax`) |
 
-What the probes did **not** show: *that the values are right*. `--run`
-confirms the kernels compile and the interpreter runs them, not that `dw`
-equals `dY^T X`. That needs the Python reference check, and is the first
-deliverable of §6.
+The probes are now `tests/chx/bwd_dx.chx`, `bwd_dw.chx`, `bwd_db.chx` and
+`bwd_sigmoid.chx`, and *the values are right* **[measured]**: `tests/kernels.py`
+(in the gate) first checks its own formulas against central differences of
+`L = sum(g * sigmoid(x w^T + b))` (dx, dw, db, 1e-7, on r=3 n=4 k=5), then holds
+each kernel's `--run` summary to those formulas on both targets (6 runs,
+r up to 256). Byte-identity with the Rust's CUDA C, Metal and `--run` summaries
+holds for the 10 new cases (`golden/`, lex-gpu `851497d`). Mutants: `s - q`
+changed to `s + q` in `bwd_sigmoid` and `matmul a b` to `matmul a a` in
+`bwd_dx` both fail the check. What this does not cover: only the interpreter's
+f32 sums, not a GPU's, and nothing about the *order* of a batch sum on a device
+(§7).
 
 Findings that shaped the table:
 
@@ -111,10 +120,9 @@ it.
 
 ## 6. Plan, each step ending at a number
 
-1. **Reference check.** `tests/kernels.py`-style plain-Python checks for the four
-   probes of §4 (`dx`, `dw`, `db`, sigmoid backward), added to `tests/chx/` and
-   `tests/cases.txt` with goldens from the Rust (`scripts/regen-golden.sh`).
-   Done when all agree to 1e-5 on the interpreter, and a mutated kernel fails.
+1. **Reference check. Done** (§4): the four kernels, their cases and goldens
+   from the Rust, and `tests/kernels.py` checks that agree to 1e-5 on the
+   interpreter and fail on a mutant.
 2. **A two-layer network, trained on the CPU interpreter** through cancho-opt:
    `opt minimize --method bfgs` with a cancho-gpu program as the objective, on a
    regression small enough to have a closed-form answer. Done when the loss
