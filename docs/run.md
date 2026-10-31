@@ -1,7 +1,8 @@
 # `cancho-gpu run`: a kernel with real inputs
 
-> **Status: a design, nothing built.** Step 2 of [`training.md`](training.md) §6
-> stopped here: `check --run` and `emit --run` execute a kernel only over the
+> **Status: built and measured (§6), CPU interpreter only; Metal and CUDA are
+> open.** The design below was written first and the gates before the code. Step 2
+> of [`training.md`](training.md) §6 had stopped here: `check --run` and `emit --run` execute a kernel only over the
 > interpreter's made-up tensors (`design.md` §10), so no program can hand a
 > kernel parameters and read back the answer. This document says what the
 > smallest change is, and the gates it must pass, before any of it is written.
@@ -33,7 +34,7 @@ feature the Rust does not have. So this is a **new subcommand**, `run`, and
 ## 3. The command (a choice)
 
 ```
-cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME=FILE ...] [--out NAME ...]
+cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME FILE ...] [--out NAME ...]
 ```
 
 * **`--target T`** is `nvidia-ada` or `apple-m-series`. It is required when the
@@ -41,17 +42,20 @@ cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME=FILE ...] [--
   The target is not decoration: the interpreter sums in f32 in program order, and
   the two targets cut a reduction differently, so `gemm_fp4`'s last digit
   already differs between them (`design.md` §10) **[read]**.
-* **`--in NAME=FILE`** gives a read-only parameter its values. The file is
+* **`--in NAME FILE`** gives a read-only parameter its values. The file is
   decimal numbers separated by white space, row-major, **exactly** the
-  parameter's element count, each parsed by the parser that reads `name=value`
-  constants (`f32.parse`) and rounded once to the parameter's dtype. **Every
+  parameter's element count and at most 16 MiB (a text handle's length), each parsed by the parser that reads `name=value`
+  constants (`f32.parse`, a binary64) and rounded **once** to the parameter's dtype
+  (f32, f16 ties to even, or i8 half away from zero, as the interpreter's own
+  inputs are). **Every
   read-only parameter must be given**: there is no silent fall-back to the LCG,
   because a kernel run on made-up numbers by mistake looks exactly like a
   kernel run on real ones.
 * **`--out NAME`** prints every element of a writable parameter on one line,
   separated by single spaces, each as `{:?}` of its f32 (`f32.debug`, the
   shortest text that reads back, held to the Rust's printer by `design.md` §4)
-  and a newline. Several `--out` print one line each, in the order given.
+  and a newline; elements are written one at a time, so the output has no size
+  limit but the machine's. Several `--out` print one line each, in the order given.
   Writable parameters start at zero, as today.
 * **Text, not binary.** The one consumer, `opt`, speaks text, and the printer
   and the parser already exist and are checked. A binary path (`sample` already
@@ -113,3 +117,43 @@ cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME=FILE ...] [--
   start, is **[open]**.
 * It adds no ReLU, no `AᵀB` product and no atomics; those remain the surface
   gaps of `training.md` §4.
+
+## 6. Measured
+
+The command is `src/runcmd.cho` (about 300 lines), with `cli.constant` made
+public and `interp.convert` added; `interp.run` and the `--run` path are
+untouched.
+
+* **Gate 1, same execution as `--run`:** for `bwd_dx` (two shapes), `bwd_dw` (two,
+  one with a batch of 256), `bwd_db`, `bwd_sigmoid`, `attn_gate` and `softmax`,
+  `run` over the interpreter's own tensors gives the first four values of
+  `check --run` exactly and its mean and peak to 6e-5 (`tests/kernels.py`,
+  8 runs) **[measured: `python3 tests/kernels.py build/cancho-gpu`]**.
+* **Gate 2, the whole vector:** all elements of the seven that have a reference
+  agree with it to 1e-5; the largest difference seen is 2e-6 (`bwd_dw` with a
+  batch of 256).
+* **Gate 3 and 4:** `tests/run.sh`: the known answer of `dx = dy w` on both
+  targets, a signed exponent, two `--out`, and **20 refusals**, each with its
+  rule, exit status 1 and nothing on standard output (it is in `scripts/gate.sh`).
+* **Gate 5, mutants:** inputs stored in reverse order, the minus sign dropped, and
+  the kernel not executed are each caught (`tests/kernels.py` and `tests/run.sh`
+  fail). Three mutants, not an exhaustive set.
+* **Gate 6, nothing else moved:** `scripts/gate.sh` passes with the pinned
+  compiler: 218 golden cases still agree with the Rust, the authority report is
+  unchanged, `cancho fmt --check` is clean.
+* **Gate 7, end to end** (`scripts/check_train.py`, needs a built cancho-opt `opt`,
+  so not in `scripts/gate.sh`): `examples/train/lsq_objective.py` computes the loss
+  and gradient of a 16-row, 3-feature least-squares fit with
+  `examples/train/lsq_residual.chx` (forward) and `tests/chx/bwd_dw.chx` (backward,
+  `n = 1`), and `opt minimize --method bfgs` drives it. It converges in **12
+  evaluations** to within **1.1e-5** of the normal-equations solution in `w` and
+  1.2e-10 in the loss. The tolerance is f32 arithmetic and `opt`'s default `gtol`
+  of 1e-5, not slack. **Cost: 28 to 36 ms an evaluation over three runs** (two
+  `cancho-gpu` processes and a Python one), 0.33 to 0.43 s for the fit, on this
+  machine and not as a benchmark. With the gradient's sign flipped the same fit does not converge.
+
+What this does **not** show: anything about a network larger than 32 parameters
+(`opt`'s limit), a batch beyond a few hundred rows (the interpreter emulates f32
+in integers), or any GPU. The two kernels are held to the interpreter, and the
+interpreter to the Rust, only for the kernels whose cases are in
+`tests/cases.txt`; `lsq_residual.chx` is an example and has no golden.
