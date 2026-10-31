@@ -135,7 +135,8 @@ it.
    backward of that network's sigmoid is `bwd_sigmoid.chx`'s arithmetic, but
    the objective there is Python. **Not done: an objective computed by a
    cancho-gpu kernel**, because a `.chx` kernel cannot be given parameters from a
-   command line. What it takes: an input path for `check --run` (a file or
+   command line. Designed in [`run.md`](run.md) (a new subcommand, not a flag on
+   `--run`, with its gates). What it takes: an input path for `check --run` (a file or
    standard input per `in` tensor, and all of an `out` tensor printed, not four
    values), which is an extension of the Rust's `--run` and so a lex-gpu or a
    cancho-gpu-only flag, a decision for this repository (the interpreter's
