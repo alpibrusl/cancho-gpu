@@ -160,6 +160,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | [docs/design.md](docs/design.md) | how the compiler is built, what it cost, every difference from the Rust and why |
 | [docs/training.md](docs/training.md) | whether training belongs here, what `.chx` can express of a backward pass (four kernels built), the plan |
 | [docs/resident.md](docs/resident.md) | a resident objective: compile and upload once, one line per evaluation, so a GPU can show what it does (a design; the interface, not the kernel, is the measured cost) |
+| [docs/native.md](docs/native.md) | why the CPU path is 130 times slower than the language (a software f32), the swap for the real `f32` type, and what ending the Rust oracle would change and cost (a design; the loops are in `bench/native/`) |
 | [docs/run.md](docs/run.md) | `cancho-gpu run`: a kernel on the CPU interpreter with inputs from files and its whole output printed; designed, built and measured |
 | [docs/comparison.md](docs/comparison.md) | compared with OpenNN: a two-layer network's forward pass on a CPU, outputs and timings, and where this project is worse |
 | [docs/rules.md](docs/rules.md) | every refusal rule and what triggers it |
