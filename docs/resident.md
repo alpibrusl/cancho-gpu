@@ -112,7 +112,7 @@ finiteness check and the timeout apply per request. New refusals, each with a ru
 tag and a fixture in `cancho-opt`'s `scripts/check_cli.py`: the program exits before
 answering (`opt.objective-failed`, with the point), answers with other than the
 expected count (`opt.objective-output`), or does not answer within the timeout
-(`opt.objective-timeout`; the README speaks of a clock "for its timeout", but a search of `lib/nm/objective.cho` and `docs/design.md` for the word finds nothing, so whether a per-evaluation timeout exists today is **[open]** and this may be a new tag). Authority
+(a per-evaluation limit already exists, one hour, and a program that exceeds it is `opt.objective-failed`; `--timeout-ms` makes it settable. **Built:** `cancho-opt` `docs/design.md` section 14, no new rule tag). Authority
 is unchanged: `exec` and a clock. It is a separate change in a separate repository
 and starts with its own section in `docs/design.md`.
 
@@ -151,7 +151,7 @@ and starts with its own section in `docs/design.md`.
 
 ## 6. Plan, each step ending at a number
 
-1. **`opt --persistent`** in cancho-opt: design section, gates, then code. Number: the
+1. **`opt --persistent`** in cancho-opt. **Done** (draft PR alpibrusl/cancho-opt#8, design section 14). Number: the
    existing 12-evaluation fit gives the same answer through a persistent *CPU*
    program (a ten-line Python loop), and evaluations per second with the process
    start gone.
@@ -184,8 +184,6 @@ as `run` was.
 
 ## 8. Open
 
-* Whether `opt` already has a per-evaluation timeout to extend, or whether
-  `opt.objective-timeout` is new (§4).
 * Whether the host-side f64 `scale` should instead be a kernel constant once the
   surface can say a scalar times a tile.
 * A transposing load or `matmul_tn` would remove `xt` from the resident files
