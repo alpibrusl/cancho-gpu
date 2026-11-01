@@ -1,13 +1,10 @@
 edition 5;
 module matmul;
 
-// Matrix products on the threads, not the matrix units: the `MatMulNT`
-// and `MatMul` arms of `lex_msl::program::Gen::op` and its
-// `batched_rows`, ported -- for the operands a `.chx` file can produce.
-// A lazy NVFP4 dequantisation is the one packed weight format the
-// surface has (`dequant_fp4`); the other packings of the Rust
-// (`Pairs`, `Six`, ternary) come from builders the surface has no
-// syntax for, and are not here.
+// Matrix products on the threads, not the matrix units (`matmul` and
+// `matmul_nt`, and the batched-row products), for the operands a `.chx`
+// file can produce. A lazy NVFP4 dequantisation is the one packed weight
+// format the surface has (`dequant_fp4`).
 //
 // A dequantisation record (`Dq`) is
 // `[v, s, row, cols, group, packed, qe, qc, qview]`: the per-element
@@ -43,9 +40,8 @@ fn n[&m, &t](m: &!m [int], t: &!t [byte], x: int) -> [] int {
 }
 
 // Consecutive elements per lane per step in a split-K reduction: the
-// largest of `default`, 8, 4, 2 that tiles the reduction evenly. (The
-// Rust reads `LEX_VEC` first; this port has no environment, so the
-// default is the answer, as it is when the variable is unset.)
+// largest of `default`, 8, 4, 2 that tiles the reduction evenly. (There is
+// no environment knob: the default is the answer.)
 fn split_k_vec(kd: int, lanes: int, want: int) -> [] int {
     if want > 0 && kd % (lanes * want) == 0 {
         return want;
@@ -107,7 +103,7 @@ fn param_dtype_of[&m, &t](m: &!m [int], t: &!t [byte], g: int, lv: int) -> [] in
     return ir.param_dtype(m, mem.get(m, p, i));
 }
 
-// The dequantisation a reduction may use, after the Rust's filter.
+// The dequantisation a reduction may use.
 fn usable_dq[&m](m: &!m [int], d: int, kd: int, vec: int) -> [] bool {
     return vec > 1 && m[d + 3] == kd && m[d + 4] % vec == 0 && vec % 2 == 0;
 }
@@ -270,7 +266,7 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
 // fragment is permuted the same way. The cost is nearly flat in the number of
 // rows, which is the point: a prefill chunk, or the tokens a speculative step
 // checks, costs about what one token does. Only when the schedule sets `frag`
-// (a key the Rust has not); answers -2 when the shapes do not fit, and the
+// (a schedule key of this project's own); answers -2 when the shapes do not fit, and the
 // generic path lowers it.
 fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, b: int, ops: int) -> [] int {
     let frag = gen.frag(m, g);

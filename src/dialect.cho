@@ -1,10 +1,9 @@
 edition 5;
 module dialect;
 
-// How a target spells what every backend needs: `lex_msl::dialect`,
-// ported. `d` is `msl()` or `cuda()`; the lowering asks here for every
-// spelling that differs and nowhere else, which is the seam the Rust
-// draws and the reason one lowering serves both targets.
+// How a target spells what every backend needs. `d` is `msl()` or
+// `cuda()`; the lowering asks here for every spelling that differs and
+// nowhere else, which is the seam that lets one lowering serve both targets.
 
 import mem;
 import text;

@@ -9,7 +9,7 @@
  * and answers an `int64_t` -- a handle or a count when >= 0, a failure
  * when < 0, whose text `cgpu_error` copies out.
  *
- * The driver and NVRTC are `dlopen`ed, as lex-gpu's `lex-cuda` does, so
+ * The driver and NVRTC are `dlopen`ed, so
  * this builds and links anywhere and a machine without them gets an
  * answer instead of a link error. CANCHOGPU_LIBCUDA and CANCHOGPU_LIBNVRTC
  * name other libraries (the mock in tests/mock/ does).

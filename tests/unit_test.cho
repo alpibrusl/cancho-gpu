@@ -1,9 +1,9 @@
 edition 6;
 
 // Unit tests for the parts that have no oracle in the goldens on their
-// own: f32 rounding and printing (the expected strings are what Rust's
-// `{:?}` prints for `s.parse::<f64>().unwrap() as f32`, recorded by
-// running it), the f32 operations, and the string pool.
+// own: f32 rounding and printing (the expected strings are the shortest digits
+// that read back as the f32 nearest each input, first recorded from an independent
+// implementation: `golden/PROVENANCE`), the f32 operations, and the string pool.
 //
 //     cancho test tests/unit_test.cho <every src/*.cho but main.cho> --std
 
@@ -96,8 +96,8 @@ fn shows[&m, &t](m: &!m [int], t: &!t [byte], x: float, want: &static [byte]) ->
     return text.is(t, f32.debug(m, t, x), want);
 }
 
-// The expected strings are what lex-gpu's `interp::round`, `e4m3` and
-// Rust's `{:.N}` print for the same inputs, recorded by running them.
+// The expected strings were first recorded from an independent implementation
+// (`golden/PROVENANCE`) for the same inputs.
 fn check_interpreter_math[&m, &t](m: &!m [int], t: &!t [byte]) -> [] bool {
     let third = f32.div(1.0, 3.0);
     var ok = shows(m, t, f32.round_half(third), "0.33325195");

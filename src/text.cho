@@ -9,8 +9,7 @@ module text;
 // so a handle stays valid for the whole run and a substring is free
 // (`docs/design.md` §3.2).
 //
-// The emitters build their output by formatting, as the Rust they port
-// does with `format!`: `fmt2(m, t, "for (uint k = 0; k < $u; ++k) {", a, b)`
+// The emitters build their output by formatting: `fmt2(m, t, "for (uint k = 0; k < $u; ++k) {", a, b)`
 // splices handles where the template has `$`. Every argument is a
 // handle evaluated before the call, so a string under construction is
 // never interleaved with another -- the reason the pool can be a single

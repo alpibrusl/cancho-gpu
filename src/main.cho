@@ -1,6 +1,6 @@
 edition 5;
 
-// `cancho-gpu` -- lex-gpu's `.chx` compiler, in cancho.
+// `cancho-gpu` -- the `.chx` tile-kernel compiler.
 //
 //     cancho-gpu emit  <file.chx> <dir> [name=value ...] [--run]
 //     cancho-gpu check <file.chx> [name=value ...] [--run]
@@ -12,16 +12,15 @@ edition 5;
 //
 // `emit` checks the program, lowers it for every target it has a
 // schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
-// writes `<dir>/<kernel>.cu` and `<dir>/<kernel>.metal`; it is
-// `lex-msl`'s `emit_lx` example, and `tests/golden.sh` holds the two to
-// the same bytes. `check` stops after the checker. `--run` interprets
-// the program on the CPU over made-up inputs first and prints what it
-// writes, as `emit_lx --run` does (`docs/design.md` §10). The directory must
+// writes `<dir>/<kernel>.cu` and `<dir>/<kernel>.metal`, which
+// `tests/golden.sh` holds to the recorded goldens. `check` stops after the
+// checker. `--run` interprets the program on the CPU over made-up inputs first
+// and prints what it writes (`docs/design.md` §10). The directory must
 // exist: cancho has no way to make one.
 //
 // `run` executes the program on the CPU interpreter over inputs read from
 // files and prints a whole output (`docs/run.md`); it is not a flag of `--run`,
-// whose summary stays byte-identical with the Rust's.
+// whose summary is a golden.
 //
 // `gguf` prints the header of a GGUF file -- its metadata and its tensor
 // directory -- as the canonical text `tests/gguf.sh` compares with the
