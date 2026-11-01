@@ -138,8 +138,16 @@ it.
    `bwd_dw.chx` reaches the normal-equations solution in **12 BFGS evaluations**,
    within 1.1e-5 in `w`, at **28 to 36 ms an evaluation** over three runs (process starts
    dominate; §3's worry is confirmed for small problems and unmeasured for large).
-3. **The same on a Metal GPU** through `cancho-gpu-device`, and the cost of the
-   pipe per evaluation measured. This is where §3's worry is confirmed or not.
+3. **The same on a Metal GPU** through `cancho-gpu-metal-device`, and the cost of
+   the pipe per evaluation measured. **Built, not yet measured.** The device
+   programs take `--in` / `--out` like `cancho-gpu run` ([`run.md`](run.md) §7),
+   and `scripts/check_train.py --bin build/cancho-gpu-metal-device` runs the fit
+   through it; the plumbing is held against mock drivers (the bytes uploaded are the
+   encoded inputs; six mutants caught). No Mac was available, so neither the
+   hardware agreement of the four backward kernels (`scripts/metal-io.py`) nor the
+   cost per evaluation on a GPU has been run. On the CPU the same script gives 40 to
+   46 ms an evaluation on the machine that built this; §3's worry stays confirmed
+   for small problems and open for GPUs.
 4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
    type in cancho-ml, or stop.
 
@@ -148,8 +156,10 @@ to it; this document touches only cancho-gpu.
 
 ## 7. Open
 
-* `cancho-gpu-device run`, the same flags on a GPU (step 3), which needs a
-  machine with Metal or CUDA.
+* The device programs' `--in` / `--out` on **real hardware**: Metal needs a Mac
+  (`scripts/metal-io.py`, then `scripts/check_train.py --bin`), CUDA an NVIDIA GPU
+  (it has only ever run against a mock driver). The flags exist and their
+  plumbing is tested ([`run.md`](run.md) §7.4).
 * cancho-opt takes the program by the name given without searching `PATH`
   (found writing its examples); the objective of a future cancho-gpu driver is
   given as an absolute path.

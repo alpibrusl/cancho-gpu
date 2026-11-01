@@ -10,6 +10,7 @@
  * and an entry the source does not define is refused, as the real driver would.
  */
 #define _POSIX_C_SOURCE 200809L
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,9 +67,14 @@ int64_t cgpu_download(int64_t buf, char *d, int64_t n) {
     return n;
 }
 
+static int64_t bound[64];
+static int n_bound;
+
 int64_t cgpu_arg(int64_t buf) {
-    (void)buf;
-    /* Just record that an argument was bound */
+    if (n_bound >= 64) {
+        return -1;
+    }
+    bound[n_bound++] = buf;
     return 0;
 }
 
@@ -100,11 +106,27 @@ int64_t cgpu_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     const char *path = getenv("CANCHOGPU_METAL_MOCK_LOG");
     FILE *log = path ? fopen(path, "a") : NULL;
     if (!log) {
+        n_bound = 0;
         return 1;
     }
-    /* For now, just log a simple message */
-    fprintf(log, "launch metal_kernel grid %lldx%lld block %lld args 1 bytes %d\n", gx, gy, threads, 1024);
+    fprintf(log, "launch metal_kernel grid %lldx%lld block %lld args %d bytes ", (long long)gx, (long long)gy, (long long)threads, n_bound);
+    for (int i = 0; i < n_bound; i++) {
+        fprintf(log, "%s%zu", i ? "," : "", blocks[bound[i]].n);
+    }
+    fprintf(log, "\n");
+    /* FNV-1a 64 of each argument buffer at the launch (tests/device-io.sh). */
+    fprintf(log, "sums ");
+    for (int i = 0; i < n_bound; i++) {
+        const unsigned char *b = (const unsigned char *)blocks[bound[i]].p;
+        unsigned long long h = 14695981039346656037ULL;
+        for (size_t k = 0; k < blocks[bound[i]].n; k++) {
+            h = (h ^ b[k]) * 1099511628211ULL;
+        }
+        fprintf(log, "%s%016llx", i ? "," : "", h);
+    }
+    fprintf(log, "\n");
     fclose(log);
+    n_bound = 0;
     return 0;
 }
 

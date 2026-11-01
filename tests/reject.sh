@@ -40,7 +40,7 @@ for rule in $(grep -ho 'fail(m, t, "[a-z-]*"\|diag(m, t, c, "[a-z-]*"\|bad(m, t,
   # readers' rules (gguf-, st-, tok-) and the chat request's (chat-) are
   # held by their own corpora (tests/gguf.sh ... tests/chat.sh), not by
   # `.chx` fixtures.
-  case "$rule" in usage|no-schedule|scope|gguf-*|st-*|tok-*|chat-*) continue ;; esac
+  case "$rule" in usage|io|no-schedule|scope|gguf-*|st-*|tok-*|chat-*) continue ;; esac
   if [ ! -f "$ROOT/tests/reject/$rule.chx" ]; then
     echo "rule \`$rule\` has no fixture in tests/reject/"; fail=1
   fi

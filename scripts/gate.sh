@@ -22,6 +22,7 @@ tests/golden.sh
 tests/reject.sh
 tests/run.sh
 CANCHO="$CANCHO" tests/device.sh
+CANCHO="$CANCHO" tests/device-io.sh
 tests/gguf.sh
 tests/safetensors.sh
 tests/tokenizer.sh

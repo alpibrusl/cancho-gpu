@@ -64,6 +64,209 @@ fn space(c: int) -> [] bool {
     return c == 32 || c == 10 || c == 13 || c == 9;
 }
 
+// The arguments from `from` on: `[constants, ins, outs, target, has_target]`
+// where `ins` holds `[name, argument index of the file]` and `outs` names.
+// `device` is the device programs' reading: no `--target` (it is not
+// `name=value`, so a `usage` refusal), and `--run` skipped as `cli.constants`
+// does. Answers -1 with a refusal.
+pub fn scan[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args, from: int, device: bool) -> [args] int {
+    let consts = mem.list(m);
+    let ins = mem.list(m);
+    let outs = mem.list(m);
+    var want_target = text.empty();
+    var have_target = 0;
+    var ai = from;
+    while ai < arg_count(args) {
+        let s = text.from_bytes(m, t, arg(args, ai));
+        if !device && text.is(t, s, "--target") {
+            if ai + 1 >= arg_count(args) {
+                return err.fail(m, t, "usage", text.lit(m, t, "--target needs a target name"));
+            }
+            want_target = text.from_bytes(m, t, arg(args, ai + 1));
+            have_target = 1;
+            ai = ai + 2;
+        } else if text.is(t, s, "--in") {
+            if ai + 2 >= arg_count(args) {
+                return err.fail(m, t, "usage", text.lit(m, t, "--in needs a parameter name and a file"));
+            }
+            mem.push(m, ins, mem.rec2(m, text.from_bytes(m, t, arg(args, ai + 1)), ai + 2));
+            ai = ai + 3;
+        } else if text.is(t, s, "--out") {
+            if ai + 1 >= arg_count(args) {
+                return err.fail(m, t, "usage", text.lit(m, t, "--out needs a parameter name"));
+            }
+            mem.push(m, outs, text.from_bytes(m, t, arg(args, ai + 1)));
+            ai = ai + 2;
+        } else if device && text.is(t, s, "--run") {
+            ai = ai + 1;
+        } else {
+            let c = cli.constant(m, t, s);
+            if c < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, consts, c);
+            ai = ai + 1;
+        }
+    }
+    return mem.of5(m, consts, ins, outs, want_target, have_target);
+}
+
+// Every `--in` names a read-only parameter, once; every read-only parameter is
+// given (no fall-back to the interpreter's made-up numbers); every `--out`
+// names a writable one. Answers 0, or -1 with a refusal.
+pub fn check_io[&m, &t](m: &!m [int], t: &!t [byte], prog: int, ins: int, outs: int) -> [] int {
+    let ps = ir.p_params(m, prog);
+    let np = mem.size(m, ps);
+    let given = mem.grab(m, np + 1);
+    var k = 0;
+    while k < np {
+        m[given + k] = 0;
+        k = k + 1;
+    }
+    k = 0;
+    while k < mem.size(m, ins) {
+        let rec = mem.get(m, ins, k);
+        let idx = find(m, t, prog, m[rec]);
+        if idx < 0 {
+            return err.fail(m, t, "usage", text.f1(m, t, "--in names `$`, which is not a parameter", m[rec]));
+        }
+        if ir.param_writable(m, mem.get(m, ps, idx)) {
+            return err.fail(m, t, "usage", text.f1(m, t, "--in names `$`, which the kernel writes", m[rec]));
+        }
+        if m[given + idx] == 1 {
+            return err.fail(m, t, "usage", text.f1(m, t, "--in names `$` twice", m[rec]));
+        }
+        m[given + idx] = 1;
+        k = k + 1;
+    }
+    k = 0;
+    while k < np {
+        let p = mem.get(m, ps, k);
+        if !ir.param_writable(m, p) && m[given + k] == 0 {
+            return err.fail(m, t, "usage", text.f1(m, t, "the parameter `$` is read by the kernel: give it with --in", ir.param_name(m, p)));
+        }
+        k = k + 1;
+    }
+    k = 0;
+    while k < mem.size(m, outs) {
+        let name = mem.get(m, outs, k);
+        let idx = find(m, t, prog, name);
+        if idx < 0 {
+            return err.fail(m, t, "usage", text.f1(m, t, "--out names `$`, which is not a parameter", name));
+        }
+        if !ir.param_writable(m, mem.get(m, ps, idx)) {
+            return err.fail(m, t, "usage", text.f1(m, t, "--out names `$`, which the kernel only reads", name));
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// Read each `--in` file into the tensor of `globals` it names, rounded once to
+// the parameter's dtype. Answers 0, or -1 with a refusal (`io` for a file that
+// cannot be read or is over 16 MiB, `usage` for a token that is not a number
+// or a count that is not the parameter's).
+pub fn load[&m, &t, &x, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), args: &a Args, prog: int, globals: int, ins: int) -> [fs_read(""), file_read, args] int {
+    let ps = ir.p_params(m, prog);
+    var k = 0;
+    while k < mem.size(m, ins) {
+        let rec = mem.get(m, ins, k);
+        let name = m[rec];
+        let idx = find(m, t, prog, name);
+        let p = mem.get(m, ps, idx);
+        let g = mem.get(m, globals, idx);
+        let (at, n) = (m[g + 2], m[g + 3]);
+        let dt = ir.param_dtype(m, p);
+        let path = arg(args, m[rec + 1]);
+        let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, cap());
+        if ftop < 0 {
+            return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
+        }
+        if fsize > fgot {
+            return err.fail(m, t, "io", text.f1(m, t, "$ is over 16 MiB", text.from_bytes(m, t, path)));
+        }
+        let all = text.handle(ftop, fgot);
+        var pos = 0;
+        var count = 0;
+        while pos < fgot {
+            if space(text.at(t, all, pos)) {
+                pos = pos + 1;
+            } else {
+                let start = pos;
+                while pos < fgot && !space(text.at(t, all, pos)) {
+                    pos = pos + 1;
+                }
+                var tok = text.sub(all, start, pos);
+                var negative = false;
+                if text.at(t, tok, 0) == '-' {
+                    negative = true;
+                    tok = text.sub(tok, 1, text.size(tok));
+                }
+                let (ok, v) = f32.parse(m, t, tok);
+                if !ok {
+                    return err.fail(m, t, "usage", text.f2(m, t, "`$` in the file for `$` is not a number", text.sub(all, start, pos), name));
+                }
+                if count >= n {
+                    return err.fail(m, t, "usage", text.f2(m, t, "the file for `$` has more than the $ numbers the parameter holds", name, text.num(m, t, n)));
+                }
+                var value = v;
+                if negative {
+                    value = -v;
+                }
+                fm[at + count] = interp.convert(dt, value);
+                count = count + 1;
+            }
+        }
+        if count != n {
+            return err.fail(m, t, "usage", text.fmt(m, t, "the file for `$` has $ numbers; the parameter holds $", mem.of3(m, name, text.num(m, t, count), text.num(m, t, n))));
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// Copy every read-only tensor of `from` into `to` (two sets built by
+// `interp.inputs` for one program): the device programs read the files once
+// and give the reference and the upload the same numbers.
+pub fn copy_inputs[&m, &x](m: &!m [int], fm: &!x [float], prog: int, from: int, to: int) -> [] int {
+    let ps = ir.p_params(m, prog);
+    var i = 0;
+    while i < mem.size(m, ps) {
+        if !ir.param_writable(m, mem.get(m, ps, i)) {
+            let (a, b) = (mem.get(m, from, i), mem.get(m, to, i));
+            var j = 0;
+            while j < m[a + 3] {
+                fm[m[b + 2] + j] = fm[m[a + 2] + j];
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Print each `--out` whole: one line, the elements as the shortest text that
+// reads back, written one at a time so the size has no limit.
+pub fn print_outs[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, prog: int, globals: int, outs: int) -> [io_write] int {
+    var k = 0;
+    while k < mem.size(m, outs) {
+        let idx = find(m, t, prog, mem.get(m, outs, k));
+        let g = mem.get(m, globals, idx);
+        let (at, n) = (m[g + 2], m[g + 3]);
+        var j = 0;
+        while j < n {
+            if j > 0 {
+                io.write_all(io, " ");
+            }
+            io.write_all(io, text.bytes(t, f32.debug(m, t, fm[at + j])));
+            j = j + 1;
+        }
+        io.write_all(io, "\n");
+        k = k + 1;
+    }
+    return 0;
+}
+
 pub fn go[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
     let file = arg(args, 2);
     // The source goes straight into the pool, so names are handles into it.
@@ -79,42 +282,15 @@ pub fn go[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], 
     let src = text.handle(top, got);
 
     // The arguments after the file: constants, --target, --in, --out.
-    let consts = mem.list(m);
-    let ins = mem.list(m);
-    let outs = mem.list(m);
-    var want_target = text.empty();
-    var have_target = false;
-    var ai = 3;
-    while ai < arg_count(args) {
-        let s = text.from_bytes(m, t, arg(args, ai));
-        if text.is(t, s, "--target") {
-            if ai + 1 >= arg_count(args) {
-                return refuse(m, t, io, text.lit(m, t, "--target needs a target name"));
-            }
-            want_target = text.from_bytes(m, t, arg(args, ai + 1));
-            have_target = true;
-            ai = ai + 2;
-        } else if text.is(t, s, "--in") {
-            if ai + 2 >= arg_count(args) {
-                return refuse(m, t, io, text.lit(m, t, "--in needs a parameter name and a file"));
-            }
-            mem.push(m, ins, mem.rec2(m, text.from_bytes(m, t, arg(args, ai + 1)), ai + 2));
-            ai = ai + 3;
-        } else if text.is(t, s, "--out") {
-            if ai + 1 >= arg_count(args) {
-                return refuse(m, t, io, text.lit(m, t, "--out needs a parameter name"));
-            }
-            mem.push(m, outs, text.from_bytes(m, t, arg(args, ai + 1)));
-            ai = ai + 2;
-        } else {
-            let c = cli.constant(m, t, s);
-            if c < 0 {
-                return cli.report(m, t, io);
-            }
-            mem.push(m, consts, c);
-            ai = ai + 1;
-        }
+    let scanned = scan(m, t, args, 3, false);
+    if scanned < 0 {
+        return cli.report(m, t, io);
     }
+    let consts = mem.get(m, scanned, 0);
+    let ins = mem.get(m, scanned, 1);
+    let outs = mem.get(m, scanned, 2);
+    let want_target = mem.get(m, scanned, 3);
+    let have_target = mem.get(m, scanned, 4) == 1;
     if mem.size(m, outs) == 0 {
         return refuse(m, t, io, text.lit(m, t, "nothing to print: give --out NAME for a writable parameter"));
     }
@@ -167,137 +343,17 @@ pub fn go[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], 
     if globals < 0 {
         return cli.report(m, t, io);
     }
-    let ps = ir.p_params(m, prog);
-    let np = mem.size(m, ps);
-
-    // Every --in names a read-only parameter, once; every read-only
-    // parameter is given. (No fall-back to the interpreter's made-up numbers.)
-    let given = mem.grab(m, np + 1);
-    var k = 0;
-    while k < np {
-        m[given + k] = 0;
-        k = k + 1;
+    if check_io(m, t, prog, ins, outs) < 0 {
+        return cli.report(m, t, io);
     }
-    k = 0;
-    while k < mem.size(m, ins) {
-        let rec = mem.get(m, ins, k);
-        let idx = find(m, t, prog, m[rec]);
-        if idx < 0 {
-            return refuse(m, t, io, text.f1(m, t, "--in names `$`, which is not a parameter", m[rec]));
-        }
-        if ir.param_writable(m, mem.get(m, ps, idx)) {
-            return refuse(m, t, io, text.f1(m, t, "--in names `$`, which the kernel writes", m[rec]));
-        }
-        if m[given + idx] == 1 {
-            return refuse(m, t, io, text.f1(m, t, "--in names `$` twice", m[rec]));
-        }
-        m[given + idx] = 1;
-        k = k + 1;
-    }
-    k = 0;
-    while k < np {
-        let p = mem.get(m, ps, k);
-        if !ir.param_writable(m, p) && m[given + k] == 0 {
-            return refuse(m, t, io, text.f1(m, t, "the parameter `$` is read by the kernel: give it with --in", ir.param_name(m, p)));
-        }
-        k = k + 1;
-    }
-    k = 0;
-    while k < mem.size(m, outs) {
-        let name = mem.get(m, outs, k);
-        let idx = find(m, t, prog, name);
-        if idx < 0 {
-            return refuse(m, t, io, text.f1(m, t, "--out names `$`, which is not a parameter", name));
-        }
-        if !ir.param_writable(m, mem.get(m, ps, idx)) {
-            return refuse(m, t, io, text.f1(m, t, "--out names `$`, which the kernel only reads", name));
-        }
-        k = k + 1;
-    }
-
     // Read the inputs into the tensors the interpreter allocated.
-    k = 0;
-    while k < mem.size(m, ins) {
-        let rec = mem.get(m, ins, k);
-        let name = m[rec];
-        let idx = find(m, t, prog, name);
-        let p = mem.get(m, ps, idx);
-        let g = mem.get(m, globals, idx);
-        let (at, n) = (m[g + 2], m[g + 3]);
-        let dt = ir.param_dtype(m, p);
-        let path = arg(args, m[rec + 1]);
-        let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, cap());
-        if ftop < 0 {
-            io.error_all(io, "error[io]: cannot read ");
-            io.error_all(io, path);
-            io.error_all(io, "\n");
-            return 1;
-        }
-        if fsize > fgot {
-            io.error_all(io, "error[io]: ");
-            io.error_all(io, path);
-            io.error_all(io, " is over 16 MiB\n");
-            return 1;
-        }
-        let all = text.handle(ftop, fgot);
-        var pos = 0;
-        var count = 0;
-        while pos < fgot {
-            if space(text.at(t, all, pos)) {
-                pos = pos + 1;
-            } else {
-                let start = pos;
-                while pos < fgot && !space(text.at(t, all, pos)) {
-                    pos = pos + 1;
-                }
-                var tok = text.sub(all, start, pos);
-                var negative = false;
-                if text.at(t, tok, 0) == '-' {
-                    negative = true;
-                    tok = text.sub(tok, 1, text.size(tok));
-                }
-                let (ok, v) = f32.parse(m, t, tok);
-                if !ok {
-                    return refuse(m, t, io, text.f2(m, t, "`$` in the file for `$` is not a number", text.sub(all, start, pos), name));
-                }
-                if count >= n {
-                    return refuse(m, t, io, text.f2(m, t, "the file for `$` has more than the $ numbers the parameter holds", name, text.num(m, t, n)));
-                }
-                var value = v;
-                if negative {
-                    value = -v;
-                }
-                fm[at + count] = interp.convert(dt, value);
-                count = count + 1;
-            }
-        }
-        if count != n {
-            return refuse(m, t, io, text.fmt(m, t, "the file for `$` has $ numbers; the parameter holds $", mem.of3(m, name, text.num(m, t, count), text.num(m, t, n))));
-        }
-        k = k + 1;
+    if load(m, t, fm, fs, args, prog, globals, ins) < 0 {
+        return cli.report(m, t, io);
     }
 
     if interp.execute(m, t, fm, prog, globals) < 0 {
         return cli.report(m, t, io);
     }
 
-    // Print each --out whole: one line, the elements as the shortest text
-    // that reads back, written one at a time so the size has no limit.
-    k = 0;
-    while k < mem.size(m, outs) {
-        let idx = find(m, t, prog, mem.get(m, outs, k));
-        let g = mem.get(m, globals, idx);
-        let (at, n) = (m[g + 2], m[g + 3]);
-        var j = 0;
-        while j < n {
-            if j > 0 {
-                io.write_all(io, " ");
-            }
-            io.write_all(io, text.bytes(t, f32.debug(m, t, fm[at + j])));
-            j = j + 1;
-        }
-        io.write_all(io, "\n");
-        k = k + 1;
-    }
-    return 0;
+    return print_outs(m, t, fm, io, prog, globals, outs);
 }

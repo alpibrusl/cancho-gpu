@@ -2,11 +2,18 @@
 """Gate 7 of docs/run.md: a least-squares fit trained by cancho-opt's BFGS whose
 loss and gradient are computed by cancho-gpu kernels (examples/train/).
 
-    OPT=<cancho-opt>/build/opt CANCHO_GPU=build/cancho-gpu python3 scripts/check_train.py
+    OPT=<cancho-opt>/build/opt python3 scripts/check_train.py [--bin PROGRAM] [--target T]
+
+`--bin` is the program the objective calls (default `$CANCHO_GPU`, else
+`build/cancho-gpu`): `build/cancho-gpu-metal-device` runs the same fit through the
+Metal device program (docs/run.md section 7), whose one target is implied, so
+`--target -` (the default for a name containing "device"). `--target` defaults to
+`nvidia-ada` for `cancho-gpu`. `--runs N` repeats the fit to show the spread.
 
 Not in scripts/gate.sh: it needs a built `opt` (cancho-opt, its own pinned
 compiler). It can fail: the last check flips the gradient's sign and requires the
 fit not to reach the answer."""
+import argparse
 import json
 import os
 import subprocess
@@ -18,8 +25,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "examples", "train"))
 import lsq_objective as L  # noqa: E402
 
+ap = argparse.ArgumentParser()
+ap.add_argument("--bin", default=os.environ.get("CANCHO_GPU", os.path.join(ROOT, "build", "cancho-gpu")))
+ap.add_argument("--target", default=None)
+ap.add_argument("--runs", type=int, default=1)
+ARGS = ap.parse_args()
 OPT = os.environ.get("OPT", "")
-BIN = os.path.abspath(os.environ.get("CANCHO_GPU", os.path.join(ROOT, "build", "cancho-gpu")))
+BIN = os.path.abspath(ARGS.bin)
+TARGET = ARGS.target or ("-" if "device" in os.path.basename(BIN) else "nvidia-ada")
 if not os.path.exists(OPT):
     raise SystemExit("set OPT to a built cancho-opt `opt`")
 PY = sys.executable
@@ -64,21 +77,28 @@ def fit(program):
 
 
 w_ne, loss_ne = normal_equations()
-objective = [PY, os.path.join(ROOT, "examples", "train", "lsq_objective.py"), BIN, ROOT]
+objective = [PY, os.path.join(ROOT, "examples", "train", "lsq_objective.py"), BIN, ROOT, TARGET]
 res, secs = fit(objective)
+times = [secs]
+for _ in range(ARGS.runs - 1):
+    again, more = fit(objective)
+    assert again["nfev"] == res["nfev"]
+    times.append(more)
 dist = max(abs(a - b) for a, b in zip(res["x"], w_ne))
 check("bfgs converged with kernels as the objective", res["converged"], f"nfev {res['nfev']}")
 check("it reaches the normal-equations solution", dist < 1e-4 and abs(res["fun"] - loss_ne) < 1e-8,
       f"largest difference in w {dist:.1e}, in the loss {abs(res['fun'] - loss_ne):.1e}")
-print(f"     cost: {secs:.2f} s for {res['nfev']} evaluations, {1000 * secs / res['nfev']:.0f} ms each "
-      f"(two cancho-gpu processes and a Python one; this machine, not a benchmark)")
+ms = sorted(1000 * s_ / res["nfev"] for s_ in times)
+print(f"     cost with {os.path.basename(BIN)}: {min(times):.2f} to {max(times):.2f} s for {res['nfev']} evaluations, "
+      f"{ms[0]:.0f} to {ms[-1]:.0f} ms each over {len(times)} run(s) "
+      f"(two {os.path.basename(BIN)} processes and a Python one; this machine, not a benchmark)")
 
 # It can fail: the same program with the gradient's sign flipped.
 with tempfile.TemporaryDirectory() as d:
     bad = os.path.join(d, "flipped.py")
     with open(bad, "w") as f:
         f.write("import subprocess, sys\n"
-                f"r = subprocess.run([{PY!r}, {objective[1]!r}, {BIN!r}, {ROOT!r}], input=sys.stdin.read(), capture_output=True, text=True, check=True)\n"
+                f"r = subprocess.run([{PY!r}, {objective[1]!r}, {BIN!r}, {ROOT!r}, {TARGET!r}], input=sys.stdin.read(), capture_output=True, text=True, check=True)\n"
                 "v = r.stdout.split()\nprint(v[0], *['-' + g if not g.startswith('-') else g[1:] for g in v[1:]])\n")
     res_bad, _ = fit([PY, bad])
 dist_bad = max(abs(a - b) for a, b in zip(res_bad["x"], w_ne))

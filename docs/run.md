@@ -1,7 +1,10 @@
 # `cancho-gpu run`: a kernel with real inputs
 
-> **Status: built and measured (§6), CPU interpreter only; Metal and CUDA are
-> open.** The design below was written first and the gates before the code. Step 2
+> **Status: built and measured (§6) on the CPU interpreter. The device programs
+> take the same flags (§7): the plumbing is built and measured against mock
+> drivers on Linux; the Metal hardware gates (§7.2 items 3 and 4) are written
+> (`scripts/metal-io.py`, `scripts/check_train.py --bin`) and have NOT been run, for
+> want of a Mac; CUDA has no hardware at all.** The design below was written first and the gates before the code. Step 2
 > of [`training.md`](training.md) §6 had stopped here: `check --run` and `emit --run` execute a kernel only over the
 > interpreter's made-up tensors (`design.md` §10), so no program can hand a
 > kernel parameters and read back the answer. This document says what the
@@ -157,3 +160,151 @@ What this does **not** show: anything about a network larger than 32 parameters
 in integers), or any GPU. The two kernels are held to the interpreter, and the
 interpreter to the Rust, only for the kernels whose cases are in
 `tests/cases.txt`; `lsq_residual.chx` is an example and has no golden.
+
+## 7. The same flags on the device programs
+
+> §7.1-7.3 were written before the code. Claims are **[measured]**, **[read]**
+> or **[open]**; §7.4 says what was and was not run.
+
+### 7.1 The design
+
+`cancho-gpu-device` (CUDA) and `cancho-gpu-metal-device` (Metal) take
+
+```
+run <file.chx> [name=value ...] [--in NAME FILE ...] [--out NAME ...]
+```
+
+with the grammar, the file format (white-space separated numbers, exactly the
+parameter's element count, at most 16 MiB, rounded once by `interp.convert`) and
+the refusals (`usage`, `io`, no new rule) of §3. There is no `--target`: each
+program has its one target, and `--target` is refused as `usage` like any
+argument that is not `name=value`.
+
+* **One reader, three callers.** The argument parser, the check of the names
+  against the program, and the file reader leave `src/runcmd.cho` as `pub`
+  functions that the compiler program, `device/main.cho` and
+  `device/metal-main.cho` all call. The build scripts compile every `src/*.cho`
+  but `main.cho`, so they see them **[read]**. The CPU `run` keeps its bytes: its
+  24 cases (`tests/run.sh`) and `tests/kernels.py` are the proof.
+* **Both tensor sets.** The device programs build the interpreter's tensors
+  twice, `want` (the reference) and `have` (the upload). With `--in` the files
+  are read once, into `want`, and the read-only tensors are copied to `have`, so
+  the two cannot differ. Every read-only parameter must be given: no fall-back to
+  the LCG.
+* **`--out` alone is refused.** `--out` without `--in` falls under "every read-only
+  parameter must be given", as on the CPU: a device answer on made-up inputs is
+  what the program printed before.
+* **`--out` prints the device's answer, after the comparison.** The comparison
+  against the interpreter (2e-2 of the output's peak, unchanged) runs first; on a
+  mismatch the refusal is `device-mismatch` and the `--out` lines are not
+  printed. With `--out`, **stdout carries only the `--out` lines** (one per name,
+  `f32.debug`, as `cancho-gpu run`), because the consumer is a program parsing
+  it; the summaries, the `upload:` lines and the comparison go to standard error.
+  Without `--out` stdout is what it was, byte for byte (`tests/device.sh`).
+* **Authority.** `fileio.prefix` needs the `file_read` label next to the
+  `fs_read("")` the device programs already hold. That widens the device programs'
+  effect list by one label of a capability they already own; their `ffi(...)`
+  declarations are unchanged, and `tests/authority.sh` (the compiler program's
+  report) is unchanged **[measured: §7.4]**.
+* **The device's answer is not bit-exact.** A GPU may sum in another order; the
+  gate is "within 2e-2 of the peak", the same as the existing comparison, and the
+  hardware gate below uses it too. That tolerance is wide enough to pass a wrong
+  kernel whose error is small against the peak; the CPU `run` is the exact
+  reference (§4 gates 1-2), the device run says only that the device agrees with
+  it to that tolerance.
+
+### 7.2 Gates (written before the code; each must be able to fail)
+
+1. **Plumbing, no GPU.** The mocks run no kernel, so a run with `--in` must still
+   refuse `device-mismatch` (that it can fail), **and** the bytes each mock
+   received for each uploaded buffer must be the encoded real inputs. The mocks
+   log, after the `launch` line, `sums <fnv1a-64 of each argument buffer>`, in
+   argument order; `tests/device-io.sh` computes the f32 / f16 / i8 encoding of
+   the file's numbers in Python and compares. CUDA runs against
+   `tests/mock/libcuda_mock.c`; Metal is linked against
+   `tests/mock/libmetalgpu_mock.c` in place of the Objective-C++ shim, which is
+   the one thing the Linux run does not exercise.
+2. **Refusals**, for both programs: a missing `--in`, a wrong count (too few, too
+   many), a token that is not a number, an unknown name, a doubled name, `--in`
+   of a writable parameter, `--out` of a read-only one, an unreadable file, a
+   flag without its argument, `--target`. Each with its rule, exit status 1,
+   nothing on stdout.
+3. **Real hardware (a Mac, Apple Silicon).** `bwd_dx r=2 n=2 k=3` with
+   `dy = 1 2 / 3 4`, `w = 1 0 2 / 0 1 3`, `--out dx`: values within 2e-2 of the
+   peak of `1.0 2.0 8.0 3.0 4.0 18.0`; then the four backward kernels against
+   `tests/kernels.py`'s references, every element. `scripts/metal-io.py`.
+4. **End to end on the GPU.** `scripts/check_train.py` and
+   `examples/train/lsq_objective.py` take the binary and its target as
+   arguments; the 12-evaluation fit runs with `cancho-gpu-metal-device` and the
+   cost per evaluation is recorded beside the CPU's 28 to 36 ms. Whether the GPU
+   is faster is **[open]**, and for a 16-row fit each evaluation compiles a
+   kernel and opens the device, so slower is the expected direction.
+5. **Nothing else moved:** `scripts/gate.sh` with the pinned compiler.
+6. **Mutants** for the input path (inputs stored in the wrong order, the sign
+   dropped, the upload skipped) must each fail gate 1.
+
+### 7.3 Known limits carried over, not fixed here
+
+`opt` takes at most 32 parameters; the surface has no ReLU, no `AᵀB` and no
+atomics (`training.md` §4); the order of a batch sum on a GPU is not pinned
+(`training.md` §7).
+
+### 7.4 Measured, and what was not run
+
+Run in a Linux container (no GPU, no Mac), with the compiler at the pin
+(`a4572ea`) for this repository and `0768094` for cancho-opt.
+
+* **Gate 1, plumbing [measured: `tests/device-io.sh`, 90 checks, in
+  `scripts/gate.sh`]:** for `bwd_dx`, `bwd_dw` and `gemm_fp4` (f16, i8 and f32
+  inputs; 8192 numbers in the largest file), on both programs: the mock's zeros are
+  refused as `device-mismatch` with nothing on stdout, **and** the FNV-1a 64 of every
+  buffer the mock received equals that of the f32 / f16 / i8 encoding of the file's
+  numbers, computed independently in Python. The reference summary shows the peak
+  18.0 of the known answer, so the reference ran on the files. The one run that
+  can pass (`dy` all zeros, so the answer and the mock's zeros agree) prints the
+  device's `--out` line, and two `--out` print two lines.
+  The Metal program is linked against `tests/mock/libmetalgpu_mock.c` **in place
+  of `shim/canchogpu-metal.mm`**: the Objective-C++ shim and the Metal framework
+  are not exercised here **[read]**. `tests/metal-device.sh` is untouched, is not
+  in the gate, and cannot have used its mock on a Mac as written: the shim
+  never loads `CANCHOGPU_METAL_FRAMEWORK` and `build-metal-device.sh` links the
+  real shim **[read, not run]**.
+* **Gate 2, refusals [measured]:** 16 per program (those of §3 that apply, a missing
+  source file, and `--target`, which the device programs do not take), each with its rule and the specific
+  message, exit status 1, nothing on stdout and nothing reaching the device.
+* **Mutants [measured]:** six, each turned the gate red and was reverted: inputs
+  stored in reverse order (6 checks fail), the minus sign dropped (6), the upload
+  given the LCG instead of the files (3), the upload call skipped on CUDA (3) and
+  on Metal (3), and `--out` printed before the comparison (6). The first two sit in
+  the loader shared with the CPU command, so `tests/run.sh` catches them too.
+* **Gate 5, nothing else moved [measured]:** `scripts/gate.sh` passes with the
+  pinned compiler: 218 golden cases agree with the Rust, 8 self-recorded,
+  `tests/authority.sh` unchanged (`args, err_write, file_read, fs_read, fs_write,
+  heap, io_write`), `cancho fmt --check` clean, `tests/run.sh` 24 cases and
+  `tests/kernels.py` unchanged. `tests/reject.sh` now lists `io` among the rules
+  that need no fixture (it is raised through `err.fail` from the shared loader;
+  `tests/run.sh` and `tests/device-io.sh` hold it). The device programs' effect
+  list gained `file_read`; their `ffi(...)` declarations did not change.
+* **Gate 4, the fit [measured on the CPU only]:** `scripts/check_train.py` now takes
+  `--bin`, `--target` and `--runs`. With `build/cancho-gpu` it converges in 12
+  evaluations, 1.1e-5 from the normal equations as before, at **40 to 46 ms an
+  evaluation over three runs on this machine** (the 28 to 36 ms of §6 was another
+  machine: only a comparison on one machine means anything). With a wrapper that
+  stands in for a device program (`--target -`, no `--target` passed) the same fit
+  runs, which proves the argument plumbing and nothing about a GPU.
+
+**Not run, and so not claimed:**
+
+* **Gate 3, Metal hardware: not run.** `scripts/metal-io.py` is written and its
+  logic was checked against the CPU command (all seven comparisons agree to
+  4e-7 of the peak there, which is the CPU, not a GPU). On a Mac:
+  `scripts/build-metal-device.sh && python3 scripts/metal-io.py build/cancho-gpu-metal-device`.
+* **Gate 4 on the GPU: not run.** `python3 scripts/check_train.py --bin
+  $PWD/build/cancho-gpu-metal-device --runs 3` records the cost per evaluation.
+  **[open]**: whether it is faster or slower than 40 to 46 ms. Each evaluation
+  starts two processes that each compile the kernel and open the device, so
+  slower is the expectation for a 16-row fit, but that is a guess.
+* **CUDA: no hardware.** Its half is plumbing against a mock driver
+  and nothing more.
+* The Metal shim was not compiled here (macOS only), so `build-metal-device.sh`
+  with the new sources is untested; the same sources link against the mock.

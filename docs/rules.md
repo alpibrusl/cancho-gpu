@@ -27,5 +27,5 @@ stable part; the message is for a person. Each has a fixture in
 | `interp` | interpreter | A `--run` whose tensors do not fit the interpreter's memory, or a value it cannot find (the latter cannot happen after the checker) |
 | `device` | `cancho-gpu-device` | The driver or NVRTC is missing, or refused a call; the message is the shim's (`docs/device.md`). Checked by `tests/device.sh`, not a fixture: it is about the machine, not a program |
 | `device-mismatch` | `cancho-gpu-device` | An output further than 2e-2 of its peak from the reference interpreter. Checked by `tests/device.sh` against the mock, whose zeros must be refused |
-| `usage` | CLI | A constant that is not `name=number` |
-| `io` | CLI | A file that cannot be read or written |
+| `usage` | CLI | A constant that is not `name=number`; the `--in` / `--out` mistakes of `docs/run.md` §3 (on `run`, `cancho-gpu-device` and `cancho-gpu-metal-device`) |
+| `io` | CLI | A file that cannot be read or written, an `--in` file over 16 MiB. Raised through `err.fail` from `runcmd.load`; checked by `tests/run.sh` and `tests/device-io.sh`, not a fixture |
