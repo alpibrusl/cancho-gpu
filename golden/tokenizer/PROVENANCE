@@ -1,0 +1,3 @@
+golden/tokenizer/ was made by lex-rt's Rust tokenizer at lex-gpu 851497d64e0f7a3bce63e1c6eab47ad0ffa79c16 and is a regression record
+of cancho-gpu tokenize since (scripts/record-tokenizer-golden.sh). It is NOT confirmed by an independent implementation: Hugging Face
+`tokenizers` differs on real tokenizers (tests/tokenizer_hf.py, issue #51). The fixtures are minimal files that library cannot read.

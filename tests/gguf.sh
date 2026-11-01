@@ -2,7 +2,8 @@
 # The GGUF reader (docs/runtime.md):
 #
 #   * each fixture of tests/gguf/*.gguf dumps byte-identically with the
-#     dump lex-rt's reader prints (golden/gguf/, from tools/gguf_dump.rs);
+#     dump the independent Python reader prints (golden/gguf/, from tools/gguf_dump.py,
+#     which tests/oracles.py holds to the goldens);
 #   * each fixture of tests/gguf/reject/ is refused, with the rule its
 #     name starts with, and so is the one fixture too large to commit;
 #   * every `gguf-` rule in the sources has such a fixture;
@@ -63,5 +64,5 @@ status=0; "$BIN" gguf "$WORK/cut.gguf" --sum >/dev/null 2>"$WORK/err" || status=
 status=0; "$BIN" gguf "$ROOT/tests/gguf/nothing.gguf" >/dev/null 2>"$WORK/err" || status=$?
 grep -q '^error\[io\]' "$WORK/err" || { echo "a missing file: expected error[io]"; fail=1; }
 python3 "$ROOT/tests/gguf/fuzz.py" "$BIN" "$ROOT/tests/gguf/tiny.gguf" 1000 || fail=1
-echo "$n GGUF fixtures match the Rust dump, $refused refused"
+echo "$n GGUF fixtures match the independent dump, $refused refused"
 exit $fail

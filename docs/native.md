@@ -1,6 +1,6 @@
 # Native: cancho-gpu at the speed of its language, and without the Rust oracle
 
-> **Status: N1 and N2 are built and measured (§6); N2f (the readers' oracles), N3, N4 and N5 are not.**
+> **Status: N1, N2 and N2f are built and measured (§6); N3, N4 and N5 are not.**
 > Written before the code; each step of §6 ends at a number. Claims are marked
 > **[measured]** (with the command), **[read]** (from a document or the source) or
 > **[open]**. It answers two questions that arrived tangled: *why is cancho-gpu
@@ -183,16 +183,45 @@ first. `rank >= 3` windows still use `elem`; the kernels in `tests/cases.txt` th
 
 **Not done, and said plainly:**
 
-* **N2f. The readers' oracles are still external and still Rust.** The GGUF reader, the tokenizer, the sampler and the Unicode
-  tables (`src/unicode_data.cho`, generated from the oracle's own predicates) are held to dumps made by lex-rt's Rust tools
-  (`scripts/regen-gguf-golden.sh`, `regen-tokenizer-golden.sh`, `regen-sampler-golden.sh`, `regen-unicode-data.sh`); the safetensors
-  one is the `safetensors` library. They are not `.chx`, they were not in this design, and they are the next dependence on the
-  Rust to remove. Candidates for independent oracles: Hugging Face `tokenizers` for the tokenizer (the repository already
-  checks the chat template against jinja2 and the model against `transformers`), the `gguf` Python package for the GGUF reader,
-  Python's `unicodedata` for the Unicode tables. The sampler has no obvious independent reference.
+* **N2f is done below; one Rust tool is left (the Unicode table generator).**
 * **CUDA stays weaker than before** (§4.5): its text is a regression record and nothing else, until there is an NVIDIA machine.
 * **The tests in `tests/cases.txt` that compute nothing numeric** (the 26 refusals, the lowering-only cases) have no float64
   reference, as before; their evidence is the goldens and the reject fixtures.
+
+### N2f. The readers' oracles: built
+
+The GGUF reader, the tokenizer, the sampler and the Unicode tables were held to dumps made by lex-rt's Rust tools. Four results:
+
+* **GGUF: retired.** `tools/gguf_dump.py` is an independent reader written from the format description (it `mmap`s a file, so a
+  5 GB model is no cost). It reproduces the three goldens byte for byte, **and is identical to `cancho-gpu gguf` on six real
+  models** (0.27 to 5.6 GB; 112 to 427 tensors; the Ollama store on this machine). `tools/gguf_dump.rs` is deleted.
+* **Sampler: retired.** The sampler is an algorithm (temperature, top-k, top-p, a `xorshift64*` stream seeded through `splitmix64`),
+  so its oracle is a second implementation: `tools/sampler_dump.py`, in Python with exact 64-bit arithmetic and `numpy.float32`,
+  ported from the algorithm. **75 cases, 2,269 rows: every pick and nucleus id identical, and all 191,630 probabilities
+  bit-identical** to the goldens the Rust made (on this platform; `numpy.exp` and the platform's `expf` agree here, and may not
+  elsewhere). `tools/sampler_dump.rs` is deleted. This is a port of a design, not a check against another design, and the
+  doc says so.
+* **Tokenizer: the oracle is Hugging Face `tokenizers`, and it disagrees with us.** `tools/tokenizer_dump.py` uses the library, which
+  reads each `tokenizer.json`'s own normalizer, pre-tokenizer and decoder. On the real Qwen2.5-0.5B and Qwen3.8-27B tokenizers it
+  differs from `cancho-gpu tokenize` in 3 of the 37 hand-written records (the same three on both) and in 234 and 211 of the 500
+  random ones. The causes, from the first differing character: NFC lacks the singleton mappings (`Ω` U+2126, `Å` U+212B; the
+  largest class, 107 of 211); `\s*[\r\n]+` does not take the longest run (`"  \n  \n x"`: 2228 2228 830 against 29773 830, on the
+  model this repo serves); `\p{L}`, `\p{M}`, `\p{N}` are approximations (`Ⅷ`, `⁴`, `½`, Thai vowel marks); and the pattern is not
+  read from the file. Ordinary text agrees. **The Rust oracle agreed with us because we were written to match it** (`bpe.cho`
+  said so), and the earlier "identical over 3,811 records through 4 real tokenizers" is true of that oracle only. This is the
+  most valuable thing N2f found, and it is not fixed here: issue
+  [#51](https://github.com/alpibrusl/cancho-gpu/issues/51), pinned by `tests/tokenizer_hf.py` (the differing records and counts
+  are exact; a regression or a fix both fail it until the pin is moved). `tools/tokenizer_dump.rs` is deleted; the toy
+  fixtures' goldens stay as regression records (`golden/tokenizer/PROVENANCE`), because the library cannot read those minimal files.
+* **Unicode tables: not replaced, and why.** `src/unicode_data.cho` holds Rust's `is_alphabetic`/`is_numeric`/`is_whitespace` and
+  lex-rt's NFC tables. Python's `unicodedata` has no `Alphabetic` property, so they cannot be regenerated like for like; the
+  right replacement is the general categories the regexes name (`\p{L}`, `\p{M}`, `\p{N}`) and full NFC, which is the fix for #51.
+  `tools/unicode_tables.rs` and `scripts/regen-unicode-data.sh` stay until then.
+
+**Gates added:** `tests/oracles.py` (the Python oracles against their goldens, ~7 s; both fail when broken on purpose),
+`tests/tokenizer_hf.py` (skips when the library or the tokenizer files are missing). `scripts/regen-gguf-golden.sh` and
+`regen-sampler-golden.sh` need only python (and numpy); regenerating changed no golden. `scripts/gguf-real.sh` and
+`tokenizer-real.sh` need no Rust checkout.
 
 ### N3. A free summation order
 

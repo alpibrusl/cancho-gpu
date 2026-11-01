@@ -1,0 +1,3 @@
+golden/gguf/ was first made by lex-rt's Rust GGUF reader at lex-gpu 851497d64e0f7a3bce63e1c6eab47ad0ffa79c16.
+Since docs/native.md N2f it is reproduced by the independent Python reader tools/gguf_dump.py, byte for byte
+(tests/oracles.py; also identical to cancho-gpu on six real models, 0.27 to 5.6 GB).
