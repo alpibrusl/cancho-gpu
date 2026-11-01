@@ -5,9 +5,9 @@ module parser;
 // ported. A node is a record `[kind, a, b, c, d, e]` (`kinds.cho` names
 // the kinds); a list of nodes is a `mem` list. Names are text handles.
 //
-// The grammar, and every refusal's wording, is the Rust's: a `.chx` file
-// it accepts is accepted here and one it refuses is refused with the
-// same sentence (rule `syntax`).
+// The grammar is `docs/chx.md` §2's. It began as lex-gpu's (a port of its
+// `lex_front::syntax`), and a `.chx` file that parser accepted is accepted here;
+// the refusal wording began as its too, and is this project's now (rule `syntax`).
 
 import mem;
 import text;

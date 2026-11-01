@@ -4,12 +4,11 @@
 #     CANCHO=<path to the pinned cancho> scripts/gate.sh
 #
 # Canonical formatting, the file budget, the build, the unit tests, the
-# goldens (byte-identical with lex-gpu's Rust emitter), the refusal
-# fixtures, the device path against a mock driver (docs/device.md) and the
-# GGUF reader against the Rust dump (docs/runtime.md). The live
-# differential against a lex-gpu checkout (scripts/differential.sh) is not
-# in it: it needs cargo and lex-gpu, and the goldens are its recorded
-# answer.
+# goldens (regression records of this compiler: scripts/record-golden.sh), the
+# refusal fixtures, the kernels against float64 references (tests/kernels.py),
+# the device path against a mock driver (docs/device.md), the sessions
+# (tests/session.py) and the readers against their recorded oracles
+# (docs/runtime.md; external tools, docs/native.md N2f).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CANCHO=${CANCHO:-cancho}
