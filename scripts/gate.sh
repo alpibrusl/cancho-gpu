@@ -29,5 +29,7 @@ tests/tokenizer.sh
 tests/sampler.sh
 tests/chat.sh
 python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"
+CANCHO="$CANCHO" scripts/build-session.sh
+python3 tests/session.py build/cancho-gpu-session
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"

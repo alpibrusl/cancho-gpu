@@ -34,7 +34,7 @@ fn refuse[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, msg: int) -> [err
     return cli.report(m, t, io);
 }
 
-fn scheduled[&m, &t](m: &!m [int], t: &!t [byte], unit: int, tg: int) -> [] bool {
+pub fn scheduled[&m, &t](m: &!m [int], t: &!t [byte], unit: int, tg: int) -> [] bool {
     let name = target.name(m, tg);
     let scheds = m[unit + 1];
     var i = 0;
@@ -48,7 +48,7 @@ fn scheduled[&m, &t](m: &!m [int], t: &!t [byte], unit: int, tg: int) -> [] bool
 }
 
 // The index of the parameter called `name`, or -1.
-fn find[&m, &t](m: &!m [int], t: &!t [byte], prog: int, name: int) -> [] int {
+pub fn find[&m, &t](m: &!m [int], t: &!t [byte], prog: int, name: int) -> [] int {
     let ps = ir.p_params(m, prog);
     var i = 0;
     while i < mem.size(m, ps) {
@@ -162,10 +162,65 @@ pub fn check_io[&m, &t](m: &!m [int], t: &!t [byte], prog: int, ins: int, outs: 
     return 0;
 }
 
-// Read each `--in` file into the tensor of `globals` it names, rounded once to
-// the parameter's dtype. Answers 0, or -1 with a refusal (`io` for a file that
-// cannot be read or is over 16 MiB, `usage` for a token that is not a number
+// One number token, as `f32.parse` reads it (which takes no sign) with a leading `-` allowed: (ok, value).
+pub fn number[&m, &t](m: &!m [int], t: &!t [byte], tok: int) -> [] (bool, float) {
+    var rest = tok;
+    var negative = false;
+    if text.size(rest) > 0 && text.at(t, rest, 0) == '-' {
+        negative = true;
+        rest = text.sub(rest, 1, text.size(rest));
+    }
+    let (ok, v) = f32.parse(m, t, rest);
+    if !ok {
+        return (false, 0.0);
+    }
+    if negative {
+        return (true, -v);
+    }
+    return (true, v);
+}
+
+// Read the file at `path` into the `n` floats of `fm` from `at`, rounded once to `dt`. `name` is the parameter's, for the messages.
+// Answers 0, or -1 with a refusal (`io` for a file that cannot be read or is over 16 MiB, `usage` for a token that is not a number
 // or a count that is not the parameter's).
+pub fn load_one[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), path: &p [byte], name: int, dt: int, at: int, n: int) -> [fs_read(""), file_read] int {
+    let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, cap());
+    if ftop < 0 {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
+    }
+    if fsize > fgot {
+        return err.fail(m, t, "io", text.f1(m, t, "$ is over 16 MiB", text.from_bytes(m, t, path)));
+    }
+    let all = text.handle(ftop, fgot);
+    var pos = 0;
+    var count = 0;
+    while pos < fgot {
+        if space(text.at(t, all, pos)) {
+            pos = pos + 1;
+        } else {
+            let start = pos;
+            while pos < fgot && !space(text.at(t, all, pos)) {
+                pos = pos + 1;
+            }
+            let (ok, value) = number(m, t, text.sub(all, start, pos));
+            if !ok {
+                return err.fail(m, t, "usage", text.f2(m, t, "`$` in the file for `$` is not a number", text.sub(all, start, pos), name));
+            }
+            if count >= n {
+                return err.fail(m, t, "usage", text.f2(m, t, "the file for `$` has more than the $ numbers the parameter holds", name, text.num(m, t, n)));
+            }
+            fm[at + count] = interp.convert(dt, value);
+            count = count + 1;
+        }
+    }
+    if count != n {
+        return err.fail(m, t, "usage", text.fmt(m, t, "the file for `$` has $ numbers; the parameter holds $", mem.of3(m, name, text.num(m, t, count), text.num(m, t, n))));
+    }
+    return 0;
+}
+
+// Read each `--in` file into the tensor of `globals` it names, rounded once to
+// the parameter's dtype. Answers 0, or -1 with a refusal (see `load_one`).
 pub fn load[&m, &t, &x, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), args: &a Args, prog: int, globals: int, ins: int) -> [fs_read(""), file_read, args] int {
     let ps = ir.p_params(m, prog);
     var k = 0;
@@ -175,50 +230,8 @@ pub fn load[&m, &t, &x, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], fs
         let idx = find(m, t, prog, name);
         let p = mem.get(m, ps, idx);
         let g = mem.get(m, globals, idx);
-        let (at, n) = (m[g + 2], m[g + 3]);
-        let dt = ir.param_dtype(m, p);
-        let path = arg(args, m[rec + 1]);
-        let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, cap());
-        if ftop < 0 {
-            return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
-        }
-        if fsize > fgot {
-            return err.fail(m, t, "io", text.f1(m, t, "$ is over 16 MiB", text.from_bytes(m, t, path)));
-        }
-        let all = text.handle(ftop, fgot);
-        var pos = 0;
-        var count = 0;
-        while pos < fgot {
-            if space(text.at(t, all, pos)) {
-                pos = pos + 1;
-            } else {
-                let start = pos;
-                while pos < fgot && !space(text.at(t, all, pos)) {
-                    pos = pos + 1;
-                }
-                var tok = text.sub(all, start, pos);
-                var negative = false;
-                if text.at(t, tok, 0) == '-' {
-                    negative = true;
-                    tok = text.sub(tok, 1, text.size(tok));
-                }
-                let (ok, v) = f32.parse(m, t, tok);
-                if !ok {
-                    return err.fail(m, t, "usage", text.f2(m, t, "`$` in the file for `$` is not a number", text.sub(all, start, pos), name));
-                }
-                if count >= n {
-                    return err.fail(m, t, "usage", text.f2(m, t, "the file for `$` has more than the $ numbers the parameter holds", name, text.num(m, t, n)));
-                }
-                var value = v;
-                if negative {
-                    value = -v;
-                }
-                fm[at + count] = interp.convert(dt, value);
-                count = count + 1;
-            }
-        }
-        if count != n {
-            return err.fail(m, t, "usage", text.fmt(m, t, "the file for `$` has $ numbers; the parameter holds $", mem.of3(m, name, text.num(m, t, count), text.num(m, t, n))));
+        if load_one(m, t, fm, fs, arg(args, m[rec + 1]), name, ir.param_dtype(m, p), m[g + 2], m[g + 3]) < 0 {
+            return 0 - 1;
         }
         k = k + 1;
     }
