@@ -1,3 +1,5 @@
-golden/tokenizer/ was made by lex-rt's Rust tokenizer at lex-gpu 851497d64e0f7a3bce63e1c6eab47ad0ffa79c16 and is a regression record
-of cancho-gpu tokenize since (scripts/record-tokenizer-golden.sh). It is NOT confirmed by an independent implementation: Hugging Face
-`tokenizers` differs on real tokenizers (tests/tokenizer_hf.py, issue #51). The fixtures are minimal files that library cannot read.
+golden/tokenizer/ for the tokenizer.json fixtures is what Hugging Face `tokenizers` prints (tools/tokenizer_dump.py), since issue #51 was
+fixed: cancho-gpu tokenize reproduces it, and also agrees with the library on the real Qwen2.5 and Qwen3.8 tokenizers (tests/tokenizer_hf.py).
+They were first made by lex-rt's Rust tokenizer at lex-gpu 851497d64e0f7a3bce63e1c6eab47ad0ffa79c16, which shared the deviations the fix removed.
+The GGUF fixture (toy.gguf) is a regression record of cancho-gpu tokenize: the library cannot read a GGUF; its output agrees with the library on
+the equivalent JSON toy except for the ids given to added tokens.

@@ -3,9 +3,9 @@
 #
 #   * each tokenizer fixture of tests/tokenizer/ (three tokenizer.json forms
 #     and a GGUF) gives, over the hand-written corpus and over 500 random
-#     records, exactly the ids and decoded text recorded in golden/tokenizer/
-#     (a regression record: made by lex-rt's Rust tokenizer first, not confirmed by an
-#     independent one; tests/tokenizer_hf.py compares with Hugging Face, issue #51);
+#     records, exactly the ids and decoded text in golden/tokenizer/ (what Hugging Face
+#     `tokenizers` prints for the JSON fixtures, tools/tokenizer_dump.py; a regression
+#     record for the GGUF one); tests/tokenizer_hf.py compares with it on real tokenizers;
 #   * each fixture of tests/tokenizer/reject/ is refused with the rule its
 #     name starts with, and so is text that is not UTF-8;
 #   * every `tok-` rule in the sources has such a fixture;

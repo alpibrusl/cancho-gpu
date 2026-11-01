@@ -16,8 +16,8 @@ before writing cancho.
   case in `tests/cases.txt`, and, if it computes numbers, a reference. The
   order of a floating-point reduction is not specified (`docs/chx.md` §4):
   never compare a sum bit for bit across implementations. The GGUF,
-  tokenizer, sampler and Unicode goldens still come from external tools
-  (`docs/native.md` N2f).
+  sampler and tokenizer goldens come from Python tools and Hugging Face
+  (`tools/`, `docs/native.md` N2f); no Rust tool is left.
 - **Every refusal has a rule tag** and a fixture in `tests/reject/`
   (`tests/reject.sh` fails on a tag without one). No input reaches a trap.
 - **Two programs.** `cancho-gpu` (from `cancho.toml`) links only libc;
