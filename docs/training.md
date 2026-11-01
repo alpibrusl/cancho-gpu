@@ -1,10 +1,10 @@
 # Training: whether cancho-gpu should, and what a first step costs
 
-> **Status: a design, plus steps 1 and 2 of §6 built (step 2 on the CPU interpreter): four backward kernels
+> **Status: a design, plus steps 1 to 3 of §6 built (step 2 on the CPU interpreter, step 3 on Metal): four backward kernels
 > (`tests/chx/bwd_*.chx`), held to the Rust's output and to a reference
 > that is itself checked against finite differences. Recommendation: do not
-> add training to cancho-gpu yet; take steps 2 and 3 of §6 and decide on what
-> they measure.** Claims are marked **[measured]** (with
+> add training to cancho-gpu yet; steps 2 and 3 are measured (§6), and step 4
+> is the decision they feed.** Claims are marked **[measured]** (with
 > the command), **[read]** (from a document or the source, not run) or
 > **[open]**.
 
@@ -139,15 +139,13 @@ it.
    within 1.1e-5 in `w`, at **28 to 36 ms an evaluation** over three runs (process starts
    dominate; §3's worry is confirmed for small problems and unmeasured for large).
 3. **The same on a Metal GPU** through `cancho-gpu-metal-device`, and the cost of
-   the pipe per evaluation measured. **Built, not yet measured.** The device
-   programs take `--in` / `--out` like `cancho-gpu run` ([`run.md`](run.md) §7),
-   and `scripts/check_train.py --bin build/cancho-gpu-metal-device` runs the fit
-   through it; the plumbing is held against mock drivers (the bytes uploaded are the
-   encoded inputs; six mutants caught). No Mac was available, so neither the
-   hardware agreement of the four backward kernels (`scripts/metal-io.py`) nor the
-   cost per evaluation on a GPU has been run. On the CPU the same script gives 40 to
-   46 ms an evaluation on the machine that built this; §3's worry stays confirmed
-   for small problems and open for GPUs.
+   the pipe per evaluation measured. **Done on an Apple M4 Max** ([`run.md`](run.md) §7.5).
+   The four backward kernels agree with `tests/kernels.py`'s references to 3.6e-7 of
+   the peak (`scripts/metal-io.py`), and the fit reaches the same solution in the same
+   12 BFGS evaluations. **94 to 125 ms an evaluation** over three runs, against 40 to 46 ms
+   on the CPU: the device path is *slower* for a problem this size, two processes each
+   compiling the kernel and opening the device per evaluation. §3's worry is confirmed
+   for small problems on a GPU too; whether a large problem flips it is still unmeasured.
 4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
    type in cancho-ml, or stop.
 
@@ -156,10 +154,10 @@ to it; this document touches only cancho-gpu.
 
 ## 7. Open
 
-* The device programs' `--in` / `--out` on **real hardware**: Metal needs a Mac
-  (`scripts/metal-io.py`, then `scripts/check_train.py --bin`), CUDA an NVIDIA GPU
-  (it has only ever run against a mock driver). The flags exist and their
-  plumbing is tested ([`run.md`](run.md) §7.4).
+* The device programs' `--in` / `--out` on **CUDA hardware**: an NVIDIA GPU (it has
+  only ever run against a mock driver). Metal is done (§6 step 3).
+* Whether a problem large enough to amortise the per-evaluation process starts makes
+  the GPU faster than the CPU interpreter.
 * cancho-opt takes the program by the name given without searching `PATH`
   (found writing its examples); the objective of a future cancho-gpu driver is
   given as an absolute path.
