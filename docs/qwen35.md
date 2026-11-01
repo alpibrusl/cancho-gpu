@@ -188,6 +188,15 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   (-12%), 2266 against 2889 (-22%), 2659 against 3114 (-15%). The gain is larger the busier the CPU, since the
   old round did more of its work there; only same-session pairs compare. The head's cache is warmed through
   prefill (without it acceptance falls from about 0.9 to about 0.5): a position costs about 1 ms more.
+* **Why the benchmark's speculative row is 1.3x, not 1.8x** (measured on the benchmark prompt, 128 tokens, 62 rounds): the
+  first draft is accepted 91 of 127 times (72%, not the 95% above, which was 64 tokens on other prompts) and the second,
+  given the first, 42 of 90 (47%): 2.06 tokens a round. A round costs about 62 ms (41 plain), so the gain is
+  2.06 x 41 / 62 = 1.36x, the measured 33.0 against 25.7 tok/s. The verify's matvecs are about 39 ms of the round, and the
+  three-row kernels reach 316-374 GB/s where one row reaches 430-470 (1.22-1.37x the time of a one-row kernel for the same
+  weights). A sweep of the biggest one (`swiglu_few`: 128/256/512 threads, 16/32/64 weight rows, whole `--spec` runs,
+  decode 3831-4021 ms) finds the schedule already at its optimum (the best was 0.5% better, within noise), so the
+  gap to one row is in the kernel's structure (three rows per weight read), not its schedule. Matching one row's bandwidth would
+  make a round about 53 ms (about 39 tok/s); a deeper draft would add little (the second is right 47% of the time).
 * **Costs:** 2.7 GB more resident memory (14.1 to 16.7 GB for the server, measured: the embedding table on the
   device 2.5 GB, the head 239 MB; the spare delta states are allocated but only touched when a round runs) and
   about 3 s more to start (the table is read once; the few-row kernels are compiled at load).
