@@ -1,4 +1,4 @@
-edition 5;
+edition 6;
 
 // Unit tests for the parts that have no oracle in the goldens on their
 // own: f32 rounding and printing (the expected strings are what Rust's
@@ -134,6 +134,50 @@ fn check_interpreter_math[&m, &t](m: &!m [int], t: &!t [byte]) -> [] bool {
     return ok;
 }
 
+// One value through both roundings: the hardware's (`f32.round`) and the integer arithmetic it replaced (`f32.round_soft`). The same
+// bits, or both NaN.
+fn same_rounding(x: float) -> [] bool {
+    let a = f32.round(x);
+    let b = f32.round_soft(x);
+    if a != a || b != b {
+        return a != a && b != b;
+    }
+    return bits_of(a) == bits_of(b);
+}
+
+// `docs/native.md` N1: `f32.round` is cancho's conversion and not the integer code. 400,000 values from a fixed generator: random
+// bit patterns (finite and not), a binary64 right at the tie between two f32s and one step either side of it, subnormals, and the
+// edge of overflow.
+fn check_hardware_round() -> [] bool {
+    var seed = 88172645463325252;
+    var ok = true;
+    var n = 0;
+    while n < 100000 {
+        seed = seed ^ seed << 13;
+        seed = seed ^ seed >> 7;
+        seed = seed ^ seed << 17;
+        let x = f32.from_bits(seed);
+        ok = ok && same_rounding(x);
+        // the f32 below this value, and the exact tie above it, and a binary64 step each side of the tie
+        let low = bits_of(f32.round(x));
+        ok = ok && same_rounding(f32.from_bits(low | 1 << 28));
+        ok = ok && same_rounding(f32.from_bits((low | 1 << 28) + 1));
+        ok = ok && same_rounding(f32.from_bits((low | 1 << 28) - 1));
+        n = n + 1;
+    }
+    // subnormal f32s and the largest finite one, with the ties between them
+    var k = 1;
+    while k < 2000 {
+        let v = f32.from_bits32(k);
+        let up = f32.from_bits32(k + 1);
+        ok = ok && same_rounding(v) && same_rounding((v + up) / 2.0) && same_rounding(v * 0.5000000000000001) && same_rounding(v * 0.4999999999999999);
+        k = k + 1;
+    }
+    let big = f32.from_bits32(2139095039);
+    ok = ok && same_rounding(big) && same_rounding(big * 1.0000000298023224) && same_rounding(big * 1.0000000596046448) && same_rounding(big * 2.0);
+    return ok;
+}
+
 // IEEE words for the device (`docs/device.md` §3), against Python's
 // `struct` packing of the same values.
 fn check_bit_patterns() -> [] bool {
@@ -207,6 +251,13 @@ fn test_the_string_pool[&h](heap: &!h Heap) -> [heap] int {
 
 fn test_interpreter_rounding_and_fixed_point_match_rust[&h](heap: &!h Heap) -> [heap] int {
     return with_memory(heap, 5);
+}
+
+fn test_hardware_rounding_is_the_integer_rounding() -> [] int {
+    if check_hardware_round() {
+        return 0;
+    }
+    return 1;
 }
 
 fn test_ieee_bit_patterns_for_the_device() -> [] int {

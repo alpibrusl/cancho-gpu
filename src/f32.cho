@@ -1,4 +1,4 @@
-edition 5;
+edition 6;
 module f32;
 
 // `f32` -- single precision, without a single-precision type.
@@ -72,8 +72,14 @@ fn signed(negative: bool, x: float) -> [] float {
     return x;
 }
 
-// `x as f32`: nearest, ties to even; past the largest f32, infinity.
+// `x as f32`: nearest, ties to even; past the largest f32, infinity. The hardware's conversion (cancho's `f32` type, `docs/native.md` N1),
+// which `round_soft` below, the integer arithmetic this module was written with, agrees with on every value it was tried on.
 pub fn round(x: float) -> [] float {
+    return float_of32(f32_of(x));
+}
+
+// The same rounding done in integers on `bits_of`: kept as the oracle `round` is held to (`tests/unit_test.cho`) and for nothing else.
+pub fn round_soft(x: float) -> [] float {
     if is_nan(x) || !is_finite(x) || x == 0.0 {
         return x;
     }
@@ -550,7 +556,7 @@ pub fn abs(a: float) -> [] float {
 }
 
 // f32 `sqrt`: correctly rounded on both sides.
-pub fn sqrt32(x: float) -> [] float {
+pub fn sqrt_f32(x: float) -> [] float {
     return round(sqrt(x));
 }
 
