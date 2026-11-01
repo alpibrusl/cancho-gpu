@@ -1,0 +1,138 @@
+edition 5;
+
+// `cancho-gpu-session` -- a session on the CPU interpreter (`docs/resident.md`):
+//
+//     cancho-gpu-session <session file> [--target nvidia-ada|apple-m-series]
+//
+// The kernels are compiled and the resident data read once; then one request line on standard input (the numbers of the `input`
+// directives) is answered by one line on standard output (the numbers of the `answer` directives), until standard input ends.
+// A program of its own because reading standard input is an authority `cancho-gpu` does not have (`tests/authority.sh`).
+//
+// Built by `scripts/build-session.sh`.
+
+import std.io;
+import mem;
+import text;
+import err;
+import cli;
+import session;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 268435456;
+}
+
+fn floats_cap() -> [] int {
+    return 32000000;
+}
+
+// the longest request line
+fn line_cap() -> [] int {
+    return 1048576;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-session <session file> [--target nvidia-ada|apple-m-series]\n");
+    return 2;
+}
+
+fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_read, io_write, err_write, fs_read(""), file_read, args] int {
+    if arg_count(args) != 2 && arg_count(args) != 4 {
+        return usage(io);
+    }
+    var want = text.empty();
+    var have = false;
+    if arg_count(args) == 4 {
+        if !text.is(t, text.from_bytes(m, t, arg(args, 2)), "--target") {
+            return usage(io);
+        }
+        want = text.from_bytes(m, t, arg(args, 3));
+        have = true;
+    }
+    let file = arg(args, 1);
+    let top = m[mem.text_slot()];
+    let got = fs_read(fs, file, t[top..len(t)]);
+    if got < 0 {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, file);
+        io.error_all(io, "\n");
+        return 1;
+    }
+    m[mem.text_slot()] = top + got;
+    let sess = session.open(m, t, fm, fs, text.handle(top, got), want, have);
+    if sess < 0 {
+        return cli.report(m, t, io);
+    }
+    // everything from here is given back after each request
+    let mark = m[mem.top_slot()];
+    let tmark = m[mem.text_slot()];
+    var more = true;
+    while more {
+        var n = 0;
+        var c = getchar(io);
+        while c >= 0 && c != 10 && n < line_cap() {
+            t[tmark + n] = byte_of(c);
+            n = n + 1;
+            c = getchar(io);
+        }
+        if c >= 0 && c != 10 {
+            let r = err.fail(m, t, "session", text.lit(m, t, "a request line is over 1 MiB"));
+            return cli.report(m, t, io);
+        }
+        if c < 0 && n == 0 {
+            more = false;
+        } else {
+            m[mem.text_slot()] = tmark + n;
+            if session.serve_line(m, t, fm, io, sess, text.handle(tmark, n)) < 0 {
+                return cli.report(m, t, io);
+            }
+            mem.release_to(m, mark);
+            m[mem.text_slot()] = tmark;
+            if c < 0 {
+                more = false;
+            }
+        }
+    }
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        var fb = box_slice(h, floats_cap(), 0.0);
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                borrow mut fb as &!fr in {
+                    let m = contents(mr);
+                    let t = contents(tr);
+                    let fm = contents(fr);
+                    mem.init(m);
+                    borrow mut io as &!i in {
+                        borrow fs as &f in {
+                            borrow args as &a in {
+                                status = run(m, t, fm, i, f, a);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+        unbox_slice(h, fb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    return status;
+}
