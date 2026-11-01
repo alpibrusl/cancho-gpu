@@ -145,7 +145,25 @@ it.
    12 BFGS evaluations. **94 to 125 ms an evaluation** over three runs, against 40 to 46 ms
    on the CPU: the device path is *slower* for a problem this size, two processes each
    compiling the kernel and opening the device per evaluation. §3's worry is confirmed
-   for small problems on a GPU too; whether a large problem flips it is still unmeasured.
+   for small problems on a GPU too. **Growing the problem does not flip it** [measured,
+`python3 scripts/bench_train_size.py`, one machine, medians of 3, one evaluation, both
+paths including the Python that writes the inputs]:
+
+   | R x K | CPU interpreter | Metal device | CPU / Metal |
+   |---|---|---|---|
+   | 16 x 3 | 6 ms | 69 ms | 0.08 |
+   | 256 x 16 | 15 ms | 80 ms | 0.18 |
+   | 1024 x 64 | 137 ms | 206 ms | 0.66 |
+   | 4096 x 128 | 1017 ms | 1122 ms | 0.91 |
+   | 16384 x 256 | refused by both: an input over 16 MiB of text | | |
+
+   The loss agrees to 1.5e-10 (relative) and the gradient to 5.4e-7 of its peak at every size.
+   Metal closes on the CPU but does not pass it, and the reason is not the GPU: at 4096 x 128 the
+   residual kernel alone is 0.33 s on the CPU and 0.375 s on Metal, about a megaflop of work, and
+   the Python writing the inputs is 0.15 s more. The text interface (every number printed and parsed
+   per evaluation, capped at 16 MiB) is the cost, so a GPU gains nothing from this protocol.
+   Only a binary or resident interface (parameters kept on the device between evaluations) could
+   show what the hardware does; that is the decision for step 4.
 4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
    type in cancho-ml, or stop.
 
@@ -156,8 +174,8 @@ to it; this document touches only cancho-gpu.
 
 * The device programs' `--in` / `--out` on **CUDA hardware**: an NVIDIA GPU (it has
   only ever run against a mock driver). Metal is done (§6 step 3).
-* Whether a problem large enough to amortise the per-evaluation process starts makes
-  the GPU faster than the CPU interpreter.
+* A binary or device-resident objective interface: with text on a pipe the GPU cannot win
+  up to the 16 MiB input cap (§6 step 3); what it would do without that is unmeasured.
 * cancho-opt takes the program by the name given without searching `PATH`
   (found writing its examples); the objective of a future cancho-gpu driver is
   given as an absolute path.
