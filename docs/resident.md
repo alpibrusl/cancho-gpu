@@ -151,10 +151,10 @@ and starts with its own section in `docs/design.md`.
 
 ## 6. Plan, each step ending at a number
 
-1. **`opt --persistent`** in cancho-opt. **Done** (draft PR alpibrusl/cancho-opt#8, design section 14). Number: the
-   existing 12-evaluation fit gives the same answer through a persistent *CPU*
-   program (a ten-line Python loop), and evaluations per second with the process
-   start gone.
+1. **`opt --persistent`** in cancho-opt. **Done** (draft PR alpibrusl/cancho-opt#8, design section 14). Measured: the same
+   answer byte for byte as a process per point for Nelder-Mead, BFGS and SPSA, and 159
+   Rosenbrock evaluations in 0.02 to 0.03 s against 2.7 to 2.9 s (the 12-evaluation
+   fit of `check_train.py` is not run through it yet: that needs step 2).
 2. **`cancho-gpu session`** on the interpreter: the session file reader in `src/`
    (shared, `pub`, as `runcmd.cho` is), the loop, gates 1, 3 (CPU) and 5. Runs on
    Linux with no hardware. Number: ms per evaluation at the §1 sizes with the process
