@@ -1,0 +1,20 @@
+// y = sigmoid(x w^T + b): one dense layer with a sigmoid, over r rows of k
+// features and n outputs. The forward of both layers of the network that
+// bench/opennn compares with OpenNN's (the host calls it twice).
+algo dense_sigmoid(r, n, k)
+  in  x: f32[r, k]
+  in  w: f32[n, k]
+  in  b: f32[1, n]
+  out y: f32[r, n]
+{
+  let xt = load x
+  let wt = load w
+  let bt = load b
+  let z = matmul_nt xt wt
+  let zb = z + bt
+  let s = sigmoid zb
+  store s -> y
+}
+
+schedule dense_sigmoid for apple-m-series { threads 128 }
+schedule dense_sigmoid for nvidia-ada     { threads 128 }
