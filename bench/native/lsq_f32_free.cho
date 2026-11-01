@@ -1,0 +1,88 @@
+edition 7;
+import std.io;
+
+// 4096 x 128 least squares loss+gradient: two passes of 524288 multiply-adds, repeated, plain f64 arithmetic.
+fn pass[&f](x: &f [float], w: &f [float], e: &!f [float]) -> [] float {
+    return 0.0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec } = split(world);
+    release(ffi); release(fs); release(net); release(args); release(clock); release(signals); release(exec);
+    var status = 0;
+    borrow mut heap as &!h in {
+        let r = 4096;
+        let k = 128;
+        var xb = box_slice(h, r * k, 0.5f32);
+        var wb = box_slice(h, k, 0.25f32);
+        var eb = box_slice(h, r, 0.0f32);
+        var gb = box_slice(h, k, 0.0f32);
+        borrow mut xb as &!xr in {
+            borrow mut wb as &!wr in {
+                borrow mut eb as &!er in {
+                    borrow mut gb as &!gr in {
+                        let x = contents(xr);
+                        let w = contents(wr);
+                        let e = contents(er);
+                        let g = contents(gr);
+                        var rep = 0;
+                        var total = 0.0f32;
+                        while rep < 2000 {
+                            var i = 0;
+                            while i < r {
+                                var s0 = 0.0f32;
+                                var s1 = 0.0f32;
+                                var s2 = 0.0f32;
+                                var s3 = 0.0f32;
+                                var s4 = 0.0f32;
+                                var s5 = 0.0f32;
+                                var s6 = 0.0f32;
+                                var s7 = 0.0f32;
+                                var j = 0;
+                                while j < k {
+                                    s0 = s0 + x[i * k + j] * w[j];
+                                    s1 = s1 + x[i * k + j + 1] * w[j + 1];
+                                    s2 = s2 + x[i * k + j + 2] * w[j + 2];
+                                    s3 = s3 + x[i * k + j + 3] * w[j + 3];
+                                    s4 = s4 + x[i * k + j + 4] * w[j + 4];
+                                    s5 = s5 + x[i * k + j + 5] * w[j + 5];
+                                    s6 = s6 + x[i * k + j + 6] * w[j + 6];
+                                    s7 = s7 + x[i * k + j + 7] * w[j + 7];
+                                    j = j + 8;
+                                }
+                                e[i] = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7)) - 1.0f32;
+                                i = i + 1;
+                            }
+                            var z = 0;
+                            while z < k {
+                                g[z] = 0.0f32;
+                                z = z + 1;
+                            }
+                            var q = 0;
+                            while q < r {
+                                let eq = e[q];
+                                var c = 0;
+                                while c < k {
+                                    g[c] = g[c] + eq * x[q * k + c];
+                                    c = c + 1;
+                                }
+                                q = q + 1;
+                            }
+                            w[0] = w[0] + 0.000000001f32 * g[0];
+                            total = w[0];
+                            rep = rep + 1;
+                        }
+                        status = int_of_f32(total * 1000.0f32) % 100;
+                    }
+                }
+            }
+        }
+        unbox_slice(h, xb);
+        unbox_slice(h, wb);
+        unbox_slice(h, eb);
+        unbox_slice(h, gb);
+    }
+    release(heap);
+    release(io);
+    return status;
+}
