@@ -1,17 +1,12 @@
 #!/bin/sh
-# Regenerate src/unicode_data.cho from the oracle's own Unicode predicates
-# and NFC tables (lex-rt, built by the toolchain on this machine).
+# Regenerate src/unicode_data.cho from Python's `unicodedata` (tools/unicode_tables.py): the general categories L, M, N, White_Space,
+# the combining classes, the canonical decompositions and compositions. Needs python3 and nothing else.
 #
-#     scripts/regen-unicode-data.sh <lex-gpu checkout>
+#     scripts/regen-unicode-data.sh
 #
-# The example is copied into the checkout for the build and removed after.
+# The Unicode version is that of the python3 that runs it, and is written in the generated file's header; a different Python may
+# give a different file, and then tests/tokenizer_hf.py (the same Unicode data as Hugging Face's, or not) is the check.
 set -eu
-LEX_GPU=${1:?usage: regen-unicode-data.sh <lex-gpu checkout>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-EX=$LEX_GPU/crates/lex-rt/examples/unicode_tables.rs
-mkdir -p "$LEX_GPU/crates/lex-rt/examples"
-cp "$ROOT/tools/unicode_tables.rs" "$EX"
-trap 'rm -f "$EX"' EXIT
-(cd "$LEX_GPU" && RUSTC_VERSION=$(rustc --version | cut -d' ' -f2) cargo build -q -p lex-rt --example unicode_tables)
-"$LEX_GPU/target/debug/examples/unicode_tables" > "$ROOT/src/unicode_data.cho"
-echo "src/unicode_data.cho regenerated with rustc $(rustc --version | cut -d' ' -f2) from lex-gpu $(git -C "$LEX_GPU" rev-parse --short HEAD)"
+python3 "$ROOT/tools/unicode_tables.py" > "$ROOT/src/unicode_data.cho"
+echo "src/unicode_data.cho regenerated with Unicode $(python3 -c 'import unicodedata; print(unicodedata.unidata_version)')"

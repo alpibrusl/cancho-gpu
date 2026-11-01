@@ -1,4 +1,4 @@
-tokenizer ids=862
+tokenizer ids=859
 ids 7: 72 101 399 111 44 723 33
 dec "Hello, world!"
 ids 19: 84 104 101 754 817 789 32 106 117 109 391 758 315 32 330 122 121 798 46
@@ -33,17 +33,17 @@ ids 19: 228 189 424 367 140 228 184 150 231 149 140 367 129 32 301 484 32 236 46
 dec "\xe4\xbd\xa0\xe5\xa5\xbd\xef\xbc\x8c\xe4\xb8\x96\xe7\x95\x8c\xef\xbc\x81 \xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf \xec\x95\x88\xeb\x85\x95\xed\x95\x98\xec\x84\xb8\xec\x9a\x94"
 ids 24: 208 191 379 380 208 178 208 181 209 130 32 208 188 380 379 32 206 494 32 215 169 215 453 713
 dec "\xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82 \xd0\xbc\xd0\xb8\xd1\x80 \xce\x91\xce\xb8\xce\xae\xce\xbd\xce\xb1 \xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d \xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7"
-ids 19: 302 185 302 191 302 384 510 32 376 167 286 177 376 475 32 378 471 377 141
+ids 17: 302 185 302 191 302 384 510 32 376 167 286 177 376 475 32 378 473
 dec "\xe0\xa4\xb9\xe0\xa4\xbf\xe0\xa4\xa8\xe0\xa5\x8d\xe0\xa4\xa6\xe0\xa5\x80 \xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5 \xe0\xae\x95\xe0\xaf\x86\xe0\xae\xa9\xe0\xaf\x8d"
 ids 16: 101 109 111 106 105 705 706 316 502 369 322 140 136 351 445 369
 dec "emoji \xf0\x9f\x98\x80 \xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7 \xf0\x9f\x8f\xb3\xef\xb8\x8f\xe2\x80\x8d\xf0\x9f\x8c\x88 \xe2\x9d\xa4\xef\xb8\x8f"
-ids 23: 372 160 372 161 32 194 189 32 194 178 32 217 163 217 164 709 32 289 167 289 168 289 169
+ids 25: 372 160 372 161 32 194 189 32 194 178 32 217 163 217 164 32 226 516 32 289 167 289 168 289 169
 dec "\xe2\x91\xa0\xe2\x91\xa1 \xc2\xbd \xc2\xb2 \xd9\xa3\xd9\xa4 \xe2\x85\xa7 \xe0\xa5\xa7\xe0\xa5\xa8\xe0\xa5\xa9"
-ids 24: 857 117 115 293 10 87 400 116 787 32 50 43 50 63 858 10 857 334 105 290 329 10 52 858
+ids 24: 312 117 115 293 10 87 400 116 787 32 50 43 50 63 410 10 312 334 105 290 329 10 52 410
 dec "<|im_start|>user\x0aWhat is 2+2?<|im_end|>\x0a<|im_start|>assistant\x0a4<|im_end|>"
-ids 6: 856 856 735 32 857 857
+ids 6: 411 411 735 32 312 312
 dec "<|endoftext|><|endoftext|> text <|im_start|><|im_start|>"
-ids 16: 860 728 32 859 821 32 271 97 385 32 861 32 271 276 95 294
+ids 16: 857 728 32 856 821 32 271 97 385 32 858 32 271 276 95 294
 dec "<|a|b|> then <|a|> and <|a|b <|im|> <|im_end"
 ids 20: 97 194 437 279 131 99 227 128 128 100 32 323 122 293 111 323 386 100 327 323
 dec "a\xc2\xa0b\xe2\x80\x83c\xe3\x80\x80d \xe2\x80\x8bzero\xe2\x80\x8bwidth\xe2\x80\x8b"

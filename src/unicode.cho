@@ -5,13 +5,11 @@ module unicode;
 // `docs/runtime.md` §9): UTF-8 in and out, the character classes the
 // pre-tokenizer's split uses, and NFC.
 //
-// The classes are those of lex-rt's tokenizer, which this began as: `unicode_data.cho` is
-// generated from `char::is_alphabetic`, `is_numeric` and `is_whitespace`
-// of the Rust that builds lex-rt, and from lex-rt's own NFC tables
-// (`tools/unicode_tables.rs`, the one Rust tool left). **They are not the classes the
-// Qwen tokenizers' regexes name** (`\p{L}`, `\p{M}`, `\p{N}`), and NFC lacks the singleton
-// mappings: issue #51, found by comparing with Hugging Face `tokenizers`. Replacing the
-// tables with the general categories is the fix, and what retires the generator.
+// The classes are the Unicode general categories the Qwen tokenizers' regexes name (`\p{L}`, `\p{M}`, `\p{N}`) and the
+// White_Space property (`\s`), and NFC is complete: canonical decomposition (singletons such as U+2126 included, Hangul by
+// arithmetic), canonical ordering, canonical composition. `unicode_data.cho` is generated from Python's `unicodedata` by
+// `tools/unicode_tables.py`; the Unicode version is in its header. They replaced Rust's `is_alphabetic`/`is_numeric` tables and
+// an NFC without decomposition, which were the first causes of issue #51.
 
 import unicode_data;
 import mem;
@@ -34,13 +32,23 @@ fn in_ranges(table: &static [int], cp: int) -> [] bool {
     return false;
 }
 
-pub fn is_alphabetic(cp: int) -> [] bool {
+// `\p{L}`: the general categories Lu, Ll, Lt, Lm, Lo.
+pub fn is_letter(cp: int) -> [] bool {
     if cp < 128 {
         return cp >= 65 && cp <= 90 || cp >= 97 && cp <= 122;
     }
-    return in_ranges(unicode_data.alphabetic(), cp);
+    return in_ranges(unicode_data.letter(), cp);
 }
 
+// `\p{M}`: Mn, Mc, Me.
+pub fn is_mark(cp: int) -> [] bool {
+    if cp < 768 {
+        return false;
+    }
+    return in_ranges(unicode_data.mark(), cp);
+}
+
+// `\p{N}`: Nd, Nl, No.
 pub fn is_numeric(cp: int) -> [] bool {
     if cp < 128 {
         return cp >= 48 && cp <= 57;
@@ -48,17 +56,12 @@ pub fn is_numeric(cp: int) -> [] bool {
     return in_ranges(unicode_data.numeric(), cp);
 }
 
+// `\s`: the White_Space property.
 pub fn is_whitespace(cp: int) -> [] bool {
     if cp < 128 {
         return cp == 32 || cp >= 9 && cp <= 13;
     }
     return in_ranges(unicode_data.whitespace(), cp);
-}
-
-// `\p{M}` as lex-rt writes it: the blocks that appear in text, not every
-// combining mark (`tokenizer.rs`, `is_mark`).
-pub fn is_mark(cp: int) -> [] bool {
-    return cp >= 768 && cp <= 879 || cp >= 1155 && cp <= 1161 || cp >= 1425 && cp <= 1469 || cp == 1471 || cp >= 1473 && cp <= 1474 || cp >= 1476 && cp <= 1477 || cp == 1479 || cp >= 1552 && cp <= 1562 || cp >= 1611 && cp <= 1631 || cp == 1648 || cp >= 1750 && cp <= 1756 || cp >= 1759 && cp <= 1764 || cp >= 1767 && cp <= 1768 || cp >= 1770 && cp <= 1773 || cp >= 2304 && cp <= 2307 || cp >= 2362 && cp <= 2383 || cp >= 2385 && cp <= 2391 || cp == 3633 || cp >= 3636 && cp <= 3642 || cp >= 3655 && cp <= 3662 || cp >= 6832 && cp <= 6911 || cp >= 7616 && cp <= 7679 || cp >= 8400 && cp <= 8432 || cp >= 12441 && cp <= 12442 || cp >= 65024 && cp <= 65039 || cp >= 65056 && cp <= 65071 || cp >= 917760 && cp <= 917999;
 }
 
 // ---------------------------------------------------------------------
@@ -236,10 +239,52 @@ pub fn scalars[&m, &t](m: &!m [int], t: &!t [byte], from: int, to: int) -> [] in
     return out;
 }
 
-// NFC of the scalar values in `cps`, the way the oracle does it: canonical
-// ordering of marks, then composition; no decomposition. The result is a
-// list.
-pub fn nfc[&m](m: &!m [int], cps: int) -> [] int {
+// Append the full canonical decomposition of `cp` to the list `out`: itself where it has none. Hangul syllables are arithmetic; the
+// rest is `decomp_index` (a binary search) into `decomp_data`.
+fn decompose[&m](m: &!m [int], cp: int, out: int) -> [] int {
+    if cp >= 44032 && cp < 55204 {
+        let si = cp - 44032;
+        mem.push(m, out, 4352 + si / 588);
+        mem.push(m, out, 4449 + si % 588 / 28);
+        if si % 28 != 0 {
+            mem.push(m, out, 4519 + si % 28);
+        }
+        return 0;
+    }
+    if cp >= 192 {
+        let index = unicode_data.decomp_index();
+        var lo = 0;
+        var hi = len(index) / 3;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if cp < index[mid * 3] {
+                hi = mid;
+            } else if cp > index[mid * 3] {
+                lo = mid + 1;
+            } else {
+                let data = unicode_data.decomp_data();
+                var k = 0;
+                while k < index[mid * 3 + 2] {
+                    mem.push(m, out, data[index[mid * 3 + 1] + k]);
+                    k = k + 1;
+                }
+                return 0;
+            }
+        }
+    }
+    mem.push(m, out, cp);
+    return 0;
+}
+
+// NFC of the scalar values in `cps`: canonical decomposition, canonical ordering of marks, then canonical composition. The result is
+// a list.
+pub fn nfc[&m](m: &!m [int], cps0: int) -> [] int {
+    let cps = mem.list(m);
+    var d = 0;
+    while d < mem.size(m, cps0) {
+        decompose(m, mem.get(m, cps0, d), cps);
+        d = d + 1;
+    }
     let out = mem.list(m);
     var i = 0;
     while i < mem.size(m, cps) {
