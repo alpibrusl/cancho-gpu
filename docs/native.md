@@ -1,6 +1,6 @@
 # Native: cancho-gpu at the speed of its language, and without the Rust oracle
 
-> **Status: N1, N2 and N2f are built and measured (§6) and no Rust tool is left; N3, N4 and N5 are not.**
+> **Status: N1, N2, N2f and N4 are built and measured (§6) and no Rust tool is left; N3 and N5 are not.**
 > Written before the code; each step of §6 ends at a number. Claims are marked
 > **[measured]** (with the command), **[read]** (from a document or the source) or
 > **[open]**. It answers two questions that arrived tangled: *why is cancho-gpu
@@ -233,21 +233,64 @@ own overhead will sit above it. **Gate:** `tests/kernels.py` and the references 
 tolerance that a reassociated f32 sum needs (a few units in the last place per accumulator, written
 down per kernel, not guessed). Without cancho#671 this step still gives about 2.5x.
 
-### N4. Matrix-by-vector kernels on a GPU
+### N4. Matrix-by-vector kernels on a GPU: built
 
-**[measured]** the three kernels of one least-squares evaluation take 12 microseconds of GPU time
-at 16 x 3, 55 at 1024 x 64 and 308 at 4096 x 128: about 7 gigaflops, on hardware that does thousands;
-reading `x` twice at memory bandwidth is about 10 microseconds. So the kernels, not the interface,
-are 30 times off the roofline at the one size where it shows. The shim can already split the time:
-`CANCHOGPU_PROFILE=2` times each kernel, and `CANCHOGPU_NOOP=` / `CANCHOGPU_SKIP=` launch a grid that does
-no work or leave a kernel out **[read]**. Plan: (a) profile `lsq_residual` (`matmul_nt` of `[r, k]` by `[1, k]`) and `bwd_dw`
-with `n = 1`; (b) hypothesis **[open]**: the schedule gives one threadgroup of 128 threads per output tile and
-an `n = 1` product has one tile column, so the grid is `r / tile` groups, each reducing `k` serially;
-(c) a variant that splits the reduction across the threadgroup (a `threadgroup` reduction), chosen by shape
-at lowering; (d) the gate is the references plus `metal-kernels.sh` on the Mac, and the number is
-the table in `resident.md` §10. The lowering is shared with CUDA, so a change moves its text; after N2
-that is a reviewed diff and before it a Rust-golden change, which is why N4 is better after N2 for the
-kernels it touches.
+**The cause was simpler than the plan guessed, and the fix is in the kernels, not the compiler.** The three kernels of one least-squares
+evaluation took 312 microseconds of GPU time at 4096 x 128 (about 7 gigaflops; the memory allows about 10 microseconds). The plan below
+(§ as first written) guessed that the grid had one tile column and each threadgroup reduced serially. **There was no grid at all**: both
+kernels, like the repository's decode `matvec`, were written without a `grid` statement, so each launched
+**one threadgroup of 128 threads, one core of the 40 on this GPU** (`emit` prints it: `launch: 1 threadgroups x 128 threads`), and in
+the forward product neighbouring threads read rows 128 floats apart. The language does not invent parallelism: a `.chx` kernel is
+as parallel as its `grid` says.
+
+**Measured, in isolation** (the shim's per-kernel profile, `CANCHOGPU_PROFILE=2`; Apple M4 Max; medians of 35; a small harness that
+runs one kernel on random resident data):
+
+| kernel at 4096 x 128 | before (no grid) | after |
+|---|---|---|
+| forward, `matmul_nt` of `[4096,128]` by `[1,128]` (`lsq_residual`) | 154 us | **9 us** with `grid i over r / bm`, `bm 32` to `128`, 64 to 256 threads (7 to 8 us) |
+| backward, `bwd_dw`, `[1,4096]` by `[128,4096]^T` | 148 us | **11 us** with `grid j over k / bk`, `bk 1`, 64 to 256 threads (10 us) |
+| the loss, `bwd_dw` with `k = 1` | 10 us | 10 us |
+
+The schedule matters in a way a grid-less kernel hid. Forward: with few threads and a big block a threadgroup is slow (bm 256 on 32
+threads: 43 us); 128 to 256 threads at any `bm` from 32 to 128 sits at the memory roofline. Backward: one output column per threadgroup
+(`bk 1`, 128 groups) is the fastest at every thread count from 32; `bk 8` needs 256 threads to match it, and `bk 32` is 3 times slower
+because the reduction over 4096 rows is then split over too few groups.
+
+**What was changed:** `tests/chx/bwd_dw.chx` (a grid over `k / bk`, `bk 1` on both targets) and `examples/train/lsq_residual.chx` (a
+constant `bm`, the rows one threadgroup takes, chosen by `lsq_session.block` as the largest of 128 .. 1 dividing `r`). No compiler change.
+Re-recording the goldens changed exactly the three `bwd_dw` cases (six files: the kernel name now ends `_1`), and the interpreter's
+summaries are identical, so the CPU computes the same numbers. The gate passes; on the Mac `metal-io.py` (7 of 7, `bwd_dw` to 1.6e-7 of the
+peak), `metal-kernels.sh` (13 of 13) and the Metal session tests (35) pass.
+
+**Result, end to end** (the Metal session, ms per evaluation, data resident):
+
+| R x K | before N4 | after | CPU session (before, after) |
+|---|---|---|---|
+| 16 x 3 | 0.14 | 0.15 | 0.01, 0.01 |
+| 256 x 16 | 0.15 | 0.15 | 0.03, 0.03 |
+| 1024 x 64 | 0.20 | 0.17 | 0.22, 0.33 |
+| 4096 x 128 | **0.49** | **0.20** | 1.4, 1.7 to 2.0 |
+
+At 4096 x 128 the GPU time is now 30 microseconds of the 200, so what remains is the per-request cost (uploading `w`, three launches, one
+wait, the read-back, the text on the pipe): about 0.15 ms at any size, visible in the 16 x 3 row. **Against the bar set earlier (as fast as
+plain cancho): met.** Plain compiled cancho on one core is 0.46 ms at 4096 x 128, so the Metal session is 2.3 times faster; torch on MPS
+takes 0.66 ms for the same evaluation (3.3 times slower than this); numpy on the CPU takes 0.02 ms (10 times faster, on a problem of 2 MFLOP that
+a GPU is the wrong tool for). The fit through `opt --persistent` converges identically on both sessions.
+
+**The cost, honestly:** the grid kernels make the CPU interpreter slower, about 20 to 40% at 4096 x 128 (1.4 ms to 1.7 to 2.0): `bwd_dw`
+with `bk 1` runs 128 instances, each of which loads the whole of `dyt` (524,000 extra element copies). The NVIDIA schedule has the same
+`bk` and **has not been run on an NVIDIA GPU**; it is a guess carried over, not a measurement.
+
+**Not done, and not known:** the decode kernels of the model runners (`matvec`, `matvec_rows` and the rest) are written without a grid
+too (`emit` shows `grid 1x1` at n = 4096), so the same effect may be costing them; they were tuned for a different shape (a split-K
+reduction inside one threadgroup) and **were not measured or changed here**. That is the first thing to look at for the 25 tokens a
+second, and the harness for it exists (`gpu_time.py` below).
+
+The original plan, kept because the guess it records was wrong: *"(b) hypothesis [open]: the schedule gives one threadgroup of 128
+threads per output tile and an n = 1 product has one tile column, so the grid is r / tile groups, each reducing k serially; (c) a variant
+that splits the reduction across the threadgroup, chosen by shape at lowering."* Neither was needed: `n = 1` was not the cause, and the lowering
+is fine.
 
 ### N5. Interface and the shim
 

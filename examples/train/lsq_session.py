@@ -18,6 +18,11 @@ import lsq_objective as L  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 
+def block(r):
+    """The rows one threadgroup of the forward kernel takes: the largest of 128, 64, ..., 1 that divides r."""
+    return next(b for b in (128, 64, 32, 16, 8, 4, 2, 1) if r % b == 0)
+
+
 def write(directory, r, k):
     L.R, L.K = r, k
     L.WSTAR = [((i % 7) - 3) / 2.0 if k > 3 else v for i, v in enumerate([1.5, -2.0, 0.5] + [0.0] * max(0, k - 3))][:k]
@@ -29,7 +34,7 @@ def write(directory, r, k):
     L.write(p("t"), t)
     with open(p("session"), "w") as f:
         f.write(f"""# the least-squares fit at {r} x {k}
-program fwd {os.path.join(ROOT, 'examples/train/lsq_residual.chx')} r={r} k={k}
+program fwd {os.path.join(ROOT, 'examples/train/lsq_residual.chx')} r={r} k={k} bm={block(r)}
 program bwd {os.path.join(ROOT, 'tests/chx/bwd_dw.chx')} r={r} n=1 k={k}
 program sq  {os.path.join(ROOT, 'tests/chx/bwd_dw.chx')} r={r} n=1 k=1
 

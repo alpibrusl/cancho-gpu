@@ -37,6 +37,11 @@ def data():
     return x, t
 
 
+def block(r):
+    """The rows one threadgroup of the forward kernel takes: the largest of 128, 64, ..., 1 that divides r."""
+    return next(b for b in (128, 64, 32, 16, 8, 4, 2, 1) if r % b == 0)
+
+
 def write(path, values):
     with open(path, "w") as f:
         f.write(" ".join(repr(v) for v in values) + "\n")
@@ -57,7 +62,7 @@ def loss_grad(binary, root, w, target="nvidia-ada"):
         write(p("x"), [v for row in x for v in row])
         write(p("w"), w)
         write(p("t"), t)
-        e = run(binary, os.path.join(root, "examples/train/lsq_residual.chx"), [f"r={R}", f"k={K}"],
+        e = run(binary, os.path.join(root, "examples/train/lsq_residual.chx"), [f"r={R}", f"k={K}", f"bm={block(R)}"],
                 [("x", p("x")), ("w", p("w")), ("t", p("t"))], "e", target)
         write(p("et"), e)  # dy^T: [1, R]
         write(p("xt"), [x[i][c] for c in range(K) for i in range(R)])  # x^T: [K, R]
