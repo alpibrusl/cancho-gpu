@@ -164,6 +164,31 @@ paths including the Python that writes the inputs]:
    per evaluation, capped at 16 MiB) is the cost, so a GPU gains nothing from this protocol.
    Only a binary or resident interface (parameters kept on the device between evaluations) could
    show what the hardware does; that is the decision for step 4.
+
+   **Against what people would use instead** [measured, same script, same data, float32, medians,
+   in-process: the data stays in memory (on the device for MPS) and each evaluation takes `w` in
+   and gives the loss and gradient back as Python floats; torch 2.12, numpy 2.4.6, Python 3.14.5,
+   Apple M4 Max]. Milliseconds per evaluation:
+
+   | R x K | cancho CPU | cancho Metal | pure Python | numpy | torch CPU | torch MPS |
+   |---|---|---|---|---|---|---|
+   | 16 x 3 | 6 | 80 | 0.01 | 0.00 | 0.01 | 0.77 |
+   | 256 x 16 | 21 | 95 | 0.26 | 0.01 | 0.01 | 0.80 |
+   | 1024 x 64 | 155 | 234 | 3.62 | 0.01 | 0.02 | 0.80 |
+   | 4096 x 128 | 1145 | 1266 | 43.7 | 0.02 | 0.04 | 0.81 |
+   | 16384 x 256 | refused (16 MiB) | refused | not run | 0.12 | 0.16 | 0.84 |
+
+   (numpy's 0.00 is under 5 microseconds. Every path that answered agrees with numpy's loss to
+   1e-7 relative and its gradient to 2e-6 of the peak.) **What this says, plainly:** through this
+   interface, cancho-gpu is not competitive with anything. Even a pure Python loop is 26 times
+   faster than the cancho CPU interpreter at 4096 x 128, and numpy about 50,000 times. torch on MPS
+   sits at a flat 0.8 ms (dispatch and synchronisation, not arithmetic) and does not beat numpy or
+   torch-CPU at any size here: these problems are 0.0001 to 0.5 gigaflop, far too small for a GPU to
+   pay for itself. So the resident interface of [`resident.md`](resident.md) can at best bring
+   cancho's Metal path to a dispatch floor like torch-MPS's; it cannot, on this evidence, make a
+   least-squares fit of this size faster than numpy. Whether any problem cancho-gpu could run
+   through `opt` is large enough to favour a GPU is **[open]**; OpenNN was not run (its training is
+   not the same operation as one gradient evaluation, and it needs a C++ build).
 4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
    type in cancho-ml, or stop.
 

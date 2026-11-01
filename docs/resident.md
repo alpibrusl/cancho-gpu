@@ -19,7 +19,8 @@ least-squares fit through `cancho-gpu run` (CPU interpreter) and
 | 1024 x 64 | 137 ms | 206 ms |
 | 4096 x 128 | 1017 ms | 1122 ms |
 
-Metal never passes the CPU, and the kernel is not the reason: at 4096 x 128 the
+Metal never passes the CPU, and the kernel is not the reason (and both are far from numpy or torch, which
+do this evaluation in 0.02 to 0.8 ms: `training.md` §6 step 3 has that table, which this section does not repeat): at 4096 x 128 the
 forward kernel is about a megaflop, yet one process takes 0.33 s on the CPU and
 0.375 s on Metal. Where the time goes **[measured, one machine, the gate running
 beside it, so rough]**:
@@ -144,9 +145,10 @@ and starts with its own section in `docs/design.md`.
    is never echoed.
 6. **Measured, then the doc is corrected.** `scripts/bench_train_size.py` extended
    with `--session`: per-evaluation ms at the §1 sizes, CPU session and Metal
-   session, one machine, medians. **Predictions, to be tested, not claims:** per
-   evaluation under 10 ms on Metal at 1024 x 64; the Metal session faster than the CPU
-   session at 4096 x 128. If either is false, §1's explanation is wrong or incomplete
+   session, one machine, medians. The same script now also times numpy and torch (CPU and MPS), and the session is read against
+   them too. **Predictions, to be tested, not claims:** per evaluation under 10 ms on Metal at
+   1024 x 64; the Metal session faster than the CPU session at 4096 x 128; **not** faster than
+   torch-MPS's 0.8 ms floor or than numpy (this document does not expect it). If either is false, §1's explanation is wrong or incomplete
    and this document says so here.
 
 ## 6. Plan, each step ending at a number
