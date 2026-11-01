@@ -3,8 +3,8 @@ module tokenize;
 
 // `tokenize` -- the `cancho-gpu tokenize <tokenizer> <corpus>` command: the
 // ids and the decoded text of each record of a corpus, in the canonical
-// form `tools/tokenizer_dump.rs` prints from lex-rt's tokenizer
-// (`docs/runtime.md` §9).
+// form `tools/tokenizer_dump.py` prints with Hugging Face `tokenizers`
+// (`docs/runtime.md` §9; the two differ on real tokenizers, issue #51).
 //
 // `<tokenizer>` is a `tokenizer.json` or a GGUF (told by its first four
 // bytes). The corpus is records separated by a line holding only `%%`

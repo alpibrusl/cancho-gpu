@@ -1,0 +1,3 @@
+golden/sampler/ was first made by lex-rt's Rust sampler at lex-gpu 851497d64e0f7a3bce63e1c6eab47ad0ffa79c16.
+Since docs/native.md N2f it is reproduced by tools/sampler_dump.py, a Python implementation of the same algorithm
+(picks and ids identical, all 191,630 probabilities bit-identical on the platform in PLATFORM: tests/oracles.py).

@@ -1,8 +1,8 @@
 #!/bin/sh
 # The sampler (docs/runtime.md §10): each case of tests/sampler/cases.txt
 # (the logits file, vocab, temperature, top_p, top_k and seed `cancho-gpu
-# sample` is given) must give the picks and nucleus ids lex-rt's sampler
-# gives, and probabilities within a few units in the last place
+# sample` is given) must give the picks and nucleus ids tools/sampler_dump.py's
+# (a Python implementation of the algorithm; tests/oracles.py holds it to the goldens) give, and probabilities within a few units in the last place
 # (tests/sampler/compare.py says why they are not all identical), against
 # golden/sampler/. And bad arguments and files are refused, not trapped.
 set -eu
@@ -42,5 +42,5 @@ grep -q '^error\[io\]' "$WORK/err" || { echo "a missing file: expected error[io]
 : > "$WORK/empty.f32"
 status=0; "$BIN" sample "$WORK/empty.f32" 2 1 1 1 1 >/dev/null 2>"$WORK/err" || status=$?
 [ "$status" -eq 1 ] || { echo "an empty file: exit $status, expected 1"; fail=1; }
-echo "$n sampler cases match lex-rt's: $rows rows, $probs probabilities, $same bit-identical, worst $worst ulps"
+echo "$n sampler cases match the recorded goldens: $rows rows, $probs probabilities, $same bit-identical, worst $worst ulps"
 exit $fail
