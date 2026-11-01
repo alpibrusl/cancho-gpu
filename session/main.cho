@@ -62,7 +62,7 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
         return 1;
     }
     m[mem.text_slot()] = top + got;
-    let sess = session.open(m, t, fm, fs, text.handle(top, got), want, have);
+    let sess = session.open(m, t, fm, fs, text.handle(top, got), want, have, false);
     if sess < 0 {
         return cli.report(m, t, io);
     }
