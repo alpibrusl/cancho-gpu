@@ -153,6 +153,11 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 .bar .fill { height: 100%; background: var(--line); } .bar.us .fill { background: var(--accent); }
 .bar b { text-align: right; font-variant-numeric: tabular-nums; }
 @media (max-width: 36rem) { .bar { grid-template-columns: 6rem 1fr 4.2rem; } }
+.stories { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; max-width: 56rem; margin: 1.6rem auto 0; }
+.story { min-width: 0; border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; background: var(--surface); }
+.story h3 { margin: 0 0 .3rem; } .story p { margin: .4rem 0; color: var(--muted); } .story pre.code { margin: .7rem 0; }
+.story .note { font-size: .88rem; } .story pre.code { overflow-x: auto; } .story, .story pre, .links { text-align: left; }
+.links { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: .5rem; max-width: 56rem; } .links li { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -160,7 +165,7 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 <header class="top"><div class="wrap">
   <a class="brand" href="#top"><img src="assets/cancho-gpu-logo-256.png" alt="">cancho-gpu</a>
   <nav aria-label="Sections">
-    <a href="#how" class="opt">How it works</a><a href="#kernel" class="opt">A kernel</a><a href="#model" class="opt">The model</a><a href="#proof" class="opt">Evidence</a><a href="#fit" class="opt">Where it fits</a><a href="#start">Try it</a>
+    <a href="#how" class="opt">How it works</a><a href="#stories">Stories</a><a href="#kernel" class="opt">A kernel</a><a href="#model" class="opt">The model</a><a href="#results" class="opt">Evidence</a><a href="#try">Try it</a><a href="#docs" class="opt">Docs</a>
     <a href="https://github.com/alpibrusl/cancho-gpu">GitHub</a>
   </nav>
 </div></header>
@@ -171,88 +176,10 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
   <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model on a Metal GPU</a>
   <h1>GPU kernels that say what they can do.</h1>
   <p class="lead">Write a tile kernel once. The compiler checks it, refuses what is wrong and names the rule, and writes <b>CUDA C</b> and <b>Metal</b>. The same kernels run Qwen3.8&#8209;27B on a Mac's GPU.</p>
-  <div class="cta"><a class="btn primary" href="#start">Try it</a><a class="btn ghost" href="#proof">See the evidence</a></div>
-</div>
+  <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn ghost" href="#results">See the evidence</a></div>
 
-<figure class="video">
-  <div class="frame"><video controls preload="metadata" playsinline poster="demo-poster.png" aria-label="A recorded terminal session: a kernel is compiled to Metal, a wrong kernel is refused, and a 27B model generates text on the GPU">
-    <source src="demo.mp4" type="video/mp4"><source src="demo.webm" type="video/webm">
-    Your browser cannot play the video; the transcript below has the same session.
-  </video></div>
-  <figcaption>A real session, recorded: the commands run for real, only the typing is simulated. Kernel compiled and a wrong one refused, then Qwen3.8-27B (NVFP4, weights from Ollama's store) generating 64 tokens, greedy, no chat template, on an Apple M4 Max.</figcaption>
-  <details class="transcript"><summary>Transcript</summary><pre id="transcript"># cancho-gpu: typed tile kernels, one source for CUDA C and Metal
 
-$ cat swiglu.chx
-// a = silu(g) * u over a row of n: the gated activation of a SwiGLU MLP.
-algo swiglu(n)
-  in  g: f32[1, n]
-  in  u: f32[1, n]
-  out y: f32[1, n]
-{
-  let gt = load g
-  let ut = load u
-  let sg = sigmoid &amp;gt
-  let a  = gt * sg
-  store a * ut -&gt; y
-}
-
-schedule swiglu for apple-m-series { threads 256 }
-schedule swiglu for nvidia-ada     { threads 256 }
-
-$ cancho-gpu emit swiglu.chx out n=17408
-swiglu_17408.cu: 256 threads, grid 1x1, 0 B of tiles
-swiglu_17408.metal: 256 threads, grid 1x1, 0 B of tiles
-
-# what it writes for Apple GPUs (the CUDA C is written next to it)
-$ sed -n '/kernel void/,/^}/p' out/swiglu_17408.metal | head -22
-kernel void swiglu_17408(
-    device const float* p0_g [[buffer(0)]],
-    device const float* p1_u [[buffer(1)]],
-    device float* p2_y [[buffer(2)]],
-    uint tid [[thread_index_in_threadgroup]],
-    uint3 tgpos [[threadgroup_position_in_grid]])
-{
-    const uint gid = tgpos.x;
-    float v2[68];
-    for (uint k = 0; k &lt; 68u; ++k) {
-        const uint e = k * 256u + tid;
-        if (e &lt; 17408u) {
-            v2[k] = float(1.0f / (1.0f + precise::exp(-float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])))));
-        }
-    }
-    float v3[68];
-    for (uint k = 0; k &lt; 68u; ++k) {
-        const uint e = k * 256u + tid;
-        if (e &lt; 17408u) {
-            v3[k] = float(float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])) * float(v2[k]));
-        }
-    }
-
-# a wrong program is refused, with the rule it broke
-$ cat leak.chx
-algo k(n)
-  in  x: f32[1, n]
-  in  w: f32[1, n]
-  out y: f32[1, n]
-{
-  let a = load x
-  let b = load w
-  store sigmoid a -&gt; y
-}
-schedule k for nvidia-ada { threads 32 }
-
-$ cancho-gpu check leak.chx n=8
-error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op
-
-# and the kernels run a 27B model on this Mac's GPU
-$ cancho-gpu-run35 ~/.ollama/models kernels "Q: Why is the sky blue?\nA:" 64 --stream --timing
-
-The sky appears blue due to a phenomenon called **Rayleigh scattering**.
-
-When sunlight enters the Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). Sunlight is composed of all colors of the visible spectrum, which have different wavelengths. Shorter wavelengths (like blue and violet) scatter
-timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms=2808</pre></details>
-</figure>
-
+<section id="why">
 <div class="cards">
   <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
   <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, byte-for-byte what the independent Rust implementation writes: 192 emitting cases, 26 refused by both.</p></div>
@@ -261,6 +188,41 @@ timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms
   <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, speed on the 27B is about half of Ollama's, and attention stops at 1364 positions. Each is in the status section, with its issue.</p></div>
   <div class="card"><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code says so.</p></div>
 </div>
+<p class="note">What the promise does <b>not</b> establish: that a kernel is fast (speed is measured only for the 27B model, and is below Ollama's), that CUDA works on a real GPU (it has run only against a mock driver), or that a kernel computes what you meant (the checker proves linearity, bounds and shapes, not intent). The stories below say what each run shows and what it does not.</p>
+</section>
+
+<section id="stories">
+  <div class="center"><h2>Five things that were actually run.</h2>
+  <p class="sub">Each story is a real command and what it printed, with the document that holds the run and a line on what it does not show.</p></div>
+<!--stories-->
+  <div class="stories">
+    <article class="story"><h3>A wrong kernel is refused, and the rule has a name</h3>
+      <p>A kernel that loads a second tensor and never uses it. The checker refuses it and says which tensor and which rule; nothing is written.</p>
+<pre class="code">$ cancho-gpu check leak.chx n=8
+error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op</pre>
+      <p class="note">Shows: the refusal and its stable rule tag (every rule has a fixture, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/rules.md">rules.md</a>). Does not show: that a kernel which passes computes what you meant.</p></article>
+    <article class="story"><h3>Run a kernel on your own numbers</h3>
+      <p>The backward of a matrix product, on two small matrices you can check by hand: <code>dy</code> is 1 2 / 3 4 and <code>w</code> is 1 0 2 / 0 1 3, so <code>dx = dy w</code> is 1 2 8 / 3 4 18.</p>
+<pre class="code">$ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
+    --in dy dy --in w w --out dx
+1.0 2.0 8.0 3.0 4.0 18.0</pre>
+      <p class="note">Shows: the CPU interpreter, with inputs from files and the whole output printed (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">run.md</a>). Does not show: a GPU run; the device programs do not take input yet.</p></article>
+    <article class="story"><h3>Train a small model with kernels as the objective</h3>
+      <p>A least-squares fit whose loss and gradient are computed by cancho-gpu kernels, driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS: 12 evaluations to within 1.1e-5 of the normal-equations solution, at 28 to 36 ms an evaluation.</p>
+<pre class="code">$ opt minimize --method bfgs --x0 0,0,0 -- python3 examples/train/lsq_objective.py ...
+{"method":"bfgs","x":[1.5065,-2.0052,0.4572],"nfev":12,"converged":true, ...}</pre>
+      <p class="note">Shows: a kernel as an optimiser's objective, on the CPU interpreter (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/examples/train/README.md">examples</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">training.md</a>). Does not show: training on a GPU, more than 32 parameters, or any speed claim.</p></article>
+    <article class="story"><h3>A 27B model on the same kernels</h3>
+      <p>Qwen3.8-27B (NVFP4, read from Ollama's store) generating on a Metal GPU: 25.2 tokens a second, 32.6 with speculative decoding, against 42.8 for Ollama in the same invocation, on one Apple M4 Max.</p>
+<pre class="code">$ cancho-gpu-run35 &lt;ollama store&gt; tests/chx "&lt;prompt&gt;" 64</pre>
+      <p class="note">Shows: it runs and agrees with a reference's log-probabilities to 1e-4 (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>). Does not show: that it is the fast way to run this model; it is not.</p></article>
+    <article class="story"><h3>Compared with OpenNN</h3>
+      <p>A two-layer sigmoid network, forward only, the same weights in both: outputs agree to 1.4e-7 of a binary64 reference. OpenNN's call takes about 2.5 microseconds in process; cancho-gpu's CPU interpreter takes milliseconds as two processes. <b>No ratio is claimed</b>: they measure different things.</p>
+<pre class="code">$ python3 bench/opennn/compare.py --opennn build/forward_opennn --gpu build/cancho-gpu</pre>
+      <p class="note">Shows: agreement and the two timings, with the differences and where cancho-gpu is worse (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>). Does not show: any GPU, training, or a larger network.</p></article>
+  </div>
+<!--/stories-->
+</section>
 
 <section id="how">
   <div class="center"><h2>How it works.</h2>
@@ -405,21 +367,100 @@ schedule k for nvidia-ada { threads 32 }</pre>
   <p class="caption">The Metal and CUDA text is the compiler's actual output for <code>n=17408</code> (<code>cancho-gpu emit tests/chx/swiglu.chx out n=17408</code>), the kernel function only; the refusal is <code>tests/reject/leak.chx</code>.</p>
 </section>
 
-<section id="model">
-  <div class="center"><h2>A real model on the same kernels.</h2>
-  <p class="sub">Qwen3.8-27B (NVFP4, 48 gated-delta layers) reads Ollama's store and runs on a Metal GPU. It is not the fastest way to run this model, and the page says so.</p></div>
-  <div class="bars" role="img" aria-label="Decode speed on the same machine: Ollama 42.8 tokens a second, MLX-LM 28.7, cancho-gpu 25.2, cancho-gpu with speculative decoding 32.6">
-    <div class="bar"><span>Ollama</span><div class="track"><div class="fill" style="width:100%"></div></div><b>42.8</b></div>
-    <div class="bar"><span>MLX-LM</span><div class="track"><div class="fill" style="width:67.1%"></div></div><b>28.7</b></div>
-    <div class="bar us"><span>cancho-gpu, speculative</span><div class="track"><div class="fill" style="width:76.2%"></div></div><b>32.6</b></div>
-    <div class="bar us"><span>cancho-gpu</span><div class="track"><div class="fill" style="width:58.9%"></div></div><b>25.2</b></div>
-  </div>
-  <p class="caption">Decode speed, tokens a second, greedy, 128 tokens of a prose continuation, three runs each, one machine (Apple M4 Max, 64 GB), one invocation, with other jobs running on the machine (load average 14 at the start; the runs themselves varied by under 2%) (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">docs/benchmark.md</a>). Ollama decodes this model with speculative decoding from the model's own draft head; cancho-gpu does too in the speculative row (a chain of two drafts, three rows checked a pass, the same tokens as plain decoding: <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>), and is not there yet. MLX-LM uses a different 4-bit quantisation. Prompt processing takes eight tokens at a time: a 49-token prompt in 0.65 s, against 2.2 s a token at a time (one run each).</p>
-  <div class="cards">
-    <div class="card"><h3>Correct, not just fast</h3><p>Three prompts, eight steps each: the same token and top five as the reference's golden log-probabilities, logit gaps within 1e-4.</p></div>
-    <div class="card"><h3>Small first</h3><p>Qwen2.5-0.5B gives the same greedy tokens as Hugging Face transformers in float32, every top-5 logit within 1e-4, at about 6 ms a token.</p></div>
-    <div class="card"><h3>Measured, with the misses</h3><p>An experiment that looked like a win and was a bug, and one that did not move the pipeline at all, are in <a href="https://github.com/alpibrusl/cancho-gpu/issues/24">#24</a> and <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>.</p></div>
-  </div>
+<section id="audit">
+  <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a granite outcrop with circuit traces on a blue disc" width="512" height="512" style="margin-bottom:2rem">
+  <h2>A kernel compiler should be small enough to audit.</h2>
+  <div class="fitwrap"><table class="fit">
+    <thead><tr><th>Question</th><th>What cancho-gpu does</th></tr></thead>
+    <tbody>
+      <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
+      <tr><th>How do I know the output is right?</th><td>The Rust emitter is the oracle: goldens are recorded from it, never from this compiler, and a live differential runs the same cases against a build of it. A CPU interpreter checks what a kernel computes, and a device program compares the GPU against it.</td></tr>
+      <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
+      <tr><th>Is it an inference runtime?</th><td>A first one. <code>cancho-gpu-run</code> and <code>cancho-gpu-run35</code> run Qwen2.5-0.5B and Qwen3.8-27B: every layer is a compiled kernel on a Metal GPU. The 0.5B model gives the same greedy tokens as Hugging Face transformers; the 27B (NVFP4 weights from Ollama's store, 48 gated-delta layers) matches a reference implementation's golden log-probabilities to 1e-4 and decodes at about 25 tokens a second (33 with speculative decoding), against about 43 for Ollama in the same benchmark run. It also serves an OpenAI-compatible chat endpoint with streaming (one request at a time).</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="watch">
+  <div class="center"><h2>A real session, replayed.</h2></div>
+<figure class="video">
+  <div class="frame"><video controls preload="metadata" playsinline poster="demo-poster.png" aria-label="A recorded terminal session: a kernel is compiled to Metal, a wrong kernel is refused, and a 27B model generates text on the GPU">
+    <source src="demo.mp4" type="video/mp4"><source src="demo.webm" type="video/webm">
+    Your browser cannot play the video; the transcript below has the same session.
+  </video></div>
+  <figcaption>A real session, recorded: the commands run for real, only the typing is simulated. Kernel compiled and a wrong one refused, then Qwen3.8-27B (NVFP4, weights from Ollama's store) generating 64 tokens, greedy, no chat template, on an Apple M4 Max.</figcaption>
+  <details class="transcript"><summary>Transcript</summary><pre id="transcript"># cancho-gpu: typed tile kernels, one source for CUDA C and Metal
+
+$ cat swiglu.chx
+// a = silu(g) * u over a row of n: the gated activation of a SwiGLU MLP.
+algo swiglu(n)
+  in  g: f32[1, n]
+  in  u: f32[1, n]
+  out y: f32[1, n]
+{
+  let gt = load g
+  let ut = load u
+  let sg = sigmoid &amp;gt
+  let a  = gt * sg
+  store a * ut -&gt; y
+}
+
+schedule swiglu for apple-m-series { threads 256 }
+schedule swiglu for nvidia-ada     { threads 256 }
+
+$ cancho-gpu emit swiglu.chx out n=17408
+swiglu_17408.cu: 256 threads, grid 1x1, 0 B of tiles
+swiglu_17408.metal: 256 threads, grid 1x1, 0 B of tiles
+
+# what it writes for Apple GPUs (the CUDA C is written next to it)
+$ sed -n '/kernel void/,/^}/p' out/swiglu_17408.metal | head -22
+kernel void swiglu_17408(
+    device const float* p0_g [[buffer(0)]],
+    device const float* p1_u [[buffer(1)]],
+    device float* p2_y [[buffer(2)]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint3 tgpos [[threadgroup_position_in_grid]])
+{
+    const uint gid = tgpos.x;
+    float v2[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v2[k] = float(1.0f / (1.0f + precise::exp(-float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])))));
+        }
+    }
+    float v3[68];
+    for (uint k = 0; k &lt; 68u; ++k) {
+        const uint e = k * 256u + tid;
+        if (e &lt; 17408u) {
+            v3[k] = float(float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])) * float(v2[k]));
+        }
+    }
+
+# a wrong program is refused, with the rule it broke
+$ cat leak.chx
+algo k(n)
+  in  x: f32[1, n]
+  in  w: f32[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  let b = load w
+  store sigmoid a -&gt; y
+}
+schedule k for nvidia-ada { threads 32 }
+
+$ cancho-gpu check leak.chx n=8
+error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op
+
+# and the kernels run a 27B model on this Mac's GPU
+$ cancho-gpu-run35 ~/.ollama/models kernels "Q: Why is the sky blue?\nA:" 64 --stream --timing
+
+The sky appears blue due to a phenomenon called **Rayleigh scattering**.
+
+When sunlight enters the Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). Sunlight is composed of all colors of the visible spectrum, which have different wavelengths. Shorter wavelengths (like blue and violet) scatter
+timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms=2808</pre></details>
+</figure>
 </section>
 
 <section id="train">
@@ -435,32 +476,6 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
     <div class="card"><h3>What it cannot do yet</h3><p>No ReLU, no <code>A<sup>T</sup>B</code> product, no atomics; at most 32 parameters through <code>opt</code>; nothing on a GPU. Whether a GPU even helps at this size is unmeasured.</p></div>
   </div>
   <p class="note">Design, gates and numbers: <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">the run document</a> and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">the training document</a>, which also says why training does not belong in the compiler yet. Examples: <a href="https://github.com/alpibrusl/cancho-gpu/tree/main/examples/train">cancho-gpu</a> and <a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">cancho-opt</a>.</p>
-</section>
-
-<section id="why">
-  <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a granite outcrop with circuit traces on a blue disc" width="512" height="512" style="margin-bottom:2rem">
-  <h2>A kernel compiler should be small enough to audit.</h2>
-  <div class="fitwrap"><table class="fit">
-    <thead><tr><th>Question</th><th>What cancho-gpu does</th></tr></thead>
-    <tbody>
-      <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
-      <tr><th>How do I know the output is right?</th><td>The Rust emitter is the oracle: goldens are recorded from it, never from this compiler, and a live differential runs the same cases against a build of it. A CPU interpreter checks what a kernel computes, and a device program compares the GPU against it.</td></tr>
-      <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
-      <tr><th>Is it an inference runtime?</th><td>A first one. <code>cancho-gpu-run</code> and <code>cancho-gpu-run35</code> run Qwen2.5-0.5B and Qwen3.8-27B: every layer is a compiled kernel on a Metal GPU. The 0.5B model gives the same greedy tokens as Hugging Face transformers; the 27B (NVFP4 weights from Ollama's store, 48 gated-delta layers) matches a reference implementation's golden log-probabilities to 1e-4 and decodes at about 25 tokens a second (33 with speculative decoding), against about 43 for Ollama in the same benchmark run. It also serves an OpenAI-compatible chat endpoint with streaming (one request at a time).</td></tr>
-    </tbody>
-  </table></div>
-</section>
-
-<section id="proof">
-  <h2>Every claim has a measurement, or says it has none.</h2>
-  <p class="sub">The oracle is external, so "it works" is a comparison, not an opinion. Where a claim turned out false, the design document was corrected in place.</p>
-  <div class="stats">
-    <div><b>218</b><span>cases byte-identical with the reference implementation: 192 emit, 26 refused by both</span></div>
-    <div><b>51</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
-    <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
-    <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
-  </div>
-  <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where each reader differs from its oracle, and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">the kernels document</a> the context limit.</p>
 </section>
 
 <section id="fit">
@@ -481,7 +496,45 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
   </div>
 </section>
 
-<section id="start">
+<section class="status" id="status">
+  <h2>Status: alpha</h2>
+  <ul>
+    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, four backward kernels, and <code>run</code> (a kernel on your inputs, CPU interpreter).</li>
+    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs.</li>
+    <li>Unproven: CUDA on a real GPU; training on any GPU; the kernels' speed against the best runtimes (about half of Ollama's on the 27B).</li>
+  </ul>
+</section>
+
+<section id="model">
+  <div class="center"><h2>A real model on the same kernels.</h2>
+  <p class="sub">Qwen3.8-27B (NVFP4, 48 gated-delta layers) reads Ollama's store and runs on a Metal GPU. It is not the fastest way to run this model, and the page says so.</p></div>
+  <div class="bars" role="img" aria-label="Decode speed on the same machine: Ollama 42.8 tokens a second, MLX-LM 28.7, cancho-gpu 25.2, cancho-gpu with speculative decoding 32.6">
+    <div class="bar"><span>Ollama</span><div class="track"><div class="fill" style="width:100%"></div></div><b>42.8</b></div>
+    <div class="bar"><span>MLX-LM</span><div class="track"><div class="fill" style="width:67.1%"></div></div><b>28.7</b></div>
+    <div class="bar us"><span>cancho-gpu, speculative</span><div class="track"><div class="fill" style="width:76.2%"></div></div><b>32.6</b></div>
+    <div class="bar us"><span>cancho-gpu</span><div class="track"><div class="fill" style="width:58.9%"></div></div><b>25.2</b></div>
+  </div>
+  <p class="caption">Decode speed, tokens a second, greedy, 128 tokens of a prose continuation, three runs each, one machine (Apple M4 Max, 64 GB), one invocation, with other jobs running on the machine (load average 14 at the start; the runs themselves varied by under 2%) (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">docs/benchmark.md</a>). Ollama decodes this model with speculative decoding from the model's own draft head; cancho-gpu does too in the speculative row (a chain of two drafts, three rows checked a pass, the same tokens as plain decoding: <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>), and is not there yet. MLX-LM uses a different 4-bit quantisation. Prompt processing takes eight tokens at a time: a 49-token prompt in 0.65 s, against 2.2 s a token at a time (one run each).</p>
+  <div class="cards">
+    <div class="card"><h3>Correct, not just fast</h3><p>Three prompts, eight steps each: the same token and top five as the reference's golden log-probabilities, logit gaps within 1e-4.</p></div>
+    <div class="card"><h3>Small first</h3><p>Qwen2.5-0.5B gives the same greedy tokens as Hugging Face transformers in float32, every top-5 logit within 1e-4, at about 6 ms a token.</p></div>
+    <div class="card"><h3>Measured, with the misses</h3><p>An experiment that looked like a win and was a bug, and one that did not move the pipeline at all, are in <a href="https://github.com/alpibrusl/cancho-gpu/issues/24">#24</a> and <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>.</p></div>
+  </div>
+</section>
+
+<section id="results">
+  <h2>Measured, not promised.</h2>
+  <p class="sub">The oracle is external, so "it works" is a comparison, not an opinion. <b>Who ran what:</b> the case counts and the interpreter runs are checked by CI on every push (<code>scripts/gate.sh</code>); the 27B and Metal numbers were made by hand on one Apple M4 Max and are reported in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>; the OpenNN numbers are one run on a 4-vCPU container, in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>. Where a claim turned out false, the design document was corrected in place.</p>
+  <div class="stats">
+    <div><b>218</b><span>cases byte-identical with the reference implementation: 192 emit, 26 refused by both</span></div>
+    <div><b>51</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
+    <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
+    <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
+  </div>
+  <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where each reader differs from its oracle, and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">the kernels document</a> the context limit.</p>
+</section>
+
+<section id="try">
   <h2>Try it.</h2>
   <p class="sub">You need the cancho compiler at the commit pinned in <code>cancho.toml</code>, and Rust to build it.</p>
   <pre class="code">git clone https://github.com/alpibrusl/cancho
@@ -495,21 +548,31 @@ build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
   <p class="note">Other commands: <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code>, <code>cancho-gpu run &lt;file.chx&gt; [--in NAME FILE ...] [--out NAME ...]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
 </section>
 
-<section class="status" id="status">
-  <h2>Status: alpha</h2>
-  <ul>
-    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, four backward kernels, and <code>run</code> (a kernel on your inputs, CPU interpreter).</li>
-    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs.</li>
-    <li>Unproven: CUDA on a real GPU; training on any GPU; the kernels' speed against the best runtimes (about half of Ollama's on the 27B).</li>
+<section id="docs">
+  <h2>Go deeper.</h2>
+  <ul class="links">
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">Design</a>: how the compiler is built, what it cost and every difference from the Rust</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">Run</a>: a kernel on your own inputs, with its gates and numbers</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">Training</a>: whether training belongs here, and what the surface can express of a backward pass</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">Compared with OpenNN</a>: a forward pass measured on a CPU, and where cancho-gpu is worse</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">Device</a>: driving a GPU, and what stays unproven</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">Runtime</a>: the GGUF and safetensors readers, the tokenizer and the sampler</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">Kernels</a>: the attention-layer decode kernels and the context limit</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/qwen35.md">Qwen3.8-27B</a>: the 27B runner, its kernels and how it is checked</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/serving.md">Serving</a>: the OpenAI-compatible endpoint</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">Benchmark</a>: the numbers, their conditions and how to rerun them</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/rules.md">Rules</a>: every refusal and what triggers it</li>
+    <li><a href="llms.txt">llms.txt</a>: this page as an agent reads it</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/issues">Issues</a>: the open slices</li>
   </ul>
 </section>
 
 </main>
 <footer><div class="wrap">
-  <span>cancho-gpu &middot; EUPL-1.2</span>
+  <span>cancho-gpu &middot; EUPL-1.2 &middot; written in <a href="https://github.com/alpibrusl/cancho">cancho</a></span>
   <a href="https://github.com/alpibrusl/cancho-gpu">GitHub</a>
-  <a href="https://github.com/alpibrusl/cancho">cancho</a>
   <a href="llms.txt">llms.txt</a>
+  <span>the sibling tools: <a href="https://github.com/alpibrusl/cancho-stats">stats</a>, <a href="https://github.com/alpibrusl/cancho-table">table</a>, <a href="https://github.com/alpibrusl/cancho-ml">ml</a>, <a href="https://github.com/alpibrusl/cancho-opt">opt</a></span>
 </div></footer>
 
 <script>
