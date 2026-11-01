@@ -124,13 +124,9 @@ def check(binary, quiet=False):
                     "print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)")
             return int(subprocess.run([sys.executable, "-c", code, binary, session, str(n), *TARGET], capture_output=True, text=True, timeout=300).stdout)
         small, large = peak(2000), peak(20000)
-        if METAL:
-            # KNOWN DEFECT (docs/resident.md section 10): the Metal shim is built without ARC and keeps its command buffers in a C struct,
-            # so each request leaves autoreleased objects that no pool drains. Bounded here, not denied.
-            per_request = (large - small) / 18000
-            say(per_request < 4096, f"memory on the device path grows {per_request:.0f} bytes a request (known defect: the shim's autoreleased command buffers); peak {small} after 2000 requests, {large} after 20000")
-        else:
-            say(large < small * 1.25 + 4096, f"memory is given back: peak resident size {small} after 2000 requests, {large} after 20000 (units as the platform's ru_maxrss)")
+        # Memory is given back on the device path too: it was not until the shim was built with ARC and each entry point put in an
+        # autorelease pool (about 1.9 KB a request leaked before: docs/native.md N5).
+        say(large < small * 1.25 + 4096, f"memory is given back: peak resident size {small} after 2000 requests, {large} after 20000 (units as the platform's ru_maxrss)")
 
         # 4. the end
         status, out, err = talk(binary, session, "")

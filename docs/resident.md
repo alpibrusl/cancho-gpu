@@ -295,7 +295,7 @@ program of its own, as the device programs are.
 
 ### Known defects and what is not done
 
-* **The shim leaks about 1.9 KB a request** (peak resident size 29.5 MB after 2,000 requests, 63.4 MB after
+* **[Fixed afterwards: `native.md` N5.] The shim leaks about 1.9 KB a request** (peak resident size 29.5 MB after 2,000 requests, 63.4 MB after
   20,000). `shim/canchogpu-metal.mm` is built without ARC and keeps its command buffer and encoder in a C
   struct, so the autoreleased objects of each `commandBuffer` call are never released. The right fix is explicit
   retain and release where `g.cmd`, `g.enc` and `g.last` are set and cleared (about eight sites), plus an autorelease

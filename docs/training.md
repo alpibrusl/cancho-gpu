@@ -34,7 +34,7 @@ that, and whether the sibling projects (cancho-ml, cancho-opt) are a better home
   on a GPU decides the last bits, and nothing in the compiler pins it **[open]**.
   cancho-ml's contract (exact sums, a stored summation order) is the opposite of
   what a GPU training loop gives for free.
-* **Priorities.** The 27B decodes at 25 tok/s against Ollama's 43
+* **Priorities.** The 27B decodes at 26 tok/s against Ollama's 46
   (`benchmark.md`); CUDA has run only against a mock driver; split-KV
   attention is unbuilt. Training competes with those.
 
