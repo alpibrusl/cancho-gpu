@@ -178,6 +178,17 @@ paths including the Python that writes the inputs]:
    | 4096 x 128 | 1145 | 1266 | 43.7 | 0.02 | 0.04 | 0.81 |
    | 16384 x 256 | refused (16 MiB) | refused | not run | 0.12 | 0.16 | 0.84 |
 
+   **Correction to how this table reads, measured afterwards:** the cancho columns are whole
+   processes and the baselines are not. `cancho-gpu run` at 4096 x 128 takes 0.375 s with a matmul
+   and 0.370 s with a `rowsum`, and 0.36 to 0.40 s for four shapes holding the same 524,288 input
+   numbers: **the time follows the count of numbers read, not the operation**, about 0.7 microsecond
+   a number (Python's `float()` reads the same file at 0.16, 0.083 s; printing 524k numbers back
+   takes 2.9 s). An evaluation is two such processes. So "pure Python is 26 times faster than the
+   cancho CPU interpreter" compares a Python loop over numbers already in memory with two processes
+   that parse a million, and says nothing about the interpreter's arithmetic, which this
+   interface hides. What the interpreter costs by itself is measured through the session
+   ([`resident.md`](resident.md)), which parses once.
+
    (numpy's 0.00 is under 5 microseconds. Every path that answered agrees with numpy's loss to
    1e-7 relative and its gradient to 2e-6 of the peak.) **What this says, plainly:** through this
    interface, cancho-gpu is not competitive with anything. Even a pure Python loop is 26 times
