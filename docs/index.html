@@ -255,7 +255,7 @@ timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms
 
 <div class="cards">
   <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
-  <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, byte-for-byte what the independent Rust implementation writes: 182 emitting cases, 26 refused by both.</p></div>
+  <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, byte-for-byte what the independent Rust implementation writes: 192 emitting cases, 26 refused by both.</p></div>
   <div class="card"><h3>Held to an oracle</h3><p>Goldens come from the Rust, never from this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
   <div class="card"><h3>Runs a real model</h3><p>Qwen3.8-27B decodes at 25 tokens a second on a Metal GPU (33 with speculative decoding), with the same tokens and top five as a reference's log-probabilities.</p></div>
   <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, speed on the 27B is about half of Ollama's, and attention stops at 1364 positions. Each is in the status section, with its issue.</p></div>
@@ -422,6 +422,21 @@ schedule k for nvidia-ada { threads 32 }</pre>
   </div>
 </section>
 
+<section id="train">
+  <div class="center"><h2>Run a kernel on your own numbers.</h2>
+  <p class="sub"><code>cancho-gpu run</code> executes a kernel on the CPU interpreter over inputs you give it and prints the whole output. It exists so a kernel can be the objective of an optimiser, and a small model has been trained that way. It does not run on a GPU yet.</p></div>
+  <pre class="code">$ printf '1 2\n3 4\n' &gt; dy; printf '1 0 2\n0 1 3\n' &gt; w
+$ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
+    --in dy dy --in w w --out dx
+1.0 2.0 8.0 3.0 4.0 18.0</pre>
+  <div class="cards">
+    <div class="card"><h3>Backward kernels</h3><p><code>dx</code>, <code>dw</code>, <code>db</code> and the sigmoid's, byte-identical with the Rust's output and held, element by element, to a reference that is itself checked against finite differences.</p></div>
+    <div class="card"><h3>A fit, with kernels as the objective</h3><p>A least-squares fit driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS, loss and gradient computed by these kernels: 12 evaluations, within 1.1e-5 of the normal-equations solution, 28 to 36 ms an evaluation on the CPU interpreter.</p></div>
+    <div class="card"><h3>What it cannot do yet</h3><p>No ReLU, no <code>A<sup>T</sup>B</code> product, no atomics; at most 32 parameters through <code>opt</code>; nothing on a GPU. Whether a GPU even helps at this size is unmeasured.</p></div>
+  </div>
+  <p class="note">Design, gates and numbers: <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">the run document</a> and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">the training document</a>, which also says why training does not belong in the compiler yet. Examples: <a href="https://github.com/alpibrusl/cancho-gpu/tree/main/examples/train">cancho-gpu</a> and <a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">cancho-opt</a>.</p>
+</section>
+
 <section id="why">
   <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a granite outcrop with circuit traces on a blue disc" width="512" height="512" style="margin-bottom:2rem">
   <h2>A kernel compiler should be small enough to audit.</h2>
@@ -440,8 +455,8 @@ schedule k for nvidia-ada { threads 32 }</pre>
   <h2>Every claim has a measurement, or says it has none.</h2>
   <p class="sub">The oracle is external, so "it works" is a comparison, not an opinion. Where a claim turned out false, the design document was corrected in place.</p>
   <div class="stats">
-    <div><b>208</b><span>cases byte-identical with the reference implementation: 182 emit, 26 refused by both</span></div>
-    <div><b>24</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
+    <div><b>218</b><span>cases byte-identical with the reference implementation: 192 emit, 26 refused by both</span></div>
+    <div><b>51</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
     <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
     <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
   </div>
@@ -460,6 +475,7 @@ schedule k for nvidia-ada { threads 32 }</pre>
       <li>CUDA on real hardware, Hopper, AMD</li>
       <li>Speed on the 27B model, long contexts (it needs a change to the language), concurrent requests</li>
       <li>Attention over more than 1364 positions (it needs a change to the language)</li>
+      <li>Training on a GPU: kernels run on your inputs on the CPU interpreter only, and the device programs do not take input yet</li>
       <li>Speed: reach and agreement are measured, timing is not</li>
     </ul></div>
   </div>
@@ -476,15 +492,15 @@ export CANCHO=$PWD/../cancho/target/release/cancho
 $CANCHO build
 mkdir -p out
 build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
-  <p class="note">Other commands: <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
+  <p class="note">Other commands: <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code>, <code>cancho-gpu run &lt;file.chx&gt; [--in NAME FILE ...] [--out NAME ...]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
 </section>
 
 <section class="status" id="status">
   <h2>Status: alpha</h2>
   <ul>
-    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, and rope, kv_append, attention and gate kernels.</li>
-    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>).</li>
-    <li>Unproven: CUDA on a real GPU; the kernels' speed against the best runtimes (about half of Ollama's on the 27B).</li>
+    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, four backward kernels, and <code>run</code> (a kernel on your inputs, CPU interpreter).</li>
+    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs.</li>
+    <li>Unproven: CUDA on a real GPU; training on any GPU; the kernels' speed against the best runtimes (about half of Ollama's on the 27B).</li>
   </ul>
 </section>
 

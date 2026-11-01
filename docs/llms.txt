@@ -1,10 +1,10 @@
 # cancho-gpu
 
-> A compiler for typed tile kernels (the .chx language), written in cancho: it checks a typed tile program (linearity, bounds, shapes, the threadgroup budget) and lowers it to CUDA C and Metal, byte-identical with an independent reference implementation (a Rust compiler, used as the test oracle) on 208 cases (182 emit, 26 refused by both). It links only libc; its authority report names what it may do (args, stderr, file read and write, heap, stdout) and no network or foreign code. Alpha: the compiler, device path, model-reading core (GGUF, safetensors, BPE tokenizer, sampler) and the decode kernels of an attention layer are built; no tensor values are read and no model is run.
+> A compiler for typed tile kernels (the .chx language), written in cancho: it checks a typed tile program (linearity, bounds, shapes, the threadgroup budget) and lowers it to CUDA C and Metal, byte-identical with an independent reference implementation (a Rust compiler, used as the test oracle) on 218 cases (192 emit, 26 refused by both). It links only libc; its authority report names what it may do (args, stderr, file read and write, heap, stdout) and no network or foreign code. Alpha: the compiler, device path, model-reading core (GGUF, safetensors, BPE tokenizer, sampler) and the decode kernels of an attention layer are built; it runs Qwen2.5-0.5B and Qwen3.8-27B on a Metal GPU and serves the 27B over an OpenAI-compatible endpoint. A kernel can be run on inputs you give it (CPU interpreter only) and four backward kernels exist; training on a GPU is not built.
 
 ## Use it
 - [Quick start](https://github.com/alpibrusl/cancho-gpu#quick-start): build the compiler at the pinned revision, emit a kernel.
-- Commands: `cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]`, `cancho-gpu check <file.chx> [name=value ...] [--run]`, `cancho-gpu gguf <file.gguf> [--sum]`, `cancho-gpu safetensors <file>`, `cancho-gpu tokenize <tokenizer.json|model.gguf> <corpus>`, `cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>`. A refusal is `error[<rule>]: <message>` on stderr, exit 1; a usage mistake is exit 2.
+- Commands: `cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]`, `cancho-gpu check <file.chx> [name=value ...] [--run]`, `cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME FILE ...] [--out NAME ...]`, `cancho-gpu gguf <file.gguf> [--sum]`, `cancho-gpu safetensors <file>`, `cancho-gpu tokenize <tokenizer.json|model.gguf> <corpus>`, `cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>`. A refusal is `error[<rule>]: <message>` on stderr, exit 1; a usage mistake is exit 2.
 
 ## Facts that matter when calling it
 - Targets: nvidia-ada (CUDA C) and apple-m-series (Metal), each from the file's schedule. amd-cdna3 is a schedule row with no emitter.
@@ -13,7 +13,8 @@
 - Kernels: rope, kv_append, attention (head dimension 256; at most 1364 positions on Metal) and attn_gate in tests/chx/. Split-KV attention for longer contexts cannot be written in the surface yet.
 - Model runner: `cancho-gpu-run <model dir> tests/chx "<prompt>" <new tokens>` for Qwen2-architecture bf16 checkpoints (256-position context, no chat template), 6 to 12 ms a token. Qwen3.8-27B: `cancho-gpu-run35 <ollama store> tests/chx "<prompt>" <new tokens>` runs `qwen3.8:27b-mlx` (NVFP4, 48 gated-delta layers) at about 25 tokens a second (about 33 with speculative decoding by the model's own draft head), matching a reference's golden log-probabilities to 1e-4 (1024-position context).
 - Serving: `cancho-gpu-serve <ollama store> tests/chx --port 8080 [--api-key K]` is an OpenAI-compatible `/v1/chat/completions` (streaming, the model's chat template held to jinja2, thinking mode) over Qwen3.8-27B, one request at a time, 1024-position context (docs/serving.md).
-- Not implemented: concurrent requests, tools, images, AMD, Hopper.
+- Running a kernel on your own numbers: `cancho-gpu run` reads each read-only parameter from a text file (`--in NAME FILE`, whitespace-separated, exactly the parameter's size, none optional) and prints a writable one whole (`--out NAME`) from the CPU interpreter; `--target` is required when the file has both schedules. Backward kernels `bwd_dx`, `bwd_dw`, `bwd_db` and `bwd_sigmoid` are in tests/chx/. A least-squares fit driven by cancho-opt's BFGS with these kernels as the objective converges in 12 evaluations at 28 to 36 ms each. The surface has no ReLU, no A^T B product and no atomics; the device programs do not take input yet.
+- Not implemented: concurrent requests, tools, images, AMD, Hopper, training on a GPU.
 
 ## Optional
 - [Design](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md): how the compiler is built and every difference from the Rust.
@@ -22,4 +23,6 @@
 - [Inference](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/inference.md): running Qwen2.5-0.5B on a Metal GPU.
 - [Qwen3.8-27B](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/qwen35.md): the 27B runner, its kernels and how it is checked.
 - [Kernels](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md): the attention-layer decode kernels and the context limit.
+- [Run](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md): a kernel on your own inputs, with its gates and numbers.
+- [Training](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md): whether training belongs here, and what the surface can express of a backward pass.
 - [Issues](https://github.com/alpibrusl/cancho-gpu/issues): the open slices.
