@@ -22,6 +22,10 @@ extern "C" {
 #define MAX_BUFFERS 4096
 #define MAX_ARGS 64
 
+/* Memory: this file is built with -fobjc-arc (the build scripts pass it), so the Metal objects held in `g` are strong references and
+ * `= nil` releases them. Every entry point that makes Metal objects runs in an @autoreleasepool: the program that calls it is a plain
+ * C-like main with no run loop and so no pool of its own, and without one every command buffer and encoder made by a request would
+ * live until exit (about 1.9 KB a request: docs/resident.md section 10, docs/native.md N5). */
 static struct {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
@@ -63,115 +67,123 @@ static char *cstr(const char *p, int64_t n) {
 }
 
 int64_t cgpu_open(void) {
-    if (g.device) {
+    @autoreleasepool {
+        if (g.device) {
+            return 0;
+        }
+    
+        g.device = MTLCreateSystemDefaultDevice();
+        if (!g.device) {
+            return fail("no Metal device", "MTLCreateSystemDefaultDevice returned NULL");
+        }
+    
+        g.queue = [g.device newCommandQueue];
+        if (!g.queue) {
+            return fail("no command queue", "newCommandQueue returned NULL");
+        }
+    
         return 0;
     }
-    
-    g.device = MTLCreateSystemDefaultDevice();
-    if (!g.device) {
-        return fail("no Metal device", "MTLCreateSystemDefaultDevice returned NULL");
-    }
-    
-    g.queue = [g.device newCommandQueue];
-    if (!g.queue) {
-        return fail("no command queue", "newCommandQueue returned NULL");
-    }
-    
-    return 0;
 }
 
 int64_t cgpu_compile(const char *src_p, int64_t src_n) {
-    if (!g.device) {
-        return fail("cgpu_compile", "the device is not open");
-    }
-    if (g.n_libraries == MAX_MODULES) {
-        return fail("cgpu_compile", "too many modules");
-    }
-    
-    char *src = cstr(src_p, src_n);
-    if (!src) {
-        return fail("cgpu_compile", "out of memory");
-    }
-    
-    NSString *srcString = [NSString stringWithUTF8String:src];
-    free(src);
-    
-    if (!srcString) {
-        return fail("cgpu_compile", "failed to create NSString from source");
-    }
-    
-    NSError *error = nil;
-    id<MTLLibrary> library = [g.device newLibraryWithSource:srcString options:nil error:&error];
-    
-    if (!library) {
-        if (error) {
-            return fail("the kernel does not compile", [error.localizedDescription UTF8String]);
+    @autoreleasepool {
+        if (!g.device) {
+            return fail("cgpu_compile", "the device is not open");
         }
-        return fail("the kernel does not compile", "unknown error");
-    }
+        if (g.n_libraries == MAX_MODULES) {
+            return fail("cgpu_compile", "too many modules");
+        }
     
-    g.libraries[g.n_libraries] = library;
-    return g.n_libraries++;
+        char *src = cstr(src_p, src_n);
+        if (!src) {
+            return fail("cgpu_compile", "out of memory");
+        }
+    
+        NSString *srcString = [NSString stringWithUTF8String:src];
+        free(src);
+    
+        if (!srcString) {
+            return fail("cgpu_compile", "failed to create NSString from source");
+        }
+    
+        NSError *error = nil;
+        id<MTLLibrary> library = [g.device newLibraryWithSource:srcString options:nil error:&error];
+    
+        if (!library) {
+            if (error) {
+                return fail("the kernel does not compile", [error.localizedDescription UTF8String]);
+            }
+            return fail("the kernel does not compile", "unknown error");
+        }
+    
+        g.libraries[g.n_libraries] = library;
+        return g.n_libraries++;
+    }
 }
 
 static char prof_name[4096][72];
 
 int64_t cgpu_function(int64_t module, const char *name_p, int64_t name_n) {
-    if (module < 0 || module >= g.n_libraries) {
-        return fail("cgpu_function", "no such module");
-    }
-    if (g.n_functions == MAX_FUNCTIONS) {
-        return fail("cgpu_function", "too many functions");
-    }
-    
-    char *name = cstr(name_p, name_n);
-    if (!name) {
-        return fail("cgpu_function", "out of memory");
-    }
-    
-    NSString *funcName = [NSString stringWithUTF8String:name];
-    snprintf(prof_name[g.n_functions], sizeof prof_name[0], "%s", name);
-    free(name);
-    
-    if (!funcName) {
-        return fail("cgpu_function", "failed to create function name string");
-    }
-    
-    id<MTLFunction> function = [g.libraries[module] newFunctionWithName:funcName];
-    if (!function) {
-        return fail("cgpu_function", "function not found in library");
-    }
-    
-    NSError *error = nil;
-    id<MTLComputePipelineState> pipeline = [g.device newComputePipelineStateWithFunction:function error:&error];
-    
-    if (!pipeline) {
-        if (error) {
-            return fail("cuModuleGetFunction", [error.localizedDescription UTF8String]);
+    @autoreleasepool {
+        if (module < 0 || module >= g.n_libraries) {
+            return fail("cgpu_function", "no such module");
         }
-        return fail("cuModuleGetFunction", "unknown error");
-    }
+        if (g.n_functions == MAX_FUNCTIONS) {
+            return fail("cgpu_function", "too many functions");
+        }
     
-    g.functions[g.n_functions] = pipeline;
-    return g.n_functions++;
+        char *name = cstr(name_p, name_n);
+        if (!name) {
+            return fail("cgpu_function", "out of memory");
+        }
+    
+        NSString *funcName = [NSString stringWithUTF8String:name];
+        snprintf(prof_name[g.n_functions], sizeof prof_name[0], "%s", name);
+        free(name);
+    
+        if (!funcName) {
+            return fail("cgpu_function", "failed to create function name string");
+        }
+    
+        id<MTLFunction> function = [g.libraries[module] newFunctionWithName:funcName];
+        if (!function) {
+            return fail("cgpu_function", "function not found in library");
+        }
+    
+        NSError *error = nil;
+        id<MTLComputePipelineState> pipeline = [g.device newComputePipelineStateWithFunction:function error:&error];
+    
+        if (!pipeline) {
+            if (error) {
+                return fail("cuModuleGetFunction", [error.localizedDescription UTF8String]);
+            }
+            return fail("cuModuleGetFunction", "unknown error");
+        }
+    
+        g.functions[g.n_functions] = pipeline;
+        return g.n_functions++;
+    }
 }
 
 int64_t cgpu_alloc(int64_t bytes) {
-    if (!g.device) {
-        return fail("cgpu_alloc", "the device is not open");
-    }
-    if (g.n_buffers == MAX_BUFFERS || bytes <= 0) {
-        return fail("cgpu_alloc", bytes <= 0 ? "an empty buffer" : "too many buffers");
-    }
+    @autoreleasepool {
+        if (!g.device) {
+            return fail("cgpu_alloc", "the device is not open");
+        }
+        if (g.n_buffers == MAX_BUFFERS || bytes <= 0) {
+            return fail("cgpu_alloc", bytes <= 0 ? "an empty buffer" : "too many buffers");
+        }
     
-    id<MTLBuffer> buffer = [g.device newBufferWithLength:(NSUInteger)bytes options:MTLResourceStorageModeShared];
-    if (!buffer) {
-        return fail("cgpu_alloc", "failed to allocate buffer");
-    }
+        id<MTLBuffer> buffer = [g.device newBufferWithLength:(NSUInteger)bytes options:MTLResourceStorageModeShared];
+        if (!buffer) {
+            return fail("cgpu_alloc", "failed to allocate buffer");
+        }
     
-    g.buffers[g.n_buffers] = buffer;
-    g.sizes[g.n_buffers] = bytes;
-    return g.n_buffers++;
+        g.buffers[g.n_buffers] = buffer;
+        g.sizes[g.n_buffers] = bytes;
+        return g.n_buffers++;
+    }
 }
 
 static int64_t buffer_ok(int64_t buf, int64_t n, const char *what) {
@@ -290,71 +302,73 @@ static int64_t prof_n[4096];
 int64_t cgpu_prof_dump(void);
 
 int64_t cgpu_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
-    if (fn < 0 || fn >= g.n_functions) {
-        g.n_args = 0;
-        return fail("cgpu_launch_async", "no such function");
-    }
-    if (!g.cmd) {
-        g.cmd = [g.queue commandBuffer];
+    @autoreleasepool {
+        if (fn < 0 || fn >= g.n_functions) {
+            g.n_args = 0;
+            return fail("cgpu_launch_async", "no such function");
+        }
         if (!g.cmd) {
+            g.cmd = [g.queue commandBuffer];
+            if (!g.cmd) {
+                g.n_args = 0;
+                return fail("cgpu_launch_async", "failed to create command buffer");
+            }
+            g.enc = [g.cmd computeCommandEncoderWithDispatchType:(getenv("CANCHOGPU_SERIAL") ? MTLDispatchTypeSerial : MTLDispatchTypeConcurrent)];
+            g.fresh = 1;
+            if (!g.enc) {
+                g.cmd = nil;
+                g.n_args = 0;
+                return fail("cgpu_launch_async", "failed to create compute encoder");
+            }
+        }
+        if (getenv("CANCHOGPU_SKIP") && strstr(prof_name[fn], getenv("CANCHOGPU_SKIP"))) {
+            /* Ablation for timing only: leave this kernel out (the outputs are then wrong). */
             g.n_args = 0;
-            return fail("cgpu_launch_async", "failed to create command buffer");
+            return 0;
         }
-        g.enc = [g.cmd computeCommandEncoderWithDispatchType:(getenv("CANCHOGPU_SERIAL") ? MTLDispatchTypeSerial : MTLDispatchTypeConcurrent)];
-        g.fresh = 1;
-        if (!g.enc) {
-            g.cmd = nil;
+        if (!g.fresh && !g.overlap) {
+            [g.enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
+        g.fresh = 0;
+        g.overlap = 0;
+        if (getenv("CANCHOGPU_NOOP") && strstr(prof_name[fn], getenv("CANCHOGPU_NOOP"))) {
+            /* Ablation for timing only: launch this kernel's grid but do no work (outputs are wrong). Splits a
+             * kernel's cost into its launch and dependency latency (what is left) and its work (what goes). */
+            static id<MTLComputePipelineState> noop = nil;
+            if (!noop) {
+                NSError *ne = nil;
+                id<MTLLibrary> nl = [g.device newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void noop(device float *x [[buffer(0)]], uint t [[thread_position_in_grid]]) { if (t == 0xFFFFFFFFu) x[0] = 0.0f; }" options:nil error:&ne];
+                noop = [g.device newComputePipelineStateWithFunction:[nl newFunctionWithName:@"noop"] error:&ne];
+            }
+            [g.enc setComputePipelineState:noop];
+            for (int64_t i = 0; i < g.n_args; i++) {
+                [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
+            }
+            [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
+                  threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
             g.n_args = 0;
-            return fail("cgpu_launch_async", "failed to create compute encoder");
+            return 0;
         }
-    }
-    if (getenv("CANCHOGPU_SKIP") && strstr(prof_name[fn], getenv("CANCHOGPU_SKIP"))) {
-        /* Ablation for timing only: leave this kernel out (the outputs are then wrong). */
-        g.n_args = 0;
-        return 0;
-    }
-    if (!g.fresh && !g.overlap) {
-        [g.enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-    }
-    g.fresh = 0;
-    g.overlap = 0;
-    if (getenv("CANCHOGPU_NOOP") && strstr(prof_name[fn], getenv("CANCHOGPU_NOOP"))) {
-        /* Ablation for timing only: launch this kernel's grid but do no work (outputs are wrong). Splits a
-         * kernel's cost into its launch and dependency latency (what is left) and its work (what goes). */
-        static id<MTLComputePipelineState> noop = nil;
-        if (!noop) {
-            NSError *ne = nil;
-            id<MTLLibrary> nl = [g.device newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void noop(device float *x [[buffer(0)]], uint t [[thread_position_in_grid]]) { if (t == 0xFFFFFFFFu) x[0] = 0.0f; }" options:nil error:&ne];
-            noop = [g.device newComputePipelineStateWithFunction:[nl newFunctionWithName:@"noop"] error:&ne];
-        }
-        [g.enc setComputePipelineState:noop];
+        [g.enc setComputePipelineState:g.functions[fn]];
         for (int64_t i = 0; i < g.n_args; i++) {
             [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
         }
         [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
               threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
         g.n_args = 0;
+        if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
+            /* Per-kernel breakdown: run each launch in a buffer of its own and
+             * add up its GPU time by function. Slower than the real schedule. */
+            [g.enc endEncoding];
+            [g.cmd commit];
+            [g.cmd waitUntilCompleted];
+            prof_ns[fn] += ([g.cmd GPUEndTime] - [g.cmd GPUStartTime]) * 1e9;
+            prof_n[fn] += 1;
+            g.cmd = nil;
+            g.enc = nil;
+        }
         return 0;
     }
-    [g.enc setComputePipelineState:g.functions[fn]];
-    for (int64_t i = 0; i < g.n_args; i++) {
-        [g.enc setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
-    }
-    [g.enc dispatchThreadgroups:MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1)
-          threadsPerThreadgroup:MTLSizeMake((NSUInteger)threads, 1, 1)];
-    g.n_args = 0;
-    if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
-        /* Per-kernel breakdown: run each launch in a buffer of its own and
-         * add up its GPU time by function. Slower than the real schedule. */
-        [g.enc endEncoding];
-        [g.cmd commit];
-        [g.cmd waitUntilCompleted];
-        prof_ns[fn] += ([g.cmd GPUEndTime] - [g.cmd GPUStartTime]) * 1e9;
-        prof_n[fn] += 1;
-        g.cmd = nil;
-        g.enc = nil;
-    }
-    return 0;
 }
 
 /* Commit what `cgpu_launch_async` encoded, without waiting: the GPU starts on it
@@ -379,89 +393,95 @@ int64_t cgpu_overlap(void) {
 }
 
 int64_t cgpu_flush(void) {
-    if (!g.cmd) {
+    @autoreleasepool {
+        if (!g.cmd) {
+            return 0;
+        }
+        [g.enc endEncoding];
+        [g.cmd commit];
+        g.last = g.cmd;
+        g.cmd = nil;
+        g.enc = nil;
         return 0;
     }
-    [g.enc endEncoding];
-    [g.cmd commit];
-    g.last = g.cmd;
-    g.cmd = nil;
-    g.enc = nil;
-    return 0;
 }
 
 /* Commit what is pending and wait for everything submitted: the GPU time of
  * the last command buffer, in nanoseconds (0 if nothing was submitted). */
 int64_t cgpu_sync(void) {
-    cgpu_flush();
-    if (!g.last) {
+    @autoreleasepool {
+        cgpu_flush();
+        if (!g.last) {
+            if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
+                cgpu_prof_dump();
+            }
+            return 0;
+        }
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        [g.last waitUntilCompleted];
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        int64_t ns = (int64_t)(([g.last GPUEndTime] - [g.last GPUStartTime]) * 1e9);
+        if (getenv("CANCHOGPU_PROFILE")) {
+            double wall = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+            fprintf(stderr, "sync: waited %.3f ms, last buffer gpu %.3f ms\n", wall, ns / 1e6);
+        }
+        g.last = nil;
         if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
             cgpu_prof_dump();
         }
-        return 0;
+        return ns;
     }
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    [g.last waitUntilCompleted];
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    int64_t ns = (int64_t)(([g.last GPUEndTime] - [g.last GPUStartTime]) * 1e9);
-    if (getenv("CANCHOGPU_PROFILE")) {
-        double wall = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
-        fprintf(stderr, "sync: waited %.3f ms, last buffer gpu %.3f ms\n", wall, ns / 1e6);
-    }
-    g.last = nil;
-    if (getenv("CANCHOGPU_PROFILE") && getenv("CANCHOGPU_PROFILE")[0] == '2') {
-        cgpu_prof_dump();
-    }
-    return ns;
 }
 
 int64_t cgpu_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
-    if (g.cmd) {
-        cgpu_sync();
-    }
-    if (fn < 0 || fn >= g.n_functions) {
-        g.n_args = 0;
-        return fail("cgpu_launch", "no such function");
-    }
+    @autoreleasepool {
+        if (g.cmd) {
+            cgpu_sync();
+        }
+        if (fn < 0 || fn >= g.n_functions) {
+            g.n_args = 0;
+            return fail("cgpu_launch", "no such function");
+        }
     
-    // Create command buffer
-    id<MTLCommandBuffer> commandBuffer = [g.queue commandBuffer];
-    if (!commandBuffer) {
-        g.n_args = 0;
-        return fail("cgpu_launch", "failed to create command buffer");
-    }
+        // Create command buffer
+        id<MTLCommandBuffer> commandBuffer = [g.queue commandBuffer];
+        if (!commandBuffer) {
+            g.n_args = 0;
+            return fail("cgpu_launch", "failed to create command buffer");
+        }
     
-    id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
-    if (!computeEncoder) {
+        id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
+        if (!computeEncoder) {
+            [commandBuffer commit];
+            g.n_args = 0;
+            return fail("cgpu_launch", "failed to create compute encoder");
+        }
+    
+        // Set the compute pipeline state
+        [computeEncoder setComputePipelineState:g.functions[fn]];
+    
+        // Set the arguments
+        for (int64_t i = 0; i < g.n_args; i++) {
+            [computeEncoder setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
+        }
+    
+        // Dispatch the compute kernel
+        MTLSize threadgroupsSize = MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1);
+        MTLSize threadsSize = MTLSizeMake((NSUInteger)threads, 1, 1);
+    
+        [computeEncoder dispatchThreadgroups:threadgroupsSize threadsPerThreadgroup:threadsSize];
+    
+        // End encoding
+        [computeEncoder endEncoding];
+    
+        // Commit and wait for completion
         [commandBuffer commit];
+        [commandBuffer waitUntilCompleted];
+    
         g.n_args = 0;
-        return fail("cgpu_launch", "failed to create compute encoder");
+        return 0;
     }
-    
-    // Set the compute pipeline state
-    [computeEncoder setComputePipelineState:g.functions[fn]];
-    
-    // Set the arguments
-    for (int64_t i = 0; i < g.n_args; i++) {
-        [computeEncoder setBuffer:g.args[i] offset:(NSUInteger)g.arg_offsets[i] atIndex:i];
-    }
-    
-    // Dispatch the compute kernel
-    MTLSize threadgroupsSize = MTLSizeMake((NSUInteger)gx, (NSUInteger)gy, 1);
-    MTLSize threadsSize = MTLSizeMake((NSUInteger)threads, 1, 1);
-    
-    [computeEncoder dispatchThreadgroups:threadgroupsSize threadsPerThreadgroup:threadsSize];
-    
-    // End encoding
-    [computeEncoder endEncoding];
-    
-    // Commit and wait for completion
-    [commandBuffer commit];
-    [commandBuffer waitUntilCompleted];
-    
-    g.n_args = 0;
-    return 0;
 }
 
 int64_t cgpu_error(char *out, int64_t n) {

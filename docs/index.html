@@ -213,7 +213,7 @@ error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op</p
 {"method":"bfgs","x":[1.5065,-2.0052,0.4572],"nfev":12,"converged":true, ...}</pre>
       <p class="note">Shows: a kernel as an optimiser's objective, on the CPU interpreter (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/examples/train/README.md">examples</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">training.md</a>). Does not show: training on a GPU, more than 32 parameters, or any speed claim.</p></article>
     <article class="story"><h3>A 27B model on the same kernels</h3>
-      <p>Qwen3.8-27B (NVFP4, read from Ollama's store) generating on a Metal GPU: 25.2 tokens a second, 32.6 with speculative decoding, against 42.8 for Ollama in the same invocation, on one Apple M4 Max.</p>
+      <p>Qwen3.8-27B (NVFP4, read from Ollama's store) generating on a Metal GPU: 25.7 tokens a second, 33.0 with speculative decoding, against 45.9 for Ollama in the same invocation, on one Apple M4 Max.</p>
 <pre class="code">$ cancho-gpu-run35 &lt;ollama store&gt; tests/chx "&lt;prompt&gt;" 64</pre>
       <p class="note">Shows: it runs and agrees with a reference's log-probabilities to 1e-4 (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>). Does not show: that it is the fast way to run this model; it is not.</p></article>
     <article class="story"><h3>Compared with OpenNN</h3>
@@ -508,13 +508,13 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
 <section id="model">
   <div class="center"><h2>A real model on the same kernels.</h2>
   <p class="sub">Qwen3.8-27B (NVFP4, 48 gated-delta layers) reads Ollama's store and runs on a Metal GPU. It is not the fastest way to run this model, and the page says so.</p></div>
-  <div class="bars" role="img" aria-label="Decode speed on the same machine: Ollama 42.8 tokens a second, MLX-LM 28.7, cancho-gpu 25.2, cancho-gpu with speculative decoding 32.6">
-    <div class="bar"><span>Ollama</span><div class="track"><div class="fill" style="width:100%"></div></div><b>42.8</b></div>
-    <div class="bar"><span>MLX-LM</span><div class="track"><div class="fill" style="width:67.1%"></div></div><b>28.7</b></div>
-    <div class="bar us"><span>cancho-gpu, speculative</span><div class="track"><div class="fill" style="width:76.2%"></div></div><b>32.6</b></div>
-    <div class="bar us"><span>cancho-gpu</span><div class="track"><div class="fill" style="width:58.9%"></div></div><b>25.2</b></div>
+  <div class="bars" role="img" aria-label="Decode speed on the same machine: Ollama 45.9 tokens a second, MLX-LM 29.8, cancho-gpu 25.7, cancho-gpu with speculative decoding 33.0">
+    <div class="bar"><span>Ollama</span><div class="track"><div class="fill" style="width:100%"></div></div><b>45.9</b></div>
+    <div class="bar"><span>MLX-LM</span><div class="track"><div class="fill" style="width:64.9%"></div></div><b>29.8</b></div>
+    <div class="bar us"><span>cancho-gpu, speculative</span><div class="track"><div class="fill" style="width:71.9%"></div></div><b>33.0</b></div>
+    <div class="bar us"><span>cancho-gpu</span><div class="track"><div class="fill" style="width:56.0%"></div></div><b>25.7</b></div>
   </div>
-  <p class="caption">Decode speed, tokens a second, greedy, 128 tokens of a prose continuation, three runs each, one machine (Apple M4 Max, 64 GB), one invocation, with other jobs running on the machine (load average 14 at the start; the runs themselves varied by under 2%) (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">docs/benchmark.md</a>). Ollama decodes this model with speculative decoding from the model's own draft head; cancho-gpu does too in the speculative row (a chain of two drafts, three rows checked a pass, the same tokens as plain decoding: <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>), and is not there yet. MLX-LM uses a different 4-bit quantisation. Prompt processing takes eight tokens at a time: a 49-token prompt in 0.65 s, against 2.2 s a token at a time (one run each).</p>
+  <p class="caption">Decode speed, tokens a second, greedy, 128 tokens of a prose continuation, five runs each, one machine (Apple M4 Max, 64 GB), one invocation, with a light background load (load average about 3 at the start; the runs themselves varied by under 2%) (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">docs/benchmark.md</a>). Ollama decodes this model with speculative decoding from the model's own draft head; cancho-gpu does too in the speculative row (a chain of two drafts, three rows checked a pass, the same tokens as plain decoding: <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>), and is not there yet. MLX-LM uses a different 4-bit quantisation. Prompt processing takes eight tokens at a time: a 49-token prompt in 0.65 s, against 2.2 s a token at a time (one run each).</p>
   <div class="cards">
     <div class="card"><h3>Correct, not just fast</h3><p>Three prompts, eight steps each: the same token and top five as the reference's golden log-probabilities, logit gaps within 1e-4.</p></div>
     <div class="card"><h3>Small first</h3><p>Qwen2.5-0.5B gives the same greedy tokens as Hugging Face transformers in float32, every top-5 logit within 1e-4, at about 6 ms a token.</p></div>
