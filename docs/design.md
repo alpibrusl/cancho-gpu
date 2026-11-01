@@ -1,5 +1,10 @@
 # cancho-gpu: design
 
+> **Reading this document after `native.md` N2.** It describes how the compiler was built as a port of lex-gpu's and was held to
+> that Rust implementation as its oracle; **that is no longer so.** Where it says "the Rust's" as an authority, read "it began as
+> the Rust's": the language is specified in [`chx.md`](chx.md), numbers are held to float64 references, and the goldens are
+> regression records. The account of what was hard and what it cost stands as history.
+
 > **Status: slices 1–8, 9b (`exp`/`log`, `softmax` and the decode kernels of an
 > attention layer: [`kernels.md`](kernels.md); split-KV for long contexts is not
 > built) and 10 of cancho#251 built and measured** (driving a GPU: CUDA against a mock driver only, Metal also on
@@ -212,12 +217,10 @@ reachable (an estimate, as above), and 240 more of f32.
 
 ## 9. How it is checked
 
-* `tests/golden.sh`: every case of `tests/cases.txt` against
-  `golden/`, which is the Rust emitter's output at the lex-gpu commit in
-  `golden/LEX_GPU`, regenerated only from the Rust
-  (`scripts/regen-golden.sh`).
-* `scripts/differential.sh <lex-gpu>`: the same cases against a live
-  build of the Rust.
+* `tests/golden.sh`: every case of `tests/cases.txt` against `golden/`. **Corrected (`native.md` N2):** the goldens were the Rust
+  emitter's output at the lex-gpu commit in `golden/PROVENANCE`, regenerated only from the Rust; they are regression records
+  of this compiler now (`scripts/record-golden.sh`), and `scripts/differential.sh`, which ran the Rust live, is gone.
+  What a kernel computes is held to float64 references by `tests/kernels.py`.
 * `tests/reject.sh`: one fixture per rule tag, each refused with its own
   tag and nothing written; and every tag the sources can raise has a
   fixture.

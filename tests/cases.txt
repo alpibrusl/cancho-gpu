@@ -1,5 +1,5 @@
-# <file.chx> [name=value ...] -- see scripts/differential.sh
-# lex-gpu's own kernels, at the sizes its README uses and at others.
+# <file.chx> [name=value ...] -- recorded in golden/ by scripts/record-golden.sh
+# The kernels of lex-gpu, at the sizes its README uses and at others, then cases of our own.
 tests/chx/ported/silu_mul.chx
 tests/chx/ported/rmsnorm.chx n=4096 eps=0.00001
 tests/chx/ported/rmsnorm.chx n=4096 eps=1e-5
@@ -245,3 +245,12 @@ tests/chx/bwd_db.chx r=64 n=32
 tests/chx/bwd_db.chx r=64 n=32 --run
 tests/chx/bwd_sigmoid.chx r=8 n=64
 tests/chx/bwd_sigmoid.chx r=8 n=64 --run
+# Cases for lowering paths the Rust emitter never had (the register-fragment NVFP4 product, a schedule's `frag`, docs/kernels.md section 6):
+tests/chx/matvec_fp4_batch.chx m=1 n=17408 k=5120
+tests/chx/matvec_fp4_batch.chx m=2 n=17408 k=5120
+tests/chx/matvec_fp4_batch.chx m=8 n=17408 k=5120
+tests/chx/matvec_fp4_batch.chx m=3 n=64 k=128 --run
+tests/chx/matvec_fp4_res_batch.chx m=4 n=5120 k=17408
+tests/chx/matvec_fp4_res_batch.chx m=2 n=64 k=128 --run
+tests/chx/matvec_fp4_swiglu_batch.chx m=4 n=17408 k=5120
+tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=64 k=128 --run

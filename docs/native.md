@@ -1,6 +1,6 @@
 # Native: cancho-gpu at the speed of its language, and without the Rust oracle
 
-> **Status: a design; N1 is built and measured (§6, N1), the rest is not.**
+> **Status: N1 and N2 are built and measured (§6); N2f (the readers' oracles), N3, N4 and N5 are not.**
 > Written before the code; each step of §6 ends at a number. Claims are marked
 > **[measured]** (with the command), **[read]** (from a document or the source) or
 > **[open]**. It answers two questions that arrived tangled: *why is cancho-gpu
@@ -98,8 +98,10 @@ emitter; `golden/` is regenerated only from the Rust." Concretely:
    CPU). Until then the CUDA text is *regression-tested, not verified*, and the README says so.
 6. **The rules change in one place:** `CLAUDE.md` ("The oracle is the Rust" becomes "the oracle
    is `docs/chx.md` and the independent references"), the repository description, `README`,
-   `design.md`'s byte-identity sections; `golden/`, `regen-golden.sh` and `differential.sh`
-   are deleted **after** N1 is merged.
+   `design.md`'s byte-identity sections; `regen-golden.sh` and `differential.sh` are deleted **after** N1 is merged. **`golden/`
+   is kept, not deleted (changed from the first draft of this section):** its 226 cases are byte-identical with what this compiler
+   writes (re-recording changed none of them), so deleting them would throw away a regression net for nothing. They become
+   regression records.
 
 ## 5. Order
 
@@ -156,14 +158,41 @@ are still `edition 5`. Moving the storage to `[f32]` would halve the memory a te
 what it would buy has not been measured, and the remaining distance to the plain loop (3.5 times) is the place to look
 first. `rank >= 3` windows still use `elem`; the kernels in `tests/cases.txt` that use them were not timed.
 
-### N2. Independence
+### N2. Independence: built
 
-Section 4. The pieces, in order: (a) `docs/chx.md`, written from the parser and checker
-as they are (the surface does not change); (b) references for every kernel of
-`tests/cases.txt` that computes numbers, with a tolerance per kernel and the *mutants*
-(`tests/session.py --mutants` is the model) showing each reference fails when the kernel is
-wrong; (c) self-goldens for the text; (d) the rules and descriptions; (e) deletions. N2 does
-not start until N1 is merged and measured.
+**What was done:**
+
+* **`docs/chx.md`**, the specification of the language, first edition: the grammar (read off the parser), the types, the
+  operations and their broadcasting, the linearity rules, the targets, and what is **deliberately unspecified** (the order of a
+  reduction; the accuracy of the transcendental functions; the `i8` tie rule; NaN and infinity). It lists its own open points.
+* **A float64 reference for every one of the 41 numeric kernel families** of `tests/cases.txt`. Twenty-nine already had one in
+  `tests/kernels.py`; twelve did not (`gemm`, `gemm_mma`, `gemm_fp4`, `gemm_fp4_res`, `rmsnorm`, `silu_mul`, `softmax`, `rowops`, `stage`,
+  and the plain `matvec`, `matvec_fp4`, `batch_fp4`): they were written, they all agreed with the kernels at the first try on both
+  targets, and `kernels.py --mutants` makes one deliberate change to nine of them (a sign, a missing residual, a dropped slice of k,
+  a reciprocal omitted) and requires each reference to fail. `kernels.py` now has 146 checks. Two of my first mutants were
+  stopped by the type checker instead of the reference and were replaced. One reference needed a looser tolerance (`matvec`
+  at k = 4096: 1.7e-5 on terms adding up to 254, about one f32 rounding step at that scale), stated at the call.
+* **The goldens are regression records.** `golden-self/`, `self-cases.txt` and `record-self-golden.sh` are folded into one
+  `golden/` (226 cases: 200 emit, 26 refused), `scripts/record-golden.sh` records them from this compiler, and **re-recording
+  changed none of the 218 that had come from the Rust** (checked by `git diff`: only `golden/PROVENANCE` differs, the renamed
+  `LEX_GPU`). `tests/golden.sh` no longer says "the Rust refuses".
+* **Deleted:** `scripts/differential.sh`, `scripts/regen-golden.sh`, `scripts/record-self-golden.sh`, `tests/self-cases.txt`.
+* **The rules and the public text:** `CLAUDE.md` ("There is no Rust oracle"), the README (what you get, requirements, checking it,
+  history, contributing), `docs/design.md` (a banner and §9 corrected in place), `docs/kernels.md`, `docs/llms.txt`,
+  `docs/index.html`, the header of `src/parser.cho`.
+
+**Not done, and said plainly:**
+
+* **N2f. The readers' oracles are still external and still Rust.** The GGUF reader, the tokenizer, the sampler and the Unicode
+  tables (`src/unicode_data.cho`, generated from the oracle's own predicates) are held to dumps made by lex-rt's Rust tools
+  (`scripts/regen-gguf-golden.sh`, `regen-tokenizer-golden.sh`, `regen-sampler-golden.sh`, `regen-unicode-data.sh`); the safetensors
+  one is the `safetensors` library. They are not `.chx`, they were not in this design, and they are the next dependence on the
+  Rust to remove. Candidates for independent oracles: Hugging Face `tokenizers` for the tokenizer (the repository already
+  checks the chat template against jinja2 and the model against `transformers`), the `gguf` Python package for the GGUF reader,
+  Python's `unicodedata` for the Unicode tables. The sampler has no obvious independent reference.
+* **CUDA stays weaker than before** (§4.5): its text is a regression record and nothing else, until there is an NVIDIA machine.
+* **The tests in `tests/cases.txt` that compute nothing numeric** (the 26 refusals, the lowering-only cases) have no float64
+  reference, as before; their evidence is the goldens and the reject fixtures.
 
 ### N3. A free summation order
 

@@ -40,14 +40,14 @@ the existing matrix kernels.
 ## 2. How they are held to something
 
 * **The emitters.** Every case of `tests/cases.txt` for these kernels (19 of the
-  159 now) writes CUDA C and Metal **byte-identical with lex-gpu's Rust
-  emitter's**, or is refused where the Rust refuses (`tests/golden.sh`,
-  goldens recorded from the Rust, lex-gpu `851497d`). A refusal can be partial:
-  an over-budget attention is accepted for CUDA and refused for Metal, and the
-  golden keeps the CUDA file the Rust wrote before it refused
-  (`scripts/regen-golden.sh`, `tests/golden.sh` learned this here).
-* **The interpreter.** The `--run` summaries of the ten `--run` cases are
-  byte-identical with the Rust interpreter's.
+  159 now) writes CUDA C and Metal held to the recorded goldens, or is refused where the
+  record says so (`tests/golden.sh`). They were first agreed byte for byte with lex-gpu's
+  Rust emitter (`851497d`, `golden/PROVENANCE`) and are regression records since (`docs/native.md` N2).
+  A refusal can be partial: an over-budget attention is accepted for CUDA and refused for
+  Metal, and the golden keeps the CUDA file written before the refusal
+  (`scripts/record-golden.sh`).
+* **The interpreter.** The `--run` summaries of the ten `--run` cases are goldens (first
+  agreed with the Rust interpreter's) and agree with the float64 references of `tests/kernels.py`.
 * **What they compute** (`tests/kernels.py`, in the gate). Byte-identity with
   lex-gpu says the two compilers agree, not that `attention.chx` is attention. The
   script runs each kernel with `--run` on the interpreter's own made-up inputs
@@ -150,8 +150,8 @@ rows (`scripts/metal-kernels.sh`) and against the plain-Python model (`tests/ker
 as fast as the decode path for one row, which is why those kernels are separate files: the decode path is
 unchanged.
 
-`frag` is a schedule key the Rust does not have, so no oracle can hold these cases: their expected output is
-`golden-self/`, recorded from this compiler (`scripts/record-self-golden.sh`, `tests/self-cases.txt`) and
+`frag` is a schedule key the Rust does not have, so the Rust never held these cases: their expected output is
+in `golden/` like the others, recorded from this compiler (`scripts/record-golden.sh`) and
 reviewed as text; what they compute is held by the interpreter, `tests/kernels.py` and the device check.
 A schedule that sets `frag` where the shapes do not fit (more than eight rows, a reduction that is not a
 multiple of 32, a group size other than 16, CUDA) lowers through the generic path, so the key is never wrong,
