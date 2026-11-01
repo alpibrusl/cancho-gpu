@@ -31,6 +31,7 @@ import dialect;
 import lower;
 import interp;
 import cli;
+import runcmd;
 import metal;
 
 fn words() -> [] int {
@@ -116,6 +117,17 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         i = i + 1;
     }
     metal.cgpu_close(ffi);
+    return 0;
+}
+
+// A line of the report: on standard output, or on standard error when `--out`
+// has standard output for itself.
+fn say[&t, &i](t: &!t [byte], io: &!i Io, diag: bool, s: int) -> [io_write, err_write] int {
+    if diag {
+        io.error_all(io, text.bytes(t, s));
+    } else {
+        io.write_all(io, text.bytes(t, s));
+    }
     return 0;
 }
 
@@ -220,7 +232,7 @@ fn compare[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], prog: int, 
     return text.joined(m, t, lines, "");
 }
 
-fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_write, err_write, fs_read(""), args, ffi("libmetalgpu")] int {
+fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu")] int {
     if arg_count(args) < 3 {
         return usage(io);
     }
@@ -237,10 +249,17 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
         return 1;
     }
     m[mem.text_slot()] = top + got;
-    let vals = cli.constants(m, t, args, 3);
-    if vals < 0 {
+    // The constants, and `--in` / `--out` as `cancho-gpu run` takes them (docs/run.md section 7).
+    let scanned = runcmd.scan(m, t, args, 3, true);
+    if scanned < 0 {
         return cli.report(m, t, io);
     }
+    let vals = mem.get(m, scanned, 0);
+    let ins = mem.get(m, scanned, 1);
+    let outs = mem.get(m, scanned, 2);
+    // With `--out` standard output carries only the `--out` lines, for the
+    // program that reads them: the summaries and the comparison go to standard error.
+    let diag = mem.size(m, outs) > 0;
     let unit = parser.parse(m, t, text.handle(top, got));
     if unit < 0 {
         return cli.report(m, t, io);
@@ -254,19 +273,32 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     if check.check(m, t, prog, tg) < 0 {
         return cli.report(m, t, io);
     }
+    if mem.size(m, ins) > 0 || diag {
+        if runcmd.check_io(m, t, prog, ins, outs) < 0 {
+            return cli.report(m, t, io);
+        }
+    }
     let l = lower.lower(m, t, prog, tg, dialect.msl(), m[s + 1], m[s + 3], m[s + 4], m[s + 5], m[s + 7]);
     if l < 0 {
         return cli.report(m, t, io);
     }
     let want = interp.inputs(m, t, fm, prog);
-    if want < 0 || interp.execute(m, t, fm, prog, want) < 0 {
+    if want < 0 {
         return cli.report(m, t, io);
     }
-    io.write_all(io, text.bytes(t, interp.summary(m, t, fm, prog, want, text.lit(m, t, "reference"))));
+    if runcmd.load(m, t, fm, fs, args, prog, want, ins) < 0 {
+        return cli.report(m, t, io);
+    }
+    if interp.execute(m, t, fm, prog, want) < 0 {
+        return cli.report(m, t, io);
+    }
+    say(t, io, diag, interp.summary(m, t, fm, prog, want, text.lit(m, t, "reference")));
     let have = interp.inputs(m, t, fm, prog);
     if have < 0 {
         return cli.report(m, t, io);
     }
+    // The upload holds the numbers the reference ran on.
+    runcmd.copy_inputs(m, fm, prog, want, have);
     let sizes = mem.list(m);
     if on_device(m, t, fm, ffi, prog, l, have, sizes) < 0 {
         return cli.report(m, t, io);
@@ -277,15 +309,16 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     var k = 0;
     while k < mem.size(m, sizes) {
         let l2 = mem.of2(m, ir.param_name(m, mem.get(m, ps, k)), text.num(m, t, mem.get(m, sizes, k)));
-        io.write_all(io, text.bytes(t, text.fmt(m, t, "upload: $ $ bytes\n", l2)));
+        say(t, io, diag, text.fmt(m, t, "upload: $ $ bytes\n", l2));
         k = k + 1;
     }
-    io.write_all(io, text.bytes(t, interp.summary(m, t, fm, prog, have, text.lit(m, t, "device"))));
-    io.write_all(io, text.bytes(t, compare(m, t, fm, prog, want, have)));
+    say(t, io, diag, interp.summary(m, t, fm, prog, have, text.lit(m, t, "device")));
+    say(t, io, diag, compare(m, t, fm, prog, want, have));
     if err.failed(m) {
         return cli.report(m, t, io);
     }
-    return 0;
+    // Only a device answer that agrees with the reference is printed.
+    return runcmd.print_outs(m, t, fm, io, prog, have, outs);
 }
 
 fn main(world: World) -> [] int {

@@ -4,6 +4,7 @@
  * launch writes nothing and appends one line to $CANCHOGPU_MOCK_LOG:
  *
  *     launch <entry> grid <gx>x<gy> block <threads> args <n> bytes <b0>,<b1>,...
+ *     sums <h0>,<h1>,...      (FNV-1a 64 of each argument buffer, hex)
  *
  * reading exactly as many arguments as the entry declares (counted from
  * its signature in the loaded "PTX", which is the source -- see
@@ -85,6 +86,19 @@ CUresult cuLaunchKernel(void *f, unsigned gx, unsigned gy, unsigned gz, unsigned
     fprintf(log, "launch %s grid %ux%u block %u args %d bytes ", ((struct fn *)f)->name, gx, gy, bx, n);
     for (int i = 0; i < n; i++) {
         fprintf(log, "%s%zu", i ? "," : "", size_of(*(CUdeviceptr *)params[i]));
+    }
+    fprintf(log, "\n");
+    /* What each argument buffer held at the launch: FNV-1a 64 of its bytes
+     * (tests/device-io.sh compares them with the encoded inputs). */
+    fprintf(log, "sums ");
+    for (int i = 0; i < n; i++) {
+        CUdeviceptr p = *(CUdeviceptr *)params[i];
+        const unsigned char *b = (const unsigned char *)(size_t)p;
+        unsigned long long h = 14695981039346656037ULL;
+        for (size_t k = 0; k < size_of(p); k++) {
+            h = (h ^ b[k]) * 1099511628211ULL;
+        }
+        fprintf(log, "%s%016llx", i ? "," : "", h);
     }
     fprintf(log, "\n");
     fclose(log);

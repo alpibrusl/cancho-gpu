@@ -113,6 +113,8 @@ row 0 pick 1 nucleus 2: 1=3f6922c8 0=3db6e9c3
 ```sh
 CANCHO=$CANCHO scripts/build-device.sh        # CUDA: build/cancho-gpu-device
 CANCHO=$CANCHO scripts/build-metal-device.sh  # Metal: build/cancho-gpu-metal-device
+# real inputs and the device's whole answer, as `cancho-gpu run` takes them (docs/run.md section 7):
+build/cancho-gpu-metal-device run tests/chx/bwd_dx.chx r=2 n=2 k=3 --in dy dy.txt --in w w.txt --out dx
 ```
 
 **See what it is allowed to do** (checked by `tests/authority.sh`, in the gate):
@@ -126,7 +128,7 @@ $CANCHO authority --std src/*.cho
 ## Checking it
 
 ```sh
-CANCHO=$CANCHO scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing, GGUF, safetensors, tokenizer, sampler, kernels, authority
+CANCHO=$CANCHO scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing (also with `--in` / `--out`), GGUF, safetensors, tokenizer, sampler, kernels, authority
 scripts/differential.sh <reference checkout>  # the same cases against a live build of the reference
 scripts/regen-golden.sh <reference checkout>  # golden/ from the reference, never from this compiler
 scripts/regen-gguf-golden.sh <reference checkout>  # golden/gguf/ from the reference runtime's reader (also regen-tokenizer-golden.sh, regen-sampler-golden.sh, regen-safetensors-golden.sh, regen-unicode-data.sh)

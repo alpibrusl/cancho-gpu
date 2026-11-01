@@ -72,8 +72,10 @@ measures the need for but does not build.
 
 ## 3. The program
 
-`cancho-gpu-device run <file.chx> [name=value ...]`, a second binary
-(`device/`), so the compiler itself still links nothing but libc:
+`cancho-gpu-device run <file.chx> [name=value ...] [--in NAME FILE ...] [--out NAME ...]`,
+a second binary (`device/`), so the compiler itself still links nothing but
+libc. Without `--in`/`--out` the inputs are the interpreter's made-up ones; with
+them, the files' (design, gates and measurements in [`run.md`](run.md) §7):
 
 1. Parse, elaborate, check and lower for `nvidia-ada`, exactly as
    `emit` does; run the reference interpreter over the made-up inputs.
