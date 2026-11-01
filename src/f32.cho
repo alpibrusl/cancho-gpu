@@ -1,25 +1,21 @@
 edition 6;
 module f32;
 
-// `f32` -- single precision, without a single-precision type.
+// `f32` -- single precision for the interpreter and the printers.
 //
-// cancho has one floating type, binary64 (`cancho/docs/floating-point.md`
-// §1). The Rust this compiler ports computes its constants in f32 and
-// prints them with `{:?}`, and "the same program" is byte-identical
-// output, so the f32 rounding and the f32 printing both have to be
-// exact. They are, with two facts (`docs/design.md` §4):
+// A tensor element is held as a `float` (binary64) whose value is exactly an
+// f32; every f32 is exactly a binary64, so nothing is lost. Rounding a
+// binary64 to the nearest f32 (`round`) is cancho's conversion
+// (`float_of32(f32_of(x))`, `docs/native.md` N1); `round_soft` is the same
+// rounding done in integers on `bits_of`, kept as the oracle `round` is held
+// to (`tests/unit_test.cho`). One f32 `+ - * /` is a binary64 operation
+// rounded once, which is the correctly rounded f32 result because binary64
+// has more than `2 * 24 + 2` significand bits (double rounding cannot bite).
 //
-// * every f32 is exactly a binary64, so an f32 is held as a `float`
-//   whose value happens to be one; and
-// * binary64 has more than `2 * 24 + 2` significand bits, so one f32
-//   `+ - * /` done in binary64 and rounded once to f32 is the correctly
-//   rounded f32 result -- double rounding cannot bite.
-//
-// So the only primitive needed is "round a binary64 to the nearest f32",
-// done in integers on `bits_of` and rebuilt with `math.ldexp`, which is
-// exact for every f32. cancho has `bits_of` but nothing that builds a
-// float from bits; `ldexp` is the way round that, and cancho-gpu is the
-// first program that asked (cancho#251).
+// The rest is printing and reading: the shortest digits that read back as an
+// f32 (`debug`), a fixed number of decimals (`fixed`), and decimal text read
+// to the nearest value (`parse`). Their formats are part of the output the
+// goldens record.
 
 import mem;
 import text;
@@ -149,7 +145,7 @@ pub fn from_bits(bits: int) -> [] float {
 }
 
 // ---------------------------------------------------------------------
-// Printing: what Rust's `{:?}` writes for an f32
+// Printing: the shortest digits that read back as an f32
 // ---------------------------------------------------------------------
 
 fn limbs() -> [] int {
@@ -159,8 +155,7 @@ fn limbs() -> [] int {
 // The shortest digits that read back as the f32 `x` (positive, finite,
 // nonzero), by Steele and White's algorithm -- `std.fmt`'s, with the
 // neighbours of an f32 in place of a binary64's. Answers the digits
-// (a list of 0..9) and `k`, with `x = 0.d1d2... * 10^k`. Ties round up,
-// as Rust's shortest mode does.
+// (a list of 0..9) and `k`, with `x = 0.d1d2... * 10^k`. Ties round up.
 fn shortest[&m](m: &!m [int], x: float) -> [] (int, int) {
     let (negative, m53, e53) = parts_of(x);
     // The same value with an f32's significand.
@@ -297,7 +292,7 @@ fn zeros[&m, &t](m: &!m [int], t: &!t [byte], n: int) -> [] int {
     return s;
 }
 
-// The f32 `x` as Rust's `{:?}` writes it: the shortest digits that read
+// The f32 `x` as text: the shortest digits that read
 // back, positional between 1e-4 and 1e16 with at least one digit after
 // the point (`0.5`, `16384.0`), exponential outside it (`1e-5`, `1.5e16`).
 pub fn debug[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
@@ -347,13 +342,13 @@ pub fn debug[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
 // Reading: a decimal literal, correctly rounded to binary64
 // ---------------------------------------------------------------------
 
-// `s` as Rust's `str::parse::<f64>` reads the numbers the `.chx` lexer
+// `s` as a number, for the numbers the `.chx` lexer
 // produces: digits, an optional point and fraction, an optional
 // exponent. Answers `(true, value)`, or `(false, 0.0)` when it is not a
 // number. The rounding is `std.json`'s, which is correct (Clinger's fast
 // path and an exact slow path); the text is first brought to the JSON
-// grammar, which forbids the leading zeros and the bare trailing point
-// that Rust accepts.
+// grammar, which forbids the leading zeros and the bare trailing point,
+// so those are refused here.
 pub fn parse[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] (bool, float) {
     let n = text.size(s);
     // digits [. digits] [(e|E) [+|-] digits]
@@ -444,8 +439,8 @@ pub fn to_count(x: float) -> [] int {
 }
 
 // `x as usize`, printed: the exact integer for a whole `x` below 2^64,
-// and `usize::MAX` at and past it -- which is what the Rust's kernel
-// names carry for a constant that large. cancho's `int` stops at 2^63,
+// and `usize::MAX` (18446744073709551615) at and past it -- which is what
+// kernel names carry for a constant that large. cancho's `int` stops at 2^63,
 // so the value is held as two 32-bit halves and divided down by hand.
 pub fn count_string[&m, &t](m: &!m [int], t: &!t [byte], x: float) -> [] int {
     if is_nan(x) || x <= 0.0 {
@@ -653,7 +648,7 @@ fn whole_string[&m, &t](m: &!m [int], t: &!t [byte], mant: int, e: int) -> [] in
     return text.joined(m, t, parts, "");
 }
 
-// The f32 `x` as Rust's `{:.prec$}` writes it: exact, ties to even, the
+// The f32 `x` with `prec` decimals: exact, ties to even, the
 // sign kept on a negative value that rounds to zero.
 pub fn fixed[&m, &t](m: &!m [int], t: &!t [byte], x: float, prec: int) -> [] int {
     if is_nan(x) {

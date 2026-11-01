@@ -1,7 +1,7 @@
 edition 5;
 module lexer;
 
-// `.chx` text to tokens: `lex_front::syntax::Lexer`, ported.
+// `.chx` text to tokens (`docs/chx.md` §2).
 //
 // A token is a record `[kind, text, value, line, col]`: `kind` is one of
 // the four below, `text` the bytes it was spelled with (a handle into the
@@ -52,7 +52,7 @@ fn token[&m](m: &!m [int], k: int, s: int, v: int, line: int, col: int) -> [] in
     return mem.rec5(m, k, s, v, line, col);
 }
 
-// What `{:?}` of the Rust `Tok` prints, for messages.
+// A token as a message shows it.
 pub fn show[&m, &t](m: &!m [int], t: &!t [byte], tok: int) -> [] int {
     let k = m[tok];
     if k == ident() {
