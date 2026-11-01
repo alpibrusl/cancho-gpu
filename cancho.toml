@@ -1,6 +1,6 @@
 [package]
 name = "cancho-gpu"
-cancho = "a4572ea3b506e4bcec1c4be43deda1043c11ba9f"   # the compiler these sources were written for
+cancho = "a49ea779d01207bfe83337ee79f4f003319c5f06"   # the compiler these sources were written for
 
 [[bin]]
 name = "cancho-gpu"
