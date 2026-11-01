@@ -1,0 +1,301 @@
+edition 5;
+
+// `cancho-gpu-metal-session` -- a session on a Metal GPU (`docs/resident.md`):
+//
+//     cancho-gpu-metal-session <session file>
+//
+// The same session file as `cancho-gpu-session`, with the kernels compiled for `apple-m-series`. Each kernel is compiled to Metal
+// once, every parameter gets a device buffer once, the resident data is uploaded once, and a link is the same buffer for the
+// output of one kernel and the input of the next (no trip through the host). A request line then uploads the `input` parameters,
+// launches the kernels in order, reads the `answer` outputs back and writes them as one line.
+//
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-metal-session.sh`).
+
+import std.io;
+import mem;
+import text;
+import err;
+import kinds;
+import f32;
+import ir;
+import cli;
+import devcodec;
+import session;
+import metal;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 268435456;
+}
+
+fn floats_cap() -> [] int {
+    return 32000000;
+}
+
+fn line_cap() -> [] int {
+    return 1048576;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-metal-session <session file>\n");
+    return 2;
+}
+
+// The shim's last failure, as a `device` refusal.
+fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
+    let top = m[mem.text_slot()];
+    let n = metal.cgpu_error(ffi, t[top..top + 4096]);
+    var detail = text.handle(top, 0);
+    if n > 0 {
+        m[mem.text_slot()] = top + n;
+        detail = text.handle(top, n);
+    } else {
+        detail = text.lit(m, t, "no detail");
+    }
+    return err.fail(m, t, "device", text.f2(m, t, "$: $", text.lit(m, t, what), detail));
+}
+
+// The device buffer of parameter `ai` of program `pi` once set up (`bufs` holds one list of buffers for each program).
+fn buffer_of[&m](m: &!m [int], bufs: int, pi: int, ai: int) -> [] int {
+    return mem.get(m, mem.get(m, bufs, pi), ai);
+}
+
+// Compile every kernel, give every parameter a buffer (a linked input shares the buffer of the output it is linked from) and upload
+// the resident data. Answers (the list of each program's kernel function, the list of each program's buffers), or (-1, -1).
+fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), sess: int) -> [ffi("libmetalgpu")] (int, int) {
+    let progs = m[sess + session.s_progs()];
+    let links = m[sess + session.s_links()];
+    let resident = m[sess + session.s_resident()];
+    if metal.cgpu_open(ffi) < 0 {
+        let r = device_fail(m, t, ffi, "opening the device");
+        return (0 - 1, 0 - 1);
+    }
+    let funcs = mem.list(m);
+    let bufs = mem.list(m);
+    var q = 0;
+    while q < mem.size(m, progs) {
+        let pr = mem.get(m, progs, q);
+        let l = m[pr + 3];
+        let kernel_module = metal.cgpu_compile(ffi, text.bytes(t, m[l + 1]));
+        if kernel_module < 0 {
+            let r = device_fail(m, t, ffi, "compiling a kernel");
+            return (0 - 1, 0 - 1);
+        }
+        let func = metal.cgpu_function(ffi, kernel_module, text.bytes(t, m[l]));
+        if func < 0 {
+            let r = device_fail(m, t, ffi, "finding an entry point");
+            return (0 - 1, 0 - 1);
+        }
+        mem.push(m, funcs, func);
+        let mine = mem.list(m);
+        let globals = m[pr + 2];
+        var i = 0;
+        while i < mem.size(m, globals) {
+            let g = mem.get(m, globals, i);
+            var shared = 0 - 1;
+            var k = 0;
+            while k < mem.size(m, links) {
+                let link = mem.get(m, links, k);
+                if m[link + 2] == q && m[link + 3] == i {
+                    let gs = mem.get(m, m[mem.get(m, progs, m[link]) + 2], m[link + 1]);
+                    if m[gs] != m[g] {
+                        let r = err.fail(m, t, "session", text.lit(m, t, "a link needs the same element type at both ends on a device, which shares the buffer"));
+                        return (0 - 1, 0 - 1);
+                    }
+                    shared = buffer_of(m, bufs, m[link], m[link + 1]);
+                }
+                k = k + 1;
+            }
+            if shared >= 0 {
+                mem.push(m, mine, shared);
+            } else {
+                let buf = metal.cgpu_alloc(ffi, m[g + 3] * kinds.size_bytes(m[g]));
+                if buf < 0 {
+                    let r = device_fail(m, t, ffi, "allocating a buffer");
+                    return (0 - 1, 0 - 1);
+                }
+                mem.push(m, mine, buf);
+            }
+            i = i + 1;
+        }
+        mem.push(m, bufs, mine);
+        q = q + 1;
+    }
+    // The resident data goes up once. The staging bytes are given back as soon as they are sent.
+    var r = 0;
+    while r < mem.size(m, resident) {
+        let rec = mem.get(m, resident, r);
+        let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+        let mark = m[mem.text_slot()];
+        let at = devcodec.encode(m, t, fm, g);
+        let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+        if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[at..at + bytes]) < 0 {
+            let e = device_fail(m, t, ffi, "uploading resident data");
+            return (0 - 1, 0 - 1);
+        }
+        m[mem.text_slot()] = mark;
+        r = r + 1;
+    }
+    return (funcs, bufs);
+}
+
+// One request on the device, after `session.fill_inputs`: upload the inputs, launch the kernels in order, read the answers back.
+fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), sess: int, funcs: int, bufs: int) -> [ffi("libmetalgpu")] int {
+    let progs = m[sess + session.s_progs()];
+    let inputs = m[sess + session.s_inputs()];
+    let answers = m[sess + session.s_answers()];
+    var k = 0;
+    while k < mem.size(m, inputs) {
+        let rec = mem.get(m, inputs, k);
+        let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+        let at = devcodec.encode(m, t, fm, g);
+        if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[at..at + m[g + 3] * kinds.size_bytes(m[g])]) < 0 {
+            return device_fail(m, t, ffi, "uploading an input");
+        }
+        k = k + 1;
+    }
+    var q = 0;
+    while q < mem.size(m, progs) {
+        let pr = mem.get(m, progs, q);
+        let l = m[pr + 3];
+        let mine = mem.get(m, bufs, q);
+        var i = 0;
+        while i < mem.size(m, mine) {
+            if metal.cgpu_arg(ffi, mem.get(m, mine, i)) < 0 {
+                return device_fail(m, t, ffi, "binding an argument");
+            }
+            i = i + 1;
+        }
+        if metal.cgpu_launch_async(ffi, mem.get(m, funcs, q), m[l + 2], m[l + 3], m[l + 4]) < 0 {
+            return device_fail(m, t, ffi, "launching a kernel");
+        }
+        q = q + 1;
+    }
+    // One wait for all the kernels, which the device runs in the order they were encoded.
+    if metal.cgpu_sync(ffi) < 0 {
+        return device_fail(m, t, ffi, "waiting for the kernels");
+    }
+    k = 0;
+    while k < mem.size(m, answers) {
+        let a = mem.get(m, answers, k);
+        let g = mem.get(m, m[mem.get(m, progs, m[a]) + 2], m[a + 1]);
+        let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+        let at = devcodec.reserve(m, bytes);
+        if metal.cgpu_download(ffi, buffer_of(m, bufs, m[a], m[a + 1]), t[at..at + bytes]) < 0 {
+            return device_fail(m, t, ffi, "reading an answer back");
+        }
+        devcodec.decode(m, t, fm, g, at);
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_read, io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu")] int {
+    if arg_count(args) != 2 {
+        return usage(io);
+    }
+    let file = arg(args, 1);
+    let top = m[mem.text_slot()];
+    let got = fs_read(fs, file, t[top..len(t)]);
+    if got < 0 {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, file);
+        io.error_all(io, "\n");
+        return 1;
+    }
+    m[mem.text_slot()] = top + got;
+    // The target is the device's: apple-m-series.
+    let sess = session.open(m, t, fm, fs, text.handle(top, got), text.lit(m, t, "apple-m-series"), true, true);
+    if sess < 0 {
+        return cli.report(m, t, io);
+    }
+    let (funcs, bufs) = setup(m, t, fm, ffi, sess);
+    if funcs < 0 {
+        return cli.report(m, t, io);
+    }
+    let mark = m[mem.top_slot()];
+    let tmark = m[mem.text_slot()];
+    var more = true;
+    var status = 0;
+    while more {
+        var n = 0;
+        var c = getchar(io);
+        while c >= 0 && c != 10 && n < line_cap() {
+            t[tmark + n] = byte_of(c);
+            n = n + 1;
+            c = getchar(io);
+        }
+        if c >= 0 && c != 10 {
+            let r = err.fail(m, t, "session", text.lit(m, t, "a request line is over 1 MiB"));
+            status = cli.report(m, t, io);
+            more = false;
+        } else if c < 0 && n == 0 {
+            more = false;
+        } else {
+            m[mem.text_slot()] = tmark + n;
+            var done = session.fill_inputs(m, t, fm, sess, text.handle(tmark, n));
+            if done >= 0 {
+                done = on_device(m, t, fm, ffi, sess, funcs, bufs);
+            }
+            if done >= 0 {
+                done = session.print_answers(m, t, fm, io, sess);
+            }
+            if done < 0 {
+                status = cli.report(m, t, io);
+                more = false;
+            } else {
+                mem.release_to(m, mark);
+                m[mem.text_slot()] = tmark;
+                if c < 0 {
+                    more = false;
+                }
+            }
+        }
+    }
+    metal.cgpu_close(ffi);
+    return status;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(net);
+    release(clock);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        var fb = box_slice(h, floats_cap(), 0.0);
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                borrow mut fb as &!fr in {
+                    let m = contents(mr);
+                    let t = contents(tr);
+                    let fm = contents(fr);
+                    mem.init(m);
+                    borrow mut io as &!i in {
+                        borrow fs as &f in {
+                            borrow args as &a in {
+                                borrow gpu as &g in {
+                                    status = run(m, t, fm, i, f, a, g);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+        unbox_slice(h, fb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    return status;
+}

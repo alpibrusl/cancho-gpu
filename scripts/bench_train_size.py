@@ -31,19 +31,21 @@ ap.add_argument("--cpu", default=os.path.join(ROOT, "build", "cancho-gpu"))
 ap.add_argument("--metal", default=os.path.join(ROOT, "build", "cancho-gpu-metal-device"))
 ap.add_argument("--reps", type=int, default=3)
 ap.add_argument("--session", default=os.path.join(ROOT, "build", "cancho-gpu-session"))
+ap.add_argument("--metal-session", default=os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 ap.add_argument("--sizes", default="16x3,256x16,1024x64,4096x128,16384x256")
 args = ap.parse_args()
 
-def session_ms(r, k, w, reps):
+def session_ms(r, k, w, reps, binary=None):
     """(setup seconds, ms per request) of one resident session on the CPU interpreter: the data is read once, a request is `w`."""
-    if not os.path.exists(args.session):
+    binary = binary or args.session
+    if not os.path.exists(binary):
         return None
     d = tempfile.mkdtemp()
     try:
         path = lsq_session.write(d, r, k)
         line = " ".join(repr(v) for v in w) + "\n"
         t0 = time.perf_counter()
-        proc = subprocess.Popen([os.path.abspath(args.session), path, "--target", "nvidia-ada"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen([os.path.abspath(binary), path] + ([] if "metal" in os.path.basename(binary) else ["--target", "nvidia-ada"]), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         proc.stdin.write(line)
         proc.stdin.flush()
         first = proc.stdout.readline()
@@ -136,8 +138,9 @@ for size in args.sizes.split(","):
         else:
             row[name] = (statistics.median(times), (loss, grad), "")
     sess = session_ms(L.R, L.K, w, max(args.reps, 5)) if L.R * L.K <= 1 << 20 else None
+    msess = session_ms(L.R, L.K, w, max(args.reps, 20), args.metal_session) if L.R * L.K <= 1 << 20 else None
     if sess:
-        print(f"{size:>12}  session: {sess[1]:.1f} ms per evaluation after {sess[0]:.2f} s of setup (the data is read once)")
+        print(f"{size:>12}  session: CPU {sess[1]:.2f} ms per evaluation after {sess[0]:.2f} s of setup" + (f"; Metal {msess[1]:.2f} ms after {msess[0]:.2f} s" if msess else "") + " (the data is read once)")
     x, t = L.data()
     base = baselines(x, t, w, max(args.reps, 5))
     cell = lambda r: f"{r[0]:11.0f}" if r[0] is not None else f"{'refused':>11}"
