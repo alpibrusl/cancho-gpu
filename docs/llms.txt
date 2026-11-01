@@ -24,5 +24,6 @@
 - [Qwen3.8-27B](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/qwen35.md): the 27B runner, its kernels and how it is checked.
 - [Kernels](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md): the attention-layer decode kernels and the context limit.
 - [Run](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md): a kernel on your own inputs, with its gates and numbers.
+- [Compared with OpenNN](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md): a forward pass measured on a CPU, with the differences and where cancho-gpu is worse.
 - [Training](https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md): whether training belongs here, and what the surface can express of a backward pass.
 - [Issues](https://github.com/alpibrusl/cancho-gpu/issues): the open slices.

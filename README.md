@@ -158,6 +158,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | [docs/design.md](docs/design.md) | how the compiler is built, what it cost, every difference from the Rust and why |
 | [docs/training.md](docs/training.md) | whether training belongs here, what `.chx` can express of a backward pass (four kernels built), the plan |
 | [docs/run.md](docs/run.md) | `cancho-gpu run`: a kernel on the CPU interpreter with inputs from files and its whole output printed; designed, built and measured |
+| [docs/comparison.md](docs/comparison.md) | compared with OpenNN: a two-layer network's forward pass on a CPU, outputs and timings, and where this project is worse |
 | [docs/rules.md](docs/rules.md) | every refusal rule and what triggers it |
 | [docs/device.md](docs/device.md) | driving a GPU: the shim, the authority it reports, the mock, what stays unproven |
 | [docs/runtime.md](docs/runtime.md) | reading a model: the GGUF and safetensors readers, the tokenizer and the sampler, where each differs from its oracle, how each is held to it |

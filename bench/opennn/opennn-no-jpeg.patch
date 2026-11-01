@@ -1,0 +1,31 @@
+diff --git a/opennn/CMakeLists.txt b/opennn/CMakeLists.txt
+index 1e59b8f..8ab9d4b 100644
+--- a/opennn/CMakeLists.txt
++++ b/opennn/CMakeLists.txt
+@@ -117,6 +117,10 @@ endif()
+ 
+ file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "*.cpp")
+ file(GLOB_RECURSE HEADER_FILES CONFIGURE_DEPENDS "*.h")
++option(OpenNN_WITH_JPEG "Build the image loaders and the libjpeg-turbo they need" ON)
++if(NOT OpenNN_WITH_JPEG)
++    list(FILTER CPP_SOURCES EXCLUDE REGEX "/dataset/(image_processing|image_dataset|yolo_dataset|yolo_dataset_io)\\.cpp$")
++endif()
+ list(FILTER CPP_SOURCES EXCLUDE REGEX "-DESKTOP-[^/\\\\]*\\.cpp$")
+ list(FILTER HEADER_FILES EXCLUDE REGEX "-DESKTOP-[^/\\\\]*\\.h$")
+ list(FILTER HEADER_FILES EXCLUDE REGEX "/core/cuda/flash_attention_shim/")
+@@ -188,6 +192,7 @@ target_link_libraries(opennn PUBLIC
+     $<BUILD_INTERFACE:ZLIB::ZLIBSTATIC>
+     $<INSTALL_INTERFACE:ZLIB::ZLIBSTATIC>)
+ 
++if(OpenNN_WITH_JPEG)
+ include(ExternalProject)
+ set(_opennn_jpeg_install_dir
+     ${CMAKE_BINARY_DIR}/_deps/opennn_libjpeg_turbo-install)
+@@ -247,6 +252,7 @@ add_dependencies(opennn opennn_libjpeg_turbo_ep)
+ target_link_libraries(opennn PUBLIC
+     $<BUILD_INTERFACE:opennn_jpeg>
+     $<INSTALL_INTERFACE:OpenNN::jpeg>)
++endif()
+ 
+ target_include_directories(opennn PUBLIC
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
