@@ -1,0 +1,303 @@
+edition 5;
+module runcmd;
+
+// `cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME FILE ...]
+// [--out NAME ...]` -- a kernel run on the CPU interpreter over inputs the
+// caller gives, with the whole of an output printed (`docs/run.md`).
+//
+// It is a command of its own and not a flag of `--run`, whose summary is held
+// byte for byte to the Rust's (`docs/design.md` §10.2): `interp.run` is not
+// touched. Refusals are the rules that already exist -- `usage`, `io`,
+// `no-schedule`, `interp` -- and nothing is printed when one is raised.
+
+import std.io;
+import mem;
+import text;
+import err;
+import f32;
+import parser;
+import elab;
+import check;
+import target;
+import interp;
+import cli;
+import fileio;
+import ir;
+
+// The largest input file: a text handle's length is 24 bits.
+fn cap() -> [] int {
+    return 16777215;
+}
+
+fn refuse[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, msg: int) -> [err_write] int {
+    let r = err.fail(m, t, "usage", msg);
+    return cli.report(m, t, io);
+}
+
+fn scheduled[&m, &t](m: &!m [int], t: &!t [byte], unit: int, tg: int) -> [] bool {
+    let name = target.name(m, tg);
+    let scheds = m[unit + 1];
+    var i = 0;
+    while i < mem.size(m, scheds) {
+        if text.eq(t, m[mem.get(m, scheds, i)], name) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The index of the parameter called `name`, or -1.
+fn find[&m, &t](m: &!m [int], t: &!t [byte], prog: int, name: int) -> [] int {
+    let ps = ir.p_params(m, prog);
+    var i = 0;
+    while i < mem.size(m, ps) {
+        if text.eq(t, ir.param_name(m, mem.get(m, ps, i)), name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn space(c: int) -> [] bool {
+    return c == 32 || c == 10 || c == 13 || c == 9;
+}
+
+pub fn go[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let file = arg(args, 2);
+    // The source goes straight into the pool, so names are handles into it.
+    let top = m[mem.text_slot()];
+    let got = fs_read(fs, file, t[top..len(t)]);
+    if got < 0 {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, file);
+        io.error_all(io, "\n");
+        return 1;
+    }
+    m[mem.text_slot()] = top + got;
+    let src = text.handle(top, got);
+
+    // The arguments after the file: constants, --target, --in, --out.
+    let consts = mem.list(m);
+    let ins = mem.list(m);
+    let outs = mem.list(m);
+    var want_target = text.empty();
+    var have_target = false;
+    var ai = 3;
+    while ai < arg_count(args) {
+        let s = text.from_bytes(m, t, arg(args, ai));
+        if text.is(t, s, "--target") {
+            if ai + 1 >= arg_count(args) {
+                return refuse(m, t, io, text.lit(m, t, "--target needs a target name"));
+            }
+            want_target = text.from_bytes(m, t, arg(args, ai + 1));
+            have_target = true;
+            ai = ai + 2;
+        } else if text.is(t, s, "--in") {
+            if ai + 2 >= arg_count(args) {
+                return refuse(m, t, io, text.lit(m, t, "--in needs a parameter name and a file"));
+            }
+            mem.push(m, ins, mem.rec2(m, text.from_bytes(m, t, arg(args, ai + 1)), ai + 2));
+            ai = ai + 3;
+        } else if text.is(t, s, "--out") {
+            if ai + 1 >= arg_count(args) {
+                return refuse(m, t, io, text.lit(m, t, "--out needs a parameter name"));
+            }
+            mem.push(m, outs, text.from_bytes(m, t, arg(args, ai + 1)));
+            ai = ai + 2;
+        } else {
+            let c = cli.constant(m, t, s);
+            if c < 0 {
+                return cli.report(m, t, io);
+            }
+            mem.push(m, consts, c);
+            ai = ai + 1;
+        }
+    }
+    if mem.size(m, outs) == 0 {
+        return refuse(m, t, io, text.lit(m, t, "nothing to print: give --out NAME for a writable parameter"));
+    }
+
+    let unit = parser.parse(m, t, src);
+    if unit < 0 {
+        return cli.report(m, t, io);
+    }
+
+    // The target: the one asked for, or the only one the file has.
+    let nv = target.nvidia_ada(m, t);
+    let ap = target.apple_m_series(m, t);
+    var tg = nv;
+    if have_target {
+        if text.is(t, want_target, "nvidia-ada") {
+            tg = nv;
+        } else if text.is(t, want_target, "apple-m-series") {
+            tg = ap;
+        } else {
+            return refuse(m, t, io, text.f1(m, t, "`$` is not a target (nvidia-ada, apple-m-series)", want_target));
+        }
+        if !scheduled(m, t, unit, tg) {
+            let r = err.fail(m, t, "no-schedule", text.f1(m, t, "the file has no schedule for $", target.name(m, tg)));
+            return cli.report(m, t, io);
+        }
+    } else {
+        let has_nv = scheduled(m, t, unit, nv);
+        let has_ap = scheduled(m, t, unit, ap);
+        if has_nv && has_ap {
+            return refuse(m, t, io, text.lit(m, t, "the file has a schedule for both targets: say --target nvidia-ada or --target apple-m-series"));
+        }
+        if !has_nv && !has_ap {
+            let r = err.fail(m, t, "no-schedule", text.lit(m, t, "the file has no schedule for nvidia-ada or apple-m-series"));
+            return cli.report(m, t, io);
+        }
+        if has_ap {
+            tg = ap;
+        }
+    }
+
+    let compiled = elab.compile(m, t, unit, target.name(m, tg), consts);
+    if compiled < 0 {
+        return cli.report(m, t, io);
+    }
+    let prog = m[compiled];
+    if check.check(m, t, prog, tg) < 0 {
+        return cli.report(m, t, io);
+    }
+    let globals = interp.inputs(m, t, fm, prog);
+    if globals < 0 {
+        return cli.report(m, t, io);
+    }
+    let ps = ir.p_params(m, prog);
+    let np = mem.size(m, ps);
+
+    // Every --in names a read-only parameter, once; every read-only
+    // parameter is given. (No fall-back to the interpreter's made-up numbers.)
+    let given = mem.grab(m, np + 1);
+    var k = 0;
+    while k < np {
+        m[given + k] = 0;
+        k = k + 1;
+    }
+    k = 0;
+    while k < mem.size(m, ins) {
+        let rec = mem.get(m, ins, k);
+        let idx = find(m, t, prog, m[rec]);
+        if idx < 0 {
+            return refuse(m, t, io, text.f1(m, t, "--in names `$`, which is not a parameter", m[rec]));
+        }
+        if ir.param_writable(m, mem.get(m, ps, idx)) {
+            return refuse(m, t, io, text.f1(m, t, "--in names `$`, which the kernel writes", m[rec]));
+        }
+        if m[given + idx] == 1 {
+            return refuse(m, t, io, text.f1(m, t, "--in names `$` twice", m[rec]));
+        }
+        m[given + idx] = 1;
+        k = k + 1;
+    }
+    k = 0;
+    while k < np {
+        let p = mem.get(m, ps, k);
+        if !ir.param_writable(m, p) && m[given + k] == 0 {
+            return refuse(m, t, io, text.f1(m, t, "the parameter `$` is read by the kernel: give it with --in", ir.param_name(m, p)));
+        }
+        k = k + 1;
+    }
+    k = 0;
+    while k < mem.size(m, outs) {
+        let name = mem.get(m, outs, k);
+        let idx = find(m, t, prog, name);
+        if idx < 0 {
+            return refuse(m, t, io, text.f1(m, t, "--out names `$`, which is not a parameter", name));
+        }
+        if !ir.param_writable(m, mem.get(m, ps, idx)) {
+            return refuse(m, t, io, text.f1(m, t, "--out names `$`, which the kernel only reads", name));
+        }
+        k = k + 1;
+    }
+
+    // Read the inputs into the tensors the interpreter allocated.
+    k = 0;
+    while k < mem.size(m, ins) {
+        let rec = mem.get(m, ins, k);
+        let name = m[rec];
+        let idx = find(m, t, prog, name);
+        let p = mem.get(m, ps, idx);
+        let g = mem.get(m, globals, idx);
+        let (at, n) = (m[g + 2], m[g + 3]);
+        let dt = ir.param_dtype(m, p);
+        let path = arg(args, m[rec + 1]);
+        let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, cap());
+        if ftop < 0 {
+            io.error_all(io, "error[io]: cannot read ");
+            io.error_all(io, path);
+            io.error_all(io, "\n");
+            return 1;
+        }
+        if fsize > fgot {
+            io.error_all(io, "error[io]: ");
+            io.error_all(io, path);
+            io.error_all(io, " is over 16 MiB\n");
+            return 1;
+        }
+        let all = text.handle(ftop, fgot);
+        var pos = 0;
+        var count = 0;
+        while pos < fgot {
+            if space(text.at(t, all, pos)) {
+                pos = pos + 1;
+            } else {
+                let start = pos;
+                while pos < fgot && !space(text.at(t, all, pos)) {
+                    pos = pos + 1;
+                }
+                var tok = text.sub(all, start, pos);
+                var negative = false;
+                if text.at(t, tok, 0) == '-' {
+                    negative = true;
+                    tok = text.sub(tok, 1, text.size(tok));
+                }
+                let (ok, v) = f32.parse(m, t, tok);
+                if !ok {
+                    return refuse(m, t, io, text.f2(m, t, "`$` in the file for `$` is not a number", text.sub(all, start, pos), name));
+                }
+                if count >= n {
+                    return refuse(m, t, io, text.f2(m, t, "the file for `$` has more than the $ numbers the parameter holds", name, text.num(m, t, n)));
+                }
+                var value = v;
+                if negative {
+                    value = -v;
+                }
+                fm[at + count] = interp.convert(dt, value);
+                count = count + 1;
+            }
+        }
+        if count != n {
+            return refuse(m, t, io, text.fmt(m, t, "the file for `$` has $ numbers; the parameter holds $", mem.of3(m, name, text.num(m, t, count), text.num(m, t, n))));
+        }
+        k = k + 1;
+    }
+
+    if interp.execute(m, t, fm, prog, globals) < 0 {
+        return cli.report(m, t, io);
+    }
+
+    // Print each --out whole: one line, the elements as the shortest text
+    // that reads back, written one at a time so the size has no limit.
+    k = 0;
+    while k < mem.size(m, outs) {
+        let idx = find(m, t, prog, mem.get(m, outs, k));
+        let g = mem.get(m, globals, idx);
+        let (at, n) = (m[g + 2], m[g + 3]);
+        var j = 0;
+        while j < n {
+            if j > 0 {
+                io.write_all(io, " ");
+            }
+            io.write_all(io, text.bytes(t, f32.debug(m, t, fm[at + j])));
+            j = j + 1;
+        }
+        io.write_all(io, "\n");
+        k = k + 1;
+    }
+    return 0;
+}

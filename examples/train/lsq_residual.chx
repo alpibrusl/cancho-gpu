@@ -1,0 +1,19 @@
+// e = x w^T - t: the residual of a linear model over r rows of k features.
+// The forward half of examples/train/lsq_objective.py; its backward is
+// tests/chx/bwd_dw.chx with n = 1.
+algo lsq_residual(r, k)
+  in  x: f32[r, k]
+  in  w: f32[1, k]
+  in  t: f32[r, 1]
+  out e: f32[r, 1]
+{
+  let xt = load x
+  let wt = load w
+  let tt = load t
+  let y = matmul_nt xt wt
+  let d = y - tt
+  store d -> e
+}
+
+schedule lsq_residual for apple-m-series { threads 128 }
+schedule lsq_residual for nvidia-ada     { threads 128 }

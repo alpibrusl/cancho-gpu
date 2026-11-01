@@ -48,6 +48,15 @@ fn round_to(dt: int, x: float) -> [] float {
     return x;
 }
 
+// A value read from outside (`cancho-gpu run`'s input files) as a tensor of
+// `dt` holds it: a binary64 rounded once, to f32, to f16 or to an I8 code.
+pub fn convert(dt: int, x: float) -> [] float {
+    if dt == kinds.f16() || dt == kinds.i8() {
+        return round_to(dt, x);
+    }
+    return f32.round(x);
+}
+
 // --- The interpreter's record: `[prog, kinds, values, globals]`
 
 fn new_interp[&m](m: &!m [int], prog: int, globals: int) -> [] int {

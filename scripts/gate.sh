@@ -20,6 +20,7 @@ tests/files.sh
 "$CANCHO" test
 tests/golden.sh
 tests/reject.sh
+tests/run.sh
 CANCHO="$CANCHO" tests/device.sh
 tests/gguf.sh
 tests/safetensors.sh

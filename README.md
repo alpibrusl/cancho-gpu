@@ -65,6 +65,14 @@ softmax: nvidia-ada ok
 ...
 ```
 
+**Run a kernel on inputs you give it** (the CPU interpreter; `docs/run.md`). `dy` is `1 2 / 3 4` and `w` is `1 0 2 / 0 1 3`, so `dx = dy w`:
+
+```
+$ printf '1 2\n3 4\n' > dy; printf '1 0 2\n0 1 3\n' > w
+$ build/cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada --in dy dy --in w w --out dx
+1.0 2.0 8.0 3.0 4.0 18.0
+```
+
 **A refusal names its rule:**
 
 ```
@@ -148,7 +156,8 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | | |
 |---|---|
 | [docs/design.md](docs/design.md) | how the compiler is built, what it cost, every difference from the Rust and why |
-| [docs/training.md](docs/training.md) | whether training belongs here (a design, nothing built), what `.chx` can express of a backward pass, the plan |
+| [docs/training.md](docs/training.md) | whether training belongs here, what `.chx` can express of a backward pass (four kernels built), the plan |
+| [docs/run.md](docs/run.md) | `cancho-gpu run`: a kernel on the CPU interpreter with inputs from files and its whole output printed; designed, built and measured |
 | [docs/rules.md](docs/rules.md) | every refusal rule and what triggers it |
 | [docs/device.md](docs/device.md) | driving a GPU: the shim, the authority it reports, the mock, what stays unproven |
 | [docs/runtime.md](docs/runtime.md) | reading a model: the GGUF and safetensors readers, the tokenizer and the sampler, where each differs from its oracle, how each is held to it |

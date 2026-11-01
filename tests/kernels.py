@@ -14,9 +14,11 @@ hold the kernels' text and summaries byte-for-byte against lex-gpu; this is
 what says the summaries are *right*.
 """
 import math
+import os
 import re
 import subprocess
 import sys
+import tempfile
 
 BIN = sys.argv[1]
 
@@ -354,6 +356,42 @@ def bwd_sigmoid(r, n):
     return out
 
 
+def run_full(kernel, consts, names, sizes, out, target="nvidia-ada"):
+    """`cancho-gpu run` over the interpreter's own tensors, written to files in
+    parameter order (docs/run.md gates 1 and 2): the whole of `out`, and the
+    first four values / mean / peak that `check --run` printed for the same
+    program, which must be the same numbers."""
+    tensors = lcg(sizes)
+    with tempfile.TemporaryDirectory() as d:
+        argv = [BIN, "run", f"tests/chx/{kernel}.chx"] + consts + ["--target", target]
+        for name, values in zip(names, tensors):
+            path = os.path.join(d, name)
+            with open(path, "w") as f:
+                f.write(" ".join(repr(v) for v in values) + "\n")
+            argv += ["--in", name, path]
+        r = subprocess.run(argv + ["--out", out], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"run {kernel} {consts}: {r.stderr.strip()}")
+    return [float(x) for x in r.stdout.split()]
+
+
+def check_full(name, kernel, consts, names, sizes, out, want=None):
+    got = run_full(kernel, consts, names, sizes, out)
+    summary_got = run(kernel, consts)[out]["nvidia-ada"]
+    mean, peak, first = summary(got)
+    # Gate 1: the same execution as `check --run`.
+    same = abs(summary_got[0] - mean) <= 6e-5 and abs(summary_got[1] - peak) <= 6e-5 and summary_got[2] == first
+    print(f"{'ok  ' if same else 'FAIL'} run == check --run: {name} ({len(got)} values)")
+    ok = same
+    # Gate 2: every element against the reference, not four.
+    if want is not None:
+        worst = max(abs(a - b) for a, b in zip(got, want)) if len(got) == len(want) else float("inf")
+        good = worst <= 1e-5
+        print(f"{'ok  ' if good else 'FAIL'} whole output: {name}, largest difference {worst:.2e}")
+        ok &= good
+    return ok
+
+
 ok = True
 for r, h, p in ((24, 32, 192), (3, 4, 2)):
     ok &= check(f"rope r={r} h={h} p={p}", run("rope", [f"r={r}", f"h={h}", f"p={p}"])["y"], rope(r, h, p))
@@ -411,4 +449,12 @@ for r, n, k in ((8, 32, 64), (256, 32, 64)):
     ok &= check(f"bwd_dw r={r} n={n} k={k}", run("bwd_dw", [f"r={r}", f"n={n}", f"k={k}"])["dw"], bwd_dw(r, n, k))
 ok &= check("bwd_db r=64 n=32", run("bwd_db", ["r=64", "n=32"])["db"], bwd_db(64, 32))
 ok &= check("bwd_sigmoid r=8 n=64", run("bwd_sigmoid", ["r=8", "n=64"])["dz"], bwd_sigmoid(8, 64))
+for r, n, k in ((8, 32, 64), (1, 5, 7)):
+    ok &= check_full(f"bwd_dx r={r} n={n} k={k}", "bwd_dx", [f"r={r}", f"n={n}", f"k={k}"], ["dy", "w"], [r * n, n * k], "dx", bwd_dx(r, n, k))
+for r, n, k in ((8, 32, 64), (256, 32, 64)):
+    ok &= check_full(f"bwd_dw r={r} n={n} k={k}", "bwd_dw", [f"r={r}", f"n={n}", f"k={k}"], ["dyt", "xt"], [n * r, k * r], "dw", bwd_dw(r, n, k))
+ok &= check_full("bwd_db r=64 n=32", "bwd_db", ["r=64", "n=32"], ["ones", "dy"], [64, 64 * 32], "db", bwd_db(64, 32))
+ok &= check_full("bwd_sigmoid r=8 n=64", "bwd_sigmoid", ["r=8", "n=64"], ["z", "dy"], [8 * 64, 8 * 64], "dz", bwd_sigmoid(8, 64))
+ok &= check_full("attn_gate r=3 n=7", "attn_gate", ["r=3", "n=7"], ["o", "gate"], [21, 21], "y", attn_gate(3, 7))
+ok &= check_full("softmax r=4 n=64", "softmax", ["r=4", "n=64"], ["x"], [256], "y")
 sys.exit(0 if ok else 1)

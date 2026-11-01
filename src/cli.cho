@@ -45,7 +45,7 @@ pub fn constants[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args, from: i
 }
 
 // One `name=value`, as `[name, f64 bits]`, or -1.
-fn constant[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+pub fn constant[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
     let eq = text.index_of(t, s, '=', 0);
     if eq < 0 {
         return err.fail(m, t, "usage", text.f1(m, t, "`$` is not name=value", s));
