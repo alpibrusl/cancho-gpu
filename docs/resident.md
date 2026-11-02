@@ -1,7 +1,7 @@
 # A resident objective: keeping the data on the device between evaluations
 
 > **Status: the opt half (`--persistent`), the CPU session and the Metal session are
-> built and measured (§6 steps 1 to 3, §9, §10). §1-§8 were written
+> built and measured (§6 steps 1 to 3, §9, §10, §11). §1-§8 were written
 > before the code; §9 says where the build differs from them and what it measured.** It is
 > step 4 of [`training.md`](training.md) §6 taken one level down: the question
 > is no longer whether to train, but whether the *interface* between `opt` and
@@ -303,3 +303,11 @@ program of its own, as the device programs are.
   at 4 KB a request and says so.
 * No mock-driver gate (§5.4) and no mutants for the Metal build.
 * CUDA: none; there is no hardware (`device.md`).
+
+## 11. After `native.md` N4: the kernels were single-threadgroup
+
+§10's account of the Metal session ends with "the kernels ... use the GPU badly for a matrix-by-vector shape" and 308 microseconds of
+GPU time at 4096 x 128. **The explanation was incomplete and the number is superseded.** The kernels ran on one threadgroup because they
+had no `grid` (`native.md` N4). With a `grid` (in `bwd_dw.chx` and `lsq_residual.chx`) the three kernels take **30 microseconds** and the Metal
+session **0.20 ms** an evaluation at 4096 x 128 (0.49 before), 2.3 times faster than plain compiled cancho (0.46 ms) and 3.3 times faster than torch on
+MPS (0.66 ms). §10's table of the Metal session, and its sentence on the roofline, describe the grid-less kernels.

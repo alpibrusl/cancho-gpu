@@ -1,18 +1,24 @@
 // e = x w^T - t: the residual of a linear model over r rows of k features.
 // The forward half of examples/train/lsq_objective.py; its backward is
 // tests/chx/bwd_dw.chx with n = 1.
-algo lsq_residual(r, k)
+//
+// One threadgroup for each block of `bm` rows (`grid i over r / bm`), so a large fit runs on the
+// whole GPU: without the grid it ran on one threadgroup, one core, 22 times slower than the
+// memory allows at r = 4096 (154 microseconds against 7; docs/native.md N4). `bm` is a constant
+// that divides r (`lsq_session.block`: the largest of 128, 64, ..., 1 that does).
+algo lsq_residual(r, k, bm)
   in  x: f32[r, k]
   in  w: f32[1, k]
   in  t: f32[r, 1]
   out e: f32[r, 1]
 {
-  let xt = load x
+  grid i over r / bm
+  let xt = load x[i * bm, 0 ; bm, k]
   let wt = load w
-  let tt = load t
+  let tt = load t[i * bm, 0 ; bm, 1]
   let y = matmul_nt xt wt
   let d = y - tt
-  store d -> e
+  store d -> e[i * bm, 0]
 }
 
 schedule lsq_residual for apple-m-series { threads 128 }

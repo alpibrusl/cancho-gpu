@@ -1,15 +1,22 @@
 // The backward of y = x w^T with respect to w: dw = dy^T x. The surface
 // has no A^T B product (docs/training.md section 4), so the host supplies
 // dy^T and x^T and this is a `matmul_nt` over the batch r.
+//
+// One threadgroup for each block of `bk` columns of dw (`grid j over k / bk`): without the grid
+// the whole reduction over r ran on a single threadgroup, one core of the GPU, 30 times slower
+// than the memory allows (docs/native.md N4). `bk 1` is the fastest schedule measured for the
+// shape the least-squares fit uses (r = 4096, n = 1, k = 128: 10 microseconds against 148).
 algo bwd_dw(r, n, k)
   in  dyt: f32[n, r]
   in  xt:  f32[k, r]
   out dw:  f32[n, k]
+  tile bk
 {
+  grid j over k / bk
   let a = load dyt
-  let b = load xt
-  store matmul_nt a b -> dw
+  let b = load xt[j * bk, 0 ; bk, r]
+  store matmul_nt a b -> dw[0, j * bk]
 }
 
-schedule bwd_dw for apple-m-series { threads 128 }
-schedule bwd_dw for nvidia-ada     { threads 128 }
+schedule bwd_dw for apple-m-series { threads 128 bk 1 }
+schedule bwd_dw for nvidia-ada     { threads 128 bk 1 }
