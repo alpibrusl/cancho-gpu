@@ -2,9 +2,9 @@
 
 > **Status: built and measured (§6) on the CPU interpreter. The device programs
 > take the same flags (§7): the plumbing is built and measured against mock
-> drivers on Linux; the Metal hardware gates (§7.2 items 3 and 4) are written
-> (`scripts/metal-io.py`, `scripts/check_train.py --bin`) and have NOT been run, for
-> want of a Mac; CUDA has no hardware at all.** The design below was written first and the gates before the code. Step 2
+> drivers on Linux; the Metal hardware gates (§7.2 items 3 and 4) were **run on an
+> Apple M4 Max** (`scripts/metal-io.py`, `scripts/check_train.py --bin`; §7.5); CUDA
+> has no hardware at all.** The design below was written first and the gates before the code. Step 2
 > of [`training.md`](training.md) §6 had stopped here: `check --run` and `emit --run` execute a kernel only over the
 > interpreter's made-up tensors (`design.md` §10), so no program can hand a
 > kernel parameters and read back the answer. This document says what the
@@ -293,17 +293,20 @@ Run in a Linux container (no GPU, no Mac), with the compiler at the pin
   stands in for a device program (`--target -`, no `--target` passed) the same fit
   runs, which proves the argument plumbing and nothing about a GPU.
 
+**Run on Metal hardware (Apple M4 Max, Metal 4; the compiler at cancho `a49ea779`, built with `--ignore-compiler-rev` because the pin predates it and `std.linalg` is gone from the older checkout) [measured]:**
+
+* **Gate 3 passes.** `scripts/build-metal-device.sh && python3 scripts/metal-io.py build/cancho-gpu-metal-device`:
+  all seven comparisons agree, the largest difference 3.55e-7 of the peak (`bwd_dw r=256`),
+  against the 2e-2 allowed; the known answer `1 2 8 3 4 18` comes back exactly.
+* **Gate 4 passes, and the cost is known.** `OPT=../cancho-opt/build/opt python3 scripts/check_train.py
+  --bin build/cancho-gpu-metal-device --runs 3`: BFGS converges in 12 evaluations, within
+  1.1e-5 in `w` and 3.1e-10 in the loss (the CPU's numbers), and the flipped gradient does not reach the
+  answer. **94 to 125 ms an evaluation**, against 40 to 46 ms on the CPU: slower, as expected for a
+  16-row fit, since each evaluation starts two processes that each compile the kernel and open
+  the device. One machine, three runs, not a benchmark.
+
 **Not run, and so not claimed:**
 
-* **Gate 3, Metal hardware: not run.** `scripts/metal-io.py` is written and its
-  logic was checked against the CPU command (all seven comparisons agree to
-  4e-7 of the peak there, which is the CPU, not a GPU). On a Mac:
-  `scripts/build-metal-device.sh && python3 scripts/metal-io.py build/cancho-gpu-metal-device`.
-* **Gate 4 on the GPU: not run.** `python3 scripts/check_train.py --bin
-  $PWD/build/cancho-gpu-metal-device --runs 3` records the cost per evaluation.
-  **[open]**: whether it is faster or slower than 40 to 46 ms. Each evaluation
-  starts two processes that each compile the kernel and open the device, so
-  slower is the expectation for a 16-row fit, but that is a guess.
 * **CUDA: no hardware.** Its half is plumbing against a mock driver
   and nothing more.
 * The Metal shim was not compiled here (macOS only), so `build-metal-device.sh`

@@ -1,10 +1,10 @@
 # Training: whether cancho-gpu should, and what a first step costs
 
-> **Status: a design, plus steps 1 and 2 of §6 built (step 2 on the CPU interpreter): four backward kernels
+> **Status: a design, plus steps 1 to 3 of §6 built (step 2 on the CPU interpreter, step 3 on Metal): four backward kernels
 > (`tests/chx/bwd_*.chx`), held to the Rust's output and to a reference
 > that is itself checked against finite differences. Recommendation: do not
-> add training to cancho-gpu yet; take steps 2 and 3 of §6 and decide on what
-> they measure.** Claims are marked **[measured]** (with
+> add training to cancho-gpu yet; steps 2 and 3 are measured (§6), and step 4
+> is the decision they feed.** Claims are marked **[measured]** (with
 > the command), **[read]** (from a document or the source, not run) or
 > **[open]**.
 
@@ -139,15 +139,67 @@ it.
    within 1.1e-5 in `w`, at **28 to 36 ms an evaluation** over three runs (process starts
    dominate; §3's worry is confirmed for small problems and unmeasured for large).
 3. **The same on a Metal GPU** through `cancho-gpu-metal-device`, and the cost of
-   the pipe per evaluation measured. **Built, not yet measured.** The device
-   programs take `--in` / `--out` like `cancho-gpu run` ([`run.md`](run.md) §7),
-   and `scripts/check_train.py --bin build/cancho-gpu-metal-device` runs the fit
-   through it; the plumbing is held against mock drivers (the bytes uploaded are the
-   encoded inputs; six mutants caught). No Mac was available, so neither the
-   hardware agreement of the four backward kernels (`scripts/metal-io.py`) nor the
-   cost per evaluation on a GPU has been run. On the CPU the same script gives 40 to
-   46 ms an evaluation on the machine that built this; §3's worry stays confirmed
-   for small problems and open for GPUs.
+   the pipe per evaluation measured. **Done on an Apple M4 Max** ([`run.md`](run.md) §7.5).
+   The four backward kernels agree with `tests/kernels.py`'s references to 3.6e-7 of
+   the peak (`scripts/metal-io.py`), and the fit reaches the same solution in the same
+   12 BFGS evaluations. **94 to 125 ms an evaluation** over three runs, against 40 to 46 ms
+   on the CPU: the device path is *slower* for a problem this size, two processes each
+   compiling the kernel and opening the device per evaluation. §3's worry is confirmed
+   for small problems on a GPU too. **Growing the problem does not flip it** [measured,
+`python3 scripts/bench_train_size.py`, one machine, medians of 3, one evaluation, both
+paths including the Python that writes the inputs]:
+
+   | R x K | CPU interpreter | Metal device | CPU / Metal |
+   |---|---|---|---|
+   | 16 x 3 | 6 ms | 69 ms | 0.08 |
+   | 256 x 16 | 15 ms | 80 ms | 0.18 |
+   | 1024 x 64 | 137 ms | 206 ms | 0.66 |
+   | 4096 x 128 | 1017 ms | 1122 ms | 0.91 |
+   | 16384 x 256 | refused by both: an input over 16 MiB of text | | |
+
+   The loss agrees to 1.5e-10 (relative) and the gradient to 5.4e-7 of its peak at every size.
+   Metal closes on the CPU but does not pass it, and the reason is not the GPU: at 4096 x 128 the
+   residual kernel alone is 0.33 s on the CPU and 0.375 s on Metal, about a megaflop of work, and
+   the Python writing the inputs is 0.15 s more. The text interface (every number printed and parsed
+   per evaluation, capped at 16 MiB) is the cost, so a GPU gains nothing from this protocol.
+   Only a binary or resident interface (parameters kept on the device between evaluations) could
+   show what the hardware does; that is the decision for step 4.
+
+   **Against what people would use instead** [measured, same script, same data, float32, medians,
+   in-process: the data stays in memory (on the device for MPS) and each evaluation takes `w` in
+   and gives the loss and gradient back as Python floats; torch 2.12, numpy 2.4.6, Python 3.14.5,
+   Apple M4 Max]. Milliseconds per evaluation:
+
+   | R x K | cancho CPU | cancho Metal | pure Python | numpy | torch CPU | torch MPS |
+   |---|---|---|---|---|---|---|
+   | 16 x 3 | 6 | 80 | 0.01 | 0.00 | 0.01 | 0.77 |
+   | 256 x 16 | 21 | 95 | 0.26 | 0.01 | 0.01 | 0.80 |
+   | 1024 x 64 | 155 | 234 | 3.62 | 0.01 | 0.02 | 0.80 |
+   | 4096 x 128 | 1145 | 1266 | 43.7 | 0.02 | 0.04 | 0.81 |
+   | 16384 x 256 | refused (16 MiB) | refused | not run | 0.12 | 0.16 | 0.84 |
+
+   **Correction to how this table reads, measured afterwards:** the cancho columns are whole
+   processes and the baselines are not. `cancho-gpu run` at 4096 x 128 takes 0.375 s with a matmul
+   and 0.370 s with a `rowsum`, and 0.36 to 0.40 s for four shapes holding the same 524,288 input
+   numbers: **the time follows the count of numbers read, not the operation**, about 0.7 microsecond
+   a number (Python's `float()` reads the same file at 0.16, 0.083 s; printing 524k numbers back
+   takes 2.9 s). An evaluation is two such processes. So "pure Python is 26 times faster than the
+   cancho CPU interpreter" compares a Python loop over numbers already in memory with two processes
+   that parse a million, and says nothing about the interpreter's arithmetic, which this
+   interface hides. What the interpreter costs by itself is measured through the session
+   ([`resident.md`](resident.md)), which parses once.
+
+   (numpy's 0.00 is under 5 microseconds. Every path that answered agrees with numpy's loss to
+   1e-7 relative and its gradient to 2e-6 of the peak.) **What this says, plainly:** through this
+   interface, cancho-gpu is not competitive with anything. Even a pure Python loop is 26 times
+   faster than the cancho CPU interpreter at 4096 x 128, and numpy about 50,000 times. torch on MPS
+   sits at a flat 0.8 ms (dispatch and synchronisation, not arithmetic) and does not beat numpy or
+   torch-CPU at any size here: these problems are 0.0001 to 0.5 gigaflop, far too small for a GPU to
+   pay for itself. So the resident interface of [`resident.md`](resident.md) can at best bring
+   cancho's Metal path to a dispatch floor like torch-MPS's; it cannot, on this evidence, make a
+   least-squares fit of this size faster than numpy. Whether any problem cancho-gpu could run
+   through `opt` is large enough to favour a GPU is **[open]**; OpenNN was not run (its training is
+   not the same operation as one gradient evaluation, and it needs a C++ build).
 4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
    type in cancho-ml, or stop.
 
@@ -156,10 +208,10 @@ to it; this document touches only cancho-gpu.
 
 ## 7. Open
 
-* The device programs' `--in` / `--out` on **real hardware**: Metal needs a Mac
-  (`scripts/metal-io.py`, then `scripts/check_train.py --bin`), CUDA an NVIDIA GPU
-  (it has only ever run against a mock driver). The flags exist and their
-  plumbing is tested ([`run.md`](run.md) §7.4).
+* The device programs' `--in` / `--out` on **CUDA hardware**: an NVIDIA GPU (it has
+  only ever run against a mock driver). Metal is done (§6 step 3).
+* A binary or device-resident objective interface: with text on a pipe the GPU cannot win
+  up to the 16 MiB input cap (§6 step 3); what it would do without that is unmeasured.
 * cancho-opt takes the program by the name given without searching `PATH`
   (found writing its examples); the objective of a future cancho-gpu driver is
   given as an absolute path.
