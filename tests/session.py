@@ -193,8 +193,8 @@ def training_checks(binary, d):
     n, blocks = 5, 3
     tdir = os.path.join(d, "train")
     os.makedirs(tdir)
-    w0 = [float(i) for i in range(n)]
-    table = [[(j + 1) * 0.5 + i * 0.25 for i in range(n)] for j in range(blocks)]
+    w0 = [f32(i + 0.3) for i in range(n)]  # not dyadic, so that every byte of a binary word matters
+    table = [[f32((j + 1) * 0.5 + i * 0.25 + 0.1) for i in range(n)] for j in range(blocks)]
     open(os.path.join(tdir, "w0"), "w").write(" ".join(map(repr, w0)) + "\n")
     open(os.path.join(tdir, "table"), "w").write(" ".join(repr(v) for row in table for v in row) + "\n")
     kernel = os.path.join(ROOT, "tests/chx/step_add.chx")
@@ -246,6 +246,30 @@ answer add.wo
     refuse("steps given twice", [("steps\n", "steps\nsteps\n")])
     refuse("a table for a parameter that is also resident", [("table add.d", "resident add.d " + os.path.join(tdir, "w0") + "\ntable add.d")])
     refuse("a carry between different sizes", [("n=5", "n=5"), ("carry add.wo -> add.w", "carry add.wo -> add.d")])
+    # binary files (`f32` after the file): little-endian float32 words, no cap and nothing to parse
+    import struct
+    open(os.path.join(tdir, "w0.bin"), "wb").write(b"".join(struct.pack("<f", v) for v in w0))
+    open(os.path.join(tdir, "table.bin"), "wb").write(b"".join(struct.pack("<f", v) for row in table for v in row))
+    bin_body = body.replace(os.path.join(tdir, "w0"), os.path.join(tdir, "w0.bin")).replace(f"{os.path.join(tdir, 'table')} {blocks}", f"{os.path.join(tdir, 'table.bin')} {blocks} f32").replace("resident add.w " + os.path.join(tdir, "w0.bin"), "resident add.w " + os.path.join(tdir, "w0.bin") + " f32")
+    open(os.path.join(tdir, "bin.session"), "w").write(bin_body)
+    status, out, err = talk(binary, os.path.join(tdir, "bin.session"), "7\n")
+    say(status == 0 and len(out) == 1 and numbers(out[0]) == want(7), f"binary resident and table files give the text files' answer: {out}")
+
+    def refuse_bin(what, edit, tag="usage"):
+        path_bad = os.path.join(tdir, "bad-bin.session")
+        text = bin_body
+        for old, new in edit:
+            text = text.replace(old, new)
+        open(path_bad, "w").write(text)
+        status, out, err = talk(binary, path_bad, "1\n")
+        say(status == 1 and out == [] and err.startswith(f"error[{tag}]"), f"refused as {tag}: {what}" + ("" if status == 1 else f" (status {status}, {out}, {err[:80]!r})"))
+
+    open(os.path.join(tdir, "short.bin"), "wb").write(b"\0" * 12)
+    open(os.path.join(tdir, "long.bin"), "wb").write(b"\0" * (4 * n + 4))
+    refuse_bin("a binary file too short", [(os.path.join(tdir, "w0.bin"), os.path.join(tdir, "short.bin"))])
+    refuse_bin("a binary file too long", [(os.path.join(tdir, "w0.bin"), os.path.join(tdir, "long.bin"))])
+    refuse_bin("a binary file that is not there", [(os.path.join(tdir, "w0.bin"), os.path.join(tdir, "gone.bin"))], tag="io")
+    refuse_bin("a flag that is not f32", [(os.path.join(tdir, "w0.bin") + " f32", os.path.join(tdir, "w0.bin") + " f64")], tag="session")
     # without `steps` a request is just its inputs, once
     open(os.path.join(tdir, "once.session"), "w").write(body.replace("steps\n", ""))
     status, out, err = talk(binary, os.path.join(tdir, "once.session"), "\n\n")
@@ -265,6 +289,8 @@ MUTANTS = [
     ("src/session.cho", "m[sess + s_count()] = m[sess + s_count()] + 1;\n        j = j + 1;", "j = j + 1;", "the table position does not advance"),
     ("src/session.cho", "fm[m[gd + 2] + e] = fm[m[gs + 2] + e];", "fm[m[gd + 2] + e] = fm[m[gd + 2] + e];", "a carry copies nothing"),
     ("src/session.cho", "(m[sess + s_count()] % m[tb + 3])", "(m[sess + s_count()] % m[tb + 3] + 1)", "the table is read one block late"),
+    ("src/runcmd.cho", "int_of(t[b]) | int_of(t[b + 1]) << 8", "int_of(t[b]) | int_of(t[b + 1]) << 7", "a binary word's second byte is shifted wrongly"),
+    ("src/runcmd.cho", "if fsize != 4 * n {", "if fsize < 4 * n {", "a binary file longer than the parameter is accepted"),
     ("src/session.cho", "if m[mem.get(m, supplied, dp) + da] != 1 {", "if m[mem.get(m, supplied, dp) + da] < 0 {", "a carry to a parameter that is not resident is accepted"),
 ]
 

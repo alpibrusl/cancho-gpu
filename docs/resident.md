@@ -187,8 +187,7 @@ program of its own, as the device programs are.
   (`training.md` §2, **[open]**).
 * CUDA: the session is for Metal and the CPU; the CUDA shim is unchanged and has no
   hardware (`device.md`).
-* The inputs are still text, once: the 16 MiB cap on a resident file stands until a
-  binary format is designed **[open]**.
+* The inputs are text, once, unless the directive ends in `f32` (section 12.4), which reads binary words and has no 16 MiB cap.
 
 ## 8. Open
 
@@ -380,3 +379,11 @@ Same passes over the data, 40 times lower loss for 3.3 times the time: the step 
 the hidden layer is `relu(w1 x^T + b1)` and its backward is `step(ht)` in place of `ht (1 - ht)` (`ht > 0` exactly where the pre-activation is). `tests/train.py`: on 1024 samples of 16 features and 16 hidden units the CPU session's loss after 1, 10 and 40 steps equals the float64
 reference's (0.299027, 0.104148, 0.013525 against 0.299027, 0.104149, 0.013525), the loss falls from 0.2990 to 0.0135, and the Metal session equals the CPU session to 1e-4. Not measured: the step time of the ReLU network (the kernels differ from the sigmoid ones in two element-wise operations).
 `matmul_tn` is still not a surface operation: the transposed orientation of `mlp_fwd.chx` (a column of `ht` is a sample) makes it unnecessary here, at the price of a transposed copy of the data (`xt`).
+
+### 12.4 Binary tensor files (`f32`)
+
+`resident P.PARAM FILE f32` and `table P.PARAM FILE BLOCKS f32` read the file as little-endian IEEE binary32 words, exactly the parameter's (or the table's) element count and nothing else: no number is parsed, so the 16 MiB cap of a text file does
+not apply (the file is staged in the session's byte pool, 256 MiB). The parameter must be f32. A file of the wrong size is `usage`, one that is not there `io`, a word after the file other than `f32` `session`.
+`tests/session.py` (CPU and Metal) runs the accumulating session from binary files and requires the text session's answer, with non-dyadic values so that every byte of a word matters; two CPU mutants (a byte shifted wrongly, a longer file accepted).
+`mlp_session.py --binary` writes the training data this way. **Measured** (Apple M4 Max): the 16384 x 64 x 128 session answers its first request in **0.08 s from binary files against 0.22 to 0.40 s from text**; a 32768 x 64 x 128 network (the data is 8 MiB binary, 22 MiB as text, which is refused)
+trains at **1.27 ms a step**, loss 0.0346 after 320 steps. **A limit that was removed in the same change:** a device session allocated interpreter memory for every tensor of every program (32 million floats in all), so 65536 x 64 x 128 did not fit. It now gives a tensor interpreter memory only when the host reads or writes it (a resident file, an input, an answer; `interp.globals_lazy` and `materialise`): **65536 x 64 x 128 (4.2 million samples-features, a 16 MiB binary data file) starts in 0.38 s and trains at 2.48 ms a step**, loss 0.0476 after 320 steps. The CPU session still allocates everything, since it computes in that memory.

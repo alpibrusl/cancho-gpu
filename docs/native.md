@@ -386,11 +386,7 @@ Both change the arithmetic, so the same-tokens guarantee (`scripts/spec-check.sh
 
 ### N5. Interface and the shim
 
-* **Tensors from binary files.** A resident file is text and capped at 16 MiB (about 800,000
-  numbers), so no problem past 4096 x 128 can be tried through a session: the sizes at which a GPU
-  would win are out of reach. A `resident NAME FILE --f32` form (little-endian IEEE words, read with
-  `f32_of_bits` over four bytes, no parse) has no cap beyond memory and removes the parsing from setup (0.68 s at 4096 x 128). Own
-  document first.
+* **Tensors from binary files: built** (`resident.md` section 12.4). `resident P.PARAM FILE f32` and `table P.PARAM FILE BLOCKS f32` read little-endian IEEE words with no parsing and no 16 MiB cap.
 * **The shim's memory: fixed.** The cause was not the missing `retain`/`release` the first plan guessed. The shim was written for ARC
   (`g.cmd = nil` to release) but **built without it** (`-fobjc-arc` was in no build script), so it ran with manual reference counting, never
   retained the command buffers and encoders it stored, and ran with no autorelease pool, so every one lived to the end of the process:

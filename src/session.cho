@@ -215,14 +215,18 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, progs_raw, mem.rec4(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno));
             } else if text.is(t, head, "resident") {
-                if nw != 3 {
-                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE"));
+                if nw != 3 && !(nw == 4 && text.is(t, mem.get(m, words, 3), "f32")) {
+                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE [f32]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
                     return bad(m, t, lineno, text.lit(m, t, "resident takes PROGRAM.PARAM"));
                 }
-                mem.push(m, res_raw, mem.rec4(m, pn, an, mem.get(m, words, 2), lineno));
+                var binary = 0;
+                if nw == 4 {
+                    binary = 1;
+                }
+                mem.push(m, res_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), lineno, binary));
             } else if text.is(t, head, "link") {
                 if nw != 4 || !text.is(t, mem.get(m, words, 2), "->") {
                     return bad(m, t, lineno, text.lit(m, t, "link PROGRAM.OUT -> PROGRAM.PARAM"));
@@ -275,8 +279,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, carry_raw, mem.rec5(m, sp, sa, dp, da, lineno));
             } else if text.is(t, head, "table") {
-                if nw != 4 {
-                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS"));
+                if nw != 4 && !(nw == 5 && text.is(t, mem.get(m, words, 4), "f32")) {
+                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -286,7 +290,17 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 if !okb || blocks < 1.0 || blocks > 100000000.0 || float_of(truncate(blocks)) != blocks {
                     return bad(m, t, lineno, text.lit(m, t, "the blocks of a table are a positive whole number"));
                 }
-                mem.push(m, table_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), truncate(blocks), lineno));
+                let traw = mem.grab(m, 6);
+                m[traw] = pn;
+                m[traw + 1] = an;
+                m[traw + 2] = mem.get(m, words, 2);
+                m[traw + 3] = truncate(blocks);
+                m[traw + 4] = lineno;
+                m[traw + 5] = 0;
+                if nw == 5 {
+                    m[traw + 5] = 1;
+                }
+                mem.push(m, table_raw, traw);
             } else if text.is(t, head, "steps") {
                 if nw != 1 {
                     return bad(m, t, lineno, text.lit(m, t, "steps takes nothing"));
@@ -343,7 +357,12 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 return 0 - 1;
             }
         }
-        let globals = interp.inputs(m, t, fm, prog);
+        var globals = 0 - 1;
+        if device {
+            globals = interp.globals_lazy(m, prog);
+        } else {
+            globals = interp.inputs(m, t, fm, prog);
+        }
         if globals < 0 {
             return 0 - 1;
         }
@@ -378,7 +397,16 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         m[cell] = 1;
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
-        if runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]) < 0 {
+        if interp.materialise(m, t, fm, g) < 0 {
+            return 0 - 1;
+        }
+        var loaded = 0;
+        if m[raw + 4] == 1 {
+            loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+        } else {
+            loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+        }
+        if loaded < 0 {
             return 0 - 1;
         }
         mem.push(m, resident, mem.rec2(m, pi, ai));
@@ -443,7 +471,13 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if whole < 0 {
             return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
         }
-        if runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]) < 0 {
+        var loaded = 0;
+        if m[raw + 5] == 1 {
+            loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+        } else {
+            loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+        }
+        if loaded < 0 {
             return 0 - 1;
         }
         mem.push(m, tables, mem.rec4(m, pi, ai, whole, m[raw + 3]));
@@ -501,6 +535,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             return bad(m, t, m[raw + 2], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
         }
         m[cell] = 3;
+        if interp.materialise(m, t, fm, mem.get(m, m[mem.get(m, progs, pi) + 2], ai)) < 0 {
+            return 0 - 1;
+        }
         mem.push(m, inputs, mem.rec2(m, pi, ai));
         i = i + 1;
     }
@@ -532,6 +569,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         if !ir.param_writable(m, prm) {
             return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is only read by its kernel: an answer is an output", m[raw + 1]));
+        }
+        if interp.materialise(m, t, fm, mem.get(m, m[mem.get(m, progs, pi) + 2], ai)) < 0 {
+            return 0 - 1;
         }
         mem.push(m, answers, mem.rec4(m, pi, ai, m[raw + 2], m[raw + 3]));
         i = i + 1;

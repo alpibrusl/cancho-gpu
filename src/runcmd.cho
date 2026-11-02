@@ -22,6 +22,7 @@ import interp;
 import cli;
 import fileio;
 import ir;
+import kinds;
 
 // The largest input file: a text handle's length is 24 bits.
 fn cap() -> [] int {
@@ -215,6 +216,30 @@ pub fn load_one[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float]
     if count != n {
         return err.fail(m, t, "usage", text.fmt(m, t, "the file for `$` has $ numbers; the parameter holds $", mem.of3(m, name, text.num(m, t, count), text.num(m, t, n))));
     }
+    return 0;
+}
+
+// The same for a binary file: `n` little-endian IEEE binary32 words, nothing else (the `f32` flag of a session's `resident` and `table`). No number is
+// parsed, so the cap of a text file does not apply; the staging bytes are given back. Only an f32 parameter can be read this way.
+pub fn load_f32[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), path: &p [byte], name: int, dt: int, at: int, n: int) -> [fs_read(""), file_read] int {
+    if dt != kinds.f32() {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not an f32 parameter: a binary file holds f32 words", name));
+    }
+    let mark = m[mem.text_slot()];
+    let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 4 * n + 1);
+    if ftop < 0 {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
+    }
+    if fsize != 4 * n {
+        return err.fail(m, t, "usage", text.fmt(m, t, "the binary file for `$` has $ bytes; the parameter holds $ f32 words ($ bytes)", mem.of4(m, name, text.num(m, t, fsize), text.num(m, t, n), text.num(m, t, 4 * n))));
+    }
+    var j = 0;
+    while j < n {
+        let b = ftop + 4 * j;
+        fm[at + j] = f32.from_bits32(int_of(t[b]) | int_of(t[b + 1]) << 8 | int_of(t[b + 2]) << 16 | int_of(t[b + 3]) << 24);
+        j = j + 1;
+    }
+    m[mem.text_slot()] = mark;
     return 0;
 }
 
