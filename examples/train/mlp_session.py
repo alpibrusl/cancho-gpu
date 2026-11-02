@@ -2,10 +2,10 @@
 """A two-layer network trained with Adam entirely on the device (docs/resident.md section 12): the data, the parameters and Adam's moments are resident,
 a request is a count of steps, and the answer is the loss after them (and, with `--dump`, the parameters).
 
-    python3 examples/train/mlp_session.py DIR R K HD STEPS [--dump] [--lr L] [--batch B]     writes DIR/session and its files (numpy)
+    python3 examples/train/mlp_session.py DIR R K HD STEPS [--dump] [--lr L] [--batch B] [--relu]     writes DIR/session and its files (numpy)
     echo 1000 | cancho-gpu-metal-session DIR/session                             1000 Adam steps, one wait; prints the loss
 
-The model is mlp_fwd.chx (sigmoid hidden layer, linear output), the loss e^T e / 2R, the backward pass bwd_dw.chx and mlp_dzt.chx, the optimiser adam.chx on each of w1, b1, w2, b2.
+The model is mlp_fwd.chx (sigmoid hidden layer, or ReLU with --relu: mlp_fwd_relu.chx; linear output), the loss e^T e / 2R, the backward pass bwd_dw.chx and mlp_dzt.chx, the optimiser adam.chx on each of w1, b1, w2, b2.
 The targets are a smooth function of the features, which a network of this size can fit."""
 import math
 import os
@@ -57,8 +57,9 @@ def put(path, values):
         f.write(" ".join(str(v) for v in np.asarray(values, dtype=np.float32).reshape(-1)) + "\n")
 
 
-def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=None):
+def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=None, act="sigmoid"):
     """With `batch` B the data (r_all samples) is a table of r_all / B minibatches and step j trains on batch j mod (r_all / B); the loss answered is that of the last minibatch."""
+    suffix = "_relu" if act == "relu" else ""
     r = batch or r_all
     nb = r_all // r
     assert r * nb == r_all, "the batch must divide the samples"
@@ -88,8 +89,8 @@ def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=N
             f.write(text)
     bm = block(r, 32)
     lines = [f"# a {k}-{hd}-1 sigmoid network on {r} samples, Adam, lr {lr}",
-             f"program fwd {chx('mlp_fwd.chx')} r={r} k={k} hd={hd} bm={bm}",
-             f"program dz  {chx('mlp_dzt.chx')} r={r} hd={hd} bm={bm}",
+             f"program fwd {chx('mlp_fwd' + suffix + '.chx')} r={r} k={k} hd={hd} bm={bm}",
+             f"program dz  {chx('mlp_dzt' + suffix + '.chx')} r={r} hd={hd} bm={bm}",
              f"program gw1 {chx(gradient) if not dw2 else p(gradient)} r={r} n={hd} k={k}",
              f"program gb1 {chx(gradient) if not dw2 else p(gradient)} r={r} n={hd} k=1",
              f"program gw2 {chx('bwd_dw.chx')} r={r} n=1 k={hd}",
@@ -118,7 +119,7 @@ def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=N
     return p("session")
 
 
-def reference(r, k, hd, steps, lr=0.01, batch=None):
+def reference(r, k, hd, steps, lr=0.01, batch=None, act="sigmoid"):
     """The same training in binary64 numpy: (the loss before each step, the final parameters). With `batch`, step j uses minibatch j mod (r / batch)."""
     x_all, t_all = data(r, k)
     x_all, t_all = x_all.astype(np.float64), t_all.astype(np.float64)
@@ -131,10 +132,11 @@ def reference(r, k, hd, steps, lr=0.01, batch=None):
     for step in range(1, steps + 1):
         lo = ((step - 1) % (r_all // r)) * r
         x, t = x_all[lo:lo + r], t_all[lo:lo + r]
-        h = 1.0 / (1.0 + np.exp(-(x @ w1.T + b1)))
+        z = x @ w1.T + b1
+        h = np.maximum(z, 0.0) if act == "relu" else 1.0 / (1.0 + np.exp(-z))
         e = h @ w2 + b2[0] - t
         losses.append(0.5 * float(e @ e) / r)
-        dz = (e[:, None] * w2[None, :]) * h * (1.0 - h)
+        dz = (e[:, None] * w2[None, :]) * ((h > 0.0) if act == "relu" else h * (1.0 - h))
         grads = [dz.T @ x, dz.sum(0), h.T @ e, np.array([e.sum()])]
         for i, (param, g) in enumerate(zip((w1, b1, w2, b2), grads)):
             g = g / r
@@ -149,7 +151,9 @@ if __name__ == "__main__":
     lr = float(sys.argv[sys.argv.index("--lr") + 1]) if "--lr" in sys.argv else 0.01
     if "--lr" in sys.argv:
         a.remove(sys.argv[sys.argv.index("--lr") + 1])
+    act = "relu" if "--relu" in sys.argv else "sigmoid"
+    a = [x for x in a if x != "--relu"]
     batch = int(sys.argv[sys.argv.index("--batch") + 1]) if "--batch" in sys.argv else None
     if batch:
         a.remove(sys.argv[sys.argv.index("--batch") + 1])
-    print(write(a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), lr=lr, dump="--dump" in sys.argv, batch=batch))
+    print(write(a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), lr=lr, dump="--dump" in sys.argv, batch=batch, act=act))

@@ -268,3 +268,5 @@ tests/chx/attention_scores.chx nkv=4 g=6 t=256 ts=32 d=256 tmax=1024
 tests/chx/attention_scores.chx nkv=2 g=6 t=64 ts=16 d=256 tmax=96 --run
 tests/chx/attention_pv.chx nkv=4 g=6 t=256 dw=32 d=256 tmax=1024
 tests/chx/attention_pv.chx nkv=2 g=6 t=64 dw=32 d=256 tmax=96 --run
+tests/chx/activations.chx r=4 n=8
+tests/chx/activations.chx r=3 n=5 --run

@@ -650,6 +650,10 @@ def new_checks():
     ok &= check("delta_step3 y nk=2", got["y"], want_y)
     ok &= check("attention_scores nkv=2 g=6 t=64 ts=16", run("attention_scores", ["nkv=2", "g=6", "t=64", "ts=16", "d=256", "tmax=96"])["sc"], attention_scores(2, 6, 64, 256, 96))
     ok &= check("attention_pv nkv=2 g=6 t=64 dw=32", run("attention_pv", ["nkv=2", "g=6", "t=64", "dw=32", "d=256", "tmax=96"])["o"], attention_pv(2, 6, 64, 256, 96))
+    got = run("activations", ["r=4", "n=8"])
+    (xs,) = lcg([32])
+    ok &= check("activations relu r=4 n=8", got["y"], [max(v, 0.0) for v in xs])
+    ok &= check("activations step r=4 n=8", got["d"], [1.0 if v > 0.0 else 0.0 for v in xs])
     return ok
 
 
@@ -668,6 +672,7 @@ MUTANTS = [
     ("delta_step3.chx", "let e2_2 = d2_2 * b2_2", "let e2_2 = d2_2 + b2_2", "delta_step3 adds beta to the third token's error"),
     ("attention_scores.chx", "store sd + mk -> sc[i * g, sp * ts]", "store sd - mk -> sc[i * g, sp * ts]", "attention_scores subtracts the mask"),
     ("attention_pv.chx", "let p  = e / z", "let p  = e * z", "attention_pv multiplies by the sum"),
+    ("activations.chx", "store relu &a -> y", "store step &a -> y", "relu is a step"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
     ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),
 ]

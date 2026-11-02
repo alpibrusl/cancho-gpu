@@ -823,6 +823,10 @@ fn unary[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int 
         expr = dialect.log(m, t, d, src);
     } else if m[o + 1] == kinds.sigmoid() {
         expr = text.f1(m, t, "1.0f / (1.0f + $)", dialect.exp(m, t, d, text.f1(m, t, "-$", src)));
+    } else if m[o + 1] == kinds.relu() {
+        expr = dialect.fmax(m, t, d, src, text.lit(m, t, "0.0f"));
+    } else if m[o + 1] == kinds.step() {
+        expr = text.f1(m, t, "($ > 0.0f ? 1.0f : 0.0f)", src);
     } else {
         let ex = dialect.exp(m, t, d, text.f1(m, t, "-$", dialect.fabs(m, t, d, src)));
         let lg = dialect.log(m, t, d, text.f1(m, t, "1.0f + $", ex));

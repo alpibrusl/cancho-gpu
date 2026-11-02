@@ -255,6 +255,15 @@ fn unary_apply(u: int, x: float) -> [] float {
     if u == kinds.sigmoid() {
         return f32.div(1.0, f32.add(1.0, f32.exp32(-x)));
     }
+    if u == kinds.relu() {
+        return f32.max(x, 0.0);
+    }
+    if u == kinds.step() {
+        if x > 0.0 {
+            return 1.0;
+        }
+        return 0.0;
+    }
     // max(x, 0) + ln_1p(exp(-|x|))
     return f32.add(f32.max(x, 0.0), f32.ln_1p32(f32.exp32(-f32.abs(x))));
 }
