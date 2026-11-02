@@ -319,10 +319,15 @@ speculative decode. **Ollama's number includes the model's own draft head** (the
 * **So the N4 effect is not hiding in the decode path:** no kernel there is 20 times off its roofline, and the weight kernels are within 20% of it.
   What remains for plain decode is perhaps 10 to 20% (the weight kernels to 90%, attention, `delta_step`), with real work in each.
 
-**What the Ollama gap is, then (inferred, not measured):** 45.9 tok/s at the 37 ms a pass that cancho-gpu spends would be 1.7 tokens a pass, which a
-speculative decoder with a good draft head gets and a chain of two with three rows checked a pass (cancho-gpu's: 33.0 / 25.8 = 1.28) does not. Ollama
-reports no per-pass number, so this is a reading of the arithmetic, not a measurement of Ollama; what would test it is the acceptance rate of
-cancho-gpu's draft head (`--mtp-accept`) and a deeper or wider speculation.
+**What the Ollama gap is, then (measured; this replaces an earlier inference that Ollama gets about 1.7 tokens a pass, which was wrong):**
+Ollama logs the speculative decoding of each request (`~/.ollama/logs/server.log`, "speculative decode stats"; the source is
+`mlxrunner/speculate_stats.go` in github.com/ollama/ollama, which runs this model through its MLX runner and drafts with the model's own
+head, to a depth its controller picks from measured acceptance and cost). The eight benchmark runs of this invocation (128 tokens each) read:
+62 to 68 rounds, 114 to 136 drafted, 60 to 66 accepted, acceptance 48 to 53%, an average depth of 1.7 to 2.2 (at most 3 or 4):
+**about 2.0 tokens a round, the same as cancho-gpu's 2.06 in 62 rounds.** So the yield is not the gap. Ollama's 45.9 tok/s at 2.0 tokens
+a round is a round of about 44 ms; cancho-gpu's is 62 (41 for a plain token). The gap is the cost of a round, not speculation. (On other
+prompts, in older logs, Ollama's head is accepted 84 to 98% of the time at depth 3 to 4 and gets 3 to 3.8 tokens a round: its depth
+controller goes deeper where drafts pay, which cancho-gpu's fixed chain of two does not.)
 
 ### N5. Interface and the shim
 
