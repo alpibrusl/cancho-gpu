@@ -4,12 +4,14 @@ algo attn_gate_q(r, n)
   in  o:  f32[r, n]
   in  qg: f32[r, 2 * n]
   out y:  f32[r, n]
+  tile br
 {
-  let ot = load o
-  let gt = load qg[0, n ; r, n]
+  grid i over r / br
+  let ot = load o[i * br, 0 ; br, n]
+  let gt = load qg[i * br, n ; br, n]
   let sg = sigmoid gt
-  store ot * sg -> y
+  store ot * sg -> y[i * br, 0]
 }
 
-schedule attn_gate_q for apple-m-series { threads 256 }
-schedule attn_gate_q for nvidia-ada     { threads 256 }
+schedule attn_gate_q for apple-m-series { threads 256 br 1 }
+schedule attn_gate_q for nvidia-ada     { threads 256 br 1 }

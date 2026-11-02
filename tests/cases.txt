@@ -254,3 +254,17 @@ tests/chx/matvec_fp4_res_batch.chx m=4 n=5120 k=17408
 tests/chx/matvec_fp4_res_batch.chx m=2 n=64 k=128 --run
 tests/chx/matvec_fp4_swiglu_batch.chx m=4 n=17408 k=5120
 tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=64 k=128 --run
+tests/chx/matvec_rows_f16_m.chx m=3 n=48 k=5120
+tests/chx/matvec_rows_f16_m.chx m=3 n=64 k=96 --run
+tests/chx/gates_rows.chx m=3 h=48
+tests/chx/gates_rows.chx m=3 h=5 --run
+tests/chx/qk_norm_rows.chx m=3 nk=16 rows=80
+tests/chx/qk_norm_rows.chx m=3 nk=2 rows=6 --run
+tests/chx/conv_step3.chx c=10240
+tests/chx/conv_step3.chx c=512 --run
+tests/chx/delta_step3.chx nk=16
+tests/chx/delta_step3.chx nk=2 --run
+tests/chx/attention_scores.chx nkv=4 g=6 t=256 ts=32 d=256 tmax=1024
+tests/chx/attention_scores.chx nkv=2 g=6 t=64 ts=16 d=256 tmax=96 --run
+tests/chx/attention_pv.chx nkv=4 g=6 t=256 dw=32 d=256 tmax=1024
+tests/chx/attention_pv.chx nkv=2 g=6 t=64 dw=32 d=256 tmax=96 --run

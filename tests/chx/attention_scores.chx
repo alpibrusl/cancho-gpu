@@ -1,0 +1,24 @@
+// The scores half of attention.chx, split over the cache's positions so that more than one threadgroup a
+// key/value head works on it: the scores of head i's g query heads against positions sp * ts .. (sp + 1) * ts,
+//
+//     sc = q k^T / 16 + mask        (1/16 = 1/sqrt(256))
+//
+// written to a [nkv * g, t] scratch. attention_pv.chx takes the softmax and the product with v from it. The same
+// arithmetic as attention.chx; d MUST be 256 (the 1/16 is a literal, see attention.chx).
+algo attention_scores(nkv, g, t, ts, d, tmax)
+  in  q:    f32[nkv * g, d]
+  in  k:    f32[nkv * tmax, d]
+  in  mask: f32[1, t]
+  out sc:   f32[nkv * g, t]
+{
+  grid i over nkv, sp over t / ts
+  let qt = load q[i * g, 0 ; g, d]
+  let kt = load k[i * tmax + sp * ts, 0 ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.0625
+  let mk = load mask[0, sp * ts ; 1, ts]
+  store sd + mk -> sc[i * g, sp * ts]
+}
+
+schedule attention_scores for apple-m-series { threads 512 }
+schedule attention_scores for nvidia-ada     { threads 128 }

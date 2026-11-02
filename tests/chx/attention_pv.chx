@@ -1,0 +1,22 @@
+// The second half of attention.chx, split over the head dimension: the softmax of head i's scores (from
+// attention_scores.chx; every threadgroup of a head redoes it, g x t numbers) and the product with the columns
+// dc * dw .. (dc + 1) * dw of v. The same arithmetic as attention.chx.
+algo attention_pv(nkv, g, t, dw, d, tmax)
+  in  sc: f32[nkv * g, t]
+  in  v:  f32[nkv * tmax, d]
+  out o:  f32[nkv * g, d]
+{
+  grid i over nkv, dc over d / dw
+  let sm = load sc[i * g, 0 ; g, t]
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / z
+  let vt = load v[i * tmax, dc * dw ; t, dw]
+  let r  = matmul p vt
+  store r -> o[i * g, dc * dw]
+}
+
+schedule attention_pv for apple-m-series { threads 1024 }
+schedule attention_pv for nvidia-ada     { threads 128 }

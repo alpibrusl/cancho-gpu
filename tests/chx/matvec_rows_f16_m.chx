@@ -1,0 +1,16 @@
+// matvec_rows_f16 for m rows of x (the tokens a speculative check runs), the f16 weights read once: the
+// in_proj_a and in_proj_b of a gated-delta layer, one launch where the check made one for each row.
+algo matvec_rows_f16_m(m, n, k)
+  in  x: f32[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let wt = load w[i * bn, 0 ; bn, k]
+  store matmul_nt xt wt -> y[0, i * bn]
+}
+
+schedule matvec_rows_f16_m for apple-m-series { threads 256 bn 8 }
+schedule matvec_rows_f16_m for nvidia-ada     { threads 128 bn 4 }

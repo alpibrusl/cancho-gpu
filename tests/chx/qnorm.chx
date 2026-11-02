@@ -4,8 +4,10 @@ algo qnorm(r, n, eps)
   in  x: f32[r, 2 * n]
   in  w: f32[1, n]
   out y: f32[r, n]
+  tile br
 {
-  let q  = load x[0, 0 ; r, n]
+  grid i over r / br
+  let q  = load x[i * br, 0 ; br, n]
   let sq = &q * &q
   let ss = rowsum sq
   let ms = ss * (1 / n)
@@ -13,8 +15,8 @@ algo qnorm(r, n, eps)
   let rs = rsqrt t
   let xn = q * rs
   let w  = load w
-  store xn * w -> y
+  store xn * w -> y[i * br, 0]
 }
 
-schedule qnorm for apple-m-series { threads 256 }
-schedule qnorm for nvidia-ada     { threads 256 }
+schedule qnorm for apple-m-series { threads 256 br 1 }
+schedule qnorm for nvidia-ada     { threads 256 br 1 }

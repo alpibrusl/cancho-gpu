@@ -73,5 +73,5 @@ algo delta_step(nk)
   store sn2 -> so[i * 384 + 256 + r * br, 0]
 }
 
-schedule delta_step for apple-m-series { threads 128 br 32 }
+schedule delta_step for apple-m-series { threads 256 br 8 }
 schedule delta_step for nvidia-ada     { threads 128 br 32 }

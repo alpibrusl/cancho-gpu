@@ -92,8 +92,8 @@ model and no other.
 
 ## 5. Speed
 
-Steady decode on this machine (M4 Max, the weights read from the page cache): **40 ms a token, 25 tokens a
-second**; with the draft head (below) 33.0 on the benchmark's prose prompt and about 44 on a code prompt; the weights take 2.8 s to load. Prefill takes the prompt eight tokens at a time (below), about 75 tokens a second on a 49-token prompt (22 token by token, with `--single`). In
+Steady decode on this machine (M4 Max, the weights read from the page cache): **36.5 ms a token, 27 tokens a
+second**; with the draft head (below) 39.9 on the benchmark's prose prompt and about 44 on a code prompt; the weights take 2.8 s to load. Prefill takes the prompt eight tokens at a time (below), about 105 tokens a second on a 49-token prompt (22 token by token, with `--single`). In
 the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weights at about 46 tokens a
 second and MLX-LM (a different 4-bit quantisation) at about 30; the reference runtime measured 25 (39 ms a
 token) when it was run for its tokens.
@@ -188,6 +188,29 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   (-12%), 2266 against 2889 (-22%), 2659 against 3114 (-15%). The gain is larger the busier the CPU, since the
   old round did more of its work there; only same-session pairs compare. The head's cache is warmed through
   prefill (without it acceptance falls from about 0.9 to about 0.5): a position costs about 1 ms more.
+* **Why the benchmark's speculative row is 1.3x, not 1.8x** (measured on the benchmark prompt, 128 tokens, 62 rounds): the
+  first draft is accepted 91 of 127 times (72%, not the 95% above, which was 64 tokens on other prompts) and the second,
+  given the first, 42 of 90 (47%): 2.06 tokens a round. A round costs about 62 ms (41 plain), so the gain is
+  2.06 x 41 / 62 = 1.36x, the measured 33.0 against 25.7 tok/s. The verify's matvecs are about 39 ms of the round, and the
+  three-row kernels reach 316-374 GB/s where one row reaches 430-470 (1.22-1.37x the time of a one-row kernel for the same
+  weights). A sweep of the biggest one (`swiglu_few`: 128/256/512 threads, 16/32/64 weight rows, whole `--spec` runs,
+  decode 3831-4021 ms) finds the schedule already at its optimum (the best was 0.5% better, within noise), so the
+  gap to one row is not the schedule. Nor is a hand-written kernel likely to close it: `experimental/metal-bw/batch.mm`
+  (issue 26), re-run on the 17408 x 5120 matrix, gets 287 GB/s of weights at best for three rows with the scalar
+  path (`w3_4`; one row: 473) and 230 GB/s with the matrix unit (`m3_1`), both below the generated kernel's 316-374 inside the
+  verify. Three rows cost more than one because the work per weight byte (a load and a dequantisation, then three
+  multiply-adds) is issue-bound, not bandwidth-bound. (A first estimate here, that matching one row would give about 39
+  tok/s, assumed that was possible; it is an upper bound this evidence argues against.) A deeper draft would add little
+  (the second is right 47% of the time).
+* **What closed part of that gap** (`docs/native.md` N4c; same prompt, 127 tokens, decode ms, speculative / plain): the round's
+  small kernels had no `grid` or too few threadgroups, and the delta layers launched eighteen small kernels a check. One
+  threadgroup a row for `rmsnorm_rows`, `rope`, `gated_norm`, `qnorm` and `attn_gate_q` (3940 to 3330 spec with the
+  delta work below); the delta layers' a/b projections, gates and `qk_norm` batched over the three rows and their convolution
+  and delta step carried through the three tokens in one launch each (`conv_step3`, `delta_step3`: the state is read once and the
+  three states a rejection may keep are written; 18 launches a layer to 6); attention in two launches over 32 threadgroups
+  instead of one over 4 (`attention_scores`, `attention_pv`: 71 us to 14). Result: 3940 to 3180 ms speculative
+  (33.0 to 39.9 tok/s in `docs/benchmark.md`) and 5005 to 4640 ms plain (25.7 to 27.4), with the same tokens as before. What is left of a
+  round (51 ms) is the three-row weight kernels, about 40 ms of it: `CANCHOGPU_NOOP` on the few-row matvecs leaves 11 ms.
 * **Costs:** 2.7 GB more resident memory (14.1 to 16.7 GB for the server, measured: the embedding table on the
   device 2.5 GB, the head 239 MB; the spare delta states are allocated but only touched when a round runs) and
   about 3 s more to start (the table is read once; the few-row kernels are compiled at load).

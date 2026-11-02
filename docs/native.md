@@ -319,10 +319,70 @@ speculative decode. **Ollama's number includes the model's own draft head** (the
 * **So the N4 effect is not hiding in the decode path:** no kernel there is 20 times off its roofline, and the weight kernels are within 20% of it.
   What remains for plain decode is perhaps 10 to 20% (the weight kernels to 90%, attention, `delta_step`), with real work in each.
 
-**What the Ollama gap is, then (inferred, not measured):** 45.9 tok/s at the 37 ms a pass that cancho-gpu spends would be 1.7 tokens a pass, which a
-speculative decoder with a good draft head gets and a chain of two with three rows checked a pass (cancho-gpu's: 33.0 / 25.8 = 1.28) does not. Ollama
-reports no per-pass number, so this is a reading of the arithmetic, not a measurement of Ollama; what would test it is the acceptance rate of
-cancho-gpu's draft head (`--mtp-accept`) and a deeper or wider speculation.
+**What the Ollama gap is, then (measured; this replaces an earlier inference that Ollama gets about 1.7 tokens a pass, which was wrong):**
+Ollama logs the speculative decoding of each request (`~/.ollama/logs/server.log`, "speculative decode stats"; the source is
+`mlxrunner/speculate_stats.go` in github.com/ollama/ollama, which runs this model through its MLX runner and drafts with the model's own
+head, to a depth its controller picks from measured acceptance and cost). The eight benchmark runs of this invocation (128 tokens each) read:
+62 to 68 rounds, 114 to 136 drafted, 60 to 66 accepted, acceptance 48 to 53%, an average depth of 1.7 to 2.2 (at most 3 or 4):
+**about 2.0 tokens a round, the same as cancho-gpu's 2.06 in 62 rounds.** So the yield is not the gap. Ollama's 45.9 tok/s at 2.0 tokens
+a round is a round of about 44 ms; cancho-gpu's is 62 (41 for a plain token). The gap is the cost of a round, not speculation. (On other
+prompts, in older logs, Ollama's head is accepted 84 to 98% of the time at depth 3 to 4 and gets 3 to 3.8 tokens a round: its depth
+controller goes deeper where drafts pay, which cancho-gpu's fixed chain of two does not.)
+
+### N4c. Closing the round (measured)
+
+N4b's last result was that the gap to Ollama is the cost of a round, not its yield (62 ms against about 44 at 2.0 tokens a round). The round's
+costs, by the shim's profile (`CANCHOGPU_PROFILE=2`, isolated per kernel, so they overstate what the pipeline overlaps) and by `CANCHOGPU_NOOP` (a kernel launched
+with no work, timing the real pipeline): the three-row weight kernels about 40 ms of 51, the rest about 11. In that rest, kernels that ran on **one threadgroup
+for all their rows** (the same mistake as N4's `bwd_dw`): `rmsnorm_rows` 49 us for 3 rows of 5120, `rope` 19.6, `gated_norm` 38, `qnorm` 29, `attn_gate_q` 25;
+and `attention` on **4** (one per KV head) at 71 us a layer. Each of those took a `grid` over rows (or a split) and a schedule with more threads:
+
+| change | spec ms (127 tokens) | plain ms | tok/s spec / plain |
+|---|---|---|---|
+| start (`146b4ce`) | 3940 | 5005 | 32.2 / 25.4 |
+| `rmsnorm_rows`: a threadgroup a row | 3775 | 5005 | 33.7 / 25.4 |
+| delta layers in six launches (`conv_step3`, `delta_step3`, batched a/b, gates, `qk_norm`), `delta_step` at 256 threads, 8 rows | 3515 | 4857 | 36.1 / 26.2 |
+| `rope`, `gated_norm`, `qnorm`, `attn_gate_q`: a threadgroup a row | 3330 | 4746 | 38.1 / 26.8 |
+| attention in two kernels over 32 threadgroups | 3180 | 4640 | 39.9 / 27.4 |
+
+(Interleaved with the Python harness `ab.py` of the session, minimum of three; every row has the same tokens as plain greedy decoding, `scripts/spec-check.sh` on seven
+prompts, and the 27B golden check; the attention change also against the build before it at about 400 and 860 tokens of context, so all three cache sizes ran.)
+The benchmark invocation after it (`docs/benchmark.md`): Ollama 45.3, MLX-LM 29.6, cancho-gpu 27.4, speculative 39.9: 88% of Ollama, from 72%; prefill 81 to 108 tok/s.
+
+**What did not work, and what is left.**
+
+* The schedule of the three-row weight kernels is at its optimum (a sweep of 128 to 512 threads and 16 to 64 rows: all within 4%), and a hand-written kernel does not beat the
+  generated one (`experimental/metal-bw/batch.mm`, issue 26: 287 GB/s for three rows at best, the generated 316 to 374). Launching the one-row swiglu kernel three times
+  (a `grid` over the rows, hoping the three threadgroups share the weight reads through the cache) was 2.4 times slower (632 against 268 us): the rows do not share.
+  Three rows are limited by the work per weight byte (a load and a dequantisation, then three multiply-adds), not by the memory.
+* Ollama's own log (N4b) shows it drafting deeper when drafts pay (3 to 3.8 tokens a round on prompts where its head is right 84 to 98% of the time); cancho-gpu's chain is two. A depth
+  controller like Ollama's (`mlxrunner/speculate_depth.go`) is the way to the same yield on predictable text; on the benchmark's prompt the yield is the same as Ollama's (2.0).
+  **What a third draft would be worth (measured acceptance, estimated cost).** `--mtp-accept` now prints the third draft's acceptance, given the first two (128 tokens, greedy):
+
+  | prompt | 1st | 2nd | 3rd | tokens a round, 2 drafts / 3 | speed 2 / 3 drafts, tok/s | change |
+  |---|---|---|---|---|---|---|
+  | benchmark prose | 72% | 48% | 43% | 2.07 / 2.22 | 40.1 / 37.9 | -5% |
+  | story | 76% | 48% | 58% | 2.13 / 2.34 | 41.3 / 39.9 | -3% |
+  | physics | 84% | 63% | 69% | 2.37 / 2.73 | 46.0 / 46.7 | +2% |
+  | explanation | 89% | 78% | 74% | 2.58 / 3.10 | 50.2 / 53.0 | +6% |
+  | "The capital of France is" | 97% | 86% | 85% | 2.80 / 3.51 | 54.4 / 60.0 | +10% |
+  | code (`def quicksort`) | 99% | 91% | 86% | 2.89 / 3.67 | 56.1 / 62.6 | +12% |
+
+  The speeds assume a two-draft round of 51.5 ms (measured) and a three-draft one of 58.5, which is an **estimate** (a fourth row through the weight kernels, about 4 ms; a third head step, about 2.5; one more
+  row of `lm_head` and argmax, about 0.6). A depth that is chosen each round from the measured acceptance, as Ollama's controller does, would take the better of the two: about +10% on predictable text and
+  nothing on the benchmark's prompt. It also costs a four-row verify (the few-row kernels are compiled for three; `conv_step3` and `delta_step3` are three-row kernels; `commit`, the mask and the token slots
+  of `spec_round` assume three; two more spare delta states, 300 MB). That is a rewrite of the speculative path for a gain on easy text only, so it is **not built**; the table is what to weigh it by.
+* The remaining 7 ms of a round to Ollama's on the benchmark prompt are the three-row weight kernels. What would shorten them is fewer instructions per weight: fp16 accumulation or the matrix unit,
+  both of which change the arithmetic and neither of which has been tried here.
+
+### N4d. Why three rows cost more than one (measured)
+
+`experimental/metal-bw/batch_m3.mm` times the weight kernel by hand with the weights rotated through 16 copies (every launch reads DRAM). On the 17408 x 5120 matrix, the same run: one token 142 us,
+two 159, three 210 to 246 (every variant of the loop, rows a simdgroup, register layout): **the cliff is at the third token, not at the second**. Two controls locate it. Reading x from one row for all
+three tokens (the compiler then computes one dot product and the outputs are wrong, so this is a timing control only) brings three tokens to 169 us: the time is the multiply-adds (three a weight),
+not the weight traffic or x's. And half-precision x and products (again timing only) brings three tokens to the one-token time (166 against 170). So the three-row kernel is **ALU-bound in f32**, and
+what would close the gap to the one-row speed (about 6 ms of the 51 ms round) is cheaper arithmetic a weight: f16 products or the matrix unit (`m3_*` in `batch.mm`: 230 GB/s for any number of tokens, not yet tuned).
+Both change the arithmetic, so the same-tokens guarantee (`scripts/spec-check.sh`) would have to be re-earned; it is left.
 
 ### N5. Interface and the shim
 

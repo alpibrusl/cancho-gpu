@@ -464,6 +464,80 @@ ok &= check_full("bwd_db r=64 n=32", "bwd_db", ["r=64", "n=32"], ["ones", "dy"],
 ok &= check_full("bwd_sigmoid r=8 n=64", "bwd_sigmoid", ["r=8", "n=64"], ["z", "dy"], [8 * 64, 8 * 64], "dz", bwd_sigmoid(8, 64))
 ok &= check_full("attn_gate r=3 n=7", "attn_gate", ["r=3", "n=7"], ["o", "gate"], [21, 21], "y", attn_gate(3, 7))
 ok &= check_full("softmax r=4 n=64", "softmax", ["r=4", "n=64"], ["x"], [256], "y")
+# ---- the speculative check's multi-row kernels (docs/qwen35.md): each is the single-row kernel's mathematics over m rows ----------------
+
+def conv_step3(c):
+    x, cs, cw = lcg([3 * c, 3 * c, 4 * c])
+    seq = [cs[0:c], cs[c:2 * c], cs[2 * c:3 * c], x[0:c], x[c:2 * c], x[2 * c:3 * c]]
+    y = []
+    for t in range(3):
+        y += [silu_(sum(seq[t + k][j] * cw[k * c + j] for k in range(4))) for j in range(c)]
+    return y, [v for t in range(3) for v in seq[t + 1] + seq[t + 2] + seq[t + 3]]
+
+
+def gates_rows(m, h):
+    a, b, aa, dtb = lcg([m * h, m * h, h, h])
+    g = [math.exp(-aa[i] * softplus_(a[t * h + i] + dtb[i])) for t in range(m) for i in range(h)]
+    bt = [1 / (1 + math.exp(-x)) for x in b]
+    return [x for v in g for x in [v] * 128], [x for v in bt for x in [v] * 128]
+
+
+def qk_norm_rows(m, nk, rows):
+    (c,) = lcg([m * rows * 128])
+    def norm(r, scale):
+        v = c[r * 128:(r + 1) * 128]
+        rs = 1 / math.sqrt(sum(a * a for a in v) / 128 + 1e-6)
+        return [a * rs * scale for a in v]
+    return ([x for t in range(m) for r in range(nk) for x in norm(t * rows + r, 0.0078125)],
+            [x for t in range(m) for r in range(nk) for x in norm(t * rows + nk + r, 0.08838834764831845)])
+
+
+def matvec16_m(m, n, k):
+    x, w = lcg([m * k, n * k])
+    return [sum(x[t * k + j] * f16(w[i * k + j]) for j in range(k)) for t in range(m) for i in range(n)]
+
+
+def attention_scores(nkv, g, t, d, tmax):
+    q, k, mask = lcg([nkv * g * d, nkv * tmax * d, t])
+    return [sum(q[(i * g + r) * d + c] * k[(i * tmax + pos) * d + c] for c in range(d)) * 0.0625 + mask[pos]
+            for i in range(nkv) for r in range(g) for pos in range(t)]
+
+
+def attention_pv(nkv, g, t, d, tmax):
+    sc, v = lcg([nkv * g * t, nkv * tmax * d])
+    out = []
+    for i in range(nkv):
+        for r in range(g):
+            s = sc[(i * g + r) * t:(i * g + r + 1) * t]
+            mx = max(s)
+            e = [math.exp(x - mx) for x in s]
+            z = sum(e)
+            for col in range(d):
+                out.append(sum(e[pos] / z * v[(i * tmax + pos) * d + col] for pos in range(t)))
+    return out
+
+
+def delta_step3(nk):
+    s, q, k, v, g, bt = lcg([nk * 384 * 128, 3 * nk * 128, 3 * nk * 128, 30720, 3 * nk * 3 * 128, 3 * nk * 384])
+    so = [[0.0] * len(s) for _ in range(3)]
+    y = [0.0] * (3 * nk * 384)
+    for i in range(nk):
+        for j in range(3):
+            for r in range(128):
+                row = i * 384 + j * 128 + r
+                state = s[row * 128:(row + 1) * 128]
+                for t in range(3):
+                    kb = k[(t * nk + i) * 128:(t * nk + i + 1) * 128]
+                    qb = q[(t * nk + i) * 128:(t * nk + i + 1) * 128]
+                    gj = g[(t * nk * 3 + i * 3 + j) * 128:(t * nk * 3 + i * 3 + j + 1) * 128]
+                    sg = [state[c] * gj[c] for c in range(128)]
+                    e = (v[t * 10240 + 4096 + row] - sum(sg[c] * kb[c] for c in range(128))) * bt[t * nk * 384 + row]
+                    state = [sg[c] + kb[c] * e for c in range(128)]
+                    so[t][row * 128:(row + 1) * 128] = state
+                    y[t * nk * 384 + row] = sum(state[c] * qb[c] for c in range(128))
+    return so, y
+
+
 # ---- N2b: the kernels that had no reference (docs/native.md) -------------------------------------------------------------------------
 
 def gemm_ref(m, n, k, wide_a=False):
@@ -554,6 +628,28 @@ def new_checks():
     got = run("stage", ["m=8", "k=64"])["y"]
     for target, bk in (("apple-m-series", 16), ("nvidia-ada", 32)):
         ok &= check(f"stage m=8 k=64 bk={bk}", {target: got[target]}, stage_ref(8, 64, bk), need=1)
+    got = run("conv_step3", ["c=512"])
+    want_y, want_n = conv_step3(512)
+    ok &= check("conv_step3 y c=512", got["y"], want_y)
+    ok &= check("conv_step3 n1 c=512", got["n1"], want_n[0:1536])
+    ok &= check("conv_step3 n2 c=512", got["n2"], want_n[1536:3072])
+    ok &= check("conv_step3 n3 c=512", got["n3"], want_n[3072:4608])
+    got = run("gates_rows", ["m=3", "h=5"])
+    want_g, want_b = gates_rows(3, 5)
+    ok &= check("gates_rows g m=3 h=5", got["g"], want_g)
+    ok &= check("gates_rows bt m=3 h=5", got["bt"], want_b)
+    got = run("qk_norm_rows", ["m=3", "nk=2", "rows=6"])
+    want_q, want_k = qk_norm_rows(3, 2, 6)
+    ok &= check("qk_norm_rows qn m=3 nk=2", got["qn"], want_q)
+    ok &= check("qk_norm_rows kn m=3 nk=2", got["kn"], want_k)
+    ok &= check("matvec_rows_f16_m m=3 n=64 k=96", run("matvec_rows_f16_m", ["m=3", "n=64", "k=96"])["y"], matvec16_m(3, 64, 96))
+    got = run("delta_step3", ["nk=2"])
+    want_so, want_y = delta_step3(2)
+    for t in range(3):
+        ok &= check(f"delta_step3 so{t + 1} nk=2", got[f"so{t + 1}"], want_so[t])
+    ok &= check("delta_step3 y nk=2", got["y"], want_y)
+    ok &= check("attention_scores nkv=2 g=6 t=64 ts=16", run("attention_scores", ["nkv=2", "g=6", "t=64", "ts=16", "d=256", "tmax=96"])["sc"], attention_scores(2, 6, 64, 256, 96))
+    ok &= check("attention_pv nkv=2 g=6 t=64 dw=32", run("attention_pv", ["nkv=2", "g=6", "t=64", "dw=32", "d=256", "tmax=96"])["o"], attention_pv(2, 6, 64, 256, 96))
     return ok
 
 
@@ -568,6 +664,12 @@ MUTANTS = [
     ("softmax.chx", "let q  = e / s", "let q  = e * s", "softmax multiplies by the sum"),
     ("rowops.chx", "let o  = h / ss", "let o  = h * ss", "rowops multiplies by the sum"),
     ("stage.chx", "yield acc + st", "yield acc - st", "stage subtracts"),
+    ("conv_step3.chx", "store t0 * g0 -> y[0, i * bc]", "store t0 + g0 -> y[0, i * bc]", "conv_step3 adds the gate to the first row's output"),
+    ("delta_step3.chx", "let e2_2 = d2_2 * b2_2", "let e2_2 = d2_2 + b2_2", "delta_step3 adds beta to the third token's error"),
+    ("attention_scores.chx", "store sd + mk -> sc[i * g, sp * ts]", "store sd - mk -> sc[i * g, sp * ts]", "attention_scores subtracts the mask"),
+    ("attention_pv.chx", "let p  = e / z", "let p  = e * z", "attention_pv multiplies by the sum"),
+    ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
+    ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),
 ]
 
 

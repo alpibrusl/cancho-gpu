@@ -202,7 +202,7 @@ pub fn mtp_step[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
     qwen35.fp4(m, ffi, k_qg, b_n, mem.get(m, mw, 1), b_qg);
     qwen35.go(m, ffi, k_qnorm, b_qg, mem.get(m, mw, 4), b_q2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
     qwen35.go(m, ffi, k_ropeq, b_q2, b_cos, b_sin, b_qr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    qwen35.go(m, ffi, qwen35.attn_kernel(m, eng, pos + 1), b_qr, mc1, mc2, b_mmask, b_o, 0 - 1, 0 - 1, 0 - 1);
+    qwen35.attn_go(m, ffi, eng, pos + 1, b_qr, mc1, mc2, b_mmask, b_o);
     qwen35.go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
     qwen35.fp4_res(m, ffi, k_out, b_og, mem.get(m, mw, 6), b_mz, b_mz2);
     qwen35.go(m, ffi, k_rms, b_mz2, mem.get(m, mw, 10), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
@@ -313,7 +313,7 @@ fn mtp_gpu[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, hid: int,
     qwen35.fp4(m, ffi, k_qg, b_n, mem.get(m, mw, 1), b_qg);
     qwen35.go(m, ffi, k_qnorm, b_qg, mem.get(m, mw, 4), b_q2, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
     qwen35.go(m, ffi, k_ropeq, b_q2, b_cos, b_sin, b_qr, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    qwen35.go(m, ffi, qwen35.attn_kernel(m, eng, pos + 1), b_qr, mc1, mc2, mask, b_o, 0 - 1, 0 - 1, 0 - 1);
+    qwen35.attn_go(m, ffi, eng, pos + 1, b_qr, mc1, mc2, mask, b_o);
     qwen35.go(m, ffi, k_attn_gate, b_o, b_qg, b_og, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
     qwen35.fp4_res(m, ffi, k_out, b_og, mem.get(m, mw, 6), b_mz, b_mz2);
     qwen35.go(m, ffi, k_rms, b_mz2, mem.get(m, mw, 10), b_n, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);

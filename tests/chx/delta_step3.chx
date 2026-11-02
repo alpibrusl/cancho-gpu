@@ -1,0 +1,193 @@
+// delta_step.chx for the three tokens a speculative check runs, in one launch: the state of a head is read once,
+// carried through the three tokens in registers and written after each (so1, so2, so3 are the states after the
+// first, second and third token; a rejection keeps the one after the last token it kept). Per token, as
+// delta_step.chx does:
+//
+//     S = S g;   S += (v - S k) beta  k^T;   y = S q
+//
+// q and k are the tokens' rows of qk_norm (nk each), v is the value part of each token's convolution output
+// (a 10240-wide row, the value part from 4096), g and bt the gates of gates.chx, y three rows of nk * 384.
+// Every value is loaded where it is used, so each is used once. (Written by a script; edit the result.)
+algo delta_step3(nk)
+  in  s:  f32[nk * 384, 128]
+  in  q:  f32[3 * nk, 128]
+  in  k:  f32[3 * nk, 128]
+  in  v:  f32[30720]
+  in  g:  f32[3 * nk * 3, 128]
+  in  bt: f32[3 * nk * 384]
+  out so1: f32[nk * 384, 128]
+  out so2: f32[nk * 384, 128]
+  out so3: f32[nk * 384, 128]
+  out y:  f32[3 * nk * 384]
+  tile br
+{
+  grid i over nk, r over 128 / br
+  let s0_0 = load s[i * 384 + 0 + r * br, 0 ; br, 128]
+  let g0_0 = load g[i * 3 + 0, 0 ; 1, 128]
+  let sg0_0 = s0_0 * g0_0
+  let kp0_0 = load k[0*nk + i, 0 ; 1, 128]
+  let p0_0 = &sg0_0 * kp0_0
+  let m0_0 = rowsum p0_0
+  let v0_0 = load v[4096 + i * 384 + 0 + r * br ; br]
+  let d0_0 = v0_0 - m0_0
+  let b0_0 = load bt[0*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_0 = d0_0 * b0_0
+  let z0_0 = zeros f32[br, 128]
+  let kk0_0 = load k[0*nk + i, 0 ; 1, 128]
+  let k00_0 = z0_0 + kk0_0
+  let u0_0 = k00_0 * e0_0
+  let sn0_0 = sg0_0 + u0_0
+  let qb0_0 = load q[0*nk + i, 0 ; 1, 128]
+  let y0_0 = &sn0_0 * qb0_0
+  store rowsum y0_0 -> y[0*nk*384 + i * 384 + 0 + r * br]
+  store &sn0_0 * 1.0 -> so1[i * 384 + 0 + r * br, 0]
+  let g0_1 = load g[1*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_1 = sn0_0 * g0_1
+  let kp0_1 = load k[1*nk + i, 0 ; 1, 128]
+  let p0_1 = &sg0_1 * kp0_1
+  let m0_1 = rowsum p0_1
+  let v0_1 = load v[14336 + i * 384 + 0 + r * br ; br]
+  let d0_1 = v0_1 - m0_1
+  let b0_1 = load bt[1*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_1 = d0_1 * b0_1
+  let z0_1 = zeros f32[br, 128]
+  let kk0_1 = load k[1*nk + i, 0 ; 1, 128]
+  let k00_1 = z0_1 + kk0_1
+  let u0_1 = k00_1 * e0_1
+  let sn0_1 = sg0_1 + u0_1
+  let qb0_1 = load q[1*nk + i, 0 ; 1, 128]
+  let y0_1 = &sn0_1 * qb0_1
+  store rowsum y0_1 -> y[1*nk*384 + i * 384 + 0 + r * br]
+  store &sn0_1 * 1.0 -> so2[i * 384 + 0 + r * br, 0]
+  let g0_2 = load g[2*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_2 = sn0_1 * g0_2
+  let kp0_2 = load k[2*nk + i, 0 ; 1, 128]
+  let p0_2 = &sg0_2 * kp0_2
+  let m0_2 = rowsum p0_2
+  let v0_2 = load v[24576 + i * 384 + 0 + r * br ; br]
+  let d0_2 = v0_2 - m0_2
+  let b0_2 = load bt[2*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_2 = d0_2 * b0_2
+  let z0_2 = zeros f32[br, 128]
+  let kk0_2 = load k[2*nk + i, 0 ; 1, 128]
+  let k00_2 = z0_2 + kk0_2
+  let u0_2 = k00_2 * e0_2
+  let sn0_2 = sg0_2 + u0_2
+  let qb0_2 = load q[2*nk + i, 0 ; 1, 128]
+  let y0_2 = &sn0_2 * qb0_2
+  store rowsum y0_2 -> y[2*nk*384 + i * 384 + 0 + r * br]
+  store sn0_2 -> so3[i * 384 + 0 + r * br, 0]
+  let s1_0 = load s[i * 384 + 128 + r * br, 0 ; br, 128]
+  let g1_0 = load g[i * 3 + 1, 0 ; 1, 128]
+  let sg1_0 = s1_0 * g1_0
+  let kp1_0 = load k[0*nk + i, 0 ; 1, 128]
+  let p1_0 = &sg1_0 * kp1_0
+  let m1_0 = rowsum p1_0
+  let v1_0 = load v[4096 + i * 384 + 128 + r * br ; br]
+  let d1_0 = v1_0 - m1_0
+  let b1_0 = load bt[0*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_0 = d1_0 * b1_0
+  let z1_0 = zeros f32[br, 128]
+  let kk1_0 = load k[0*nk + i, 0 ; 1, 128]
+  let k01_0 = z1_0 + kk1_0
+  let u1_0 = k01_0 * e1_0
+  let sn1_0 = sg1_0 + u1_0
+  let qb1_0 = load q[0*nk + i, 0 ; 1, 128]
+  let y1_0 = &sn1_0 * qb1_0
+  store rowsum y1_0 -> y[0*nk*384 + i * 384 + 128 + r * br]
+  store &sn1_0 * 1.0 -> so1[i * 384 + 128 + r * br, 0]
+  let g1_1 = load g[1*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_1 = sn1_0 * g1_1
+  let kp1_1 = load k[1*nk + i, 0 ; 1, 128]
+  let p1_1 = &sg1_1 * kp1_1
+  let m1_1 = rowsum p1_1
+  let v1_1 = load v[14336 + i * 384 + 128 + r * br ; br]
+  let d1_1 = v1_1 - m1_1
+  let b1_1 = load bt[1*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_1 = d1_1 * b1_1
+  let z1_1 = zeros f32[br, 128]
+  let kk1_1 = load k[1*nk + i, 0 ; 1, 128]
+  let k01_1 = z1_1 + kk1_1
+  let u1_1 = k01_1 * e1_1
+  let sn1_1 = sg1_1 + u1_1
+  let qb1_1 = load q[1*nk + i, 0 ; 1, 128]
+  let y1_1 = &sn1_1 * qb1_1
+  store rowsum y1_1 -> y[1*nk*384 + i * 384 + 128 + r * br]
+  store &sn1_1 * 1.0 -> so2[i * 384 + 128 + r * br, 0]
+  let g1_2 = load g[2*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_2 = sn1_1 * g1_2
+  let kp1_2 = load k[2*nk + i, 0 ; 1, 128]
+  let p1_2 = &sg1_2 * kp1_2
+  let m1_2 = rowsum p1_2
+  let v1_2 = load v[24576 + i * 384 + 128 + r * br ; br]
+  let d1_2 = v1_2 - m1_2
+  let b1_2 = load bt[2*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_2 = d1_2 * b1_2
+  let z1_2 = zeros f32[br, 128]
+  let kk1_2 = load k[2*nk + i, 0 ; 1, 128]
+  let k01_2 = z1_2 + kk1_2
+  let u1_2 = k01_2 * e1_2
+  let sn1_2 = sg1_2 + u1_2
+  let qb1_2 = load q[2*nk + i, 0 ; 1, 128]
+  let y1_2 = &sn1_2 * qb1_2
+  store rowsum y1_2 -> y[2*nk*384 + i * 384 + 128 + r * br]
+  store sn1_2 -> so3[i * 384 + 128 + r * br, 0]
+  let s2_0 = load s[i * 384 + 256 + r * br, 0 ; br, 128]
+  let g2_0 = load g[i * 3 + 2, 0 ; 1, 128]
+  let sg2_0 = s2_0 * g2_0
+  let kp2_0 = load k[0*nk + i, 0 ; 1, 128]
+  let p2_0 = &sg2_0 * kp2_0
+  let m2_0 = rowsum p2_0
+  let v2_0 = load v[4096 + i * 384 + 256 + r * br ; br]
+  let d2_0 = v2_0 - m2_0
+  let b2_0 = load bt[0*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_0 = d2_0 * b2_0
+  let z2_0 = zeros f32[br, 128]
+  let kk2_0 = load k[0*nk + i, 0 ; 1, 128]
+  let k02_0 = z2_0 + kk2_0
+  let u2_0 = k02_0 * e2_0
+  let sn2_0 = sg2_0 + u2_0
+  let qb2_0 = load q[0*nk + i, 0 ; 1, 128]
+  let y2_0 = &sn2_0 * qb2_0
+  store rowsum y2_0 -> y[0*nk*384 + i * 384 + 256 + r * br]
+  store &sn2_0 * 1.0 -> so1[i * 384 + 256 + r * br, 0]
+  let g2_1 = load g[1*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_1 = sn2_0 * g2_1
+  let kp2_1 = load k[1*nk + i, 0 ; 1, 128]
+  let p2_1 = &sg2_1 * kp2_1
+  let m2_1 = rowsum p2_1
+  let v2_1 = load v[14336 + i * 384 + 256 + r * br ; br]
+  let d2_1 = v2_1 - m2_1
+  let b2_1 = load bt[1*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_1 = d2_1 * b2_1
+  let z2_1 = zeros f32[br, 128]
+  let kk2_1 = load k[1*nk + i, 0 ; 1, 128]
+  let k02_1 = z2_1 + kk2_1
+  let u2_1 = k02_1 * e2_1
+  let sn2_1 = sg2_1 + u2_1
+  let qb2_1 = load q[1*nk + i, 0 ; 1, 128]
+  let y2_1 = &sn2_1 * qb2_1
+  store rowsum y2_1 -> y[1*nk*384 + i * 384 + 256 + r * br]
+  store &sn2_1 * 1.0 -> so2[i * 384 + 256 + r * br, 0]
+  let g2_2 = load g[2*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_2 = sn2_1 * g2_2
+  let kp2_2 = load k[2*nk + i, 0 ; 1, 128]
+  let p2_2 = &sg2_2 * kp2_2
+  let m2_2 = rowsum p2_2
+  let v2_2 = load v[24576 + i * 384 + 256 + r * br ; br]
+  let d2_2 = v2_2 - m2_2
+  let b2_2 = load bt[2*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_2 = d2_2 * b2_2
+  let z2_2 = zeros f32[br, 128]
+  let kk2_2 = load k[2*nk + i, 0 ; 1, 128]
+  let k02_2 = z2_2 + kk2_2
+  let u2_2 = k02_2 * e2_2
+  let sn2_2 = sg2_2 + u2_2
+  let qb2_2 = load q[2*nk + i, 0 ; 1, 128]
+  let y2_2 = &sn2_2 * qb2_2
+  store rowsum y2_2 -> y[2*nk*384 + i * 384 + 256 + r * br]
+  store sn2_2 -> so3[i * 384 + 256 + r * br, 0]
+}
+
+schedule delta_step3 for apple-m-series { threads 256 br 8 }
+schedule delta_step3 for nvidia-ada     { threads 128 br 32 }

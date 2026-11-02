@@ -269,8 +269,10 @@ def markdown(results, args, mach):
             "Runtimes ran one at a time with the others idle; Ollama's models were unloaded first. The GPU is shared "
             "with whatever else the machine is doing, which is the main source of the spread. "
             f"The 1-minute load average at the start was {mach.get('load_average_at_start', 'not recorded')} "
-            "(other jobs on this machine; the script refuses to run above `--max-load`, 6 by default, and this "
-            "invocation overrode it after a probe of plain against speculative decoding repeated within 1%).", "",
+            "(other jobs on this machine; the script refuses to run above `--max-load`, 6 by default"
+            + ("" if not isinstance(mach.get("load_average_at_start"), (int, float)) or mach["load_average_at_start"] <= 6
+               else ", and this invocation overrode it after a probe of plain against speculative decoding repeated within 1%")
+            + ").", "",
             "**Compare rows within one table, not across invocations.** The spread inside an invocation is small, "
             "but two full invocations minutes apart on the same machine differed by up to 1.8x for the same "
             "runtime (MLX-LM decoding the 27B: 12.1 tok/s in one, 21.3 in the other; transformers on the CPU: 7.6 and "

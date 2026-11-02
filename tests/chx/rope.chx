@@ -12,9 +12,11 @@ algo rope(r, h, p)
   in  cs: f32[1, h]
   in  sn: f32[1, h]
   out y:  f32[r, 2 * h + p]
+  tile br
 {
-  let x1   = load x[0, 0 ; r, h]
-  let x2   = load x[0, h ; r, h]
+  grid i over r / br
+  let x1   = load x[i * br, 0 ; br, h]
+  let x2   = load x[i * br, h ; br, h]
   let c    = load cs
   let s    = load sn
   let a    = &x1 * &c
@@ -23,11 +25,11 @@ algo rope(r, h, p)
   let d    = x2 * c
   let e    = x1 * s
   let hi   = d + e
-  let rest = load x[0, 2 * h ; r, p]
-  store lo   -> y[0, 0]
-  store hi   -> y[0, h]
-  store rest -> y[0, 2 * h]
+  let rest = load x[i * br, 2 * h ; br, p]
+  store lo   -> y[i * br, 0]
+  store hi   -> y[i * br, h]
+  store rest -> y[i * br, 2 * h]
 }
 
-schedule rope for apple-m-series { threads 128 }
-schedule rope for nvidia-ada     { threads 128 }
+schedule rope for apple-m-series { threads 128 br 1 }
+schedule rope for nvidia-ada     { threads 128 br 1 }
