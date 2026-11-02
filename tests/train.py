@@ -80,6 +80,22 @@ def main():
     if metal:
         out_rl_dev = serve(metal, rl, "1\n9\n30\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(out_rl_dev, out_rl)), f"Metal session on the ReLU network equals the CPU session's losses to 1e-4: {[round(v[0], 6) for v in out_rl_dev]}")
+    # a deeper network, minibatches, binary files: dense_fwd, out_fwd and hid_bwd against a float64 numpy implementation (docs/resident.md section 13)
+    import deep_session as DS
+    ddir = os.path.join(d, "deepdata")
+    os.makedirs(ddir)
+    rng = np.random.RandomState(1)
+    Xd = rng.normal(size=(640, 16)).astype(np.float32)
+    np.save(os.path.join(ddir, "X.npy"), Xd)
+    np.save(os.path.join(ddir, "y.npy"), (Xd[:, 0] * Xd[:, 1] + Xd[:, 2] > 0).astype(np.float32))
+    ds = DS.write(ddir, os.path.join(ddir, "s"), [32, 32], 64, 40, lr=0.01)
+    dref, _ = DS.reference(ddir, [32, 32], 64, 40, lr=0.01)
+    out_d = serve(cpu, ds, "1\n1\n8\n30\n", ["--target", "nvidia-ada"])
+    for line, at in zip(out_d, (1, 2, 10, 40)):
+        say(close(line[0], dref[at - 1], 1e-4), f"CPU session, a 16-32-32-1 ReLU network on minibatches of 64, {at} steps: loss {line[0]:.6f}, float64 reference {dref[at - 1]:.6f}")
+    if metal:
+        out_dd = serve(metal, ds, "1\n1\n8\n30\n")
+        say(all(close(a[0], b[0], 1e-4) for a, b in zip(out_dd, out_d)), f"Metal session on the deeper network equals the CPU session's losses to 1e-4: {[round(v[0], 6) for v in out_dd]}")
     if metal:
         dev_small = serve(metal, session, "1\n9\n20\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(dev_small, out)), f"Metal session on the small network equals the CPU session's loss to 1e-4: {[round(v[0], 6) for v in dev_small]}")

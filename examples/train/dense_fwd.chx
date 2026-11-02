@@ -1,0 +1,31 @@
+// One hidden layer of a ReLU network on a minibatch of b samples, forward, in both orientations (the backward pass needs the activations transposed and
+// the surface has no transposing load): h = relu(x w^T + bias) as [b, n] and ht = relu(w x^T + biasc) as [n, b]. `bias` and `biasc` are the same numbers as a row
+// and as a column. One threadgroup takes bm samples.
+algo dense_fwd(b, k, n, bm)
+  in  hin:   f32[b, k]
+  in  w:     f32[n, k]
+  in  bias:  f32[1, n]
+  in  biasc: f32[n, 1]
+  out h:     f32[b, n]
+  out ht:    f32[n, b]
+{
+  grid i over b / bm
+  let x  = load hin[i * bm, 0 ; bm, k]
+  let wt = load w
+  let z  = matmul_nt x wt
+  let bt = load bias
+  let zb = z + bt
+  store relu zb -> h[i * bm, 0]
+  let x2 = load hin[i * bm, 0 ; bm, k]
+  let w2 = load w
+  let zt = matmul_nt w2 x2
+  let bc = load biasc
+  let o  = zeros f32[1, bm]
+  let on = o + 1.0
+  let bb = matmul bc on
+  let zc = zt + bb
+  store relu zc -> ht[0, i * bm]
+}
+
+schedule dense_fwd for apple-m-series { threads 128 }
+schedule dense_fwd for nvidia-ada     { threads 128 }

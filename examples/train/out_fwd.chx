@@ -1,0 +1,37 @@
+// The output layer of a binary classifier on a minibatch: z = h w^T + b, p = sigmoid(z), and for the cross-entropy loss
+// l = softplus(z) - y z (per sample) and its gradient with respect to z, dz = p - y (the 1/b of the mean is the optimiser's `gs`). dz and l are also
+// written as rows ([1, b]): the backward kernels want them transposed.
+algo out_fwd(b, k, bm)
+  in  hin:  f32[b, k]
+  in  w:    f32[1, k]
+  in  bias: f32[1, 1]
+  in  y:    f32[b, 1]
+  out dz:   f32[b, 1]
+  out dzt:  f32[1, b]
+  out l:    f32[1, b]
+{
+  grid i over b / bm
+  let x  = load hin[i * bm, 0 ; bm, k]
+  let wt = load w
+  let z  = matmul_nt x wt
+  let oc = zeros f32[bm, 1]
+  let on = oc + 1.0
+  let bt = load bias
+  let bb = matmul on bt
+  let zb = z + bb
+  let p  = sigmoid &zb
+  let yt = load y[i * bm, 0 ; bm, 1]
+  let d  = p - yt
+  store &d * 1.0 -> dz[i * bm, 0]
+  let o1 = zeros f32[1, 1]
+  let one = o1 + 1.0
+  store matmul_nt &one d -> dzt[0, i * bm]
+  let sp = softplus &zb
+  let y2 = load y[i * bm, 0 ; bm, 1]
+  let yz = y2 * zb
+  let lc = sp - yz
+  store matmul_nt one lc -> l[0, i * bm]
+}
+
+schedule out_fwd for apple-m-series { threads 128 }
+schedule out_fwd for nvidia-ada     { threads 128 }

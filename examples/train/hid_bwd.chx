@@ -1,0 +1,24 @@
+// The backward of a ReLU layer: from the gradient dzn [b, n2] of the layer above and its weights w [n2, n], dh = dzn w and dz = dh * step(h) for this layer's
+// activations h [b, n]; dz is written as it is and transposed (dzt = eye dz^T, a product with the identity, since the surface has no transposing store).
+algo hid_bwd(b, n, n2, bm)
+  in  dzn:  f32[b, n2]
+  in  w:    f32[n2, n]
+  in  h:    f32[b, n]
+  in  eye:  f32[n, n]
+  out dz:   f32[b, n]
+  out dzt:  f32[n, b]
+{
+  grid i over b / bm
+  let d  = load dzn[i * bm, 0 ; bm, n2]
+  let wt = load w
+  let dh = matmul d wt
+  let hh = load h[i * bm, 0 ; bm, n]
+  let st = step hh
+  let g  = dh * st
+  store &g * 1.0 -> dz[i * bm, 0]
+  let e  = load eye
+  store matmul_nt e g -> dzt[0, i * bm]
+}
+
+schedule hid_bwd for apple-m-series { threads 128 }
+schedule hid_bwd for nvidia-ada     { threads 128 }

@@ -222,4 +222,4 @@ to it; this document touches only cancho-gpu.
 * A `matmul_tn` or transposing load (a lex-gpu change).
 * ~~ReLU (`max`) in the surface~~ done: `relu` and `step`. A general binary `max a b` is still not spelled.
 * Atomics, or another way to reduce across thread groups.
-* OpenNN's current numbers, from running it rather than reading its pages.
+* ~~OpenNN's current numbers, from running it rather than reading its pages.~~ Done for training a deeper network: `resident.md` section 13 (OpenNN built from source, its own driver).

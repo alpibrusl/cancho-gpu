@@ -387,3 +387,31 @@ not apply (the file is staged in the session's byte pool, 256 MiB). The paramete
 `tests/session.py` (CPU and Metal) runs the accumulating session from binary files and requires the text session's answer, with non-dyadic values so that every byte of a word matters; two CPU mutants (a byte shifted wrongly, a longer file accepted).
 `mlp_session.py --binary` writes the training data this way. **Measured** (Apple M4 Max): the 16384 x 64 x 128 session answers its first request in **0.08 s from binary files against 0.22 to 0.40 s from text**; a 32768 x 64 x 128 network (the data is 8 MiB binary, 22 MiB as text, which is refused)
 trains at **1.27 ms a step**, loss 0.0346 after 320 steps. **A limit that was removed in the same change:** a device session allocated interpreter memory for every tensor of every program (32 million floats in all), so 65536 x 64 x 128 did not fit. It now gives a tensor interpreter memory only when the host reads or writes it (a resident file, an input, an answer; `interp.globals_lazy` and `materialise`): **65536 x 64 x 128 (4.2 million samples-features, a 16 MiB binary data file) starts in 0.38 s and trains at 2.48 ms a step**, loss 0.0476 after 320 steps. The CPU session still allocates everything, since it computes in that memory.
+
+## 13. A deeper network against torch and OpenNN (measured)
+
+`examples/train/compare_train.py` trains the same network on the same data with four runtimes and prints the time and what was learned. **The task:** binary classification of 64 standard-normal features by a label from a random two-hidden-layer tanh teacher plus noise
+(`examples/train/compare_train.py` makes the data; a perfect classifier of the noiseless label gets 0.90 and the best a student can do on the noisy one is about 0.87). **The network:** 64-W-W-W-1, ReLU, a sigmoid output, cross-entropy, Adam at 1e-3,
+minibatches of 256 (512 for W = 512), 12 epochs. Four runtimes on an Apple M4 Max, float32, all in this one invocation of the script, one run each:
+
+* **cancho-gpu:** a Metal session (`deep_session.py`; the kernels `dense_fwd`, `out_fwd`, `hid_bwd`, `bwd_dw`, `adam`), the data a table of binary files, a request an epoch of steps.
+* **torch 2.12** on the CPU and on MPS, a Python loop over the same minibatches, `torch.optim.Adam`, the data already on the device.
+* **OpenNN** (checkout `ad4dd07`), CPU, built from its source with Apple clang and libomp by `bench/opennn/build_dense.sh`: **its own `dense` benchmark driver** (`benchmarks/families/dense.cpp`, Eigen without BLAS), `Adam` and `CrossEntropy` through its `Training` class. It draws its own Glorot weights and shuffles itself.
+
+cancho-gpu and torch start from the same Glorot weights and take the same minibatches in the same order (the data is shuffled once; a minibatch table is read round and round), so their loss curves are comparable; all the test accuracies except OpenNN's are computed here from the parameters by the same numpy code.
+Seconds an epoch (the median of the 12), and the test accuracy after the last epoch:
+
+| network | cancho-gpu (Metal) | torch CPU | torch MPS | OpenNN CPU |
+|---|---|---|---|---|
+| 64-128-128-128-1, 100,000 samples | **0.144 s**, 0.8451 | 0.219 s, 0.8438 | 0.333 s, 0.8435 | 0.401 s, 0.8460 |
+| 64-256-256-256-1, 100,000 samples | **0.158 s**, 0.8322 | 0.566 s, 0.8386 | 0.365 s, 0.8281 | 0.644 s, 0.8380 |
+| 64-512-512-512-1, 200,000 samples, batch 512 | 0.942 s, 0.8446 | 0.859 s, 0.8534 | **0.369 s**, 0.8486 | 1.610 s, 0.8500 |
+
+**What this says.** (1) **They learn the same thing.** The best test accuracy over the epochs is 0.857 to 0.858 at width 128, 0.857 to 0.859 at 256 and 0.867 to 0.868 at 512, reached at epoch 2 to 4 by cancho-gpu and torch alike, and every runtime then overfits down to the 0.83 to 0.85 above
+(the last-epoch figures differ by the noise of that decline, not by anything the runtimes do differently). The test loss of cancho-gpu equals torch-MPS's at every width (0.3796 and 0.3799; 0.4832 and 0.4827 at 512) and torch-CPU's differs (0.5434 at 512): two float32 trajectories from one start part company, as in section 12.
+(2) **Speed depends on the width.** At 128 and 256 units a step is small, and the GPU session wins: 1.5 times faster than torch's best at 128 and 2.3 times at 256, because it runs the whole epoch without returning to Python, with no launch overhead the loop has. At 512 units torch on MPS is **2.6 times faster than cancho-gpu**, whose
+matrix products are the generic untiled kernels of the surface (no threadgroup-memory tiling, no use of the matrix unit) and which does twice the forward arithmetic (each layer in both orientations, since the surface has no transposing load) and transposes by a product with the identity.
+At 512 cancho-gpu is level with torch's CPU path and 1.7 times faster than OpenNN's. (3) **OpenNN is the slowest at every width**, on a CPU through Eigen alone; its own benchmarks use MKL on x86, which this machine does not have, so this is not its best.
+**Not claimed:** anything about another machine, another model, NVIDIA (every kernel here compiles for it and none has run), or a speed that holds when torch is tuned (compiled, with CUDA graphs); one run each, and the margins of 10 to 15% (width 512, cancho-gpu against torch CPU) are inside what the machine's clocks move between runs (`benchmark.md`).
+Tuning that mattered: the threadgroup shape of the three new kernels (a minibatch spread over `bm` = 2 samples a threadgroup with 256 threads, from 16 samples and 128 threads) took the 512 network from 6.3 ms to 2.4 ms a step.
+`tests/train.py` holds the kernels to a float64 numpy implementation of the same training (a 16-32-32-1 network, 40 steps: 0.720912, 0.635014, 0.485022, 0.15289 against 0.720912, 0.635014, 0.485024, 0.152891) on the CPU session, and the Metal session to the CPU session.
