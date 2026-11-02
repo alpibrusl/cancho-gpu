@@ -195,8 +195,13 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   three-row kernels reach 316-374 GB/s where one row reaches 430-470 (1.22-1.37x the time of a one-row kernel for the same
   weights). A sweep of the biggest one (`swiglu_few`: 128/256/512 threads, 16/32/64 weight rows, whole `--spec` runs,
   decode 3831-4021 ms) finds the schedule already at its optimum (the best was 0.5% better, within noise), so the
-  gap to one row is in the kernel's structure (three rows per weight read), not its schedule. Matching one row's bandwidth would
-  make a round about 53 ms (about 39 tok/s); a deeper draft would add little (the second is right 47% of the time).
+  gap to one row is not the schedule. Nor is a hand-written kernel likely to close it: `experimental/metal-bw/batch.mm`
+  (issue 26), re-run on the 17408 x 5120 matrix, gets 287 GB/s of weights at best for three rows with the scalar
+  path (`w3_4`; one row: 473) and 230 GB/s with the matrix unit (`m3_1`), both below the generated kernel's 316-374 inside the
+  verify. Three rows cost more than one because the work per weight byte (a load and a dequantisation, then three
+  multiply-adds) is issue-bound, not bandwidth-bound. (A first estimate here, that matching one row would give about 39
+  tok/s, assumed that was possible; it is an upper bound this evidence argues against.) A deeper draft would add little
+  (the second is right 47% of the time).
 * **Costs:** 2.7 GB more resident memory (14.1 to 16.7 GB for the server, measured: the embedding table on the
   device 2.5 GB, the head 239 MB; the spare delta states are allocated but only touched when a round runs) and
   about 3 s more to start (the table is read once; the few-row kernels are compiled at load).
