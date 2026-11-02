@@ -47,6 +47,26 @@ pub fn s_answers() -> [] int {
     return 4;
 }
 
+// carry records (source program, source param, destination program, destination param)
+pub fn s_carries() -> [] int {
+    return 5;
+}
+
+// table records (program, param, the interpreter's offset of the whole table, blocks)
+pub fn s_tables() -> [] int {
+    return 6;
+}
+
+// 1 when the first number of a request is the count of repetitions
+pub fn s_steps() -> [] int {
+    return 7;
+}
+
+// the repetitions run so far (the table position)
+pub fn s_count() -> [] int {
+    return 8;
+}
+
 fn space(c: int) -> [] bool {
     return c == 32 || c == 9 || c == 13;
 }
@@ -162,6 +182,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     let link_raw = mem.list(m);
     let input_raw = mem.list(m);
     let answer_raw = mem.list(m);
+    let carry_raw = mem.list(m);
+    let table_raw = mem.list(m);
+    var steps = 0;
     var pos = 0;
     var lineno = 0;
     let total = text.size(src);
@@ -241,8 +264,39 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     nb = sb;
                 }
                 mem.push(m, answer_raw, mem.rec5(m, pn, an, na, nb, lineno));
+            } else if text.is(t, head, "carry") {
+                if nw != 4 || !text.is(t, mem.get(m, words, 2), "->") {
+                    return bad(m, t, lineno, text.lit(m, t, "carry PROGRAM.OUT -> PROGRAM.PARAM"));
+                }
+                let (sp, sa) = dotted(m, t, mem.get(m, words, 1));
+                let (dp, da) = dotted(m, t, mem.get(m, words, 3));
+                if sp < 0 || dp < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "carry takes PROGRAM.PARAM on both sides"));
+                }
+                mem.push(m, carry_raw, mem.rec5(m, sp, sa, dp, da, lineno));
+            } else if text.is(t, head, "table") {
+                if nw != 4 {
+                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "table takes PROGRAM.PARAM"));
+                }
+                let (okb, blocks) = runcmd.number(m, t, mem.get(m, words, 3));
+                if !okb || blocks < 1.0 || blocks > 100000000.0 || float_of(truncate(blocks)) != blocks {
+                    return bad(m, t, lineno, text.lit(m, t, "the blocks of a table are a positive whole number"));
+                }
+                mem.push(m, table_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), truncate(blocks), lineno));
+            } else if text.is(t, head, "steps") {
+                if nw != 1 {
+                    return bad(m, t, lineno, text.lit(m, t, "steps takes nothing"));
+                }
+                if steps == 1 {
+                    return bad(m, t, lineno, text.lit(m, t, "steps is given once"));
+                }
+                steps = 1;
             } else {
-                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer)", head));
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, steps)", head));
             }
         }
     }
@@ -367,6 +421,69 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         i = i + 1;
     }
 
+    // Tables: the whole file is read once into a region of `blocks` times the parameter, and block j of it is the parameter in repetition j.
+    let tables = mem.list(m);
+    i = 0;
+    while i < mem.size(m, table_raw) {
+        let raw = mem.get(m, table_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is written by the kernel: it cannot be a table", m[raw + 1]));
+        }
+        let cell = mem.get(m, supplied, pi) + ai;
+        if m[cell] != 0 {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
+        }
+        m[cell] = 4;
+        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        let whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
+        if whole < 0 {
+            return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
+        }
+        if runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]) < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, tables, mem.rec4(m, pi, ai, whole, m[raw + 3]));
+        i = i + 1;
+    }
+
+    // Carries: (source program, source param, destination program, destination param); the destination is a resident parameter listed at or before the source.
+    let carries = mem.list(m);
+    i = 0;
+    while i < mem.size(m, carry_raw) {
+        let raw = mem.get(m, carry_raw, i);
+        let (sp, sa, sprm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if sp < 0 {
+            return 0 - 1;
+        }
+        let (dp, da, dprm) = locate(m, t, progs, m[raw + 2], m[raw + 3], m[raw + 4]);
+        if dp < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, sprm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is not written by its kernel: only an output can be carried from", m[raw + 1]));
+        }
+        if ir.param_writable(m, dprm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is written by its kernel: only an input can be carried to", m[raw + 3]));
+        }
+        if dp > sp {
+            return bad(m, t, m[raw + 4], text.lit(m, t, "a carry goes from a program to one listed at or before it"));
+        }
+        let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
+        let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
+        if m[gs] != m[gd] || m[gs + 3] != m[gd + 3] {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "the output holds $ numbers and the input $, or their types differ", text.num(m, t, m[gs + 3]), text.num(m, t, m[gd + 3])));
+        }
+        if m[mem.get(m, supplied, dp) + da] != 1 {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is carried to, so it must be resident (its first value)", m[raw + 2], m[raw + 3]));
+        }
+        mem.push(m, carries, mem.rec4(m, sp, sa, dp, da));
+        i = i + 1;
+    }
+
     // Inputs: (program, param), in the order of the request line.
     let inputs = mem.list(m);
     i = 0;
@@ -420,12 +537,16 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         i = i + 1;
     }
 
-    let sess = mem.rec(m, 5);
+    let sess = mem.rec(m, 9);
     m[sess + s_progs()] = progs;
     m[sess + s_resident()] = resident;
     m[sess + s_links()] = links;
     m[sess + s_inputs()] = inputs;
     m[sess + s_answers()] = answers;
+    m[sess + s_carries()] = carries;
+    m[sess + s_tables()] = tables;
+    m[sess + s_steps()] = steps;
+    m[sess + s_count()] = 0;
     return sess;
 }
 
@@ -564,12 +685,82 @@ pub fn print_answers[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float
     return 0;
 }
 
+// With `steps`, the request starts with the count of repetitions: (that count, the rest of the line), or (-1, the line) with a refusal. Without it, (1, the line).
+pub fn take_steps[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> [] (int, int) {
+    if m[sess + s_steps()] == 0 {
+        return (1, line);
+    }
+    let n = text.size(line);
+    var pos = 0;
+    while pos < n && space(text.at(t, line, pos)) {
+        pos = pos + 1;
+    }
+    let start = pos;
+    while pos < n && !space(text.at(t, line, pos)) {
+        pos = pos + 1;
+    }
+    if start == pos {
+        let r = err.fail(m, t, "session", text.lit(m, t, "the request starts with the count of steps, and holds nothing"));
+        return (0 - 1, line);
+    }
+    let (ok, v) = runcmd.number(m, t, text.sub(line, start, pos));
+    if !ok || v < 1.0 || v > 1000000000.0 || float_of(truncate(v)) != v {
+        let r = err.fail(m, t, "session", text.f1(m, t, "`$` is not a count of steps (a positive whole number below 10^9)", text.sub(line, start, pos)));
+        return (0 - 1, line);
+    }
+    return (truncate(v), text.sub(line, pos, n));
+}
+
+// The programs `reps` times on the CPU interpreter: before each repetition block `count mod blocks` of every table is the parameter, after it each carry copies its output to its parameter.
+pub fn run_steps[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: int, reps: int) -> [] int {
+    let progs = m[sess + s_progs()];
+    let tables = m[sess + s_tables()];
+    let carries = m[sess + s_carries()];
+    var j = 0;
+    while j < reps {
+        var k = 0;
+        while k < mem.size(m, tables) {
+            let tb = mem.get(m, tables, k);
+            let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
+            let from = m[tb + 2] + m[g + 3] * (m[sess + s_count()] % m[tb + 3]);
+            var e = 0;
+            while e < m[g + 3] {
+                fm[m[g + 2] + e] = fm[from + e];
+                e = e + 1;
+            }
+            k = k + 1;
+        }
+        if run_cpu(m, t, fm, sess) < 0 {
+            return 0 - 1;
+        }
+        k = 0;
+        while k < mem.size(m, carries) {
+            let c = mem.get(m, carries, k);
+            let gs = mem.get(m, m[mem.get(m, progs, m[c]) + 2], m[c + 1]);
+            let gd = mem.get(m, m[mem.get(m, progs, m[c + 2]) + 2], m[c + 3]);
+            var e = 0;
+            while e < m[gd + 3] {
+                fm[m[gd + 2] + e] = fm[m[gs + 2] + e];
+                e = e + 1;
+            }
+            k = k + 1;
+        }
+        m[sess + s_count()] = m[sess + s_count()] + 1;
+        j = j + 1;
+    }
+    return 0;
+}
+
 // Answer the request `line` on the CPU interpreter. Answers 0, or -1 with a refusal.
 pub fn serve_line[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, sess: int, line: int) -> [io_write] int {
-    if fill_inputs(m, t, fm, sess, line) < 0 {
+    let (reps, rest) = take_steps(m, t, sess, line);
+    if reps < 0 {
         return 0 - 1;
     }
-    if run_cpu(m, t, fm, sess) < 0 {
+    if fill_inputs(m, t, fm, sess, rest) < 0 {
+        return 0 - 1;
+    }
+    if run_steps(m, t, fm, sess, reps) < 0 {
         return 0 - 1;
     }
     return print_answers(m, t, fm, io, sess);

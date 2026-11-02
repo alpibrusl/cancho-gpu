@@ -30,7 +30,7 @@ fn fail[&m, &t](m: &!m [int], t: &!t [byte], msg: int) -> [] int {
 }
 
 // `n` floats of `fm`, or -1 when they do not fit.
-fn falloc[&m, &f](m: &!m [int], fm: &!f [float], n: int) -> [] int {
+pub fn falloc[&m, &f](m: &!m [int], fm: &!f [float], n: int) -> [] int {
     let at = m[mem.float_slot()];
     if at + n > len(fm) {
         return 0 - 1;

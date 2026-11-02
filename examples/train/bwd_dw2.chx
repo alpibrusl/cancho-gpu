@@ -1,0 +1,17 @@
+// bwd_dw.chx with the grid over both axes of dw: dw[n, k] = dyt[n, r] xt[k, r]^T, one threadgroup for each bn x bk block of the result. bwd_dw.chx
+// has a grid over k only, so a result with few columns (a bias gradient: k = 1) is one threadgroup reducing over all r, which at r = 16384 and n = 128 took 800 us
+// (docs/resident.md section 12).
+algo bwd_dw2(r, n, k)
+  in  dyt: f32[n, r]
+  in  xt:  f32[k, r]
+  out dw:  f32[n, k]
+  tile bn, bk
+{
+  grid i over n / bn, j over k / bk
+  let a = load dyt[i * bn, 0 ; bn, r]
+  let b = load xt[j * bk, 0 ; bk, r]
+  store matmul_nt a b -> dw[i * bn, j * bk]
+}
+
+schedule bwd_dw2 for apple-m-series { threads 512 bn 32 bk 1 }
+schedule bwd_dw2 for nvidia-ada     { threads 512 bn 32 bk 1 }
