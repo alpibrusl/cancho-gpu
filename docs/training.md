@@ -200,8 +200,10 @@ paths including the Python that writes the inputs]:
    least-squares fit of this size faster than numpy. Whether any problem cancho-gpu could run
    through `opt` is large enough to favour a GPU is **[open]**; OpenNN was not run (its training is
    not the same operation as one gradient evaluation, and it needs a C++ build).
-4. **Decide.** Only here: Adam in cancho-opt, `matmul_tn` in lex-gpu, a model
-   type in cancho-ml, or stop.
+4. **Decide. Done in two parts.** (a) Adam in cancho-opt (`opt minimize --method adam`, its `docs/design.md` section 15: bit for bit against a float64 implementation, 1e-15 from
+   `torch.optim.Adam`), for objectives of at most 32 parameters called through a pipe. (b) **The optimiser on the device** ([`resident.md`](resident.md) section 12): a session with `steps`, `carry`
+   and `table`, in which a two-layer network is trained with Adam without the parameters leaving the GPU. Its loss equals a float64 reference's and `torch.optim.Adam`'s to 6 digits after 100 steps, and a step takes 0.30 ms
+   at 4096 x 32 x 32 (torch: 0.37 on the CPU, 0.87 on MPS) and 1.01 ms at 16384 x 64 x 128 (1.33 and 1.01). `matmul_tn` in lex-gpu and a model type in cancho-ml are still open.
 
 Each step is a separate change. Steps 2 and 3 touch cancho-opt and need access
 to it; this document touches only cancho-gpu.
