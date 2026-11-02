@@ -692,6 +692,39 @@ pub fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: in
     return out;
 }
 
+// The tensors of a program without interpreter memory (a device session keeps most of them on the device): each is (dtype, shape, -1, count), and
+// `materialise` gives one its memory when the host has to read or write it (a resident file, an input, an answer).
+pub fn globals_lazy[&m](m: &!m [int], prog: int) -> [] int {
+    let out = mem.list(m);
+    let ps = ir.p_params(m, prog);
+    var i = 0;
+    while i < mem.size(m, ps) {
+        let p = mem.get(m, ps, i);
+        let shape = ir.param_shape(m, p);
+        mem.push(m, out, mem.rec4(m, ir.param_dtype(m, p), shape, 0 - 1, mem.product(m, shape)));
+        i = i + 1;
+    }
+    return out;
+}
+
+// Memory for a lazy tensor, zeroed; a tensor that has it is left alone. Answers 0, or -1 with a refusal.
+pub fn materialise[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], g: int) -> [] int {
+    if m[g + 2] >= 0 {
+        return 0;
+    }
+    let at = falloc(m, fm, m[g + 3]);
+    if at < 0 {
+        return fail(m, t, text.lit(m, t, "the run's tensors do not fit the interpreter's memory"));
+    }
+    var j = 0;
+    while j < m[g + 3] {
+        fm[at + j] = 0.0;
+        j = j + 1;
+    }
+    m[g + 2] = at;
+    return 0;
+}
+
 fn first_four[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], at: int, n: int) -> [] int {
     let parts = mem.list(m);
     var i = 0;

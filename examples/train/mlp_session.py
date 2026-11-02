@@ -2,7 +2,7 @@
 """A two-layer network trained with Adam entirely on the device (docs/resident.md section 12): the data, the parameters and Adam's moments are resident,
 a request is a count of steps, and the answer is the loss after them (and, with `--dump`, the parameters).
 
-    python3 examples/train/mlp_session.py DIR R K HD STEPS [--dump] [--lr L] [--batch B] [--relu]     writes DIR/session and its files (numpy)
+    python3 examples/train/mlp_session.py DIR R K HD STEPS [--dump] [--lr L] [--batch B] [--relu] [--binary]     writes DIR/session and its files (numpy)
     echo 1000 | cancho-gpu-metal-session DIR/session                             1000 Adam steps, one wait; prints the loss
 
 The model is mlp_fwd.chx (sigmoid hidden layer, or ReLU with --relu: mlp_fwd_relu.chx; linear output), the loss e^T e / 2R, the backward pass bwd_dw.chx and mlp_dzt.chx, the optimiser adam.chx on each of w1, b1, w2, b2.
@@ -51,13 +51,19 @@ def schedule(steps, lr):
     return [(lr / (1.0 - B1 ** t), 1.0 / math.sqrt(1.0 - B2 ** t)) for t in range(1, steps + 1)]
 
 
-def put(path, values):
-    """The shortest text that reads back as the same float32 (a 16384 x 64 matrix is 6 MB, under the 16 MiB a resident file may be)."""
+def put(path, values, binary=False):
+    """The shortest text that reads back as the same float32 (a 16384 x 64 matrix is 6 MB; a text file is capped at 16 MiB), or with `binary` the
+    little-endian float32 words themselves (no cap, no parsing: the `f32` flag of `resident` and `table`)."""
+    a = np.asarray(values, dtype="<f4").reshape(-1)
+    if binary:
+        with open(path, "wb") as f:
+            f.write(a.tobytes())
+        return
     with open(path, "w") as f:
-        f.write(" ".join(str(v) for v in np.asarray(values, dtype=np.float32).reshape(-1)) + "\n")
+        f.write(" ".join(str(v) for v in a) + "\n")
 
 
-def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=None, act="sigmoid"):
+def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=None, act="sigmoid", binary=False):
     """With `batch` B the data (r_all samples) is a table of r_all / B minibatches and step j trains on batch j mod (r_all / B); the loss answered is that of the last minibatch."""
     suffix = "_relu" if act == "relu" else ""
     r = batch or r_all
@@ -67,15 +73,19 @@ def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=N
     p = lambda name: os.path.join(directory, name)
     x, t = data(r_all, k)
     w1, b1, w2, b2 = init(k, hd)
-    put(p("x"), x)
-    put(p("xt"), np.concatenate([x[j * r:(j + 1) * r].T.reshape(-1) for j in range(nb)]))
-    put(p("t"), t)
-    put(p("ones"), np.ones(r))
+    put(p("x"), x, binary)
+    put(p("xt"), np.concatenate([x[j * r:(j + 1) * r].T.reshape(-1) for j in range(nb)]), binary)
+    put(p("t"), t, binary)
+    put(p("ones"), np.ones(r), binary)
     for name, v in (("w1", w1), ("b1", b1), ("w2", w2), ("b2", b2)):
-        put(p(name), v)
-        put(p("z" + name), np.zeros_like(v))
-    with open(p("sched"), "w") as f:
-        f.write(" ".join(f"{a!r} {b!r}" for a, b in schedule(steps, lr)) + "\n")
+        put(p(name), v, binary)
+        put(p("z" + name), np.zeros_like(v), binary)
+    if binary:
+        put(p("sched"), np.array(schedule(steps, lr)).reshape(-1), True)
+    else:
+        with open(p("sched"), "w") as f:
+            f.write(" ".join(f"{a!r} {b!r}" for a, b in schedule(steps, lr)) + "\n")
+    fl = " f32" if binary else ""
     chx = lambda name: os.path.join(HERE, name) if os.path.exists(os.path.join(HERE, name)) else os.path.join(ROOT, "tests", "chx", name)
     if dw2 is None:
         dw2 = tuned(r, hd)
@@ -100,13 +110,13 @@ def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=N
     for name, n in sizes.items():
         lines.append(f"program a{name} {chx('adam.chx')} n={n} bn={block(n, 128)} gs={1.0 / r!r} b1={B1} b2={B2} eps={EPS}")
     if batch:
-        lines += [f"table fwd.x {p('x')} {nb}", f"table fwd.t {p('t')} {nb}", f"table gw1.xt {p('xt')} {nb}"]
+        lines += [f"table fwd.x {p('x')} {nb}{fl}", f"table fwd.t {p('t')} {nb}{fl}", f"table gw1.xt {p('xt')} {nb}{fl}"]
     else:
-        lines += [f"resident fwd.x {p('x')}", f"resident fwd.t {p('t')}", f"resident gw1.xt {p('xt')}"]
-    lines += [f"resident gb1.xt {p('ones')}", f"resident gb2.xt {p('ones')}"]
+        lines += [f"resident fwd.x {p('x')}{fl}", f"resident fwd.t {p('t')}{fl}", f"resident gw1.xt {p('xt')}{fl}"]
+    lines += [f"resident gb1.xt {p('ones')}{fl}", f"resident gb2.xt {p('ones')}{fl}"]
     for name in sizes:
-        lines += [f"resident fwd.{name} {p(name)}", f"resident a{name}.w {p(name)}", f"resident a{name}.m {p('z' + name)}", f"resident a{name}.v {p('z' + name)}", f"table a{name}.s {p('sched')} {steps}"]
-    lines += [f"resident dz.w2c {p('w2')}",
+        lines += [f"resident fwd.{name} {p(name)}{fl}", f"resident a{name}.w {p(name)}{fl}", f"resident a{name}.m {p('z' + name)}{fl}", f"resident a{name}.v {p('z' + name)}{fl}", f"table a{name}.s {p('sched')} {steps}{fl}"]
+    lines += [f"resident dz.w2c {p('w2')}{fl}",
               "link fwd.ht -> dz.ht", "link fwd.e -> dz.e", "link dz.dzt -> gw1.dyt", "link dz.dzt -> gb1.dyt", "link fwd.e -> gw2.dyt", "link fwd.ht -> gw2.xt",
               "link fwd.e -> gb2.dyt", "link fwd.e -> ls.dyt", "link fwd.e -> ls.xt", "link gw1.dw -> aw1.grad", "link gb1.dw -> ab1.grad", "link gw2.dw -> aw2.grad", "link gb2.dw -> ab2.grad"]
     for name in sizes:
@@ -153,7 +163,9 @@ if __name__ == "__main__":
         a.remove(sys.argv[sys.argv.index("--lr") + 1])
     act = "relu" if "--relu" in sys.argv else "sigmoid"
     a = [x for x in a if x != "--relu"]
+    binary = "--binary" in sys.argv
+    a = [x for x in a if x != "--binary"]
     batch = int(sys.argv[sys.argv.index("--batch") + 1]) if "--batch" in sys.argv else None
     if batch:
         a.remove(sys.argv[sys.argv.index("--batch") + 1])
-    print(write(a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), lr=lr, dump="--dump" in sys.argv, batch=batch, act=act))
+    print(write(a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), lr=lr, dump="--dump" in sys.argv, batch=batch, act=act, binary=binary))
