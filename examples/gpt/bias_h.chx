@@ -1,0 +1,16 @@
+// y = f16(z + bias): the epilogue of a projection whose product z is f32.
+algo bias_h(r, c, bm)
+  in  z:    f32[r, c]
+  in  bias: f32[1, c]
+  out y:    f16[r, c]
+{
+  grid i over r / bm
+  let a  = load z[i * bm, 0 ; bm, c]
+  let bt = load bias
+  let s  = a + bt
+  let h  = stage f16 s
+  store h -> y[i * bm, 0]
+}
+
+schedule bias_h for apple-m-series { threads 128 }
+schedule bias_h for nvidia-ada     { threads 128 }

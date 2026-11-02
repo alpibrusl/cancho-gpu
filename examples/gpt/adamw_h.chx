@@ -1,0 +1,43 @@
+// adam_h.chx with decoupled weight decay (AdamW): w <- w (1 - lr wd) - lr m_hat / (sqrt(v_hat) + eps); `lwd` is lr * wd. The f16 copy `wh` is what the matrix unit reads.
+algo adamw_h(n, bn, gs, b1, b2, eps, lwd)
+  in  w:    f32[1, n]
+  in  m:    f32[1, n]
+  in  v:    f32[1, n]
+  in  grad: f32[1, n]
+  in  s:    f32[1, 2]
+  out wo:   f32[1, n]
+  out mo:   f32[1, n]
+  out vo:   f32[1, n]
+  out wh:   f16[1, n]
+{
+  grid i over n / bn
+  let g0 = load grad[0, i * bn ; 1, bn]
+  let g  = g0 * gs
+  let m0 = load m[0, i * bn ; 1, bn]
+  let d  = &g - &m0
+  let m1 = m0 + d * (1 - b1)
+  store &m1 * 1.0 -> mo[0, i * bn]
+  let v0 = load v[0, i * bn ; 1, bn]
+  let q  = &g * (1 - b2)
+  let v1 = v0 * b2 + q * g
+  store &v1 * 1.0 -> vo[0, i * bn]
+  let vg = v1 + 1.0e-30
+  let rr = rsqrt &vg
+  let sq = vg * rr
+  let o  = zeros f32[1, bn]
+  let on = o + 1.0
+  let sc = load s[0, 1 ; 1, 1]
+  let sb = matmul sc &on
+  let dn = sq * sb + eps
+  let q2 = m1 / dn
+  let rt = load s[0, 0 ; 1, 1]
+  let rb = matmul rt on
+  let w0 = load w[0, i * bn ; 1, bn]
+  let wn = w0 * (1 - lwd) - q2 * rb
+  store &wn * 1.0 -> wo[0, i * bn]
+  let wq = stage f16 wn
+  store wq -> wh[0, i * bn]
+}
+
+schedule adamw_h for apple-m-series { threads 128 }
+schedule adamw_h for nvidia-ada     { threads 128 }

@@ -1,0 +1,45 @@
+// The backward of ln_fwd: from dy (f32) and the layer's input x, dx = rstd (dxh - mean(dxh) - xh mean(dxh xh)) + dres with dxh = dy gamma (dres is the gradient that
+// arrives around the layer by the residual connection), and the two products whose column sums are the gradients of gamma and beta: pg = dy xh and dyh = dy (f16).
+algo ln_bwd(r, c, bm)
+  in  dy:    f32[r, c]
+  in  x:     f32[r, c]
+  in  gamma: f32[1, c]
+  in  dres:  f32[r, c]
+  out dx:    f32[r, c]
+  out pg:    f16[r, c]
+  out dyh:   f16[r, c]
+{
+  grid i over r / bm
+  let xx = load x[i * bm, 0 ; bm, c]
+  let s1 = rowsum &xx
+  let mu = s1 * (1 / c)
+  let xc = xx - mu
+  let sq = &xc * &xc
+  let s2 = rowsum sq
+  let vr = s2 * (1 / c)
+  let ve = vr + 0.00001
+  let rs = rsqrt ve
+  let xh = xc * &rs
+  let d  = load dy[i * bm, 0 ; bm, c]
+  let g  = load gamma
+  let dh = &d * g
+  let m1 = rowsum &dh
+  let a1 = m1 * (1 / c)
+  let pr = &dh * &xh
+  let m2 = rowsum pr
+  let a2 = m2 * (1 / c)
+  let t1 = dh - a1
+  let t2 = &xh * a2
+  let t3 = t1 - t2
+  let t4 = t3 * rs
+  let dr = load dres[i * bm, 0 ; bm, c]
+  store t4 + dr -> dx[i * bm, 0]
+  let pgf = &d * xh
+  let pgh = stage f16 pgf
+  store pgh -> pg[i * bm, 0]
+  let dh2 = stage f16 d
+  store dh2 -> dyh[i * bm, 0]
+}
+
+schedule ln_bwd for apple-m-series { threads 128 }
+schedule ln_bwd for nvidia-ada     { threads 128 }

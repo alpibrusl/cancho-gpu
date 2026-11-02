@@ -15,7 +15,8 @@ typedef unsigned char uchar;
 extern "C" __global__ void activations_4_8(
     const float* __restrict__ p0_x,
     float* __restrict__ p1_y,
-    float* __restrict__ p2_d
+    float* __restrict__ p2_d,
+    float* __restrict__ p3_t
 )
 {
     const uint tid = threadIdx.x;
@@ -37,13 +38,26 @@ extern "C" __global__ void activations_4_8(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v2[k] = float((float(float(p0_x[(uint)(0) * 8u + (uint)(0) * 1u + ((e))])) > 0.0f ? 1.0f : 0.0f));
+            v2[k] = float(tanhf(float(float(p0_x[(uint)(0) * 8u + (uint)(0) * 1u + ((e))]))));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p2_d[(uint)(0) * 8u + (uint)(0) * 1u + (e)] = float(float(v2[k]));
+            p3_t[(uint)(0) * 8u + (uint)(0) * 1u + (e)] = float(float(v2[k]));
+        }
+    }
+    float v3[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v3[k] = float((float(float(p0_x[(uint)(0) * 8u + (uint)(0) * 1u + ((e))])) > 0.0f ? 1.0f : 0.0f));
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p2_d[(uint)(0) * 8u + (uint)(0) * 1u + (e)] = float(float(v3[k]));
         }
     }
 }

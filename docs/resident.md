@@ -441,3 +441,34 @@ Seconds an epoch, the `compare_train.py` network of section 13, one invocation p
 **Reading.** Mixed precision takes the 512 network from 0.94 to **0.20 s an epoch, 4.8 times, and 1.9 times faster than torch on MPS in float32 and 2.3 times faster than its autocast**; it is faster than torch's best at 128, 256 and 512 and level with it at 1024 (0.437 against 0.434; the 1024 network is 2.2 million parameters,
 and there the untuned kernels and the elementwise epilogues, which write the pre-activations to memory, show). The learning is the same: the best test accuracy over the epochs is 0.8572 / 0.8561 / 0.8672 / 0.8678 for cancho-gpu mixed at 128 / 256 / 512 / 1024 against torch's 0.8565 / 0.8569 / 0.8666 / 0.8678, and the test loss agrees (0.3763 against 0.3799 at 128).
 (The "f32" column is section 13's; the f16 rounding of the weights and activations changes the trajectory in the last digits.) **Not claimed:** anything about a model whose activations overflow f16 (no loss scaling was needed here and none is implemented), another machine, or NVIDIA (the CUDA text of the new layouts has only been generated, not run).
+
+## 15. A GPT trained on the device (roadmap M1; measured)
+
+`docs/roadmap-models.md` M1 asked for a character-level GPT trained in a session, held to a float64 specification, and compared with torch. It is built and it meets its exits.
+
+**The model** (`examples/gpt/`): pre-LayerNorm decoder blocks, causal multi-head attention, a GELU (tanh form) feed-forward, an untied output layer, AdamW; the vocabulary is padded to 128 with the padding logits masked, and tokens enter as the one-hot rows of a `[vocabulary + positions]` embedding matrix, so an embedding needs no gather and its gradient no scatter.
+`gpt_ref.py` is the specification: binary64 numpy with a hand-written backward, **checked against finite differences (28 tensors, worst relative difference 1e-6)**. `gpt_session.py` writes the session: about 110 programs for 2 layers (the forward and backward passes, each product on the matrix unit with f16 operands and f32 accumulation, the residual stream and the master weights and Adam's moments in f32).
+Every kernel is `.chx`: `onehot`, `ln_fwd`, `ln_bwd`, `bias_h`, `res_bias`, `gelu_bias`, `gelu_bwd`, `att_scores`, `att_softmax`, `att_pv`, `att_dp`, `att_dsoft`, `att_dqkv`, `ce`, `adamw_h`, plus the existing `gemm_mma*`, `cast_h`, `rowvec_mm`, `adam`.
+
+**What the language gained for it:** `tanh`; **a column `[rows, 1]` broadcasts along the columns** (a loaded column against a matrix: before, only a row vector or a reduction did); **a third grid axis** (a head of a sequence needs `b`, `h` and a row tile; the offsets must stay affine, so a division of a grid coordinate is not allowed, and the third axis is folded into the launch's second dimension and split in the kernel).
+And of the sessions: `resident` and `table` files with the `f32`/`f16` flag now go **straight to the device** without passing through the interpreter's binary64 memory (a 10 M-parameter model's weights and moments did not fit it), the Metal shim holds 1,024 modules instead of 64.
+
+**Correctness** (`tests/train.py`, on the CPU interpreter's emulation of the arithmetic and on the GPU): one step of a 2-layer, 2-head GPT, loss 4.16103 against the specification's 4.16103, **the gradients of all 28 tensors within 8e-4 of the float64 backward (7.8e-4 on the GPU)**; 25 AdamW steps on a learnable stream against a float64 AdamW: 4.2242, 3.1027, 1.8494, 0.2231 at steps 1, 5, 10, 25 against 4.2242, 3.1018, 1.8404, 0.2215.
+Two things were found by this checking and are worth recording because the loss alone hid them: the first version's GELU read `tanh in * k` as `(tanh in) * k` (a call takes the next atom: the argument must be a name), a **2% error in the feed-forward's gradients that torch's own fp16 autocast did not have (0.14%) and that made the model learn visibly slower**, found by comparing intermediate activations with the specification, layer by layer;
+and a loss scale of 1024 on the f16 gradients overflowed after 300 steps (NaN), so the scale is 16 (the errors were the same with and without it, so f16's subnormals were not the problem).
+
+**Training on text** (`examples/gpt/compare_gpt.py`; the text is the Markdown documentation of this repository and of cancho, 4,000,000 ASCII characters, 96 distinct, no download; 90% to train and the last 10% to validate; AdamW at 1e-3 with a 5% warm-up and a cosine decay, batches of 32 sequences of 128 characters (4096 tokens a step), 1,500 steps, the same start (`init_params`) and the same batches for every runtime). Apple M4 Max:
+
+| model | runtime | ms a step | tokens a second | validation loss after 1,500 steps |
+|---|---|---|---|---|
+| 4 layers, d 256, 4 heads, 3.26 M parameters | **cancho-gpu (Metal)** | **15.4** | **265,000** | 1.403 |
+| | torch MPS (float32) | 16.0 | 257,000 | 1.400 |
+| | torch MPS (float16 autocast) | 17.6 | 233,000 | 1.417 |
+| | torch CPU | 69.5 | 59,000 | 1.400 |
+| 6 layers, d 384, 6 heads, 10.80 M parameters | **cancho-gpu (Metal)** | **37.0** | **111,000** | 1.376 |
+| | torch MPS (float32) | 41.3 | 99,000 | 1.380 |
+| | torch MPS (float16 autocast) | 44.5 | 92,000 | 1.408 |
+
+**Reading.** The loss curves agree at every point (validation loss 2.263 / 1.780 / 1.600 / 1.499 / 1.431 / 1.403 for cancho-gpu and 2.263 / 1.776 / 1.596 / 1.492 / 1.430 / 1.400 for torch at steps 250, 500, 750, 1000, 1250, 1500), so it learns the same thing; the 10.8 M model reaches 1.376 nats a character, under the roadmap's 1.6.
+It is as fast as torch on MPS in float32 (3% faster at 3.3 M parameters, 10% at 10.8 M) and faster than torch's mixed precision, **after tuning**: the first working version took 28 ms a step; attention in 32-row tiles (the 64-row tiles of the first version left most of the GPU idle: 256 threadgroups of tiny work, 1.3 ms for the scores of a layer) and the weight gradients in 32 x 32 tiles (a reduction over 4096 tokens into a 256 x 256 result was 16 threadgroups) took it to 15.5.
+**Not claimed:** the contexts above 128 (the attention kernels keep a head's whole row of scores as one tile, `bn = t`, which is why `t` is 64 or 128), a vocabulary of more than 128 (a real tokenizer needs the embedding lookup of the roadmap's G1), dropout, gradient clipping, anything about NVIDIA; one run each, and the time of cancho-gpu is measured in a separate session that answers only the loss (a parameter dump is 3 million numbers of text a request).

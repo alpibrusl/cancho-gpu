@@ -1,7 +1,7 @@
 # Training and serving real models with cancho-gpu: the gaps, and a plan
 
 > **Status: a plan (a design written before the code), with measured starting points.** Marks as elsewhere: **[measured]**, **[read]** (from source or documents, not run), **[open]**.
-> Written after `resident.md` section 14: the training stack reaches 2 TFLOPS on the matrix unit and trains MLPs faster than torch on MPS; nothing below is built yet.
+> Written after `resident.md` section 14: the training stack reaches 2 TFLOPS on the matrix unit and trains MLPs faster than torch on MPS. **M1 is built and met its exits (`resident.md` section 15)**; the rest below is still a plan.
 
 ## 1. What the machine can do, and what cancho-gpu can do now
 
@@ -36,7 +36,7 @@ What does not: everything in section 2.
 
 Each milestone is a separate change, designed before it is built, with gates that can fail, and its result is **compared with torch on this machine the way `resident.md` section 13 and 14 compare MLPs**: the same data, the same start, the same batches, the loss curves compared, then the time.
 
-**M1. A character-level GPT trains** (G2 to G6, G10; no G1: 65 characters are a one-hot). A 6-layer, 384-wide, 6-head GPT on the Shakespeare characters (about 10 M parameters), context 256, as in nanoGPT **[read]**.
+**M1. A character-level GPT trains. Built (`resident.md` section 15): the gradients of all 28 tensors within 8e-4 of a float64 backward, a 10.8 M-parameter GPT at 1.376 nats a character, 37 ms a step against torch MPS's 41.** (original plan follows) (G2 to G6, G10; no G1: 65 characters are a one-hot). A 6-layer, 384-wide, 6-head GPT on the Shakespeare characters (about 10 M parameters), context 256, as in nanoGPT **[read]**.
 Exit: the loss after 100 steps equals a float64 numpy implementation's to 1e-3 (CPU session) and torch's to 3 digits; the validation loss falls under 1.6 nats; step time and total time are within 1.5 of torch on MPS, or better.
 New kernels: LayerNorm forward/backward, causal attention forward/backward (non-fused first), GELU, the cross-entropy, AdamW. New language: `gelu`, `tanh` (G5), `max a b`.
 

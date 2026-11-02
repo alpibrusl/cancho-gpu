@@ -1,0 +1,16 @@
+// y = res + z + bias: a projection added to the residual stream (f32).
+algo res_bias(r, c, bm)
+  in  z:    f32[r, c]
+  in  bias: f32[1, c]
+  in  res:  f32[r, c]
+  out y:    f32[r, c]
+{
+  grid i over r / bm
+  let a  = load z[i * bm, 0 ; bm, c]
+  let bt = load bias
+  let rr = load res[i * bm, 0 ; bm, c]
+  store rr + a + bt -> y[i * bm, 0]
+}
+
+schedule res_bias for apple-m-series { threads 128 }
+schedule res_bias for nvidia-ada     { threads 128 }

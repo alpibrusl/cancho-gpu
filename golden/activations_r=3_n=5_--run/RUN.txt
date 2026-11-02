@@ -1,4 +1,6 @@
 nvidia-ada: y [3, 5] = mean 0.1283, peak 0.4658, first [0.0, 0.0, 0.04315579, 0.13490403]
 nvidia-ada: d [3, 5] = mean 0.6000, peak 1.0000, first [0.0, 0.0, 1.0, 1.0]
+nvidia-ada: t [3, 5] = mean -0.0163, peak 0.4490, first [-0.44592106, -0.4490041, 0.04312902, 0.13409157]
 apple-m-series: y [3, 5] = mean 0.1283, peak 0.4658, first [0.0, 0.0, 0.04315579, 0.13490403]
 apple-m-series: d [3, 5] = mean 0.6000, peak 1.0000, first [0.0, 0.0, 1.0, 1.0]
+apple-m-series: t [3, 5] = mean -0.0163, peak 0.4490, first [-0.44592106, -0.4490041, 0.04312902, 0.13409157]

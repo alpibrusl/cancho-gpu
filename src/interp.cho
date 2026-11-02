@@ -258,6 +258,9 @@ fn unary_apply(u: int, x: float) -> [] float {
     if u == kinds.relu() {
         return f32.max(x, 0.0);
     }
+    if u == kinds.tanh() {
+        return f32.tanh32(x);
+    }
     if u == kinds.step() {
         if x > 0.0 {
             return 1.0;
@@ -405,7 +408,7 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
         }
         let (sa, sb) = (ir.shape(m, m[a]), ir.shape(m, m[b]));
         let two = mem.size(m, sa) == 2;
-        let row = two && mem.size(m, sb) == 1 && mem.get(m, sb, 0) == mem.get(m, sa, 0);
+        let row = two && (mem.size(m, sb) == 1 && mem.get(m, sb, 0) == mem.get(m, sa, 0) || mem.size(m, sb) == 2 && mem.get(m, sb, 1) == 1 && mem.get(m, sb, 0) == mem.get(m, sa, 0) && mem.get(m, sa, 1) != 1);
         let col = two && !row && mem.size(m, sb) == 2 && mem.get(m, sb, 0) == 1 && mem.get(m, sb, 1) == mem.get(m, sa, 1);
         var cols = 1;
         if two {
@@ -759,28 +762,36 @@ pub fn execute[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: i
     let it = new_interp(m, prog, globals);
     let pid = ir.p_pid(m, prog);
     let pid2 = ir.p_pid2(m, prog);
+    let pid3 = ir.p_pid3(m, prog);
     // Instances are independent by construction, so one after another is
     // faithful, and reproducible.
-    var g2 = 0;
-    while g2 < ir.p_grid2(m, prog) {
-        if pid2 >= 0 {
-            put(m, it, pid2, 2, g2);
+    var g3 = 0;
+    while g3 < ir.p_grid3(m, prog) {
+        if pid3 >= 0 {
+            put(m, it, pid3, 2, g3);
         }
-        var g = 0;
-        while g < ir.p_grid(m, prog) {
-            if pid >= 0 {
-                put(m, it, pid, 2, g);
+        var g2 = 0;
+        while g2 < ir.p_grid2(m, prog) {
+            if pid2 >= 0 {
+                put(m, it, pid2, 2, g2);
             }
-            // Every instance's tiles are dead once it ends: give the
-            // memory back, so a large grid runs in the space of one.
-            let mark = m[mem.float_slot()];
-            if block(m, t, fm, it, ir.p_body(m, prog)) < 0 {
-                return 0 - 1;
+            var g = 0;
+            while g < ir.p_grid(m, prog) {
+                if pid >= 0 {
+                    put(m, it, pid, 2, g);
+                }
+                // Every instance's tiles are dead once it ends: give the
+                // memory back, so a large grid runs in the space of one.
+                let mark = m[mem.float_slot()];
+                if block(m, t, fm, it, ir.p_body(m, prog)) < 0 {
+                    return 0 - 1;
+                }
+                m[mem.float_slot()] = mark;
+                g = g + 1;
             }
-            m[mem.float_slot()] = mark;
-            g = g + 1;
+            g2 = g2 + 1;
         }
-        g2 = g2 + 1;
+        g3 = g3 + 1;
     }
     return 0;
 }

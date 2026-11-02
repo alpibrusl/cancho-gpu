@@ -546,6 +546,8 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
             u = kinds.relu();
         } else if text.is(t, f, "step") {
             u = kinds.step();
+        } else if text.is(t, f, "tanh") {
+            u = kinds.tanh();
         } else {
             return bad(m, t, "unbound", text.f1(m, t, "`$` is not an operation here", f));
         }
@@ -599,7 +601,8 @@ fn lower_bin[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e:
     }
     let rs = m[r + 1];
     // The checker's two broadcasts, and no others.
-    let row_b = mem.size(m, ls) == 2 && mem.size(m, rs) == 1 && mem.get(m, rs, 0) == mem.get(m, ls, 0);
+    // a vector of the rows, or a column [rows, 1], broadcasts along the columns
+    let row_b = mem.size(m, ls) == 2 && (mem.size(m, rs) == 1 && mem.get(m, rs, 0) == mem.get(m, ls, 0) || mem.size(m, rs) == 2 && mem.get(m, rs, 1) == 1 && mem.get(m, rs, 0) == mem.get(m, ls, 0) && mem.get(m, ls, 1) != 1);
     let col_b = mem.size(m, ls) == 2 && mem.size(m, rs) == 2 && mem.get(m, rs, 0) == 1 && mem.get(m, rs, 1) == mem.get(m, ls, 1);
     if !mem.same(m, ls, rs) && !row_b && !col_b {
         return bad(m, t, "shape", text.f3(m, t, "`$`: $ against $, which do not broadcast", name, sd(m, t, ls), sd(m, t, rs)));
@@ -839,8 +842,8 @@ pub fn build[&m, &t](m: &!m [int], t: &!t [byte], algo: int, vals: int, chunk: i
         let s = mem.get(m, body, i);
         if m[s] == kinds.s_grid() {
             let axes = m[s + 1];
-            if mem.size(m, axes) > 2 {
-                return bad(m, t, "grid", text.lit(m, t, "a grid has at most two axes"));
+            if mem.size(m, axes) > 3 {
+                return bad(m, t, "grid", text.lit(m, t, "a grid has at most three axes"));
             }
             if ir.has_grid(m, b) {
                 return bad(m, t, "grid", text.lit(m, t, "a grid is declared once, and not beside a schedule's `chunk`"));
@@ -856,8 +859,10 @@ pub fn build[&m, &t](m: &!m [int], t: &!t [byte], algo: int, vals: int, chunk: i
                 var v = 0;
                 if j == 0 {
                     v = ir.grid(m, t, b, n);
-                } else {
+                } else if j == 1 {
                     v = ir.grid2(m, t, b, n);
+                } else {
+                    v = ir.grid3(m, t, b, n);
                 }
                 mem.push(m, idx, mem.rec2(m, m[ax], v));
                 j = j + 1;

@@ -1,0 +1,42 @@
+// Cross-entropy over a padded vocabulary of c logits (maskv: 0 for a real id, -1e9 for padding): per row, the loss lse - logit[target] and the gradient p - onehot(target)
+// of the logits times `scale`, f16 (the 1/n of the mean and the 1/scale are the optimiser's `gs`; the scale keeps the gradients of the layers below out of f16's subnormals, as a loss scale does). The target is a whole number held as f32; jrow holds 0 .. c - 1.
+algo ce(r, c, bm, scale)
+  in  lg:    f32[r, c]
+  in  tgt:   f32[r, 1]
+  in  jrow:  f32[1, c]
+  in  maskv: f32[1, c]
+  out dl:    f16[r, c]
+  out loss:  f32[r]
+{
+  grid i over r / bm
+  let a  = load lg[i * bm, 0 ; bm, c]
+  let mk = load maskv
+  let lm = a + mk
+  let mx = rowmax &lm
+  let sh = &lm - &mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / &z
+  let j  = load jrow
+  let zz = zeros f32[bm, c]
+  let jb = zz + j
+  let t  = load tgt[i * bm, 0 ; bm, 1]
+  let db = jb - t
+  let zn = zeros f32[bm, c]
+  let dn = zn - &db
+  let df = relu db + relu dn
+  let zo = zeros f32[bm, c]
+  let on = zo + 1.0
+  let oh = relu (on - df)
+  let g0 = p - &oh
+  let g  = g0 * scale
+  let gh = stage f16 g
+  store gh -> dl[i * bm, 0]
+  let lz = log z
+  let ohl = oh * lm
+  let tl = rowsum ohl
+  store lz + mx - tl -> loss[i * bm]
+}
+
+schedule ce for apple-m-series { threads 128 }
+schedule ce for nvidia-ada     { threads 128 }

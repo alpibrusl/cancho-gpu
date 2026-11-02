@@ -11,6 +11,7 @@ kernel void activations_3_5(
     device const float* p0_x [[buffer(0)]],
     device float* p1_y [[buffer(1)]],
     device float* p2_d [[buffer(2)]],
+    device float* p3_t [[buffer(3)]],
     uint tid [[thread_index_in_threadgroup]],
     uint3 tgpos [[threadgroup_position_in_grid]])
 {
@@ -32,13 +33,26 @@ kernel void activations_3_5(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 15u) {
-            v2[k] = float((float(float(p0_x[(uint)(0) * 5u + (uint)(0) * 1u + ((e))])) > 0.0f ? 1.0f : 0.0f));
+            v2[k] = float(precise::tanh(float(float(p0_x[(uint)(0) * 5u + (uint)(0) * 1u + ((e))]))));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 15u) {
-            p2_d[(uint)(0) * 5u + (uint)(0) * 1u + (e)] = float(float(v2[k]));
+            p3_t[(uint)(0) * 5u + (uint)(0) * 1u + (e)] = float(float(v2[k]));
+        }
+    }
+    float v3[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 15u) {
+            v3[k] = float((float(float(p0_x[(uint)(0) * 5u + (uint)(0) * 1u + ((e))])) > 0.0f ? 1.0f : 0.0f));
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 15u) {
+            p2_d[(uint)(0) * 5u + (uint)(0) * 1u + (e)] = float(float(v3[k]));
         }
     }
 }

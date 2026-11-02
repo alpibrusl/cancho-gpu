@@ -1,0 +1,21 @@
+// p = softmax(s * scale + mask) over each row of every head's score matrix (mask: 0 or -1e9 above the diagonal, [t, t]), written as f16 for the product with v.
+algo att_softmax(nb, nh, t, bm, scale)
+  in  s:    f32[nb * nh * t, t]
+  in  mask: f32[t, t]
+  out p:    f16[nb * nh * t, t]
+{
+  grid b over nb, h over nh, i over t / bm
+  let a  = load s[(b * nh + h) * t + i * bm, 0 ; bm, t]
+  let mk = load mask[i * bm, 0 ; bm, t]
+  let sm = a * scale + mk
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let pr = e / z
+  let ph = stage f16 pr
+  store ph -> p[(b * nh + h) * t + i * bm, 0]
+}
+
+schedule att_softmax for apple-m-series { threads 128 }
+schedule att_softmax for nvidia-ada     { threads 128 }
