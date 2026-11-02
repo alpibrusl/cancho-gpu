@@ -1,0 +1,12 @@
+// y = f32(x): reads an f16 parameter (the tests of a session's `f16` binary files, docs/resident.md section 14).
+algo widen(n)
+  in  x: f16[1, n]
+  out y: f32[1, n]
+{
+  let a = load x
+  let b = stage f32 a
+  store b -> y
+}
+
+schedule widen for apple-m-series { threads 64 }
+schedule widen for nvidia-ada     { threads 64 }

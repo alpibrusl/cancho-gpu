@@ -1,0 +1,21 @@
+// The backward of the output layer into the last hidden layer: dz = (dz_out w) * step(h), f16, from dz_out [b, 1] and w [1, k].
+algo out_bwd_h(b, k, bm)
+  in  dzo: f32[b, 1]
+  in  w:   f32[1, k]
+  in  h:   f16[b, k]
+  out dz:  f16[b, k]
+{
+  grid i over b / bm
+  let d  = load dzo[i * bm, 0 ; bm, 1]
+  let wt = load w
+  let dh = matmul d wt
+  let hh = load h[i * bm, 0 ; bm, k]
+  let hf = stage f32 hh
+  let s  = step hf
+  let o  = dh * s
+  let dq = stage f16 o
+  store dq -> dz[i * bm, 0]
+}
+
+schedule out_bwd_h for apple-m-series { threads 128 }
+schedule out_bwd_h for nvidia-ada     { threads 128 }

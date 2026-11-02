@@ -548,6 +548,22 @@ def gemm_ref(m, n, k, wide_a=False):
     return [sum(a[i * k + c] * w[j * k + c] for c in range(k)) for i in range(m) for j in range(n)]
 
 
+def gemm_nn_ref(m, n, k):
+    """y = a w with w stored [k, n]: the mma_nn layout."""
+    a, w = lcg([m * k, k * n])
+    a = [f16(x) for x in a]
+    w = [f16(x) for x in w]
+    return [sum(a[i * k + c] * w[c * n + j] for c in range(k)) for i in range(m) for j in range(n)]
+
+
+def gemm_tn_ref(m, n, k):
+    """y = a^T w with a stored [k, m] and w stored [k, n]: the mma_tn layout."""
+    a, w = lcg([k * m, k * n])
+    a = [f16(x) for x in a]
+    w = [f16(x) for x in w]
+    return [sum(a[c * m + i] * w[c * n + j] for c in range(k)) for i in range(m) for j in range(n)]
+
+
 def gemm_fp4_ref(m, n, k, residual=False):
     """NVFP4 weights dequantised (code * block scale * the row's f32 scale), rounded to f16 by `stage f16`, against f16 activations."""
     ins = lcg([m * k, n] + ([m * n] if residual else []))
@@ -612,6 +628,8 @@ def new_checks():
     for m, n, k in ((128, 128, 64), (48, 16, 32)):
         ok &= check(f"gemm m={m} n={n} k={k}", run("ported/gemm", [f"m={m}", f"n={n}", f"k={k}"])["y"], gemm_ref(m, n, k))
     ok &= check("gemm_mma m=128 n=128 k=64", run("ported/gemm_mma", ["m=128", "n=128", "k=64"])["y"], gemm_ref(128, 128, 64))
+    ok &= check("gemm_mma_nn m=128 n=128 k=64", run("ported/gemm_mma_nn", ["m=128", "n=128", "k=64"])["y"], gemm_nn_ref(128, 128, 64))
+    ok &= check("gemm_mma_tn m=128 n=128 k=64", run("ported/gemm_mma_tn", ["m=128", "n=128", "k=64"])["y"], gemm_tn_ref(128, 128, 64))
     ok &= check("gemm_fp4 m=128 n=128 k=64", run("ported/gemm_fp4", ["m=128", "n=128", "k=64"])["y"], gemm_fp4_ref(128, 128, 64))
     ok &= check("gemm_fp4_res m=128 n=128 k=64", run("ported/gemm_fp4_res", ["m=128", "n=128", "k=64"])["y"], gemm_fp4_ref(128, 128, 64, True))
     ok &= check("rmsnorm n=4096 eps=1e-5", run("ported/rmsnorm", ["n=4096", "eps=1e-5"])["y"], rmsnorm_ref(4096, 1e-5))
@@ -660,6 +678,8 @@ def new_checks():
 # One deliberate change to each kernel above, in a copy: its reference must fail. (file under CHX_ROOT, text, replacement, what it breaks)
 MUTANTS = [
     ("ported/gemm.chx", "yield acc + matmul_nt at wt", "yield acc - matmul_nt at wt", "gemm accumulates with the wrong sign"),
+    ("ported/gemm_mma_nn.chx", "yield mma_nn acc at wt", "yield mma acc at wt", "gemm_mma_nn reads its right tile as [n, k]"),
+    ("ported/gemm_mma_tn.chx", "let at = load a[p * bk, i * bm ; bk, bm] @shared", "let at = load a[p * bk, j * bm ; bk, bm] @shared", "gemm_mma_tn takes the wrong columns of a"),
     ("ported/gemm_mma.chx", "for p in 0 .. k / bk with acc", "for p in 0 .. k / bk - 1 with acc", "gemm_mma leaves out the last slice of k"),
     ("ported/gemm_fp4.chx", "for p in 0 .. k / bk with acc", "for p in 0 .. k / bk - 1 with acc", "gemm_fp4 leaves out the last slice of k"),
     ("ported/gemm_fp4_res.chx", "  let acc = add_window acc r[i * bm, j * bn]\n", "", "gemm_fp4_res leaves out the residual"),

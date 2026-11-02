@@ -382,7 +382,7 @@ reference's (0.299027, 0.104148, 0.013525 against 0.299027, 0.104149, 0.013525),
 
 ### 12.4 Binary tensor files (`f32`)
 
-`resident P.PARAM FILE f32` and `table P.PARAM FILE BLOCKS f32` read the file as little-endian IEEE binary32 words, exactly the parameter's (or the table's) element count and nothing else: no number is parsed, so the 16 MiB cap of a text file does
+`resident P.PARAM FILE f32` and `table P.PARAM FILE BLOCKS f32` read the file as little-endian IEEE binary32 words (`f16` likewise for an f16 parameter, section 14), exactly the parameter's (or the table's) element count and nothing else: no number is parsed, so the 16 MiB cap of a text file does
 not apply (the file is staged in the session's byte pool, 256 MiB). The parameter must be f32. A file of the wrong size is `usage`, one that is not there `io`, a word after the file other than `f32` `session`.
 `tests/session.py` (CPU and Metal) runs the accumulating session from binary files and requires the text session's answer, with non-dyadic values so that every byte of a word matters; two CPU mutants (a byte shifted wrongly, a longer file accepted).
 `mlp_session.py --binary` writes the training data this way. **Measured** (Apple M4 Max): the 16384 x 64 x 128 session answers its first request in **0.08 s from binary files against 0.22 to 0.40 s from text**; a 32768 x 64 x 128 network (the data is 8 MiB binary, 22 MiB as text, which is refused)
@@ -415,3 +415,29 @@ At 512 cancho-gpu is level with torch's CPU path and 1.7 times faster than OpenN
 **Not claimed:** anything about another machine, another model, NVIDIA (every kernel here compiles for it and none has run), or a speed that holds when torch is tuned (compiled, with CUDA graphs); one run each, and the margins of 10 to 15% (width 512, cancho-gpu against torch CPU) are inside what the machine's clocks move between runs (`benchmark.md`).
 Tuning that mattered: the threadgroup shape of the three new kernels (a minibatch spread over `bm` = 2 samples a threadgroup with 256 threads, from 16 samples and 128 threads) took the 512 network from 6.3 ms to 2.4 ms a step.
 `tests/train.py` holds the kernels to a float64 numpy implementation of the same training (a 16-32-32-1 network, 40 steps: 0.720912, 0.635014, 0.485022, 0.15289 against 0.720912, 0.635014, 0.485024, 0.152891) on the CPU session, and the Metal session to the CPU session.
+
+## 14. Mixed precision on the matrix unit (measured)
+
+Section 13 left cancho-gpu 2.6 times behind torch on MPS at 512 units: its matrix products are the generic untiled `matmul_nt`, 0.3 TFLOPS, and each layer was computed in both orientations. The matrix-unit path (`mma`, `docs/chx.md`) reads f16 tiles from threadgroup memory
+and accumulates in f32: `gemm_mma.chx` takes **121 microseconds for a 512 x 512 x 512 product, 2.2 TFLOPS, against 838 microseconds for the generic kernel**. Using it for training needed the other two layouts of a layer's products, so the language gained them:
+
+* **`mma_nn`, `mma_tn`, `mma_tt`** (`docs/chx.md`): `mma` with the left tile stored `[k, m]` and/or the right tile stored `[k, n]` (Metal: `simdgroup_load` with or without its transpose flag; CUDA: the `wmma` fragment's `row_major` or `col_major`; the CUDA text is held by goldens and has not run). A forward product is `mma`, a layer's input gradient `mma_nn`,
+  a weight gradient `mma_tn`: no transposed copy of anything. `gemm_mma_nn.chx` and `gemm_mma_tn.chx` are held to float64 references (`tests/kernels.py`) with mutants, **and run on the Metal GPU against numpy: the three layouts at 512 x 512 x 512 agree to 3e-5 of a peak of 40, in 121 to 124 us each.**
+* **`f16` after a `resident` or `table` file** reads binary16 words (the same cap-free binary form as `f32`, section 12.4).
+
+`examples/train/mp_session.py` is `deep_session.py` rewritten for them: master weights and Adam's moments in f32; an f16 copy of each weight matrix written by the Adam kernel (`adam_h.chx`) beside the f32 one; activations and the gradients of the pre-activations in f16; every product on the matrix unit with f32 accumulation;
+a bias-and-ReLU epilogue (`bias_relu_h`), a ReLU-gradient mask (`step_mask_h`), a gridded bias gradient (`rowvec_mm`; `bwd_db.chx` has no grid). The surface has no conversion between dtypes but `stage f16`/`stage f32`, which is how the epilogues narrow and widen. Widths must be multiples of 64, the input width of 32.
+`tests/train.py` (new checks) holds it to the float64 reference (0.770328, 0.685322, 0.596921 against 0.770288, 0.685168, 0.596911 at steps 1, 2 and 10: the f16 rounding), the Metal session to the CPU interpreter's emulation of the same arithmetic, and `tests/session.py` the `f16` files (with a mutant).
+
+Seconds an epoch, the `compare_train.py` network of section 13, one invocation per width (torch's `amp` is `torch.autocast(float16)` on MPS), M4 Max:
+
+| width | cancho-gpu f32 | **cancho-gpu mixed** | torch CPU | torch MPS | torch MPS autocast | OpenNN CPU |
+|---|---|---|---|---|---|---|
+| 128 | 0.144 | **0.084** | 0.231 | 0.335 | 0.423 | 0.378 |
+| 256 | 0.157 | **0.105** | 0.569 | 0.370 | 0.438 | 0.639 |
+| 512 | 0.941 | **0.198** | 0.851 | 0.377 | 0.457 | 1.550 |
+| 1024 | - | 0.437 | 1.920 | 0.434 | 0.544 | - |
+
+**Reading.** Mixed precision takes the 512 network from 0.94 to **0.20 s an epoch, 4.8 times, and 1.9 times faster than torch on MPS in float32 and 2.3 times faster than its autocast**; it is faster than torch's best at 128, 256 and 512 and level with it at 1024 (0.437 against 0.434; the 1024 network is 2.2 million parameters,
+and there the untuned kernels and the elementwise epilogues, which write the pre-activations to memory, show). The learning is the same: the best test accuracy over the epochs is 0.8572 / 0.8561 / 0.8672 / 0.8678 for cancho-gpu mixed at 128 / 256 / 512 / 1024 against torch's 0.8565 / 0.8569 / 0.8666 / 0.8678, and the test loss agrees (0.3763 against 0.3799 at 128).
+(The "f32" column is section 13's; the f16 rounding of the weights and activations changes the trajectory in the last digits.) **Not claimed:** anything about a model whose activations overflow f16 (no loss scaling was needed here and none is implemented), another machine, or NVIDIA (the CUDA text of the new layouts has only been generated, not run).

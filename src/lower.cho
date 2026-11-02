@@ -544,9 +544,15 @@ fn mma[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
         return fail(m, t, "mma reads tiles in threadgroup memory");
     }
     let (cn, ct, geom) = (m[lc + 1], m[lc + 2], m[lc + 3]);
-    let k = mem.get(m, ir.shape(m, m[la + 2]), 1);
-    let lda = gen.row_len(m, g, ir.var_of(m[o + 2]), k);
-    let ldb = gen.row_len(m, g, ir.var_of(m[o + 3]), k);
+    // the layout of the operands (kinds.mma_shapes_agree): bit 1, the left tile is stored [k, m]; bit 2, the right one is stored [k, n]
+    let a_t = m[o + 4] % 2 == 1;
+    let b_kn = m[o + 4] / 2 % 2 == 1;
+    var k = mem.get(m, ir.shape(m, m[la + 2]), 1);
+    if a_t {
+        k = mem.get(m, ir.shape(m, m[la + 2]), 0);
+    }
+    let lda = gen.row_len(m, g, ir.var_of(m[o + 2]), mem.get(m, ir.shape(m, m[la + 2]), 1));
+    let ldb = gen.row_len(m, g, ir.var_of(m[o + 3]), mem.get(m, ir.shape(m, m[lb + 2]), 1));
     if k % m[geom + 4] != 0 {
         return err.fail(m, t, "lowering", text.n2(m, t, "mma over $ is not whole $-wide steps", k, m[geom + 4]));
     }
@@ -554,7 +560,7 @@ fn mma[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     let cols = mem.get(m, ir.shape(m, ct), 1) / m[geom + 1];
     let a_row = text.n2(m, t, "(tid / $u) * $u", 32 * m[geom + 1], rows);
     let b_row = text.n2(m, t, "(tid / 32u % $u) * $u", m[geom + 1], cols);
-    let ls = dialect.frag_mma(m, t, gen.dia(m, g), cn, m[la + 1], m[lb + 1], k, lda, ldb, m[geom + 2], m[geom + 3], a_row, b_row);
+    let ls = dialect.frag_mma(m, t, gen.dia(m, g), cn, m[la + 1], m[lb + 1], k, lda, ldb, m[geom + 2], m[geom + 3], a_row, b_row, m[o + 4]);
     gen.emit_lines(m, t, g, ls);
     gen.set_loc(m, g, x, gen.mk_loc(m, gen.l_frag(), cn, ct, geom));
     return 0;

@@ -243,6 +243,29 @@ pub fn load_f32[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float]
     return 0;
 }
 
+// The same for `n` little-endian IEEE binary16 words (the `f16` flag): only an f16 parameter.
+pub fn load_f16[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), path: &p [byte], name: int, dt: int, at: int, n: int) -> [fs_read(""), file_read] int {
+    if dt != kinds.f16() {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not an f16 parameter: a binary16 file holds f16 words", name));
+    }
+    let mark = m[mem.text_slot()];
+    let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 2 * n + 1);
+    if ftop < 0 {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
+    }
+    if fsize != 2 * n {
+        return err.fail(m, t, "usage", text.fmt(m, t, "the binary file for `$` has $ bytes; the parameter holds $ f16 words ($ bytes)", mem.of4(m, name, text.num(m, t, fsize), text.num(m, t, n), text.num(m, t, 2 * n))));
+    }
+    var j = 0;
+    while j < n {
+        let b = ftop + 2 * j;
+        fm[at + j] = f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 8);
+        j = j + 1;
+    }
+    m[mem.text_slot()] = mark;
+    return 0;
+}
+
 // Read each `--in` file into the tensor of `globals` it names, rounded once to
 // the parameter's dtype. Answers 0, or -1 with a refusal (see `load_one`).
 pub fn load[&m, &t, &x, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), args: &a Args, prog: int, globals: int, ins: int) -> [fs_read(""), file_read, args] int {

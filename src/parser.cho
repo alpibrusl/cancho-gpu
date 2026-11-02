@@ -312,7 +312,16 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         }
         return node(m, kinds.e_zeros(), m[ts], m[ts + 1], sp, 0, 0);
     }
-    if text.is(t, s, "mma") {
+    if text.is(t, s, "mma") || text.is(t, s, "mma_nn") || text.is(t, s, "mma_tn") || text.is(t, s, "mma_tt") {
+        // the layout of the operands: bit 1 = the left tile is stored [k, m] (transposed), bit 2 = the right tile is stored [k, n]
+        var layout = 0;
+        if text.is(t, s, "mma_nn") {
+            layout = 2;
+        } else if text.is(t, s, "mma_tn") {
+            layout = 3;
+        } else if text.is(t, s, "mma_tt") {
+            layout = 1;
+        }
         let c = atom(m, t, p);
         if c < 0 {
             return 0 - 1;
@@ -325,7 +334,7 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         if b < 0 {
             return 0 - 1;
         }
-        return node(m, kinds.e_mma(), c, a, b, 0, 0);
+        return node(m, kinds.e_mma(), c, a, b, layout, 0);
     }
     if text.is(t, s, "dequant_fp4") {
         let q = atom(m, t, p);

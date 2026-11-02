@@ -1,0 +1,20 @@
+// y = a w: a tiled matrix product on the matrix unit with the right operand stored [k, n] (the layout a layer's gradient with respect to its input needs:
+// dx = dz w, where w is [n_out, n_in]). `mma_nn` is `mma` with the right tile in its stored layout; f16 inputs, f32 accumulation, as gemm_mma.chx.
+algo gemm_mma_nn(m, n, k)
+  in  a: f16[m, k]
+  in  w: f16[k, n]
+  out y: f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[p * bk, j * bn ; bk, bn] @shared
+    yield mma_nn acc at wt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule gemm_mma_nn for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
+schedule gemm_mma_nn for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

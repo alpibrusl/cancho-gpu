@@ -1,0 +1,18 @@
+// dz = f16(dh * step(h)): the gradient of a ReLU layer's pre-activation from the gradient dh (f32) of its output and its activations h (f16).
+algo step_mask_h(b, n, bm)
+  in  dh: f32[b, n]
+  in  h:  f16[b, n]
+  out dz: f16[b, n]
+{
+  grid i over b / bm
+  let g  = load dh[i * bm, 0 ; bm, n]
+  let hh = load h[i * bm, 0 ; bm, n]
+  let hf = stage f32 hh
+  let s  = step hf
+  let o  = g * s
+  let dh = stage f16 o
+  store dh -> dz[i * bm, 0]
+}
+
+schedule step_mask_h for apple-m-series { threads 128 }
+schedule step_mask_h for nvidia-ada     { threads 128 }

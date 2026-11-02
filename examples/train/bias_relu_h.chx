@@ -1,0 +1,17 @@
+// h = f16(relu(z + bias)): the epilogue of a layer's matrix product z = h_in w^T (f32), one threadgroup for each bm rows.
+algo bias_relu_h(b, n, bm)
+  in  z:    f32[b, n]
+  in  bias: f32[1, n]
+  out h:    f16[b, n]
+{
+  grid i over b / bm
+  let a  = load z[i * bm, 0 ; bm, n]
+  let bt = load bias
+  let s  = a + bt
+  let r = relu s
+  let hs = stage f16 r
+  store hs -> h[i * bm, 0]
+}
+
+schedule bias_relu_h for apple-m-series { threads 128 }
+schedule bias_relu_h for nvidia-ada     { threads 128 }

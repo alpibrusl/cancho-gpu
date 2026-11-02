@@ -1,0 +1,15 @@
+// out[1, k] = v[1, b] x[b, k] (x f16, v f32): a bias gradient (v = ones) or the output layer's weight gradient (v = dz), a threadgroup for each bk columns
+// (bwd_db.chx has no grid and is one threadgroup reducing over the whole batch).
+algo rowvec_mm(b, k, bk)
+  in  v:   f32[1, b]
+  in  x:   f16[b, k]
+  out out: f32[1, k]
+{
+  grid j over k / bk
+  let a = load v
+  let c = load x[0, j * bk ; b, bk]
+  store matmul a c -> out[0, j * bk]
+}
+
+schedule rowvec_mm for apple-m-series { threads 128 }
+schedule rowvec_mm for nvidia-ada     { threads 128 }
