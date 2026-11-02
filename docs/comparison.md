@@ -1,6 +1,6 @@
 # Compared with OpenNN
 
-> **Status: measured here, on a CPU, for a forward pass only.** Nothing in this
+> **Status: measured here, on a CPU, for a forward pass only (training is compared in `resident.md` section 13).** Nothing in this
 > document is about a GPU, about training speed, or about a model larger than the
 > one below. Marks: **[measured]** (with the command), **[read]** (from the other
 > project's source or documents, not run) and **[open]**. The rules this follows
