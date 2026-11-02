@@ -69,12 +69,15 @@ fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f F
     let progs = m[sess + session.s_progs()];
     let links = m[sess + session.s_links()];
     let resident = m[sess + session.s_resident()];
+    let carries = m[sess + session.s_carries()];
+    let tables = m[sess + session.s_tables()];
     if metal.cgpu_open(ffi) < 0 {
         let r = device_fail(m, t, ffi, "opening the device");
         return (0 - 1, 0 - 1);
     }
     let funcs = mem.list(m);
     let bufs = mem.list(m);
+    let groups = mem.list(m);
     var q = 0;
     while q < mem.size(m, progs) {
         let pr = mem.get(m, progs, q);
@@ -109,20 +112,71 @@ fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f F
                 }
                 k = k + 1;
             }
+            // a carry is one buffer for the output and every parameter it feeds (the kernel is safe in place): the first of the group to be set up
+            // allocates it and the others take it. `groups` holds (source program, source parameter, buffer).
+            var group_src = 0 - 1;
+            var group_par = 0 - 1;
+            k = 0;
+            while k < mem.size(m, carries) {
+                let c = mem.get(m, carries, k);
+                if m[c] == q && m[c + 1] == i || m[c + 2] == q && m[c + 3] == i {
+                    group_src = m[c];
+                    group_par = m[c + 1];
+                }
+                k = k + 1;
+            }
+            if group_src >= 0 {
+                k = 0;
+                while k < mem.size(m, groups) {
+                    let gr = mem.get(m, groups, k);
+                    if m[gr] == group_src && m[gr + 1] == group_par {
+                        shared = m[gr + 2];
+                    }
+                    k = k + 1;
+                }
+            }
+            var table_blocks = 1;
+            k = 0;
+            while k < mem.size(m, tables) {
+                let tb = mem.get(m, tables, k);
+                if m[tb] == q && m[tb + 1] == i {
+                    table_blocks = m[tb + 3];
+                }
+                k = k + 1;
+            }
             if shared >= 0 {
                 mem.push(m, mine, shared);
             } else {
-                let buf = metal.cgpu_alloc(ffi, m[g + 3] * kinds.size_bytes(m[g]));
+                let buf = metal.cgpu_alloc(ffi, table_blocks * m[g + 3] * kinds.size_bytes(m[g]));
                 if buf < 0 {
                     let r = device_fail(m, t, ffi, "allocating a buffer");
                     return (0 - 1, 0 - 1);
                 }
                 mem.push(m, mine, buf);
+                if group_src >= 0 {
+                    mem.push(m, groups, mem.rec3(m, group_src, group_par, buf));
+                }
             }
             i = i + 1;
         }
         mem.push(m, bufs, mine);
         q = q + 1;
+    }
+    // The tables go up once, whole.
+    var tq = 0;
+    while tq < mem.size(m, tables) {
+        let tb = mem.get(m, tables, tq);
+        let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
+        let whole = mem.rec4(m, m[g], m[g + 1], m[tb + 2], m[g + 3] * m[tb + 3]);
+        let mark = m[mem.text_slot()];
+        let at = devcodec.encode(m, t, fm, whole);
+        let bytes = m[whole + 3] * kinds.size_bytes(m[g]);
+        if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[tb], m[tb + 1]), t[at..at + bytes]) < 0 {
+            let e = device_fail(m, t, ffi, "uploading a table");
+            return (0 - 1, 0 - 1);
+        }
+        m[mem.text_slot()] = mark;
+        tq = tq + 1;
     }
     // The resident data goes up once. The staging bytes are given back as soon as they are sent.
     var r = 0;
@@ -143,7 +197,7 @@ fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f F
 }
 
 // One request on the device, after `session.fill_inputs`: upload the inputs, launch the kernels in order, read the answers back.
-fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), sess: int, funcs: int, bufs: int) -> [ffi("libmetalgpu")] int {
+fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), sess: int, funcs: int, bufs: int, reps: int) -> [ffi("libmetalgpu")] int {
     let progs = m[sess + session.s_progs()];
     let inputs = m[sess + session.s_inputs()];
     let answers = m[sess + session.s_answers()];
@@ -157,22 +211,45 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         }
         k = k + 1;
     }
-    var q = 0;
-    while q < mem.size(m, progs) {
-        let pr = mem.get(m, progs, q);
-        let l = m[pr + 3];
-        let mine = mem.get(m, bufs, q);
-        var i = 0;
-        while i < mem.size(m, mine) {
-            if metal.cgpu_arg(ffi, mem.get(m, mine, i)) < 0 {
-                return device_fail(m, t, ffi, "binding an argument");
+    let tables = m[sess + session.s_tables()];
+    var rep = 0;
+    while rep < reps {
+        var q = 0;
+        while q < mem.size(m, progs) {
+            let pr = mem.get(m, progs, q);
+            let l = m[pr + 3];
+            let mine = mem.get(m, bufs, q);
+            var i = 0;
+            while i < mem.size(m, mine) {
+                // a table parameter is bound at the block the repetition number picks
+                var offset = 0 - 1;
+                var tk = 0;
+                while tk < mem.size(m, tables) {
+                    let tb = mem.get(m, tables, tk);
+                    if m[tb] == q && m[tb + 1] == i {
+                        let g = mem.get(m, m[pr + 2], i);
+                        offset = m[sess + session.s_count()] % m[tb + 3] * m[g + 3] * kinds.size_bytes(m[g]);
+                    }
+                    tk = tk + 1;
+                }
+                var bound = 0;
+                if offset >= 0 {
+                    bound = metal.cgpu_arg_at(ffi, mem.get(m, mine, i), offset);
+                } else {
+                    bound = metal.cgpu_arg(ffi, mem.get(m, mine, i));
+                }
+                if bound < 0 {
+                    return device_fail(m, t, ffi, "binding an argument");
+                }
+                i = i + 1;
             }
-            i = i + 1;
+            if metal.cgpu_launch_async(ffi, mem.get(m, funcs, q), m[l + 2], m[l + 3], m[l + 4]) < 0 {
+                return device_fail(m, t, ffi, "launching a kernel");
+            }
+            q = q + 1;
         }
-        if metal.cgpu_launch_async(ffi, mem.get(m, funcs, q), m[l + 2], m[l + 3], m[l + 4]) < 0 {
-            return device_fail(m, t, ffi, "launching a kernel");
-        }
-        q = q + 1;
+        m[sess + session.s_count()] = m[sess + session.s_count()] + 1;
+        rep = rep + 1;
     }
     // One wait for all the kernels, which the device runs in the order they were encoded.
     if metal.cgpu_sync(ffi) < 0 {
@@ -236,9 +313,13 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
             more = false;
         } else {
             m[mem.text_slot()] = tmark + n;
-            var done = session.fill_inputs(m, t, fm, sess, text.handle(tmark, n));
+            let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
+            var done = reps;
             if done >= 0 {
-                done = on_device(m, t, fm, ffi, sess, funcs, bufs);
+                done = session.fill_inputs(m, t, fm, sess, rest);
+            }
+            if done >= 0 {
+                done = on_device(m, t, fm, ffi, sess, funcs, bufs, reps);
             }
             if done >= 0 {
                 done = session.print_answers(m, t, fm, io, sess);

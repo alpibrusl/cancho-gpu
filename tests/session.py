@@ -176,9 +176,80 @@ def check(binary, quiet=False):
         say(r.returncode == 1 and r.stdout == "" and r.stderr.startswith("error[io]"), "refused as io: a session file that is not there")
         r = subprocess.run([binary], capture_output=True, text=True)
         say(r.returncode == 2 and r.stdout == "", "no arguments: usage, status 2")
+
+        training_checks(binary, d)
     finally:
         shutil.rmtree(d)
     return bad == 0
+
+
+def f32(x):
+    import struct
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def training_checks(binary, d):
+    """docs/resident.md section 12: `steps`, `carry` and `table`, on a kernel that adds a table's block to a carried parameter."""
+    n, blocks = 5, 3
+    tdir = os.path.join(d, "train")
+    os.makedirs(tdir)
+    w0 = [float(i) for i in range(n)]
+    table = [[(j + 1) * 0.5 + i * 0.25 for i in range(n)] for j in range(blocks)]
+    open(os.path.join(tdir, "w0"), "w").write(" ".join(map(repr, w0)) + "\n")
+    open(os.path.join(tdir, "table"), "w").write(" ".join(repr(v) for row in table for v in row) + "\n")
+    kernel = os.path.join(ROOT, "tests/chx/step_add.chx")
+    body = f"""program add {kernel} n={n}
+resident add.w {os.path.join(tdir, 'w0')}
+table add.d {os.path.join(tdir, 'table')} {blocks}
+carry add.wo -> add.w
+steps
+answer add.wo
+"""
+    path = os.path.join(tdir, "session")
+    open(path, "w").write(body)
+
+    def want(reps_total):
+        w = list(w0)
+        for j in range(reps_total):
+            w = [f32(a + b) for a, b in zip(w, table[j % blocks])]
+        return w
+
+    def numbers(line):
+        return [float(v) for v in line.split()]
+
+    status, out, err = talk(binary, path, "5\n")
+    say(status == 0 and len(out) == 1 and numbers(out[0]) == want(5), f"5 steps carry the parameter through the table, which wraps after {blocks}: {out}")
+    status, out, err = talk(binary, path, "1\n")
+    say(status == 0 and len(out) == 1 and numbers(out[0]) == want(1), f"one step is one block: {out}")
+    status, out, err = talk(binary, path, "2\n3\n")
+    say(status == 0 and len(out) == 2 and numbers(out[1]) == want(5), f"a second request continues where the first stopped (2 then 3 steps = 5): {out}")
+    status, out, err = talk(binary, path, "7\n")
+    say(status == 0 and len(out) == 1 and numbers(out[0]) == want(7), f"7 steps, two laps and a block: {out}")
+    for text, why in (("0\n", "0 steps"), ("-1\n", "a negative count"), ("1.5\n", "a count that is not whole"), ("x\n", "a count that is not a number"), ("\n", "no count"), ("2 3\n", "a number after the count when the session takes none")):
+        status, out, err = talk(binary, path, text)
+        say(status == 1 and out == [] and err.startswith("error[session]"), f"refused as session: {why}")
+
+    def refuse(what, edit, tag="session"):
+        bad_path = os.path.join(tdir, "bad.session")
+        text = body
+        for old, new in edit:
+            text = text.replace(old, new)
+        open(bad_path, "w").write(text)
+        status, out, err = talk(binary, bad_path, "1\n")
+        say(status == 1 and out == [] and err.startswith(f"error[{tag}]"), f"refused as {tag}: {what}" + ("" if status == 1 else f" (status {status}, {out}, {err[:80]!r})"))
+
+    refuse("a carry to a parameter that is not resident", [("resident add.w", "# resident add.w\ninput add.w")])
+    refuse("a carry from an input", [("carry add.wo -> add.w", "carry add.d -> add.w")])
+    refuse("a carry to an output", [("carry add.wo -> add.w", "carry add.wo -> add.wo")])
+    refuse("a table whose file holds another number of blocks", [(f"table add.d {os.path.join(tdir, 'table')} {blocks}", f"table add.d {os.path.join(tdir, 'table')} {blocks + 1}")], tag="usage")
+    refuse("a table with zero blocks", [(f"{os.path.join(tdir, 'table')} {blocks}", f"{os.path.join(tdir, 'table')} 0")])
+    refuse("steps given twice", [("steps\n", "steps\nsteps\n")])
+    refuse("a table for a parameter that is also resident", [("table add.d", "resident add.d " + os.path.join(tdir, "w0") + "\ntable add.d")])
+    refuse("a carry between different sizes", [("n=5", "n=5"), ("carry add.wo -> add.w", "carry add.wo -> add.d")])
+    # without `steps` a request is just its inputs, once
+    open(os.path.join(tdir, "once.session"), "w").write(body.replace("steps\n", ""))
+    status, out, err = talk(binary, os.path.join(tdir, "once.session"), "\n\n")
+    say(status == 0 and len(out) == 2 and numbers(out[0]) == want(1) and numbers(out[1]) == want(2), f"without steps each request is one repetition, and the table and the carry still advance: {out}")
 
 
 MUTANTS = [
@@ -190,6 +261,11 @@ MUTANTS = [
     ("session/main.cho", "if c < 0 && n == 0 {", "if c < 0 {", "a last line without its newline is dropped"),
     ("src/session.cho", "while pos < n && space(text.at(t, line, pos)) {\n        pos = pos + 1;\n    }\n    if pos < n {", "while pos < n && space(text.at(t, line, pos)) {\n        pos = pos + 1;\n    }\n    if pos < 0 {", "a request with too many numbers is accepted"),
     ("src/session.cho", "if sp >= dp {", "if sp > dp {", "a link from a program to itself is accepted"),
+    ("src/session.cho", "return (truncate(v), text.sub(line, pos, n));", "return (truncate(v) + 1, text.sub(line, pos, n));", "the count of steps is one too many"),
+    ("src/session.cho", "m[sess + s_count()] = m[sess + s_count()] + 1;\n        j = j + 1;", "j = j + 1;", "the table position does not advance"),
+    ("src/session.cho", "fm[m[gd + 2] + e] = fm[m[gs + 2] + e];", "fm[m[gd + 2] + e] = fm[m[gd + 2] + e];", "a carry copies nothing"),
+    ("src/session.cho", "(m[sess + s_count()] % m[tb + 3])", "(m[sess + s_count()] % m[tb + 3] + 1)", "the table is read one block late"),
+    ("src/session.cho", "if m[mem.get(m, supplied, dp) + da] != 1 {", "if m[mem.get(m, supplied, dp) + da] < 0 {", "a carry to a parameter that is not resident is accepted"),
 ]
 
 

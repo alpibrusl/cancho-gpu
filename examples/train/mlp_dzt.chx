@@ -1,0 +1,25 @@
+// The backward of mlp_fwd's hidden layer, transposed like it: dzt = (w2^T e) * ht * (1 - ht), the gradient of the loss e^T e / 2r
+// (before the 1/r, which the optimiser applies) with respect to the pre-activations. w2c is w2 as a column [hd, 1].
+algo mlp_dzt(r, hd, bm)
+  in  ht:  f32[hd, r]
+  in  e:   f32[1, r]
+  in  w2c: f32[hd, 1]
+  out dzt: f32[hd, r]
+{
+  grid i over r / bm
+  let h  = load ht[0, i * bm ; hd, bm]
+  let g  = load e[0, i * bm ; 1, bm]
+  let c  = load w2c
+  let z  = zeros f32[hd, bm]
+  let eb = z + g
+  let o  = zeros f32[1, bm]
+  let on = o + 1.0
+  let cb = matmul c on
+  let dy = eb * cb
+  let s  = &h * &h
+  let u  = h - s
+  store dy * u -> dzt[0, i * bm]
+}
+
+schedule mlp_dzt for apple-m-series { threads 128 }
+schedule mlp_dzt for nvidia-ada     { threads 128 }

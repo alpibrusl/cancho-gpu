@@ -311,3 +311,65 @@ GPU time at 4096 x 128. **The explanation was incomplete and the number is super
 had no `grid` (`native.md` N4). With a `grid` (in `bwd_dw.chx` and `lsq_residual.chx`) the three kernels take **30 microseconds** and the Metal
 session **0.20 ms** an evaluation at 4096 x 128 (0.49 before), 2.3 times faster than plain compiled cancho (0.46 ms) and 3.3 times faster than torch on
 MPS (0.66 ms). §10's table of the Metal session, and its sentence on the roofline, describe the grid-less kernels.
+
+## 12. A training session: the optimiser on the device (design, written before the code)
+
+§11 measured 0.20 ms an evaluation at 4096 x 128 through a Metal session, 3.3 times faster than torch on MPS. That is one gradient evaluation, and `opt` takes a step between two of them: the
+parameters go up as text and the gradient comes back as text, the cost §10 found (about 0.7 microsecond a number, and the pipe holds a few hundred of them: `opt`'s `docs/design.md` section 14).
+A model with thousands of parameters cannot be trained that way, and a small one pays the text for every step. **The remedy is to keep the optimiser's state on the device too and to run many
+steps for one request.** Three directives, and one convention for the request line:
+
+```
+resident adam.w  w0.txt          # the initial parameters (and m, v: files of zeros)
+carry    adam.wo -> adam.w       # after every repetition, the new w is the w of the next one
+table    adam.t  sched.txt       # a file of S blocks of the parameter's size; repetition j uses block j mod S
+steps                            # the first number of a request is how many times the programs run
+```
+
+* **`steps`:** a request line starts with a count `N` (a positive integer) followed by the `input` parameters' numbers. The programs run in order `N` times, the device runs them back to back with
+  **one wait at the end** (the encoded launches of every repetition go to one command buffer), and the answers are those of the last repetition, one line as before. A session without `steps` is unchanged.
+* **`carry P.OUT -> Q.PARAM`:** after each repetition the parameter `Q.PARAM` holds what `P.OUT` was given, for the next. `Q` is listed at or before `P`; the two have the same size and element type; `Q.PARAM` must be
+  `resident` (its first value). On the CPU interpreter this is a copy at the end of the repetition; **on the device the two are one buffer**, so a carried program must be safe in place: element `i` of the output depends on
+  the carried parameter only at `i` (an element-wise optimiser step is). That is the contract, and it is checked on the CPU only by a test that compares the two sessions. The answers read after the last repetition see the carried value.
+* **`table P.PARAM FILE`:** a resident file that holds `S` consecutive blocks, each the size of the parameter. Repetition `j` (counted from the first request of the session, so a second request continues) reads block `j mod S`.
+  This is how Adam's bias corrections (a block of two numbers a step, computed on the host in f64) reach the kernel, and how a minibatch is chosen (S batches of data) without a trip through the host.
+* **Refusals:** a `carry` whose ends differ in size or type, whose destination is not resident, whose source is read-only or listed before the destination, or a table whose size is not a multiple of the parameter's, is `session`,
+  with the line, before any device work. `steps` twice, or a count that is not a positive integer, is `session`.
+
+**What the gate must be able to fail (`tests/session.py`).** (1) A kernel that adds one to a carried parameter: after `N` repetitions it holds `N` more, on the CPU and on the device, and a second request continues from it.
+(2) A table of distinct blocks read in order, wrapping around. (3) The CPU session and the Metal session agree on every case. (4) Each refusal. (5) Mutants: the count off by one, the table index not advanced, the carry not applied, a carry applied twice.
+**Then the training itself (`examples/train/mlp_*`):** a two-layer network and Adam written as `.chx` kernels trained for a few thousand steps, the loss and the parameters checked against a float64 implementation of the same
+steps (and `torch.optim.Adam` on the same data), and the time of a step against torch on MPS and on the CPU. **Claims not made before they are measured:** that this is faster than torch for a model of any size
+(the earlier measurements say torch is at a flat 0.8 ms a step on MPS; whether a step here is under that is the question).
+
+### 12.1 As built (measured)
+
+`session.cho` and the two session programs implement `steps`, `carry` and `table` as designed, with two refinements found while building: a `table` directive names its blocks (`table P.PARAM FILE BLOCKS`, so the file is checked against the
+parameter's size and no pre-scan of the file is needed), and on the device **one output may feed several parameters** (the four Adam outputs feed both the next step and the forward kernels): the output and every parameter it is carried to are
+one buffer, allocated by whichever is set up first. `tests/session.py` gained 20 checks (the accumulating kernel `tests/chx/step_add.chx` against a float32 simulation, the wrap of the table, continuation across requests, eight refusals), run on the CPU
+and on Metal, and 5 CPU mutants; four device-only mutants (a table never advanced, one repetition whatever the count, a carry not shared, the table position not advanced) were built by hand and all are killed by `tests/session.py --metal`.
+
+**The training** (`examples/train/mlp_session.py`, `tests/train.py`; kernels `mlp_fwd.chx`, `mlp_dzt.chx`, `adam.chx`, `bwd_dw2.chx` beside the existing `bwd_dw.chx`): a request is a count of Adam steps, the answer the loss after them.
+(1) The CPU session trains an 8-4-1 sigmoid network: the loss after 1, 10 and 30 steps equals a float64 numpy implementation's to 6 digits (0.282091, 0.218097, 0.142954 against 0.142955) and the parameters to 2e-6; 15 steps and 15 give exactly what 30 give.
+(2) The Metal session gives the CPU session's losses and, on a 32-32-1 network and 4096 samples, **the float64 reference's to 6 digits after 1, 10 and 100 steps, and `torch.optim.Adam` in float32 on the same data and start, 0.069565 and 0.069565 after 100**.
+It does not claim more than 100 steps: after 1000 the device is at a loss of 0.00076 and the reference at 0.00108, as two float precisions part company on a trained network (both fit it).
+(3) **Time of an Adam step** (`python3 examples/train/mlp_bench.py`, Apple M4 Max, torch 2.12, float32, interleaved rounds, medians of 3 of 400 steps; the cancho column is one request of 400 steps with one wait):
+
+| samples x features x hidden | parameters | cancho-gpu (Metal session) | torch (CPU) | torch (MPS) |
+|---|---|---|---|---|
+| 4096 x 32 x 32 | 1,089 | 0.301 ms | 0.372 ms | 0.870 ms |
+| 16384 x 64 x 128 | 8,449 | 1.013 ms | 1.333 ms | 1.011 ms |
+
+**What this says, plainly:** a training step on the device is as fast as torch's best on this machine (CPU at the small size, MPS and CPU at the larger), not faster by a wide margin, and equal to it in the numbers. It is 3 to 5 times faster than the
+path through `opt` could be (an evaluation of 0.2 ms plus the text of the parameters and gradient each way, and `opt`'s pipe holds a few hundred numbers). Where the step goes, by the shim's profile (`CANCHOGPU_PROFILE=2`, isolated, 16384 x 64 x 128): the two
+reductions over all 16384 samples with n = 1 (`ls`, `gb2`: 76 us each, one threadgroup) and the forward kernel (300 us) are the largest now that the bias and weight gradients of the hidden layer take `bwd_dw2.chx`
+(a grid over both axes of the result: those two took 807 and 754 us with `bwd_dw.chx`, whose grid is over the columns only, so a bias gradient with k = 1 was one threadgroup reducing over everything: the N4 mistake of `native.md` again, found by profiling the first
+version, which was 5.1 ms a step; with the grid, 1.0). The 0.127 ms a step that one early run of the small size showed was not reproduced by the interleaved runs, and is not claimed.
+**Not claimed:** speed for a model of any other size; that fusing the launches (11 a step) would not help (it would: the small size is launch-bound); anything about NVIDIA (the kernels compile for it and the CPU session runs them, but no GPU was available).
+
+### 12.2 Minibatches through `table` (measured)
+
+`mlp_session.write(..., batch=B)` makes the data, the targets and the transposed data tables of `r / B` minibatches (`table fwd.x`, `table fwd.t`, `table gw1.xt`), so step `j` trains on batch `j mod (r / B)`: epochs without a trip through the host, and no new directive.
+`tests/train.py` holds it to the float64 reference (minibatches of 128 of 1024, 40 steps, so five laps of a table of 8): the CPU session to 1e-4 at steps 1, 2, 3, 10 and 40, and the Metal session to the CPU session's losses.
+**What it buys** (16384 x 64 x 128, lr 0.003, Metal, 300 epochs each; the loss is on all the data, from the returned parameters): full batch, 300 steps, 1.01 ms a step, 0.28 s, loss **0.0217**; minibatches of 2048, 2400 steps, 0.39 ms a step, 0.93 s, loss **0.00054**.
+Same passes over the data, 40 times lower loss for 3.3 times the time: the step is cheaper but there are eight times as many. (One learning rate for both and one run each: it shows that minibatches work through the table, not which batch size is best.)

@@ -1,0 +1,14 @@
+// w' = w + d, element-wise: the smallest kernel that is safe in place, for the tests of a session's `carry`, `table` and `steps`
+// (docs/resident.md section 12). Carried, w accumulates the blocks of a table d.
+algo step_add(n)
+  in  w:  f32[1, n]
+  in  d:  f32[1, n]
+  out wo: f32[1, n]
+{
+  let a = load w
+  let b = load d
+  store a + b -> wo
+}
+
+schedule step_add for apple-m-series { threads 64 }
+schedule step_add for nvidia-ada     { threads 64 }
