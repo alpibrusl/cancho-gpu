@@ -32,6 +32,7 @@ import lower;
 import interp;
 import cli;
 import runcmd;
+import devcodec;
 import metal;
 
 fn words() -> [] int {
@@ -89,7 +90,7 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         if buf < 0 {
             return device_fail(m, t, ffi, "allocating a buffer");
         }
-        let at = encode(m, t, fm, g);
+        let at = devcodec.encode(m, t, fm, g);
         if metal.cgpu_upload(ffi, buf, t[at..at + bytes]) < 0 {
             return device_fail(m, t, ffi, "uploading an input");
         }
@@ -108,11 +109,11 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         if ir.param_writable(m, mem.get(m, ps, i)) {
             let g = mem.get(m, got, i);
             let bytes = m[g + 3] * kinds.size_bytes(m[g]);
-            let at = reserve(m, bytes);
+            let at = devcodec.reserve(m, bytes);
             if metal.cgpu_download(ffi, mem.get(m, bufs, i), t[at..at + bytes]) < 0 {
                 return device_fail(m, t, ffi, "reading an output back");
             }
-            decode(m, t, fm, g, at);
+            devcodec.decode(m, t, fm, g, at);
         }
         i = i + 1;
     }
@@ -127,70 +128,6 @@ fn say[&t, &i](t: &!t [byte], io: &!i Io, diag: bool, s: int) -> [io_write, err_
         io.error_all(io, text.bytes(t, s));
     } else {
         io.write_all(io, text.bytes(t, s));
-    }
-    return 0;
-}
-
-// `n` bytes at the end of the pool, reserved: a staging area for one
-// tensor's bytes.
-fn reserve[&m](m: &!m [int], n: int) -> [] int {
-    let at = m[mem.text_slot()];
-    m[mem.text_slot()] = at + n;
-    return at;
-}
-
-// A tensor's bytes as the device holds them: f32 and f16 as IEEE words,
-// I8 as two's-complement bytes, little-endian. Answers where they start.
-fn encode[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], g: int) -> [] int {
-    let dt = m[g];
-    let size = kinds.size_bytes(dt);
-    let (at, n) = (m[g + 2], m[g + 3]);
-    let out = reserve(m, n * size);
-    var i = 0;
-    while i < n {
-        let v = fm[at + i];
-        var word = 0;
-        if dt == kinds.f32() {
-            word = f32.bits32(v);
-        } else if dt == kinds.f16() {
-            word = f32.bits16(v);
-        } else {
-            word = truncate(v) & 255;
-        }
-        var b = 0;
-        while b < size {
-            t[out + i * size + b] = byte_of(word >> 8 * b & 255);
-            b = b + 1;
-        }
-        i = i + 1;
-    }
-    return out;
-}
-
-fn decode[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], g: int, from: int) -> [] int {
-    let dt = m[g];
-    let size = kinds.size_bytes(dt);
-    let (at, n) = (m[g + 2], m[g + 3]);
-    var i = 0;
-    while i < n {
-        var word = 0;
-        var b = size - 1;
-        while b >= 0 {
-            word = word << 8 | int_of(t[from + i * size + b]);
-            b = b - 1;
-        }
-        if dt == kinds.f32() {
-            fm[at + i] = f32.from_bits32(word);
-        } else if dt == kinds.f16() {
-            fm[at + i] = f32.from_bits16(word);
-        } else {
-            var v = word;
-            if v >= 128 {
-                v = v - 256;
-            }
-            fm[at + i] = float_of(v);
-        }
-        i = i + 1;
     }
     return 0;
 }

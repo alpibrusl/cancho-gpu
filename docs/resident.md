@@ -1,7 +1,7 @@
 # A resident objective: keeping the data on the device between evaluations
 
-> **Status: the opt half (`--persistent`) and the CPU session are built and
-> measured (§6 steps 1 and 2, §9); the Metal session is not. §1-§8 were written
+> **Status: the opt half (`--persistent`), the CPU session and the Metal session are
+> built and measured (§6 steps 1 to 3, §9, §10). §1-§8 were written
 > before the code; §9 says where the build differs from them and what it measured.** It is
 > step 4 of [`training.md`](training.md) §6 taken one level down: the question
 > is no longer whether to train, but whether the *interface* between `opt` and
@@ -167,7 +167,7 @@ and starts with its own section in `docs/design.md`.
 2. **`cancho-gpu-session`** on the interpreter. **Done** (§9). Measured: the 12-evaluation
    fit through `opt --persistent` takes 3.8 to 4.4 ms in all, against 0.39 s with a
    process per evaluation; one evaluation at 4096 x 128 is 66 ms against 1150.
-3. **`cancho-gpu-metal-device session`**, gates 2, 3 (Metal), 4 and 6. Number: the
+3. **`cancho-gpu-metal-session`** **Done** (§10): gates 2, 3 (Metal) and 6; gate 4 (a mock driver counting uploads) is not built. Number: the
    table in §1 again, with a third column.
 4. **Decide** whether `training.md` step 4 goes on (Adam in `opt`, mini-batches) or
    stops: on the numbers.
@@ -251,3 +251,55 @@ program of its own, as the device programs are.
 * **Not done:** the Metal session (§6 step 3) and so gates 2, 4 and the Metal half of 6.
   The CPU session answers the question the design asked of the interface: with it the
   per-evaluation cost is the interpreter's arithmetic, and it is no longer the thing in the way.
+
+## 10. The Metal session as built (measured)
+
+> Apple M4 Max, Metal 4, cancho `a49ea779` built with `CANCHO_COMPILER=auto`.
+
+* **`cancho-gpu-metal-session FILE`** (`device/metal-session-main.cho`, `scripts/build-metal-session.sh`),
+  a program of its own like the CPU session, with the same file, the same reader and setup
+  (`src/session.cho`, whose `open` now also lowers each program to Metal source when asked) and the
+  byte codec of the device programs (`src/devcodec.cho`, moved out of `metal-main.cho`, which uses it
+  too). Each kernel is compiled once; every parameter has a device buffer once; resident data is uploaded
+  once; **a link is the same buffer for the output and for the input** (no copy; a link between different
+  element types is refused, since the buffer cannot be both); a request uploads the inputs, encodes the
+  kernels in order (`cgpu_launch_async`, each waiting for the one before it, as the shim documents) with
+  **one** `cgpu_sync`, and reads the answers back. Launching with a wait for each kernel instead cost
+  0.72 ms at 4096 x 128 and 0.40 ms at 16 x 3; one wait costs 0.49 and 0.14.
+* **Gate** (`python3 tests/session.py build/cancho-gpu-metal-session --metal`): 35 checks pass, the
+  numbers held to 1e-4 instead of 1e-6 (the device sums in another order; in practice the loss is within
+  4.5e-7 of the CPU session's). The existing Metal checks are unchanged after the codec moved
+  (`metal-io.py` 7 of 7, `metal-kernels.sh` 13 of 13). Mutants were not run on the Metal build.
+* **Measured** (milliseconds per evaluation, medians of 20 and more; setup once in brackets):
+
+  | R x K | CPU session | Metal session | compiled cancho, plain f64 loops |
+  |---|---|---|---|
+  | 16 x 3 | 0.01 (0.00 s) | 0.14 (0.04 s) | |
+  | 256 x 16 | 0.31 (0.01) | 0.15 (0.05) | |
+  | 1024 x 64 | 4.5 (0.09) | 0.20 (0.12) | |
+  | 4096 x 128 | 36.9 (0.68) | 0.50 (0.68) | 0.46 |
+
+  (The last column is a single loop in the language, `-O2` of the compiler in cancho; it equals C `-O2`
+  at 0.54 and gives the same result: the language is not the slow part, the CPU interpreter is.) The fit
+  through `opt --persistent` takes **41 to 44 ms** in all on the Metal session (about 35 of them opening the
+  device and compiling), against 4 ms on the CPU session and 1.1 to 1.5 s through the per-process device path.
+* **So is it as fast as plain cancho? Only at the largest size here, and it should be faster.** At 4096 x 128
+  Metal takes 0.50 ms against 0.46 for one core of compiled cancho; below that, plain cancho wins
+  (it scales with the work, 0.06 ms at 1024 x 64 by that rate, against Metal's 0.20 floor). The shim reports
+  **the GPU time of the three kernels: 12 microseconds at 16 x 3, 55 at 1024 x 64 and 308 at 4096 x 128.**
+  Those 308 are about 7 gigaflops on a chip that does thousands, and reading `x` twice at memory bandwidth
+  should take about 10: the kernels (a `matmul_nt` of an `[r, k]` tile by a vector, and `bwd_dw` with `n = 1`)
+  use the GPU badly for a matrix-by-vector shape. That, and not the interface, is what stands between this and the
+  roofline, and it is open work. Larger problems cannot be tried through this interface: a resident file is text
+  and is capped at 16 MiB (about 800,000 numbers).
+
+### Known defects and what is not done
+
+* **The shim leaks about 1.9 KB a request** (peak resident size 29.5 MB after 2,000 requests, 63.4 MB after
+  20,000). `shim/canchogpu-metal.mm` is built without ARC and keeps its command buffer and encoder in a C
+  struct, so the autoreleased objects of each `commandBuffer` call are never released. The right fix is explicit
+  retain and release where `g.cmd`, `g.enc` and `g.last` are set and cleared (about eight sites), plus an autorelease
+  pool around each entry point; it also touches the Qwen runners, so it is its own change. The gate bounds it
+  at 4 KB a request and says so.
+* No mock-driver gate (§5.4) and no mutants for the Metal build.
+* CUDA: none; there is no hardware (`device.md`).

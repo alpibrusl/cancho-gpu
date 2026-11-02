@@ -85,7 +85,7 @@ if ARGS.session:
     import lsq_session
     session_dir = tempfile.mkdtemp()
     session_file = lsq_session.write(session_dir, L.R, L.K)
-    objective = [BIN, session_file, "--target", "nvidia-ada"]
+    objective = [BIN, session_file] + ([] if "metal" in os.path.basename(BIN) else ["--target", "nvidia-ada"])
 res, secs = fit(objective)
 times = [secs]
 for _ in range(ARGS.runs - 1):
