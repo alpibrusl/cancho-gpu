@@ -92,8 +92,8 @@ model and no other.
 
 ## 5. Speed
 
-Steady decode on this machine (M4 Max, the weights read from the page cache): **40 ms a token, 25 tokens a
-second**; with the draft head (below) 33.0 on the benchmark's prose prompt and about 44 on a code prompt; the weights take 2.8 s to load. Prefill takes the prompt eight tokens at a time (below), about 75 tokens a second on a 49-token prompt (22 token by token, with `--single`). In
+Steady decode on this machine (M4 Max, the weights read from the page cache): **36.5 ms a token, 27 tokens a
+second**; with the draft head (below) 39.9 on the benchmark's prose prompt and about 44 on a code prompt; the weights take 2.8 s to load. Prefill takes the prompt eight tokens at a time (below), about 105 tokens a second on a 49-token prompt (22 token by token, with `--single`). In
 the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weights at about 46 tokens a
 second and MLX-LM (a different 4-bit quantisation) at about 30; the reference runtime measured 25 (39 ms a
 token) when it was run for its tokens.
@@ -202,6 +202,15 @@ output distributed as if no draft had been made: at temperature 0 the tokens are
   multiply-adds) is issue-bound, not bandwidth-bound. (A first estimate here, that matching one row would give about 39
   tok/s, assumed that was possible; it is an upper bound this evidence argues against.) A deeper draft would add little
   (the second is right 47% of the time).
+* **What closed part of that gap** (`docs/native.md` N4c; same prompt, 127 tokens, decode ms, speculative / plain): the round's
+  small kernels had no `grid` or too few threadgroups, and the delta layers launched eighteen small kernels a check. One
+  threadgroup a row for `rmsnorm_rows`, `rope`, `gated_norm`, `qnorm` and `attn_gate_q` (3940 to 3330 spec with the
+  delta work below); the delta layers' a/b projections, gates and `qk_norm` batched over the three rows and their convolution
+  and delta step carried through the three tokens in one launch each (`conv_step3`, `delta_step3`: the state is read once and the
+  three states a rejection may keep are written; 18 launches a layer to 6); attention in two launches over 32 threadgroups
+  instead of one over 4 (`attention_scores`, `attention_pv`: 71 us to 14). Result: 3940 to 3180 ms speculative
+  (33.0 to 39.9 tok/s in `docs/benchmark.md`) and 5005 to 4640 ms plain (25.7 to 27.4), with the same tokens as before. What is left of a
+  round (51 ms) is the three-row weight kernels, about 40 ms of it: `CANCHOGPU_NOOP` on the few-row matvecs leaves 11 ms.
 * **Costs:** 2.7 GB more resident memory (14.1 to 16.7 GB for the server, measured: the embedding table on the
   device 2.5 GB, the head 239 MB; the spare delta states are allocated but only touched when a round runs) and
   about 3 s more to start (the table is read once; the few-row kernels are compiled at load).
