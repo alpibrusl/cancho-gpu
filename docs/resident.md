@@ -1,7 +1,8 @@
 # A resident objective: keeping the data on the device between evaluations
 
-> **Status: a design, nothing built. Written before the code; the gates in §5
-> are written before the program they judge and must be able to fail.** It is
+> **Status: the opt half (`--persistent`) and the CPU session are built and
+> measured (§6 steps 1 and 2, §9); the Metal session is not. §1-§8 were written
+> before the code; §9 says where the build differs from them and what it measured.** It is
 > step 4 of [`training.md`](training.md) §6 taken one level down: the question
 > is no longer whether to train, but whether the *interface* between `opt` and
 > a kernel is what stops a GPU from winning. Claims are marked **[measured]**
@@ -50,7 +51,7 @@ protocol of `opt` starts a program per point (`cancho-opt` `docs/design.md` §4
   The program is started once; for each point `opt` writes one line (the numbers of
   the point, as now) and reads one line back (the value, and for BFGS the gradient,
   as now). Closing its standard input ends the program.
-* **Device side:** `cancho-gpu session` (CPU interpreter) and
+* **Device side:** `cancho-gpu-session` (CPU interpreter; a program of its own, §9) and
   `cancho-gpu-metal-device session` (Metal), which read a *session file*, set
   everything up, then loop: one request line in, one answer line out.
 
@@ -120,10 +121,15 @@ and starts with its own section in `docs/design.md`.
 ## 5. Gates (written before the code; each must be able to fail)
 
 1. **The session agrees with the pipeline it replaces.** On the CPU interpreter,
-   `session` answers equal the loss and gradient of `lsq_objective.py` through
-   `cancho-gpu run` **bit for bit** (same interpreter, same f32 sums; the host's f64
-   scale is the only new arithmetic and the gate recomputes it). At 16x3, 256x16 and
-   4096x128. *Mutant:* the `link` to `sq.xt` dropped (the loss then differs).
+   `session` answers agree with a float64 reference written from the mathematics, the
+   loss to 1e-6 relative and the gradient to 1e-5 of its peak. **Corrected after
+   building it:** the first draft said "equal `lsq_objective.py` through `cancho-gpu run`
+   bit for bit", which is false and was never going to be: the old pipeline sums the
+   loss in f64 on the host and divides a gradient that was printed in shortest decimal,
+   while the session sums in f32 on the interpreter and scales the exact f32; they
+   differ by about 3e-8 relative. At 16x3, 256x16 and 1024x64 (4096x128 is not in the
+   gate: its reference takes a minute in pure Python). *Mutant:* the `link` to `sq.xt`
+   dropped (the loss then differs).
 2. **Metal agrees with the CPU session** within 2e-2 of the peak, as `run.md`
    §7.1 (the device sums in another order), and **in practice** to the 1e-6 seen in
    `metal-io.py`; the gate prints the largest difference so it can be read.
@@ -141,8 +147,9 @@ and starts with its own section in `docs/design.md`.
    resident, linked nor input, a link between shapes of different element counts, a
    link from an input, a file that does not exist, a request with the wrong number of
    values, a value that is not a number, end of input in the middle of a line. A
-   refusal after setup is an answer line `error: <tag>` and exit status 2; the payload
-   is never echoed.
+   refusal, before or after setup, is `error[session]: ...` on standard error, status 1
+   and nothing more on standard output (the convention of the other commands; the
+   first draft said an answer line and status 2). The payload is not echoed.
 6. **Measured, then the doc is corrected.** `scripts/bench_train_size.py` extended
    with `--session`: per-evaluation ms at the §1 sizes, CPU session and Metal
    session, one machine, medians. The same script now also times numpy and torch (CPU and MPS), and the session is read against
@@ -157,18 +164,17 @@ and starts with its own section in `docs/design.md`.
    answer byte for byte as a process per point for Nelder-Mead, BFGS and SPSA, and 159
    Rosenbrock evaluations in 0.02 to 0.03 s against 2.7 to 2.9 s (the 12-evaluation
    fit of `check_train.py` is not run through it yet: that needs step 2).
-2. **`cancho-gpu session`** on the interpreter: the session file reader in `src/`
-   (shared, `pub`, as `runcmd.cho` is), the loop, gates 1, 3 (CPU) and 5. Runs on
-   Linux with no hardware. Number: ms per evaluation at the §1 sizes with the process
-   start and the data parsing gone.
+2. **`cancho-gpu-session`** on the interpreter. **Done** (§9). Measured: the 12-evaluation
+   fit through `opt --persistent` takes 3.8 to 4.4 ms in all, against 0.39 s with a
+   process per evaluation; one evaluation at 4096 x 128 is 66 ms against 1150.
 3. **`cancho-gpu-metal-device session`**, gates 2, 3 (Metal), 4 and 6. Number: the
    table in §1 again, with a third column.
 4. **Decide** whether `training.md` step 4 goes on (Adam in `opt`, mini-batches) or
    stops: on the numbers.
 
 Each step is a separate change. Nothing here touches the byte-identity of `emit`,
-`check` or `run` with lex-gpu's Rust (`CLAUDE.md`): `session` is a new subcommand,
-as `run` was.
+`check` or `run` with lex-gpu's Rust (`CLAUDE.md`): the CPU session is a
+program of its own, as the device programs are.
 
 ## 7. What this does not do
 
@@ -190,3 +196,58 @@ as `run` was.
   surface can say a scalar times a tile.
 * A transposing load or `matmul_tn` would remove `xt` from the resident files
   (`training.md` §4); it is a lex-gpu change.
+
+## 9. The CPU session as built (measured)
+
+> Where this differs from §1-§8, and what it measured. Everything below was run on an
+> Apple M4 Max with cancho `a49ea779` built with `CANCHO_COMPILER=auto` (the compiler
+> written in cancho alone, no fallback to the Rust one).
+
+* **A program of its own, `cancho-gpu-session`** (`session/main.cho`,
+  `scripts/build-session.sh`), not a subcommand of `cancho-gpu`. Reading standard input
+  is an authority `cancho-gpu` does not have (`tests/authority.sh` pins its report), so
+  the loop lives in a program whose report is pinned separately: `args, err_write,
+  file_read, fs_read, heap, io_read, io_write`, no `fs_write`, no network, no foreign
+  code (`tests/authority.sh`). The session file's reader and the setup are `src/session.cho`,
+  which the Metal session will use too.
+* **`cancho-gpu-session FILE [--target T]`.** The target is for every program of the file
+  (default `nvidia-ada` where the file has it, else `apple-m-series`); the session file
+  has none, so the same file serves the device programs, which have one target each.
+* **The directives of §3 as written**, plus: `answer` prints every element of the
+  output, and the scale is `(x * A) / B` in f64. A link copies on the host here (the
+  CPU has no device), just before the program that reads it. Numbers are printed
+  shortest-that-reads-back in f64.
+* **Memory:** each request's allocations are given back (`mem.release_to`); 2,000 and 20,000
+  requests peak at the same resident size (1,933,312 bytes), and the mutant that does not
+  give it back is killed by that check.
+* **Gates** (`tests/session.py`, in `scripts/gate.sh`): 36 checks pass: a hand-checked
+  answer, the fit at three sizes against float64, the data read once (the files are
+  deleted after the first request), 2,000 requests, the end of input, and 28 refusals.
+  **Eight mutants** (`--mutants`) are killed: a link that copies nothing, the denominator
+  of a scale ignored, a scale the wrong way round, a link copied after its reader, memory
+  not given back, a last line without its newline dropped, too many numbers accepted, a
+  link from a program to itself. Two survived the first set of cases and the cases were
+  mended (memory: 2,000 requests did not show a leak, so the check now compares peak
+  resident sizes; the self-link: the case was refused for another reason).
+* **Measured** (`scripts/bench_train_size.py`; one evaluation, medians, in milliseconds):
+
+  | R x K | process per evaluation | session | setup, once | pure Python | numpy |
+  |---|---|---|---|---|---|
+  | 16 x 3 | 5 | 0.0 | 0.00 s | 0.01 | <0.005 |
+  | 256 x 16 | 25 | 0.4 | 0.01 s | 0.27 | 0.01 |
+  | 1024 x 64 | 156 | 4.8 | 0.09 s | 3.8 | 0.01 |
+  | 4096 x 128 | 1150 | 66 | 0.86 s | 36 | 0.02 |
+
+  (16384 x 256 is refused: a resident file is over 16 MiB of text.) **The interpreter's
+  own arithmetic is about twice a pure Python loop's, not thousands of times slower:**
+  4096 x 128 is 1.05 million multiply-adds in 66 ms, about 63 ns each, where Python's
+  list comprehension takes about 35. The rest of the 1150 ms was text and process starts
+  (`training.md` §6 step 3). The session is **17 times** faster than a process per
+  evaluation at 4096 x 128 and about 14 to 30 at the small sizes.
+* **The fit** (`OPT=…/opt python3 scripts/check_train.py --session --bin build/cancho-gpu-session --runs 5`):
+  BFGS with `--persistent` converges in the same 12 evaluations to the
+  normal-equations solution (1.1e-5 in `w`, 1.8e-10 in the loss), the whole fit in **3.8 to
+  4.4 ms**, process start included; the flipped-gradient program still fails.
+* **Not done:** the Metal session (§6 step 3) and so gates 2, 4 and the Metal half of 6.
+  The CPU session answers the question the design asked of the interface: with it the
+  per-evaluation cost is the interpreter's arithmetic, and it is no longer the thing in the way.

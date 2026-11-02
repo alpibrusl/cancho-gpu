@@ -37,10 +37,10 @@ for rule in $(grep -ho 'fail(m, t, "[a-z-]*"\|diag(m, t, c, "[a-z-]*"\|bad(m, t,
   # name outside its block; the surface has no way to write one (a
   # binding in a loop body is not in the outer environment at all, so it
   # is `unbound` first). Kept, as the Rust keeps it, and exempt here. The
-  # readers' rules (gguf-, st-, tok-) and the chat request's (chat-) are
+  # readers' rules (gguf-, st-, tok-), the chat request's (chat-) and the session's (`session`, tests/session.py) are
   # held by their own corpora (tests/gguf.sh ... tests/chat.sh), not by
   # `.chx` fixtures.
-  case "$rule" in usage|io|no-schedule|scope|gguf-*|st-*|tok-*|chat-*) continue ;; esac
+  case "$rule" in usage|io|no-schedule|scope|session|gguf-*|st-*|tok-*|chat-*) continue ;; esac
   if [ ! -f "$ROOT/tests/reject/$rule.chx" ]; then
     echo "rule \`$rule\` has no fixture in tests/reject/"; fail=1
   fi

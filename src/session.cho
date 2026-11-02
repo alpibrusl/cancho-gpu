@@ -1,0 +1,544 @@
+edition 5;
+module session;
+
+// A session (`docs/resident.md`): several kernels compiled once, some of their inputs read once (resident), the output of one
+// feeding the input of another (a link), and the rest of the inputs coming a line at a time. This module reads and checks the
+// session file, sets everything up on the CPU interpreter, and answers a request line. The loop that reads standard input is the
+// program's (`session/main.cho`): reading standard input is an authority `cancho-gpu` itself does not have (`tests/authority.sh`).
+//
+// Every refusal is the rule `session`, with the line of the session file when it is about the file.
+
+import std.fmt;
+import std.io;
+import mem;
+import text;
+import err;
+import f32;
+import parser;
+import elab;
+import check;
+import target;
+import interp;
+import cli;
+import fileio;
+import ir;
+import runcmd;
+
+// The session record's words.
+fn s_progs() -> [] int {
+    return 0;
+}
+
+fn s_resident() -> [] int {
+    return 1;
+}
+
+fn s_links() -> [] int {
+    return 2;
+}
+
+fn s_inputs() -> [] int {
+    return 3;
+}
+
+fn s_answers() -> [] int {
+    return 4;
+}
+
+fn space(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 13;
+}
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], line: int, msg: int) -> [] int {
+    return err.fail(m, t, "session", text.f2(m, t, "line $: $", text.num(m, t, line), msg));
+}
+
+// The words of `line` up to a `#`.
+fn tokens[&m, &t](m: &!m [int], t: &!t [byte], line: int) -> [] int {
+    let out = mem.list(m);
+    let n = text.size(line);
+    var i = 0;
+    while i < n {
+        let c = text.at(t, line, i);
+        if c == '#' {
+            i = n;
+        } else if space(c) {
+            i = i + 1;
+        } else {
+            let start = i;
+            while i < n && !space(text.at(t, line, i)) && text.at(t, line, i) != '#' {
+                i = i + 1;
+            }
+            mem.push(m, out, text.sub(line, start, i));
+        }
+    }
+    return out;
+}
+
+// `P.PARAM` as (program name, parameter name), or (-1, -1) when there is no single dot.
+fn dotted[&m, &t](m: &!m [int], t: &!t [byte], word: int) -> [] (int, int) {
+    let dot = text.index_of(t, word, '.', 0);
+    if dot <= 0 || dot + 1 >= text.size(word) || text.index_of(t, word, '.', dot + 1) >= 0 {
+        return (0 - 1, 0 - 1);
+    }
+    return (text.sub(word, 0, dot), text.sub(word, dot + 1, text.size(word)));
+}
+
+// The index of the program called `name` in the list of `(name, ...)` records, or -1.
+fn prog_index[&m, &t](m: &!m [int], t: &!t [byte], progs: int, name: int) -> [] int {
+    var i = 0;
+    while i < mem.size(m, progs) {
+        if text.eq(t, m[mem.get(m, progs, i)], name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// A scale `A/B` (two numbers, or one) as (ok, the f64 bits of A, the f64 bits of B); B is not zero.
+fn scale_of[&m, &t](m: &!m [int], t: &!t [byte], word: int) -> [] (bool, int, int) {
+    let slash = text.index_of(t, word, '/', 0);
+    var a = word;
+    var b = text.empty();
+    if slash >= 0 {
+        a = text.sub(word, 0, slash);
+        b = text.sub(word, slash + 1, text.size(word));
+    }
+    let (oka, va) = runcmd.number(m, t, a);
+    if !oka {
+        return (false, 0, 0);
+    }
+    var vb = 1.0;
+    if slash >= 0 {
+        let (okb, v) = runcmd.number(m, t, b);
+        if !okb || v == 0.0 {
+            return (false, 0, 0);
+        }
+        vb = v;
+    }
+    return (true, bits_of(va), bits_of(vb));
+}
+
+// The target to compile for: the one asked for, or `nvidia-ada` when the file has it, else `apple-m-series`.
+fn pick[&m, &t](m: &!m [int], t: &!t [byte], unit: int, want: int, have: bool, line: int) -> [] int {
+    let nv = target.nvidia_ada(m, t);
+    let ap = target.apple_m_series(m, t);
+    var tg = nv;
+    if have {
+        if text.is(t, want, "apple-m-series") {
+            tg = ap;
+        } else if !text.is(t, want, "nvidia-ada") {
+            return bad(m, t, line, text.f1(m, t, "`$` is not a target (nvidia-ada, apple-m-series)", want));
+        }
+    } else if !runcmd.scheduled(m, t, unit, nv) {
+        tg = ap;
+    }
+    if !runcmd.scheduled(m, t, unit, tg) {
+        return bad(m, t, line, text.f1(m, t, "the file has no schedule for $", target.name(m, tg)));
+    }
+    return tg;
+}
+
+// The source of a `.chx` file into the text pool: a handle, or -1 with a refusal.
+fn source[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, line: int) -> [fs_read("")] int {
+    let top = m[mem.text_slot()];
+    let got = fs_read(fs, text.bytes(t, path), t[top..len(t)]);
+    if got < 0 {
+        return bad(m, t, line, text.f1(m, t, "cannot read $", path));
+    }
+    m[mem.text_slot()] = top + got;
+    return text.handle(top, got);
+}
+
+// Read the session file `src` and set it up. Answers the session record, or -1 with a refusal. `want` and `have` are `--target`.
+pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), src: int, want: int, have: bool) -> [fs_read(""), file_read] int {
+    let progs_raw = mem.list(m);
+    let res_raw = mem.list(m);
+    let link_raw = mem.list(m);
+    let input_raw = mem.list(m);
+    let answer_raw = mem.list(m);
+    var pos = 0;
+    var lineno = 0;
+    let total = text.size(src);
+    while pos < total {
+        var end = text.index_of(t, src, 10, pos);
+        if end < 0 {
+            end = total;
+        }
+        lineno = lineno + 1;
+        let words = tokens(m, t, text.sub(src, pos, end));
+        pos = end + 1;
+        let nw = mem.size(m, words);
+        if nw > 0 {
+            let head = mem.get(m, words, 0);
+            if text.is(t, head, "program") {
+                if nw < 3 {
+                    return bad(m, t, lineno, text.lit(m, t, "program NAME FILE.chx [name=value ...]"));
+                }
+                let consts = mem.list(m);
+                var w = 3;
+                while w < nw {
+                    let c = cli.constant(m, t, mem.get(m, words, w));
+                    if c < 0 {
+                        return 0 - 1;
+                    }
+                    mem.push(m, consts, c);
+                    w = w + 1;
+                }
+                mem.push(m, progs_raw, mem.rec4(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno));
+            } else if text.is(t, head, "resident") {
+                if nw != 3 {
+                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "resident takes PROGRAM.PARAM"));
+                }
+                mem.push(m, res_raw, mem.rec4(m, pn, an, mem.get(m, words, 2), lineno));
+            } else if text.is(t, head, "link") {
+                if nw != 4 || !text.is(t, mem.get(m, words, 2), "->") {
+                    return bad(m, t, lineno, text.lit(m, t, "link PROGRAM.OUT -> PROGRAM.PARAM"));
+                }
+                let (sp, sa) = dotted(m, t, mem.get(m, words, 1));
+                let (dp, da) = dotted(m, t, mem.get(m, words, 3));
+                if sp < 0 || dp < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "link takes PROGRAM.PARAM on both sides"));
+                }
+                mem.push(m, link_raw, mem.rec5(m, sp, sa, dp, da, lineno));
+            } else if text.is(t, head, "input") {
+                if nw != 2 {
+                    return bad(m, t, lineno, text.lit(m, t, "input PROGRAM.PARAM"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "input takes PROGRAM.PARAM"));
+                }
+                mem.push(m, input_raw, mem.rec3(m, pn, an, lineno));
+            } else if text.is(t, head, "answer") {
+                if nw != 2 && nw != 4 {
+                    return bad(m, t, lineno, text.lit(m, t, "answer PROGRAM.PARAM [scale A/B]"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "answer takes PROGRAM.PARAM"));
+                }
+                var na = bits_of(1.0);
+                var nb = bits_of(1.0);
+                if nw == 4 {
+                    if !text.is(t, mem.get(m, words, 2), "scale") {
+                        return bad(m, t, lineno, text.lit(m, t, "answer PROGRAM.PARAM [scale A/B]"));
+                    }
+                    let (oks, sa, sb) = scale_of(m, t, mem.get(m, words, 3));
+                    if !oks {
+                        return bad(m, t, lineno, text.lit(m, t, "a scale is A/B with a B that is not zero"));
+                    }
+                    na = sa;
+                    nb = sb;
+                }
+                mem.push(m, answer_raw, mem.rec5(m, pn, an, na, nb, lineno));
+            } else {
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer)", head));
+            }
+        }
+    }
+    if mem.size(m, progs_raw) == 0 {
+        return bad(m, t, lineno, text.lit(m, t, "the session has no program"));
+    }
+    if mem.size(m, answer_raw) == 0 {
+        return bad(m, t, lineno, text.lit(m, t, "the session has no answer"));
+    }
+
+    // Compile every program once: records (name, prog, globals).
+    let progs = mem.list(m);
+    var i = 0;
+    while i < mem.size(m, progs_raw) {
+        let raw = mem.get(m, progs_raw, i);
+        if prog_index(m, t, progs, m[raw]) >= 0 {
+            return bad(m, t, m[raw + 3], text.f1(m, t, "the program `$` is named twice", m[raw]));
+        }
+        let text_src = source(m, t, fs, m[raw + 1], m[raw + 3]);
+        if text_src < 0 {
+            return 0 - 1;
+        }
+        let unit = parser.parse(m, t, text_src);
+        if unit < 0 {
+            return 0 - 1;
+        }
+        let tg = pick(m, t, unit, want, have, m[raw + 3]);
+        if tg < 0 {
+            return 0 - 1;
+        }
+        let compiled = elab.compile(m, t, unit, target.name(m, tg), m[raw + 2]);
+        if compiled < 0 {
+            return 0 - 1;
+        }
+        let prog = m[compiled];
+        if check.check(m, t, prog, tg) < 0 {
+            return 0 - 1;
+        }
+        let globals = interp.inputs(m, t, fm, prog);
+        if globals < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, progs, mem.rec3(m, m[raw], prog, globals));
+        i = i + 1;
+    }
+
+    // How each read-only parameter is supplied: 0 not yet, 1 resident, 2 linked, 3 input. One word per parameter of every program.
+    let np = mem.size(m, progs);
+    let supplied = mem.list(m);
+    i = 0;
+    while i < np {
+        let n = mem.size(m, ir.p_params(m, m[mem.get(m, progs, i) + 1]));
+        mem.push(m, supplied, mem.grab(m, n + 1));
+        i = i + 1;
+    }
+
+    let resident = mem.list(m);
+    i = 0;
+    while i < mem.size(m, res_raw) {
+        let raw = mem.get(m, res_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 3]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 3], text.f1(m, t, "`$` is written by the kernel: it cannot be resident", m[raw + 1]));
+        }
+        let cell = mem.get(m, supplied, pi) + ai;
+        if m[cell] != 0 {
+            return bad(m, t, m[raw + 3], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
+        }
+        m[cell] = 1;
+        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        if runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]) < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, resident, raw);
+        i = i + 1;
+    }
+
+    // Links: (source program, source param, destination program, destination param), the source before the destination.
+    let links = mem.list(m);
+    i = 0;
+    while i < mem.size(m, link_raw) {
+        let raw = mem.get(m, link_raw, i);
+        let (sp, sa, sprm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if sp < 0 {
+            return 0 - 1;
+        }
+        let (dp, da, dprm) = locate(m, t, progs, m[raw + 2], m[raw + 3], m[raw + 4]);
+        if dp < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, sprm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is not written by its kernel: only an output can be linked from", m[raw + 1]));
+        }
+        if ir.param_writable(m, dprm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is written by its kernel: only an input can be linked to", m[raw + 3]));
+        }
+        if sp >= dp {
+            return bad(m, t, m[raw + 4], text.lit(m, t, "a link goes from a program to one listed after it"));
+        }
+        let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
+        let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
+        if m[gs + 3] != m[gd + 3] {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "the output holds $ numbers and the input $", text.num(m, t, m[gs + 3]), text.num(m, t, m[gd + 3])));
+        }
+        let cell = mem.get(m, supplied, dp) + da;
+        if m[cell] != 0 {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is supplied twice", m[raw + 2], m[raw + 3]));
+        }
+        m[cell] = 2;
+        mem.push(m, links, mem.rec4(m, sp, sa, dp, da));
+        i = i + 1;
+    }
+
+    // Inputs: (program, param), in the order of the request line.
+    let inputs = mem.list(m);
+    i = 0;
+    while i < mem.size(m, input_raw) {
+        let raw = mem.get(m, input_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 2]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 2], text.f1(m, t, "`$` is written by the kernel: it cannot be an input", m[raw + 1]));
+        }
+        let cell = mem.get(m, supplied, pi) + ai;
+        if m[cell] != 0 {
+            return bad(m, t, m[raw + 2], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
+        }
+        m[cell] = 3;
+        mem.push(m, inputs, mem.rec2(m, pi, ai));
+        i = i + 1;
+    }
+
+    // Every read-only parameter is supplied.
+    i = 0;
+    while i < np {
+        let prog = m[mem.get(m, progs, i) + 1];
+        let ps = ir.p_params(m, prog);
+        var k = 0;
+        while k < mem.size(m, ps) {
+            let prm = mem.get(m, ps, k);
+            if !ir.param_writable(m, prm) && m[mem.get(m, supplied, i) + k] == 0 {
+                return err.fail(m, t, "session", text.f2(m, t, "`$.$` is read by its kernel and nothing supplies it (resident, link or input)", m[mem.get(m, progs, i)], ir.param_name(m, prm)));
+            }
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+
+    // Answers: (program, param, A bits, B bits).
+    let answers = mem.list(m);
+    i = 0;
+    while i < mem.size(m, answer_raw) {
+        let raw = mem.get(m, answer_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is only read by its kernel: an answer is an output", m[raw + 1]));
+        }
+        mem.push(m, answers, mem.rec4(m, pi, ai, m[raw + 2], m[raw + 3]));
+        i = i + 1;
+    }
+
+    let sess = mem.rec(m, 5);
+    m[sess + s_progs()] = progs;
+    m[sess + s_resident()] = resident;
+    m[sess + s_links()] = links;
+    m[sess + s_inputs()] = inputs;
+    m[sess + s_answers()] = answers;
+    return sess;
+}
+
+// The program `pname`'s parameter `aname`: (program index, parameter index, the parameter), or (-1, -1, -1) with a refusal.
+fn locate[&m, &t](m: &!m [int], t: &!t [byte], progs: int, pname: int, aname: int, line: int) -> [] (int, int, int) {
+    let pi = prog_index(m, t, progs, pname);
+    if pi < 0 {
+        let r = bad(m, t, line, text.f1(m, t, "`$` is not a program of the session", pname));
+        return (0 - 1, 0 - 1, 0 - 1);
+    }
+    let prog = m[mem.get(m, progs, pi) + 1];
+    let ai = runcmd.find(m, t, prog, aname);
+    if ai < 0 {
+        let r = bad(m, t, line, text.f2(m, t, "`$` has no parameter `$`", pname, aname));
+        return (0 - 1, 0 - 1, 0 - 1);
+    }
+    return (pi, ai, mem.get(m, ir.p_params(m, prog), ai));
+}
+
+// How many numbers a request line holds.
+pub fn input_count[&m](m: &!m [int], sess: int) -> [] int {
+    let progs = m[sess + s_progs()];
+    let inputs = m[sess + s_inputs()];
+    var total = 0;
+    var i = 0;
+    while i < mem.size(m, inputs) {
+        let rec = mem.get(m, inputs, i);
+        let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+        total = total + m[g + 3];
+        i = i + 1;
+    }
+    return total;
+}
+
+// Answer the request `line` (a handle into the text pool): the numbers go into the inputs in order, the programs run in order with
+// each link copied just before its destination, and the answers are written as one line. Answers 0, or -1 with a refusal.
+pub fn serve_line[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, sess: int, line: int) -> [io_write] int {
+    let progs = m[sess + s_progs()];
+    let inputs = m[sess + s_inputs()];
+    let links = m[sess + s_links()];
+    let answers = m[sess + s_answers()];
+    let n = text.size(line);
+    var pos = 0;
+    var got = 0;
+    var k = 0;
+    while k < mem.size(m, inputs) {
+        let rec = mem.get(m, inputs, k);
+        let prog = m[mem.get(m, progs, m[rec]) + 1];
+        let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+        let dt = ir.param_dtype(m, mem.get(m, ir.p_params(m, prog), m[rec + 1]));
+        var j = 0;
+        while j < m[g + 3] {
+            while pos < n && space(text.at(t, line, pos)) {
+                pos = pos + 1;
+            }
+            if pos >= n {
+                return err.fail(m, t, "session", text.f2(m, t, "the request holds $ numbers; the session takes $", text.num(m, t, got), text.num(m, t, input_count(m, sess))));
+            }
+            let start = pos;
+            while pos < n && !space(text.at(t, line, pos)) {
+                pos = pos + 1;
+            }
+            let (ok, v) = runcmd.number(m, t, text.sub(line, start, pos));
+            if !ok {
+                return err.fail(m, t, "session", text.f1(m, t, "`$` in the request is not a number", text.sub(line, start, pos)));
+            }
+            fm[m[g + 2] + j] = interp.convert(dt, v);
+            got = got + 1;
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+    while pos < n && space(text.at(t, line, pos)) {
+        pos = pos + 1;
+    }
+    if pos < n {
+        return err.fail(m, t, "session", text.f1(m, t, "the request holds more than the $ numbers the session takes", text.num(m, t, input_count(m, sess))));
+    }
+
+    var q = 0;
+    while q < mem.size(m, progs) {
+        var l = 0;
+        while l < mem.size(m, links) {
+            let link = mem.get(m, links, l);
+            if m[link + 2] == q {
+                let sp = mem.get(m, progs, m[link]);
+                let dp = mem.get(m, progs, q);
+                let gs = mem.get(m, m[sp + 2], m[link + 1]);
+                let gd = mem.get(m, m[dp + 2], m[link + 3]);
+                let dt = ir.param_dtype(m, mem.get(m, ir.p_params(m, m[dp + 1]), m[link + 3]));
+                var j = 0;
+                while j < m[gd + 3] {
+                    fm[m[gd + 2] + j] = interp.convert(dt, fm[m[gs + 2] + j]);
+                    j = j + 1;
+                }
+            }
+            l = l + 1;
+        }
+        let cur = mem.get(m, progs, q);
+        if interp.execute(m, t, fm, m[cur + 1], m[cur + 2]) < 0 {
+            return 0 - 1;
+        }
+        q = q + 1;
+    }
+
+    var first = true;
+    k = 0;
+    while k < mem.size(m, answers) {
+        let a = mem.get(m, answers, k);
+        let g = mem.get(m, m[mem.get(m, progs, m[a]) + 2], m[a + 1]);
+        let (scale_a, scale_b) = (f32.from_bits(m[a + 2]), f32.from_bits(m[a + 3]));
+        let scratch = m[mem.text_slot()];
+        var j = 0;
+        while j < m[g + 3] {
+            if !first {
+                io.write_all(io, " ");
+            }
+            first = false;
+            let w = fmt.float_into(t[scratch..scratch + 32], fm[m[g + 2] + j] * scale_a / scale_b);
+            io.write_all(io, t[scratch..scratch + w]);
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+    io.write_all(io, "\n");
+    let _flushed = flush_out(io);
+    return 0;
+}

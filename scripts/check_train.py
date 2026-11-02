@@ -29,6 +29,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--bin", default=os.environ.get("CANCHO_GPU", os.path.join(ROOT, "build", "cancho-gpu")))
 ap.add_argument("--target", default=None)
 ap.add_argument("--runs", type=int, default=1)
+ap.add_argument("--session", action="store_true", help="BFGS with --persistent through a resident session (docs/resident.md): --bin is cancho-gpu-session")
 ARGS = ap.parse_args()
 OPT = os.environ.get("OPT", "")
 BIN = os.path.abspath(ARGS.bin)
@@ -63,7 +64,8 @@ def normal_equations():
 
 def fit(program):
     start = time.time()
-    r = subprocess.run([OPT, "minimize", "--method", "bfgs", "--x0", "0,0,0", "--"] + program, capture_output=True, text=True)
+    persistent = ["--persistent"] if ARGS.session else []
+    r = subprocess.run([OPT, "minimize", "--method", "bfgs", "--x0", "0,0,0", *persistent, "--"] + program, capture_output=True, text=True)
     elapsed = time.time() - start
     # A fit that does not converge exits 1 and still prints its result; only an
     # error object is a failure of the run itself.
@@ -78,6 +80,12 @@ def fit(program):
 
 w_ne, loss_ne = normal_equations()
 objective = [PY, os.path.join(ROOT, "examples", "train", "lsq_objective.py"), BIN, ROOT, TARGET]
+if ARGS.session:
+    sys.path.insert(0, os.path.join(ROOT, "examples", "train"))
+    import lsq_session
+    session_dir = tempfile.mkdtemp()
+    session_file = lsq_session.write(session_dir, L.R, L.K)
+    objective = [BIN, session_file, "--target", "nvidia-ada"]
 res, secs = fit(objective)
 times = [secs]
 for _ in range(ARGS.runs - 1):
@@ -89,17 +97,30 @@ check("bfgs converged with kernels as the objective", res["converged"], f"nfev {
 check("it reaches the normal-equations solution", dist < 1e-4 and abs(res["fun"] - loss_ne) < 1e-8,
       f"largest difference in w {dist:.1e}, in the loss {abs(res['fun'] - loss_ne):.1e}")
 ms = sorted(1000 * s_ / res["nfev"] for s_ in times)
-print(f"     cost with {os.path.basename(BIN)}: {min(times):.2f} to {max(times):.2f} s for {res['nfev']} evaluations, "
-      f"{ms[0]:.0f} to {ms[-1]:.0f} ms each over {len(times)} run(s) "
-      f"(two {os.path.basename(BIN)} processes and a Python one; this machine, not a benchmark)")
+if ARGS.session:
+    print(f"     cost through a resident session: the whole fit, 12 evaluations, takes {1000 * min(times):.1f} to {1000 * max(times):.1f} ms over {len(times)} run(s), "
+          f"{ms[0]:.2f} to {ms[-1]:.2f} ms an evaluation, start included (this machine, not a benchmark)")
+else:
+    print(f"     cost with {os.path.basename(BIN)}: {min(times):.2f} to {max(times):.2f} s for {res['nfev']} evaluations, "
+          f"{ms[0]:.0f} to {ms[-1]:.0f} ms each over {len(times)} run(s) "
+          f"(two {os.path.basename(BIN)} processes and a Python one; this machine, not a benchmark)")
 
 # It can fail: the same program with the gradient's sign flipped.
 with tempfile.TemporaryDirectory() as d:
     bad = os.path.join(d, "flipped.py")
-    with open(bad, "w") as f:
-        f.write("import subprocess, sys\n"
-                f"r = subprocess.run([{PY!r}, {objective[1]!r}, {BIN!r}, {ROOT!r}, {TARGET!r}], input=sys.stdin.read(), capture_output=True, text=True, check=True)\n"
-                "v = r.stdout.split()\nprint(v[0], *['-' + g if not g.startswith('-') else g[1:] for g in v[1:]])\n")
+    if ARGS.session:
+        with open(bad, "w") as f:
+            f.write("import subprocess, sys\n"
+                    f"p = subprocess.Popen({objective!r}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)\n"
+                    "for line in sys.stdin:\n"
+                    "    p.stdin.write(line); p.stdin.flush()\n"
+                    "    v = p.stdout.readline().split()\n"
+                    "    print(v[0], *['-' + g if not g.startswith('-') else g[1:] for g in v[1:]], flush=True)\n")
+    else:
+        with open(bad, "w") as f:
+            f.write("import subprocess, sys\n"
+                    f"r = subprocess.run([{PY!r}, {objective[1]!r}, {BIN!r}, {ROOT!r}, {TARGET!r}], input=sys.stdin.read(), capture_output=True, text=True, check=True)\n"
+                    "v = r.stdout.split()\nprint(v[0], *['-' + g if not g.startswith('-') else g[1:] for g in v[1:]])\n")
     res_bad, _ = fit([PY, bad])
 dist_bad = max(abs(a - b) for a, b in zip(res_bad["x"], w_ne))
 check("a flipped gradient does not reach it", not (res_bad["converged"] and dist_bad < 1e-4),

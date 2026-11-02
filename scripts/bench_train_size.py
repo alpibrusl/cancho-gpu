@@ -15,6 +15,8 @@ back as Python floats, which is what an optimiser needs; they are float32 as the
 One machine, medians, not a benchmark in the sense of benchmark.md."""
 import argparse
 import os
+import subprocess
+import tempfile
 import statistics
 import sys
 import time
@@ -22,13 +24,46 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "examples", "train"))
 import lsq_objective as L  # noqa: E402
+import lsq_session  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--cpu", default=os.path.join(ROOT, "build", "cancho-gpu"))
 ap.add_argument("--metal", default=os.path.join(ROOT, "build", "cancho-gpu-metal-device"))
 ap.add_argument("--reps", type=int, default=3)
+ap.add_argument("--session", default=os.path.join(ROOT, "build", "cancho-gpu-session"))
 ap.add_argument("--sizes", default="16x3,256x16,1024x64,4096x128,16384x256")
 args = ap.parse_args()
+
+def session_ms(r, k, w, reps):
+    """(setup seconds, ms per request) of one resident session on the CPU interpreter: the data is read once, a request is `w`."""
+    if not os.path.exists(args.session):
+        return None
+    d = tempfile.mkdtemp()
+    try:
+        path = lsq_session.write(d, r, k)
+        line = " ".join(repr(v) for v in w) + "\n"
+        t0 = time.perf_counter()
+        proc = subprocess.Popen([os.path.abspath(args.session), path, "--target", "nvidia-ada"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        proc.stdin.write(line)
+        proc.stdin.flush()
+        first = proc.stdout.readline()
+        setup = time.perf_counter() - t0
+        if not first:
+            return None
+        ts = []
+        for _ in range(reps):
+            t1 = time.perf_counter()
+            proc.stdin.write(line)
+            proc.stdin.flush()
+            proc.stdout.readline()
+            ts.append(1000 * (time.perf_counter() - t1))
+        proc.stdin.close()
+        proc.wait(timeout=60)
+        return setup, statistics.median(ts)
+    finally:
+        import shutil
+        shutil.rmtree(d)
+
 
 def baselines(x, t, w, reps):
     """ms per evaluation of loss 1/(2R)|e|^2 and gradient 1/R e^T x, e = x w - t, in process."""
@@ -100,6 +135,9 @@ for size in args.sizes.split(","):
             times.append(1000 * (time.time() - t0))
         else:
             row[name] = (statistics.median(times), (loss, grad), "")
+    sess = session_ms(L.R, L.K, w, max(args.reps, 5)) if L.R * L.K <= 1 << 20 else None
+    if sess:
+        print(f"{size:>12}  session: {sess[1]:.1f} ms per evaluation after {sess[0]:.2f} s of setup (the data is read once)")
     x, t = L.data()
     base = baselines(x, t, w, max(args.reps, 5))
     cell = lambda r: f"{r[0]:11.0f}" if r[0] is not None else f"{'refused':>11}"
