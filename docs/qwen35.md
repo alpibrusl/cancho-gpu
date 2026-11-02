@@ -93,9 +93,9 @@ model and no other.
 ## 5. Speed
 
 Steady decode on this machine (M4 Max, the weights read from the page cache): **40 ms a token, 25 tokens a
-second**; with the draft head (below) 32.6 on the benchmark's prose prompt and about 44 on a code prompt; the weights take 2.8 s to load. Prefill takes the prompt eight tokens at a time (below), about 75 tokens a second on a 49-token prompt (22 token by token, with `--single`). In
-the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weights at about 43 tokens a
-second and MLX-LM (a different 4-bit quantisation) at about 29; the reference runtime measured 25 (39 ms a
+second**; with the draft head (below) 33.0 on the benchmark's prose prompt and about 44 on a code prompt; the weights take 2.8 s to load. Prefill takes the prompt eight tokens at a time (below), about 75 tokens a second on a 49-token prompt (22 token by token, with `--single`). In
+the same benchmark invocation (`docs/benchmark.md`) Ollama decodes the same weights at about 46 tokens a
+second and MLX-LM (a different 4-bit quantisation) at about 30; the reference runtime measured 25 (39 ms a
 token) when it was run for its tokens.
 
 Where a token goes, measured in the real, pipelined run by making kernels do nothing (`CANCHOGPU_NOOP=<name>`

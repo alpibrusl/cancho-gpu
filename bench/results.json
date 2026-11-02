@@ -8,8 +8,8 @@
   "mlx_lm": "0.31.3",
   "transformers": "5.2.0",
   "torch": "2.12.0",
-  "load_average_at_start": 15.0,
-  "cancho_gpu_commit": "7c3a9a8"
+  "load_average_at_start": 3.5,
+  "cancho_gpu_commit": "146b4ce"
  },
  "args": {
   "models": [
@@ -18,22 +18,22 @@
   ],
   "runs": 5,
   "new": 128,
-  "json": "/tmp/benchall.json",
-  "markdown": "/tmp/benchall.md",
+  "json": "/private/tmp/claude-502/t/bench/full.json",
+  "markdown": "/private/tmp/claude-502/t/bench/full.md",
   "quick": false,
-  "max_load": 16.0,
+  "max_load": 6.0,
   "from_json": null
  },
  "prompt": "The history of computing is a history of abstraction. Early programmers wrote machine code by hand, then assemblers gave names to instructions, then compilers let people describe what they wanted rather than how to get it. Today a single line of code can",
  "results": {
   "qwen2.5-0.5b": {
    "cancho-gpu": {
-    "load_s": 0.999,
+    "load_s": 0.939,
     "runs": [
      {
-      "prefill_tps": 174.37722419928826,
-      "decode_tps": 170.01338688085676,
-      "mem_gb": 1.091371008,
+      "prefill_tps": 190.66147859922177,
+      "decode_tps": 192.4242424242424,
+      "mem_gb": 1.082032128,
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
       "ids": [
        387,
@@ -169,9 +169,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 171.32867132867133,
-      "decode_tps": 170.46979865771812,
-      "mem_gb": 1.091960832,
+      "prefill_tps": 190.66147859922177,
+      "decode_tps": 192.4242424242424,
+      "mem_gb": 1.082277888,
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
       "ids": [
        387,
@@ -307,9 +307,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 175.0,
-      "decode_tps": 170.24128686327077,
-      "mem_gb": 1.091928064,
+      "prefill_tps": 190.66147859922177,
+      "decode_tps": 193.30289193302892,
+      "mem_gb": 1.083621376,
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
       "ids": [
        387,
@@ -445,9 +445,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 171.32867132867133,
-      "decode_tps": 170.69892473118279,
-      "mem_gb": 1.090895872,
+      "prefill_tps": 188.46153846153845,
+      "decode_tps": 190.97744360902254,
+      "mem_gb": 1.083670528,
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
       "ids": [
        387,
@@ -583,9 +583,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 175.0,
-      "decode_tps": 169.10785619174433,
-      "mem_gb": 1.091796992,
+      "prefill_tps": 188.46153846153845,
+      "decode_tps": 192.4242424242424,
+      "mem_gb": 1.08208128,
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
       "ids": [
        387,
@@ -722,13 +722,13 @@
      }
     ],
     "note": "memory is the process's resident set; the weights live in Metal buffers that are not counted",
-    "load_before": 14.6
+    "load_before": 3.0
    },
    "mlx-lm": {
-    "load_s": 0.4554157257080078,
+    "load_s": 0.39916014671325684,
     "runs": [
      {
-      "decode_tps": 299.33509005572597,
+      "decode_tps": 350.7043883939562,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -862,11 +862,11 @@
        1483
       ],
       "text": "be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is used by the computer to do its work. The compiler is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used",
-      "prefill_tps": 3206.8938144580775,
-      "mem_gb": 1.083953372
+      "prefill_tps": 4024.9438089125138,
+      "mem_gb": 1.073606864
      },
      {
-      "decode_tps": 313.6674140928826,
+      "decode_tps": 351.4551642752788,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1000,11 +1000,11 @@
        1483
       ],
       "text": "be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is used by the computer to do its work. The compiler is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used",
-      "prefill_tps": 3674.8735568627344,
-      "mem_gb": 1.083953372
+      "prefill_tps": 3984.077026368327,
+      "mem_gb": 1.073606864
      },
      {
-      "decode_tps": 300.4825616307197,
+      "decode_tps": 350.9421692327219,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1138,11 +1138,11 @@
        1483
       ],
       "text": "be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is used by the computer to do its work. The compiler is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used",
-      "prefill_tps": 2997.8586917268126,
-      "mem_gb": 1.083953372
+      "prefill_tps": 3978.995451785877,
+      "mem_gb": 1.073606864
      },
      {
-      "decode_tps": 313.87604920681014,
+      "decode_tps": 349.7533333196817,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1276,11 +1276,11 @@
        1483
       ],
       "text": "be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is used by the computer to do its work. The compiler is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used",
-      "prefill_tps": 2627.521963725151,
-      "mem_gb": 1.083953372
+      "prefill_tps": 4017.9439738262754,
+      "mem_gb": 1.073606864
      },
      {
-      "decode_tps": 307.292249449361,
+      "decode_tps": 351.37597155974,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1414,17 +1414,17 @@
        1483
       ],
       "text": "be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is used by the computer to do its work. The compiler is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used by the computer to do its work. The interpreter is the layer of code that is visible to the programmer, but is used",
-      "prefill_tps": 2890.4006804452342,
-      "mem_gb": 1.083953372
+      "prefill_tps": 4028.7905591938306,
+      "mem_gb": 1.073606864
      }
     ],
-    "load_before": 14.5
+    "load_before": 3.0
    },
    "transformers-cpu": {
-    "load_s": 0.5393381118774414,
+    "load_s": 0.46391797065734863,
     "runs": [
      {
-      "decode_tps": 10.663711312270241,
+      "decode_tps": 65.0139764828738,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1558,11 +1558,11 @@
        311
       ],
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
-      "prefill_tps": 186.16394167275072,
+      "prefill_tps": 833.5600386116046,
       "mem_gb": null
      },
      {
-      "decode_tps": 10.482383558225132,
+      "decode_tps": 65.68202290278708,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1696,11 +1696,11 @@
        311
       ],
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
-      "prefill_tps": 172.72550446687453,
+      "prefill_tps": 832.6954548769519,
       "mem_gb": null
      },
      {
-      "decode_tps": 10.558814734774296,
+      "decode_tps": 65.41553497447123,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1834,11 +1834,11 @@
        311
       ],
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
-      "prefill_tps": 170.29262993746627,
+      "prefill_tps": 839.1245248506674,
       "mem_gb": null
      },
      {
-      "decode_tps": 10.661195213895844,
+      "decode_tps": 65.85710198717418,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -1972,11 +1972,11 @@
        311
       ],
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
-      "prefill_tps": 176.63050420948053,
+      "prefill_tps": 842.3436330624172,
       "mem_gb": null
      },
      {
-      "decode_tps": 10.509678207025011,
+      "decode_tps": 65.69931063879753,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -2110,36 +2110,36 @@
        311
       ],
       "text": " be written in a programming language, and a computer can execute it. The language is the abstraction layer, the compiler is the compiler, and the interpreter is the interpreter. The abstraction layer is the layer of code that is not visible to the programmer, but is necessary for the computer to do its job. The compiler is the layer of code that is visible to the programmer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is visible to the programmer and the computer, but is not necessary for the computer to do its job. The interpreter is the layer of code that is not visible to",
-      "prefill_tps": 172.66470243781131,
+      "prefill_tps": 742.1107600535854,
       "mem_gb": null
      }
     ],
-    "load_before": 14.8
+    "load_before": 3.2
    }
   },
   "qwen3.8-27b": {
    "ollama": {
-    "load_s": 1.414980084,
+    "load_s": 1.216420334,
     "runs": [
      {
-      "prefill_tps": 169.65246346629414,
-      "decode_tps": 43.37899005474567,
+      "prefill_tps": 174.88882067828308,
+      "decode_tps": 47.070374080052474,
       "mem_gb": null,
       "text": " hide thousands of machine instructions, and the compiler is the machine that performs that hiding.\n\nThis is the story of how that machine works.\n\n## 1.1 What a compiler actually does\n\nA compiler is a program that reads one program and produces another. The input is source code written in a high-level language. The output is machine code that a processor can execute. In between, the compiler performs a sequence of transformations, each one taking the program from one representation to another.\n\nThe overall shape of a modern compiler looks like this:\n\n```text\nSource code\n    |\n    v\n[ Front End ]\n",
       "prefill_tokens": 49,
       "decode_tokens": 128
      },
      {
-      "prefill_tps": 169.65246346629414,
-      "decode_tps": 42.53285652782776,
+      "prefill_tps": 174.88882067828308,
+      "decode_tps": 45.55500655485117,
       "mem_gb": null,
       "text": " hide thousands of machine instructions, and the compiler is the machine that performs that hiding.\n\nThis book is about that machine. It is a tour of the ideas that make modern compilers possible, told through the lens of a single language, a small but complete one called Tiny. Tiny is not a toy. It has functions, closures, objects, exceptions, and a type system. It is just small enough that you can hold the whole thing in your head, which is the point.\n\nThe tour has three parts. The first is the theory: the mathematical foundations that make compilation a science rather than an art. The second is the practice",
       "prefill_tokens": 49,
       "decode_tokens": 128
      },
      {
-      "prefill_tps": 169.65246346629414,
-      "decode_tps": 42.804178056429286,
+      "prefill_tps": 174.88882067828308,
+      "decode_tps": 45.900604596022085,
       "mem_gb": null,
       "text": " hide thousands of machine instructions, and the compiler is the machine that performs that hiding.\n\nThis book is about that machine. It is a tour of the ideas that make modern compilers possible, told through the lens of a single language, a small but complete one called Tiny. Tiny is not a toy. It has functions, closures, objects, exceptions, and a type system. It is just small enough that you can hold the whole thing in your head, which is the point.\n\nThe tour has three parts. The first is the theory: the mathematical foundations that make compilation a science rather than an art. The second is the practice",
       "prefill_tokens": 49,
@@ -2147,13 +2147,13 @@
      }
     ],
     "note": "Ollama caches the prompt between requests, so its prefill rate is that of the first, cold request (one measurement, not a median); memory is not reported by the API",
-    "load_before": 15.2
+    "load_before": 4.9
    },
    "mlx-lm": {
-    "load_s": 3.2617878913879395,
+    "load_s": 2.8705310821533203,
     "runs": [
      {
-      "decode_tps": 28.735946405961304,
+      "decode_tps": 29.811641376461218,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -2287,11 +2287,11 @@
        198
       ],
       "text": "hide thousands of machine instructions. The next frontier is not a faster CPU or a smaller transistor. It is a new kind of abstraction: one that lets a person describe intent, and lets a machine figure out the rest.\n\nThat is the promise of generative AI. And it is also the source of a great deal of confusion.\n\n## The Abstraction Ladder\n\nEvery major leap in computing has followed the same pattern. The machine gets more capable, the abstraction gets higher, and the person doing the work stops thinking about the details.\n\n-   **1950s:** Programmers wrote binary or machine code.\n",
-      "prefill_tps": 140.4617177064539,
+      "prefill_tps": 144.43503242271183,
       "mem_gb": 15.495826584
      },
      {
-      "decode_tps": 28.709790161950288,
+      "decode_tps": 29.828742527697663,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -2425,11 +2425,11 @@
        198
       ],
       "text": "hide thousands of machine instructions. The next frontier is not a faster CPU or a smaller transistor. It is a new kind of abstraction: one that lets a person describe intent, and lets a machine figure out the rest.\n\nThat is the promise of generative AI. And it is also the source of a great deal of confusion.\n\n## The Abstraction Ladder\n\nEvery major leap in computing has followed the same pattern. The machine gets more capable, the abstraction gets higher, and the person doing the work stops thinking about the details.\n\n-   **1950s:** Programmers wrote binary or machine code.\n",
-      "prefill_tps": 141.90600024397187,
-      "mem_gb": 15.495842968
+      "prefill_tps": 144.14797833762597,
+      "mem_gb": 15.495859352
      },
      {
-      "decode_tps": 28.66067838406794,
+      "decode_tps": 29.839348326519534,
       "prompt_tokens": 49,
       "decode_tokens": 128,
       "ids": [
@@ -2563,19 +2563,19 @@
        198
       ],
       "text": "hide thousands of machine instructions. The next frontier is not a faster CPU or a smaller transistor. It is a new kind of abstraction: one that lets a person describe intent, and lets a machine figure out the rest.\n\nThat is the promise of generative AI. And it is also the source of a great deal of confusion.\n\n## The Abstraction Ladder\n\nEvery major leap in computing has followed the same pattern. The machine gets more capable, the abstraction gets higher, and the person doing the work stops thinking about the details.\n\n-   **1950s:** Programmers wrote binary or machine code.\n",
-      "prefill_tps": 145.8273296478388,
-      "mem_gb": 15.495842968
+      "prefill_tps": 142.99057974805638,
+      "mem_gb": 15.495859352
      }
     ],
-    "load_before": 15.1
+    "load_before": 4.0
    },
    "cancho-gpu": {
-    "load_s": 1.813,
+    "load_s": 1.574,
     "runs": [
      {
-      "prefill_tps": 78.39999999999999,
-      "decode_tps": 25.064140517071245,
-      "mem_gb": 14.801043456,
+      "prefill_tps": 82.07705192629817,
+      "decode_tps": 25.718914540299718,
+      "mem_gb": 14.786347008,
       "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
       "ids": [
        9959,
@@ -2711,9 +2711,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 77.0440251572327,
-      "decode_tps": 25.168450257629804,
-      "mem_gb": 14.800928768,
+      "prefill_tps": 80.85808580858085,
+      "decode_tps": 25.708502024291498,
+      "mem_gb": 14.784888832,
       "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
       "ids": [
        9959,
@@ -2849,9 +2849,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 78.65168539325842,
-      "decode_tps": 25.173439048562933,
-      "mem_gb": 14.800830464,
+      "prefill_tps": 81.39534883720931,
+      "decode_tps": 25.786802030456855,
+      "mem_gb": 14.784790528,
       "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
       "ids": [
        9959,
@@ -2988,15 +2988,15 @@
      }
     ],
     "note": "memory is the process's resident set; the weights live in Metal buffers that are not counted; Qwen3.8 weights are NVFP4 read from Ollama's store",
-    "load_before": 14.9
+    "load_before": 4.0
    },
    "cancho-gpu-spec": {
-    "load_s": 2.114,
+    "load_s": 1.856,
     "runs": [
      {
-      "prefill_tps": 77.90143084260731,
-      "decode_tps": 32.61427837699024,
-      "mem_gb": 17.577639936,
+      "prefill_tps": 80.32786885245902,
+      "decode_tps": 32.96988577362409,
+      "mem_gb": 17.569169408,
       "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
       "ids": [
        9959,
@@ -3132,9 +3132,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 77.90143084260731,
-      "decode_tps": 32.63103802672148,
-      "mem_gb": 17.577590784,
+      "prefill_tps": 80.32786885245902,
+      "decode_tps": 32.92714544983148,
+      "mem_gb": 17.569234944,
       "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
       "ids": [
        9959,
@@ -3270,9 +3270,9 @@
       "decode_tokens": 127
      },
      {
-      "prefill_tps": 77.65451664025356,
-      "decode_tps": 32.59753593429158,
-      "mem_gb": 17.580539904,
+      "prefill_tps": 81.66666666666667,
+      "decode_tps": 32.961328834674276,
+      "mem_gb": 17.570594816,
       "text": " hide thousands of machine instructions, and the compiler decides how to turn that intention into something the hardware can execute.\n\nThe next abstraction is not a new language. It is a new way of thinking about what a program is. Instead of describing a sequence of steps, we describe a relationship between inputs and outputs. Instead of telling the machine how to compute, we tell it what the result must satisfy. The compiler then finds a way to make that true.\n\nThis is the idea behind declarative programming, and it is the idea that has quietly shaped the most important programming languages of the last fifty years.\n\n## The Imperative World\n\n",
       "ids": [
        9959,
@@ -3409,7 +3409,7 @@
      }
     ],
     "note": "memory is the process's resident set; the weights live in Metal buffers that are not counted; Qwen3.8 weights are NVFP4 read from Ollama's store; speculative decoding with the model's own draft head (chain of two, three rows checked a pass), the same tokens as plain greedy",
-    "load_before": 15.0
+    "load_before": 3.5
    }
   }
  }

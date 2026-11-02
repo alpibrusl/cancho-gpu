@@ -1,6 +1,6 @@
 # Native: cancho-gpu at the speed of its language, and without the Rust oracle
 
-> **Status: N1, N2, N2f and N4 are built and measured (§6) and no Rust tool is left; N3 and N5 are not.**
+> **Status: N1, N2, N2f, N4 and the shim's memory (N5) are built and measured (§6) and no Rust tool is left; N3 and the binary tensor files (N5) are not.**
 > Written before the code; each step of §6 ends at a number. Claims are marked
 > **[measured]** (with the command), **[read]** (from a document or the source) or
 > **[open]**. It answers two questions that arrived tangled: *why is cancho-gpu
@@ -282,15 +282,47 @@ a GPU is the wrong tool for). The fit through `opt --persistent` converges ident
 with `bk 1` runs 128 instances, each of which loads the whole of `dyt` (524,000 extra element copies). The NVIDIA schedule has the same
 `bk` and **has not been run on an NVIDIA GPU**; it is a guess carried over, not a measurement.
 
-**Not done, and not known:** the decode kernels of the model runners (`matvec`, `matvec_rows` and the rest) are written without a grid
-too (`emit` shows `grid 1x1` at n = 4096), so the same effect may be costing them; they were tuned for a different shape (a split-K
-reduction inside one threadgroup) and **were not measured or changed here**. That is the first thing to look at for the 25 tokens a
-second, and the harness for it exists (`gpu_time.py` below).
+**The decode kernels of the model runners: measured afterwards, and they are not affected** (this paragraph first said they "may be", on
+the evidence of `emit` for the plain test kernel `tests/chx/matvec.chx`, which is not what the runners use). The 27B's decode kernels have
+grids (the swiglu product launches 2,176 threadgroups) and read the weights at 442 GB/s, 81% of the chip's 546; see N4b.
 
 The original plan, kept because the guess it records was wrong: *"(b) hypothesis [open]: the schedule gives one threadgroup of 128
 threads per output tile and an n = 1 product has one tile column, so the grid is r / tile groups, each reducing k serially; (c) a variant
 that splits the reduction across the threadgroup, chosen by shape at lowering."* Neither was needed: `n = 1` was not the cause, and the lowering
 is fine.
+
+### N4b. Decode on the 27B: where a token goes, and the comparison with Ollama (measured)
+
+`python3 bench/bench.py --models qwen3.8-27b --runs 5 --new 128` on the final code of this stack, Apple M4 Max, 64 GiB, one runtime at a
+time, 5 runs and a warm-up each (Spotify was using one core; the load average was 2 to 3, under the script's limit of 6). The first run, with
+the decode path unchanged since the earlier benchmark and all of N1 to N4 in the code:
+
+| runtime | decode tok/s |
+|---|---|
+| Ollama (Metal) | 45.9 (45.6 to 48.3) |
+| MLX-LM (Metal) | 29.9 |
+| cancho-gpu (Metal) | 25.8 |
+| cancho-gpu, speculative | 33.0 |
+
+Two more invocations on the same code, after the shim fix and then both models together (`docs/benchmark.md` is the second): Ollama 46.7 and 45.9, MLX-LM 29.8 and 29.8, cancho-gpu 25.8 and 25.7, speculative 33.0 and 33.0. Within an invocation the spread is under 1%; across the three, under 2% for every runtime, unlike the 1.8x the benchmark's own warning records for an earlier day. The gap to Ollama is 1.8 times against plain decode and 1.4 against
+speculative decode. **Ollama's number includes the model's own draft head** (the earlier benchmark said so), so the fair row is the speculative one.
+
+**Where a plain token goes** (shim profile; `CANCHOGPU_PROFILE=1` and `=2`, 32 tokens, kernel by kernel):
+
+* The CPU waits **37.1 ms** a token on the GPU while encoding in about 1.6: decode is **GPU-bound**, not launch-bound. The token takes 38.8 ms.
+* The FP4 weight kernels (`matvec_fp4_swiglu`, `_res`, `_rows`) read **14.4 GB a token** at **442 GB/s, 81% of the chip's 546**: swiglu 17408 x 5120
+  468 GB/s, the down projection 432, the 248,320-row `lm_head` 490. A plain decode of this model cannot go under 14.4 GB / 546 GB/s = 26 ms, 38
+  tokens a second, and a kernel at 90% would give 29 ms, 34 tokens a second.
+* Everything else is a few milliseconds a token: `delta_step` 4.8 (120 launches at 40 us; it has a 16 x 4 grid), `attention` 2.9 (40 launches at 73 us; **only 4
+  threadgroups, one per KV head**, so 4 of 40 cores: a split-KV kernel is the way to improve it, and it is not built), `matvec_rows_f16` 1.9 (240 launches at
+  8 us), then norms and gates of 1 ms each. `rmsnorm_rows`, `gated_norm` and `qk_norm` are `grid 1x1`, but the first two are prefill kernels and the third costs 10 us a launch.
+* **So the N4 effect is not hiding in the decode path:** no kernel there is 20 times off its roofline, and the weight kernels are within 20% of it.
+  What remains for plain decode is perhaps 10 to 20% (the weight kernels to 90%, attention, `delta_step`), with real work in each.
+
+**What the Ollama gap is, then (inferred, not measured):** 45.9 tok/s at the 37 ms a pass that cancho-gpu spends would be 1.7 tokens a pass, which a
+speculative decoder with a good draft head gets and a chain of two with three rows checked a pass (cancho-gpu's: 33.0 / 25.8 = 1.28) does not. Ollama
+reports no per-pass number, so this is a reading of the arithmetic, not a measurement of Ollama; what would test it is the acceptance rate of
+cancho-gpu's draft head (`--mtp-accept`) and a deeper or wider speculation.
 
 ### N5. Interface and the shim
 
@@ -299,10 +331,17 @@ is fine.
   would win are out of reach. A `resident NAME FILE --f32` form (little-endian IEEE words, read with
   `f32_of_bits` over four bytes, no parse) has no cap beyond memory and removes the parsing from setup (0.68 s at 4096 x 128). Own
   document first.
-* **The shim's autorelease defect** (`resident.md` §10): about 1.9 KB leaked a request. Explicit
-  retain and release where `g.cmd`, `g.enc`, `g.last` are set and cleared, and an autorelease pool per entry
-  point; it also touches the Qwen runners, so their checks (`scripts/qwen35-check.sh` and the others that need
-  weights) are the gate, and where weights are not to hand that is said.
+* **The shim's memory: fixed.** The cause was not the missing `retain`/`release` the first plan guessed. The shim was written for ARC
+  (`g.cmd = nil` to release) but **built without it** (`-fobjc-arc` was in no build script), so it ran with manual reference counting, never
+  retained the command buffers and encoders it stored, and ran with no autorelease pool, so every one lived to the end of the process:
+  1,880 bytes a request (peak 29.5 MB after 2,000 requests, 63.4 MB after 20,000). The fix is the build flag (`-fobjc-arc`, with
+  `-fno-exceptions -fno-objc-exceptions`: an `@autoreleasepool` otherwise needs the C++ runtime at link time, and the shim never throws)
+  in the five scripts that compile it, and an `@autoreleasepool` around each entry point that makes Metal objects. **Measured:** 25.80 MB after
+  2,000 requests and 25.67 MB after 20,000 (-7 bytes a request, which is noise). `tests/session.py --metal` now requires the same flat memory as
+  the CPU session instead of bounding a leak. **Checked on the Mac with the rebuilt runners:** `qwen35-check.sh` (27B against the reference's
+  golden log-probabilities: same tokens, same top five, worst logit-gap difference 0.0001, 3 prompts of 8 steps), `model-check.sh` (0.5B against
+  transformers: same tokens, worst top-5 logit difference 0.0001, 3 prompts), `metal-io.py` 7 of 7, `metal-kernels.sh` 13 of 13, the Metal
+  session 35 checks. **Speed is unchanged by the fix:** an A/B of the old and new shim on the 0.5B decode, alternating six runs each in the same minutes, gave 191.7 tok/s (190.1 to 192.4) with the old and 192.7 (191.0 to 193.0) with the new. The 0.5B figure is higher than October's 170 for a reason not found here: MLX-LM rose by the same 14% and `transformers` on the CPU went from 10.6 to 65.7 tok/s between invocations, so it is the machine's state or the libraries, not this stack.
 
 ## 7. What this does not do
 
