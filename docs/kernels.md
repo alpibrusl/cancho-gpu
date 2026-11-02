@@ -2,7 +2,9 @@
 
 > **Status: four kernels written in `.chx`, held to lex-gpu's emitter and
 > interpreter, and checked against a reference for what they compute; the
-> long-context split-KV attention is not built, and §4 says precisely why.**
+> long-context split-KV attention is not built, and §4 says precisely why. (§6: the
+> runner has since split attention into two kernels over 32 threadgroups; that is
+> speed, not a longer context.)**
 > Issue [#6](https://github.com/alpibrusl/cancho-gpu/issues/6).
 
 Slice 9b of cancho#251 asked for "the transformer kernel set (softmax, rope,
@@ -105,6 +107,16 @@ Two ways forward, each a change to the *oracle's* repository as well as this one
 three small kernels over a global maximum; or loops that carry more than one
 tile would allow the one-pass online softmax. Neither was done here, because
 changing the language is the maintainer's call and the second is a real design.
+
+## 4b. What was built since (speed, not length)
+
+`attention.chx` runs one threadgroup for each key/value head: 4 of a GPU's cores, 71 us a layer. The runner now uses
+`tests/chx/attention_scores.chx` (a grid over the head and over slices of the cached positions: the scores,
+scaled and masked, written to a scratch) and `attention_pv.chx` (a grid over the head and over slices of the head
+dimension: the softmax of a head's scores and the product with `v`), 32 threadgroups each, 5 and 9 us, the same arithmetic
+(`docs/native.md` N4c). That is not the split-KV of §3: no merge of partial maxima is needed, because the scores are
+materialised, and for that reason `attention_pv` holds a head's `[g, t]` scores in one tile, **so its ceiling is the
+same 1364 positions**. A context past that still needs the merge, and §4's list of what the surface lacks still stands.
 
 ## 5. Not measured
 

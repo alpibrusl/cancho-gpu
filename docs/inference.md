@@ -119,6 +119,7 @@ encode launches without waiting (`cgpu_launch_async`, `cgpu_flush`, `cgpu_sync`)
 ## 6. Qwen3.8-27B
 
 It runs: see `docs/qwen35.md` (the layers, the NVFP4 and gated-delta kernels, the Ollama-store weights loader,
-a runner checked against the reference's golden log-probabilities, about 24 tokens a second). What it still
-needs is speed, a longer context (split-KV attention cannot be written in the surface yet, `docs/kernels.md` §4),
-a chat template and a batched prefill.
+a runner checked against the reference's golden log-probabilities, 27.4 tokens a second, 39.9 speculative). It has since
+gained a chat template (`docs/serving.md`) and a batched prefill. What it still needs is a longer context than 1024
+positions: split-KV attention with its merge is not built (`docs/kernels.md` §4), and the two-kernel attention the runner
+uses has the same ceiling as one kernel for the scores of a head.

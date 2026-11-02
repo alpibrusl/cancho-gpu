@@ -244,7 +244,7 @@ the refusals more than for the dump.
   refused by both, as they are not safetensors. This is the format
   `lex-rt/src/qwen.rs` reads (NVFP4 codes as `U32`, scales as `U8`, a
   global scale as `F32`).
-* Not measured: reading a tensor's bytes, and any model run.
+* Not measured here: reading a tensor's bytes, and any model run (the runners read the tensors and run models since: `docs/inference.md`, `docs/qwen35.md`).
 
 ## 9. The BPE tokenizer (stage 3)
 
@@ -402,5 +402,5 @@ is 1, as the oracle's `max(1)` has it.
 * Three runs of 20,000 rows each (vocabulary 50; not in the gate): the same,
   with the worst difference 5 ulps (60,000 rows, 1.34 million probabilities,
   98.8 to 99.4% bit-identical).
-* Not measured: a real model's logits (there is no decode loop here yet); the
+* Not measured here: a real model's logits (the decode loops are in `docs/inference.md` and `docs/qwen35.md`); the
   speculative rules; a seed of 2^63 or more.
