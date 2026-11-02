@@ -1308,7 +1308,7 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 go(m, ffi, m[eng + 148], b_as, b_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
                 go12(m, ffi, m[eng + 151], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3b, l), mem.get(m, st3c, l), mem.get(m, st3d, l), b_ys, 0 - 1, 0 - 1);
             } else {
-            var tt = 0;
+                var tt = 0;
                 while tt < rows {
                     ov(ffi);
                     go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 3), at(b_as, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
