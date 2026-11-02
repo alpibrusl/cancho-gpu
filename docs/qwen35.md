@@ -1,8 +1,8 @@
 # Qwen3.8-27B in `.chx`
 
 > **Status: Qwen3.8-27B runs on a Metal GPU in cancho and agrees with the reference
-> implementation's golden log-probabilities (§4); about 22 tokens a second, against the
-> reference runtime's 25 and Ollama's 42 on this machine (§5).**
+> implementation's golden log-probabilities (§4); 27.4 tokens a second, 39.9 with the model's
+> own draft head, against Ollama's 45.3 in the same benchmark run (§5, `docs/benchmark.md`).**
 
 The model is `qwen3.8:27b-mlx`: 64 layers, hidden 5120, NVFP4 weights (4-bit E2M1 codes,
 an E4M3 scale per 16 values, one f32 scale per tensor), `model_type: qwen3_5`. It
@@ -101,7 +101,7 @@ token) when it was run for its tokens.
 Where a token goes, measured in the real, pipelined run by making kernels do nothing (`CANCHOGPU_NOOP=<name>`
 launches a kernel's grid and barriers but no work; `CANCHOGPU_SKIP=<name>` leaves it out; `CANCHOGPU_PROFILE=2`
 times each kernel alone, which adds about 60 us of launch overhead to each and so overstates small kernels;
-minimum of three runs, 23 tokens, one machine, 41 ms a token):
+minimum of three runs, 23 tokens, one machine, 41 ms a token; this table is from before `native.md` N4c, after which a token takes 36.5 ms and the small kernels are no longer where the time goes):
 
 | part | ms a token |
 |---|---|
