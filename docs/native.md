@@ -1,6 +1,6 @@
 # Native: cancho-gpu at the speed of its language, and without the Rust oracle
 
-> **Status: a design. Nothing in it is built except the measurements of §1.**
+> **Status: a design; N1 is built and measured (§6, N1), the rest is not.**
 > Written before the code; each step of §6 ends at a number. Claims are marked
 > **[measured]** (with the command), **[read]** (from a document or the source) or
 > **[open]**. It answers two questions that arrived tangled: *why is cancho-gpu
@@ -31,8 +31,8 @@ Three things follow.
 
 1. **The language is not slow.** Compiled cancho equals C when sums are taken in
    the order written, in f64 and in f32.
-2. **The interpreter is 130 times slower than the same loop written plainly,**
-   and the reason is in the source **[read]**: cancho-gpu was written when cancho
+2. **The interpreter was 130 times slower than the same loop written plainly,** (that figure is for the whole pass; see N1 for the split between
+   the two causes) and the first reason is in the source **[read]**: cancho-gpu was written when cancho
    had no `f32`, so each f32 operation is a binary64 operation followed by a
    rounding done in integers (`src/f32.cho`, `round`: `bits_of`, `bit_length`,
    shifts, ties to even, about thirty integer operations), twice per multiply-add
@@ -115,22 +115,46 @@ N4 and N5 do not depend on the rest and can run beside it. Each step is a separa
 
 ## 6. The steps
 
-### N1. The swap (cancho's F4)
+### N1. The swap (cancho's F4): built
 
-* `edition 5;` to `edition 7;` in every file, which changes `Split` in the three
-  programs' `main` (`signals`, `exec` are new fields, released at once) and nothing else
-  that was found writing `bench/native/lsq_f32.cho`.
-* `fm` from `[float]` (binary64 holding binary32 values) to `[f32]`: tensors, `interp`,
-  `runcmd`, `session`, `devcodec`, the device programs. `src/f32.cho` shrinks to what the
-  type does not do (`round_to` for `f16`/`i8` storage, the printing of `{:?}` through
-  `std.fmt32`, whose output is byte for byte Rust's `{:?}`, checked against all 2^32 patterns).
-* **Gate:** nothing changes. `tests/golden.sh` (224 files), `tests/run.sh`,
-  `tests/kernels.py`, `tests/session.py`, `scripts/metal-io.py` and the full
-  `scripts/gate.sh` pass byte for byte. A swap that moves a byte is wrong.
-* **Number:** `bench/native/` and `scripts/bench_train_size.py` again: the CPU session at
-  4096 x 128 from 36.9 ms toward 1 ms. **Prediction [open]: 1 to 3 ns per multiply-add**, since
-  the interpreter's loop does a few index computations a multiply-add that the plain loop does not.
-  If it is above 5, the document says so and the loop is restructured (see N3).
+**What was done, in three changes, each held to the goldens:**
+
+1. `f32.round` is cancho's conversion (`float_of32(f32_of(x))`) and the integer code is kept as `round_soft`, the oracle
+   `tests/unit_test.cho` holds it to on 400,000 values (random bit patterns, exact ties and a binary64 step either side of
+   each, subnormals, the edge of overflow); two deliberate breaks of `round` fail it, one of them a single binary64 ulp.
+   `f32.cho` is `edition 6`; its `sqrt32` is renamed `sqrt_f32` because `sqrt32` is a builtin there.
+2. `interp.dot` accumulates in the `f32` type: the operands are f32 values, so converting them is exact, and one
+   hardware multiply and one hardware add are what two integer roundings computed.
+3. **`read_global` and the `store` op walk a rank-1 or rank-2 window by rows with a running index** instead of calling `elem`
+   for every element. This is not the f32 type and was not in the first version of this design.
+
+**Measured** (`scripts/bench_train_size.py`, 4096 x 128, the CPU session, ms per evaluation of 1.05 million multiply-adds):
+
+| | ms | ns per multiply-add |
+|---|---|---|
+| before | 36.9 | 35 |
+| after (1) and (2): the `f32` type | 9.2, then 8.0 | 8.8, then 7.7 |
+| after (3): rows, not `elem` | **1.62** | **1.5** |
+
+The 256 x 16 and 1024 x 64 sizes went from 0.31 to 0.03 ms and from 4.5 to 0.27 ms. The goldens agree byte for byte after
+every one of the three (218 of 218 and 8 of 8), `tests/kernels.py`, `tests/session.py`, `tests/run.sh`, the authority
+reports and `scripts/gate.sh` pass, and `metal-io.py` (7), `metal-kernels.sh` (13) and the Metal session (35) are unchanged.
+
+**Correction to §1 and to what I said when this was proposed.** I put the whole 63 ns on the software f32 rounding. It was not
+all of it. **The type alone gave 4 times (36.9 to 9.2 ms); the rest, a further 5 times, was the interpreter computing a tensor index
+from scratch for every element it loaded or stored** (a loop over dimensions, a helper loop for the product of the inner
+dimensions, and an integer division and remainder each, through the pool): `sample` on the running session put 80% of its
+samples in the one small function `elem` called from the load loop, and about 10% in the multiply-adds. The 63 ns of §1 is the
+figure for the whole interpreter on a pass that loads, multiplies and stores; the multiply-add itself was never 63.
+
+**Against the prediction (1 to 3 ns): met, 1.5 ns.** Plain compiled cancho is 0.46 ms for the same evaluation, so the
+interpreter is now 3.5 times a plain loop, not 130. It is also level with the Metal session below 1024 x 64 and 3 times slower
+than it at 4096 x 128 (0.50 ms).
+
+**Not done, and not needed to meet the number:** `fm` is still `[float]` (binary64 holding binary32 values) and 44 files
+are still `edition 5`. Moving the storage to `[f32]` would halve the memory a tensor takes and remove a conversion per load;
+what it would buy has not been measured, and the remaining distance to the plain loop (3.5 times) is the place to look
+first. `rank >= 3` windows still use `elem`; the kernels in `tests/cases.txt` that use them were not timed.
 
 ### N2. Independence
 

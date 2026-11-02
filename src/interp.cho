@@ -1,4 +1,4 @@
-edition 5;
+edition 6;
 module interp;
 
 // The reference interpreter: `lex_front::interp`, for the ops a `.chx`
@@ -173,6 +173,35 @@ fn read_global[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int
     let dims = m[g + 1];
     let shape = ir.shape(m, ty);
     let dt = ir.dtype(m, ty);
+    let rank = mem.size(m, shape);
+    if rank == 1 || rank == 2 {
+        // A window of a row-major tensor: walk it by rows with a running index, the arithmetic `elem` does for each element.
+        var rows = 1;
+        var cols = mem.get(m, shape, 0);
+        var stride = 0;
+        var base = mem.get(m, off, 0);
+        if rank == 2 {
+            rows = cols;
+            cols = mem.get(m, shape, 1);
+            stride = mem.get(m, dims, 1);
+            base = base * stride + mem.get(m, off, 1);
+        }
+        let at = m[tile + 1];
+        let src = m[g + 2];
+        var r = 0;
+        var i = 0;
+        while r < rows {
+            let row = src + base + r * stride;
+            var c = 0;
+            while c < cols {
+                fm[at + i] = round_to(dt, fm[row + c]);
+                i = i + 1;
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+        return tile;
+    }
     var i = 0;
     while i < m[tile + 2] {
         fm[m[tile + 1] + i] = round_to(dt, fm[m[g + 2] + elem(m, dims, off, shape, i)]);
@@ -214,7 +243,7 @@ fn apply(bop: int, a: float, b: float) -> [] float {
 
 fn unary_apply(u: int, x: float) -> [] float {
     if u == kinds.rsqrt() {
-        return f32.div(1.0, f32.sqrt32(x));
+        return f32.div(1.0, f32.sqrt_f32(x));
     }
     if u == kinds.exp() {
         return f32.exp32(x);
@@ -231,13 +260,15 @@ fn unary_apply(u: int, x: float) -> [] float {
 
 // `sum_p a[i, p] * b[.., p]` in f32, in order, starting from 0.
 fn dot[&f](fm: &!f [float], a: int, astride: int, b: int, bstride: int, k: int) -> [] float {
-    var s = 0.0;
+    // The operands are f32 values held in binary64, so converting them is exact; the product and the sum are then the hardware's
+    // binary32 ones, each correctly rounded, which is what `f32.add(s, f32.mul(x, y))` computed with two integer roundings.
+    var s = 0.0f32;
     var p = 0;
     while p < k {
-        s = f32.add(s, f32.mul(fm[a + p * astride], fm[b + p * bstride]));
+        s = s + f32_of(fm[a + p * astride]) * f32_of(fm[b + p * bstride]);
         p = p + 1;
     }
-    return s;
+    return float_of32(s);
 }
 
 // One op: answers the result tile, 0 for none, or -1.
@@ -275,6 +306,33 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
         }
         let g = tensor_of(m, it, ir.view_param(m, vw));
         let shape = ir.view_shape(m, vw);
+        let rank = mem.size(m, shape);
+        if rank == 1 || rank == 2 {
+            // As `read_global`: rows with a running index.
+            var rows = 1;
+            var cols = mem.get(m, shape, 0);
+            var stride = 0;
+            var base = mem.get(m, off, 0);
+            if rank == 2 {
+                rows = cols;
+                cols = mem.get(m, shape, 1);
+                stride = mem.get(m, m[g + 1], 1);
+                base = base * stride + mem.get(m, off, 1);
+            }
+            var r = 0;
+            var i = 0;
+            while r < rows {
+                let row = m[g + 2] + base + r * stride;
+                var c = 0;
+                while c < cols {
+                    fm[row + c] = round_to(m[g], fm[m[src + 1] + i]);
+                    i = i + 1;
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            return 0;
+        }
         var i = 0;
         while i < m[src + 2] {
             fm[m[g + 2] + elem(m, m[g + 1], off, shape, i)] = round_to(m[g], fm[m[src + 1] + i]);
