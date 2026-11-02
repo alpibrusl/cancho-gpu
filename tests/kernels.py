@@ -672,6 +672,10 @@ def new_checks():
     (xs,) = lcg([32])
     ok &= check("activations relu r=4 n=8", got["y"], [max(v, 0.0) for v in xs])
     ok &= check("activations step r=4 n=8", got["d"], [1.0 if v > 0.0 else 0.0 for v in xs])
+    ok &= check("activations tanh r=4 n=8", got["t"], [math.tanh(v) for v in xs])
+    got = run("colbcast", ["r=8", "c=16"])
+    x, sc, tt = lcg([128, 8, 16])
+    ok &= check("colbcast r=8 c=16", got["y"], [x[i * 16 + j] * sc[i] + tt[j] for i in range(8) for j in range(16)])
     return ok
 
 
@@ -693,6 +697,8 @@ MUTANTS = [
     ("attention_scores.chx", "store sd + mk -> sc[i * g, sp * ts]", "store sd - mk -> sc[i * g, sp * ts]", "attention_scores subtracts the mask"),
     ("attention_pv.chx", "let p  = e / z", "let p  = e * z", "attention_pv multiplies by the sum"),
     ("activations.chx", "store relu &a -> y", "store step &a -> y", "relu is a step"),
+    ("colbcast.chx", "let e = a * b", "let e = a + b", "colbcast adds the column where it multiplies"),
+    ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
     ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),
 ]

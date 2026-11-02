@@ -20,6 +20,7 @@ import f32;
 import ir;
 import cli;
 import devcodec;
+import fileio;
 import session;
 import metal;
 
@@ -65,7 +66,7 @@ fn buffer_of[&m](m: &!m [int], bufs: int, pi: int, ai: int) -> [] int {
 
 // Compile every kernel, give every parameter a buffer (a linked input shares the buffer of the output it is linked from) and upload
 // the resident data. Answers (the list of each program's kernel function, the list of each program's buffers), or (-1, -1).
-fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), sess: int) -> [ffi("libmetalgpu")] (int, int) {
+fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), sess: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] (int, int) {
     let progs = m[sess + session.s_progs()];
     let links = m[sess + session.s_links()];
     let resident = m[sess + session.s_resident()];
@@ -167,13 +168,31 @@ fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f F
     while tq < mem.size(m, tables) {
         let tb = mem.get(m, tables, tq);
         let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
-        let whole = mem.rec4(m, m[g], m[g + 1], m[tb + 2], m[g + 3] * m[tb + 3]);
         let mark = m[mem.text_slot()];
-        let at = devcodec.encode(m, t, fm, whole);
-        let bytes = m[whole + 3] * kinds.size_bytes(m[g]);
-        if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[tb], m[tb + 1]), t[at..at + bytes]) < 0 {
-            let e = device_fail(m, t, ffi, "uploading a table");
-            return (0 - 1, 0 - 1);
+        if m[tb + 2] < 0 {
+            // a binary table: the file's bytes are the device's, and go up as they are
+            let want = m[g + 3] * m[tb + 3] * kinds.size_bytes(m[g]);
+            let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[tb + 4]), want + 1);
+            if ftop < 0 {
+                let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[tb + 4]));
+                return (0 - 1, 0 - 1);
+            }
+            if fsize != want {
+                let e = err.fail(m, t, "usage", text.f2(m, t, "the binary table $ has $ bytes", m[tb + 4], text.num(m, t, fsize)));
+                return (0 - 1, 0 - 1);
+            }
+            if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[tb], m[tb + 1]), t[ftop..ftop + want]) < 0 {
+                let e = device_fail(m, t, ffi, "uploading a table");
+                return (0 - 1, 0 - 1);
+            }
+        } else {
+            let whole = mem.rec4(m, m[g], m[g + 1], m[tb + 2], m[g + 3] * m[tb + 3]);
+            let at = devcodec.encode(m, t, fm, whole);
+            let bytes = m[whole + 3] * kinds.size_bytes(m[g]);
+            if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[tb], m[tb + 1]), t[at..at + bytes]) < 0 {
+                let e = device_fail(m, t, ffi, "uploading a table");
+                return (0 - 1, 0 - 1);
+            }
         }
         m[mem.text_slot()] = mark;
         tq = tq + 1;
@@ -184,11 +203,29 @@ fn setup[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f F
         let rec = mem.get(m, resident, r);
         let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
         let mark = m[mem.text_slot()];
-        let at = devcodec.encode(m, t, fm, g);
-        let bytes = m[g + 3] * kinds.size_bytes(m[g]);
-        if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[at..at + bytes]) < 0 {
-            let e = device_fail(m, t, ffi, "uploading resident data");
-            return (0 - 1, 0 - 1);
+        if m[rec + 2] >= 0 {
+            // a binary resident file: its bytes are the device's, and go up as they are
+            let want = m[g + 3] * kinds.size_bytes(m[g]);
+            let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[rec + 2]), want + 1);
+            if ftop < 0 {
+                let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
+                return (0 - 1, 0 - 1);
+            }
+            if fsize != want {
+                let e = err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes", m[rec + 2], text.num(m, t, fsize)));
+                return (0 - 1, 0 - 1);
+            }
+            if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[ftop..ftop + want]) < 0 {
+                let e = device_fail(m, t, ffi, "uploading resident data");
+                return (0 - 1, 0 - 1);
+            }
+        } else {
+            let at = devcodec.encode(m, t, fm, g);
+            let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+            if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[at..at + bytes]) < 0 {
+                let e = device_fail(m, t, ffi, "uploading resident data");
+                return (0 - 1, 0 - 1);
+            }
         }
         m[mem.text_slot()] = mark;
         r = r + 1;
@@ -289,7 +326,7 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     if sess < 0 {
         return cli.report(m, t, io);
     }
-    let (funcs, bufs) = setup(m, t, fm, ffi, sess);
+    let (funcs, bufs) = setup(m, t, fm, ffi, fs, sess);
     if funcs < 0 {
         return cli.report(m, t, io);
     }

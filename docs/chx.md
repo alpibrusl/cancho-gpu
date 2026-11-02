@@ -57,7 +57,7 @@ atom      := '&' NAME                                          // a borrow: the 
            | 'dequant_fp4' atom atom atom NUMBER               // q scales g group
            | 'add_window' atom NAME '[' ce {',' ce} ']'
            | 'stage' ('f16'|'f32') atom
-           | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log'|'relu'|'step') atom
+           | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log'|'relu'|'step'|'tanh') atom
            | 'for' NAME 'in' ce '..' ce [ 'with' NAME {',' NAME} ] '{' block '}'
 space     := '@' ('reg' | 'shared' | 'frag')
 
@@ -84,6 +84,7 @@ as `syntax`** (and its message names the position, `line:col`).
   loop indices and `grid` coordinates, evaluated with integer arithmetic.
 * **Broadcasting:** a binary operation takes two tiles of the same shape, **or** a 2-D left operand with a 1-D right operand
   whose length is the left's row count (each row of the left meets one value of the right), **or** a 2-D left operand with a
+  right operand of shape `[rows, 1]` (a loaded column: the same, and tested by `tests/chx/colbcast.chx`), **or** a 2-D left operand with a
   right operand of shape `[1, n]` (each column meets one value). There are no other broadcasts (`shape`). A number
   literal takes the shape of the other operand: `ms + eps`, `2 * q`.
 * **Conversions** are never implicit: storing a wider type into a narrower tensor, or combining dtypes, is refused
@@ -103,6 +104,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `a + b`, `a - b`, `a * b`, `a / b` | elementwise, with the broadcasts of §4, `f32` unless both are another type |
 | `sigmoid`, `softplus`, `exp`, `log`, `rsqrt` | elementwise: `1/(1+e^-x)`, `ln(1+e^x)`, `e^x`, `ln x`, `1/sqrt(x)`; accuracy is §7 |
 | `relu`, `step` | elementwise: `max(x, 0)` and `1 if x > 0 else 0` (the derivative of `relu`, with the value 0 at 0). Exact in f32, so no accuracy question |
+| `tanh` | elementwise hyperbolic tangent (GELU's tanh form is built from it); accuracy is §7 |
 | `rowsum a`, `rowmax a` | the sum / maximum of each row of a 2-D tile: a 1-D tile of the row count |
 | `matmul a b` | `a b`, `[m,k] x [k,n]` to `[m,n]` |
 | `matmul_nt a b` | `a b^T`, `[m,k] x [n,k]` to `[m,n]` |
@@ -112,7 +114,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `add_window acc x[o]` | `acc` plus the window of `x` at offsets `o`, of `acc`'s shape |
 | `store e -> y[o]` | write `e` into the window of `y` at `o` (the origin if no offsets), rounding to `y`'s dtype |
 | `for i in a .. b with c { ... yield e }` | run the body for `i = a, a+1, ..., b-1`, with the carried tile `c` bound to the previous iteration's `yield` (to `c`'s initial value at first); the loop's value is the last yield. At most one carried tile; it must be yielded in every iteration with the same type (`carry`) |
-| `grid i over e, j over f` | the instance's coordinates: the kernel is run for every `(i, j)` in `0..e x 0..f`, instances independent; at most two axes, not inside a loop (`grid`). **A kernel with no `grid` is one instance, which runs on one threadgroup: a core of the GPU.** Parallelism is only what the grid says (`native.md` N4: two products of 2 MB took 150 us without one and 10 us with) |
+| `grid i over e, j over f, k over g` | the instance's coordinates: the kernel is run for every `(i, j, k)` in `0..e x 0..f x 0..g`, instances independent; **at most three axes** (the third is folded into the launch's second dimension, which the kernel splits again: `gid2 = y % f`, `gid3 = y / f`), not inside a loop (`grid`). **A kernel with no `grid` is one instance, which runs on one threadgroup: a core of the GPU.** Parallelism is only what the grid says (`native.md` N4: two products of 2 MB took 150 us without one and 10 us with) |
 
 ### Reductions: the order is not specified
 

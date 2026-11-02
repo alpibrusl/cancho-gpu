@@ -467,7 +467,7 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
             return 0 - 1;
         }
         let (as_, bs) = (ir.shape(m, ta), ir.shape(m, tb));
-        let row_b = mem.size(m, as_) == 2 && mem.size(m, bs) == 1 && mem.get(m, bs, 0) == mem.get(m, as_, 0);
+        let row_b = mem.size(m, as_) == 2 && (mem.size(m, bs) == 1 && mem.get(m, bs, 0) == mem.get(m, as_, 0) || mem.size(m, bs) == 2 && mem.get(m, bs, 1) == 1 && mem.get(m, bs, 0) == mem.get(m, as_, 0) && mem.get(m, as_, 1) != 1);
         let col_b = mem.size(m, as_) == 2 && mem.size(m, bs) == 2 && mem.get(m, bs, 0) == 1 && mem.get(m, bs, 1) == mem.get(m, as_, 1);
         if !mem.same(m, as_, bs) && !row_b && !col_b {
             return diag(m, t, c, "shape", text.f3(m, t, "$ of $ and $", text.lit(m, t, kinds.binop_name(m[o + 1])), sd(m, t, as_), sd(m, t, bs)));
@@ -774,6 +774,14 @@ pub fn check[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int) -> [] int 
         m[r] = 1;
         m[r + 1] = 0;
         m[r + 2] = ir.p_grid2(m, prog) - 1;
+    }
+    let pid3 = ir.p_pid3(m, prog);
+    if pid3 >= 0 {
+        define(m, c, pid3, ir.index_ty(), top);
+        let r = rng(m, c, pid3);
+        m[r] = 1;
+        m[r + 1] = 0;
+        m[r + 2] = ir.p_grid3(m, prog) - 1;
     }
     block(m, t, c, ir.p_body(m, prog), mem.list(m));
     let peak = m[c + 6];

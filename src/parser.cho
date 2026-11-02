@@ -410,7 +410,7 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         return for_loop(m, t, p);
     }
     // A call is `name expr` with no parentheses: `rowsum sq`, `rsqrt t`.
-    if text.is(t, s, "rowsum") || text.is(t, s, "rowmax") || text.is(t, s, "rsqrt") || text.is(t, s, "sigmoid") || text.is(t, s, "softplus") || text.is(t, s, "exp") || text.is(t, s, "log") || text.is(t, s, "relu") || text.is(t, s, "step") {
+    if text.is(t, s, "rowsum") || text.is(t, s, "rowmax") || text.is(t, s, "rsqrt") || text.is(t, s, "sigmoid") || text.is(t, s, "softplus") || text.is(t, s, "exp") || text.is(t, s, "log") || text.is(t, s, "relu") || text.is(t, s, "step") || text.is(t, s, "tanh") {
         let e = atom(m, t, p);
         if e < 0 {
             return 0 - 1;

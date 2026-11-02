@@ -1,0 +1,19 @@
+// Attention scores of every head of every sequence: s[(b nh + h) t + i, j] = q_i . k_j (unscaled, f32), with q and k read from the projection qkv [n, 3 d] (f16: the query
+// of head h at columns h dh .., the key at d + h dh ..) on the matrix unit. A threadgroup takes bm query rows of one head of one sequence and all t keys (bn = t).
+algo att_scores(nb, nh, t, d, dh)
+  in  qkv: f16[nb * t, 3 * d]
+  out s:   f32[nb * nh * t, t]
+  tile bm, bn, bk
+{
+  grid b over nb, h over nh, i over t / bm
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. dh / bk with acc {
+    let at = load qkv[b * t + i * bm, h * dh + p * bk ; bm, bk] @shared
+    let wt = load qkv[b * t, d + h * dh + p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> s[(b * nh + h) * t + i * bm, 0]
+}
+
+schedule att_scores for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule att_scores for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

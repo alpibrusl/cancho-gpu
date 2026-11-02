@@ -560,6 +560,10 @@ pub fn exp32(x: float) -> [] float {
     return round(math.exp(x));
 }
 
+pub fn tanh32(x: float) -> [] float {
+    return round(math.tanh(x));
+}
+
 pub fn log32(x: float) -> [] float {
     return round(math.log(x));
 }

@@ -1,11 +1,13 @@
-// relu and its derivative step, element-wise: the two operations a ReLU network's forward and backward passes need (docs/chx.md).
+// relu, its derivative step and tanh, element-wise (docs/chx.md): what a ReLU network's passes and GELU need.
 algo activations(r, n)
   in  x: f32[r, n]
   out y: f32[r, n]
   out d: f32[r, n]
+  out t: f32[r, n]
 {
   let a = load x
   store relu &a -> y
+  store tanh &a -> t
   store step a -> d
 }
 

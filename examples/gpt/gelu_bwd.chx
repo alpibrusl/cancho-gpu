@@ -1,0 +1,27 @@
+// du = f16(dh * gelu'(u)) for the tanh form: gelu'(u) = 0.5 (1 + th) + 0.5 u (1 - th^2) k (1 + 3 * 0.044715 u^2), th = tanh(k (u + 0.044715 u^3)), k = sqrt(2/pi).
+algo gelu_bwd(r, c, bm)
+  in  dh: f32[r, c]
+  in  u:  f32[r, c]
+  out du: f16[r, c]
+{
+  grid i over r / bm
+  let g  = load dh[i * bm, 0 ; bm, c]
+  let uu = load u[i * bm, 0 ; bm, c]
+  let u2 = &uu * &uu
+  let u3 = &u2 * &uu
+  let in = &uu + u3 * 0.044715
+  let ik = in * 0.7978845608028654
+  let th = tanh ik
+  let t2 = &th * &th
+  let ones = &t2 * 0.0 + 1.0
+  let sech = ones - t2
+  let p1 = (th + 1.0) * 0.5
+  let c2 = u2 * 0.13414500000000002 + 1.0
+  let p2 = uu * sech * 0.5 * c2 * 0.7978845608028654
+  let d  = g * (p1 + p2)
+  let hh = stage f16 d
+  store hh -> du[i * bm, 0]
+}
+
+schedule gelu_bwd for apple-m-series { threads 128 }
+schedule gelu_bwd for nvidia-ada     { threads 128 }

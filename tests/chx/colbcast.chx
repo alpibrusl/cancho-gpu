@@ -1,0 +1,16 @@
+// A column [r, 1] against a matrix [r, c] broadcasts along the columns, as a vector of the r rows does (docs/chx.md): y = x * s + t.
+algo colbcast(r, c)
+  in  x: f32[r, c]
+  in  s: f32[r, 1]
+  in  t: f32[1, c]
+  out y: f32[r, c]
+{
+  let a = load x
+  let b = load s
+  let d = load t
+  let e = a * b
+  store e + d -> y
+}
+
+schedule colbcast for apple-m-series { threads 64 }
+schedule colbcast for nvidia-ada     { threads 64 }

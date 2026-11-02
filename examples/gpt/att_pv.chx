@@ -1,0 +1,19 @@
+// o[b t + i, h dh + j] = sum_k p[(b nh + h) t + i, k] v[b t + k, h dh + j]: every head's probabilities times its values (v at columns 2 d + h dh .. of qkv), f32 out.
+algo att_pv(nb, nh, t, d, dh)
+  in  p:   f16[nb * nh * t, t]
+  in  qkv: f16[nb * t, 3 * d]
+  out o:   f32[nb * t, d]
+  tile bm, bn, bk
+{
+  grid b over nb, h over nh, i over t / bm
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for q in 0 .. t / bk with acc {
+    let at = load p[(b * nh + h) * t + i * bm, q * bk ; bm, bk] @shared
+    let wt = load qkv[b * t + q * bk, 2 * d + h * dh ; bk, bn] @shared
+    yield mma_nn acc at wt
+  }
+  store acc -> o[b * t + i * bm, h * dh]
+}
+
+schedule att_pv for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule att_pv for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

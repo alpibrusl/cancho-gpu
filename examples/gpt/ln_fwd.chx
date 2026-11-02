@@ -1,0 +1,27 @@
+// LayerNorm of r rows of c: y = (x - mean) rsqrt(var + 1e-5) gamma + beta, written as f16 for the matrix-unit product that follows. One threadgroup takes bm rows.
+algo ln_fwd(r, c, bm)
+  in  x:     f32[r, c]
+  in  gamma: f32[1, c]
+  in  beta:  f32[1, c]
+  out y:     f16[r, c]
+{
+  grid i over r / bm
+  let xx = load x[i * bm, 0 ; bm, c]
+  let s1 = rowsum &xx
+  let mu = s1 * (1 / c)
+  let xc = xx - mu
+  let sq = &xc * &xc
+  let s2 = rowsum sq
+  let vr = s2 * (1 / c)
+  let ve = vr + 0.00001
+  let rs = rsqrt ve
+  let xh = xc * rs
+  let g  = load gamma
+  let b  = load beta
+  let yy = xh * g + b
+  let h  = stage f16 yy
+  store h -> y[i * bm, 0]
+}
+
+schedule ln_fwd for apple-m-series { threads 128 }
+schedule ln_fwd for nvidia-ada     { threads 128 }

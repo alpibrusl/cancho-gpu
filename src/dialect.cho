@@ -100,6 +100,13 @@ pub fn log[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
     return text.f1(m, t, "precise::log($)", x);
 }
 
+pub fn tanh[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
+    if is_cuda(d) {
+        return text.f1(m, t, "tanhf($)", x);
+    }
+    return text.f1(m, t, "precise::tanh($)", x);
+}
+
 pub fn rsqrt[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
     if is_cuda(d) {
         return text.f1(m, t, "rsqrtf($)", x);
@@ -215,7 +222,7 @@ pub fn fp4_preamble[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
 
 // The entry point, through the opening brace and the declarations that
 // say where this thread is. `params` is a list of `[ty, name, writable]`.
-pub fn entry_point[&m, &t](m: &!m [int], t: &!t [byte], d: int, name: int, params: int, scalars: bool, gid2: bool) -> [] int {
+pub fn entry_point[&m, &t](m: &!m [int], t: &!t [byte], d: int, name: int, params: int, scalars: bool, gid2: bool, gid3: bool, g2n: int) -> [] int {
     let lines = mem.list(m);
     if is_cuda(d) {
         mem.push(m, lines, text.f1(m, t, "extern \"C\" __global__ void $(\n", name));
@@ -239,7 +246,9 @@ pub fn entry_point[&m, &t](m: &!m [int], t: &!t [byte], d: int, name: int, param
             s = text.cat(m, t, text.sub(s, 0, text.size(s) - 2), text.lit(m, t, "\n"));
         }
         var tail = text.lit(m, t, ")\n{\n    const uint tid = threadIdx.x;\n    const uint gid = blockIdx.x;\n");
-        if gid2 {
+        if gid3 {
+            tail = text.f2(m, t, ")\n{\n    const uint tid = threadIdx.x;\n    const uint gid = blockIdx.x, gid2 = blockIdx.y % $u, gid3 = blockIdx.y / $u;\n", text.num(m, t, g2n), text.num(m, t, g2n));
+        } else if gid2 {
             tail = text.lit(m, t, ")\n{\n    const uint tid = threadIdx.x;\n    const uint gid = blockIdx.x, gid2 = blockIdx.y;\n");
         }
         return text.cat(m, t, s, tail);
@@ -260,7 +269,9 @@ pub fn entry_point[&m, &t](m: &!m [int], t: &!t [byte], d: int, name: int, param
     }
     mem.push(m, lines, text.lit(m, t, "    uint tid [[thread_index_in_threadgroup]],\n"));
     mem.push(m, lines, text.lit(m, t, "    uint3 tgpos [[threadgroup_position_in_grid]])\n{\n"));
-    if gid2 {
+    if gid3 {
+        mem.push(m, lines, text.f2(m, t, "    const uint gid = tgpos.x, gid2 = tgpos.y % $u, gid3 = tgpos.y / $u;\n", text.num(m, t, g2n), text.num(m, t, g2n)));
+    } else if gid2 {
         mem.push(m, lines, text.lit(m, t, "    const uint gid = tgpos.x, gid2 = tgpos.y;\n"));
     } else {
         mem.push(m, lines, text.lit(m, t, "    const uint gid = tgpos.x;\n"));

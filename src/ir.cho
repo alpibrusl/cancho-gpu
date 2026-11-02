@@ -208,6 +208,14 @@ pub fn p_pid2[&m](m: &!m [int], p: int) -> [] int {
     return m[p + 8];
 }
 
+pub fn p_grid3[&m](m: &!m [int], p: int) -> [] int {
+    return m[p + 9];
+}
+
+pub fn p_pid3[&m](m: &!m [int], p: int) -> [] int {
+    return m[p + 10];
+}
+
 pub fn vars[&m](m: &!m [int], p: int) -> [] int {
     return mem.size(m, m[p + 3]);
 }
@@ -246,7 +254,7 @@ pub fn param_writable[&m](m: &!m [int], prm: int) -> [] bool {
 // ---------------------------------------------------------------------
 
 pub fn builder[&m](m: &!m [int], name: int) -> [] int {
-    let b = mem.grab(m, 9);
+    let b = mem.grab(m, 11);
     m[b] = name;
     m[b + 1] = mem.list(m);
     m[b + 2] = mem.list(m);
@@ -256,6 +264,8 @@ pub fn builder[&m](m: &!m [int], name: int) -> [] int {
     m[b + 6] = kinds.none();
     m[b + 7] = 1;
     m[b + 8] = kinds.none();
+    m[b + 9] = 1;
+    m[b + 10] = kinds.none();
     return b;
 }
 
@@ -283,6 +293,13 @@ pub fn grid[&m, &t](m: &!m [int], t: &!t [byte], b: int, n: int) -> [] int {
     let pid = fresh_lit(m, t, b, "pid", index_ty());
     m[b + 5] = n;
     m[b + 6] = pid;
+    return pid;
+}
+
+pub fn grid3[&m, &t](m: &!m [int], t: &!t [byte], b: int, n: int) -> [] int {
+    let pid = fresh_lit(m, t, b, "pid3", index_ty());
+    m[b + 9] = n;
+    m[b + 10] = pid;
     return pid;
 }
 
@@ -365,7 +382,7 @@ pub fn for_end[&m, &t](m: &!m [int], t: &!t [byte], b: int, opened: int, start: 
 
 pub fn finish[&m](m: &!m [int], b: int) -> [] int {
     let stmts = mem.pop(m, m[b + 4]);
-    let p = mem.grab(m, 9);
+    let p = mem.grab(m, 11);
     m[p] = m[b];
     m[p + 1] = m[b + 1];
     m[p + 2] = mem.rec2(m, stmts, mem.list(m));
@@ -375,5 +392,7 @@ pub fn finish[&m](m: &!m [int], b: int) -> [] int {
     m[p + 6] = m[b + 6];
     m[p + 7] = m[b + 7];
     m[p + 8] = m[b + 8];
+    m[p + 9] = m[b + 9];
+    m[p + 10] = m[b + 10];
     return p;
 }

@@ -1,0 +1,36 @@
+// The gradients of the queries, keys and values of every head, into dqkv [n, 3 d] (f32; queries at h dh .., keys at d + h dh .., values at 2 d + h dh ..):
+// dq_i = sum_j ds[i, j] k_j (mma_nn), dk_j = sum_i ds[i, j] q_i (mma_tn), dv_j = sum_i p[i, j] do_i (mma_tn). One threadgroup takes bm rows of the three.
+algo att_dqkv(nb, nh, t, d, dh)
+  in  ds:   f16[nb * nh * t, t]
+  in  p:    f16[nb * nh * t, t]
+  in  dout: f16[nb * t, d]
+  in  qkv:  f16[nb * t, 3 * d]
+  out dqkv: f32[nb * t, 3 * d]
+  tile bm, bk
+{
+  grid b over nb, h over nh, i over t / bm
+  let aq = zeros f32[bm, dh] @frag
+  let aq = for q in 0 .. t / bk with aq {
+    let at = load ds[(b * nh + h) * t + i * bm, q * bk ; bm, bk] @shared
+    let wt = load qkv[b * t + q * bk, d + h * dh ; bk, dh] @shared
+    yield mma_nn aq at wt
+  }
+  store aq -> dqkv[b * t + i * bm, h * dh]
+  let ak = zeros f32[bm, dh] @frag
+  let ak = for q in 0 .. t / bk with ak {
+    let at = load ds[(b * nh + h) * t + q * bk, i * bm ; bk, bm] @shared
+    let wt = load qkv[b * t + q * bk, h * dh ; bk, dh] @shared
+    yield mma_tn ak at wt
+  }
+  store ak -> dqkv[b * t + i * bm, d + h * dh]
+  let av = zeros f32[bm, dh] @frag
+  let av = for q in 0 .. t / bk with av {
+    let at = load p[(b * nh + h) * t + q * bk, i * bm ; bk, bm] @shared
+    let wt = load dout[b * t + q * bk, h * dh ; bk, dh] @shared
+    yield mma_tn av at wt
+  }
+  store av -> dqkv[b * t + i * bm, 2 * d + h * dh]
+}
+
+schedule att_dqkv for apple-m-series { threads 128 warps 2 2 bm 64 bk 32 }
+schedule att_dqkv for nvidia-ada     { threads 128 warps 2 2 bm 64 bk 32 }

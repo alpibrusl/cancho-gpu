@@ -1,0 +1,24 @@
+// u = z + bias (f32, kept for the backward) and h = f16(gelu(u)), GELU in its tanh form: 0.5 u (1 + tanh(sqrt(2/pi) (u + 0.044715 u^3))).
+algo gelu_bias(r, c, bm)
+  in  z:    f32[r, c]
+  in  bias: f32[1, c]
+  out u:    f32[r, c]
+  out h:    f16[r, c]
+{
+  grid i over r / bm
+  let a  = load z[i * bm, 0 ; bm, c]
+  let bt = load bias
+  let uu = a + bt
+  store &uu * 1.0 -> u[i * bm, 0]
+  let u2 = &uu * &uu
+  let u3 = u2 * &uu
+  let in = &uu + u3 * 0.044715
+  let ik = in * 0.7978845608028654
+  let th = tanh ik
+  let hf = uu * (th + 1.0) * 0.5
+  let hh = stage f16 hf
+  store hh -> h[i * bm, 0]
+}
+
+schedule gelu_bias for apple-m-series { threads 128 }
+schedule gelu_bias for nvidia-ada     { threads 128 }

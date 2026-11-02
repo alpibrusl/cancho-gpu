@@ -17,8 +17,8 @@
 extern "C" {
 #endif
 
-#define MAX_MODULES 64
-#define MAX_FUNCTIONS 256
+#define MAX_MODULES 1024
+#define MAX_FUNCTIONS 1024
 #define MAX_BUFFERS 4096
 #define MAX_ARGS 64
 

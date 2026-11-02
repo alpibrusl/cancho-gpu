@@ -831,6 +831,8 @@ fn unary[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int 
         expr = text.f1(m, t, "1.0f / (1.0f + $)", dialect.exp(m, t, d, text.f1(m, t, "-$", src)));
     } else if m[o + 1] == kinds.relu() {
         expr = dialect.fmax(m, t, d, src, text.lit(m, t, "0.0f"));
+    } else if m[o + 1] == kinds.tanh() {
+        expr = dialect.tanh(m, t, d, src);
     } else if m[o + 1] == kinds.step() {
         expr = text.f1(m, t, "($ > 0.0f ? 1.0f : 0.0f)", src);
     } else {
@@ -957,6 +959,9 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, th
     if ir.p_pid2(m, prog) >= 0 {
         gen.set_loc(m, g, ir.p_pid2(m, prog), gen.mk_loc(m, gen.l_index(), text.lit(m, t, "gid2"), 0, 0));
     }
+    if ir.p_pid3(m, prog) >= 0 {
+        gen.set_loc(m, g, ir.p_pid3(m, prog), gen.mk_loc(m, gen.l_index(), text.lit(m, t, "gid3"), 0, 0));
+    }
     if block(m, t, g, ir.p_body(m, prog)) < 0 {
         return 0 - 1;
     }
@@ -1000,7 +1005,8 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, th
         i = i + 1;
     }
     let gid2 = text.contains(m, t, body, "gid2");
-    mem.push(m, out, dialect.entry_point(m, t, d, entry, params, false, gid2));
+    let gid3 = text.contains(m, t, body, "gid3");
+    mem.push(m, out, dialect.entry_point(m, t, d, entry, params, false, gid2 || gid3, gid3, ir.p_grid2(m, prog)));
     if arena_bytes > 0 {
         let f4 = text.lit(m, t, "float4");
         let a4 = text.lit(m, t, "arena4");
@@ -1023,7 +1029,7 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, th
     m[r] = entry;
     m[r + 1] = text.joined(m, t, out, "");
     m[r + 2] = ir.p_grid(m, prog);
-    m[r + 3] = ir.p_grid2(m, prog);
+    m[r + 3] = ir.p_grid2(m, prog) * ir.p_grid3(m, prog);
     m[r + 4] = threads;
     m[r + 5] = arena_bytes;
     m[r + 6] = scratch_bytes;

@@ -139,6 +139,10 @@ pub fn step() -> [] int {
     return 6;
 }
 
+pub fn tanh() -> [] int {
+    return 7;
+}
+
 // --- Reduce
 pub fn r_max() -> [] int {
     return 0;

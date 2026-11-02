@@ -276,3 +276,5 @@ tests/chx/ported/gemm_mma_nn.chx m=128 n=128 k=64 --run
 tests/chx/ported/gemm_mma_tn.chx m=128 n=128 k=64
 tests/chx/ported/gemm_mma_tn.chx m=256 n=256 k=128
 tests/chx/ported/gemm_mma_tn.chx m=128 n=128 k=64 --run
+tests/chx/colbcast.chx r=8 c=16
+tests/chx/colbcast.chx r=4 c=8 --run

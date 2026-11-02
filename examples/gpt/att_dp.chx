@@ -1,0 +1,19 @@
+// dp[(b nh + h) t + i, j] = do_i . v_j for every head (f32): the gradient of the probabilities, from the gradient of the attention output do [n, d] (f16) and the values in qkv.
+algo att_dp(nb, nh, t, d, dh)
+  in  dout: f16[nb * t, d]
+  in  qkv:  f16[nb * t, 3 * d]
+  out dp:   f32[nb * nh * t, t]
+  tile bm, bn, bk
+{
+  grid b over nb, h over nh, i over t / bm
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. dh / bk with acc {
+    let at = load dout[b * t + i * bm, h * dh + p * bk ; bm, bk] @shared
+    let wt = load qkv[b * t, 2 * d + h * dh + p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> dp[(b * nh + h) * t + i * bm, 0]
+}
+
+schedule att_dp for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule att_dp for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

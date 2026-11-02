@@ -24,6 +24,7 @@ import interp;
 import cli;
 import fileio;
 import ir;
+import kinds;
 import runcmd;
 
 // The session record's words.
@@ -403,21 +404,33 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         m[cell] = 1;
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
-        if interp.materialise(m, t, fm, g) < 0 {
-            return 0 - 1;
+        // A device session sends a binary resident file straight to the device (the record carries the file's name), keeping it out of the interpreter's memory
+        var direct = false;
+        if device && m[raw + 4] != 0 {
+            direct = true;
+            let dt = ir.param_dtype(m, prm);
+            if m[raw + 4] == 1 && dt != kinds.f32() || m[raw + 4] == 2 && dt != kinds.f16() {
+                return err.fail(m, t, "usage", text.f1(m, t, "`$` has another type than the binary file's flag says", m[raw + 1]));
+            }
+            mem.push(m, resident, mem.rec3(m, pi, ai, m[raw + 2]));
         }
-        var loaded = 0;
-        if m[raw + 4] == 2 {
-            loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
-        } else if m[raw + 4] == 1 {
-            loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
-        } else {
-            loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+        if !direct {
+            if interp.materialise(m, t, fm, g) < 0 {
+                return 0 - 1;
+            }
+            var loaded = 0;
+            if m[raw + 4] == 2 {
+                loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+            } else if m[raw + 4] == 1 {
+                loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+            } else {
+                loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+            }
+            if loaded < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, resident, mem.rec3(m, pi, ai, 0 - 1));
         }
-        if loaded < 0 {
-            return 0 - 1;
-        }
-        mem.push(m, resident, mem.rec2(m, pi, ai));
         i = i + 1;
     }
 
@@ -475,22 +488,35 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         m[cell] = 4;
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
-        let whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
-        if whole < 0 {
-            return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
+        // A device session keeps a binary table out of the interpreter's memory: the device program reads the file straight to the device (the table's record has -1 for its place
+        // there, and the file's name), so a table can be as large as the device's memory.
+        var direct = false;
+        if device && m[raw + 5] != 0 {
+            direct = true;
+            let dt = ir.param_dtype(m, prm);
+            if m[raw + 5] == 1 && dt != kinds.f32() || m[raw + 5] == 2 && dt != kinds.f16() {
+                return err.fail(m, t, "usage", text.f1(m, t, "`$` has another type than the binary file's flag says", m[raw + 1]));
+            }
+            mem.push(m, tables, mem.rec5(m, pi, ai, 0 - 1, m[raw + 3], m[raw + 2]));
         }
-        var loaded = 0;
-        if m[raw + 5] == 2 {
-            loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
-        } else if m[raw + 5] == 1 {
-            loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
-        } else {
-            loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+        if !direct {
+            let whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
+            if whole < 0 {
+                return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
+            }
+            var loaded = 0;
+            if m[raw + 5] == 2 {
+                loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+            } else if m[raw + 5] == 1 {
+                loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+            } else {
+                loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+            }
+            if loaded < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, tables, mem.rec4(m, pi, ai, whole, m[raw + 3]));
         }
-        if loaded < 0 {
-            return 0 - 1;
-        }
-        mem.push(m, tables, mem.rec4(m, pi, ai, whole, m[raw + 3]));
         i = i + 1;
     }
 
