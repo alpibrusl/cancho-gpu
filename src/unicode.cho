@@ -5,10 +5,13 @@ module unicode;
 // `docs/runtime.md` §9): UTF-8 in and out, the character classes the
 // pre-tokenizer's split uses, and NFC.
 //
-// The classes are exactly those of the oracle: `unicode_data.cho` is
+// The classes are those of lex-rt's tokenizer, which this began as: `unicode_data.cho` is
 // generated from `char::is_alphabetic`, `is_numeric` and `is_whitespace`
-// of the Rust that builds lex-rt, and from lex-rt's own NFC tables, so the
-// two cannot disagree on a scalar value.
+// of the Rust that builds lex-rt, and from lex-rt's own NFC tables
+// (`tools/unicode_tables.rs`, the one Rust tool left). **They are not the classes the
+// Qwen tokenizers' regexes name** (`\p{L}`, `\p{M}`, `\p{N}`), and NFC lacks the singleton
+// mappings: issue #51, found by comparing with Hugging Face `tokenizers`. Replacing the
+// tables with the general categories is the fix, and what retires the generator.
 
 import unicode_data;
 import mem;

@@ -529,7 +529,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
     <div><b>226</b><span>cases held to recorded goldens (200 emit, 26 refused); 218 of them first agreed byte for byte with the Rust implementation, now retired as the oracle</span></div>
     <div><b>51</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
     <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
-    <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
+    <div><b>0</b><span>differences from the independent readers on 6 real GGUF models and 3,379 Qwen3.8 tensors; the sampler's picks match on 2,269 rows. <b>The tokenizer is the exception:</b> it differs from Hugging Face on rare Unicode and blank-line cases (issue #51)</span></div>
   </div>
   <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where each reader differs from its oracle, and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">the kernels document</a> the context limit.</p>
 </section>

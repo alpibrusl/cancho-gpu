@@ -4,7 +4,8 @@ module sampler;
 // `sampler` -- picking the next token (slice 9a, stage 4 of cancho#251,
 // issue #5; `docs/runtime.md` §10).
 //
-// `lex-rt/src/sample.rs` is the oracle: temperature, then top-k, then
+// The algorithm (which `tools/sampler_dump.py` implements independently; it began as
+// lex-rt's `sample.rs`, `docs/native.md` N2f): temperature, then top-k, then
 // top-p renormalised, drawn with a xorshift64* stream seeded through
 // splitmix64. Temperature 0 (or top-k 1) is the argmax.
 //

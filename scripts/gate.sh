@@ -25,6 +25,8 @@ CANCHO="$CANCHO" tests/device-io.sh
 tests/gguf.sh
 tests/safetensors.sh
 tests/tokenizer.sh
+python3 tests/tokenizer_hf.py "${CANCHO_GPU:-build/cancho-gpu}"
+python3 tests/oracles.py
 tests/sampler.sh
 tests/chat.sh
 python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"

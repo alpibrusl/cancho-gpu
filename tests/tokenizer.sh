@@ -3,8 +3,9 @@
 #
 #   * each tokenizer fixture of tests/tokenizer/ (three tokenizer.json forms
 #     and a GGUF) gives, over the hand-written corpus and over 500 random
-#     records, exactly the ids and decoded text lex-rt's tokenizer gives
-#     (golden/tokenizer/, from tools/tokenizer_dump.rs);
+#     records, exactly the ids and decoded text recorded in golden/tokenizer/
+#     (a regression record: made by lex-rt's Rust tokenizer first, not confirmed by an
+#     independent one; tests/tokenizer_hf.py compares with Hugging Face, issue #51);
 #   * each fixture of tests/tokenizer/reject/ is refused with the rule its
 #     name starts with, and so is text that is not UTF-8;
 #   * every `tok-` rule in the sources has such a fixture;
@@ -65,5 +66,5 @@ done
 status=0; "$BIN" tokenize "$D/nothing.json" "$D/corpus.txt" >/dev/null 2>"$WORK/err" || status=$?
 grep -q '^error\[io\]' "$WORK/err" || { echo "a missing tokenizer: expected error[io]"; fail=1; }
 python3 "$D/fuzz.py" "$BIN" "$D/toy-pairs.json" "$D/toy.gguf" "$D/corpus.txt" 250 || fail=1
-echo "$n tokenizer runs match lex-rt's, $refused fixtures refused"
+echo "$n tokenizer runs match the recorded goldens, $refused fixtures refused"
 exit $fail

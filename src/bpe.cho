@@ -4,13 +4,13 @@ module bpe;
 // `bpe` -- a byte-level BPE tokenizer (slice 9a, stage 3 of cancho#251,
 // issue #5; `docs/runtime.md` §9).
 //
-// `lex-rt/src/tokenizer.rs` is the oracle, and what is here is what it
-// does, including the places it is narrow: the split before merging is the
-// one hand-written GPT-4-shaped pattern (`split`), whatever the file's
-// `pre_tokenizer` says; a GGUF is accepted only when its `tokenizer.ggml.pre`
-// is `qwen35`; `\p{M}` is the blocks that appear in text. A tokenizer that
-// disagreed would tokenise wrongly without an error, so the narrowness is
-// kept and tested, not widened.
+// It began as a port of lex-rt's `tokenizer.rs` and **does not agree with Hugging Face
+// `tokenizers` on real Qwen tokenizers** (issue #51, `tests/tokenizer_hf.py`): the split before
+// merging is the one hand-written GPT-4-shaped pattern (`split`), whatever the file's
+// `pre_tokenizer` says; `\s*[\r\n]+` does not take the longest run; `\p{L}`, `\p{M}`, `\p{N}` are
+// approximations (`\p{M}` is the blocks that appear in text); and NFC lacks the singleton mappings.
+// The differences are pinned by that test, and a tokenizer that disagrees tokenises wrongly
+// without an error, so the narrowness is recorded, not widened, until it is fixed.
 //
 // Everything is positions in the text pool and records in `m`. A token's
 // text is `(start, length)` in the pool: in place in the file where it is

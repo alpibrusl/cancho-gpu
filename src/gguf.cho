@@ -4,7 +4,8 @@ module gguf;
 // `gguf` -- a GGUF header reader: the metadata and the tensor directory
 // (slice 9a of cancho#251, issue #5; `docs/runtime.md`).
 //
-// `lex-rt/src/gguf.rs` is the oracle. The file's bytes are read straight
+// The oracle is `tools/gguf_dump.py`, an independent reader (the first was lex-rt's
+// `gguf.rs`, which this began as a port of; `docs/native.md` N2f). The file's bytes are read straight
 // into the text pool (`t`), exactly as `main.cho` reads a `.chx` source,
 // and this module holds **positions** in them, never copies: a key is
 // `(start, length)`, a value is the position after its type, a tensor's

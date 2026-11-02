@@ -4,7 +4,7 @@ module sample;
 // `sample` -- the `cancho-gpu sample <logits> <vocab> <temperature> <top_p>
 // <top_k> <seed>` command: for each row of `<vocab>` little-endian f32
 // logits in the file, the nucleus and the draw, in the form
-// `tools/sampler_dump.rs` prints from lex-rt's sampler (`docs/runtime.md`
+// `tools/sampler_dump.py` prints (`docs/runtime.md`
 // §10). The stream of draws runs across the rows, as it does in generation.
 //
 //     row 0 pick 17 nucleus 3: 17=3f000000 5=3e800000 9=3e800000

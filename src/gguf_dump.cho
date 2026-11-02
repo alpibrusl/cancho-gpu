@@ -1,8 +1,8 @@
 edition 5;
 module gguf_dump;
 
-// `gguf_dump` -- the canonical text of a GGUF header, the form the Rust
-// oracle prints too (`tools/gguf-dump`), so `tests/gguf.sh` can hold the
+// `gguf_dump` -- the canonical text of a GGUF header, the form the
+// oracle prints too (`tools/gguf_dump.py`), so `tests/gguf.sh` can hold the
 // two to the same bytes (`docs/runtime.md` §4):
 //
 //     gguf v3 tensors=2 kv=3 alignment=32

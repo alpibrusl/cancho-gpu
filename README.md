@@ -15,7 +15,7 @@
 * **Output that was checked against an independent implementation, and is held against numbers now.** CUDA C and Metal for the 226 cases of `tests/cases.txt` (200 emit, 26 are refused) are recorded in `golden/` and held to those files byte for byte (`tests/golden.sh`); they first agreed with the Rust implementation's output (218 cases at the commit in `golden/PROVENANCE`), which was the oracle until `docs/native.md` N2, and are regression goldens since: a change to one is read as text. What a kernel *computes* is held to a float64 reference written from the mathematics for **every one of the 41 numeric kernel families** (`tests/kernels.py`, with deliberate changes to nine of them that their references must catch), and, on a Mac, to the GPU. A refusal names its rule ([`docs/rules.md`](docs/rules.md)).
 * **A reference interpreter.** `--run` interprets a kernel on the CPU (binary32 arithmetic, sums in program order) and prints a summary; the summaries are goldens and agree with the float64 references to 1e-5 (51 runs).
 * **A way to drive a GPU.** A C shim and a device program compile the emitted kernel with NVRTC (CUDA) or `newLibraryWithSource` (Metal), upload the interpreter's inputs, launch, and compare ([`docs/device.md`](docs/device.md)).
-* **A model reader.** `gguf` and `safetensors` read a header (names, shapes, offsets, metadata) and refuse hostile bytes with a rule tag; `tokenize` is a byte-level BPE tokenizer and `sample` a temperature/top-k/top-p sampler. Each prints a canonical text that an independent implementation prints too: the reference runtime for GGUF, the tokenizer and the sampler, the `safetensors` library for safetensors. Identical on every fixture and on real files: five GGUF models, 2,180 + 1,199 safetensors tensors of Qwen3.8-27B, four real tokenizers over 3,811 records. The sampler's picks and ids are identical and 99% of its probabilities bit-identical (macOS's `expf` differs from the correctly rounded one in 0.6% of inputs) ([`docs/runtime.md`](docs/runtime.md)).
+* **A model reader.** `gguf` and `safetensors` read a header (names, shapes, offsets, metadata) and refuse hostile bytes with a rule tag; `tokenize` is a byte-level BPE tokenizer and `sample` a temperature/top-k/top-p sampler. Each prints a canonical text that an independent implementation prints too: a Python GGUF reader and a Python implementation of the sampler's algorithm (both written for this, both replacing the Rust tools that first made the goldens, and both reproducing those goldens exactly), the `safetensors` library for safetensors. Identical on every fixture and on real files: six GGUF models (0.27 to 5.6 GB), 2,180 + 1,199 safetensors tensors of Qwen3.8-27B. The sampler's picks and ids are identical to the independent implementation's on 2,269 rows and 100% of its probabilities bit-identical on one platform (cancho-gpu's own `exp` is correctly rounded and differs from the platform's `expf` in 0.6% of inputs, by a few ulps). **The tokenizer is the exception: it agrees with the Rust tokenizer it was written against, but not with Hugging Face `tokenizers` on real Qwen tokenizers** (3 of 37 hand-written records and about half of 500 random Unicode-heavy ones; ordinary text agrees; NFC lacks singleton mappings, `\s*[\r\n]+` is not greedy, `\p{L}`/`\p{M}`/`\p{N}` are approximations): issue [#51](https://github.com/alpibrusl/cancho-gpu/issues/51), pinned by `tests/tokenizer_hf.py` ([`docs/runtime.md`](docs/runtime.md)).
 * **Decode kernels for an attention layer.** `rope.chx`, `kv_append.chx`, `attention.chx` and `attn_gate.chx` for Qwen3.8-27B's full-attention layers, held to a plain-Python model of what they compute (and, when recorded, identical to the reference compiler's output), and run once on a Metal GPU ([`docs/kernels.md`](docs/kernels.md)).
 * **It runs a model.** `cancho-gpu-run` loads a Qwen2 checkpoint, tokenizes a prompt, runs every layer as compiled `.chx` kernels on a Metal GPU and samples the next token: Qwen2.5-0.5B gives the same 12 greedy tokens as transformers in float32 on three prompts, with every top-5 logit within 1e-4, in 6 to 12 ms a token (the spread between runs) ([`docs/inference.md`](docs/inference.md)).
 * **It runs a 27B model.** `cancho-gpu-run35` runs Qwen3.8-27B (64 layers, 48 of them gated-delta, NVFP4 weights read from Ollama's store) as `.chx` kernels: on three prompts, eight steps each, the same token, the same top five and logit gaps within 1e-4 of the reference's, and twelve greedy tokens that are the reference runtime's, at about 25 tokens a second, 33 with the model's own draft head (Ollama: about 43 in the same benchmark invocation, which also uses it) ([`docs/qwen35.md`](docs/qwen35.md)).
@@ -29,7 +29,7 @@ How it is built, what it cost and what the language made hard: [`docs/design.md`
 - The **cancho** compiler at the commit pinned in `cancho.toml`; the revision is part of the contract.
 - Rust, to build that compiler.
 - To run the tests: `python3` (fixtures, fuzzing, the kernel reference) and a C compiler (the device plumbing).
-- Only to regenerate the model-reading oracles' goldens (GGUF, tokenizer, sampler, Unicode tables; `docs/native.md` N2f): a checkout of the reference runtime and `cargo`. The `.chx` goldens need nothing but this compiler (`scripts/record-golden.sh`).
+- Only to regenerate `src/unicode_data.cho` (`scripts/regen-unicode-data.sh`, the one Rust tool left, until issue #51 is fixed): a checkout of the reference runtime and `cargo`. Every golden is regenerated with `python3` (and `numpy` for the sampler) and this compiler.
 
 ## Quick start
 
@@ -90,7 +90,7 @@ tensor blk.0.ffn.weight type=Q8_0 dims=[64] bytes=68 sum=40d93799
 ...
 ```
 
-**Read a safetensors header, tokenize, sample** (each against its oracle's output in `golden/`):
+**Read a safetensors header, tokenize, sample** (held to the outputs in `golden/`; `docs/native.md` N2f says which are independent):
 
 ```
 $ build/cancho-gpu safetensors tests/safetensors/mlx-like.safetensors
@@ -130,7 +130,8 @@ $CANCHO authority --std src/*.cho
 ```sh
 CANCHO=$CANCHO scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing (also with `--in` / `--out`), GGUF, safetensors, tokenizer, sampler, kernels, authority
 scripts/record-golden.sh                     # golden/ from this compiler; read `git diff golden/` (the numbers are held by tests/kernels.py, not by these files)
-scripts/regen-gguf-golden.sh <reference checkout>  # golden/gguf/ from the reference runtime's reader (still an external oracle: docs/native.md N2f) (also regen-tokenizer-golden.sh, regen-sampler-golden.sh, regen-safetensors-golden.sh, regen-unicode-data.sh)
+scripts/regen-gguf-golden.sh                 # golden/gguf/ from tools/gguf_dump.py (also regen-sampler-golden.sh, regen-safetensors-golden.sh, record-tokenizer-golden.sh)
+python3 tests/oracles.py                     # the Python oracles still reproduce their goldens; python3 tests/tokenizer_hf.py: the tokenizer against Hugging Face (issue #51)
 CANCHO=$CANCHO scripts/metal-kernels.sh      # the 9b kernels on a Metal GPU against the interpreter (needs a Mac)
 ```
 
@@ -164,7 +165,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | [docs/comparison.md](docs/comparison.md) | compared with OpenNN: a two-layer network's forward pass on a CPU, outputs and timings, and where this project is worse |
 | [docs/rules.md](docs/rules.md) | every refusal rule and what triggers it |
 | [docs/device.md](docs/device.md) | driving a GPU: the shim, the authority it reports, the mock, what stays unproven |
-| [docs/runtime.md](docs/runtime.md) | reading a model: the GGUF and safetensors readers, the tokenizer and the sampler, where each differs from its oracle, how each is held to it |
+| [docs/runtime.md](docs/runtime.md) | reading a model: the GGUF and safetensors readers, the tokenizer and the sampler, where each differs from its oracle, how each is held to it (and where the tokenizer disagrees with Hugging Face) |
 | [docs/inference.md](docs/inference.md) | running Qwen2.5-0.5B on a Metal GPU: what is on the GPU and what is not, how it is checked against transformers, speed, limits |
 | [docs/qwen35.md](docs/qwen35.md) | running Qwen3.8-27B: the layers, the NVFP4 and gated-delta kernels, the weights from Ollama's store, how it is checked against the reference's golden log-probabilities, speed |
 | [docs/benchmark.md](docs/benchmark.md) | cancho-gpu against MLX-LM, Ollama and transformers on the same checkpoints (`bench/bench.py`): what is measured, the numbers, and why not to compare them across runs |
@@ -179,7 +180,7 @@ device/            the device programs (CUDA, Metal): the only code that calls t
 shim/              canchogpu.c (CUDA, over dlopen) and canchogpu-metal.mm (Metal)
 tests/             goldens, refusal fixtures, the mock driver, fixtures, fuzzing and references for each reader and kernel
 golden/            what this compiler wrote for every case, recorded (and, in subdirectories, what each reader's oracle prints)
-tools/             the oracle programs (Rust examples built inside a reference checkout; a Python script for safetensors)
+tools/             the oracle programs (Python: GGUF, sampler, safetensors, the tokenizer through Hugging Face; one Rust tool left, the Unicode table generator)
 scripts/           gate, golden recording, device builds
 docs/              design, rules, device, runtime, and the project page
 ```
