@@ -497,6 +497,26 @@ def matvec16_m(m, n, k):
     return [sum(x[t * k + j] * f16(w[i * k + j]) for j in range(k)) for t in range(m) for i in range(n)]
 
 
+def attention_scores(nkv, g, t, d, tmax):
+    q, k, mask = lcg([nkv * g * d, nkv * tmax * d, t])
+    return [sum(q[(i * g + r) * d + c] * k[(i * tmax + pos) * d + c] for c in range(d)) * 0.0625 + mask[pos]
+            for i in range(nkv) for r in range(g) for pos in range(t)]
+
+
+def attention_pv(nkv, g, t, d, tmax):
+    sc, v = lcg([nkv * g * t, nkv * tmax * d])
+    out = []
+    for i in range(nkv):
+        for r in range(g):
+            s = sc[(i * g + r) * t:(i * g + r + 1) * t]
+            mx = max(s)
+            e = [math.exp(x - mx) for x in s]
+            z = sum(e)
+            for col in range(d):
+                out.append(sum(e[pos] / z * v[(i * tmax + pos) * d + col] for pos in range(t)))
+    return out
+
+
 def delta_step3(nk):
     s, q, k, v, g, bt = lcg([nk * 384 * 128, 3 * nk * 128, 3 * nk * 128, 30720, 3 * nk * 3 * 128, 3 * nk * 384])
     so = [[0.0] * len(s) for _ in range(3)]
@@ -628,6 +648,8 @@ def new_checks():
     for t in range(3):
         ok &= check(f"delta_step3 so{t + 1} nk=2", got[f"so{t + 1}"], want_so[t])
     ok &= check("delta_step3 y nk=2", got["y"], want_y)
+    ok &= check("attention_scores nkv=2 g=6 t=64 ts=16", run("attention_scores", ["nkv=2", "g=6", "t=64", "ts=16", "d=256", "tmax=96"])["sc"], attention_scores(2, 6, 64, 256, 96))
+    ok &= check("attention_pv nkv=2 g=6 t=64 dw=32", run("attention_pv", ["nkv=2", "g=6", "t=64", "dw=32", "d=256", "tmax=96"])["o"], attention_pv(2, 6, 64, 256, 96))
     return ok
 
 
@@ -644,6 +666,8 @@ MUTANTS = [
     ("stage.chx", "yield acc + st", "yield acc - st", "stage subtracts"),
     ("conv_step3.chx", "store t0 * g0 -> y[0, i * bc]", "store t0 + g0 -> y[0, i * bc]", "conv_step3 adds the gate to the first row's output"),
     ("delta_step3.chx", "let e2_2 = d2_2 * b2_2", "let e2_2 = d2_2 + b2_2", "delta_step3 adds beta to the third token's error"),
+    ("attention_scores.chx", "store sd + mk -> sc[i * g, sp * ts]", "store sd - mk -> sc[i * g, sp * ts]", "attention_scores subtracts the mask"),
+    ("attention_pv.chx", "let p  = e / z", "let p  = e * z", "attention_pv multiplies by the sum"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
     ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),
 ]

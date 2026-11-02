@@ -264,3 +264,7 @@ tests/chx/conv_step3.chx c=10240
 tests/chx/conv_step3.chx c=512 --run
 tests/chx/delta_step3.chx nk=16
 tests/chx/delta_step3.chx nk=2 --run
+tests/chx/attention_scores.chx nkv=4 g=6 t=256 ts=32 d=256 tmax=1024
+tests/chx/attention_scores.chx nkv=2 g=6 t=64 ts=16 d=256 tmax=96 --run
+tests/chx/attention_pv.chx nkv=4 g=6 t=256 dw=32 d=256 tmax=1024
+tests/chx/attention_pv.chx nkv=2 g=6 t=64 dw=32 d=256 tmax=96 --run
