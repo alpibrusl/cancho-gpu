@@ -5,9 +5,8 @@ module runcmd;
 // [--out NAME ...]` -- a kernel run on the CPU interpreter over inputs the
 // caller gives, with the whole of an output printed (`docs/run.md`).
 //
-// It is a command of its own and not a flag of `--run`, whose summary is held
-// byte for byte to the Rust's (`docs/design.md` §10.2): `interp.run` is not
-// touched. Refusals are the rules that already exist -- `usage`, `io`,
+// It is a command of its own and not a flag of `--run`, whose summary is a
+// golden (`docs/design.md` §10.2): `interp.run` is not touched. Refusals are the rules that already exist -- `usage`, `io`,
 // `no-schedule`, `interp` -- and nothing is printed when one is raised.
 
 import std.io;

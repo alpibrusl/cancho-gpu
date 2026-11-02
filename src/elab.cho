@@ -1,19 +1,15 @@
 edition 5;
 module elab;
 
-// A parsed algorithm, bound to one target: `Unit::compile`,
-// `Algo::build_with` and the lowering under them in
-// `lex_front::syntax`, ported. The constants come from the caller, the
-// tile extents and the chunk from the file's schedule, and what comes
-// back is the typed program.
+// A parsed algorithm, bound to one target (`docs/chx.md`). The constants
+// come from the caller, the tile extents and the chunk from the file's
+// schedule, and what comes back is the typed program.
 //
-// The IR has to be the *same* program the Rust builds, not an
-// equivalent one -- variable numbering included, because the emitter
-// names storage after it (`v12`). So the order of every `fresh` below
-// follows the Rust's.
+// Variables are numbered in the order they are made, because the emitter
+// names storage after the number (`v12`), so the order of every `fresh`
+// below is part of the output (the goldens record it).
 //
-// Lookup tables are lists searched from the end, which is what a Rust
-// `HashMap::insert` that replaces gives: the latest binding wins.
+// Lookup tables are lists searched from the end: the latest binding wins.
 
 import mem;
 import text;
@@ -245,8 +241,8 @@ fn num_of[&m](m: &!m [int], e: int) -> [] float {
 }
 
 // Replace a use of an algorithm constant with its value, and fold an
-// operation on two numbers in f32 -- where the Rust computes it, and
-// where "the same program" puts the same constant in the emitted text.
+// operation on two numbers in f32, so the emitted text carries the folded
+// constant (the goldens record it).
 fn substitute[&m, &t](m: &!m [int], t: &!t [byte], e: int, vals: int) -> [] int {
     let k = m[e];
     if k == kinds.e_move() {
@@ -772,7 +768,7 @@ pub fn build[&m, &t](m: &!m [int], t: &!t [byte], algo: int, vals: int, chunk: i
         }
         i = i + 1;
     }
-    // The suffix the Rust builders use: every constant in declaration
+    // The kernel's name carries a suffix: every constant in declaration
     // order. `rmsnorm(n)` with n = 4096 is `rmsnorm_4096`.
     var full = name;
     i = 0;

@@ -1,11 +1,11 @@
 edition 5;
 module target;
 
-// The hardware table: `lex_ir::Target`, as data. A target is a record
+// The hardware table, as data. A target is a record
 // `[name, simd_width, max_threads_per_threadgroup, max_threadgroup_bytes,
 //   async_copy, split_barriers]`. Only the two rows with a backend are
-// named on the command line, but the table carries all four the Rust
-// has, so a schedule for the others still type-checks.
+// named on the command line, but the table carries all four, so a schedule
+// for the others still type-checks.
 
 import mem;
 import text;

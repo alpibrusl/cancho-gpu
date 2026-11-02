@@ -1,7 +1,7 @@
 #!/bin/sh
 # The device path without a device (docs/device.md section 5): build the
-# mock driver and NVRTC, run `cancho-gpu-device` on each of lex-gpu's
-# kernels against them, and check what reached the "driver" against what
+# mock driver and NVRTC, run `cancho-gpu-device` on each of the ported
+# kernels (tests/chx/ported) against them, and check what reached the "driver" against what
 # the program is -- the entry the golden .cu defines, the grid and threads
 # `emit` reports, one argument per parameter. The mock runs no kernel, so
 # every output reads back as zeros and the comparison must refuse with

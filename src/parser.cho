@@ -1,13 +1,10 @@
 edition 5;
 module parser;
 
-// Tokens to a syntax tree: `lex_front::syntax::Parser` and `parse`,
-// ported. A node is a record `[kind, a, b, c, d, e]` (`kinds.cho` names
+// Tokens to a syntax tree. A node is a record `[kind, a, b, c, d, e]` (`kinds.cho` names
 // the kinds); a list of nodes is a `mem` list. Names are text handles.
 //
-// The grammar is `docs/chx.md` §2's. It began as lex-gpu's (a port of its
-// `lex_front::syntax`), and a `.chx` file that parser accepted is accepted here;
-// the refusal wording began as its too, and is this project's now (rule `syntax`).
+// The grammar is `docs/chx.md` §3's; every refusal is the rule `syntax`.
 
 import mem;
 import text;
@@ -78,7 +75,7 @@ fn eat_kw[&m, &t](m: &!m [int], t: &!t [byte], p: int, s: &static [byte]) -> [] 
     return false;
 }
 
-// A name, or -1. The Rust reports the position *after* the bad token.
+// A name, or -1. The position reported is the one *after* the bad token.
 fn want_ident[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
     let tok = bump(m, p);
     if lexer.kind(m, tok) == lexer.ident() {
@@ -574,7 +571,7 @@ fn block[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
 // param:    `[name, dtype, dims, writable]`
 // schedule: `[target, threads, chunk, warps_rows, warps_cols, pad, extents, frag]`
 //           with -1 for an unset optional; `extents` a list of
-//           `[name, value]`; `frag` (not in the Rust) is the number of
+//           `[name, value]`; `frag` is the number of
 //           8-row tiles a simdgroup owns in a register-fragment NVFP4
 //           product (docs/kernels.md section 6).
 
@@ -825,7 +822,7 @@ fn schedule[&m, &t](m: &!m [int], t: &!t [byte], p: int, algo: int, done: int) -
     return s;
 }
 
-// The schedule for a target name (a handle), or -1 with the Rust's
+// The schedule for a target name (a handle), or -1 with the
 // refusal: no schedule is a program nobody chose a shape for.
 pub fn schedule_for[&m, &t](m: &!m [int], t: &!t [byte], unit: int, target: int) -> [] int {
     let scheds = m[unit + 1];

@@ -1,14 +1,15 @@
 edition 6;
 module interp;
 
-// The reference interpreter: `lex_front::interp`, for the ops a `.chx`
-// file reaches, and `emit_lx`'s `--run` summary (`docs/design.md` §10).
+// The reference interpreter: the meaning of the ops a `.chx` file reaches
+// (`docs/chx.md` §5), and the `--run` summary (`docs/design.md` §10).
 //
-// Every value is f32 and every operation is done in the order the Rust
-// does it, each rounded once (`f32.cho`), because the summary the Rust
-// prints depends on the order: `gemm_fp4`'s two targets already differ
-// in a last digit. A value is rounded to its tile's dtype whenever a
-// tile of that dtype is made, as the Rust's `fresh` does.
+// Every value is f32 and every operation is rounded once, in program order
+// (`f32.cho`); the order of a reduction is the implementation's to choose
+// (`docs/chx.md` §5), and this one sums in the order written, so the summary
+// is reproducible and `gemm_fp4`'s two targets, which tile differently, differ
+// in a last digit. A value is rounded to its tile's dtype whenever a tile of
+// that dtype is made.
 //
 // Floats live in `fm`, a third memory only this module uses. A tile is
 // `[ty, offset in fm, length]`; a tensor (one per parameter) is
@@ -210,8 +211,8 @@ fn read_global[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int
     return tile;
 }
 
-// Round every element of a tile to its dtype, in place: the Rust's
-// `fresh`, done after the values are written.
+// Round every element of a tile to its dtype, in place, after the values
+// are written.
 fn settle[&m, &f](m: &!m [int], fm: &!f [float], tile: int) -> [] int {
     let dt = ir.dtype(m, m[tile]);
     if dt == kinds.f32() {
@@ -513,7 +514,7 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
     return out;
 }
 
-// `mma`, `matmul_nt` and `matmul`: f32 sums in the Rust's order.
+// `mma`, `matmul_nt` and `matmul`: f32 sums in program order.
 fn matmul[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int) -> [] int {
     let k = m[o];
     let is_mma = k == kinds.op_mma();
@@ -646,7 +647,7 @@ fn stmt[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, s: in
 // ---------------------------------------------------------------------
 
 // The made-up inputs: one tensor per parameter, `[dtype, shape, offset,
-// length]`, or -1. Floats in [-0.5, 0.5) from the Rust's LCG, I8 codes
+// length]`, or -1. Floats in [-0.5, 0.5) from an LCG (seed 12345), I8 codes
 // `0x30 + i % 8`, writable parameters zero.
 pub fn inputs[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: int) -> [] int {
     let out = mem.list(m);
@@ -699,7 +700,7 @@ pub fn execute[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: i
     let pid = ir.p_pid(m, prog);
     let pid2 = ir.p_pid2(m, prog);
     // Instances are independent by construction, so one after another is
-    // faithful; the Rust runs them in this order.
+    // faithful, and reproducible.
     var g2 = 0;
     while g2 < ir.p_grid2(m, prog) {
         if pid2 >= 0 {

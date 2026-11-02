@@ -1,9 +1,8 @@
 // y = x * rsqrt(mean(x^2) + eps) * w, over one row of n.
 //
-// The same program as `lex_front::llama::rmsnorm`, written in the surface
-// instead of in Rust. `tests/syntax.rs` requires the two to lower to the
-// same MSL, byte for byte -- an equivalent program would not be evidence
-// that the surface builds *this* IR.
+// The reference kernel for the surface: its lowering is recorded in
+// `golden/` and what it computes is held to a float64 reference by
+// `tests/kernels.py`.
 //
 // `&x` borrows and `x` moves. The checker counts consumptions, so which
 // is which is not a detail: `&x * &x` leaves x alive for the multiply at

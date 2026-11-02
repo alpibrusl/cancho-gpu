@@ -8,7 +8,7 @@
 // unit reads it. How the decode is done is not here. Lowered for CUDA it
 // becomes one thread per group of 16 values: the scale formed once for the
 // group, the eight bytes read in one load, the sixteen halves written in
-// two -- what `lex_msl::gemm` does by hand, found from this text.
+// two -- what a hand-written kernel does, found from this text.
 //
 // The packed shapes follow from the logical ones (`k / 2` bytes, `k / 16`
 // scales a row), so a window of the codes is `bk / 2` wide and steps by that.

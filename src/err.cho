@@ -3,8 +3,7 @@ module err;
 
 // `err` -- refusals, each with a rule tag.
 //
-// The Rust this ports answers `Err(String)` and stops at the first one;
-// the checker collects a list. Here every refusal is recorded as a
+// The parser stops at the first refusal; the checker collects a list. Every refusal is recorded as a
 // `(rule, message)` pair in one list (`mem.err_list_slot`), and a caller
 // that cannot go on returns `-1` after asking `failed`. The rule is a
 // stable kebab-case name, so a test or a tool can match it without

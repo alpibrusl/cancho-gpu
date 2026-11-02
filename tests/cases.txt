@@ -1,5 +1,5 @@
 # <file.chx> [name=value ...] -- recorded in golden/ by scripts/record-golden.sh
-# The kernels of lex-gpu, at the sizes its README uses and at others, then cases of our own.
+# The ported kernels, at the sizes the original README used and at others, then cases of our own.
 tests/chx/ported/silu_mul.chx
 tests/chx/ported/rmsnorm.chx n=4096 eps=0.00001
 tests/chx/ported/rmsnorm.chx n=4096 eps=1e-5
@@ -110,7 +110,7 @@ tests/chx/ported/rmsnorm.chx n=7475 eps=5462037.539898128
 tests/chx/ported/rmsnorm.chx n=7768 eps=11644.949
 tests/chx/ported/rmsnorm.chx n=5073 eps=1.2e-22
 tests/chx/ported/rmsnorm.chx n=4663 eps=34904381156.8685
-# Every refusal fixture: the Rust must refuse it as well.
+# Every refusal fixture: each must be refused (recorded with REFUSED).
 tests/reject/bounds.chx n=64
 tests/reject/budget.chx 
 tests/reject/carry.chx n=64
@@ -127,7 +127,7 @@ tests/reject/syntax.chx
 tests/reject/type.chx n=8
 tests/reject/unbound.chx n=4
 tests/reject/use-after-move.chx n=8
-# `--run`: the interpreter's summary, against the Rust's (docs/design.md §10).
+# `--run`: the interpreter's summary, recorded (docs/design.md §10).
 tests/chx/ported/silu_mul.chx --run
 tests/chx/ported/rmsnorm.chx n=4096 eps=1e-5 --run
 tests/chx/ported/rmsnorm.chx n=7 eps=0.25 --run
@@ -245,7 +245,7 @@ tests/chx/bwd_db.chx r=64 n=32
 tests/chx/bwd_db.chx r=64 n=32 --run
 tests/chx/bwd_sigmoid.chx r=8 n=64
 tests/chx/bwd_sigmoid.chx r=8 n=64 --run
-# Cases for lowering paths the Rust emitter never had (the register-fragment NVFP4 product, a schedule's `frag`, docs/kernels.md section 6):
+# Cases for lowering paths the original emitter never had (the register-fragment NVFP4 product, a schedule's `frag`, docs/kernels.md section 6):
 tests/chx/matvec_fp4_batch.chx m=1 n=17408 k=5120
 tests/chx/matvec_fp4_batch.chx m=2 n=17408 k=5120
 tests/chx/matvec_fp4_batch.chx m=8 n=17408 k=5120
