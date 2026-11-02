@@ -5,8 +5,10 @@ algo gated_norm(h, n, eps)
   in  z: f32[h, n]
   in  w: f32[1, n]
   out y: f32[h, n]
+  tile br
 {
-  let x  = load x
+  grid i over h / br
+  let x  = load x[i * br, 0 ; br, n]
   let sq = &x * &x
   let ss = rowsum sq
   let ms = ss * (1 / n)
@@ -15,11 +17,11 @@ algo gated_norm(h, n, eps)
   let xn = x * rs
   let w  = load w
   let xw = xn * w
-  let zt = load z
+  let zt = load z[i * br, 0 ; br, n]
   let sg = sigmoid &zt
   let sz = zt * sg
-  store xw * sz -> y
+  store xw * sz -> y[i * br, 0]
 }
 
-schedule gated_norm for apple-m-series { threads 256 }
-schedule gated_norm for nvidia-ada     { threads 256 }
+schedule gated_norm for apple-m-series { threads 128 br 1 }
+schedule gated_norm for nvidia-ada     { threads 128 br 1 }
