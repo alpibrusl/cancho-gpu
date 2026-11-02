@@ -71,7 +71,7 @@ the call and matmul cases **[read]**). Probes, compiled and interpreted with
 | `y = x w^T` w.r.t. `w` | `dw = matmul_nt dyt xt`, the host supplying `dY^T` and `X^T` | **[measured]** compiles, runs; with `r=256` too |
 | bias gradient | `db = matmul ones dy`, a row of ones | **[measured]** compiles, runs |
 | sigmoid | `dz = dy * (s - &s * &s)` | **[measured]** compiles, runs |
-| ReLU | needs `max` or a compare | **[measured]** refused: no such operation (`syntax`) |
+| ReLU | needs `max` or a compare | was refused (`syntax`); **now `relu` and its derivative `step` are surface operations** (`chx.md`, `tests/chx/activations.chx`), and a ReLU network trains on the device (`resident.md` section 12.3) |
 
 The probes are now `tests/chx/bwd_dx.chx`, `bwd_dw.chx`, `bwd_db.chx` and
 `bwd_sigmoid.chx`, and *the values are right* **[measured]**: `tests/kernels.py`
@@ -96,7 +96,7 @@ Findings that shaped the table:
   will spend borrows the way `softmax.chx` does.
 * **A constant has no shape of its own:** `1 - s` is refused
   (`a constant needs something to take its shape from`), hence `s - s*s` above.
-* **ReLU has no derivative to write** because it has no forward. SiLU and
+* **ReLU had no derivative to write** because it had no forward; `relu` and `step` were added to the surface since. SiLU and
   softplus are expressible (`sigmoid` is the softplus derivative), and are what
   Qwen uses.
 * **No column reduction** (`colsum`); the ones-row product above stands in for
@@ -220,6 +220,6 @@ to it; this document touches only cancho-gpu.
 * Whether the summation order of a batch gradient can be pinned on a GPU, and
   at what cost.
 * A `matmul_tn` or transposing load (a lex-gpu change).
-* ReLU (`max`) in the surface.
+* ~~ReLU (`max`) in the surface~~ done: `relu` and `step`. A general binary `max a b` is still not spelled.
 * Atomics, or another way to reduce across thread groups.
 * OpenNN's current numbers, from running it rather than reading its pages.

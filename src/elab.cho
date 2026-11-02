@@ -543,6 +543,10 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
             u = kinds.sigmoid();
         } else if text.is(t, f, "softplus") {
             u = kinds.softplus();
+        } else if text.is(t, f, "relu") {
+            u = kinds.relu();
+        } else if text.is(t, f, "step") {
+            u = kinds.step();
         } else {
             return bad(m, t, "unbound", text.f1(m, t, "`$` is not an operation here", f));
         }

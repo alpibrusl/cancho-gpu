@@ -373,3 +373,10 @@ version, which was 5.1 ms a step; with the grid, 1.0). The 0.127 ms a step that 
 `tests/train.py` holds it to the float64 reference (minibatches of 128 of 1024, 40 steps, so five laps of a table of 8): the CPU session to 1e-4 at steps 1, 2, 3, 10 and 40, and the Metal session to the CPU session's losses.
 **What it buys** (16384 x 64 x 128, lr 0.003, Metal, 300 epochs each; the loss is on all the data, from the returned parameters): full batch, 300 steps, 1.01 ms a step, 0.28 s, loss **0.0217**; minibatches of 2048, 2400 steps, 0.39 ms a step, 0.93 s, loss **0.00054**.
 Same passes over the data, 40 times lower loss for 3.3 times the time: the step is cheaper but there are eight times as many. (One learning rate for both and one run each: it shows that minibatches work through the table, not which batch size is best.)
+
+### 12.3 A ReLU network
+
+`relu` and its derivative `step` (1 where x > 0) are now surface operations (`chx.md`; `tests/chx/activations.chx` with a float64 reference and a mutant). `mlp_session.write(..., act="relu")` (or `--relu`) uses `mlp_fwd_relu.chx` and `mlp_dzt_relu.chx`:
+the hidden layer is `relu(w1 x^T + b1)` and its backward is `step(ht)` in place of `ht (1 - ht)` (`ht > 0` exactly where the pre-activation is). `tests/train.py`: on 1024 samples of 16 features and 16 hidden units the CPU session's loss after 1, 10 and 40 steps equals the float64
+reference's (0.299027, 0.104148, 0.013525 against 0.299027, 0.104149, 0.013525), the loss falls from 0.2990 to 0.0135, and the Metal session equals the CPU session to 1e-4. Not measured: the step time of the ReLU network (the kernels differ from the sigmoid ones in two element-wise operations).
+`matmul_tn` is still not a surface operation: the transposed orientation of `mlp_fwd.chx` (a column of `ht` is a sample) makes it unnecessary here, at the price of a transposed copy of the data (`xt`).

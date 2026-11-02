@@ -1,0 +1,40 @@
+// The forward pass of a two-layer network on r samples of k features, with hd ReLU hidden units and one output, written
+// transposed (a column of ht is one sample's hidden vector) so that the backward kernels need no transposing load
+// (docs/training.md section 4):
+//
+//     ht = relu(w1 x^T + b1)        e = w2 ht + b2 - t
+//
+// w1 is [hd, k], b1 a column [hd, 1], w2 a row [1, hd], b2 [1, 1], t a row of r targets; e is a row of r residuals. One threadgroup
+// takes bm samples.
+algo mlp_fwd_relu(r, k, hd, bm)
+  in  x:  f32[r, k]
+  in  w1: f32[hd, k]
+  in  b1: f32[hd, 1]
+  in  w2: f32[1, hd]
+  in  b2: f32[1, 1]
+  in  t:  f32[1, r]
+  out ht: f32[hd, r]
+  out e:  f32[1, r]
+{
+  grid i over r / bm
+  let xt = load x[i * bm, 0 ; bm, k]
+  let wt = load w1
+  let zt = matmul_nt wt xt
+  let bt = load b1
+  let o  = zeros f32[1, bm]
+  let on = o + 1.0
+  let bb = matmul bt &on
+  let zb = zt + bb
+  let h  = relu zb
+  store &h * 1.0 -> ht[0, i * bm]
+  let v  = load w2
+  let yt = matmul v h
+  let c  = load b2
+  let cb = matmul c on
+  let yb = yt + cb
+  let tt = load t[0, i * bm ; 1, bm]
+  store yb - tt -> e[0, i * bm]
+}
+
+schedule mlp_fwd_relu for apple-m-series { threads 128 }
+schedule mlp_fwd_relu for nvidia-ada     { threads 128 }

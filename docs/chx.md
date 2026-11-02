@@ -57,7 +57,7 @@ atom      := '&' NAME                                          // a borrow: the 
            | 'dequant_fp4' atom atom atom NUMBER               // q scales g group
            | 'add_window' atom NAME '[' ce {',' ce} ']'
            | 'stage' ('f16'|'f32') atom
-           | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log') atom
+           | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log'|'relu'|'step') atom
            | 'for' NAME 'in' ce '..' ce [ 'with' NAME {',' NAME} ] '{' block '}'
 space     := '@' ('reg' | 'shared' | 'frag')
 
@@ -102,6 +102,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `zeros T` | a tile of zeros |
 | `a + b`, `a - b`, `a * b`, `a / b` | elementwise, with the broadcasts of §4, `f32` unless both are another type |
 | `sigmoid`, `softplus`, `exp`, `log`, `rsqrt` | elementwise: `1/(1+e^-x)`, `ln(1+e^x)`, `e^x`, `ln x`, `1/sqrt(x)`; accuracy is §7 |
+| `relu`, `step` | elementwise: `max(x, 0)` and `1 if x > 0 else 0` (the derivative of `relu`, with the value 0 at 0). Exact in f32, so no accuracy question |
 | `rowsum a`, `rowmax a` | the sum / maximum of each row of a 2-D tile: a 1-D tile of the row count |
 | `matmul a b` | `a b`, `[m,k] x [k,n]` to `[m,n]` |
 | `matmul_nt a b` | `a b^T`, `[m,k] x [n,k]` to `[m,n]` |

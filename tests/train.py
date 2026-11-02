@@ -70,6 +70,16 @@ def main():
     if metal:
         out_dev = serve(metal, mb, "1\n1\n1\n7\n30\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(out_dev, out_mb)), f"Metal session on minibatches equals the CPU session's losses to 1e-4: {[round(v[0], 6) for v in out_dev]}")
+    # a ReLU network: relu and step in the surface (docs/chx.md)
+    rl = M.write(os.path.join(d, "relu"), 1024, 16, 16, 40, lr=0.01, act="relu")
+    rl_ref, _ = M.reference(1024, 16, 16, 40, lr=0.01, act="relu")
+    out_rl = serve(cpu, rl, "1\n9\n30\n", ["--target", "nvidia-ada"])
+    for line, at in zip(out_rl, (1, 10, 40)):
+        say(close(line[0], rl_ref[at - 1], 1e-4), f"CPU session, a ReLU network, {at} steps: loss {line[0]:.6f}, float64 reference {rl_ref[at - 1]:.6f}")
+    say(rl_ref[39] < 0.6 * rl_ref[0], f"the ReLU network learns: loss {rl_ref[0]:.4f} -> {rl_ref[39]:.4f}")
+    if metal:
+        out_rl_dev = serve(metal, rl, "1\n9\n30\n")
+        say(all(close(a[0], b[0], 1e-4) for a, b in zip(out_rl_dev, out_rl)), f"Metal session on the ReLU network equals the CPU session's losses to 1e-4: {[round(v[0], 6) for v in out_rl_dev]}")
     if metal:
         dev_small = serve(metal, session, "1\n9\n20\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(dev_small, out)), f"Metal session on the small network equals the CPU session's loss to 1e-4: {[round(v[0], 6) for v in dev_small]}")
