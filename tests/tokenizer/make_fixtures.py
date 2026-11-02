@@ -22,6 +22,9 @@ gf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gf)
 
 
+QWEN3_PATTERN = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+
+
 def byte_chars():
     chars, spare = [], 0
     for b in range(256):
@@ -162,13 +165,28 @@ def tokenizer(merges_as, ignore_merges=None, ensure_ascii=False, specials=True):
         vocab.setdefault(a + b, len(vocab))
     added = []
     if specials:
+        fresh = len(vocab)
         for c in ["<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|a|>", "<|a|b|>", "<|im|>"]:
-            added.append({"id": len(vocab) + len(added), "content": c, "special": True})
+            # The toy BPE is trained on text that contains some of these, so a few are also ordinary vocabulary entries. An added token
+            # whose text is already in the vocabulary has the vocabulary's id (that is what Hugging Face does, and a real tokenizer
+            # has no such overlap), so these fixtures say so; the rest get fresh ids.
+            if c in vocab:
+                tid = vocab[c]
+            else:
+                tid, fresh = fresh, fresh + 1
+            added.append({"id": tid, "content": c, "single_word": False, "lstrip": False, "rstrip": False, "normalized": False, "special": True})
     model = {"type": "BPE", "vocab": vocab,
              "merges": [[a, b] for a, b in merges] if merges_as == "pairs" else [a + " " + b for a, b in merges]}
     if ignore_merges is not None:
         model["ignore_merges"] = ignore_merges
-    doc = {"version": "1.0", "added_tokens": added, "normalizer": {"type": "NFC"}, "model": model}
+    # A complete tokenizer.json, as Hugging Face `tokenizers` reads it (tests/tokenizer_hf.py compares with it): the Qwen3 pre-tokenizer
+    # and the ByteLevel decoder spelled out.
+    pre = {"type": "Sequence", "pretokenizers": [
+        {"type": "Split", "pattern": {"Regex": QWEN3_PATTERN}, "behavior": "Isolated", "invert": False},
+        {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": False}]}
+    doc = {"version": "1.0", "truncation": None, "padding": None, "added_tokens": added, "normalizer": {"type": "NFC"}, "pre_tokenizer": pre,
+           "post_processor": None, "decoder": {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": False},
+           "model": model}
     return json.dumps(doc, ensure_ascii=ensure_ascii, separators=(",", ":")).encode("utf-8"), vocab, merges, added
 
 
@@ -211,6 +229,12 @@ def reject():
     out["tok-merge-split.json"] = bad(d)
     d = json.loads(good); d["added_tokens"][0]["content"] = ""
     out["tok-added.json"] = bad(d)
+    d = json.loads(good); d["added_tokens"][0]["normalized"] = True
+    out["tok-added-normalized.json"] = bad(d)
+    d = json.loads(good); d["pre_tokenizer"] = {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": False, "use_regex": True}
+    out["tok-pre-tokenizer.json"] = bad(d)
+    d = json.loads(good); d["pre_tokenizer"]["pretokenizers"][0]["pattern"]["Regex"] = "\\p{L}+"
+    out["tok-pre-tokenizer-regex.json"] = bad(d)
     out["tok-gguf-model.gguf"] = gguf_tokenizer(model="llama")
     out["tok-gguf-pre.gguf"] = gguf_tokenizer(pre="llama-bpe")
     out["tok-gguf-pre-missing.gguf"] = gguf_tokenizer(pre=None)

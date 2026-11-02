@@ -4,13 +4,11 @@ module bpe;
 // `bpe` -- a byte-level BPE tokenizer (slice 9a, stage 3 of cancho#251,
 // issue #5; `docs/runtime.md` §9).
 //
-// It began as a port of lex-rt's `tokenizer.rs` and **does not agree with Hugging Face
-// `tokenizers` on real Qwen tokenizers** (issue #51, `tests/tokenizer_hf.py`): the split before
-// merging is the one hand-written GPT-4-shaped pattern (`split`), whatever the file's
-// `pre_tokenizer` says; `\s*[\r\n]+` does not take the longest run; `\p{L}`, `\p{M}`, `\p{N}` are
-// approximations (`\p{M}` is the blocks that appear in text); and NFC lacks the singleton mappings.
-// The differences are pinned by that test, and a tokenizer that disagrees tokenises wrongly
-// without an error, so the narrowness is recorded, not widened, until it is fixed.
+// It began as a port of lex-rt's `tokenizer.rs` and was held to it; Hugging Face `tokenizers` is the
+// oracle now, and the two agree on real Qwen tokenizers (issue #51, `tests/tokenizer_hf.py`). The
+// split before merging is the file's own `pre_tokenizer`, when it is a `Split` with one of the two
+// Qwen regexes (`pattern_of`; anything else is refused), emulated exactly (`match_end`); the classes are
+// the Unicode general categories (`unicode.cho`); and the added tokens are found before NFC.
 //
 // Everything is positions in the text pool and records in `m`. A token's
 // text is `(start, length)` in the pool: in place in the file where it is
@@ -70,6 +68,11 @@ pub fn f_byte_char() -> [] int {
 }
 
 // Address of 68 words: the bytes that are lifted, in order.
+// 0 for the Qwen3 pattern (`[\p{L}\p{M}]` letters, the default), 1 for the Qwen2 one (`\p{L}`).
+pub fn f_pre() -> [] int {
+    return 9;
+}
+
 pub fn f_lifted() -> [] int {
     return 8;
 }
@@ -243,7 +246,7 @@ fn set_text[&m](m: &!m [int], tk: int, id: int, start: int, n: int) -> [] int {
 }
 
 fn new_record[&m](m: &!m [int], ids: int, merges: int, vocab_cap: int) -> [] int {
-    let tk = mem.rec(m, 9);
+    let tk = mem.rec(m, 10);
     m[tk + f_ids()] = ids;
     m[tk + f_start()] = mem.grab(m, ids + 1);
     m[tk + f_len()] = mem.grab(m, ids + 1);
@@ -300,6 +303,73 @@ fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) ->
     return (text.start(h), text.size(h));
 }
 
+// Is the boolean member `key` of the object at `node` present and true?
+fn flag_set[&s, &p](src: &s [byte], tp: &p [int], node: int, key: &static [byte]) -> [] bool {
+    let v = json.get(src, tp, node, key);
+    return v >= 0 && json.is_bool(tp, v) && json.to_bool(tp, v);
+}
+
+// The Regex string node of a pre-tokenizer node that is an isolating `Split` (`{"pattern": {"Regex": "..."}, "behavior":
+// "Isolated", "invert": false}`), or -1.
+fn regex_node[&s, &p](src: &s [byte], tp: &p [int], node: int) -> [] int {
+    let pat = json.get(src, tp, node, "pattern");
+    if pat < 0 {
+        return 0 - 1;
+    }
+    let rx = json.get(src, tp, pat, "Regex");
+    let behavior = json.get(src, tp, node, "behavior");
+    if rx < 0 || !json.is_string(tp, rx) || behavior < 0 || !json.is_string(tp, behavior) || !json.string_equals(src, tp, behavior, "Isolated") {
+        return 0 - 1;
+    }
+    let invert = json.get(src, tp, node, "invert");
+    if invert >= 0 && json.to_bool(tp, invert) {
+        return 0 - 1;
+    }
+    return rx;
+}
+
+// Which pattern the file's `pre_tokenizer` asks for: 0 for Qwen3's (`[\p{L}\p{M}]` letters; also what a file with no `pre_tokenizer`
+// gets, the toy fixtures'), 1 for Qwen2's (`\p{L}`), or -1 for one this splitter does not implement. A `Split` that isolates its
+// matches with one of the two regexes, then (if there is one) a `ByteLevel` that does not apply the GPT-2 regex itself.
+fn pattern_of[&s, &p](src: &s [byte], tp: &p [int]) -> [] int {
+    let pre = json.get(src, tp, 0, "pre_tokenizer");
+    if pre < 0 || json.is_null(tp, pre) {
+        return 0;
+    }
+    var rx = regex_node(src, tp, pre);
+    var plain = true;
+    let seq = json.get(src, tp, pre, "pretokenizers");
+    if seq >= 0 && json.is_array(tp, seq) {
+        var e = seq + 1;
+        var j = 0;
+        while j < json.count(tp, seq) {
+            let r = regex_node(src, tp, e);
+            if r >= 0 {
+                rx = r;
+            }
+            let ty = json.get(src, tp, e, "type");
+            if ty >= 0 && json.is_string(tp, ty) && json.string_equals(src, tp, ty, "ByteLevel") {
+                let ur = json.get(src, tp, e, "use_regex");
+                if ur < 0 || json.to_bool(tp, ur) {
+                    plain = false;
+                }
+            }
+            e = json.skip(tp, e);
+            j = j + 1;
+        }
+    }
+    if rx < 0 || !plain {
+        return 0 - 1;
+    }
+    if json.string_equals(src, tp, rx, "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
+        return 0;
+    }
+    if json.string_equals(src, tp, rx, "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
+        return 1;
+    }
+    return 0 - 1;
+}
+
 // Load a `tokenizer.json` whose bytes are `t[hs..hs + n]`: the record, or -1.
 pub fn from_json[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int {
     let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
@@ -310,6 +380,10 @@ pub fn from_json[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int
         return err.fail(m, t, "tok-json", text.f1(m, t, "tokenizer.json is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
     }
     let src = t[hs..hs + n];
+    let pattern = pattern_of(src, m[tape..tape + words]);
+    if pattern < 0 {
+        return bad(m, t, "tok-pre-tokenizer", "the pre_tokenizer is not a Split with one of the two Qwen regexes and a ByteLevel without its own regex");
+    }
     let root = json.get(src, m[tape..tape + words], 0, "model");
     if root < 0 || !json.is_object(m[tape..tape + words], root) {
         return bad(m, t, "tok-model", "tokenizer.json has no `model`");
@@ -420,6 +494,9 @@ pub fn from_json[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int
                 if cn == 0 {
                     return bad(m, t, "tok-added", "an added token has empty content");
                 }
+                if flag_set(src, m[tape..tape + words], a, "normalized") || flag_set(src, m[tape..tape + words], a, "lstrip") || flag_set(src, m[tape..tape + words], a, "rstrip") || flag_set(src, m[tape..tape + words], a, "single_word") {
+                    return bad(m, t, "tok-added", "an added token with normalized, lstrip, rstrip or single_word set is not implemented: it is matched in the text as it is");
+                }
                 let id = json.to_int(src, m[tape..tape + words], idn);
                 mem.push(m, m[tk + f_added()], mem.rec3(m, cs, cn, id));
                 set_text(m, tk, id, cs, cn);
@@ -429,6 +506,7 @@ pub fn from_json[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int
         }
     }
     sort_added(m, m[tk + f_added()]);
+    m[tk + f_pre()] = pattern;
     let ig = json.get(src, m[tape..tape + words], root, "ignore_merges");
     if ig >= 0 && json.to_bool(m[tape..tape + words], ig) {
         m[tk + f_ignore()] = 1;
@@ -440,8 +518,14 @@ pub fn from_json[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int
 // Encoding
 // ---------------------------------------------------------------------
 
-fn is_letter(cp: int) -> [] bool {
-    return unicode.is_alphabetic(cp) || unicode.is_mark(cp);
+// `[\p{L}\p{M}]` in the Qwen3 pattern, `\p{L}` in the Qwen2 one.
+fn letterlike(cp: int, marks: bool) -> [] bool {
+    return unicode.is_letter(cp) || marks && unicode.is_mark(cp);
+}
+
+// The class `[^\s\p{L}\p{M}\p{N}]` (Qwen3) or `[^\s\p{L}\p{N}]` (Qwen2) of the punctuation alternative.
+fn symbol(cp: int, marks: bool) -> [] bool {
+    return !unicode.is_whitespace(cp) && !letterlike(cp, marks) && !unicode.is_numeric(cp);
 }
 
 fn is_newline(cp: int) -> [] bool {
@@ -501,117 +585,106 @@ fn contraction[&m](m: &!m [int], cps: int, i: int) -> [] int {
     return hit;
 }
 
-// The pre-tokenizer's split of the scalar values `cps` whose byte offsets
-// are `at` (one more than `cps`): a list of `[from, to)` character
-// indices, two words a piece. See `tokenizer.rs`, `split`.
-fn pieces_of[&m](m: &!m [int], cps: int) -> [] int {
+// The end (exclusive, as an index into `cps`) of the match of the pre-tokenizer's regex at index `i`, or -1. The regex is, in order,
+//
+//     (?i:'s|'t|'re|'ve|'m|'ll|'d)
+//   | [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+          (Qwen2: ...?\p{L}+)
+//   | \p{N}
+//   |  ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*           (Qwen2: ...[^\s\p{L}\p{N}]+...)
+//   | \s*[\r\n]+
+//   | \s+(?!\S)
+//   | \s+
+//
+// and a backtracking engine takes the first alternative that matches, greedy as written. The three whitespace alternatives are worked
+// out, for a maximal run of whitespace `[i, w)`: `\s*[\r\n]+` backs off to the last newline of the run and ends there; `\s+(?!\S)` ends
+// before the run's last character unless the run reaches the end of the text, and does not match a single character; `\s+` takes the run.
+fn match_end[&m](m: &!m [int], cps: int, n: int, i: int, marks: bool) -> [] int {
+    let c = mem.get(m, cps, i);
+    // 1. A contraction.
+    if c == 39 && i + 1 < n {
+        let hit = contraction(m, cps, i);
+        if hit > 0 {
+            return i + 1 + hit;
+        }
+    }
+    // 2. An optional lead-in (not a newline, letter or number), then a run of letters. The lead-in is tried first and given back
+    // if no letter follows it.
+    var from = 0 - 1;
+    if c != 13 && c != 10 && !unicode.is_letter(c) && !unicode.is_numeric(c) && i + 1 < n && letterlike(mem.get(m, cps, i + 1), marks) {
+        from = i + 1;
+    } else if letterlike(c, marks) {
+        from = i;
+    }
+    if from >= 0 {
+        var j = from;
+        while j < n && letterlike(mem.get(m, cps, j), marks) {
+            j = j + 1;
+        }
+        return j;
+    }
+    // 3. One number.
+    if unicode.is_numeric(c) {
+        return i + 1;
+    }
+    // 4. An optional space, a run of symbols, then newlines.
+    var lead = 0 - 1;
+    if c == 32 && i + 1 < n && symbol(mem.get(m, cps, i + 1), marks) {
+        lead = i + 1;
+    } else if symbol(c, marks) {
+        lead = i;
+    }
+    if lead >= 0 {
+        var j = lead;
+        while j < n && symbol(mem.get(m, cps, j), marks) {
+            j = j + 1;
+        }
+        while j < n && is_newline(mem.get(m, cps, j)) {
+            j = j + 1;
+        }
+        return j;
+    }
+    // 5-7. Whitespace.
+    if unicode.is_whitespace(c) {
+        var w = i;
+        var last = 0 - 1;
+        while w < n && unicode.is_whitespace(mem.get(m, cps, w)) {
+            if is_newline(mem.get(m, cps, w)) {
+                last = w;
+            }
+            w = w + 1;
+        }
+        if last >= 0 {
+            return last + 1;
+        }
+        if w == n {
+            return w;
+        }
+        if w - i >= 2 {
+            return w - 1;
+        }
+        return w;
+    }
+    return 0 - 1;
+}
+
+// The pre-tokenizer's split of the scalar values `cps` into pieces: a list of `[from, to)` character indices, two words a piece. A
+// stretch of characters that no alternative matches is one piece (the library's `Isolated` split does the same).
+fn pieces_of[&m](m: &!m [int], cps: int, marks: bool) -> [] int {
     let n = mem.size(m, cps);
     let out = mem.list(m);
     var i = 0;
     while i < n {
-        let start = i;
-        let c = mem.get(m, cps, i);
-        var done = false;
-        // 1. A contraction.
-        if c == 39 && i + 1 < n {
-            let hit = contraction(m, cps, i);
-            if hit > 0 {
-                i = i + 1 + hit;
-                mem.push(m, out, start);
-                mem.push(m, out, i);
-                done = true;
+        let e = match_end(m, cps, n, i, marks);
+        var stop = e;
+        if e < 0 {
+            stop = i + 1;
+            while stop < n && match_end(m, cps, n, stop, marks) < 0 {
+                stop = stop + 1;
             }
         }
-        // 2. An optional lead-in, then a run of letters.
-        if !done {
-            var lead = 0;
-            if !is_letter(c) && !unicode.is_numeric(c) && !is_newline(c) {
-                lead = 1;
-            }
-            if i + lead < n && is_letter(mem.get(m, cps, i + lead)) {
-                i = i + lead;
-                while i < n && is_letter(mem.get(m, cps, i)) {
-                    i = i + 1;
-                }
-                mem.push(m, out, start);
-                mem.push(m, out, i);
-                done = true;
-            }
-        }
-        // 3. One digit.
-        if !done && unicode.is_numeric(c) {
-            i = i + 1;
-            mem.push(m, out, start);
-            mem.push(m, out, i);
-            done = true;
-        }
-        // 4. An optional space, a run of punctuation, then newlines.
-        if !done {
-            var lead = 0;
-            if c == 32 {
-                lead = 1;
-            }
-            var hit = false;
-            if i + lead < n {
-                let d = mem.get(m, cps, i + lead);
-                hit = !unicode.is_whitespace(d) && !is_letter(d) && !unicode.is_numeric(d);
-            }
-            if hit {
-                i = i + lead;
-                while i < n && !unicode.is_whitespace(mem.get(m, cps, i)) && !is_letter(mem.get(m, cps, i)) && !unicode.is_numeric(mem.get(m, cps, i)) {
-                    i = i + 1;
-                }
-                while i < n && is_newline(mem.get(m, cps, i)) {
-                    i = i + 1;
-                }
-                mem.push(m, out, start);
-                mem.push(m, out, i);
-                done = true;
-            }
-        }
-        // 5-7. Whitespace.
-        if !done && unicode.is_whitespace(c) {
-            var j = i;
-            while j < n && unicode.is_whitespace(mem.get(m, cps, j)) && !is_newline(mem.get(m, cps, j)) {
-                j = j + 1;
-            }
-            if j < n && is_newline(mem.get(m, cps, j)) {
-                while j < n && is_newline(mem.get(m, cps, j)) {
-                    j = j + 1;
-                }
-                mem.push(m, out, i);
-                mem.push(m, out, j);
-                i = j;
-                done = true;
-            } else {
-                // Whitespace with something after it keeps its last
-                // space for that something.
-                j = i;
-                while j < n && unicode.is_whitespace(mem.get(m, cps, j)) {
-                    j = j + 1;
-                }
-                var end = j;
-                if j < n && j > i {
-                    end = j - 1;
-                }
-                if end > i {
-                    mem.push(m, out, i);
-                    mem.push(m, out, end);
-                    i = end;
-                } else {
-                    i = j;
-                    mem.push(m, out, start);
-                    mem.push(m, out, i);
-                }
-                done = true;
-            }
-        }
-        // Nothing matched: one character.
-        if !done {
-            i = i + 1;
-            mem.push(m, out, start);
-            mem.push(m, out, i);
-        }
+        mem.push(m, out, i);
+        mem.push(m, out, stop);
+        i = stop;
     }
     return out;
 }
@@ -674,7 +747,7 @@ fn merge[&m, &t](m: &!m [int], t: &!t [byte], tk: int, s: int, sn: int, out: int
 // text has no added token in it): appended to `out`.
 fn encode_ordinary[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int, out: int) -> [] int {
     let cps = unicode.scalars(m, t, from, to);
-    let pieces = pieces_of(m, cps);
+    let pieces = pieces_of(m, cps, m[tk + f_pre()] == 0);
     // Byte offset of each scalar value.
     let at = mem.list(m);
     var p = from;
@@ -751,11 +824,35 @@ fn first_added[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int)
 // Text to ids: the ids of the UTF-8 text `t[from..to]` as a list, or -1
 // with a refusal (`tok-utf8`).
 pub fn encode[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) -> [] int {
-    let cps = unicode.scalars(m, t, from, to);
-    if cps < 0 {
+    if unicode.scalars(m, t, from, to) < 0 {
         return err.fail(m, t, "tok-utf8", text.lit(m, t, "the text is not well-formed UTF-8"));
     }
-    // NFC, written back into the pool.
+    // The added tokens are found in the text as it is, then each stretch between them is normalised (NFC) and split: the
+    // normaliser does not see an added token, and does not make one (`<|im_start|>` followed by U+0338 would otherwise compose
+    // `>` and U+0338 into U+226F before the token was looked for, issue #51).
+    let out = mem.list(m);
+    var rest = from;
+    var scanning = true;
+    while scanning && rest < to {
+        let (at, rec) = first_added(m, t, tk, rest, to);
+        if at < 0 {
+            encode_normalised(m, t, tk, rest, to, out);
+            scanning = false;
+        } else {
+            encode_normalised(m, t, tk, rest, at, out);
+            mem.push(m, out, m[rec + 2]);
+            rest = at + m[rec + 1];
+        }
+    }
+    return out;
+}
+
+// NFC of the well-formed text `t[from..to]`, written back into the pool, then its ids (appended to `out`).
+fn encode_normalised[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int, out: int) -> [] int {
+    if from >= to {
+        return 0;
+    }
+    let cps = unicode.scalars(m, t, from, to);
     let norm = unicode.nfc(m, cps);
     let ns = m[mem.text_slot()];
     var x = 0;
@@ -763,22 +860,7 @@ pub fn encode[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) 
         unicode.put_cp(m, t, mem.get(m, norm, x));
         x = x + 1;
     }
-    let ne = m[mem.text_slot()];
-    let out = mem.list(m);
-    var rest = ns;
-    var scanning = true;
-    while scanning && rest < ne {
-        let (at, rec) = first_added(m, t, tk, rest, ne);
-        if at < 0 {
-            encode_ordinary(m, t, tk, rest, ne, out);
-            scanning = false;
-        } else {
-            encode_ordinary(m, t, tk, rest, at, out);
-            mem.push(m, out, m[rec + 2]);
-            rest = at + m[rec + 1];
-        }
-    }
-    return out;
+    return encode_ordinary(m, t, tk, ns, m[mem.text_slot()], out);
 }
 
 // ---------------------------------------------------------------------

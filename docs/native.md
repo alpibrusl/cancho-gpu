@@ -1,6 +1,6 @@
 # Native: cancho-gpu at the speed of its language, and without the Rust oracle
 
-> **Status: N1, N2 and N2f are built and measured (§6); N3, N4 and N5 are not.**
+> **Status: N1, N2 and N2f are built and measured (§6) and no Rust tool is left; N3, N4 and N5 are not.**
 > Written before the code; each step of §6 ends at a number. Claims are marked
 > **[measured]** (with the command), **[read]** (from a document or the source) or
 > **[open]**. It answers two questions that arrived tangled: *why is cancho-gpu
@@ -183,7 +183,7 @@ first. `rank >= 3` windows still use `elem`; the kernels in `tests/cases.txt` th
 
 **Not done, and said plainly:**
 
-* **N2f is done below; one Rust tool is left (the Unicode table generator).**
+* **N2f is done below; no Rust tool is left.**
 * **CUDA stays weaker than before** (§4.5): its text is a regression record and nothing else, until there is an NVIDIA machine.
 * **The tests in `tests/cases.txt` that compute nothing numeric** (the 26 refusals, the lowering-only cases) have no float64
   reference, as before; their evidence is the goldens and the reject fixtures.
@@ -201,22 +201,23 @@ The GGUF reader, the tokenizer, the sampler and the Unicode tables were held to 
   bit-identical** to the goldens the Rust made (on this platform; `numpy.exp` and the platform's `expf` agree here, and may not
   elsewhere). `tools/sampler_dump.rs` is deleted. This is a port of a design, not a check against another design, and the
   doc says so.
-* **Tokenizer: the oracle is Hugging Face `tokenizers`, and it disagrees with us.** `tools/tokenizer_dump.py` uses the library, which
-  reads each `tokenizer.json`'s own normalizer, pre-tokenizer and decoder. On the real Qwen2.5-0.5B and Qwen3.8-27B tokenizers it
-  differs from `cancho-gpu tokenize` in 3 of the 37 hand-written records (the same three on both) and in 234 and 211 of the 500
-  random ones. The causes, from the first differing character: NFC lacks the singleton mappings (`Ω` U+2126, `Å` U+212B; the
-  largest class, 107 of 211); `\s*[\r\n]+` does not take the longest run (`"  \n  \n x"`: 2228 2228 830 against 29773 830, on the
-  model this repo serves); `\p{L}`, `\p{M}`, `\p{N}` are approximations (`Ⅷ`, `⁴`, `½`, Thai vowel marks); and the pattern is not
-  read from the file. Ordinary text agrees. **The Rust oracle agreed with us because we were written to match it** (`bpe.cho`
-  said so), and the earlier "identical over 3,811 records through 4 real tokenizers" is true of that oracle only. This is the
-  most valuable thing N2f found, and it is not fixed here: issue
-  [#51](https://github.com/alpibrusl/cancho-gpu/issues/51), pinned by `tests/tokenizer_hf.py` (the differing records and counts
-  are exact; a regression or a fix both fail it until the pin is moved). `tools/tokenizer_dump.rs` is deleted; the toy
-  fixtures' goldens stay as regression records (`golden/tokenizer/PROVENANCE`), because the library cannot read those minimal files.
-* **Unicode tables: not replaced, and why.** `src/unicode_data.cho` holds Rust's `is_alphabetic`/`is_numeric`/`is_whitespace` and
-  lex-rt's NFC tables. Python's `unicodedata` has no `Alphabetic` property, so they cannot be regenerated like for like; the
-  right replacement is the general categories the regexes name (`\p{L}`, `\p{M}`, `\p{N}`) and full NFC, which is the fix for #51.
-  `tools/unicode_tables.rs` and `scripts/regen-unicode-data.sh` stay until then.
+* **Tokenizer: the oracle is Hugging Face `tokenizers`, it disagreed with us, and it was fixed (issue #51).** `tools/tokenizer_dump.py` uses
+  the library, which reads each `tokenizer.json`'s own normalizer, pre-tokenizer and decoder. While `cancho-gpu tokenize` was held to
+  the Rust it differed from the library on the real Qwen2.5-0.5B and Qwen3.8-27B tokenizers in 3 of 37 hand-written records and in 234
+  and 211 of 500 random ones. **The Rust oracle had agreed with us because we were written to match it** (`bpe.cho` said so). The
+  causes, found by the first differing character of each record, each fixed: NFC had no decomposition (`Ω` U+2126, `Å` U+212B; the
+  largest class, 107 of 211); `\s*[\r\n]+` did not end at the last newline of a whitespace run (`"  \n  \n x"`: 2228 2228 830 against 29773 830,
+  on the model this repo serves); `\p{L}`, `\p{M}`, `\p{N}` were approximations (`Ⅷ`, `⁴`, `½`, Thai vowel marks); the pattern was not read
+  from the file; and added tokens were looked for after NFC, so `<|im_start|>` followed by U+0338 lost the token (found by the very
+  last record of the 500). **Result: 0 differences** on 37 + 500 + 1,000 records for both tokenizers (`tests/tokenizer_hf.py`, in the gate;
+  the 1,000 from a seed the fixing was not tuned against), and on 3,000 further random and 800 real prose and code records (2.17
+  million characters); the toy fixtures, made complete enough for the library to read, agree on all 537 records of each of three
+  variants and their goldens are now the library's output; speed is unchanged (0.50 s against 0.71 s on the prose). The splitter is an
+  exact emulation of the two Qwen regexes (the Qwen2 and Qwen3 patterns differ in `\p{M}`), read from the file, and any other
+  pre-tokenizer is refused (`tok-pre-tokenizer`) instead of being split wrongly. Not implemented: the `(?i:` group's Unicode case folding.
+* **Unicode tables: replaced.** `src/unicode_data.cho` is generated from Python's `unicodedata` (`tools/unicode_tables.py`, Unicode 16.0): the
+  general categories L, M, N, White_Space, the combining classes, and the canonical decompositions and compositions. Regenerating
+  reproduces the committed file. `tools/unicode_tables.rs` is deleted.
 
 **Gates added:** `tests/oracles.py` (the Python oracles against their goldens, ~7 s; both fail when broken on purpose),
 `tests/tokenizer_hf.py` (skips when the library or the tokenizer files are missing). `scripts/regen-gguf-golden.sh` and
