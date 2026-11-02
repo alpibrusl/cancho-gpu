@@ -10,8 +10,14 @@ which prints, for every output, its mean, its peak and its first four values.
 The same inputs go through plain Python (binary64) and the summaries must
 agree: the mean and peak to the four decimals they are printed to, the first
 four values to 1e-5 (the kernel sums in f32, in order). The goldens already
-hold the kernels' text and summaries byte-for-byte against lex-gpu; this is
-what says the summaries are *right*.
+hold the kernels' text and summaries byte for byte (they were first recorded
+from lex-gpu's Rust emitter and are regression goldens now, `docs/chx.md` section 6); this is what says the
+summaries are *right*.
+
+    kernels.py <cancho-gpu> [--new] [--mutants]
+
+`--new` runs only the references of `docs/native.md` N2b (the kernels that had none); `--mutants` makes one deliberate
+change to a copy of each of those kernels and requires its reference to fail (`CHX_ROOT` points `run` at the copy).
 """
 import math
 import os
@@ -21,6 +27,7 @@ import sys
 import tempfile
 
 BIN = sys.argv[1]
+CHX_ROOT = os.environ.get("CHX_ROOT", "tests/chx")
 
 
 def lcg(sizes):
@@ -36,7 +43,7 @@ def lcg(sizes):
 
 
 def run(kernel, consts):
-    r = subprocess.run([BIN, "check", f"tests/chx/{kernel}.chx"] + consts + ["--run"], capture_output=True, text=True)
+    r = subprocess.run([BIN, "check", f"{CHX_ROOT}/{kernel}.chx"] + consts + ["--run"], capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"{kernel} {consts}: {r.stderr.strip()}")
     # {output: {target: (mean, peak, first four)}}: both targets are printed.
@@ -52,16 +59,16 @@ def summary(values):
     return sum(values) / len(values), max(abs(x) for x in values), values[:4]
 
 
-def check(name, per_target, want):
+def check(name, per_target, want, need=2, tol=1e-5):
     mean, peak, first = summary(want)
     ok = True
     for target, (gm, gp, gf) in sorted(per_target.items()):
-        good = abs(gm - mean) <= 6e-5 and abs(gp - peak) <= 6e-5 and all(abs(a - b) <= 1e-5 for a, b in zip(gf, first))
+        good = abs(gm - mean) <= 6e-5 and abs(gp - peak) <= 6e-5 and all(abs(a - b) <= tol for a, b in zip(gf, first))
         print(f"{'ok  ' if good else 'FAIL'} {name} [{target}]: kernel mean {gm} peak {gp}; reference mean {mean:.4f} peak {peak:.4f}")
         if not good:
             print(f"     first four: kernel {gf}, reference {first}")
         ok &= good
-    return ok and len(per_target) == 2
+    return ok and len(per_target) == need
 
 
 def rope(r, h, p):
@@ -457,4 +464,145 @@ ok &= check_full("bwd_db r=64 n=32", "bwd_db", ["r=64", "n=32"], ["ones", "dy"],
 ok &= check_full("bwd_sigmoid r=8 n=64", "bwd_sigmoid", ["r=8", "n=64"], ["z", "dy"], [8 * 64, 8 * 64], "dz", bwd_sigmoid(8, 64))
 ok &= check_full("attn_gate r=3 n=7", "attn_gate", ["r=3", "n=7"], ["o", "gate"], [21, 21], "y", attn_gate(3, 7))
 ok &= check_full("softmax r=4 n=64", "softmax", ["r=4", "n=64"], ["x"], [256], "y")
+# ---- N2b: the kernels that had no reference (docs/native.md) -------------------------------------------------------------------------
+
+def gemm_ref(m, n, k, wide_a=False):
+    """y = a w^T over f16 inputs, accumulated wide (the kernel's f32 sum differs in the last bits)."""
+    a, w = lcg([m * k, n * k])
+    a = [x if wide_a else f16(x) for x in a]
+    w = [f16(x) for x in w]
+    return [sum(a[i * k + c] * w[j * k + c] for c in range(k)) for i in range(m) for j in range(n)]
+
+
+def gemm_fp4_ref(m, n, k, residual=False):
+    """NVFP4 weights dequantised (code * block scale * the row's f32 scale), rounded to f16 by `stage f16`, against f16 activations."""
+    ins = lcg([m * k, n] + ([m * n] if residual else []))
+    x = [f16(v) for v in ins[0]]
+    g = ins[1]
+    w = fp4_weights(n, k)
+    out = []
+    for i in range(m):
+        for j in range(n):
+            acc = sum(x[i * k + c] * f16(e2m1(w[j * k + c][0]) * w[j * k + c][1] * g[j]) for c in range(k))
+            out.append(acc + ins[2][i * n + j] if residual else acc)
+    return out
+
+
+def rmsnorm_ref(n, eps):
+    x, w = lcg([n, n])
+    rs = 1 / math.sqrt(sum(a * a for a in x) / n + eps)
+    return [x[j] * rs * w[j] for j in range(n)]
+
+
+def silu_mul_ref(n):
+    g, u = lcg([n, n])
+    return [a / (1 + math.exp(-a)) * b for a, b in zip(g, u)]
+
+
+def softmax_ref(r, n):
+    x = lcg([r * n])[0]
+    out = []
+    for i in range(r):
+        v = x[i * n:(i + 1) * n]
+        mx = max(v)
+        e = [math.exp(a - mx) for a in v]
+        out += [a / sum(e) for a in e]
+    return out
+
+
+def rowops_ref(r, n):
+    x, b = lcg([r * n, n])
+    out = []
+    for i in range(r):
+        v = x[i * n:(i + 1) * n]
+        mx = max(v)
+        z = [softplus_(a - mx) + softplus_(b[j]) for j, a in enumerate(v)]
+        s = [1 / math.sqrt(a) for a in z]
+        ss = sum(s)
+        out += [2 * (s[j] * z[j]) / ss for j in range(n)]
+    return out
+
+
+def stage_ref(m, k, bk):
+    """The kernel adds the k / bk column slices of `a` into an [m, bk] accumulator and stores it at the origin of y."""
+    a = lcg([m * k])[0]
+    out = [0.0] * (m * k)
+    for i in range(m):
+        for c in range(bk):
+            out[i * k + c] = sum(a[i * k + p * bk + c] for p in range(k // bk))
+    return out
+
+
+def new_checks():
+    ok = True
+    for m, n, k in ((128, 128, 64), (48, 16, 32)):
+        ok &= check(f"gemm m={m} n={n} k={k}", run("ported/gemm", [f"m={m}", f"n={n}", f"k={k}"])["y"], gemm_ref(m, n, k))
+    ok &= check("gemm_mma m=128 n=128 k=64", run("ported/gemm_mma", ["m=128", "n=128", "k=64"])["y"], gemm_ref(128, 128, 64))
+    ok &= check("gemm_fp4 m=128 n=128 k=64", run("ported/gemm_fp4", ["m=128", "n=128", "k=64"])["y"], gemm_fp4_ref(128, 128, 64))
+    ok &= check("gemm_fp4_res m=128 n=128 k=64", run("ported/gemm_fp4_res", ["m=128", "n=128", "k=64"])["y"], gemm_fp4_ref(128, 128, 64, True))
+    ok &= check("rmsnorm n=4096 eps=1e-5", run("ported/rmsnorm", ["n=4096", "eps=1e-5"])["y"], rmsnorm_ref(4096, 1e-5))
+    ok &= check("silu_mul", run("ported/silu_mul", [])["y"], silu_mul_ref(16384))
+    ok &= check("softmax r=4 n=64", run("softmax", ["r=4", "n=64"])["y"], softmax_ref(4, 64))
+    for r, n in ((4, 1024), (300, 7)):
+        ok &= check(f"rowops r={r} n={n}", run("rowops", [f"r={r}", f"n={n}"])["y"], rowops_ref(r, n))
+    # k = 4096 terms summed in order in f32: measured 1.7e-5 from the binary64 sum on terms that add up to 254 in absolute value, about
+    # one f32 rounding step at that scale (n * eps would allow 0.06), so 1e-4 here and 1e-5 for the shorter sums.
+    ok &= check("matvec n=64 k=4096", run("matvec", ["n=64", "k=4096"])["y"], matvec(64, 4096), tol=1e-4)
+    ok &= check("matvec_fp4 n=64 k=4096", run("matvec_fp4", ["n=64", "k=4096"])["y"], matvec_fp4(64, 4096))
+    ok &= check("batch_fp4 b=4 n=64 k=512", run("batch_fp4", ["b=4", "n=64", "k=512"])["y"], matvec_fp4_batch(4, 64, 512))
+    # `stage` has a different tile on each target (bk 16 on apple-m-series, 32 on nvidia-ada): each is held to its own.
+    got = run("stage", ["m=8", "k=64"])["y"]
+    for target, bk in (("apple-m-series", 16), ("nvidia-ada", 32)):
+        ok &= check(f"stage m=8 k=64 bk={bk}", {target: got[target]}, stage_ref(8, 64, bk), need=1)
+    return ok
+
+
+# One deliberate change to each kernel above, in a copy: its reference must fail. (file under CHX_ROOT, text, replacement, what it breaks)
+MUTANTS = [
+    ("ported/gemm.chx", "yield acc + matmul_nt at wt", "yield acc - matmul_nt at wt", "gemm accumulates with the wrong sign"),
+    ("ported/gemm_mma.chx", "for p in 0 .. k / bk with acc", "for p in 0 .. k / bk - 1 with acc", "gemm_mma leaves out the last slice of k"),
+    ("ported/gemm_fp4.chx", "for p in 0 .. k / bk with acc", "for p in 0 .. k / bk - 1 with acc", "gemm_fp4 leaves out the last slice of k"),
+    ("ported/gemm_fp4_res.chx", "  let acc = add_window acc r[i * bm, j * bn]\n", "", "gemm_fp4_res leaves out the residual"),
+    ("ported/rmsnorm.chx", "let r  = rsqrt t", "let r  = t", "rmsnorm multiplies by the mean square, not its reciprocal root"),
+    ("ported/silu_mul.chx", "store a * u -> y", "store a + u -> y", "silu_mul adds where it multiplies"),
+    ("softmax.chx", "let q  = e / s", "let q  = e * s", "softmax multiplies by the sum"),
+    ("rowops.chx", "let o  = h / ss", "let o  = h * ss", "rowops multiplies by the sum"),
+    ("stage.chx", "yield acc + st", "yield acc - st", "stage subtracts"),
+]
+
+
+def mutants():
+    import shutil
+    ok = True
+    for path, old, new, what in MUTANTS:
+        d = tempfile.mkdtemp()
+        try:
+            shutil.copytree("tests/chx", os.path.join(d, "chx"))
+            target = os.path.join(d, "chx", path)
+            text = open(target).read()
+            if text.count(old) != 1:
+                print(f"FAIL mutant '{what}': the text it changes occurs {text.count(old)} times in {path}")
+                ok = False
+                continue
+            open(target, "w").write(text.replace(old, new, 1))
+            r = subprocess.run([sys.executable, __file__, BIN, "--new"], capture_output=True, text=True, env=dict(os.environ, CHX_ROOT=os.path.join(d, "chx")))
+            fam = path.split("/")[-1].replace(".chx", "")
+            failed_lines = [l for l in r.stdout.splitlines() if l.startswith("FAIL") and fam in l]
+            if r.returncode != 0 and failed_lines:
+                print(f"ok   mutant killed: {what}")
+            elif r.returncode != 0:
+                print(f"ok?  the change stopped the run without a FAIL line for {fam}: {what} ({(r.stderr or r.stdout)[-120:].strip()!r})")
+            else:
+                print(f"FAIL mutant '{what}' SURVIVED: its reference does not notice")
+                ok = False
+        finally:
+            shutil.rmtree(d)
+    return ok
+
+
+if "--mutants" in sys.argv:
+    sys.exit(0 if mutants() else 1)
+if "--new" in sys.argv:
+    sys.exit(0 if new_checks() else 1)
+ok &= new_checks()
 sys.exit(0 if ok else 1)

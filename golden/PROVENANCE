@@ -1,0 +1,6 @@
+The cases of tests/cases.txt first agreed byte for byte with the output of lex-gpu's Rust emitter at
+851497d64e0f7a3bce63e1c6eab47ad0ffa79c16, and that agreement was held until the oracle was retired (docs/native.md N2).
+Since then these files are regression goldens recorded from this compiler (scripts/record-golden.sh): a change to one is
+reviewed as text, not assumed wrong. They are not an independent answer. The numbers a kernel computes are held to
+float64 references by tests/kernels.py. The gguf, sampler, tokenizer and safetensors directories come from other oracles
+(docs/native.md N2f).

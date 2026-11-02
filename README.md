@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/alpibrusl/cancho-gpu/actions/workflows/ci.yml/badge.svg)](https://github.com/alpibrusl/cancho-gpu/actions/workflows/ci.yml)
 
-**A GPU kernel compiler that says what it can do.** A compiler for typed tile kernels (the `.chx` language), written in [cancho](https://github.com/alpibrusl/cancho): it checks a program (every tile consumed exactly once, bounds, shapes, the threadgroup budget) and lowers it to **CUDA C** and **Metal**, byte-for-byte what an independent Rust implementation of the same language writes (see [History](#history)). It links nothing but libc, and `cancho authority`, checked in CI, names what it may do: read and write files, print, allocate; never the network, never foreign code. The [project page](https://alpibrusl.github.io/cancho-gpu/) has the summary.
+**A GPU kernel compiler that says what it can do.** A compiler for typed tile kernels (the `.chx` language), written in [cancho](https://github.com/alpibrusl/cancho): it checks a program (every tile consumed exactly once, bounds, shapes, the threadgroup budget) and lowers it to **CUDA C** and **Metal**. The language began as an independent Rust implementation's and is defined here now ([`docs/chx.md`](docs/chx.md), [History](#history)). It links nothing but libc, and `cancho authority`, checked in CI, names what it may do: read and write files, print, allocate; never the network, never foreign code. The [project page](https://alpibrusl.github.io/cancho-gpu/) has the summary.
 
 **Demo:** a recorded terminal session (a kernel compiled to Metal, a wrong one refused, Qwen3.8-27B generating on the GPU) is on [the project page](https://alpibrusl.github.io/cancho-gpu/) and in [`docs/demo.mp4`](docs/demo.mp4); `scripts/make-demo.sh` records it again.
 
@@ -12,11 +12,11 @@
 
 ## What you get
 
-* **The same bytes as an independent implementation.** CUDA C and Metal for every emitting case of `tests/cases.txt` (218 cases: 192 emit, 26 are refused by both compilers) are byte-identical with the reference implementation's, and a refusal names its rule ([`docs/rules.md`](docs/rules.md)). The goldens are recorded from that reference, never from this compiler.
-* **A reference interpreter.** `--run` interprets a kernel on the CPU and prints the same summary as the reference's, f32 order included (51 runs).
+* **Output that was checked against an independent implementation, and is held against numbers now.** CUDA C and Metal for the 226 cases of `tests/cases.txt` (200 emit, 26 are refused) are recorded in `golden/` and held to those files byte for byte (`tests/golden.sh`); they first agreed with the Rust implementation's output (218 cases at the commit in `golden/PROVENANCE`), which was the oracle until `docs/native.md` N2, and are regression goldens since: a change to one is read as text. What a kernel *computes* is held to a float64 reference written from the mathematics for **every one of the 41 numeric kernel families** (`tests/kernels.py`, with deliberate changes to nine of them that their references must catch), and, on a Mac, to the GPU. A refusal names its rule ([`docs/rules.md`](docs/rules.md)).
+* **A reference interpreter.** `--run` interprets a kernel on the CPU (binary32 arithmetic, sums in program order) and prints a summary; the summaries are goldens and agree with the float64 references to 1e-5 (51 runs).
 * **A way to drive a GPU.** A C shim and a device program compile the emitted kernel with NVRTC (CUDA) or `newLibraryWithSource` (Metal), upload the interpreter's inputs, launch, and compare ([`docs/device.md`](docs/device.md)).
 * **A model reader.** `gguf` and `safetensors` read a header (names, shapes, offsets, metadata) and refuse hostile bytes with a rule tag; `tokenize` is a byte-level BPE tokenizer and `sample` a temperature/top-k/top-p sampler. Each prints a canonical text that an independent implementation prints too: the reference runtime for GGUF, the tokenizer and the sampler, the `safetensors` library for safetensors. Identical on every fixture and on real files: five GGUF models, 2,180 + 1,199 safetensors tensors of Qwen3.8-27B, four real tokenizers over 3,811 records. The sampler's picks and ids are identical and 99% of its probabilities bit-identical (macOS's `expf` differs from the correctly rounded one in 0.6% of inputs) ([`docs/runtime.md`](docs/runtime.md)).
-* **Decode kernels for an attention layer.** `rope.chx`, `kv_append.chx`, `attention.chx` and `attn_gate.chx` for Qwen3.8-27B's full-attention layers, byte-identical with the reference compiler's output and interpreter, checked against a plain-Python model of what they compute, and run once on a Metal GPU ([`docs/kernels.md`](docs/kernels.md)).
+* **Decode kernels for an attention layer.** `rope.chx`, `kv_append.chx`, `attention.chx` and `attn_gate.chx` for Qwen3.8-27B's full-attention layers, held to a plain-Python model of what they compute (and, when recorded, identical to the reference compiler's output), and run once on a Metal GPU ([`docs/kernels.md`](docs/kernels.md)).
 * **It runs a model.** `cancho-gpu-run` loads a Qwen2 checkpoint, tokenizes a prompt, runs every layer as compiled `.chx` kernels on a Metal GPU and samples the next token: Qwen2.5-0.5B gives the same 12 greedy tokens as transformers in float32 on three prompts, with every top-5 logit within 1e-4, in 6 to 12 ms a token (the spread between runs) ([`docs/inference.md`](docs/inference.md)).
 * **It runs a 27B model.** `cancho-gpu-run35` runs Qwen3.8-27B (64 layers, 48 of them gated-delta, NVFP4 weights read from Ollama's store) as `.chx` kernels: on three prompts, eight steps each, the same token, the same top five and logit gaps within 1e-4 of the reference's, and twelve greedy tokens that are the reference runtime's, at about 25 tokens a second, 33 with the model's own draft head (Ollama: about 43 in the same benchmark invocation, which also uses it) ([`docs/qwen35.md`](docs/qwen35.md)).
 * **It serves a model.** `cancho-gpu-serve` answers `POST /v1/chat/completions` (whole or streamed, with the model's chat template held byte for byte to jinja2 on 23 requests, and thinking mode as `reasoning_content`) from the 27B on the GPU, one request at a time ([`docs/serving.md`](docs/serving.md)).
@@ -29,7 +29,7 @@ How it is built, what it cost and what the language made hard: [`docs/design.md`
 - The **cancho** compiler at the commit pinned in `cancho.toml`; the revision is part of the contract.
 - Rust, to build that compiler.
 - To run the tests: `python3` (fixtures, fuzzing, the kernel reference) and a C compiler (the device plumbing).
-- Only to regenerate the goldens or run the live differential: a checkout of the reference implementation (see [History](#history)) and `cargo`.
+- Only to regenerate the model-reading oracles' goldens (GGUF, tokenizer, sampler, Unicode tables; `docs/native.md` N2f): a checkout of the reference runtime and `cargo`. The `.chx` goldens need nothing but this compiler (`scripts/record-golden.sh`).
 
 ## Quick start
 
@@ -129,13 +129,12 @@ $CANCHO authority --std src/*.cho
 
 ```sh
 CANCHO=$CANCHO scripts/gate.sh               # format, file budget, build, unit tests, goldens, refusals, device plumbing (also with `--in` / `--out`), GGUF, safetensors, tokenizer, sampler, kernels, authority
-scripts/differential.sh <reference checkout>  # the same cases against a live build of the reference
-scripts/regen-golden.sh <reference checkout>  # golden/ from the reference, never from this compiler
-scripts/regen-gguf-golden.sh <reference checkout>  # golden/gguf/ from the reference runtime's reader (also regen-tokenizer-golden.sh, regen-sampler-golden.sh, regen-safetensors-golden.sh, regen-unicode-data.sh)
+scripts/record-golden.sh                     # golden/ from this compiler; read `git diff golden/` (the numbers are held by tests/kernels.py, not by these files)
+scripts/regen-gguf-golden.sh <reference checkout>  # golden/gguf/ from the reference runtime's reader (still an external oracle: docs/native.md N2f) (also regen-tokenizer-golden.sh, regen-sampler-golden.sh, regen-safetensors-golden.sh, regen-unicode-data.sh)
 CANCHO=$CANCHO scripts/metal-kernels.sh      # the 9b kernels on a Metal GPU against the interpreter (needs a Mac)
 ```
 
-`tests/chx/ported/` holds the reference implementation's own `.chx` kernels, copied at the commit in `golden/LEX_GPU`; `tests/chx/` holds programs written here for the lowering paths those do not reach (`softmax.chx` is the first kernel that needs `exp` and `log`).
+`tests/chx/ported/` holds the reference implementation's own `.chx` kernels, copied at the commit in `golden/PROVENANCE`; `tests/chx/` holds programs written here for the lowering paths those do not reach (`softmax.chx` is the first kernel that needs `exp` and `log`).
 
 ## Roadmap
 
@@ -160,7 +159,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | [docs/design.md](docs/design.md) | how the compiler is built, what it cost, every difference from the Rust and why |
 | [docs/training.md](docs/training.md) | whether training belongs here, what `.chx` can express of a backward pass (four kernels built), the plan |
 | [docs/resident.md](docs/resident.md) | a resident objective: compile and upload once, one line per evaluation, so a GPU can show what it does (a design; the interface, not the kernel, is the measured cost) |
-| [docs/native.md](docs/native.md) | why the CPU path is 130 times slower than the language (a software f32), the swap for the real `f32` type, and what ending the Rust oracle would change and cost (a design; the loops are in `bench/native/`) |
+| [docs/native.md](docs/native.md) | why the CPU path is 130 times slower than the language (a software f32), the swap for the real `f32` type, and N1 built (the CPU path 23 times faster, goldens byte-identical), and N2, which ended the Rust oracle (`chx.md`, 41 numeric references, recorded goldens) |
 | [docs/run.md](docs/run.md) | `cancho-gpu run`: a kernel on the CPU interpreter with inputs from files and its whole output printed; designed, built and measured |
 | [docs/comparison.md](docs/comparison.md) | compared with OpenNN: a two-layer network's forward pass on a CPU, outputs and timings, and where this project is worse |
 | [docs/rules.md](docs/rules.md) | every refusal rule and what triggers it |
@@ -179,9 +178,9 @@ src/               the compiler (lexer, parser, elaboration, checker, lowering, 
 device/            the device programs (CUDA, Metal): the only code that calls the shim
 shim/              canchogpu.c (CUDA, over dlopen) and canchogpu-metal.mm (Metal)
 tests/             goldens, refusal fixtures, the mock driver, fixtures, fuzzing and references for each reader and kernel
-golden/            what the reference writes for every case (and, in subdirectories, what each reader's oracle prints)
+golden/            what this compiler wrote for every case, recorded (and, in subdirectories, what each reader's oracle prints)
 tools/             the oracle programs (Rust examples built inside a reference checkout; a Python script for safetensors)
-scripts/           gate, differential, golden regeneration, device builds
+scripts/           gate, golden recording, device builds
 docs/              design, rules, device, runtime, and the project page
 ```
 
@@ -191,11 +190,11 @@ CUDA is verified against a mock driver, not a GPU; Metal's speed is not measured
 
 ## History
 
-The `.chx` kernel language began as [lex-gpu](https://github.com/alpibrusl/lex-gpu), a Rust compiler and inference runtime. cancho-gpu is the same language written in cancho, as the first compiler-sized program in it (cancho#251), and lex-gpu is kept as the **test oracle**: the goldens and the model-reading oracles come from it, never from this code. Nothing here depends on it at run time.
+The `.chx` kernel language began as [lex-gpu](https://github.com/alpibrusl/lex-gpu), a Rust compiler and inference runtime. cancho-gpu is the same language written in cancho, as the first compiler-sized program in it (cancho#251). For its first phase lex-gpu was kept as the **test oracle**: the goldens and the model-reading oracles came from it, never from this code, and every `.chx` case agreed with it byte for byte (218 cases, the commit in `golden/PROVENANCE`). That ended with [`docs/native.md`](docs/native.md) N2: the language is specified here ([`docs/chx.md`](docs/chx.md)), numbers are held to independent references, the goldens are regression records, and the sum order and the CPU path are this project's to choose. The readers' oracles (GGUF, tokenizer, sampler, Unicode tables) are still the reference runtime's and are the next to go (N2f). Nothing here depends on lex-gpu at run time.
 
 ## Contributing
 
-Every change goes through `scripts/gate.sh` (the same as CI). A new lowering path gets a case in `tests/cases.txt` and a run of `scripts/differential.sh`; every refusal gets a rule tag and a fixture. Design before code, in `docs/`, with claims measured; a claim that turns out false is corrected in place. See [`CLAUDE.md`](CLAUDE.md).
+Every change goes through `scripts/gate.sh` (the same as CI). A new lowering path gets a case in `tests/cases.txt` (recorded with `scripts/record-golden.sh`, its diff read) and, if it computes numbers, a float64 reference in `tests/kernels.py`; every refusal gets a rule tag and a fixture. Design before code, in `docs/`, with claims measured; a claim that turns out false is corrected in place. See [`CLAUDE.md`](CLAUDE.md).
 
 ## Licence
 

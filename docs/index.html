@@ -183,7 +183,7 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 <div class="cards">
   <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
   <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, byte-for-byte what the independent Rust implementation writes: 192 emitting cases, 26 refused by both.</p></div>
-  <div class="card"><h3>Held to an oracle</h3><p>Goldens come from the Rust, never from this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
+  <div class="card"><h3>Held to numbers</h3><p>Every numeric kernel is checked against a float64 reference written from the mathematics, and nine are checked to fail when broken on purpose. The goldens are a regression record of this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
   <div class="card"><h3>Runs a real model</h3><p>Qwen3.8-27B decodes at 25 tokens a second on a Metal GPU (33 with speculative decoding), with the same tokens and top five as a reference's log-probabilities.</p></div>
   <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, speed on the 27B is about half of Ollama's, and attention stops at 1364 positions. Each is in the status section, with its issue.</p></div>
   <div class="card"><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code says so.</p></div>
@@ -374,7 +374,7 @@ schedule k for nvidia-ada { threads 32 }</pre>
     <thead><tr><th>Question</th><th>What cancho-gpu does</th></tr></thead>
     <tbody>
       <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
-      <tr><th>How do I know the output is right?</th><td>The Rust emitter is the oracle: goldens are recorded from it, never from this compiler, and a live differential runs the same cases against a build of it. A CPU interpreter checks what a kernel computes, and a device program compares the GPU against it.</td></tr>
+      <tr><th>How do I know the output is right?</th><td>Numbers: every numeric kernel is held to a float64 reference written from the mathematics, and a device program compares the GPU against the CPU interpreter. Text: the CUDA and Metal output is recorded in goldens, which are a regression record of this compiler, not an answer. They first agreed byte for byte with a Rust implementation of the language, which was the oracle until it was retired; for CUDA, which no machine here can run, that was the only independent check, and nothing replaces it yet.</td></tr>
       <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
       <tr><th>Is it an inference runtime?</th><td>A first one. <code>cancho-gpu-run</code> and <code>cancho-gpu-run35</code> run Qwen2.5-0.5B and Qwen3.8-27B: every layer is a compiled kernel on a Metal GPU. The 0.5B model gives the same greedy tokens as Hugging Face transformers; the 27B (NVFP4 weights from Ollama's store, 48 gated-delta layers) matches a reference implementation's golden log-probabilities to 1e-4 and decodes at about 25 tokens a second (33 with speculative decoding), against about 43 for Ollama in the same benchmark run. It also serves an OpenAI-compatible chat endpoint with streaming (one request at a time).</td></tr>
     </tbody>
@@ -471,7 +471,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
     --in dy dy --in w w --out dx
 1.0 2.0 8.0 3.0 4.0 18.0</pre>
   <div class="cards">
-    <div class="card"><h3>Backward kernels</h3><p><code>dx</code>, <code>dw</code>, <code>db</code> and the sigmoid's, byte-identical with the Rust's output and held, element by element, to a reference that is itself checked against finite differences.</p></div>
+    <div class="card"><h3>Backward kernels</h3><p><code>dx</code>, <code>dw</code>, <code>db</code> and the sigmoid's, held, element by element, to a reference that is itself checked against finite differences.</p></div>
     <div class="card"><h3>A fit, with kernels as the objective</h3><p>A least-squares fit driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS, loss and gradient computed by these kernels: 12 evaluations, within 1.1e-5 of the normal-equations solution, 28 to 36 ms an evaluation on the CPU interpreter.</p></div>
     <div class="card"><h3>What it cannot do yet</h3><p>No ReLU, no <code>A<sup>T</sup>B</code> product, no atomics; at most 32 parameters through <code>opt</code>; nothing on a GPU. Whether a GPU even helps at this size is unmeasured.</p></div>
   </div>
@@ -524,9 +524,9 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
 
 <section id="results">
   <h2>Measured, not promised.</h2>
-  <p class="sub">The oracle is external, so "it works" is a comparison, not an opinion. <b>Who ran what:</b> the case counts and the interpreter runs are checked by CI on every push (<code>scripts/gate.sh</code>); the 27B and Metal numbers were made by hand on one Apple M4 Max and are reported in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>; the OpenNN numbers are one run on a 4-vCPU container, in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>. Where a claim turned out false, the design document was corrected in place.</p>
+  <p class="sub">"It works" is a comparison with an independent reference, not an opinion; the CUDA text, which no machine here can run, is the exception. <b>Who ran what:</b> the case counts and the interpreter runs are checked by CI on every push (<code>scripts/gate.sh</code>); the 27B and Metal numbers were made by hand on one Apple M4 Max and are reported in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>; the OpenNN numbers are one run on a 4-vCPU container, in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>. Where a claim turned out false, the design document was corrected in place.</p>
   <div class="stats">
-    <div><b>218</b><span>cases byte-identical with the reference implementation: 192 emit, 26 refused by both</span></div>
+    <div><b>226</b><span>cases held to recorded goldens (200 emit, 26 refused); 218 of them first agreed byte for byte with the Rust implementation, now retired as the oracle</span></div>
     <div><b>51</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
     <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
     <div><b>0</b><span>differences from the oracles on 5 real GGUF models, 3,379 Qwen3.8 tensors, and 3,811 records through 4 real tokenizers; the sampler's picks match on 60,000+ rows</span></div>
