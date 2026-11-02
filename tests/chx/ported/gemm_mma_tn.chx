@@ -1,0 +1,20 @@
+// y = a^T w: both operands stored [k, .] (the layout a layer's weight gradient needs: dw = dz^T x with dz [batch, n_out] and x [batch, n_in], summed over the batch k).
+// `mma_tn` is `mma` with the left tile stored [k, m] and the right [k, n]; f16 inputs, f32 accumulation.
+algo gemm_mma_tn(m, n, k)
+  in  a: f16[k, m]
+  in  w: f16[k, n]
+  out y: f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[p * bk, i * bm ; bk, bm] @shared
+    let wt = load w[p * bk, j * bn ; bk, bn] @shared
+    yield mma_tn acc at wt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule gemm_mma_tn for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
+schedule gemm_mma_tn for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

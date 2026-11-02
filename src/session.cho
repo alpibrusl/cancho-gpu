@@ -215,8 +215,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, progs_raw, mem.rec4(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno));
             } else if text.is(t, head, "resident") {
-                if nw != 3 && !(nw == 4 && text.is(t, mem.get(m, words, 3), "f32")) {
-                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE [f32]"));
+                if nw != 3 && !(nw == 4 && (text.is(t, mem.get(m, words, 3), "f32") || text.is(t, mem.get(m, words, 3), "f16"))) {
+                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE [f32|f16]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -225,6 +225,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 var binary = 0;
                 if nw == 4 {
                     binary = 1;
+                    if text.is(t, mem.get(m, words, 3), "f16") {
+                        binary = 2;
+                    }
                 }
                 mem.push(m, res_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), lineno, binary));
             } else if text.is(t, head, "link") {
@@ -279,8 +282,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, carry_raw, mem.rec5(m, sp, sa, dp, da, lineno));
             } else if text.is(t, head, "table") {
-                if nw != 4 && !(nw == 5 && text.is(t, mem.get(m, words, 4), "f32")) {
-                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32]"));
+                if nw != 4 && !(nw == 5 && (text.is(t, mem.get(m, words, 4), "f32") || text.is(t, mem.get(m, words, 4), "f16"))) {
+                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -299,6 +302,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 m[traw + 5] = 0;
                 if nw == 5 {
                     m[traw + 5] = 1;
+                    if text.is(t, mem.get(m, words, 4), "f16") {
+                        m[traw + 5] = 2;
+                    }
                 }
                 mem.push(m, table_raw, traw);
             } else if text.is(t, head, "steps") {
@@ -401,7 +407,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             return 0 - 1;
         }
         var loaded = 0;
-        if m[raw + 4] == 1 {
+        if m[raw + 4] == 2 {
+            loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+        } else if m[raw + 4] == 1 {
             loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
         } else {
             loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
@@ -472,7 +480,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
         }
         var loaded = 0;
-        if m[raw + 5] == 1 {
+        if m[raw + 5] == 2 {
+            loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+        } else if m[raw + 5] == 1 {
             loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
         } else {
             loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);

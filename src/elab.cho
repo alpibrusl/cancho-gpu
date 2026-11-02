@@ -271,7 +271,7 @@ fn substitute[&m, &t](m: &!m [int], t: &!t [byte], e: int, vals: int) -> [] int 
         let c = substitute(m, t, m[e + 1], vals);
         let a = substitute(m, t, m[e + 2], vals);
         let b = substitute(m, t, m[e + 3], vals);
-        return parser.node(m, k, c, a, b, 0, 0);
+        return parser.node(m, k, c, a, b, m[e + 4], 0);
     }
     if k == kinds.e_matmul() {
         let a = substitute(m, t, m[e + 2], vals);
@@ -459,11 +459,10 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         if mem.size(m, cs) != 2 || mem.size(m, ls) != 2 || mem.size(m, rs) != 2 {
             return bad(m, t, "shape", text.f1(m, t, "`$`: mma takes 2-d tiles", name));
         }
-        let ok = mem.get(m, cs, 0) == mem.get(m, ls, 0) && mem.get(m, cs, 1) == mem.get(m, rs, 0) && mem.get(m, ls, 1) == mem.get(m, rs, 1);
-        if !ok {
-            return bad(m, t, "shape", text.f4(m, t, "`$`: mma of $ x $^T into $", name, sd(m, t, ls), sd(m, t, rs), sd(m, t, cs)));
+        if !kinds.mma_shapes_agree(m, cs, ls, rs, m[e + 4]) {
+            return bad(m, t, "shape", text.f4(m, t, "`$`: mma of $ x $ into $ (the layout of the operands is in the name: mma, mma_nn, mma_tn, mma_tt)", name, sd(m, t, ls), sd(m, t, rs), sd(m, t, cs)));
         }
-        let o = ir.make_op(m, kinds.op_mma(), arg_of(m, m[e + 1], m[c]), arg_of(m, m[e + 2], m[l]), arg_of(m, m[e + 3], m[r]), 0);
+        let o = ir.make_op(m, kinds.op_mma(), arg_of(m, m[e + 1], m[c]), arg_of(m, m[e + 2], m[l]), arg_of(m, m[e + 3], m[r]), m[e + 4]);
         let v = ir.emit(m, t, b, name, o);
         set_space(m, cx, v, kinds.frag());
         return value(m, v, cs, m[c + 2]);

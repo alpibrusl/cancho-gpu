@@ -1,0 +1,37 @@
+// The output layer of a binary classifier on a minibatch whose last hidden activations h are f16: z = h w^T + b (f32), p = sigmoid(z), the cross-entropy
+// loss per sample l = softplus(z) - y z (a row) and dz = p - y both as f32 [b, 1] and as an f16 copy dzh for the matrix-unit kernels.
+algo out_fwd_h(b, k, bm)
+  in  hin:  f16[b, k]
+  in  w:    f32[1, k]
+  in  bias: f32[1, 1]
+  in  y:    f32[b, 1]
+  out dz:   f32[b, 1]
+  out dzh:  f16[b, 1]
+  out l:    f32[1, b]
+{
+  grid i over b / bm
+  let x  = load hin[i * bm, 0 ; bm, k]
+  let wt = load w
+  let z  = matmul_nt x wt
+  let oc = zeros f32[bm, 1]
+  let on = oc + 1.0
+  let bt = load bias
+  let bb = matmul on bt
+  let zb = z + bb
+  let p  = sigmoid &zb
+  let yt = load y[i * bm, 0 ; bm, 1]
+  let d  = p - yt
+  store &d * 1.0 -> dz[i * bm, 0]
+  let dd = stage f16 d
+  store dd -> dzh[i * bm, 0]
+  let o1 = zeros f32[1, 1]
+  let one = o1 + 1.0
+  let sp = softplus &zb
+  let y2 = load y[i * bm, 0 ; bm, 1]
+  let yz = y2 * zb
+  let lc = sp - yz
+  store matmul_nt one lc -> l[0, i * bm]
+}
+
+schedule out_fwd_h for apple-m-series { threads 128 }
+schedule out_fwd_h for nvidia-ada     { threads 128 }

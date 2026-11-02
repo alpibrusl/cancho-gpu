@@ -301,24 +301,51 @@ pub fn frag_fill[&m, &t](m: &!m [int], t: &!t [byte], d: int, frag: int, value: 
 }
 
 // Lines adding `a b^T` into the accumulators `c[fm][fnn]`.
-pub fn frag_mma[&m, &t](m: &!m [int], t: &!t [byte], d: int, c: int, a: int, b: int, k: int, lda: int, ldb: int, fm: int, fnn: int, a_row: int, b_row: int) -> [] int {
+pub fn frag_mma[&m, &t](m: &!m [int], t: &!t [byte], d: int, c: int, a: int, b: int, k: int, lda: int, ldb: int, fm: int, fnn: int, a_row: int, b_row: int, layout: int) -> [] int {
     let out = mem.list(m);
     let (sk, sa, sb) = (text.num(m, t, k), text.num(m, t, lda), text.num(m, t, ldb));
     let (sm, sn) = (text.num(m, t, fm), text.num(m, t, fnn));
+    // layout: bit 1, the left tile is stored [k, m] (transposed); bit 2, the right tile is stored [k, n] (not transposed)
+    let a_t = layout % 2 == 1;
+    let b_kn = layout / 2 % 2 == 1;
     mem.push(m, out, text.lit(m, t, "{"));
     if is_cuda(d) {
-        mem.push(m, out, text.f1(m, t, "    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::row_major> fa[$];", sm));
-        mem.push(m, out, text.f1(m, t, "    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::col_major> fb[$];", sn));
+        var a_major = "row_major";
+        var b_major = "col_major";
+        if a_t {
+            a_major = "col_major";
+        }
+        if b_kn {
+            b_major = "row_major";
+        }
+        mem.push(m, out, text.f2(m, t, "    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, __half, nvcuda::wmma::$> fa[$];", text.lit(m, t, a_major), sm));
+        mem.push(m, out, text.f2(m, t, "    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, __half, nvcuda::wmma::$> fb[$];", text.lit(m, t, b_major), sn));
         mem.push(m, out, text.f1(m, t, "    for (uint kk = 0; kk < $u; kk += 16u) {", sk));
-        mem.push(m, out, text.f5(m, t, "        for (uint i = 0; i < $u; ++i) nvcuda::wmma::load_matrix_sync(fa[i], $ + ($ + i * 16u) * $u + kk, $u);", sm, a, a_row, sa, sa));
-        mem.push(m, out, text.f5(m, t, "        for (uint j = 0; j < $u; ++j) nvcuda::wmma::load_matrix_sync(fb[j], $ + ($ + j * 16u) * $u + kk, $u);", sn, b, b_row, sb, sb));
+        if a_t {
+            mem.push(m, out, text.f5(m, t, "        for (uint i = 0; i < $u; ++i) nvcuda::wmma::load_matrix_sync(fa[i], $ + kk * $u + ($ + i * 16u), $u);", sm, a, sa, a_row, sa));
+        } else {
+            mem.push(m, out, text.f5(m, t, "        for (uint i = 0; i < $u; ++i) nvcuda::wmma::load_matrix_sync(fa[i], $ + ($ + i * 16u) * $u + kk, $u);", sm, a, a_row, sa, sa));
+        }
+        if b_kn {
+            mem.push(m, out, text.f5(m, t, "        for (uint j = 0; j < $u; ++j) nvcuda::wmma::load_matrix_sync(fb[j], $ + kk * $u + ($ + j * 16u), $u);", sn, b, sb, b_row, sb));
+        } else {
+            mem.push(m, out, text.f5(m, t, "        for (uint j = 0; j < $u; ++j) nvcuda::wmma::load_matrix_sync(fb[j], $ + ($ + j * 16u) * $u + kk, $u);", sn, b, b_row, sb, sb));
+        }
         mem.push(m, out, text.f1(m, t, "        for (uint i = 0; i < $u; ++i)", sm));
         mem.push(m, out, text.f3(m, t, "            for (uint j = 0; j < $u; ++j) nvcuda::wmma::mma_sync($[i][j], fa[i], fb[j], $[i][j]);", sn, c, c));
     } else {
         mem.push(m, out, text.f2(m, t, "    simdgroup_matrix<half, 8, 8> fa[$], fb[$];", sm, sn));
         mem.push(m, out, text.f1(m, t, "    for (uint kk = 0; kk < $u; kk += 8u) {", sk));
-        mem.push(m, out, text.f5(m, t, "        for (uint i = 0; i < $u; ++i) simdgroup_load(fa[i], $ + ($ + i * 8u) * $u + kk, $u);", sm, a, a_row, sa, sa));
-        mem.push(m, out, text.f5(m, t, "        for (uint j = 0; j < $u; ++j) simdgroup_load(fb[j], $ + ($ + j * 8u) * $u + kk, $u, ulong2(0, 0), true);", sn, b, b_row, sb, sb));
+        if a_t {
+            mem.push(m, out, text.f5(m, t, "        for (uint i = 0; i < $u; ++i) simdgroup_load(fa[i], $ + kk * $u + ($ + i * 8u), $u, ulong2(0, 0), true);", sm, a, sa, a_row, sa));
+        } else {
+            mem.push(m, out, text.f5(m, t, "        for (uint i = 0; i < $u; ++i) simdgroup_load(fa[i], $ + ($ + i * 8u) * $u + kk, $u);", sm, a, a_row, sa, sa));
+        }
+        if b_kn {
+            mem.push(m, out, text.f5(m, t, "        for (uint j = 0; j < $u; ++j) simdgroup_load(fb[j], $ + kk * $u + ($ + j * 8u), $u);", sn, b, sb, b_row, sb));
+        } else {
+            mem.push(m, out, text.f5(m, t, "        for (uint j = 0; j < $u; ++j) simdgroup_load(fb[j], $ + ($ + j * 8u) * $u + kk, $u, ulong2(0, 0), true);", sn, b, b_row, sb, sb));
+        }
         mem.push(m, out, text.f1(m, t, "        for (uint i = 0; i < $u; ++i)", sm));
         mem.push(m, out, text.f3(m, t, "            for (uint j = 0; j < $u; ++j) simdgroup_multiply_accumulate($[i][j], fa[i], fb[j], $[i][j]);", sn, c, c));
     }

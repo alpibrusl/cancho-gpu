@@ -270,6 +270,21 @@ answer add.wo
     refuse_bin("a binary file too long", [(os.path.join(tdir, "w0.bin"), os.path.join(tdir, "long.bin"))])
     refuse_bin("a binary file that is not there", [(os.path.join(tdir, "w0.bin"), os.path.join(tdir, "gone.bin"))], tag="io")
     refuse_bin("a flag that is not f32", [(os.path.join(tdir, "w0.bin") + " f32", os.path.join(tdir, "w0.bin") + " f64")], tag="session")
+    # binary16 files (`f16` after the file) for an f16 parameter
+    vals = [f32(v * 0.37 - 1.1) for v in range(8)]
+    h16 = [struct.unpack("<e", struct.pack("<e", v))[0] for v in vals]
+    open(os.path.join(tdir, "h.bin"), "wb").write(b"".join(struct.pack("<e", v) for v in vals))
+    wbody = f"program wd {os.path.join(ROOT, 'tests/chx/widen.chx')} n=8\nresident wd.x {os.path.join(tdir, 'h.bin')} f16\nanswer wd.y\n"
+    open(os.path.join(tdir, "widen.session"), "w").write(wbody)
+    status, out, err = talk(binary, os.path.join(tdir, "widen.session"), "\n")
+    say(status == 0 and len(out) == 1 and numbers(out[0]) == h16, f"an f16 binary file is read as binary16 words: {out}")
+    open(os.path.join(tdir, "widen-bad.session"), "w").write(wbody.replace("h.bin", "short16.bin"))
+    open(os.path.join(tdir, "short16.bin"), "wb").write(b"\0" * 14)
+    status, out, err = talk(binary, os.path.join(tdir, "widen-bad.session"), "\n")
+    say(status == 1 and out == [] and err.startswith("error[usage]"), "refused as usage: an f16 binary file of the wrong size")
+    open(os.path.join(tdir, "widen-f32.session"), "w").write(wbody.replace(" f16\n", " f32\n"))
+    status, out, err = talk(binary, os.path.join(tdir, "widen-f32.session"), "\n")
+    say(status == 1 and out == [] and err.startswith("error[usage]"), "refused as usage: an f32 flag on an f16 parameter")
     # without `steps` a request is just its inputs, once
     open(os.path.join(tdir, "once.session"), "w").write(body.replace("steps\n", ""))
     status, out, err = talk(binary, os.path.join(tdir, "once.session"), "\n\n")
@@ -289,8 +304,9 @@ MUTANTS = [
     ("src/session.cho", "m[sess + s_count()] = m[sess + s_count()] + 1;\n        j = j + 1;", "j = j + 1;", "the table position does not advance"),
     ("src/session.cho", "fm[m[gd + 2] + e] = fm[m[gs + 2] + e];", "fm[m[gd + 2] + e] = fm[m[gd + 2] + e];", "a carry copies nothing"),
     ("src/session.cho", "(m[sess + s_count()] % m[tb + 3])", "(m[sess + s_count()] % m[tb + 3] + 1)", "the table is read one block late"),
-    ("src/runcmd.cho", "int_of(t[b]) | int_of(t[b + 1]) << 8", "int_of(t[b]) | int_of(t[b + 1]) << 7", "a binary word's second byte is shifted wrongly"),
+    ("src/runcmd.cho", "f32.from_bits32(int_of(t[b]) | int_of(t[b + 1]) << 8", "f32.from_bits32(int_of(t[b]) | int_of(t[b + 1]) << 7", "a binary word's second byte is shifted wrongly"),
     ("src/runcmd.cho", "if fsize != 4 * n {", "if fsize < 4 * n {", "a binary file longer than the parameter is accepted"),
+    ("src/runcmd.cho", "f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 8)", "f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 7)", "an f16 word's second byte is shifted wrongly"),
     ("src/session.cho", "if m[mem.get(m, supplied, dp) + da] != 1 {", "if m[mem.get(m, supplied, dp) + da] < 0 {", "a carry to a parameter that is not resident is accepted"),
 ]
 

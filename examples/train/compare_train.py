@@ -22,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import deep_session as D  # noqa: E402
+import mp_session as MP  # noqa: E402
 
 arg = lambda name, default: sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 DIR = arg("--dir", os.path.join(ROOT, "build", "compare"))
@@ -32,7 +33,7 @@ BATCH = int(arg("--batch", 256))
 LR = 1e-3
 NTRAIN = int(arg("--ntrain", 100000))
 NTEST = int(arg("--ntest", 20000))
-ONLY = arg("--only", "cancho,torch-cpu,torch-mps,opennn").split(",")
+ONLY = arg("--only", "cancho,cancho-mp,torch-cpu,torch-mps,torch-mps-amp,opennn").split(",")
 OPENNN = arg("--opennn", os.environ.get("DENSE_OPENNN", ""))
 SESSION = os.environ.get("SESSION", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 WIDTHS = [WIDTH] * LAYERS
@@ -66,8 +67,9 @@ def test_metrics(ws, bs):
     return float(((z > 0.0) == (y > 0.5)).mean()), float(np.mean(np.logaddexp(0.0, z) - y * z))
 
 
-def run_cancho():
-    sess = D.write(DIR, os.path.join(DIR, "s_time"), WIDTHS, BATCH, EPOCHS * NB, lr=LR, train=NTRAIN)
+def run_cancho(mp=False):
+    W = MP if mp else D
+    sess = W.write(DIR, os.path.join(DIR, "s_time"), WIDTHS, BATCH, EPOCHS * NB, lr=LR, train=NTRAIN)
     p = subprocess.Popen([SESSION, sess], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     t0 = time.perf_counter()
     p.stdin.write("1\n")
@@ -85,7 +87,7 @@ def run_cancho():
     p.stdin.close()
     p.wait()
     # the accuracy run: the same session with every parameter in the answer, after each epoch
-    dump = D.write(DIR, os.path.join(DIR, "s_dump"), WIDTHS, BATCH, EPOCHS * NB, lr=LR, train=NTRAIN, dump=True)
+    dump = W.write(DIR, os.path.join(DIR, "s_dump"), WIDTHS, BATCH, EPOCHS * NB, lr=LR, train=NTRAIN, dump=True)
     p = subprocess.Popen([SESSION, dump], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     dims = [64] + WIDTHS + [1]
     curve = []
@@ -111,7 +113,7 @@ def run_cancho():
     return secs, curve, setup
 
 
-def run_torch(device):
+def run_torch(device, amp=False):
     import torch
     X = np.load(os.path.join(DIR, "X.npy"))[:NTRAIN]
     y = np.load(os.path.join(DIR, "y.npy"))[:NTRAIN]
@@ -125,10 +127,12 @@ def run_torch(device):
 
     def step(j):
         lo = j * BATCH
-        h = Xt[lo:lo + BATCH]
-        for l in range(nl - 1):
-            h = torch.relu(h @ P[l].T + P[nl + l])
-        z = (h @ P[nl - 1].T + P[2 * nl - 1])[:, 0]
+        with torch.autocast(device_type=device, dtype=torch.float16, enabled=amp):
+            h = Xt[lo:lo + BATCH]
+            for l in range(nl - 1):
+                h = torch.relu(h @ P[l].T + P[nl + l])
+            z = (h @ P[nl - 1].T + P[2 * nl - 1])[:, 0]
+        z = z.float()
         loss = torch.nn.functional.softplus(z).mean() - (yt[lo:lo + BATCH] * z).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -170,6 +174,10 @@ def main():
     for name in ONLY:
         if name == "cancho":
             secs, curve, setup = run_cancho()
+        elif name == "cancho-mp":
+            secs, curve, setup = run_cancho(True)
+        elif name == "torch-mps-amp":
+            secs, curve, setup = run_torch("mps", True)
         elif name == "torch-cpu":
             secs, curve, setup = run_torch("cpu")
         elif name == "torch-mps":

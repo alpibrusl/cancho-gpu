@@ -1,0 +1,13 @@
+// y = f16(x), one threadgroup for each bm rows: the f16 copy of a minibatch the matrix-unit kernels read.
+algo cast_h(r, c, bm)
+  in  x: f32[r, c]
+  out y: f16[r, c]
+{
+  grid i over r / bm
+  let a = load x[i * bm, 0 ; bm, c]
+  let h = stage f16 a
+  store h -> y[i * bm, 0]
+}
+
+schedule cast_h for apple-m-series { threads 128 }
+schedule cast_h for nvidia-ada     { threads 128 }

@@ -408,9 +408,8 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
             return 0 - 1;
         }
         let (cs, as_, bs) = (ir.shape(m, tc), ir.shape(m, ta), ir.shape(m, tb));
-        let ok = mem.size(m, cs) == 2 && mem.get(m, cs, 0) == mem.get(m, as_, 0) && mem.get(m, cs, 1) == mem.get(m, bs, 0) && mem.get(m, as_, 1) == mem.get(m, bs, 1);
-        if !ok {
-            return diag(m, t, c, "shape", text.f3(m, t, "mma of $ x $^T into $", sd(m, t, as_), sd(m, t, bs), sd(m, t, cs)));
+        if mem.size(m, cs) != 2 || !kinds.mma_shapes_agree(m, cs, as_, bs, m[o + 4]) {
+            return diag(m, t, c, "shape", text.f3(m, t, "mma of $ x $ into $", sd(m, t, as_), sd(m, t, bs), sd(m, t, cs)));
         }
         return tc;
     }

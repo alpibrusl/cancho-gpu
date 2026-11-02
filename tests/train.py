@@ -7,6 +7,7 @@
 2. A second request continues the first: 15 steps and then 15 give exactly the loss of 30 at once.
 3. (Metal session given) a 32-32-1 network on 4096 samples, 100 steps: the loss after 1, 10 and 100 steps equals the reference's to 1e-3 relative, and the CPU session's at the small size to 1e-4;
    the device trains in float32 and the reference in float64, so they part company later (after 1000 steps the loss is 0.00076 against 0.00108), and this does not claim more than 100.
+3a. A mixed-precision network (f16 weights and activations, `mma` kernels, f32 accumulation): near the float64 reference to 2e-3 early, learning, and the Metal session equal to the CPU one to 2e-2.
 3b. Minibatches (`batch` in mlp_session.write): the same checks on a table of 8 batches, through two laps.
 4. (torch given) torch.optim.Adam in float32 on the same data and start gives the loss of the device after 100 steps to 1e-3 relative.
 Needs numpy; without it the test says so and passes."""
@@ -96,6 +97,23 @@ def main():
     if metal:
         out_dd = serve(metal, ds, "1\n1\n8\n30\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(out_dd, out_d)), f"Metal session on the deeper network equals the CPU session's losses to 1e-4: {[round(v[0], 6) for v in out_dd]}")
+    # mixed precision on the matrix unit (docs/resident.md section 14): f16 weights and activations, f32 accumulation and master weights
+    import mp_session as MPS
+    mdir = os.path.join(d, "mpdata")
+    os.makedirs(mdir)
+    rngm = np.random.RandomState(1)
+    Xm = rngm.normal(size=(1280, 64)).astype(np.float32)
+    np.save(os.path.join(mdir, "X.npy"), Xm)
+    np.save(os.path.join(mdir, "y.npy"), (Xm[:, 0] * Xm[:, 1] + Xm[:, 2] > 0).astype(np.float32))
+    ms = MPS.write(mdir, os.path.join(mdir, "s"), [64, 64], 64, 40, lr=0.01)
+    mref, _ = MPS.reference(mdir, [64, 64], 64, 40, lr=0.01)
+    out_m = serve(cpu, ms, "1\n1\n8\n30\n", ["--target", "apple-m-series"])
+    for line, at in zip(out_m, (1, 2, 10)):
+        say(close(line[0], mref[at - 1], 2e-3), f"CPU session, a 64-64-64-1 mixed-precision network, {at} steps: loss {line[0]:.6f}, float64 reference {mref[at - 1]:.6f} (f16 weights and activations)")
+    say(out_m[3][0] < 0.6 * out_m[0][0], f"the mixed-precision network learns: loss {out_m[0][0]:.4f} -> {out_m[3][0]:.4f} after 40 steps")
+    if metal:
+        out_md = serve(metal, ms, "1\n1\n8\n30\n")
+        say(all(close(a[0], b[0], 2e-2) for a, b in zip(out_md, out_m)), f"Metal session on the mixed-precision network equals the CPU session's losses to 2e-2: {[round(v[0], 6) for v in out_md]}")
     if metal:
         dev_small = serve(metal, session, "1\n9\n20\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(dev_small, out)), f"Metal session on the small network equals the CPU session's loss to 1e-4: {[round(v[0], 6) for v in dev_small]}")

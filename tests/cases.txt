@@ -270,3 +270,9 @@ tests/chx/attention_pv.chx nkv=4 g=6 t=256 dw=32 d=256 tmax=1024
 tests/chx/attention_pv.chx nkv=2 g=6 t=64 dw=32 d=256 tmax=96 --run
 tests/chx/activations.chx r=4 n=8
 tests/chx/activations.chx r=3 n=5 --run
+tests/chx/ported/gemm_mma_nn.chx m=128 n=128 k=64
+tests/chx/ported/gemm_mma_nn.chx m=256 n=256 k=128
+tests/chx/ported/gemm_mma_nn.chx m=128 n=128 k=64 --run
+tests/chx/ported/gemm_mma_tn.chx m=128 n=128 k=64
+tests/chx/ported/gemm_mma_tn.chx m=256 n=256 k=128
+tests/chx/ported/gemm_mma_tn.chx m=128 n=128 k=64 --run

@@ -547,8 +547,20 @@ fn matmul[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: 
         return 0 - 1;
     }
     let (sa, sb) = (ir.shape(m, m[a]), ir.shape(m, m[b]));
-    let (mm, kd) = (mem.get(m, sa, 0), mem.get(m, sa, 1));
-    let nt = is_mma || k == kinds.op_matmul_nt();
+    // the layout of an `mma`'s operands (kinds.mma_shapes_agree): the left tile may be stored [k, m], the right [k, n]
+    var a_t = false;
+    var b_kn = false;
+    if is_mma {
+        a_t = m[o + 4] % 2 == 1;
+        b_kn = m[o + 4] / 2 % 2 == 1;
+    }
+    var mm = mem.get(m, sa, 0);
+    var kd = mem.get(m, sa, 1);
+    if a_t {
+        mm = mem.get(m, sa, 1);
+        kd = mem.get(m, sa, 0);
+    }
+    let nt = is_mma && !b_kn || k == kinds.op_matmul_nt();
     var n = mem.get(m, sb, 1);
     if nt {
         n = mem.get(m, sb, 0);
@@ -566,10 +578,16 @@ fn matmul[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: 
         var j = 0;
         while j < n {
             var s = 0.0;
+            var a_start = i * kd;
+            var a_step = 1;
+            if a_t {
+                a_start = i;
+                a_step = mm;
+            }
             if nt {
-                s = dot(fm, m[a + 1] + i * kd, 1, m[b + 1] + j * kd, 1, kd);
+                s = dot(fm, m[a + 1] + a_start, a_step, m[b + 1] + j * kd, 1, kd);
             } else {
-                s = dot(fm, m[a + 1] + i * kd, 1, m[b + 1] + j, n, kd);
+                s = dot(fm, m[a + 1] + a_start, a_step, m[b + 1] + j, n, kd);
             }
             if is_mma {
                 s = f32.add(fm[m[c + 1] + i * n + j], s);
