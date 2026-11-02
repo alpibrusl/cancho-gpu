@@ -384,6 +384,14 @@ not the weight traffic or x's. And half-precision x and products (again timing o
 what would close the gap to the one-row speed (about 6 ms of the 51 ms round) is cheaper arithmetic a weight: f16 products or the matrix unit (`m3_*` in `batch.mm`: 230 GB/s for any number of tokens, not yet tuned).
 Both change the arithmetic, so the same-tokens guarantee (`scripts/spec-check.sh`) would have to be re-earned; it is left.
 
+### N4e. The half-precision check, tried (measured: not faster)
+
+N4d located the cost of the three-row weight kernel in float32 arithmetic, and half products were the way to the one-row speed in a timing control. To see what that is worth in the real pipeline, the largest kernel of the check (`matvec_fp4_swiglu_few`, 17 of the round's 40 ms) was rewritten by hand in Metal
+(`experimental/metal-bw/swiglu_few_half.metal`: the activations rounded to half, a lane's 16 products formed and added in half2, scaled and accumulated in float; the fp4 codes decoded to exact halves and multiplied by 2^14), plugged in behind a `--fast` flag, and run on the benchmark prompt, 128 tokens:
+**the round took 3870 to 4023 ms against 3171 to 3197 for the generated float32 kernel, and the 128 tokens were the same.** So the hand kernel is **slower**, not faster: the exact decode costs a half multiply for each pair of weights, 16 more instructions for 24 products, and the conversion of the activations
+adds more, which the timing control (which read halves directly and ignored the decoding) did not pay. Making it faster would need the decode folded into the arithmetic without subnormal halves (Metal may flush them), and activations kept in half between layers; that is a different kernel design, and any
+gain would come with a changed arithmetic (the tokens agreed here on one prompt, which is not a guarantee). The flag and the wiring were not kept; the kernel stays as an experiment. **The remaining 7 ms of a round against Ollama's is therefore still open, and the generated kernel is the best known.**
+
 ### N5. Interface and the shim
 
 * **Tensors from binary files: built** (`resident.md` section 12.4). `resident P.PARAM FILE f32` and `table P.PARAM FILE BLOCKS f32` read little-endian IEEE words with no parsing and no 16 MiB cap.
