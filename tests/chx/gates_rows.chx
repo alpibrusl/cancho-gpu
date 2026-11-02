@@ -1,0 +1,30 @@
+// gates.chx for m rows (the tokens a speculative check runs): one threadgroup a row, a and b are m rows of h.
+// The same arithmetic as gates.chx per row.
+algo gates_rows(m, h)
+  in  a:   f32[m * h]
+  in  b:   f32[m * h]
+  in  aa:  f32[h]
+  in  dtb: f32[h]
+  out g:   f32[m * h, 128]
+  out bt:  f32[m * h, 128]
+{
+  grid t over m
+  let at = load a[t * h ; h]
+  let dt = load dtb
+  let s  = at + dt
+  let sp = softplus s
+  let ax = load aa
+  let mm = ax * sp
+  let z1 = zeros f32[h]
+  let ng = z1 - mm
+  let ge = exp ng
+  let z2 = zeros f32[h, 128]
+  store z2 + ge -> g[t * h, 0]
+  let bb = load b[t * h ; h]
+  let sb = sigmoid bb
+  let z3 = zeros f32[h, 128]
+  store z3 + sb -> bt[t * h, 0]
+}
+
+schedule gates_rows for apple-m-series { threads 128 }
+schedule gates_rows for nvidia-ada     { threads 128 }

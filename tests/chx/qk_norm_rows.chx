@@ -1,0 +1,28 @@
+// qk_norm.chx for m rows (the tokens a speculative check runs): one threadgroup a row. c is m rows of
+// `rows` rows of 128 (the convolution's output, qkv 10240 = 80 x 128 wide a row); qn and kn are m rows of nk.
+algo qk_norm_rows(m, nk, rows)
+  in  c:  f32[m * rows, 128]
+  out qn: f32[m * nk, 128]
+  out kn: f32[m * nk, 128]
+{
+  grid t over m
+  let q  = load c[t * rows, 0 ; nk, 128]
+  let qq = &q * &q
+  let qs = rowsum qq
+  let qm = qs * 0.0078125
+  let qe = qm + 0.000001
+  let qr = rsqrt qe
+  let qx = q * qr
+  store qx * 0.0078125 -> qn[t * nk, 0]
+  let k  = load c[t * rows + nk, 0 ; nk, 128]
+  let kk = &k * &k
+  let ks = rowsum kk
+  let km = ks * 0.0078125
+  let ke = km + 0.000001
+  let kr = rsqrt ke
+  let kx = k * kr
+  store kx * 0.08838834764831845 -> kn[t * nk, 0]
+}
+
+schedule qk_norm_rows for apple-m-series { threads 128 }
+schedule qk_norm_rows for nvidia-ada     { threads 128 }
