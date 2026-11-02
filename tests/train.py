@@ -7,6 +7,7 @@
 2. A second request continues the first: 15 steps and then 15 give exactly the loss of 30 at once.
 3. (Metal session given) a 32-32-1 network on 4096 samples, 100 steps: the loss after 1, 10 and 100 steps equals the reference's to 1e-3 relative, and the CPU session's at the small size to 1e-4;
    the device trains in float32 and the reference in float64, so they part company later (after 1000 steps the loss is 0.00076 against 0.00108), and this does not claim more than 100.
+3b. Minibatches (`batch` in mlp_session.write): the same checks on a table of 8 batches, through two laps.
 4. (torch given) torch.optim.Adam in float32 on the same data and start gives the loss of the device after 100 steps to 1e-3 relative.
 Needs numpy; without it the test says so and passes."""
 import os
@@ -59,6 +60,16 @@ def main():
     once = serve(cpu, session, "30\n", ["--target", "nvidia-ada"])
     twice = serve(cpu, session, "15\n15\n", ["--target", "nvidia-ada"])
     say(once[0] == twice[1], f"15 steps and then 15 give exactly what 30 steps at once give: {once[0][0]!r} and {twice[1][0]!r}")
+    # minibatches: the data is a table of batches and step j trains on batch j mod 8, so the table wraps after 8 steps
+    mb = M.write(os.path.join(d, "mb"), 1024, 16, 16, 40, lr=0.01, batch=128)
+    mb_ref, _ = M.reference(1024, 16, 16, 40, lr=0.01, batch=128)
+    marks = (1, 2, 3, 10, 40)
+    out_mb = serve(cpu, mb, "1\n1\n1\n7\n30\n", ["--target", "nvidia-ada"])
+    for line, at in zip(out_mb, marks):
+        say(close(line[0], mb_ref[at - 1], 1e-4), f"CPU session, minibatches of 128 of 1024, {at} steps: loss {line[0]:.6f}, float64 reference {mb_ref[at - 1]:.6f}")
+    if metal:
+        out_dev = serve(metal, mb, "1\n1\n1\n7\n30\n")
+        say(all(close(a[0], b[0], 1e-4) for a, b in zip(out_dev, out_mb)), f"Metal session on minibatches equals the CPU session's losses to 1e-4: {[round(v[0], 6) for v in out_dev]}")
     if metal:
         dev_small = serve(metal, session, "1\n9\n20\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(dev_small, out)), f"Metal session on the small network equals the CPU session's loss to 1e-4: {[round(v[0], 6) for v in dev_small]}")

@@ -2,7 +2,7 @@
 """A two-layer network trained with Adam entirely on the device (docs/resident.md section 12): the data, the parameters and Adam's moments are resident,
 a request is a count of steps, and the answer is the loss after them (and, with `--dump`, the parameters).
 
-    python3 examples/train/mlp_session.py DIR R K HD STEPS [--dump] [--lr L]     writes DIR/session and its files (numpy)
+    python3 examples/train/mlp_session.py DIR R K HD STEPS [--dump] [--lr L] [--batch B]     writes DIR/session and its files (numpy)
     echo 1000 | cancho-gpu-metal-session DIR/session                             1000 Adam steps, one wait; prints the loss
 
 The model is mlp_fwd.chx (sigmoid hidden layer, linear output), the loss e^T e / 2R, the backward pass bwd_dw.chx and mlp_dzt.chx, the optimiser adam.chx on each of w1, b1, w2, b2.
@@ -57,13 +57,17 @@ def put(path, values):
         f.write(" ".join(str(v) for v in np.asarray(values, dtype=np.float32).reshape(-1)) + "\n")
 
 
-def write(directory, r, k, hd, steps, lr=0.01, dump=False, dw2=None):
+def write(directory, r_all, k, hd, steps, lr=0.01, dump=False, dw2=None, batch=None):
+    """With `batch` B the data (r_all samples) is a table of r_all / B minibatches and step j trains on batch j mod (r_all / B); the loss answered is that of the last minibatch."""
+    r = batch or r_all
+    nb = r_all // r
+    assert r * nb == r_all, "the batch must divide the samples"
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
-    x, t = data(r, k)
+    x, t = data(r_all, k)
     w1, b1, w2, b2 = init(k, hd)
     put(p("x"), x)
-    put(p("xt"), x.T)
+    put(p("xt"), np.concatenate([x[j * r:(j + 1) * r].T.reshape(-1) for j in range(nb)]))
     put(p("t"), t)
     put(p("ones"), np.ones(r))
     for name, v in (("w1", w1), ("b1", b1), ("w2", w2), ("b2", b2)):
@@ -94,7 +98,11 @@ def write(directory, r, k, hd, steps, lr=0.01, dump=False, dw2=None):
     sizes = {"w1": hd * k, "b1": hd, "w2": hd, "b2": 1}
     for name, n in sizes.items():
         lines.append(f"program a{name} {chx('adam.chx')} n={n} bn={block(n, 128)} gs={1.0 / r!r} b1={B1} b2={B2} eps={EPS}")
-    lines += [f"resident fwd.x {p('x')}", f"resident fwd.t {p('t')}", f"resident gw1.xt {p('xt')}", f"resident gb1.xt {p('ones')}", f"resident gb2.xt {p('ones')}"]
+    if batch:
+        lines += [f"table fwd.x {p('x')} {nb}", f"table fwd.t {p('t')} {nb}", f"table gw1.xt {p('xt')} {nb}"]
+    else:
+        lines += [f"resident fwd.x {p('x')}", f"resident fwd.t {p('t')}", f"resident gw1.xt {p('xt')}"]
+    lines += [f"resident gb1.xt {p('ones')}", f"resident gb2.xt {p('ones')}"]
     for name in sizes:
         lines += [f"resident fwd.{name} {p(name)}", f"resident a{name}.w {p(name)}", f"resident a{name}.m {p('z' + name)}", f"resident a{name}.v {p('z' + name)}", f"table a{name}.s {p('sched')} {steps}"]
     lines += [f"resident dz.w2c {p('w2')}",
@@ -110,15 +118,19 @@ def write(directory, r, k, hd, steps, lr=0.01, dump=False, dw2=None):
     return p("session")
 
 
-def reference(r, k, hd, steps, lr=0.01):
-    """The same training in binary64 numpy: (the loss before each step, the final parameters)."""
-    x, t = data(r, k)
-    x, t = x.astype(np.float64), t.astype(np.float64)
+def reference(r, k, hd, steps, lr=0.01, batch=None):
+    """The same training in binary64 numpy: (the loss before each step, the final parameters). With `batch`, step j uses minibatch j mod (r / batch)."""
+    x_all, t_all = data(r, k)
+    x_all, t_all = x_all.astype(np.float64), t_all.astype(np.float64)
+    bsz = batch or r
+    r_all, r = r, bsz
     w1, b1, w2, b2 = [a.astype(np.float64) for a in init(k, hd)]
     m = [np.zeros_like(a) for a in (w1, b1, w2, b2)]
     v = [np.zeros_like(a) for a in (w1, b1, w2, b2)]
     losses = []
     for step in range(1, steps + 1):
+        lo = ((step - 1) % (r_all // r)) * r
+        x, t = x_all[lo:lo + r], t_all[lo:lo + r]
         h = 1.0 / (1.0 + np.exp(-(x @ w1.T + b1)))
         e = h @ w2 + b2[0] - t
         losses.append(0.5 * float(e @ e) / r)
@@ -137,4 +149,7 @@ if __name__ == "__main__":
     lr = float(sys.argv[sys.argv.index("--lr") + 1]) if "--lr" in sys.argv else 0.01
     if "--lr" in sys.argv:
         a.remove(sys.argv[sys.argv.index("--lr") + 1])
-    print(write(a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), lr=lr, dump="--dump" in sys.argv))
+    batch = int(sys.argv[sys.argv.index("--batch") + 1]) if "--batch" in sys.argv else None
+    if batch:
+        a.remove(sys.argv[sys.argv.index("--batch") + 1])
+    print(write(a[0], int(a[1]), int(a[2]), int(a[3]), int(a[4]), lr=lr, dump="--dump" in sys.argv, batch=batch))
