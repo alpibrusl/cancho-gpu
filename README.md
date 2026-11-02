@@ -161,6 +161,7 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | [docs/design.md](docs/design.md) | how the compiler is built, what it cost, every difference from the Rust and why |
 | [docs/training.md](docs/training.md) | whether training belongs here, what `.chx` can express of a backward pass (four kernels built), the plan |
 | [docs/resident.md](docs/resident.md) | sessions: compile and upload once, one line per evaluation, on the CPU interpreter and on Metal; and section 12, a network trained with Adam entirely on the device (`steps`, `carry`, `table`) |
+| [docs/roadmap-models.md](docs/roadmap-models.md) | training and serving real models (a GPT, a CNN, an open LLM, Whisper): the gaps in the language and the runners, and six milestones, each ending at a number against torch |
 | [docs/native.md](docs/native.md) | why the CPU path is 130 times slower than the language (a software f32), the swap for the real `f32` type, and N1 built (the CPU path 23 times faster, goldens byte-identical), and N2, which ended the Rust oracle (`chx.md`, 41 numeric references, recorded goldens) |
 | [docs/run.md](docs/run.md) | `cancho-gpu run`: a kernel on the CPU interpreter with inputs from files and its whole output printed; designed, built and measured |
 | [docs/comparison.md](docs/comparison.md) | compared with OpenNN: a two-layer network's forward pass on a CPU, outputs and timings, and where this project is worse |
