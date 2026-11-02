@@ -375,6 +375,15 @@ The benchmark invocation after it (`docs/benchmark.md`): Ollama 45.3, MLX-LM 29.
 * The remaining 7 ms of a round to Ollama's on the benchmark prompt are the three-row weight kernels. What would shorten them is fewer instructions per weight: fp16 accumulation or the matrix unit,
   both of which change the arithmetic and neither of which has been tried here.
 
+### N4d. Why three rows cost more than one (measured)
+
+`experimental/metal-bw/batch_m3.mm` times the weight kernel by hand with the weights rotated through 16 copies (every launch reads DRAM). On the 17408 x 5120 matrix, the same run: one token 142 us,
+two 159, three 210 to 246 (every variant of the loop, rows a simdgroup, register layout): **the cliff is at the third token, not at the second**. Two controls locate it. Reading x from one row for all
+three tokens (the compiler then computes one dot product and the outputs are wrong, so this is a timing control only) brings three tokens to 169 us: the time is the multiply-adds (three a weight),
+not the weight traffic or x's. And half-precision x and products (again timing only) brings three tokens to the one-token time (166 against 170). So the three-row kernel is **ALU-bound in f32**, and
+what would close the gap to the one-row speed (about 6 ms of the 51 ms round) is cheaper arithmetic a weight: f16 products or the matrix unit (`m3_*` in `batch.mm`: 230 GB/s for any number of tokens, not yet tuned).
+Both change the arithmetic, so the same-tokens guarantee (`scripts/spec-check.sh`) would have to be re-earned; it is left.
+
 ### N5. Interface and the shim
 
 * **Tensors from binary files.** A resident file is text and capped at 16 MiB (about 800,000
