@@ -49,6 +49,7 @@ fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &
     let lg = qwen35.reserve(m, 4 * qwen35.vocab());
     let lg3 = qwen35.reserve(m, 4 * qwen35.vocab());
     let lg2 = qwen35.reserve(m, 4 * qwen35.vocab());
+    let lg4 = qwen35.reserve(m, 4 * qwen35.vocab());
     let base = m[mem.text_slot()];
     let hid = qwen35.hidden_buf(m, eng);
     let smp = sampler.new(m, 0.0, 0.95, 20, 1);
@@ -78,18 +79,36 @@ fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &
     var pend2_now = 0 - 1;
     var drafts2 = 0;
     var accepted2 = 0;
+    var pending3 = 0 - 1;
+    var z1 = 0 - 1;
+    var z2 = 0 - 1;
+    var z3 = 0 - 1;
+    var f1_prev = false;
+    var f1_prev2 = false;
+    var f2_prev = false;
+    var drafts3 = 0;
+    var accepted3 = 0;
     var n = 0;
     let out_ids = mem.list(m);
     var finished = false;
     while !finished && n < new_tokens {
         let (nids, nprobs) = sampler.nucleus(m, t, smp, lg, qwen35.vocab());
         let pick = sampler.draw(m, smp, nids, nprobs);
+        if f1_prev2 && f2_prev {
+            drafts3 = drafts3 + 1;
+            if z3 == pick {
+                accepted3 = accepted3 + 1;
+            }
+        }
+        f2_prev = chain_now && pend2_now == pick;
         if chain_now {
             drafts2 = drafts2 + 1;
             if pend2_now == pick {
                 accepted2 = accepted2 + 1;
             }
         }
+        f1_prev2 = f1_prev;
+        f1_prev = pending >= 0 && pending == pick;
         chain_now = chain_next;
         pend2_now = pending2;
         chain_next = false;
@@ -115,6 +134,14 @@ fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &
             }
             let (dn2, dp2) = sampler.nucleus(m, t, smp, lg3, qwen35.vocab());
             pending2 = sampler.draw(m, smp, dn2, dp2);
+            if qwen35spec.mtp_step(m, t, ffi, fs, eng, qwen35spec.head_hidden(m, eng, raw), pending2, pos + 2, lg4) < 0 {
+                return cli.report(m, t, io);
+            }
+            let (dn3, dp3) = sampler.nucleus(m, t, smp, lg4, qwen35.vocab());
+            pending3 = sampler.draw(m, smp, dn3, dp3);
+            z3 = z2;
+            z2 = z1;
+            z1 = pending3;
             if qwen35.feed_one(m, t, ffi, fs, eng, pick, pos + 1, lg) < 0 {
                 return cli.report(m, t, io);
             }
@@ -127,6 +154,7 @@ fn accept_run[&m, &t, &i, &f, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &
     io.write_all(io, "\n");
     io.write_all(io, text.bytes(t, text.f3(m, t, "accept: $ of $ drafts ($ per mille)\n", text.num(m, t, accepted), text.num(m, t, drafts), text.num(m, t, accepted * 1000 / max1(drafts)))));
     io.write_all(io, text.bytes(t, text.f3(m, t, "accept2: $ of $ second drafts, given the first ($ per mille)\n", text.num(m, t, accepted2), text.num(m, t, drafts2), text.num(m, t, accepted2 * 1000 / max1(drafts2)))));
+    io.write_all(io, text.bytes(t, text.f3(m, t, "accept3: $ of $ third drafts, given the first two ($ per mille)\n", text.num(m, t, accepted3), text.num(m, t, drafts3), text.num(m, t, accepted3 * 1000 / max1(drafts3)))));
     metal.cgpu_close(ffi);
     return 0;
 }

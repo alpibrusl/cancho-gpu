@@ -357,6 +357,21 @@ The benchmark invocation after it (`docs/benchmark.md`): Ollama 45.3, MLX-LM 29.
   Three rows are limited by the work per weight byte (a load and a dequantisation, then three multiply-adds), not by the memory.
 * Ollama's own log (N4b) shows it drafting deeper when drafts pay (3 to 3.8 tokens a round on prompts where its head is right 84 to 98% of the time); cancho-gpu's chain is two. A depth
   controller like Ollama's (`mlxrunner/speculate_depth.go`) is the way to the same yield on predictable text; on the benchmark's prompt the yield is the same as Ollama's (2.0).
+  **What a third draft would be worth (measured acceptance, estimated cost).** `--mtp-accept` now prints the third draft's acceptance, given the first two (128 tokens, greedy):
+
+  | prompt | 1st | 2nd | 3rd | tokens a round, 2 drafts / 3 | speed 2 / 3 drafts, tok/s | change |
+  |---|---|---|---|---|---|---|
+  | benchmark prose | 72% | 48% | 43% | 2.07 / 2.22 | 40.1 / 37.9 | -5% |
+  | story | 76% | 48% | 58% | 2.13 / 2.34 | 41.3 / 39.9 | -3% |
+  | physics | 84% | 63% | 69% | 2.37 / 2.73 | 46.0 / 46.7 | +2% |
+  | explanation | 89% | 78% | 74% | 2.58 / 3.10 | 50.2 / 53.0 | +6% |
+  | "The capital of France is" | 97% | 86% | 85% | 2.80 / 3.51 | 54.4 / 60.0 | +10% |
+  | code (`def quicksort`) | 99% | 91% | 86% | 2.89 / 3.67 | 56.1 / 62.6 | +12% |
+
+  The speeds assume a two-draft round of 51.5 ms (measured) and a three-draft one of 58.5, which is an **estimate** (a fourth row through the weight kernels, about 4 ms; a third head step, about 2.5; one more
+  row of `lm_head` and argmax, about 0.6). A depth that is chosen each round from the measured acceptance, as Ollama's controller does, would take the better of the two: about +10% on predictable text and
+  nothing on the benchmark's prompt. It also costs a four-row verify (the few-row kernels are compiled for three; `conv_step3` and `delta_step3` are three-row kernels; `commit`, the mask and the token slots
+  of `spec_round` assume three; two more spare delta states, 300 MB). That is a rewrite of the speculative path for a gain on easy text only, so it is **not built**; the table is what to weigh it by.
 * The remaining 7 ms of a round to Ollama's on the benchmark prompt are the three-row weight kernels. What would shorten them is fewer instructions per weight: fp16 accumulation or the matrix unit,
   both of which change the arithmetic and neither of which has been tried here.
 
