@@ -1,0 +1,70 @@
+edition 7;
+import std.io;
+
+// 4096 x 128 least squares loss+gradient: two passes of 524288 multiply-adds, repeated, plain f64 arithmetic.
+fn pass[&f](x: &f [float], w: &f [float], e: &!f [float]) -> [] float {
+    return 0.0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec } = split(world);
+    release(ffi); release(fs); release(net); release(args); release(clock); release(signals); release(exec);
+    var status = 0;
+    borrow mut heap as &!h in {
+        let r = 4096;
+        let k = 128;
+        var xb = box_slice(h, r * k, 0.5f32);
+        var wb = box_slice(h, k, 0.25f32);
+        var eb = box_slice(h, r, 0.0f32);
+        var gb = box_slice(h, k, 0.0f32);
+        borrow mut xb as &!xr in {
+            borrow mut wb as &!wr in {
+                borrow mut eb as &!er in {
+                    borrow mut gb as &!gr in {
+                        let x = contents(xr);
+                        let w = contents(wr);
+                        let e = contents(er);
+                        let g = contents(gr);
+                        var rep = 0;
+                        var total = 0.0f32;
+                        while rep < 2000 {
+                            var i = 0;
+                            while i < r {
+                                var s = 0.0f32;
+                                var j = 0;
+                                while j < k {
+                                    s = s + x[i * k + j] * w[j];
+                                    j = j + 1;
+                                }
+                                e[i] = s - 1.0f32;
+                                i = i + 1;
+                            }
+                            var c = 0;
+                            while c < k {
+                                var s = 0.0f32;
+                                var q = 0;
+                                while q < r {
+                                    s = s + e[q] * x[q * k + c];
+                                    q = q + 1;
+                                }
+                                g[c] = s;
+                                c = c + 1;
+                            }
+                            w[0] = w[0] + 0.000000001f32 * g[0];
+                            total = w[0];
+                            rep = rep + 1;
+                        }
+                        status = int_of_f32(total * 1000.0f32) % 100;
+                    }
+                }
+            }
+        }
+        unbox_slice(h, xb);
+        unbox_slice(h, wb);
+        unbox_slice(h, eb);
+        unbox_slice(h, gb);
+    }
+    release(heap);
+    release(io);
+    return status;
+}

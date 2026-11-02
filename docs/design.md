@@ -106,6 +106,12 @@ k=17408) peaks at **9 MB** resident.
 
 ## 4. f32 without an f32 type
 
+> **Corrected (see `native.md` §1): this section describes how f32 was done, not how it must be.** cancho has had an `f32`
+> type since edition 6 (`cancho/docs/f32.md`: F1 to F3 built, bit-identical to this emulation over 10^8 operand pairs, and
+> `std.fmt32` prints as Rust's `{:?}`). The emulation below is the reason the interpreter costs about 63 ns a
+> multiply-add against 0.5 for the type **[measured, `bench/native/run.sh`]**; swapping it is `native.md` N1 and
+> cancho's F4 (cancho#672). The facts below about *what the Rust computes and prints* stay true.
+
 cancho has one float type, binary64 (cancho `docs/floating-point.md`
 §1). The Rust computes constants in f32 — `1 / n` is folded as
 `1f32 / n as f32` — and prints them with `{:?}`, and "the same program"
