@@ -97,6 +97,26 @@ def converter_quant_check(d):
                 same &= np.fromfile(os.path.join(d, "q", f"l{l:02d}.{m}.{suffix}"), dtype=part.dtype).tobytes() == part.tobytes()
             same &= not os.path.exists(os.path.join(d, "q", f"l{l:02d}.{m}.f16"))
     say(same and quant["quant"] == {"format": "nvfp4", "group": 16} and "quant" not in plain, "converter --quant nvfp4:16: every matrix of a block is the .q/.s/.g of its f16 values, no .f16 is written, the manifest names the format")
+    # a sharded checkpoint with an untied output layer (Qwen2.5-7B): two shards and an index; head.f16 is lm_head, emb.f16 the table, and the blocks are what the single-file conversion wrote
+    names = sorted(hf)
+    head = torch.tensor(np.random.default_rng(9).standard_normal((320, 128)), dtype=torch.float32).to(torch.bfloat16).contiguous()
+    allt = dict(hf)
+    allt["lm_head.weight"] = head
+    names = sorted(allt)
+    half = len(names) // 2
+    sh = os.path.join(d, "sharded")
+    os.makedirs(sh, exist_ok=True)
+    save_file({k: allt[k] for k in names[:half]}, os.path.join(sh, "model-00001-of-00002.safetensors"))
+    save_file({k: allt[k] for k in names[half:]}, os.path.join(sh, "model-00002-of-00002.safetensors"))
+    json.dump({"metadata": {}, "weight_map": {k: "model-00001-of-00002.safetensors" if k in names[:half] else "model-00002-of-00002.safetensors" for k in names}}, open(os.path.join(sh, "model.safetensors.index.json"), "w"))
+    json.dump(dict(cfg, tie_word_embeddings=False), open(os.path.join(sh, "config.json"), "w"))
+    found = convert.find(sh)
+    conv = convert.convert(found[0], found[1], os.path.join(d, "sharded_out"))
+    rd = lambda f: open(os.path.join(d, f), "rb").read()
+    same_blocks = all(rd(f"plain/l{l:02d}.{m}.f16") == rd(f"sharded_out/l{l:02d}.{m}.f16") for l in range(2) for m in ("wqkv", "wo", "wgu", "wd"))
+    say(found[0].endswith("model.safetensors.index.json") and same_blocks and rd("sharded_out/emb.f16") == rd("plain/emb.f16")
+        and np.array_equal(np.fromfile(os.path.join(d, "sharded_out", "head.f16"), dtype="<f2"), head.float().numpy().astype(np.float16).reshape(-1)) and not os.path.exists(os.path.join(d, "plain", "head.f16")),
+        "converter: a checkpoint in two shards with an index, and an untied lm_head, converts to the single file's blocks and embedding table plus head.f16 (the tied checkpoint writes none)")
     for bad_q in ("int4:64", "nvfp4:24", "nvfp4"):
         try:
             convert.convert(src, os.path.join(d, "config.json"), os.path.join(d, "bad"), quant=bad_q)
@@ -171,6 +191,23 @@ def session_checks(cpu, metal, d):
                 say(nres == 2 * 2 * 4 * c.layers and nal == 4 * (2 * c.layers - 1) and not any(f"{m}.f16" in text for m in ("wqkv", "wo", "wgu", "wd")),
                     f"the session file reads {nres} i8 files (q and s of 4 matrices, read by the forward and the backward of {c.layers} layers), chains the dequantise scratch of each matrix kind through the layers and the backward "
                     f"({nal} alias lines) and reads no f16 copy of a block matrix")
+    # the 7B's configuration: a 4-bit base under an untied head
+    cu = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2, tied=False)
+    Pu = R.init_params(cu, seed=8)
+    Pu["emb"] = Pu["emb"] * 0.3
+    Pu["head"] = Pu["head"] * 0.3
+    os.makedirs(os.path.join(d, "untied"), exist_ok=True)
+    wu = quantised_dir(os.path.join(d, "untied"), cu, Pu, 16)
+    Pq_u = R.load_params(wu, cu)
+    _, ref_u = R.lora_loss_grads(cu, Pq_u, AB, tok)
+    for binary, extra, label in ((cpu, ["--target", "nvidia-ada"], "CPU session"), (metal, [], "Metal session")):
+        if not binary:
+            continue
+        dd = os.path.join(d, "su" + label[0])
+        os.makedirs(dd, exist_ok=True)
+        _, got, _ = grads_of(binary, extra, dd, cu, wu, tok, AB, tune=tune)
+        rel, cos = compare(got, ref_u)
+        say(rel < tol and cos > ctol, f"{label}, 4-bit base under an untied head: all {len(ref_u)} adapter gradients equal the specification's (largest relative norm error {rel:.1e}, smallest cosine {cos:.5f})")
     # the forward session of M7.1 over the same files: the loss of every position and the arg max of its logits, and the residual stream after the last block, against the specification's
     wdir = quantised_dir(d, c, P, 16)
     Pq = R.load_params(wdir, c)

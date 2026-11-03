@@ -153,6 +153,8 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     lr_fn = lr_fn or (lambda s_: lr)
     tn = dict(bc=2304, ebm=1, abm=2, rbm=8, cbm=8, sbm=1, sbc=S.block(ff, 256), attn=dict(threads=128, warps="2 2", bm=64, bn=64, bk=32), ao=dict(threads=128, warps="2 2", bm=64 if dh <= 64 else 32, bk=32),
               gemm_sched={})
+    # `rope_bwd` stages the f16 gradients of every head of a row block at once, 2 (d + 2 dkv) bm bytes: 8 rows fit the 32 KiB of threadgroup memory up to 2,048 columns (the 1.5B) and not the 7B's 4,608
+    tn["rbb"] = next(b for b in (8, 4, 2, 1) if 2 * (d + 2 * dkv) * b <= 32768 and t % b == 0)
     tn.update(tune or {})
     emb = np.fromfile(w("emb.f16"), dtype="<f2").reshape(-1, d)[:v]
     # data: the embeddings of each step's batch (f16, the lookup is host work), the 1-based targets, the weight of each position (the last of a sequence has no next token)
@@ -171,16 +173,17 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     S.put(p("zeros_nd"), np.zeros((n, d)))
     bc = min(tn["bc"], -(-v // 128) * 128)
     vp = -(-v // bc) * bc
-    exact = vp == v and os.path.getsize(w("emb.f16")) == v * d * 2
-    wlm = w("emb.f16") if exact else p("wlm.f16")
+    lm_file = w("emb.f16" if c.tied else "head.f16")  # the output layer: the embedding table when tied, else a matrix of its own (docs/resident.md section 28)
+    exact = vp == v and os.path.getsize(lm_file) == v * d * 2
+    wlm = lm_file if exact else p("wlm.f16")
     if not exact:
         with open(wlm, "wb") as f:
-            f.write(emb.tobytes())
+            f.write(np.fromfile(lm_file, dtype="<f2").reshape(-1, d)[:v].tobytes())
             f.write(np.zeros((vp - v, d), dtype="<f2").tobytes())
     S.put(p("jrow"), np.arange(1, vp + 1))
     S.put(p("maskv"), np.where(np.arange(vp) < v, 0.0, -1e9))
     for name, src in (("rope_q.chx", S.rope_source("rope_q", 1, True)), ("rope_k.chx", S.rope_source("rope_k", grp, True)), ("bias_v.chx", S.rope_source("bias_v", grp, False)),
-                      ("rope_bwd.chx", rope_bwd_source(c, tn["rbm"]))):
+                      ("rope_bwd.chx", rope_bwd_source(c, tn["rbb"]))):
         for nm, a, b in tn.get("kmut", []):
             if nm == name:
                 assert a in src, (name, a)
@@ -456,7 +459,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         prog("dvv_" + s, kernel("att_dkv.chx"), nb=nb, nh=h, hkv=hkv, t=t, dh=dh)
         link(f"sm_{s}.p", f"dvv_{s}.ds")
         link(f"hdo_{s}.o", f"dvv_{s}.q")
-        prog("rb_" + s, p("rope_bwd.chx"), nb=nb, t=t, bm=tn["rbm"], hf=hf)
+        prog("rb_" + s, p("rope_bwd.chx"), nb=nb, t=t, bm=tn["rbb"], hf=hf)
         link(f"dqh_{s}.o", f"rb_{s}.dq")
         link(f"dkk_{s}.dk", f"rb_{s}.dk")
         link(f"dvv_{s}.dk", f"rb_{s}.dv")
