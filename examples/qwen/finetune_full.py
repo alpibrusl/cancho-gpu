@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """The full fine-tuning run of roadmap M7.4 part B (docs/resident.md section 24): every parameter of Qwen2.5-0.5B trained by AdamW in one Metal session (qwen_full.py), against torch (torch_full.py).
 
-    python3 examples/qwen/finetune_full.py WORK train [--steps 20] [--lr 1e-5] [--every 10]     # WORK/cancho_full.json, checkpoints WORK/ckf/stepNN/ (weights directories)
+    python3 examples/qwen/finetune_full.py WORK train [--steps 20] [--lr 1e-5] [--every 10] [--segment N] [--resume]     # WORK/cancho_full.json, checkpoints WORK/ckf/stepNN/ (weights directories); sessions of N steps hand the masters and moments over
     python3 examples/qwen/finetune_full.py WORK eval                                          # held-out loss of the starting weights and of each checkpoint
     python3 examples/qwen/finetune_full.py WORK grads                                         # the gradient of every parameter at step 1 against torch's (torch_full.py --grads)
     python3 examples/qwen/finetune_full.py WORK compare                                       # the curves side by side
 
-The corpus is WORK/corpus.npz (finetune_data.py). The whole run is one session: a step's ids are an f32 table of 4,096 numbers, there is no 512 MiB table of embeddings to hand over."""
+The corpus is WORK/corpus.npz (finetune_data.py). A step's ids are an f32 table of 4,096 numbers, so there is no 512 MiB table of embeddings to hand over: a run is one session or, with --segment, several that hand the masters and moments over (section 24.7)."""
 import json
 import os
 import shutil
@@ -26,30 +26,50 @@ arg = F.arg
 
 
 def train(work, c):
+    """The run in segments of `--segment` steps (default: all in one session). Each segment is a session started from the weights directory, the f32 masters and both moments the last one saved
+    (qwen_full.write `state`, `first_step`; docs/resident.md section 24.7); `--resume` continues an interrupted run from the last finished segment (WORK/full_run.json names it)."""
     steps, lr, every = int(arg("--steps", 20)), float(arg("--lr", 1e-5)), int(arg("--every", 10))
+    seg = int(arg("--segment", steps))
     batches, _ = F.load(work)
-    d = os.path.join(work, "s_full")
-    ck = os.path.join(d, "ck")
-    os.makedirs(ck, exist_ok=True)
-    sess = Q.write(d, c, F.WDIR, batches[:steps], steps=steps, lr=lr, lr_fn=F.lr_schedule(steps, lr), loss_scale=float(arg("--loss-scale", 16.0)), save=ck)
-    p = F.spawn(sess)
-    losses, times = [], []
-    for s in range(steps):
-        out, secs = F.ask(p, "1")
-        losses.append(float(out.split()[0]))
-        times.append(secs * 1000 if s > 0 else None)
-        if (s + 1) % every == 0 or s + 1 == steps:
-            F.ask(p, "checkpoint")
-            dst = os.path.join(work, "ckf", f"step{s + 1:03d}")
-            shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(ck, dst)
-            shutil.copy(os.path.join(F.WDIR, "manifest.json"), dst)
-        print(f"step {s + 1}: loss {losses[-1]:.5f}, {times[-1] or 0:.0f} ms", flush=True)
-    peak = F.close(p)
-    ts = [t for t in times if t is not None]
-    res = dict(losses=losses, ms=times, median_ms=float(np.median(ts)), mean_ms=float(np.mean(ts)), peak_bytes=peak, steps=steps, lr=lr)
+    assert len(batches) >= steps
+    lr_fn = F.lr_schedule(steps, lr)
+    stp = os.path.join(work, "full_run.json")
+    run = dict(step=0, losses=[], ms=[], peaks=[], wdir=F.WDIR, state=None)
+    if "--resume" in sys.argv:
+        run = json.load(open(stp))
+        print(f"resuming after step {run['step']}", flush=True)
+    while run["step"] < steps:
+        s0 = run["step"]
+        n = min(seg, steps - s0)
+        d = os.path.join(work, f"s_full{s0:03d}")
+        ck, st = os.path.join(d, "ck"), os.path.join(d, "st")
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(ck, exist_ok=True)
+        sess = Q.write(d, c, run["wdir"], batches[s0:s0 + n], steps=n, lr=lr, lr_fn=lr_fn, loss_scale=float(arg("--loss-scale", 16.0)), save=ck, save_state=st, state=run["state"], first_step=s0)
+        p = F.spawn(sess)
+        for j in range(n):
+            out, secs = F.ask(p, "1")
+            run["losses"].append(float(out.split()[0]))
+            run["ms"].append(secs * 1000 if j > 0 else None)  # the first request of a session compiles and warms
+            step = s0 + j + 1
+            if step % every == 0 or j == n - 1:
+                F.ask(p, "checkpoint")
+                dst = os.path.join(work, "ckf", f"step{step:03d}")
+                shutil.rmtree(dst, ignore_errors=True)
+                shutil.copytree(ck, dst)
+                shutil.copy(os.path.join(F.WDIR, "manifest.json"), dst)
+            print(f"step {step}: loss {run['losses'][-1]:.5f}, {run['ms'][-1] or 0:.0f} ms", flush=True)
+        run["peaks"].append(F.close(p))
+        shutil.copy(os.path.join(F.WDIR, "manifest.json"), ck)
+        old = run["state"]
+        run["step"], run["wdir"], run["state"] = s0 + n, ck, st
+        json.dump(run, open(stp, "w"))
+        if s0 > 0:  # the segment before the one just finished is no longer the starting point of anything
+            shutil.rmtree(os.path.dirname(old), ignore_errors=True)
+    ts = [t for t in run["ms"] if t is not None]
+    res = dict(losses=run["losses"], ms=run["ms"], median_ms=float(np.median(ts)), mean_ms=float(np.mean(ts)), peak_bytes=max(run["peaks"]), peaks=run["peaks"], steps=steps, lr=lr, segment=seg)
     json.dump(res, open(os.path.join(work, "cancho_full.json"), "w"))
-    print(f"{steps} steps: median {res['median_ms']:.1f} ms a step ({c.n / res['median_ms'] * 1000:.0f} tokens a second), peak footprint {peak / 1e9:.2f} GB, loss {losses[0]:.4f} -> {losses[-1]:.4f}")
+    print(f"{steps} steps in {len(run['peaks'])} session(s): median {res['median_ms']:.1f} ms a step ({c.n / res['median_ms'] * 1000:.0f} tokens a second), peak footprint {res['peak_bytes'] / 1e9:.2f} GB, loss {run['losses'][0]:.4f} -> {run['losses'][-1]:.4f}")
 
 
 def heldout(work, c, wdir, tag):
@@ -116,9 +136,13 @@ def compare(work):
     for s in range(len(la)):
         print(f"{s + 1:4d} {la[s]:11.5f} {lb[s]:11.5f} {la[s] - lb[s]:+10.5f}")
     print(f"largest |difference| of the training loss {np.abs(la - lb).max():.5f} (mean {np.abs(la - lb).mean():.5f}, step {int(np.abs(la - lb).argmax()) + 1})")
-    for s in sorted(int(k) for k in a.get("heldout", {})):
-        ha, hb = a["heldout"][str(s)] if str(s) in a["heldout"] else a["heldout"][s], b["heldout"][str(s)] if str(s) in b["heldout"] else b["heldout"][s]
+    key = lambda h, s: h[str(s)] if str(s) in h else h[s]
+    common = sorted(set(int(k) for k in a.get("heldout", {})) & set(int(k) for k in b.get("heldout", {})))
+    for s in common:
+        ha, hb = key(a["heldout"], s), key(b["heldout"], s)
         print(f"held-out step {s}: cancho-gpu {ha:.5f}, torch {hb:.5f}, difference {ha - hb:+.5f}")
+    if common:
+        print(f"largest |difference| of the held-out loss {max(abs(key(a['heldout'], s) - key(b['heldout'], s)) for s in common):.5f} over {len(common)} checkpoints")
     for n, r in (("cancho-gpu", a), ("torch float32", b)):
         print(f"{n}: median {r['median_ms']:.1f} ms a step, {4096 / r['median_ms'] * 1000:.0f} tokens a second, peak {r.get('peak_bytes', 0) / 1e9:.2f} GB")
 
