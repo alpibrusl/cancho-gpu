@@ -693,3 +693,15 @@ The error does not grow with depth: it is set in the first two blocks (1.1e-3 an
 * One batch, one run of each timing; the torch numbers are medians of 8. The arg max differs from transformers' at 7 positions, all within 0.007 of a tie; the specification's own arg max agrees with transformers' at every position, so the rounding of f16 products accounts for them.
 * torch MPS's float32 and float16 times are for `model(input_ids, labels)` under `no_grad`, with the logits made (the same work); its peak is the driver's allocation, ours the process's peak footprint, which counts the same unified memory.
 * Metal only: the CPU interpreter cannot hold the real model, and nothing here has run on NVIDIA (the kernels compile for it and the tiny model runs through the CPU session with `--target nvidia-ada`).
+
+## 18.1 The same comparison on real CIFAR-10 (measured)
+
+`compare_cnn.py --epochs 30 --train 50000 --test 10000 --laps 1 --data build/cifar/cifar-10-batches-py`: the 50,000 training and 10,000 test images of CIFAR-10 (downloaded once, with the owner's permission, from the University of Toronto's `cifar-10-python.tar.gz`, 163 MB), the 0.85 M-parameter ResNet of section 18, no augmentation, batch 128, 30 epochs (11,700 steps), AdamW 2e-3, the same start and batches for every runtime. One run each; **another agent used the GPU during it, so the step times are rough** (the interleaved rounds of section 18 are the better timing).
+
+| runtime | ms a step | images a second | training time | test accuracy at the end | best |
+|---|---|---|---|---|---|
+| cancho-gpu | 17.4 | 7,338 | 204 s | 0.8740 | 0.8743 |
+| torch MPS float32 | 10.7 | 11,997 | 125 s | 0.8697 | 0.8699 |
+| torch MPS float16 autocast | 11.1 | 11,512 | 130 s | 0.8674 | 0.8674 |
+
+**M4's exit of 90% test accuracy is not met by any runtime**: without augmentation this network stops at 87%, and torch gets the same. The three agree on the accuracy (0.874 / 0.870 / 0.867) and their test losses cross each other from epoch to epoch as ReLU networks' do, so the learning is equivalent; the time to the final accuracy is 1.6x torch's, as in section 18. Reaching 90% needs augmentation (random crops and flips) or a wider network, neither of which was built.
