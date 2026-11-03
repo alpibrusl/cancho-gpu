@@ -1,0 +1,20 @@
+// The backward of the row softmax of att_sm: ds = p (dp - rowsum(dp p)) scale (f16), the gradient of the scores before the scale; the masked entries have p = 0, so ds = 0 there.
+algo att_dsoft(nbh, t, bm, scale)
+  in  dp: f32[nbh * t, t]
+  in  p:  f16[nbh * t, t]
+  out ds: f16[nbh * t, t]
+{
+  grid b over nbh, i over t / bm
+  let g  = load dp[b * t + i * bm, 0 ; bm, t]
+  let ph = load p[b * t + i * bm, 0 ; bm, t]
+  let pf = stage f32 ph
+  let gp = &g * &pf
+  let sm = rowsum gp
+  let df = g - sm
+  let d  = pf * df * scale
+  let dh = stage f16 d
+  store dh -> ds[b * t + i * bm, 0]
+}
+
+schedule att_dsoft for apple-m-series { threads 128 }
+schedule att_dsoft for nvidia-ada     { threads 128 }

@@ -182,6 +182,10 @@ def check(binary, quiet=False):
             save_checks(binary, d)
         except Exception as e:  # a build that writes the wrong files must fail the checks, not crash the test
             say(False, f"the save checks crashed: {e!r}")
+        try:
+            alias_checks(binary, d)
+        except Exception as e:
+            say(False, f"the alias checks crashed: {e!r}")
     finally:
         shutil.rmtree(d)
     return bad == 0
@@ -303,6 +307,114 @@ answer add.wo
     open(os.path.join(tdir, "once.session"), "w").write(body.replace("steps\n", ""))
     status, out, err = talk(binary, os.path.join(tdir, "once.session"), "\n\n")
     say(status == 0 and len(out) == 2 and numbers(out[0]) == want(1) and numbers(out[1]) == want(2), f"without steps each request is one repetition, and the table and the carry still advance: {out}")
+
+
+def alias_checks(binary, d):
+    """docs/resident.md section 21.4: `alias P.OUT Q.OUT`, the output Q.OUT living in the buffer of P.OUT. A chain of programs adding `b` (tests/chx/step_add.chx) with the outputs of programs two apart
+    aliased gives the answer it gives without aliases; each refusal leaves nothing on standard output; on the device the aliased chain of 24 outputs of 32 MB holds two buffers, not 24."""
+    adir = os.path.join(d, "alias")
+    os.makedirs(adir)
+    n, k = 5, 6
+    a = [f32(i + 0.3) for i in range(n)]
+    b = [f32(0.25 * i + 0.1) for i in range(n)]
+    open(os.path.join(adir, "a"), "w").write(" ".join(map(repr, a)) + "\n")
+    open(os.path.join(adir, "b"), "w").write(" ".join(map(repr, b)) + "\n")
+    kern = os.path.join(ROOT, "tests/chx/step_add.chx")
+
+    def chain(aliases, answer="p6.wo", extra=""):
+        t = [f"program p{i} {kern} n={n}" for i in range(1, k + 1)]
+        t += [f"resident p1.w {adir}/a"] + [f"resident p{i}.d {adir}/b" for i in range(1, k + 1)]
+        t += [f"link p{i}.wo -> p{i + 1}.w" for i in range(1, k)]
+        t += aliases + [extra] if extra else aliases
+        t += [f"answer {answer}"]
+        return "\n".join(t) + "\n"
+
+    def want(count):
+        v = list(a)
+        for _ in range(count):
+            v = [f32(x + y) for x, y in zip(v, b)]
+        return v
+
+    path = os.path.join(adir, "chain.session")
+    open(path, "w").write(chain([]))
+    status, plain, err = talk(binary, path, "\n")
+    say(status == 0 and len(plain) == 1 and [float(v) for v in plain[0].split()] == want(k), f"a chain of {k} programs, each adding b to the one before: {plain}")
+    open(path, "w").write(chain(["alias p1.wo p3.wo", "alias p2.wo p4.wo", "alias p3.wo p5.wo"]))
+    status, out, err = talk(binary, path, "\n")
+    say(status == 0 and out == plain, f"the same chain with p3 in p1's buffer, p4 in p2's, p5 in p3's (so p1, p3 and p5 are one buffer) answers the same: {out}")
+    open(path, "w").write(chain(["alias p1.wo p3.wo", "alias p3.wo p5.wo"]))
+    status, out, err = talk(binary, path, "\n\n")
+    say(status == 0 and out == plain + plain, "a second request on an aliased chain answers the same too")
+
+    def refuse(what, aliases, answer="p6.wo", extra=""):
+        bad_path = os.path.join(adir, "bad.session")
+        open(bad_path, "w").write(chain(aliases, answer, extra))
+        status, out, err = talk(binary, bad_path, "\n")
+        say(status == 1 and out == [] and err.startswith("error[session]"), f"refused as session: {what}" + ("" if status == 1 else f" (status {status}, {out}, {err[:80]!r})"))
+
+    refuse("an alias whose first output is read by the aliased program itself (p2 reads p1's output)", ["alias p1.wo p2.wo"])
+    refuse("an alias onto the output of the program that reads the first (p3 reads p2's)", ["alias p2.wo p3.wo"])
+    refuse("an alias onto an output that comes before a reader of the first (p2 reads p1's; p3 is aliased onto p1, then p4 is aliased onto p1's group while p3 still has to be read by p4)", ["alias p1.wo p3.wo", "alias p1.wo p4.wo"])
+    refuse("an alias backwards", ["alias p3.wo p1.wo"])
+    refuse("an alias of an output with itself", ["alias p3.wo p3.wo"])
+    refuse("an alias of an input", ["alias p1.wo p3.d"])
+    refuse("an alias of an answered output", ["alias p1.wo p6.wo"])
+    refuse("an alias to an output twice", ["alias p1.wo p4.wo", "alias p2.wo p4.wo"])
+    refuse("an alias of a group whose earlier member is still read (p3 in p1's buffer, then p4 over p3 while p4 reads p3)", ["alias p1.wo p3.wo", "alias p3.wo p4.wo"])
+    refuse("an alias with one side", ["alias p1.wo"])
+    refuse("an alias of a program that is not there", ["alias p1.wo p9.wo"])
+    refuse("an alias of an output that is saved", ["alias p1.wo p3.wo"], extra=f"save p3.wo {adir}/saved.bin")
+    refuse("an alias of an output that is carried", ["alias p1.wo p3.wo"], extra="carry p3.wo -> p1.w")
+    # two outputs of different sizes
+    odd = chain(["alias p1.wo p7.wo"]).replace("answer p6.wo", f"program p7 {kern} n=6\nresident p7.w {adir}/a6\nresident p7.d {adir}/a6\nanswer p6.wo")
+    open(os.path.join(adir, "a6"), "w").write("1 2 3 4 5 6\n")
+    open(os.path.join(adir, "odd.session"), "w").write(odd)
+    status, out, err = talk(binary, os.path.join(adir, "odd.session"), "\n")
+    say(status == 1 and out == [] and err.startswith("error[session]"), "refused as session: an alias between outputs of different sizes")
+    if METAL:
+        # on the device the aliased outputs are one buffer: 24 chained outputs of 32 MB take two buffers' worth of memory, 24 take 768 MB
+        import numpy as np
+        big, kk = 1 << 23, 24
+        np.full(big, 1.0, dtype="<f4").tofile(os.path.join(adir, "big_a"))
+        np.full(1024, 0.5, dtype="<f4").tofile(os.path.join(adir, "big_b"))
+        open(os.path.join(adir, "chain.chx"), "w").write("""algo chain(n, bn)
+  in  a: f32[1, n]
+  in  b: f32[1, bn]
+  out y: f32[1, n]
+  out s: f32[1, 1]
+{
+  grid i over n / bn
+  let x = load a[0, i * bn ; 1, bn]
+  let z = load b
+  store x + z -> y[0, i * bn]
+  let x0 = load a[0, 0 ; 1, 1]
+  let z0 = load b[0, 0 ; 1, 1]
+  store x0 + z0 -> s[0, 0]
+}
+
+schedule chain for apple-m-series { threads 128 }
+schedule chain for nvidia-ada     { threads 128 }
+""")
+
+        def big_session(alias):
+            t = [f"program q{i} {adir}/chain.chx n={big} bn=1024" for i in range(1, kk + 1)]
+            t += [f"resident q1.a {adir}/big_a f32"] + [f"resident q{i}.b {adir}/big_b f32" for i in range(1, kk + 1)]
+            t += [f"link q{i}.y -> q{i + 1}.a" for i in range(1, kk)]
+            if alias:
+                t += [f"alias q{i}.y q{i + 2}.y" for i in range(1, kk - 1)]
+            t += [f"answer q{kk}.s"]
+            return "\n".join(t) + "\n"
+
+        peaks, answers = [], []
+        for alias in (False, True):
+            sp = os.path.join(adir, f"big{int(alias)}.session")
+            open(sp, "w").write(big_session(alias))
+            r = subprocess.run(["/usr/bin/time", "-l", binary, sp], input="\n", capture_output=True, text=True, timeout=300)
+            peak = [int(line.split()[0]) for line in r.stderr.split("\n") if "peak memory footprint" in line]
+            peaks.append(peak[0] if peak else -1)
+            answers.append(r.stdout.strip())
+        say(answers[0] == answers[1] and float(answers[0]) == 1.0 + kk * 0.5, f"a chain of {kk} programs with 32 MB outputs answers {answers[0]} with and without aliases")
+        say(peaks[0] > 0 and peaks[1] > 0 and peaks[0] - peaks[1] > 400 * 1024 * 1024, f"the aliased chain's peak memory is {peaks[1] / 1e6:.0f} MB, the unaliased one's {peaks[0] / 1e6:.0f} MB (at least 400 MB less)")
 
 
 def save_checks(binary, d):
@@ -477,6 +589,10 @@ MUTANTS = [
     ("src/ckpt.cho", "    if pos < n {\n        return err.fail(m, t, \"session\", text.lit(m, t, \"checkpoint takes nothing", "    if pos < 0 {\n        return err.fail(m, t, \"session\", text.lit(m, t, \"checkpoint takes nothing", "a checkpoint that names a file is accepted"),
     ("src/ckpt.cho", "if mem.size(m, m[sess + session.s_saves()]) == 0 {", "if mem.size(m, m[sess + session.s_saves()]) < 0 {", "a checkpoint of a session with no save is accepted"),
     ("src/ckpt.cho", "    discard(t, fs, tmp);\n    return err.fail", "    return err.fail", "a failed checkpoint leaves its temporary file"),
+    ("src/session.cho", "m[lk + 2] >= dp && !(m[mb] == dp", "m[lk + 2] > dp + 1000 && !(m[mb] == dp", "an alias onto the buffer of an output a later program still reads is accepted"),
+    ("src/session.cho", "if sp >= dp {\n            return bad(m, t, m[raw + 4], text.lit(m, t, \"an alias goes", "if sp > dp + 1000 {\n            return bad(m, t, m[raw + 4], text.lit(m, t, \"an alias goes", "an alias backwards is accepted"),
+    ("src/session.cho", "if m[a] == m[mb] && m[a + 1] == m[mb + 1] {\n                    return bad(m, t, m[raw + 4], text.f2(m, t, \"`$.$` is aliased and answered", "if false {\n                    return bad(m, t, m[raw + 4], text.f2(m, t, \"`$.$` is aliased and answered", "an alias of an answered output is accepted"),
+    ("src/session.cho", "if m[al + 2] == dp && m[al + 3] == da {\n                return bad(", "if false {\n                return bad(", "an output aliased twice is accepted"),
 ]
 
 

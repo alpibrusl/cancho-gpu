@@ -17,9 +17,9 @@
 extern "C" {
 #endif
 
-#define MAX_MODULES 1024
-#define MAX_FUNCTIONS 1024
-#define MAX_BUFFERS 4096
+#define MAX_MODULES 4096
+#define MAX_FUNCTIONS 4096
+#define MAX_BUFFERS 16384
 #define MAX_ARGS 64
 
 /* Memory: this file is built with -fobjc-arc (the build scripts pass it), so the Metal objects held in `g` are strong references and

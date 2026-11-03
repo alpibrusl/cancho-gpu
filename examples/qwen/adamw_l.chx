@@ -1,0 +1,49 @@
+// AdamW for an adapter matrix (examples/gpt/adamw_h.chx) with a mask on the gradient and a scale on the f16 copy: `mk` is 1 where the matrix is trainable and 0 on the off-diagonal blocks
+// of a fused block-diagonal B (the adapters of q, k, v, or gate and up, are fused to one product and are still separate matrices: the masked entries stay 0 and their moments stay 0);
+// `osc` multiplies the f16 copy that the matrix unit reads (alpha / r for B, 1 for A). w <- w (1 - lr wd) - lr m_hat / (sqrt(v_hat) + eps); `lwd` is lr * wd.
+algo adamw_l(n, bn, gs, b1, b2, eps, lwd, osc)
+  in  w:    f32[1, n]
+  in  m:    f32[1, n]
+  in  v:    f32[1, n]
+  in  grad: f32[1, n]
+  in  mk:   f32[1, n]
+  in  s:    f32[1, 2]
+  out wo:   f32[1, n]
+  out mo:   f32[1, n]
+  out vo:   f32[1, n]
+  out wh:   f16[1, n]
+{
+  grid i over n / bn
+  let g0 = load grad[0, i * bn ; 1, bn]
+  let k0 = load mk[0, i * bn ; 1, bn]
+  let g1 = g0 * k0
+  let g  = g1 * gs
+  let m0 = load m[0, i * bn ; 1, bn]
+  let d  = &g - &m0
+  let m1 = m0 + d * (1 - b1)
+  store &m1 * 1.0 -> mo[0, i * bn]
+  let v0 = load v[0, i * bn ; 1, bn]
+  let q  = &g * (1 - b2)
+  let v1 = v0 * b2 + q * g
+  store &v1 * 1.0 -> vo[0, i * bn]
+  let vg = v1 + 1.0e-30
+  let rr = rsqrt &vg
+  let sq = vg * rr
+  let o  = zeros f32[1, bn]
+  let on = o + 1.0
+  let sc = load s[0, 1 ; 1, 1]
+  let sb = matmul sc &on
+  let dn = sq * sb + eps
+  let q2 = m1 / dn
+  let rt = load s[0, 0 ; 1, 1]
+  let rb = matmul rt on
+  let w0 = load w[0, i * bn ; 1, bn]
+  let wn = w0 * (1 - lwd) - q2 * rb
+  store &wn * 1.0 -> wo[0, i * bn]
+  let ws = wn * osc
+  let wq = stage f16 ws
+  store wq -> wh[0, i * bn]
+}
+
+schedule adamw_l for apple-m-series { threads 128 }
+schedule adamw_l for nvidia-ada     { threads 128 }

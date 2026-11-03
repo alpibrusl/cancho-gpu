@@ -1,0 +1,21 @@
+// The gradient of a key (or value) head, summed over the `nh / hkv` query heads that read it, as ONE product: with the heads of a group contiguous in the heads-major layout, the sum over
+// heads and query positions is a single reduction over `(nh / hkv) t` consecutive rows, dk_j = sum_{h, i} ds[h, i, j] q[h, i] (mma_tn), so the group's sum costs no extra kernel and no
+// per-query-head buffer. For the values the same with the probabilities p and the output gradient do in place of ds and q. Output token-major [nb t, hkv dh].
+algo att_dkv(nb, nh, hkv, t, dh)
+  in  ds: f16[nb * nh * t, t]
+  in  q:  f16[nb * nh * t, dh]
+  out dk: f32[nb * t, hkv * dh]
+  tile bm, bk
+{
+  grid b over nb, g over hkv, i over t / bm
+  let acc = zeros f32[bm, dh] @frag
+  let acc = for c in 0 .. nh / hkv * t / bk with acc {
+    let at = load ds[(b * nh + g * (nh / hkv)) * t + c * bk, i * bm ; bk, bm] @shared
+    let wt = load q[(b * nh + g * (nh / hkv)) * t + c * bk, 0 ; bk, dh] @shared
+    yield mma_tn acc at wt
+  }
+  store acc -> dk[b * t + i * bm, g * dh]
+}
+
+schedule att_dkv for apple-m-series { threads 128 warps 2 2 bm 32 bk 32 }
+schedule att_dkv for nvidia-ada     { threads 128 warps 2 2 bm 32 bk 32 }

@@ -1,4 +1,4 @@
-// The second kernel: the loss of each row, log(sum_q cs_q exp(cm_q - M)) + M - sum_q ct_q with M the largest chunk maximum, and the 1-based column of the largest logit.
+// The second kernel: the log-sum-exp of each row (the third output, for ce_grad), the loss of each row, log(sum_q cs_q exp(cm_q - M)) + M - sum_q ct_q with M the largest chunk maximum, and the 1-based column of the largest logit.
 algo ce_comb(r, nq, bm)
   in  cm:   f32[r, nq]
   in  cs:   f32[r, nq]
@@ -6,6 +6,7 @@ algo ce_comb(r, nq, bm)
   in  ci:   f32[r, nq]
   out loss: f32[r]
   out am:   f32[r]
+  out lse:  f32[r]
 {
   grid i over r / bm
   let m  = load cm[i * bm, 0 ; bm, nq]
@@ -18,6 +19,7 @@ algo ce_comb(r, nq, bm)
   let lz = log z
   let tt = load ct[i * bm, 0 ; bm, nq]
   let tl = rowsum tt
+  store &lz + &mx -> lse[i * bm]
   store lz + mx - tl -> loss[i * bm]
   let u  = sh * 10000000.0
   let u1 = u + 1.0

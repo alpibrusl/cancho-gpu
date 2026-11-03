@@ -1,0 +1,34 @@
+// The backward of rms_h with respect to its input (the gain is frozen, so it has no gradient): with u = dy gain and rs = rsqrt(mean(x^2) + eps),
+// dx = rs u - x rs^3 mean(u x), plus dres (the gradient that arrives around the norm by the residual connection), all f32.
+algo rms_bwd(r, c, bm, eps)
+  in  dy:   f32[r, c]
+  in  x:    f32[r, c]
+  in  gain: f32[1, c]
+  in  dres: f32[r, c]
+  out dx:   f32[r, c]
+{
+  grid i over r / bm
+  let xx = load x[i * bm, 0 ; bm, c]
+  let sq = &xx * &xx
+  let s  = rowsum sq
+  let ms = s * (1 / c)
+  let me = ms + eps
+  let rs = rsqrt me
+  let d  = load dy[i * bm, 0 ; bm, c]
+  let g  = load gain
+  let u  = d * g
+  let ux = &u * &xx
+  let m2 = rowsum ux
+  let k1 = m2 * (1 / c)
+  let rr = &rs * &rs
+  let r3 = rr * &rs
+  let k  = k1 * r3
+  let t2 = xx * k
+  let t1 = u * rs
+  let t3 = t1 - t2
+  let dr = load dres[i * bm, 0 ; bm, c]
+  store t3 + dr -> dx[i * bm, 0]
+}
+
+schedule rms_bwd for apple-m-series { threads 128 }
+schedule rms_bwd for nvidia-ada     { threads 128 }

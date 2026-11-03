@@ -62,6 +62,26 @@ def build_batch(nb=8, t=512, model=MODEL, limit_bytes=6_000_000):
     return np.stack([ids[s:s + t] for s in starts])
 
 
+def train_batches(k, nb=8, t=512, model=MODEL, limit_bytes=6_000_000):
+    """`k` different batches of `nb` sequences of `t` tokens for a short training run (docs/resident.md section 21): the same corpus as `build_batch`, window j of batch i starting at
+    (i + j k) / (k nb) of the stream, so no two windows overlap more than by their position; batch 0 is not the fixed batch. Needs the tokenizer files of the model; no download."""
+    from tokenizers import Tokenizer
+    tok = Tokenizer.from_file(os.path.join(snapshot(model), "tokenizer.json"))
+    text, used = [], 0
+    for f in corpus_files():
+        try:
+            s = open(f, encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        text.append(s)
+        used += len(s)
+        if used > limit_bytes:
+            break
+    ids = np.array(tok.encode("\n\n".join(text)).ids, dtype=np.int64)
+    span = len(ids) - t
+    return np.stack([np.stack([ids[int((i + j * k) / (k * nb) * span):][:t] for j in range(nb)]) for i in range(k)])
+
+
 if __name__ == "__main__":
     if "--rebuild" in sys.argv:
         b = build_batch()

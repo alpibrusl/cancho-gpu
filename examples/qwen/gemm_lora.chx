@@ -1,0 +1,27 @@
+// y = a w^T + mid bs^T on the matrix unit: a projection with its LoRA adapter, y = x W^T + (x A^T) (s B)^T, the second product added into the same accumulator (a 16-wide inner loop; the scale
+// alpha / r is folded into bs, the f16 copy of B). a [m, k], w [n, k], mid = x A^T [m, r2] (f16), bs [n, r2] (f16); f16 operands, f32 accumulation. docs/resident.md section 21.
+algo gemm_lora(m, n, k, r2)
+  in  a:   f16[m, k]
+  in  w:   f16[n, k]
+  in  mid: f16[m, r2]
+  in  bs:  f16[n, r2]
+  out y:   f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[j * bn, p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  let acc = for p in 0 .. r2 / 16 with acc {
+    let mt = load mid[i * bm, p * 16 ; bm, 16] @shared
+    let bt = load bs[j * bn, p * 16 ; bn, 16] @shared
+    yield mma acc mt bt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule gemm_lora for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule gemm_lora for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

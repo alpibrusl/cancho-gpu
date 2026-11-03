@@ -1,0 +1,27 @@
+// The input gradient of a projection with its adapter: dx = dy W + dmid A, with dmid = dy (s B) [m, r2] (f16, from a small product and a cast), A [r2, n] stored as it is for the forward.
+// dy [m, k] (f16), w [k, n] (the weight, stored [out, in]), y [m, n] (f32). Both products accumulate into one fragment.
+algo dx_lora(m, n, k, r2)
+  in  dy:   f16[m, k]
+  in  w:    f16[k, n]
+  in  dmid: f16[m, r2]
+  in  a:    f16[r2, n]
+  out y:    f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load dy[i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[p * bk, j * bn ; bk, bn] @shared
+    yield mma_nn acc at wt
+  }
+  let acc = for p in 0 .. r2 / 16 with acc {
+    let mt = load dmid[i * bm, p * 16 ; bm, 16] @shared
+    let at = load a[p * 16, j * bn ; 16, bn] @shared
+    yield mma_nn acc mt at
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule dx_lora for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule dx_lora for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

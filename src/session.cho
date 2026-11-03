@@ -73,6 +73,11 @@ pub fn s_saves() -> [] int {
     return 9;
 }
 
+// alias records (root program, root param, program, param): the output of `program` lives in the buffer of the root output (docs/resident.md section 21.4)
+pub fn s_aliases() -> [] int {
+    return 10;
+}
+
 fn space(c: int) -> [] bool {
     return c == 32 || c == 9 || c == 13;
 }
@@ -206,6 +211,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     let carry_raw = mem.list(m);
     let table_raw = mem.list(m);
     let save_raw = mem.list(m);
+    let alias_raw = mem.list(m);
     var steps = 0;
     var pos = 0;
     var lineno = 0;
@@ -345,6 +351,16 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     }
                 }
                 mem.push(m, save_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), kind, lineno));
+            } else if text.is(t, head, "alias") {
+                if nw != 3 {
+                    return bad(m, t, lineno, text.lit(m, t, "alias PROGRAM.OUT PROGRAM.OUT"));
+                }
+                let (sp, sa) = dotted(m, t, mem.get(m, words, 1));
+                let (dp, da) = dotted(m, t, mem.get(m, words, 2));
+                if sp < 0 || dp < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "alias takes PROGRAM.OUT on both sides"));
+                }
+                mem.push(m, alias_raw, mem.rec5(m, sp, sa, dp, da, lineno));
             } else if text.is(t, head, "steps") {
                 if nw != 1 {
                     return bad(m, t, lineno, text.lit(m, t, "steps takes nothing"));
@@ -354,7 +370,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 steps = 1;
             } else {
-                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, steps, save)", head));
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, steps, save, alias)", head));
             }
         }
     }
@@ -708,7 +724,103 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         i = i + 1;
     }
 
-    let sess = mem.rec(m, 10);
+    // Aliases: (root program, root param, program, param). `alias P.OUT Q.OUT` puts the output Q.OUT in the buffer of P.OUT (a device session shares the buffer, the CPU interpreter
+    // keeps two), which is safe only if nothing reads P.OUT once Q's program has begun: both are outputs of the same type and size, P's program is listed before Q's, every program that
+    // reads P.OUT (a link) is listed before Q's, and neither is answered, saved or carried, because those are read after the programs ran. An output joins an alias group once. Aliases chain:
+    // `alias A B` then `alias B C` puts all three in one buffer, and C must come after every reader of A and of B.
+    let aliases = mem.list(m);
+    i = 0;
+    while i < mem.size(m, alias_raw) {
+        let raw = mem.get(m, alias_raw, i);
+        let (sp, sa, sprm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if sp < 0 {
+            return 0 - 1;
+        }
+        let (dp, da, dprm) = locate(m, t, progs, m[raw + 2], m[raw + 3], m[raw + 4]);
+        if dp < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, sprm) || !ir.param_writable(m, dprm) {
+            return bad(m, t, m[raw + 4], text.lit(m, t, "an alias is between two outputs of kernels"));
+        }
+        if sp >= dp {
+            return bad(m, t, m[raw + 4], text.lit(m, t, "an alias goes from a program to one listed after it"));
+        }
+        let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
+        let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
+        if m[gs] != m[gd] || m[gs + 3] != m[gd + 3] {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "the outputs hold $ and $ numbers, or their types differ", text.num(m, t, m[gs + 3]), text.num(m, t, m[gd + 3])));
+        }
+        // the root of the group P.OUT is in, and every member of it
+        var rp = sp;
+        var ra = sa;
+        var k = 0;
+        while k < mem.size(m, aliases) {
+            let al = mem.get(m, aliases, k);
+            if m[al + 2] == dp && m[al + 3] == da {
+                return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is already aliased to an earlier output", m[raw + 2], m[raw + 3]));
+            }
+            if m[al + 2] == sp && m[al + 3] == sa {
+                rp = m[al];
+                ra = m[al + 1];
+            }
+            k = k + 1;
+        }
+        // none of the members is answered, saved or carried
+        let members = mem.list(m);
+        mem.push(m, members, mem.rec2(m, rp, ra));
+        k = 0;
+        while k < mem.size(m, aliases) {
+            let al = mem.get(m, aliases, k);
+            if m[al] == rp && m[al + 1] == ra {
+                mem.push(m, members, mem.rec2(m, m[al + 2], m[al + 3]));
+            }
+            k = k + 1;
+        }
+        mem.push(m, members, mem.rec2(m, dp, da));
+        k = 0;
+        while k < mem.size(m, members) {
+            let mb = mem.get(m, members, k);
+            var j = 0;
+            while j < mem.size(m, answers) {
+                let a = mem.get(m, answers, j);
+                if m[a] == m[mb] && m[a + 1] == m[mb + 1] {
+                    return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is aliased and answered: an answer is read after the programs ran, when the buffer holds the last of the group", m[mem.get(m, progs, m[mb])], ir.param_name(m, mem.get(m, ir.p_params(m, m[mem.get(m, progs, m[mb]) + 1]), m[mb + 1]))));
+                }
+                j = j + 1;
+            }
+            j = 0;
+            while j < mem.size(m, saves) {
+                let a = mem.get(m, saves, j);
+                if m[a] == m[mb] && m[a + 1] == m[mb + 1] {
+                    return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is aliased and saved: a save is read after the programs ran, when the buffer holds the last of the group", m[mem.get(m, progs, m[mb])], ir.param_name(m, mem.get(m, ir.p_params(m, m[mem.get(m, progs, m[mb]) + 1]), m[mb + 1]))));
+                }
+                j = j + 1;
+            }
+            j = 0;
+            while j < mem.size(m, carries) {
+                let a = mem.get(m, carries, j);
+                if m[a] == m[mb] && m[a + 1] == m[mb + 1] {
+                    return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is aliased and carried: a carry keeps its buffer from one repetition to the next", m[mem.get(m, progs, m[mb])], ir.param_name(m, mem.get(m, ir.p_params(m, m[mem.get(m, progs, m[mb]) + 1]), m[mb + 1]))));
+                }
+                j = j + 1;
+            }
+            // every reader of this member is listed before the program that now writes the buffer
+            j = 0;
+            while j < mem.size(m, links) {
+                let lk = mem.get(m, links, j);
+                if m[lk] == m[mb] && m[lk + 1] == m[mb + 1] && m[lk + 2] >= dp && !(m[mb] == dp && m[mb + 1] == da) {
+                    return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is linked to a program that runs after (or as) the program that overwrites its buffer", m[mem.get(m, progs, m[mb])], ir.param_name(m, mem.get(m, ir.p_params(m, m[mem.get(m, progs, m[mb]) + 1]), m[mb + 1]))));
+                }
+                j = j + 1;
+            }
+            k = k + 1;
+        }
+        mem.push(m, aliases, mem.rec4(m, rp, ra, dp, da));
+        i = i + 1;
+    }
+
+    let sess = mem.rec(m, 11);
     m[sess + s_progs()] = progs;
     m[sess + s_resident()] = resident;
     m[sess + s_links()] = links;
@@ -719,6 +831,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     m[sess + s_steps()] = steps;
     m[sess + s_count()] = 0;
     m[sess + s_saves()] = saves;
+    m[sess + s_aliases()] = aliases;
     return sess;
 }
 

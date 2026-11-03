@@ -1,0 +1,13 @@
+// y = f32(x) for r rows of c: the embeddings of a step (an f16 `table`, prepared by the host) as the f32 residual stream the first block reads. One threadgroup takes bm rows.
+algo widen_h(r, c, bm)
+  in  x: f16[r, c]
+  out y: f32[r, c]
+{
+  grid i over r / bm
+  let a = load x[i * bm, 0 ; bm, c]
+  let b = stage f32 a
+  store b -> y[i * bm, 0]
+}
+
+schedule widen_h for apple-m-series { threads 128 }
+schedule widen_h for nvidia-ada     { threads 128 }
