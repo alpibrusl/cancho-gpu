@@ -391,3 +391,104 @@ def fd_check(c, P, AB, tokens, s=2.0, eps=1e-6, seed=0):
         an = float((G[name] * d).sum())
         out[name] = abs(fd - an) / max(abs(fd), abs(an), 1e-12)
     return out, loss
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Full fine-tuning (docs/resident.md section 24; roadmap M7.4, part B): every parameter is trained, the embedding table (tied with the output layer) included. The gradient of the table is the sum of two
+# scatter-adds: the output layer's (dlogits^T h, one row per vocabulary entry) and the input side's (the gradient of the embedding of each token added into the row of its id).
+
+def rms_back_full(dy, x, g, eps):
+    """dx and the gain's gradient of y = x rsqrt(mean(x^2) + eps) g."""
+    rs = 1.0 / np.sqrt((x * x).mean(-1, keepdims=True) + eps)
+    u = dy * g
+    return u * rs - x * (rs ** 3) * (u * x).mean(-1, keepdims=True), (dy * x * rs).sum(0)
+
+
+def head_back_full(c, P, x, tokens, chunk=16384):
+    """Like head_back, and also the gradients of the final norm's gain and of the table's rows through the output layer. Returns (loss, dx, dnorm, demb [v, d])."""
+    h = rms(x, P["norm"], c.eps)
+    tg = next_targets(tokens).reshape(-1)
+    w = np.ones((c.nb, c.t))
+    w[:, -1] = 0.0
+    w = w.reshape(-1)
+    nc = w.sum()
+    rows, _ = head(c, P, x, tg, chunk)
+    m = np.full(c.n, -np.inf)
+    z = np.zeros(c.n)
+    for j in range(0, c.v, chunk):
+        lg = h @ P["emb"][j:j + chunk].T
+        nm = np.maximum(m, lg.max(-1))
+        z = z * np.exp(m - nm) + np.exp(lg - nm[:, None]).sum(-1)
+        m = nm
+    lse = np.log(z) + m
+    dh = np.zeros_like(h)
+    demb = np.zeros((c.v, c.d))
+    for j in range(0, c.v, chunk):
+        lg = h @ P["emb"][j:j + chunk].T
+        dl = np.exp(lg - lse[:, None])
+        inside = (tg >= j) & (tg < j + chunk)
+        dl[np.nonzero(inside)[0], tg[inside] - j] -= 1.0
+        dl = dl * (w / nc)[:, None]
+        dh += dl @ P["emb"][j:j + chunk]
+        demb[j:j + chunk] = dl.T @ h
+    dx, dg = rms_back_full(dh, x, P["norm"], c.eps)
+    return float((rows * w).sum() / nc), dx, dg, demb
+
+
+def full_loss_grads(c, P, tokens, grads=True):
+    """The mean loss and the gradient of it with respect to every parameter ({name: array} like P). Written by hand like lora_loss_grads (the adapters of the forward are absent)."""
+    zero = {}
+    for l in range(c.layers):
+        for p in PROJ:
+            i, o = proj_dims(c, p)
+            zero[f"l{l:02d}.{p}.A"] = np.zeros((1, i))
+            zero[f"l{l:02d}.{p}.B"] = np.zeros((o, 1))
+    xs, cache = lora_forward(c, P, zero, tokens, 0.0)
+    if not grads:
+        rows, _ = head(c, P, xs[-1], next_targets(tokens).reshape(-1))
+        return mean_loss(rows, c), None
+    loss, g, dnorm, demb = head_back_full(c, P, xs[-1], tokens)
+    G = {"norm": dnorm}
+    cs, sn = rope_tables(c)
+    for l in reversed(range(c.layers)):
+        p, k_ = f"l{l:02d}.", cache[l]
+        dact_in = g
+        G[p + "wd"] = dact_in.T @ k_["act"]
+        dact = dact_in @ P[p + "wd"]
+        sg = 1.0 / (1.0 + np.exp(-k_["gt"]))
+        dgt = dact * k_["up"] * (sg * (1.0 + k_["gt"] * (1.0 - sg)))
+        dup = dact * (k_["gt"] * sg)
+        G[p + "wgu"] = np.concatenate([dgt.T @ k_["h2"], dup.T @ k_["h2"]])
+        dh2 = dgt @ P[p + "wgu"][:c.ff] + dup @ P[p + "wgu"][c.ff:]
+        dx2, G[p + "ln2"] = rms_back_full(dh2, k_["x1"], P[p + "ln2"], c.eps)
+        g1 = g + dx2
+        G[p + "wo"] = g1.T @ k_["att"]
+        datt = g1 @ P[p + "wo"]
+        dq, dk, dv = attention_back(datt, k_["q"], k_["k"], k_["v"], k_["pr"], c)
+        dq, dk = rope_back(dq, cs, sn, c.h, c), rope_back(dk, cs, sn, c.hkv, c)
+        dqkv = np.concatenate([dq, dk, dv], 1)
+        G[p + "bqkv"] = dqkv.sum(0)
+        G[p + "wqkv"] = dqkv.T @ k_["h1"]
+        dh1 = dqkv @ P[p + "wqkv"]
+        dx1, G[p + "ln1"] = rms_back_full(dh1, k_["x"], P[p + "ln1"], c.eps)
+        g = g1 + dx1
+    tok = np.asarray(tokens).reshape(-1)
+    np.add.at(demb, tok, g)  # the input side of the tied table: the gradient of each token's embedding added into its row
+    G["emb"] = demb
+    return loss, G
+
+
+def fd_check_full(c, P, tokens, names=None, eps=1e-6, seed=0):
+    """Finite differences along a random direction for each parameter in `names` (default all): {name: relative difference}, and the loss."""
+    loss, G = full_loss_grads(c, P, tokens)
+    rng = np.random.default_rng(seed)
+    out = {}
+    for name in names or list(G):
+        d = rng.standard_normal(P[name].shape)
+        d /= np.linalg.norm(d)
+        up, dn = dict(P), dict(P)
+        up[name], dn[name] = P[name] + eps * d, P[name] - eps * d
+        fd = (full_loss_grads(c, up, tokens, grads=False)[0] - full_loss_grads(c, dn, tokens, grads=False)[0]) / (2 * eps)
+        an = float((G[name] * d).sum())
+        out[name] = abs(fd - an) / max(abs(fd), abs(an), 1e-12)
+    return out, loss

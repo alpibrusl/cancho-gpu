@@ -1,0 +1,19 @@
+// y[0, j] = sum over the r rows of x[:, j]: a column sum in f32 (the gradients of a norm's gain and of a bias), by the product of a row of ones with each [bm, bn] tile, accumulated down the rows.
+algo colsum(r, c, bm, bn)
+  in  x: f32[r, c]
+  out y: f32[1, c]
+{
+  grid j over c / bn
+  let acc = zeros f32[1, bn]
+  let acc = for p in 0 .. r / bm with acc {
+    let t = load x[p * bm, j * bn ; bm, bn]
+    let zo = zeros f32[1, bm]
+    let on = zo + 1.0
+    let s = matmul on t
+    yield acc + s
+  }
+  store acc -> y[0, j * bn]
+}
+
+schedule colsum for apple-m-series { threads 128 }
+schedule colsum for nvidia-ada     { threads 128 }

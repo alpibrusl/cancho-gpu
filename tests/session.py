@@ -299,15 +299,64 @@ answer add.wo
     status, out, err = talk(binary, os.path.join(tdir, "widen-f32.session"), "\n")
     say(status == 1 and out == [] and err.startswith("error[usage]"), "refused as usage: an f32 flag on an f16 parameter")
     if METAL:
-        # a binary file bigger than the session's byte pool (512 MiB) is refused, not trapped (found in docs/resident.md section 20: Qwen's 272 MB output matrix did not fit the old 256 MiB pool and the process died silently, status 132)
-        m_, k_ = 4096, 73216
-        with open(os.path.join(tdir, "huge.bin"), "wb") as f:
-            f.truncate(m_ * k_ * 2)  # a sparse 600 MB file
-        with open(os.path.join(tdir, "w16.bin"), "wb") as f:
-            f.truncate(64 * k_ * 2)
-        open(os.path.join(tdir, "huge.session"), "w").write(f"program g {os.path.join(ROOT, 'tests/chx/ported/gemm_mma.chx')} m={m_} n=64 k={k_}\nresident g.a {os.path.join(tdir, 'huge.bin')} f16\nresident g.w {os.path.join(tdir, 'w16.bin')} f16\nanswer g.y\n")
-        status, out, err = talk(binary, os.path.join(tdir, "huge.session"), "\n")
-        say(status == 1 and out == [] and err.startswith("error[usage]") and "byte pool" in err, f"refused as usage: an f16 binary file larger than the byte pool (status {status}, {err[:90]!r})")
+        # a binary resident file goes up a chunk (128 MiB) at a time, so one bigger than the session's byte pool (512 MiB) is read, not refused or trapped (docs/resident.md sections 20 and 24: Qwen's 272 MB output
+        # matrix did not fit the old 256 MiB pool and the process died silently, status 132; the 0.5B's f32 table, 545 MB, does not fit the 512 MiB one). A 640 MB file of values that say where they are:
+        # the elements on each side of every chunk boundary and the last come back right
+        import numpy as np
+        n_ = 160 * 1024 * 1024
+        probes = [33554431, 33554432, 67108863, 67108864, 100663295, 100663296, n_ - 1]
+        (np.arange(n_, dtype=np.int64) % 8191).astype("<f4").tofile(os.path.join(tdir, "ramp.bin"))
+        # element k holds k mod 8191 (exact in float32; a chunk of 2^25 elements is 4096 mod 8191, so a chunk uploaded at a wrong place changes the values at its boundaries)
+        open(os.path.join(tdir, "probe.chx"), "w").write("""algo probe(n, p0, p1, p2, p3, p4, p5, p6)
+  in  a: f32[1, n]
+  out s: f32[1, 7]
+{
+  grid i over 1
+  let x0 = load a[0, p0 ; 1, 1]
+  store x0 -> s[0, 0]
+  let x1 = load a[0, p1 ; 1, 1]
+  store x1 -> s[0, 1]
+  let x2 = load a[0, p2 ; 1, 1]
+  store x2 -> s[0, 2]
+  let x3 = load a[0, p3 ; 1, 1]
+  store x3 -> s[0, 3]
+  let x4 = load a[0, p4 ; 1, 1]
+  store x4 -> s[0, 4]
+  let x5 = load a[0, p5 ; 1, 1]
+  store x5 -> s[0, 5]
+  let x6 = load a[0, p6 ; 1, 1]
+  store x6 -> s[0, 6]
+}
+
+schedule probe for apple-m-series { threads 32 }
+schedule probe for nvidia-ada     { threads 32 }
+""")
+        pa = " ".join(f"p{i}={k}" for i, k in enumerate(probes))
+        open(os.path.join(tdir, "ramp.session"), "w").write(f"program g {os.path.join(tdir, 'probe.chx')} n={n_} {pa}\nresident g.a {os.path.join(tdir, 'ramp.bin')} f32\nanswer g.s\n")
+        status, out, err = talk(binary, os.path.join(tdir, "ramp.session"), "\n")
+        want_ = [float(k % 8191) for k in probes]
+        say(status == 0 and len(out) == 1 and np.allclose(numbers(out[0]), want_, rtol=1e-6), f"a 640 MB f32 resident file (more than the byte pool) goes up in chunks and every element on each side of a chunk boundary is right: {out}")
+        # and a save of an output larger than the pool goes out in chunks too (it was a trap, status 132): a copy of the ramp (640 MB) saved and read back
+        open(os.path.join(tdir, "copy.chx"), "w").write("""algo copy(n, bn)
+  in  a: f32[1, n]
+  out y: f32[1, n]
+{
+  grid i over n / bn
+  let x = load a[0, i * bn ; 1, bn]
+  store x * 1.0 -> y[0, i * bn]
+}
+
+schedule copy for apple-m-series { threads 128 }
+schedule copy for nvidia-ada     { threads 128 }
+""")
+        open(os.path.join(tdir, "bigsave.session"), "w").write(f"program g {os.path.join(tdir, 'copy.chx')} n={n_} bn=1024\nresident g.a {os.path.join(tdir, 'ramp.bin')} f32\nprogram h {os.path.join(tdir, 'probe.chx')} n={n_} {pa}\nlink g.y -> h.a\nanswer h.s\nsteps\nsave g.y {os.path.join(tdir, 'ramp.out')} f32\n")
+        status, out, err = talk(binary, os.path.join(tdir, "bigsave.session"), "1\ncheckpoint\n")
+        ok_ = status == 0 and os.path.exists(os.path.join(tdir, "ramp.out")) and os.path.getsize(os.path.join(tdir, "ramp.out")) == n_ * 4
+        if ok_:
+            back = np.memmap(os.path.join(tdir, "ramp.out"), dtype="<f4", mode="r")
+            ok_ = bool(np.array_equal(np.array([back[k] for k in probes]), np.array(want_, dtype="<f4"))) and bool(np.array_equal(back[::65537], (np.arange(n_, dtype=np.int64)[::65537] % 8191).astype("<f4")))
+        say(ok_, f"a 640 MB output (more than the byte pool) is saved in chunks and read back whole (status {status}, {err[:80]!r})")
+        os.remove(os.path.join(tdir, "ramp.bin"))
     # without `steps` a request is just its inputs, once
     open(os.path.join(tdir, "once.session"), "w").write(body.replace("steps\n", ""))
     status, out, err = talk(binary, os.path.join(tdir, "once.session"), "\n\n")
