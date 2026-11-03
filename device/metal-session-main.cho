@@ -9,6 +9,8 @@ edition 5;
 // output of one kernel and the input of the next (no trip through the host). A request line then uploads the `input` parameters,
 // launches the kernels in order, reads the `answer` outputs back and writes them as one line.
 //
+// A `save` directive writes an output buffer to a file on the request `checkpoint` (`docs/resident.md` section 18).
+//
 // Linked with `shim/canchogpu-metal.mm` (`scripts/build-metal-session.sh`).
 
 import std.io;
@@ -22,6 +24,7 @@ import cli;
 import devcodec;
 import fileio;
 import session;
+import ckpt;
 import metal;
 
 fn words() -> [] int {
@@ -307,7 +310,75 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
     return 0;
 }
 
-fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_read, io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu")] int {
+// One file of a checkpoint (`docs/resident.md` section 18): the saves `k` up to `end`, each downloaded from its device buffer and written as it is, to a temporary
+// file that is made durable and renamed. Answers the bytes written, or -1 with a refusal.
+fn save_group[&m, &t, &f, &s](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), sess: int, bufs: int, k: int, end: int) -> [ffi("libmetalgpu"), fs_write(""), file_write] int {
+    let progs = m[sess + session.s_progs()];
+    let saves = m[sess + session.s_saves()];
+    let path = m[mem.get(m, saves, k) + 2];
+    let tmp = ckpt.tmp_path(m, t, path);
+    let mark = m[mem.text_slot()];
+    var status = 0;
+    var total = 0;
+    var failed = false;
+    match open_write(fs, text.bytes(t, tmp)) {
+        Opened::Ok(opened) => {
+            var out = opened;
+            borrow mut out as &!w in {
+                var j = k;
+                while j < end && status == 0 && !failed {
+                    let rec = mem.get(m, saves, j);
+                    let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+                    let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+                    let at = devcodec.reserve(m, bytes);
+                    if metal.cgpu_download(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[at..at + bytes]) < 0 {
+                        failed = true;
+                    } else {
+                        status = ckpt.write_all(w, t[at..at + bytes]);
+                        total = total + bytes;
+                    }
+                    m[mem.text_slot()] = at;
+                    j = j + 1;
+                }
+                if status == 0 && !failed {
+                    status = ckpt.sync_file(w);
+                }
+            }
+            file_close(out);
+        }
+        Opened::Failed(e) => {
+            status = e;
+        }
+    }
+    if failed {
+        // the temporary file is removed and the device's failure is the refusal
+        let removed = ckpt.discard(t, fs, tmp);
+        m[mem.text_slot()] = mark;
+        return device_fail(m, t, ffi, "reading a save back");
+    }
+    let done = ckpt.finish(m, t, fs, path, tmp, status, total);
+    m[mem.text_slot()] = mark;
+    return done;
+}
+
+// The request `checkpoint` on the device: every file of the saves, then the bytes of each as the answer line. The kernels of the last request have finished (one wait ends a request).
+fn checkpoint[&m, &t, &i, &f, &s](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), sess: int, bufs: int) -> [io_write, ffi("libmetalgpu"), fs_write(""), file_write] int {
+    let saves = m[sess + session.s_saves()];
+    let totals = mem.list(m);
+    var k = 0;
+    while k < mem.size(m, saves) {
+        let end = ckpt.group_end(m, t, saves, k);
+        let wrote = save_group(m, t, ffi, fs, sess, bufs, k, end);
+        if wrote < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, totals, wrote);
+        k = end;
+    }
+    return ckpt.print_totals(m, t, io, totals);
+}
+
+fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_read, io_write, err_write, fs_read(""), fs_write(""), file_read, file_write, args, ffi("libmetalgpu")] int {
     if arg_count(args) != 2 {
         return usage(io);
     }
@@ -350,16 +421,22 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
             more = false;
         } else {
             m[mem.text_slot()] = tmark + n;
-            let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
-            var done = reps;
-            if done >= 0 {
-                done = session.fill_inputs(m, t, fm, sess, rest);
-            }
-            if done >= 0 {
-                done = on_device(m, t, fm, ffi, sess, funcs, bufs, reps);
-            }
-            if done >= 0 {
-                done = session.print_answers(m, t, fm, io, sess);
+            let asked = ckpt.request(m, t, sess, text.handle(tmark, n));
+            var done = asked;
+            if asked > 0 {
+                done = checkpoint(m, t, io, ffi, fs, sess, bufs);
+            } else if asked == 0 {
+                let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
+                done = reps;
+                if done >= 0 {
+                    done = session.fill_inputs(m, t, fm, sess, rest);
+                }
+                if done >= 0 {
+                    done = on_device(m, t, fm, ffi, sess, funcs, bufs, reps);
+                }
+                if done >= 0 {
+                    done = session.print_answers(m, t, fm, io, sess);
+                }
             }
             if done < 0 {
                 status = cli.report(m, t, io);

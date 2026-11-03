@@ -207,7 +207,7 @@ program of its own, as the device programs are.
   is an authority `cancho-gpu` does not have (`tests/authority.sh` pins its report), so
   the loop lives in a program whose report is pinned separately: `args, err_write,
   file_read, fs_read, heap, io_read, io_write`, no `fs_write`, no network, no foreign
-  code (`tests/authority.sh`). The session file's reader and the setup are `src/session.cho`,
+  code (`tests/authority.sh`). *(Widened in §18: `fs_write` and `file_write`, for `save`, with the owner's approval.)* The session file's reader and the setup are `src/session.cho`,
   which the Metal session will use too.
 * **`cancho-gpu-session FILE [--target T]`.** The target is for every program of the file
   (default `nvidia-ada` where the file has it, else `apple-m-series`); the session file
@@ -479,7 +479,7 @@ It is as fast as torch on MPS in float32 (3% faster at 3.3 M parameters, 10% at 
 `serve_gpt.py generate` loads it into a **forward-only session** (`gpt_session.write(..., serve=True)`: the same kernels and the same f16 matrix-unit products as the forward of training, the optimiser and backward left out). A request is the 128 token ids of a window and a one-hot selector of the position to read, and the answer is that position's logits (`row_select.chx`: the selector times the f32 logits, so a request answers 128 numbers, not 16,384); the host takes the arg max (or samples).
 Causal attention means the positions after the one read cannot influence it, so the window is the sequence so far followed by anything.
 
-**Checkpoints are host-side.** The roadmap named a `save` directive; none was needed to reach the exit: the training session already answers every parameter (`dump`), and a checkpoint is those numbers written by the host. A device-side `save` would only matter for models whose parameters do not fit a text answer, which M5's models (billions) will.
+**Checkpoints are host-side** *(here; §18 builds the device-side `save` that this paragraph said only larger models would need)*. The roadmap named a `save` directive; none was needed to reach the exit: the training session already answers every parameter (`dump`), and a checkpoint is those numbers written by the host. A device-side `save` would only matter for models whose parameters do not fit a text answer, which M5's models (billions) will.
 **No key/value cache.** Each token recomputes the 128-token window (about 40 launches). That is the *same algorithm* as the first torch column below, so the comparison with it is like for like; the cache is a better algorithm, and torch's own cached decoder is in the table as the stronger baseline. A cached decoder in the session needs a kernel that appends to a cache at a position taken from the request, which is the roadmap's M5 (G12).
 
 **Correctness.** `tests/train.py`: the logits of one position of a 2-layer GPT within 3e-4 of the float64 forward on the CPU interpreter and 3.6e-4 on Metal, same arg max. On the trained checkpoint, six held-out prompts of 32 characters, 96 greedy tokens each (`serve_gpt.py generate`, M4 Max): **all 6 continuations are identical to torch's (float32 on MPS), 576 of 576 tokens**, and torch's recompute and torch's cached decoder agree with each other too. Teacher-forced (cancho's choice at each position of torch's own continuation) it is also 576/576, so the identity is not a lucky cascade.
@@ -514,6 +514,64 @@ cancho-gpu is 1.9x torch's same algorithm and 2.4x torch's cached decoder. Torch
 The validation curves agree at every point (27.4 M model at 250, 500, 750, 1000, 1250, 1500 steps: 4.250 / 3.712 / 3.423 / 3.202 / 3.060 / 2.989 for cancho-gpu, 4.280 / 3.706 / 3.411 / 3.199 / 3.057 / 2.982 for torch), 6% faster than torch float32 and 13% faster than its mixed precision. Two minutes for the whole run.
 
 **What stops short of the roadmap's exit, and why.**
-* **27 M parameters, not 30 to 60 M.** A d 768, 8-layer (57 M) session is accepted and runs, but the curve needs the parameters in an answer, and a run's tensors must fit the interpreter's memory (32 M numbers): the answer path refuses above it ("the run's tensors do not fit the interpreter's memory"). The way past is a device-side `save` (G10 proper), which needs the session to have `fs_write`, a widening of `cancho-gpu-session`'s authority that is the owner's decision, not made here. Training itself has no such cap (tables and residents go straight to the device, section 15).
+* **27 M parameters, not 30 to 60 M.** *(Removed in §18, which built the device-side `save` and trained and validated 60 M.)* A d 768, 8-layer (57 M) session is accepted and runs, but the curve needs the parameters in an answer, and a run's tensors must fit the interpreter's memory (32 M numbers): the answer path refuses above it ("the run's tensors do not fit the interpreter's memory"). The way past is a device-side `save` (G10 proper), which needs the session to have `fs_write`, a widening of `cancho-gpu-session`'s authority that is the owner's decision. Training itself has no such cap (tables and residents go straight to the device, section 15).
 * **Vocabularies above about 2,048.** `ce` still holds a row of the logits in a tile; a larger vocabulary needs it in column chunks with a two-pass maximum and sum, and, past about 8 k tokens, the one-hot product stops being cheap and G1 (gather, and a scatter-add with atomics or a sort-and-segment) starts to pay. Not built, not measured.
 * **Memory against torch** was not measured. The context is still 128.
+
+## 18. `save` and `checkpoint`: parameters out of a session as a file (roadmap G10 and M3; measured)
+
+§17 stopped at 27 M parameters because the only way out of a session was a text answer, and an answer must fit the interpreter's memory (32 M numbers). This section is the way out: a **binary file written by the session program from the device buffer**, with no text and
+no number passing through the interpreter.
+
+**The directive.** `save PROGRAM.OUT FILE [f32|f16]` names an output of a kernel and a file. The output is written as little-endian IEEE words, `f32` unless the flag says `f16`; the flag must match the output's type (a mismatch is `usage`, as for `resident`,
+so no conversion is done). Several `save` lines may name one file, **listed together**: the file holds their tensors one after another in the order of the lines, and is written once (`gpt_session.py` saves all 28 tensors of a 2-layer GPT, or 100 of an 8-layer one, to one
+`ckpt.bin`, in the order of `names(c)`). The saved buffer is what the last repetition left, after any `carry` (the output of an `adamw` kernel is the new weight).
+
+**The trigger.** A request line that is the word `checkpoint` and nothing else. It runs no program, takes no step, moves no table, and answers one line: the bytes written to each file, in the order the files are first named (`20` for one file of five floats, `20 20` for two files).
+It is a word and not a flag on an ordinary request for three reasons: it cannot be mistaken for a count of steps or an input (neither parses as `checkpoint`); a session without `save` is unchanged (and a `checkpoint` there is refused, rule `session`); and **a request can never name a file**,
+because the word has no argument (`checkpoint /tmp/x` is `session`). The path comes only from the session file, which is the owner's. A device session has finished every kernel of the last request before it reads the next line, so the buffers a checkpoint downloads are the state after the last step, with no extra wait.
+
+**Atomically.** The file is written whole to `FILE.tmp` (beside it, so the rename stays on one filesystem), made durable (`file_sync`) and renamed over `FILE` (`fs_rename`): a reader sees the old file or the new one, never half of one. A failure (the directory is not there, the disk is full, the rename is refused)
+leaves the old file as it was, removes the temporary file, and is the rule `io` with the path and the errno. A leftover `FILE.tmp` from a crash is truncated by the next checkpoint. Not claimed: that a power loss between the rename and the directory's own flush keeps the new name (the directory is not synced), or anything about a filesystem that does not make `rename` atomic.
+
+**Refusals, all before any device work, all with the line of the session file** (`session` unless said): a `save` of a parameter the kernel only reads; a flag that is not `f32` or `f16`; an output of another type than the flag (`usage`); a path with two dots in a row or of 4,000 bytes or more (the runtime's `Fs` traps on those, and no input reaches a trap, so they are refused first);
+a file that is also a `resident`, `table` or kernel file of the session (a save does not overwrite what the session reads; this compares the names as written, so two spellings of one path are not caught); saves to one file that are not listed together. At the checkpoint: a request with anything after the word, and a session with no `save`.
+
+**The authority.** `cancho-gpu-session` and `cancho-gpu-metal-session` were `args, err_write, file_read, fs_read, heap, io_read, io_write` (`io_read` for the request lines): they could write nothing but standard output. They now also perform **`fs_write("")` and `file_write`**. This widening was **explicitly approved by the repository owner** for this change;
+it is the last row `tests/authority.sh` pins for the CPU session (`args, err_write, file_read, file_write, fs_read, fs_write, heap, io_read, io_write`; no network, no foreign code), and a further change to that list needs the same approval. What the write can do is narrower than the label: the only paths written are the `save` paths of the session file (and their `.tmp` names), a request cannot name one, and the label `fs_write("")` is the broadest
+prefix the language can say, so the report cannot show that; this section and the tests do. The Metal session is not in `tests/authority.sh` (its report includes `ffi("libmetalgpu")`, and the gate does not build it); it shares every line that writes (`src/ckpt.cho`).
+
+**The code.** `src/session.cho` reads and checks the directive (`s_saves`); `src/ckpt.cho` is the request word, the temporary file, the CPU session's writer and the common pieces (`write_all`, `finish`); `device/metal-session-main.cho` downloads each buffer with the shim's `cgpu_download` into the byte pool
+(one tensor at a time: the pool, 256 MiB, bounds the largest tensor and not the model) and writes it. The CPU session encodes from the interpreter's memory (`devcodec.encode`), so it can save only what the interpreter holds.
+
+**Checks that can fail** (`tests/session.py`, CPU and Metal; `tests/train.py`):
+(1) a save writes nothing until a checkpoint; the file holds exactly the output's words after 3, then after 7 steps, equal to a float32 simulation with non-dyadic values; the answer is the byte count; a checkpoint takes no step;
+(2) two programs into one file in order, two files with one total each, an f16 output as binary16 words, an existing file replaced;
+(3) a failed checkpoint (the temporary name taken by a directory; a directory that is not there; the rename refused because the name is a directory) is `io`, leaves the old file and no temporary file;
+(4) 13 refusals of a session file and 4 of a request (a file named, a number after the word, the word in capitals, no save), none writing anything;
+(5) a 2-layer GPT trained 25 AdamW steps with a `save` of all 28 tensors: the file is **bit for bit** what the same session answers as text with `dump` (CPU and Metal), and `read_checkpoint` restores every shape.
+**Mutants:** 14 on the CPU session, all killed (the type check, the two path checks, the grouping, the resident-file check, the input check, the rename, the temporary file, the group boundary, the last byte, the total, the checkpoint word with an argument, a checkpoint without a save, a failed checkpoint's leftover file; with the 16 of §12 that is 30 of 30), and 4 built by hand on the device program
+(`device/metal-session-main.cho`: the last byte of a download, every save downloading the first save's buffer, a wrong total, the word not recognised), all killed by `tests/session.py --metal`.
+A first version of the failed-checkpoint test did not kill "a failed checkpoint leaves its temporary file" (its failure came before the temporary file existed); the case was added that fails at the rename.
+
+### 18.1 The GPT of §17 at 60 M parameters (roadmap M3; measured)
+
+`compare_gpt.py` now gets the curve from `save`: one session answers only the loss, the timed requests run the steps, and after each stretch an untimed `checkpoint` writes the parameters to a file that the float64 forward reads (`gpt_session.read_checkpoint`). Before, the curve cost a second, dump-answering session that could not exceed 32 M numbers.
+`serve_gpt.py train` writes its checkpoint the same way (`ckpt.bin`, then the `.npz` that `generate` loads).
+
+`python3 examples/gpt/compare_gpt.py --bpe 2048 --layers 8 --d 768 --heads 12 --steps 1500 --only cancho,torch-mps,torch-mps-amp` (Apple M4 Max, torch 2.12, the same start, the same batches and AdamW for all; the same 15.5 M-token BPE corpus as §17; 4,096 tokens a step; AdamW 1e-3, warm-up 5%, cosine; one run each; nothing else running):
+**8 layers, d 768, 12 heads, 59.95 M parameters** (the roadmap's 30 to 60 M; the embedding and output layer are 2 x 2,176 x 768 of it).
+
+| runtime | ms a step | tokens a second | 1,500 steps | validation loss at the end |
+|---|---|---|---|---|
+| **cancho-gpu (Metal session)** | **167.8** | **24,400** | 252 s | **3.106** |
+| torch MPS (float32) | 196.7 | 20,800 | 295 s | 3.114 |
+| torch MPS (float16 autocast) | 201.1 | 20,400 | 302 s | 3.278 |
+
+Validation loss (nats a token, four held-out batches of 4,096 tokens, float64 forward) at steps 250, 500, 750, 1000, 1250, 1500: cancho-gpu **4.339 / 3.815 / 3.572 / 3.331 / 3.195 / 3.106**; torch float32 4.352 / 3.821 / 3.563 / 3.339 / 3.200 / 3.114; torch float16 autocast 4.408 / 3.910 / 3.671 / 3.481 / 3.353 / 3.278.
+**Reading.** The curves of cancho-gpu and torch float32 agree to within 0.013 nats at every point and cross twice, so it learns the same thing; torch's mixed precision is behind throughout (as at 27 M in §17). cancho-gpu is **15% faster than torch float32** (167.8 against 196.7 ms) and 17% faster than its mixed precision: the margin at 27 M was 6%.
+**No kernel schedule change was needed**: the schedules tuned at d 256 and d 512 (`bm 1` for the elementwise kernels from d 640, which `gpt_session.py` already did, attention and weight-gradient tiles of 32) run at d 768 as they are, and four steps of the first run already showed 155 ms. The 168 ms is not tuned for this size; the step at d 768 was not profiled.
+
+**Limits, honestly.** One run each, so a difference of 0.01 nats between runtimes is inside what a different seed would move. The validation set is 16 K tokens drawn from the same corpus as the training text (a held-out tail, 10%), not TinyStories (it needs a download, so its numbers are not comparable). The loss reached, 3.1 nats a token, is a model after 6 M tokens, not a trained one; 1,500 steps is a measurement of speed and agreement, not of how good a 60 M model can be.
+Memory against torch was not measured. The context is still 128, the vocabulary 2,048 (§17's other two limits stand). A checkpoint of this model is 239,794,176 bytes (59.95 M f32 words, 100 tensors in one file) and a `checkpoint` request took **0.04 s** (three requests: 0.039, 0.043, 0.046 s, M4 Max SSD; macOS's `fsync` does not force the drive's own cache, so this is durable to the operating system, not to the platter).
+The `.bin` has no header: the shapes come from the configuration, so a file with the wrong configuration is caught only by its size (`read_checkpoint` checks the word count). Loading goes through the host: `read_checkpoint` gives the tensors and `gpt_session.write(params=...)` writes the per-tensor `resident` files of a new session (the optimiser's moments restart at zero); a directive that loads one combined file into the parameters is not built.

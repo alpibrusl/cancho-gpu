@@ -1,0 +1,202 @@
+edition 5;
+module ckpt;
+
+// Checkpoints (`docs/resident.md` section 18): the `save P.OUT FILE [f32|f16]` directives of a session, written on the request `checkpoint`.
+//
+// A save writes the bytes of an output buffer to a file, little-endian, straight from where the session holds them (the CPU session's
+// interpreter memory, a device session's download), with no text and no number parsed. The file is written whole to `FILE.tmp`, made
+// durable and renamed over `FILE`: a reader sees the old file or the new one, never half of one, and a failure leaves the old file and
+// removes the temporary one. The path comes only from the session file: the request word names no file.
+//
+// This is the session programs' one write authority (`fs_write`, `file_write`), widened with the owner's approval; `tests/authority.sh`
+// holds the report to it.
+
+import std.fmt;
+import std.io;
+import mem;
+import text;
+import err;
+import kinds;
+import devcodec;
+import session;
+
+fn space(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 13;
+}
+
+// 1 when the request line is the word `checkpoint` and nothing else, 0 when it does not start with it, -1 with a refusal (`session`): the word with
+// anything after it (a request cannot name a file), or a session that has no `save`.
+pub fn request[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> [] int {
+    let n = text.size(line);
+    var pos = 0;
+    while pos < n && space(text.at(t, line, pos)) {
+        pos = pos + 1;
+    }
+    let start = pos;
+    while pos < n && !space(text.at(t, line, pos)) {
+        pos = pos + 1;
+    }
+    if !text.is(t, text.sub(line, start, pos), "checkpoint") {
+        return 0;
+    }
+    while pos < n && space(text.at(t, line, pos)) {
+        pos = pos + 1;
+    }
+    if pos < n {
+        return err.fail(m, t, "session", text.lit(m, t, "checkpoint takes nothing: a request cannot name a file, the session file does"));
+    }
+    if mem.size(m, m[sess + session.s_saves()]) == 0 {
+        return err.fail(m, t, "session", text.lit(m, t, "the session file has no save directive to checkpoint"));
+    }
+    return 1;
+}
+
+// The index one past the last of the saves that write the file of save `k` (they are listed together: `session.open` checks that).
+pub fn group_end[&m, &t](m: &!m [int], t: &!t [byte], saves: int, k: int) -> [] int {
+    var end = k + 1;
+    while end < mem.size(m, saves) && text.eq(t, m[mem.get(m, saves, end) + 2], m[mem.get(m, saves, k) + 2]) {
+        end = end + 1;
+    }
+    return end;
+}
+
+// The temporary name of a file: beside it, so the rename stays on one filesystem.
+pub fn tmp_path[&m, &t](m: &!m [int], t: &!t [byte], path: int) -> [] int {
+    return text.f1(m, t, "$.tmp", path);
+}
+
+// All of `bytes` to the file, which may take several writes: 0, or the errno.
+pub fn write_all[&w, &b](file: &!w File, bytes: &b [byte]) -> [file_write] int {
+    var at = 0;
+    while at < len(bytes) {
+        match file_write(file, bytes[at..len(bytes)]) {
+            Done::Ok(n) => {
+                at = at + n;
+            }
+            Done::Failed(e) => {
+                return e;
+            }
+        }
+    }
+    return 0;
+}
+
+// Make the file durable: 0, or the errno.
+pub fn sync_file[&w](file: &!w File) -> [file_write] int {
+    match file_sync(file) {
+        Done::Ok(n) => {
+            return 0;
+        }
+        Done::Failed(e) => {
+            return e;
+        }
+    }
+}
+
+// Remove a temporary file that will not be used (what is not there is not an error).
+pub fn discard[&t, &f](t: &!t [byte], fs: &f Fs(""), tmp: int) -> [fs_write("")] int {
+    match fs_remove(fs, text.bytes(t, tmp)) {
+        Done::Ok(n) => {
+            return 0;
+        }
+        Done::Failed(e) => {
+            return e;
+        }
+    }
+}
+
+// After the temporary file is closed. With `status` 0 it is renamed over `path`; with anything else (the errno of the failed write) it is removed. Answers `total`,
+// or -1 with a refusal (`io`) and the old file untouched.
+pub fn finish[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, tmp: int, status: int, total: int) -> [fs_write("")] int {
+    var errno = status;
+    if errno == 0 {
+        match fs_rename(fs, text.bytes(t, tmp), text.bytes(t, path)) {
+            Done::Ok(n) => {
+                return total;
+            }
+            Done::Failed(e) => {
+                errno = e;
+            }
+        }
+    }
+    discard(t, fs, tmp);
+    return err.fail(m, t, "io", text.f2(m, t, "cannot write $ (errno $)", path, text.num(m, t, errno)));
+}
+
+// One file of a CPU session: the saves `k` up to `end`, in order, from the interpreter's memory. Answers the bytes written, or -1.
+fn cpu_group[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), sess: int, k: int, end: int) -> [fs_write(""), file_write] int {
+    let progs = m[sess + session.s_progs()];
+    let saves = m[sess + session.s_saves()];
+    let path = m[mem.get(m, saves, k) + 2];
+    let tmp = tmp_path(m, t, path);
+    let mark = m[mem.text_slot()];
+    var status = 0;
+    var total = 0;
+    match open_write(fs, text.bytes(t, tmp)) {
+        Opened::Ok(opened) => {
+            var out = opened;
+            borrow mut out as &!w in {
+                var j = k;
+                while j < end && status == 0 {
+                    let rec = mem.get(m, saves, j);
+                    let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+                    let at = devcodec.encode(m, t, fm, g);
+                    let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+                    status = write_all(w, t[at..at + bytes]);
+                    total = total + bytes;
+                    m[mem.text_slot()] = at;
+                    j = j + 1;
+                }
+                if status == 0 {
+                    status = sync_file(w);
+                }
+            }
+            file_close(out);
+        }
+        Opened::Failed(e) => {
+            status = e;
+        }
+    }
+    let done = finish(m, t, fs, path, tmp, status, total);
+    m[mem.text_slot()] = mark;
+    return done;
+}
+
+// Write the totals of a checkpoint as the answer line: the bytes of each file, in the order the files are first named.
+pub fn print_totals[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, totals: int) -> [io_write] int {
+    var k = 0;
+    while k < mem.size(m, totals) {
+        if k > 0 {
+            io.write_all(io, " ");
+        }
+        io.write_all(io, text.bytes(t, text.num(m, t, mem.get(m, totals, k))));
+        k = k + 1;
+    }
+    io.write_all(io, "\n");
+    let _flushed = flush_out(io);
+    return 0;
+}
+
+// Answer a request line of the CPU session: the word `checkpoint` writes the saves, anything else is `session.serve_line`'s. Answers 0, or -1 with a refusal.
+pub fn serve_cpu[&m, &t, &x, &i, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), sess: int, line: int) -> [io_write, fs_write(""), file_write] int {
+    let asked = request(m, t, sess, line);
+    if asked < 0 {
+        return 0 - 1;
+    }
+    if asked == 0 {
+        return session.serve_line(m, t, fm, io, sess, line);
+    }
+    let saves = m[sess + session.s_saves()];
+    let totals = mem.list(m);
+    var k = 0;
+    while k < mem.size(m, saves) {
+        let end = group_end(m, t, saves, k);
+        let wrote = cpu_group(m, t, fm, fs, sess, k, end);
+        if wrote < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, totals, wrote);
+        k = end;
+    }
+    return print_totals(m, t, io, totals);
+}

@@ -36,10 +36,12 @@ def schedule(steps, lr_fn):
     return [(lr_fn(t) / (1.0 - B1 ** t), 1.0 / math.sqrt(1.0 - B2 ** t)) for t in range(1, steps + 1)]
 
 
-def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, serve=False):
+def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, serve=False, save=None):
     """Writes the session. `tokens` and `targets`: int arrays [steps_data, N] (a batch for each step of the table, taken round and round). `c`: a gpt_ref.Config.
     Answers the path of the session file. With `serve`, a forward-only session for generation (docs/resident.md section 16): a request is the `n` token ids of a window and
-    an `n`-long one-hot selector of the position to read, the answer is that position's `vp` logits; `tokens` and `targets` are not used."""
+    an `n`-long one-hot selector of the position to read, the answer is that position's `vp` logits; `tokens` and `targets` are not used.
+    With `save` (a path), the f32 master weights are `save` directives to that one file, in the order of `names(c)`, written on the request `checkpoint` (docs/resident.md section 18):
+    read them back with `read_checkpoint`."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     n, d, h, dh, t, nb, ll, vp, v = c.n, c.d, c.h, c.dh, c.t, c.b, c.layers, c.vp, c.v
@@ -318,6 +320,9 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
     if dump:
         for name in mats + vecs:
             L.append(f"answer a_{name}.wo")
+    if save:
+        for name in mats + vecs:
+            L.append(f"save a_{name}.wo {save}")
     with open(p("session"), "w") as f:
         f.write("\n".join(L) + "\n")
     return p("session")
@@ -339,3 +344,39 @@ def parse_dump(c, params, numbers):
         out[name] = np.array(numbers[o:o + n]).reshape(shape)
         o += n
     return out
+
+
+def shapes(c):
+    """The shape of every parameter, as gpt_ref.init_params makes them."""
+    d = c.d
+    out = {"emb": (c.vp + c.t, d), "wlm": (c.vp, d), "lnfg": (d,), "lnfb": (d,)}
+    for l in range(c.layers):
+        out.update({f"ln1g{l}": (d,), f"ln1b{l}": (d,), f"wqkv{l}": (3 * d, d), f"bqkv{l}": (3 * d,), f"wo{l}": (d, d), f"bo{l}": (d,),
+                    f"ln2g{l}": (d,), f"ln2b{l}": (d,), f"w1{l}": (4 * d, d), f"b1{l}": (4 * d,), f"w2{l}": (d, 4 * d), f"b2{l}": (d,)})
+    return out
+
+
+def read_checkpoint(c, path):
+    """The parameters (binary64 arrays) from the file `save` wrote: little-endian float32 words, every tensor in the order of `names(c)`, nothing else."""
+    mats, vecs = names(c)
+    sh = shapes(c)
+    flat = np.fromfile(path, dtype="<f4")
+    want = sum(int(np.prod(sh[k])) for k in mats + vecs)
+    if flat.size != want:
+        raise SystemExit(f"{path}: {flat.size} words, the model has {want}")
+    out, o = {}, 0
+    for k in mats + vecs:
+        n = int(np.prod(sh[k]))
+        out[k] = flat[o:o + n].astype(np.float64).reshape(sh[k])
+        o += n
+    return out
+
+
+def checkpoint(proc, c):
+    """Ask a session that has `save` directives for a checkpoint: the bytes written, one number for the file."""
+    proc.stdin.write("checkpoint\n")
+    proc.stdin.flush()
+    line = proc.stdout.readline()
+    if not line:
+        raise SystemExit("cancho session: " + proc.stderr.read()[:300])
+    return [int(v) for v in line.split()]

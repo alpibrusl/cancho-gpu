@@ -41,7 +41,7 @@ def say(good, text):
 
 def talk(binary, session, lines, extra=TARGET, text=None):
     """Run the program on the session file, feeding `lines` (a string); (status, stdout lines, stderr)."""
-    r = subprocess.run([binary, session, *extra], input=lines, capture_output=True, text=True, timeout=120)
+    r = subprocess.run([binary, session, *extra], input=lines, capture_output=True, text=True, errors="replace", timeout=120)
     return r.returncode, r.stdout.split("\n")[:-1] if r.stdout else [], r.stderr
 
 
@@ -178,6 +178,10 @@ def check(binary, quiet=False):
         say(r.returncode == 2 and r.stdout == "", "no arguments: usage, status 2")
 
         training_checks(binary, d)
+        try:
+            save_checks(binary, d)
+        except Exception as e:  # a build that writes the wrong files must fail the checks, not crash the test
+            say(False, f"the save checks crashed: {e!r}")
     finally:
         shutil.rmtree(d)
     return bad == 0
@@ -291,6 +295,147 @@ answer add.wo
     say(status == 0 and len(out) == 2 and numbers(out[0]) == want(1) and numbers(out[1]) == want(2), f"without steps each request is one repetition, and the table and the carry still advance: {out}")
 
 
+def save_checks(binary, d):
+    """docs/resident.md section 18: `save` and the request `checkpoint`. Two accumulating programs (tests/chx/step_add.chx) whose outputs are written as little-endian words
+    to files the session file names, atomically; and the refusals of a directive that writes."""
+    import struct
+    n, blocks = 5, 2
+    sdir = os.path.join(d, "save")
+    os.makedirs(sdir)
+    j = lambda name: os.path.join(sdir, name)
+    w0 = [f32(i + 0.3) for i in range(n)]  # not dyadic: every byte of a word matters
+    w1 = [f32(100.7 - i * 1.1) for i in range(n)]
+    tab = [[f32((b + 1) * 0.5 + i * 0.25 + 0.1) for i in range(n)] for b in range(blocks)]
+    for name, vals in (("w0", w0), ("w1", w1)):
+        open(j(name), "w").write(" ".join(map(repr, vals)) + "\n")
+    open(j("tab"), "w").write(" ".join(repr(v) for row in tab for v in row) + "\n")
+    # copies of the kernels, so that a build that wrongly lets a save overwrite a kernel file damages the copy and not the repository
+    kernel, cast = j("step_add.chx"), j("cast_h.chx")
+    shutil.copy(os.path.join(ROOT, "tests/chx/step_add.chx"), kernel)
+    shutil.copy(os.path.join(ROOT, "examples/train/cast_h.chx"), cast)
+    hvals = [f32(v * 0.37 - 1.1) for v in range(8)]
+    open(j("h8"), "w").write(" ".join(map(repr, hvals)) + "\n")
+
+    def session_text(saves, extra=""):
+        return f"""program a {kernel} n={n}
+resident a.w {j('w0')}
+table a.d {j('tab')} {blocks}
+carry a.wo -> a.w
+program b {kernel} n={n}
+resident b.w {j('w1')}
+table b.d {j('tab')} {blocks}
+carry b.wo -> b.w
+program c {cast} r=1 c=8 bm=1
+resident c.x {j('h8')}
+steps
+{saves}
+{extra}answer a.wo
+"""
+
+    def advance(w, reps):
+        for k in range(reps):
+            w = [f32(x + y) for x, y in zip(w, tab[k % blocks])]
+        return w
+
+    def rb(file):
+        """A file's bytes, or None when it is not there (a build that does not write it must fail the check, not crash it)."""
+        try:
+            return open(file, "rb").read()
+        except OSError:
+            return None
+
+    def rm(file):
+        if os.path.exists(file):
+            os.remove(file)
+
+    words = lambda vals: b"".join(struct.pack("<f", v) for v in vals)
+    one = j("one.bin")
+    path = j("session")
+    open(path, "w").write(session_text(f"save a.wo {one}"))
+
+    def go(lines, session=path):
+        return talk(binary, session, lines)
+
+    status, out, err = go("3\n")
+    say(status == 0 and not os.path.exists(one), "a save writes nothing until a checkpoint is asked for")
+    status, out, err = go("3\ncheckpoint\n")
+    say(status == 0 and (out[-1:] or [None])[0] == "20" and rb(one) == words(advance(w0, 3)), f"a checkpoint writes the output's f32 words and answers their bytes: {out[-1:]}")
+    rm(one)
+    status, out, err = go("3\ncheckpoint\n4\ncheckpoint\ncheckpoint\n")
+    say(status == 0 and rb(one) == words(advance(w0, 7)) and (out[-1:] or [None])[0] == "20" and (out[-2:-1] or [None])[0] == "20", "a second checkpoint replaces the file with the later state, a third writes the same")
+    say(not os.path.exists(one + ".tmp"), "no temporary file is left behind")
+    rm(one)
+    status, out, err = go("checkpoint\n1\ncheckpoint\n")
+    say(status == 0 and rb(one) == words(advance(w0, 1)), "a checkpoint runs no program and takes no step (the next request is step 1)")
+    # two programs into one file, in the order of the directives; two files, one number each
+    open(path, "w").write(session_text(f"save a.wo {one}\nsave b.wo {one}"))
+    status, out, err = go("2\ncheckpoint\n")
+    say(status == 0 and (out[-1:] or [None])[0] == "40" and rb(one) == words(advance(w0, 2)) + words(advance(w1, 2)), f"saves to one file are written in order into it, one total: {out[-1:]}")
+    two = j("two.bin")
+    open(path, "w").write(session_text(f"save b.wo {two}\nsave a.wo {one}"))
+    status, out, err = go("2\ncheckpoint\n")
+    say(status == 0 and (out[-1:] or [None])[0] == "20 20" and rb(one) == words(advance(w0, 2)) and rb(two) == words(advance(w1, 2)), f"saves to two files: one total for each, in the order of the directives: {out[-1:]}")
+    # f16
+    hbin = j("h.bin")
+    open(path, "w").write(session_text(f"save c.y {hbin} f16"))
+    status, out, err = go("1\ncheckpoint\n")
+    want16 = b"".join(struct.pack("<e", v) for v in hvals)
+    say(status == 0 and (out[-1:] or [None])[0] == "16" and rb(hbin) == want16, f"an f16 output is written as binary16 words: {out[-1:]}")
+    # the old file survives a failed checkpoint: the temporary name is taken by a directory
+    open(path, "w").write(session_text(f"save a.wo {one}"))
+    open(one, "wb").write(b"OLD")
+    shutil.rmtree(one + ".tmp", ignore_errors=True)
+    rm(one + ".tmp")
+    os.makedirs(one + ".tmp")
+    status, out, err = go("1\ncheckpoint\n")
+    say(status == 1 and err.startswith("error[io]") and rb(one) == b"OLD", f"refused as io when the file cannot be written, and the old file is untouched: {err[:60]!r}")
+    os.rmdir(one + ".tmp")
+    # a failure after the temporary file is written (the name is taken by a directory, so the rename fails): the temporary file is removed
+    rm(one)
+    os.makedirs(os.path.join(one, "inside"))
+    status, out, err = go("1\ncheckpoint\n")
+    say(status == 1 and err.startswith("error[io]") and not os.path.exists(one + ".tmp") and os.path.isdir(os.path.join(one, "inside")), f"refused as io when the rename fails, and the temporary file is removed: {err[:50]!r}")
+    shutil.rmtree(one)
+    open(path, "w").write(session_text(f"save a.wo {j('no-such-dir')}/x.bin"))
+    status, out, err = go("1\ncheckpoint\n")
+    say(status == 1 and err.startswith("error[io]") and not os.path.exists(j("no-such-dir")), "refused as io: a file in a directory that is not there")
+    open(one, "wb").write(b"OLD")
+    open(path, "w").write(session_text(f"save a.wo {one}"))
+    status, out, err = go("1\ncheckpoint\n")
+    say(status == 0 and rb(one) == words(advance(w0, 1)), "an existing file is replaced")
+    # a request cannot name a file or ask for what is not there
+    victim = j("victim")
+    for text, why in ((f"checkpoint {victim}\n", "a checkpoint that names a file"), ("checkpoint 3\n", "a checkpoint with a number after it"), ("Checkpoint\n", "the word in capitals (it is not a number either)")):
+        status, out, err = go(text)
+        say(status == 1 and out == [] and err.startswith("error[session]") and not os.path.exists(victim), f"refused as session: {why}")
+    nosave = j("nosave.session")
+    open(nosave, "w").write(session_text(""))
+    status, out, err = go("checkpoint\n", nosave)
+    say(status == 1 and out == [] and err.startswith("error[session]"), "refused as session: a checkpoint of a session with no save")
+
+    def refuse(what, saves, tag="session", lines="1\ncheckpoint\n", extra=""):
+        bad_path = j("bad.session")
+        open(bad_path, "w").write(session_text(saves, extra))
+        status, out, err = go(lines, bad_path)
+        say(status == 1 and out == [] and err.startswith(f"error[{tag}]"), f"refused as {tag}: {what}" + ("" if status == 1 else f" (status {status}, {out}, {err[:80]!r})"))
+
+    refuse("a save of an input", f"save a.d {one}")
+    refuse("a save of a program that is not there", f"save zz.wo {one}")
+    refuse("a save of a parameter that is not there", f"save a.zz {one}")
+    refuse("a save with no file", "save a.wo")
+    refuse("a save with a flag that is not f32 or f16", f"save a.wo {one} f64")
+    refuse("an f32 output saved as f16", f"save a.wo {one} f16", tag="usage")
+    refuse("an f16 output saved as f32 (the default)", f"save c.y {one}", tag="usage")
+    refuse("a file with two dots in its path", f"save a.wo {sdir}/../x.bin")
+    refuse("a file whose path is over 4,000 bytes", f"save a.wo {sdir}/" + "x" * 4090)
+    refuse("saves to one file that are not listed together", f"save a.wo {one}\nsave b.wo {two}\nsave b.wo {one}")
+    refuse("a save over a resident file", f"save a.wo {j('w0')}")
+    refuse("a save over a table file", f"save a.wo {j('tab')}")
+    refuse("a save over a kernel file", f"save a.wo {kernel}")
+    say(not [name for name in os.listdir(sdir) if name.endswith(".tmp")], "no temporary file is left after the failed and refused checkpoints")
+    say(open(j("w0"), errors="replace").read().startswith("0.3") and open(kernel, errors="replace").read().startswith("//"), "the files the session reads are as they were")
+
+
 MUTANTS = [
     ("src/session.cho", "fm[m[gd + 2] + j] = interp.convert(dt, fm[m[gs + 2] + j]);", "fm[m[gd + 2] + j] = interp.convert(dt, 0.0);", "a link copies nothing"),
     ("src/session.cho", "fm[m[g + 2] + j] * scale_a / scale_b", "fm[m[g + 2] + j] * scale_a", "the denominator of a scale is ignored"),
@@ -308,6 +453,20 @@ MUTANTS = [
     ("src/runcmd.cho", "if fsize != 4 * n {", "if fsize < 4 * n {", "a binary file longer than the parameter is accepted"),
     ("src/runcmd.cho", "f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 8)", "f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 7)", "an f16 word's second byte is shifted wrongly"),
     ("src/session.cho", "if m[mem.get(m, supplied, dp) + da] != 1 {", "if m[mem.get(m, supplied, dp) + da] < 0 {", "a carry to a parameter that is not resident is accepted"),
+    ("src/session.cho", "if ir.param_dtype(m, prm) != want_type {", "if ir.param_dtype(m, prm) < 0 {", "a save in another type than the output's is accepted"),
+    ("src/session.cho", "if text.size(path) == 0 || text.size(path) + 4 >= 4096 {", "if text.size(path) == 0 {", "a save to a path of 4,096 bytes or more reaches the runtime's trap"),
+    ("src/session.cho", "if text.at(t, path, i) == '.' && text.at(t, path, i - 1) == '.' {", "if text.at(t, path, i) == '.' && text.at(t, path, i - 1) == 'x' {", "a save to a path with two dots reaches the runtime's trap"),
+    ("src/session.cho", "while other < i - 1 {", "while other < 0 {", "saves to one file that are apart are accepted"),
+    ("src/session.cho", "if text.eq(t, m[mem.get(m, res_raw, other) + 2], m[raw + 2]) {", "if text.eq(t, m[mem.get(m, res_raw, other) + 2], m[raw + 1]) {", "a save over a resident file is accepted"),
+    ("src/session.cho", "if !ir.param_writable(m, prm) {\n            return bad(m, t, m[raw + 4], text.f1(m, t, \"`$` is only read by its kernel: a save is an output\"", "if false {\n            return bad(m, t, m[raw + 4], text.f1(m, t, \"`$` is only read by its kernel: a save is an output\"", "a save of an input is accepted"),
+    ("src/ckpt.cho", "match fs_rename(fs, text.bytes(t, tmp), text.bytes(t, path)) {", "match fs_rename(fs, text.bytes(t, tmp), text.bytes(t, tmp)) {", "the temporary file is not renamed over the file"),
+    ("src/ckpt.cho", "let tmp = tmp_path(m, t, path);\n    let mark = m[mem.text_slot()];\n    var status = 0;\n    var total = 0;\n    match open_write", "let tmp = path;\n    let mark = m[mem.text_slot()];\n    var status = 0;\n    var total = 0;\n    match open_write", "the file is written in place and not through a temporary one"),
+    ("src/ckpt.cho", "end = end + 1;\n    }\n    return end;", "end = end;\n    }\n    return end;", "every save is a file of its own, the next truncating the last"),
+    ("src/ckpt.cho", "status = write_all(w, t[at..at + bytes]);", "status = write_all(w, t[at..at + bytes - 1]);", "a save's last byte is not written"),
+    ("src/ckpt.cho", "total = total + bytes;\n                    m[mem.text_slot()] = at;", "total = total + bytes + 1;\n                    m[mem.text_slot()] = at;", "the total a checkpoint answers is wrong"),
+    ("src/ckpt.cho", "    if pos < n {\n        return err.fail(m, t, \"session\", text.lit(m, t, \"checkpoint takes nothing", "    if pos < 0 {\n        return err.fail(m, t, \"session\", text.lit(m, t, \"checkpoint takes nothing", "a checkpoint that names a file is accepted"),
+    ("src/ckpt.cho", "if mem.size(m, m[sess + session.s_saves()]) == 0 {", "if mem.size(m, m[sess + session.s_saves()]) < 0 {", "a checkpoint of a session with no save is accepted"),
+    ("src/ckpt.cho", "    discard(t, fs, tmp);\n    return err.fail", "    return err.fail", "a failed checkpoint leaves its temporary file"),
 ]
 
 

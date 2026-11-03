@@ -68,8 +68,28 @@ pub fn s_count() -> [] int {
     return 8;
 }
 
+// save records (program, param, file, kind, line): kind 0 and 1 are f32 words, 2 is f16 words (docs/resident.md section 18)
+pub fn s_saves() -> [] int {
+    return 9;
+}
+
 fn space(c: int) -> [] bool {
     return c == 32 || c == 9 || c == 13;
+}
+
+// A path the runtime would trap on (an `Fs` refuses two dots in a row and a path of 4,096 bytes or more); a save's temporary name adds four bytes.
+fn unsafe_path[&t](t: &!t [byte], path: int) -> [] bool {
+    if text.size(path) == 0 || text.size(path) + 4 >= 4096 {
+        return true;
+    }
+    var i = 1;
+    while i < text.size(path) {
+        if text.at(t, path, i) == '.' && text.at(t, path, i - 1) == '.' {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
 }
 
 fn bad[&m, &t](m: &!m [int], t: &!t [byte], line: int, msg: int) -> [] int {
@@ -185,6 +205,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     let answer_raw = mem.list(m);
     let carry_raw = mem.list(m);
     let table_raw = mem.list(m);
+    let save_raw = mem.list(m);
     var steps = 0;
     var pos = 0;
     var lineno = 0;
@@ -308,6 +329,22 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     }
                 }
                 mem.push(m, table_raw, traw);
+            } else if text.is(t, head, "save") {
+                if nw != 3 && !(nw == 4 && (text.is(t, mem.get(m, words, 3), "f32") || text.is(t, mem.get(m, words, 3), "f16"))) {
+                    return bad(m, t, lineno, text.lit(m, t, "save PROGRAM.OUT FILE [f32|f16]"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "save takes PROGRAM.OUT"));
+                }
+                var kind = 0;
+                if nw == 4 {
+                    kind = 1;
+                    if text.is(t, mem.get(m, words, 3), "f16") {
+                        kind = 2;
+                    }
+                }
+                mem.push(m, save_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), kind, lineno));
             } else if text.is(t, head, "steps") {
                 if nw != 1 {
                     return bad(m, t, lineno, text.lit(m, t, "steps takes nothing"));
@@ -317,7 +354,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 steps = 1;
             } else {
-                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, steps)", head));
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, steps, save)", head));
             }
         }
     }
@@ -613,7 +650,65 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         i = i + 1;
     }
 
-    let sess = mem.rec(m, 9);
+    // Saves: (program, param, file, kind, line). A save writes a file, so what it may name is checked here, before any device work: an output of a
+    // kernel, held in the type the flag says; a path the runtime will not trap on; a file that is not one the session reads; and the saves to one file
+    // listed together, because they are one file written once (docs/resident.md section 18).
+    let saves = mem.list(m);
+    i = 0;
+    while i < mem.size(m, save_raw) {
+        let raw = mem.get(m, save_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is only read by its kernel: a save is an output", m[raw + 1]));
+        }
+        var want_type = kinds.f32();
+        if m[raw + 3] == 2 {
+            want_type = kinds.f16();
+        }
+        if ir.param_dtype(m, prm) != want_type {
+            return err.fail(m, t, "usage", text.f1(m, t, "`$` has another type than the save's flag says (f32 when there is none)", m[raw + 1]));
+        }
+        if unsafe_path(t, m[raw + 2]) {
+            return bad(m, t, m[raw + 4], text.lit(m, t, "the file of a save has two dots in a row or is over 4,000 bytes"));
+        }
+        var other = 0;
+        while other < mem.size(m, res_raw) {
+            if text.eq(t, m[mem.get(m, res_raw, other) + 2], m[raw + 2]) {
+                return bad(m, t, m[raw + 4], text.f1(m, t, "$ is a resident file: a save does not overwrite what the session reads", m[raw + 2]));
+            }
+            other = other + 1;
+        }
+        other = 0;
+        while other < mem.size(m, table_raw) {
+            if text.eq(t, m[mem.get(m, table_raw, other) + 2], m[raw + 2]) {
+                return bad(m, t, m[raw + 4], text.f1(m, t, "$ is a table file: a save does not overwrite what the session reads", m[raw + 2]));
+            }
+            other = other + 1;
+        }
+        other = 0;
+        while other < mem.size(m, progs_raw) {
+            if text.eq(t, m[mem.get(m, progs_raw, other) + 1], m[raw + 2]) {
+                return bad(m, t, m[raw + 4], text.f1(m, t, "$ is a kernel file: a save does not overwrite what the session reads", m[raw + 2]));
+            }
+            other = other + 1;
+        }
+        if i > 0 && !text.eq(t, m[mem.get(m, save_raw, i - 1) + 2], m[raw + 2]) {
+            other = 0;
+            while other < i - 1 {
+                if text.eq(t, m[mem.get(m, save_raw, other) + 2], m[raw + 2]) {
+                    return bad(m, t, m[raw + 4], text.f1(m, t, "the saves to $ are not together: list them one after another", m[raw + 2]));
+                }
+                other = other + 1;
+            }
+        }
+        mem.push(m, saves, mem.rec5(m, pi, ai, m[raw + 2], m[raw + 3], m[raw + 4]));
+        i = i + 1;
+    }
+
+    let sess = mem.rec(m, 10);
     m[sess + s_progs()] = progs;
     m[sess + s_resident()] = resident;
     m[sess + s_links()] = links;
@@ -623,6 +718,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     m[sess + s_tables()] = tables;
     m[sess + s_steps()] = steps;
     m[sess + s_count()] = 0;
+    m[sess + s_saves()] = saves;
     return sess;
 }
 
