@@ -1,0 +1,130 @@
+// The gradient of maxpool_fwd, as a gather: the row q of the gradient of S, in the channel group of the candidate k, is the pooled gradient of the output p = q - shift(k) where that output's
+// winner was k. [winner == k] is the triangle relu(d+1) - 2 relu(d) + relu(d-1), d = idx - k, exactly 1 at 0 and 0 at every other integer (and at -1, the border's mark). gr and idx are
+// guarded like the forward's output (the shifted windows start before row 0); gs is [rp, 4 c], f32, no guard, and its border rows hold sums over valid outputs that the consumer (s2d_bwd) never reads.
+algo maxpool_bwd(rp, c, wp, g, bm)
+  in  gr:  f32[rp + 2 * g, c]
+  in  idx: f32[rp + 2 * g, c]
+  out gs:  f32[rp, 4 * c]
+{
+  grid i over rp / bm
+  let ix4 = load idx[g + i * bm, 0 ; bm, c]
+  let dd4 = ix4 - 4
+  let pa4 = &dd4 + 1
+  let ra4 = relu pa4
+  let rb4 = relu &dd4
+  let pc4 = dd4 - 1
+  let rc4 = relu pc4
+  let tw4 = rb4 * 2
+  let tr4 = ra4 - tw4
+  let eq4 = tr4 + rc4
+  let gg4 = load gr[g + i * bm, 0 ; bm, c]
+  let c4 = eq4 * gg4
+  store c4 -> gs[i * bm, 0 * c]
+  let ix3 = load idx[g + i * bm + 1, 0 ; bm, c]
+  let dd3 = ix3 - 3
+  let pa3 = &dd3 + 1
+  let ra3 = relu pa3
+  let rb3 = relu &dd3
+  let pc3 = dd3 - 1
+  let rc3 = relu pc3
+  let tw3 = rb3 * 2
+  let tr3 = ra3 - tw3
+  let eq3 = tr3 + rc3
+  let gg3 = load gr[g + i * bm + 1, 0 ; bm, c]
+  let c3 = eq3 * gg3
+  let ix5 = load idx[g + i * bm, 0 ; bm, c]
+  let dd5 = ix5 - 5
+  let pa5 = &dd5 + 1
+  let ra5 = relu pa5
+  let rb5 = relu &dd5
+  let pc5 = dd5 - 1
+  let rc5 = relu pc5
+  let tw5 = rb5 * 2
+  let tr5 = ra5 - tw5
+  let eq5 = tr5 + rc5
+  let gg5 = load gr[g + i * bm, 0 ; bm, c]
+  let c5 = eq5 * gg5
+  let sm5 = c3 + c5
+  store sm5 -> gs[i * bm, 1 * c]
+  let ix1 = load idx[g + i * bm + wp, 0 ; bm, c]
+  let dd1 = ix1 - 1
+  let pa1 = &dd1 + 1
+  let ra1 = relu pa1
+  let rb1 = relu &dd1
+  let pc1 = dd1 - 1
+  let rc1 = relu pc1
+  let tw1 = rb1 * 2
+  let tr1 = ra1 - tw1
+  let eq1 = tr1 + rc1
+  let gg1 = load gr[g + i * bm + wp, 0 ; bm, c]
+  let c1 = eq1 * gg1
+  let ix7 = load idx[g + i * bm, 0 ; bm, c]
+  let dd7 = ix7 - 7
+  let pa7 = &dd7 + 1
+  let ra7 = relu pa7
+  let rb7 = relu &dd7
+  let pc7 = dd7 - 1
+  let rc7 = relu pc7
+  let tw7 = rb7 * 2
+  let tr7 = ra7 - tw7
+  let eq7 = tr7 + rc7
+  let gg7 = load gr[g + i * bm, 0 ; bm, c]
+  let c7 = eq7 * gg7
+  let sm7 = c1 + c7
+  store sm7 -> gs[i * bm, 2 * c]
+  let ix0 = load idx[g + i * bm + wp + 1, 0 ; bm, c]
+  let dd0 = ix0 - 0
+  let pa0 = &dd0 + 1
+  let ra0 = relu pa0
+  let rb0 = relu &dd0
+  let pc0 = dd0 - 1
+  let rc0 = relu pc0
+  let tw0 = rb0 * 2
+  let tr0 = ra0 - tw0
+  let eq0 = tr0 + rc0
+  let gg0 = load gr[g + i * bm + wp + 1, 0 ; bm, c]
+  let c0 = eq0 * gg0
+  let ix2 = load idx[g + i * bm + wp, 0 ; bm, c]
+  let dd2 = ix2 - 2
+  let pa2 = &dd2 + 1
+  let ra2 = relu pa2
+  let rb2 = relu &dd2
+  let pc2 = dd2 - 1
+  let rc2 = relu pc2
+  let tw2 = rb2 * 2
+  let tr2 = ra2 - tw2
+  let eq2 = tr2 + rc2
+  let gg2 = load gr[g + i * bm + wp, 0 ; bm, c]
+  let c2 = eq2 * gg2
+  let sm2 = c0 + c2
+  let ix6 = load idx[g + i * bm + 1, 0 ; bm, c]
+  let dd6 = ix6 - 6
+  let pa6 = &dd6 + 1
+  let ra6 = relu pa6
+  let rb6 = relu &dd6
+  let pc6 = dd6 - 1
+  let rc6 = relu pc6
+  let tw6 = rb6 * 2
+  let tr6 = ra6 - tw6
+  let eq6 = tr6 + rc6
+  let gg6 = load gr[g + i * bm + 1, 0 ; bm, c]
+  let c6 = eq6 * gg6
+  let sm6 = sm2 + c6
+  let ix8 = load idx[g + i * bm, 0 ; bm, c]
+  let dd8 = ix8 - 8
+  let pa8 = &dd8 + 1
+  let ra8 = relu pa8
+  let rb8 = relu &dd8
+  let pc8 = dd8 - 1
+  let rc8 = relu pc8
+  let tw8 = rb8 * 2
+  let tr8 = ra8 - tw8
+  let eq8 = tr8 + rc8
+  let gg8 = load gr[g + i * bm, 0 ; bm, c]
+  let c8 = eq8 * gg8
+  let sm8 = sm6 + c8
+  store sm8 -> gs[i * bm, 3 * c]
+}
+
+schedule maxpool_bwd for apple-m-series { threads 128 }
+schedule maxpool_bwd for nvidia-ada     { threads 128 }

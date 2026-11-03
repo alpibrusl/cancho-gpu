@@ -1,0 +1,15 @@
+// The gradient of gap2_fwd: each image's row of gf [n, c] spread over its valid pixels, times 1 / (h w) (mc [(h+2)(w+2), 1], zero on the border), rc rows at a time.
+algo gap2_bwd(n, h, w, c, rc)
+  in  gf: f32[n, c]
+  in  mc: f32[(h + 2) * (w + 2), 1]
+  out gi: f32[n * (h + 2) * (w + 2), c]
+{
+  grid b over n, q over (h + 2) * (w + 2) / rc
+  let r = load gf[b, 0 ; 1, c]
+  let m = load mc[q * rc, 0 ; rc, 1]
+  let t = matmul m r
+  store t -> gi[b * (h + 2) * (w + 2) + q * rc, 0]
+}
+
+schedule gap2_bwd for apple-m-series { threads 128 }
+schedule gap2_bwd for nvidia-ada     { threads 128 }

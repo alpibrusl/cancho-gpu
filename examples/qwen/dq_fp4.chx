@@ -1,4 +1,4 @@
-// A layer's 4-bit weights -> an f16 matrix (docs/resident.md section 25.4 and 26): the dequantisation of the QLoRA base into a scratch buffer that the unchanged f16 products read.
+// A layer's 4-bit weights -> an f16 matrix (docs/resident.md section 25.4 and 27): the dequantisation of the QLoRA base into a scratch buffer that the unchanged f16 products read.
 //
 // `wq` holds two E2M1 codes a byte (low nibble first), `ws` one E4M3 scale byte per 16 values (a group size is a number in `dequant_fp4`, so the session writer substitutes 32 or 64 in a copy), `wg` one f32 per row: exactly what `dequant_fp4` reads. The output is the matrix `[n, k]` the
 // f16 products take as their weight (`y = x w^T`, and `dx = dy w` with the same layout), so nothing downstream knows the base was quantised. The window of codes is `bk / 2` bytes wide.

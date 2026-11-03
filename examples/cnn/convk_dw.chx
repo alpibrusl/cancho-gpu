@@ -1,0 +1,29 @@
+// The gradient of convk with respect to w, in pieces (conv3_dw's, with the window as constants): for the tap (dy, dx) and the block r of `rs` rows, part = dz^T x_shifted (`mma_tn`), tile by
+// tile of the [cout, cin] result of that tap; `wsum` or `wsum_mask` adds the pieces. A loop must carry a tile, so it carries `u`, which is written to the unused output `junk`.
+algo convk_dw(rp, cx, cin, cout, wp, g, kh, kw, oy, ox, rs)
+  in  dz: f16[rp + 2 * g, cout]
+  in  x:  f16[rp + 2 * g, cx]
+  out part: f32[rp / rs * cout, kh * kw * cin]
+  out junk: f32[1, 8]
+  tile bm, bn, bk
+{
+  grid dy over kh, dx over kw, r over rp / rs
+  let u = zeros f32[1, 8]
+  let u = for jc in 0 .. cout / bm with u {
+    let u = for jn in 0 .. cin / bn with u {
+      let c = zeros f32[bm, bn] @frag
+      let c = for p in 0 .. rs / bk with c {
+        let a = load dz[g + r * rs + p * bk, jc * bm ; bk, bm] @shared
+        let b = load x[g + r * rs + p * bk + dy * wp + dx - oy * wp - ox, jn * bn ; bk, bn] @shared
+        yield mma_tn c a b
+      }
+      store c -> part[r * cout + jc * bm, dy * kw * cin + dx * cin + jn * bn]
+      yield u
+    }
+    yield u
+  }
+  store u -> junk[0, 0]
+}
+
+schedule convk_dw for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule convk_dw for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

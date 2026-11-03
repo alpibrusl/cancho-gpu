@@ -1,0 +1,10 @@
+{
+  "refused": [
+    {
+      "rule": "duplicate-declaration",
+      "message": "function `main` is defined twice",
+      "explanation": "A name is introduced once in the scope that holds it — a file, a signature, a struct, a pattern or a literal.",
+      "position": { "file": "main.cho", "line": 3, "column": 1 }
+    }
+  ]
+}

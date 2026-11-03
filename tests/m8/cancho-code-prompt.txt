@@ -1,0 +1,32 @@
+Your task, for the cancho program below:
+UNIT: leap
+FUNCTION: is_leap_year
+SIGNATURE: fn is_leap_year(y: int) -> [] bool
+DESCRIPTION: The proleptic Gregorian rule applied to the integer y exactly as given: a leap year is divisible by 4, except that a year divisible by 100 is not, unless it is also divisible by 400. Domain: any int, negative years and 0 included (year 0 is a leap year, -4 is a leap year, -100 is not). Beware: % on a negative int can be negative; compare it with == 0 only.
+EXAMPLES:
+is_leap_year(2024) == true
+is_leap_year(1900) == false
+is_leap_year(2000) == true
+is_leap_year(2023) == false
+INSTRUCTIONS: Add this function to project.cho, keeping every other function as it is. The file has no main. Do not write tests or examples of your own: the examples above are run for you.
+
+Reply with the complete file, with the task done, and nothing else: no markdown fences, no explanation.
+The current output of the compiler and of the checks on the file:
+- line 3, column 1: function `main` is defined twice (rule duplicate-declaration)
+    import std.math;
+    ^
+---
+edition 7;
+
+import std.math;
+
+fn is_leap_year(y: int) -> [] bool {
+    return y % 400 == 0 || (y % 4 == 0 && y % 100 != 0);
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args } = split(world);
+    release(ffi); release(fs); release(args); release(io);
+    return 0;
+}
+---

@@ -1,0 +1,117 @@
+// 3x3 stride-2 max-pooling (padding 1) of the space-to-depth image S [g + rp + g, 4 c] (resident.md section 26): the window of the pooled pixel (y, x) is the nine pixels
+// 2y-1 .. 2y+1 by 2x-1 .. 2x+1 of the image, which in S are nine (shift, channel group) pairs of the padded matrix, read as shifted windows exactly as a convolution's taps. There is no
+// `max a b`: the maximum of the running m and the next candidate v is s v - (s - 1) m with s = step(v - m), which is exactly v or m (one product is exactly zero), and the same s
+// updates the index k of the winner. Strict `>` keeps the first maximum in row-major order, which is torch's rule. Padding is zero, which equals -inf here because the input is a ReLU's
+// output (>= 0), and a window that ties the zero padding with real zeros sends its gradient to a border cell, which is discarded: the value there was 0, so its ReLU's gradient was 0.
+// a is the pooled map (f16, guarded, border rows zero); idx the winner's index 0..8 (f32, guarded), -1 on the border rows so the backward never matches them.
+algo maxpool_fwd(rp, c, wp, g, bm)
+  in  s:  f16[rp + 2 * g, 4 * c]
+  in  mk: f32[rp, 1]
+  out a:  f16[rp + 2 * g, c]
+  out idx: f32[rp + 2 * g, c]
+{
+  grid i over rp / bm
+  let v0 = load s[g + i * bm - wp - 1, 3 * c ; bm, c]
+  let f0 = stage f32 v0
+  let m0 = f0 * 1.0
+  let ix0 = zeros f32[bm, c]
+  let v1 = load s[g + i * bm - wp, 2 * c ; bm, c]
+  let f1 = stage f32 v1
+  let d1 = &f1 - &m0
+  let s1 = step d1
+  let u1 = &s1 - 1
+  let p1 = &s1 * f1
+  let q1 = &u1 * m0
+  let m1 = p1 - q1
+  let w1 = u1 * ix0
+  let e1 = s1 * 1
+  let ix1 = e1 - w1
+  let v2 = load s[g + i * bm - wp, 3 * c ; bm, c]
+  let f2 = stage f32 v2
+  let d2 = &f2 - &m1
+  let s2 = step d2
+  let u2 = &s2 - 1
+  let p2 = &s2 * f2
+  let q2 = &u2 * m1
+  let m2 = p2 - q2
+  let w2 = u2 * ix1
+  let e2 = s2 * 2
+  let ix2 = e2 - w2
+  let v3 = load s[g + i * bm - 1, 1 * c ; bm, c]
+  let f3 = stage f32 v3
+  let d3 = &f3 - &m2
+  let s3 = step d3
+  let u3 = &s3 - 1
+  let p3 = &s3 * f3
+  let q3 = &u3 * m2
+  let m3 = p3 - q3
+  let w3 = u3 * ix2
+  let e3 = s3 * 3
+  let ix3 = e3 - w3
+  let v4 = load s[g + i * bm, 0 * c ; bm, c]
+  let f4 = stage f32 v4
+  let d4 = &f4 - &m3
+  let s4 = step d4
+  let u4 = &s4 - 1
+  let p4 = &s4 * f4
+  let q4 = &u4 * m3
+  let m4 = p4 - q4
+  let w4 = u4 * ix3
+  let e4 = s4 * 4
+  let ix4 = e4 - w4
+  let v5 = load s[g + i * bm, 1 * c ; bm, c]
+  let f5 = stage f32 v5
+  let d5 = &f5 - &m4
+  let s5 = step d5
+  let u5 = &s5 - 1
+  let p5 = &s5 * f5
+  let q5 = &u5 * m4
+  let m5 = p5 - q5
+  let w5 = u5 * ix4
+  let e5 = s5 * 5
+  let ix5 = e5 - w5
+  let v6 = load s[g + i * bm - 1, 3 * c ; bm, c]
+  let f6 = stage f32 v6
+  let d6 = &f6 - &m5
+  let s6 = step d6
+  let u6 = &s6 - 1
+  let p6 = &s6 * f6
+  let q6 = &u6 * m5
+  let m6 = p6 - q6
+  let w6 = u6 * ix5
+  let e6 = s6 * 6
+  let ix6 = e6 - w6
+  let v7 = load s[g + i * bm, 2 * c ; bm, c]
+  let f7 = stage f32 v7
+  let d7 = &f7 - &m6
+  let s7 = step d7
+  let u7 = &s7 - 1
+  let p7 = &s7 * f7
+  let q7 = &u7 * m6
+  let m7 = p7 - q7
+  let w7 = u7 * ix6
+  let e7 = s7 * 7
+  let ix7 = e7 - w7
+  let v8 = load s[g + i * bm, 3 * c ; bm, c]
+  let f8 = stage f32 v8
+  let d8 = &f8 - &m7
+  let s8 = step d8
+  let u8 = &s8 - 1
+  let p8 = &s8 * f8
+  let q8 = &u8 * m7
+  let m8 = p8 - q8
+  let w8 = u8 * ix7
+  let e8 = s8 * 8
+  let ix8 = e8 - w8
+  let mm = load mk[i * bm, 0 ; bm, 1]
+  let o  = m8 * &mm
+  let h  = stage f16 o
+  store h -> a[g + i * bm, 0]
+  let xm = ix8 * &mm
+  let xn = xm + mm
+  let xo = xn - 1
+  store xo -> idx[g + i * bm, 0]
+}
+
+schedule maxpool_fwd for apple-m-series { threads 128 }
+schedule maxpool_fwd for nvidia-ada     { threads 128 }

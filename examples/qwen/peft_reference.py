@@ -22,7 +22,7 @@ MODULE = {"q": "self_attn.q_proj", "k": "self_attn.k_proj", "v": "self_attn.v_pr
 
 def override_base(model, c, base, device, dtype):
     """Replace the block matrices of the loaded model by those of the f16 weights directory `base` (a dequantised 4-bit base, quant.py dequant): the model the session's QLoRA run is a LoRA run of (docs/resident.md
-    section 26). Everything else (embeddings, norms, biases) stays the checkpoint's."""
+    section 27). Everything else (embeddings, norms, biases) stays the checkpoint's."""
     t = lambda a: torch.tensor(a, dtype=dtype, device=device)
     sh = R.shapes(c)
     get = lambda name: R.load_one(base, name, sh[name])  # one matrix at a time: a 7B model's binary64 copy would not fit

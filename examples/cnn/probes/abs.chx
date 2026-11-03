@@ -1,0 +1,15 @@
+// PROBE syntax
+// ARGS r=16 c=8
+// |x| (the absolute value), which a max-pool's tie rule or an L1 loss would want: there is no such operation.
+algo abs(r, c)
+  in  x: f32[r, c]
+  out y: f32[r, c]
+{
+  grid i over r / 8
+  let t = load x[i * 8, 0 ; 8, c]
+  let a = abs t
+  store a -> y[i * 8, 0]
+}
+
+schedule abs for apple-m-series { threads 128 }
+schedule abs for nvidia-ada     { threads 128 }

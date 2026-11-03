@@ -10,7 +10,7 @@ matrix unit (`gemm_lora`: the base product and the 16-wide adapter product accum
 the optimiser masks their gradient), and `split_grads` / `split_params` give the per-projection matrices back. The scale alpha / r is folded into the f16 copy of B (`Bs = s B`): with it the adapter's
 forward is `mid Bs^T`, the gradient of mid is `dy Bs`, and the gradient of A is `(dy Bs)^T x` with no further factor; the gradient of B is `s dy^T mid`, whose factor s goes into B's gradient scale.
 
-A quantised base (docs/resident.md section 26; roadmap M7.5): when the weights directory holds `NAME.q`, `NAME.s`, `NAME.g` for the four matrices of a block (quant.py pack) the session keeps those i8 and f32 files resident
+A quantised base (docs/resident.md section 27; roadmap M7.5): when the weights directory holds `NAME.q`, `NAME.s`, `NAME.g` for the four matrices of a block (quant.py pack) the session keeps those i8 and f32 files resident
 (0.56 bytes a weight), and before each product that reads a matrix runs `dq_fp4.chx`, which dequantises it into an f16 scratch laid out as the f16 file would be; the products, the rest of the forward and the backward are
 the unchanged ones. The scratch of a matrix kind is one buffer shared by every layer and by the forward and the backward (`alias`), so one layer's matrices are all it costs.
 
@@ -171,7 +171,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     S.put(p("zeros_nd"), np.zeros((n, d)))
     bc = min(tn["bc"], -(-v // 128) * 128)
     vp = -(-v // bc) * bc
-    lm_file = w("emb.f16" if c.tied else "head.f16")  # the output layer: the embedding table when tied, else a matrix of its own (docs/resident.md section 26)
+    lm_file = w("emb.f16" if c.tied else "head.f16")  # the output layer: the embedding table when tied, else a matrix of its own (docs/resident.md section 28)
     exact = vp == v and os.path.getsize(lm_file) == v * d * 2
     wlm = lm_file if exact else p("wlm.f16")
     if not exact:

@@ -1,0 +1,124 @@
+{
+ "eval": 61,
+ "skip_path": 14,
+ "too_large": 11,
+ "binary": 0,
+ "duplicate": 24,
+ "implements": [
+  {
+   "file": "cancho/examples/base64/base64.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/examples/ocpp_ws/b64.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/examples/ocpp_ws/ocpp_ws_test.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/examples/ocpp_ws/probe.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/examples/ocpp_ws/ws.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/examples/seek/seek.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/examples/sort/sort.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/packages/x509/.cancho-vcs/x509/sources/fea7a74f2c05297d86b5e73ca13b02598108af63682a47df5dce8a8e9f4dd9fe.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho/packages/x509/.cancho-vcs/x509_key/sources/76854bb809e888d6229377b1aba116e61669f14cb635c34819a39b44b03f3323.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho-code/src/cancho_agent.cho",
+   "items": [
+    "semver"
+   ]
+  },
+  {
+   "file": "cancho-code/src/change.cho",
+   "items": [
+    "editdistance",
+    "glob"
+   ]
+  },
+  {
+   "file": "cancho-forge/src/repo_row.cho",
+   "items": [
+    "glob"
+   ]
+  },
+  {
+   "file": "cancho-forge/tests/build_task_test.cho",
+   "items": [
+    "editdistance"
+   ]
+  },
+  {
+   "file": "cancho-forge/tests/repo_row_test.cho",
+   "items": [
+    "glob"
+   ]
+  },
+  {
+   "file": "cancho-web/examples/users_pg/users_pg.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho-oci/src/registry/registry.cho",
+   "items": [
+    "base64"
+   ]
+  },
+  {
+   "file": "cancho-cache/src/session.cho",
+   "items": [
+    "glob"
+   ]
+  },
+  {
+   "file": "cancho-cache/tests/glob_test.cho",
+   "items": [
+    "glob"
+   ]
+  },
+  {
+   "file": "cancho-afm/host/scan_twin.cho",
+   "items": [
+    "csv"
+   ]
+  }
+ ]
+}

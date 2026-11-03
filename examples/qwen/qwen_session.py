@@ -142,7 +142,7 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
     put(p("mask"), np.triu(np.full((t, t), -1e9), 1))
     bc = min(tn["bc"], -(-v // 128) * 128)
     vp = -(-v // bc) * bc  # the vocabulary rounded up to whole chunks of the cross-entropy; the padding rows of the output matrix are zero and their logits are masked
-    lm_file = w("emb.f16" if c.tied else "head.f16")  # the output layer: the embedding table when tied, else a matrix of its own (docs/resident.md section 26)
+    lm_file = w("emb.f16" if c.tied else "head.f16")  # the output layer: the embedding table when tied, else a matrix of its own (docs/resident.md section 28)
     exact = vp == v and os.path.getsize(lm_file) == v * d * 2
     wlm = lm_file if exact else p("wlm.f16")
     if not exact:

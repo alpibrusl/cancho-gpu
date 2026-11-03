@@ -1,0 +1,21 @@
+// Global average pooling of n padded images h x w: the mean over the valid pixels of each, f16 [n, c], summed rc rows at a time. vm [1, (h+2)(w+2)] is 1 / (h w) on a valid row, 0 on a border row.
+algo gap2_fwd(n, h, w, c, g, rc)
+  in  a:  f16[n * (h + 2) * (w + 2) + 2 * g, c]
+  in  vm: f32[1, (h + 2) * (w + 2)]
+  out f:  f16[n, c]
+{
+  grid b over n
+  let z = zeros f32[1, c]
+  let s = for q in 0 .. (h + 2) * (w + 2) / rc with z {
+    let t  = load a[g + b * (h + 2) * (w + 2) + q * rc, 0 ; rc, c]
+    let tf = stage f32 t
+    let v  = load vm[0, q * rc ; 1, rc]
+    let r  = matmul v tf
+    yield z + r
+  }
+  let hh = stage f16 s
+  store hh -> f[b, 0]
+}
+
+schedule gap2_fwd for apple-m-series { threads 128 }
+schedule gap2_fwd for nvidia-ada     { threads 128 }

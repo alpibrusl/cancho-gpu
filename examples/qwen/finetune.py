@@ -32,7 +32,7 @@ arg = lambda n, d: sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
 WDIR = arg("--weights", data.WEIGHTS)
 METAL = arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 EVERY = int(arg("--every", 30))
-NB = int(arg("--nb", 8))  # sequences of 512 a step (4 for the 7B: docs/resident.md section 26)
+NB = int(arg("--nb", 8))  # sequences of 512 a step (4 for the 7B: docs/resident.md section 28)
 R_, ALPHA = 16, 32.0
 LEAN = "--lean" in sys.argv  # the memory-lean session (docs/resident.md section 23.4)
 
@@ -176,4 +176,4 @@ def compare(work, names):
 if __name__ == "__main__":
     work, cmd = sys.argv[1], sys.argv[2]
     cfg = R.config_of(WDIR, 512, NB)
-    {"train": lambda: train(work, cfg), "eval": lambda: evaluate(work, cfg), "compare": lambda: compare(work, [a for a in sys.argv[3:] if not a.startswith("--")])}[cmd]()
+    {"train": lambda: train(work, cfg), "eval": lambda: evaluate(work, cfg), "compare": lambda: compare(work, [a for i, a in enumerate(sys.argv) if i > 2 and not a.startswith("--") and not sys.argv[i - 1].startswith("--weights") and not sys.argv[i - 1].startswith("--nb")])}[cmd]()

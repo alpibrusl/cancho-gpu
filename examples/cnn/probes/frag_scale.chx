@@ -1,0 +1,22 @@
+// PROBE type
+// ARGS m=64 n=64 k=32
+// The same: scaling the accumulator by a number before the store (a bias or a scale in the epilogue).
+algo frag_scale(m, n, k)
+  in  a: f16[m, k]
+  in  b: f16[n, k]
+  out y: f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for p in 0 .. k / bk with c {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let bt = load b[j * bn, p * bk ; bn, bk] @shared
+    yield mma c at bt
+  }
+  let d = c * 2.0
+  store d -> y[i * bm, j * bn]
+}
+
+schedule frag_scale for apple-m-series { threads 128 warps 2 2 bm 32 bn 32 bk 16 }
+schedule frag_scale for nvidia-ada     { threads 128 warps 2 2 bm 32 bn 32 bk 16 }

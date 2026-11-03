@@ -86,7 +86,7 @@ def init_params(c, seed=1):
 
 
 def load_one(directory, name, sh, G=None):
-    """One parameter (binary64) from the files convert.py wrote. A quantised matrix (`NAME.q`, `.s`, `.g`: quant.py pack, convert.py --quant; docs/resident.md section 26) is the decoded bytes rounded to f16,
+    """One parameter (binary64) from the files convert.py wrote. A quantised matrix (`NAME.q`, `.s`, `.g`: quant.py pack, convert.py --quant; docs/resident.md section 27) is the decoded bytes rounded to f16,
     which is what the session's dequantise kernel produces; `G`, its group size, is read from the manifest when not given."""
     kind = name.split(".")[-1]
     dt = "<f4" if kind in ("ln1", "ln2", "norm", "bqkv") else "<f2"

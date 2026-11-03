@@ -1,0 +1,15 @@
+// PROBE offset
+// ARGS n=4 c=8
+// A window offset that is a product of two coordinates (a gather by image and row at a stride that is not a constant): the offsets must be affine.
+algo product_offset(n, c)
+  in  x: f16[n * n * 16, c]
+  out y: f32[n * n * 16, c]
+{
+  grid i over n, j over n
+  let t = load x[i * j * 16, 0 ; 16, c]
+  let f = stage f32 t
+  store f -> y[i * j * 16, 0]
+}
+
+schedule product_offset for apple-m-series { threads 128 }
+schedule product_offset for nvidia-ada     { threads 128 }

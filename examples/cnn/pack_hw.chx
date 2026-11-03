@@ -1,0 +1,25 @@
+// The input images into the padded, guarded layout conv reads, for a frame h x w (pack.chx's, not square, and without its shifting matrix): two tables of n2 images each (the two halves of a batch,
+// [n2 h w, cin] f16), one row y of one image a threadgroup. A row of w pixels times cmat [cin, cp] pads its channels to cp, and is stored one column in (an offset of one row of the matrix),
+// between the zero border columns; the border rows and the guards are never written.
+algo pack_hw(n2, h, w, cin, cp, g)
+  in  xa:   f16[n2 * h * w, cin]
+  in  xb:   f16[n2 * h * w, cin]
+  in  cmat: f32[cin, cp]
+  out o:    f16[2 * n2 * (h + 2) * (w + 2) + 2 * g, cp]
+{
+  grid b over n2, y over h
+  let la = load xa[b * h * w + y * w, 0 ; w, cin]
+  let fa = stage f32 la
+  let c1 = load cmat
+  let ra = matmul fa &c1
+  let ha = stage f16 ra
+  store ha -> o[g + b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + 1, 0]
+  let lb = load xb[b * h * w + y * w, 0 ; w, cin]
+  let fb = stage f32 lb
+  let rb = matmul fb c1
+  let hb = stage f16 rb
+  store hb -> o[g + (n2 + b) * (h + 2) * (w + 2) + (y + 1) * (w + 2) + 1, 0]
+}
+
+schedule pack_hw for apple-m-series { threads 128 }
+schedule pack_hw for nvidia-ada     { threads 128 }

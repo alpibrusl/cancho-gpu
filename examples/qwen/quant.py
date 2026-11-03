@@ -4,7 +4,7 @@
     python3 examples/qwen/quant.py errors WEIGHTS [--layers 0,14,27]          # the weight error of each format on the matrices of those layers, and the bits a weight costs
     python3 examples/qwen/quant.py validate                                    # the packing below against the real `dequant_fp4` of the interpreter (cancho-gpu run gemm_fp4)
     python3 examples/qwen/quant.py fake WEIGHTS OUT FORMAT                     # a weights directory whose matrices are quantised and dequantised (f16): the forward pass of an existing session measures the loss
-    python3 examples/qwen/quant.py pack WEIGHTS OUT nvfp4:G                    # a weights directory whose four matrices of every block are the files `NAME.q`, `NAME.s`, `NAME.g` that a QLoRA session reads (section 26)
+    python3 examples/qwen/quant.py pack WEIGHTS OUT nvfp4:G                    # a weights directory whose four matrices of every block are the files `NAME.q`, `NAME.s`, `NAME.g` that a QLoRA session reads (section 27)
     python3 examples/qwen/quant.py dequant QWEIGHTS OUT                        # the f16 weights directory those files stand for, decoded from their bytes (what the session's dequantise kernel produces)
 
 Formats: nvfp4:G (E2M1 codes, an E4M3 scale per G values, one f32 per row: exactly what the surface's `dequant_fp4` reads; G = 16, 32, 64), int4:G (symmetric absmax, f16 scale, levels -8..7),
@@ -203,8 +203,8 @@ def dequant(qdir, out):
             if os.path.lexists(dst):
                 os.remove(dst)
             os.symlink(os.path.abspath(os.path.join(qdir, f"{name}.{ext}")), dst)
-    import shutil
-    shutil.copy(os.path.join(qdir, "manifest.json"), out)
+    man.pop("quant")  # the result is an f16 directory
+    json.dump(man, open(os.path.join(out, "manifest.json"), "w"), indent=1)
 
 
 if __name__ == "__main__":

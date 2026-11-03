@@ -15,7 +15,7 @@
    a random B so that every gradient is non-zero, and with B = 0 where A's gradient is exactly zero); the session's gradient of every adapter matrix (per projection, split out of the fused matrices) against the
    specification's, on the CPU interpreter and the GPU; the three-kernel cross-entropy's gradient `ce_grad`; the grouped-query sum of `att_dkv` for a group of 3; AdamW on the adapters over a table of batches against
    a float64 AdamW (the fused block-diagonal B keeps its zeros); mutants of the specification's backward and of the kernels, each far from the session's gradients.
-6'. An untied output layer (docs/resident.md section 26): forward and every adapter gradient with a `head` that is not the embedding table.
+6'. An untied output layer (docs/resident.md section 28): forward and every adapter gradient with a `head` that is not the embedding table.
 6. Heads of 128 dimensions (docs/resident.md section 23; roadmap M7.4): a 1-layer model with 4 query heads over 2 key/value heads of 128: forward, every adapter gradient, and a rotation-sign mutant.
 7. Full fine-tuning (docs/resident.md section 24; roadmap M7.4 part B): the lookup and its gradient as one-hot products, the column sums, AdamW on every tensor; the specification's gradients against finite
    differences, the session's 6 steps against a float64 AdamW on all parameters, four mutants.
@@ -422,7 +422,7 @@ def wide_head_check(cpu, metal, d):
 
 
 def untied_head_check(cpu, metal, d):
-    """An untied output layer (docs/resident.md section 26: Qwen2.5-7B and larger have `lm_head.weight`, a matrix of its own; the 0.5B and 1.5B tie it to the embedding table): a 2-layer model whose `head` differs from
+    """An untied output layer (docs/resident.md section 28: Qwen2.5-7B and larger have `lm_head.weight`, a matrix of its own; the 0.5B and 1.5B tie it to the embedding table): a 2-layer model whose `head` differs from
     its `emb`: the forward pass (loss, arg max) and every adapter gradient of the session equal the specification's, which reads `head`; and the specification reading the table instead (the tied one) is far
     from both, so the check would fail on a session that took the table for the head."""
     c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2, tied=False)

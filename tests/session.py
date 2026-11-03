@@ -202,7 +202,7 @@ def f32(x):
 
 
 def i8_checks(binary, tdir):
-    """docs/resident.md section 26: the `i8` flag of `resident`, a binary file of bytes read as signed 8-bit codes. The only kernel that consumes an i8 tensor is the dequantiser (`dequant_fp4`: no
+    """docs/resident.md section 27: the `i8` flag of `resident`, a binary file of bytes read as signed 8-bit codes. The only kernel that consumes an i8 tensor is the dequantiser (`dequant_fp4`: no
     arithmetic, staging or conversion of an i8 is expressible), so the check is the dequantise kernel of a QLoRA session (examples/qwen/dq_fp4.chx) over the three files of a 4-bit matrix packed by
     examples/qwen/nvfp4.py: its f16 output equals the decoding of those bytes, exactly, for two group sizes and several tiles (the bytes include every value from 0 to 255 as nibble pairs)."""
     import numpy as np
@@ -245,6 +245,11 @@ def i8_checks(binary, tdir):
                 open(os.path.join(tdir, "bad.session"), "w").write(body16.replace(old, f"resident dq.{param} {os.path.join(tdir, 'typed.bin')} {flag}"))
                 status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
                 say(status == 1 and out == [] and err.startswith("error[usage]") and ("not an" in err or "another type" in err), f"refused as usage: {what}")
+    sub = os.path.join(tdir, "sub")
+    os.makedirs(sub, exist_ok=True)
+    open(os.path.join(tdir, "bad.session"), "w").write(body16.replace(os.path.join(tdir, "dq16.q"), os.path.join(sub, "..", "dq16.q")))
+    status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
+    say(status == 1 and out == [] and err.startswith("error[session]") and "two dots" in err, f"refused as session, not a trap: a resident file whose path has two dots in a row (status {status})")
     open(os.path.join(tdir, "bad.session"), "w").write(body16.replace("dq.wq DIR/dq16.q i8".replace("DIR", tdir), "dq.wq DIR/dq16.q i4".replace("DIR", tdir)))
     status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
     say(status == 1 and out == [] and err.startswith("error[session]") and "[f32|f16|i8]" in err, "refused as session: a flag that is not f32, f16 or i8 (the message lists the three)")
@@ -724,6 +729,7 @@ MUTANTS = [
     ("src/runcmd.cho", "fm[at + j] = float_of(code);", "fm[at + j] = float_of(code + 1);", "an i8 code is read one too high"),
     ("src/runcmd.cho", "if dt != kinds.i8() {", "if dt < 0 {", "an i8 file is accepted for a parameter of another type"),
     ("src/session.cho", "binary = 3;", "binary = 1;", "the i8 flag is read as the f32 one"),
+    ("src/session.cho", "if unsafe_path(t, m[raw + 2]) {\n            return bad(m, t, m[raw + 3], text.lit(m, t, \"the file of a resident", "if text.size(m[raw + 2]) < 0 {\n            return bad(m, t, m[raw + 3], text.lit(m, t, \"the file of a resident", "a resident file whose path reaches the runtime's trap is accepted"),
     ("src/session.cho", "if m[mem.get(m, supplied, dp) + da] != 1 {", "if m[mem.get(m, supplied, dp) + da] < 0 {", "a carry to a parameter that is not resident is accepted"),
     ("src/session.cho", "if ir.param_dtype(m, prm) != want_type {", "if ir.param_dtype(m, prm) < 0 {", "a save in another type than the output's is accepted"),
     ("src/session.cho", "if text.size(path) == 0 || text.size(path) + 4 >= 4096 {", "if text.size(path) == 0 {", "a save to a path of 4,096 bytes or more reaches the runtime's trap"),
