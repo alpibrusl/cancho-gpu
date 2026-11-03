@@ -42,6 +42,7 @@ if python3 -c 'import numpy' 2>/dev/null; then
 else
   echo "skip quant.py validate: numpy is not installed"
 fi
+python3 tests/gdn.py
 python3 tests/qwen.py build/cancho-gpu-session
 python3 tests/qwen_quant.py build/cancho-gpu-session
 CANCHO="$CANCHO" tests/authority.sh

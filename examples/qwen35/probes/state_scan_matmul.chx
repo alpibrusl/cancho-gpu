@@ -1,0 +1,36 @@
+// PROBE numeric
+// ARGS nc=3 nb=1
+// The cross-chunk scan for nb blocks (a block is one head's slice of 64 value columns of one sequence): S [128 keys, 64 values] f32 is a loop-carried register tile; per chunk v_new = u - w S, o = (q e^g) S + Aqk v_new, S = S e^{g_last} + Kd^T v_new, with the chunk-local factors (w, Aqk, q e^g, Kd^T) precomputed by an earlier launch and loaded, and every product the generic matmul on computed tiles (the only way a product's result can feed another product inside one kernel). Writes o inside the loop. The decay of the last position is a [1, 64] row of 64 copies (a scalar is not a tile).
+algo state_scan_matmul(nc, nb)
+  in  u:   f32[nb * nc * 64, 64]
+  in  w:   f32[nb * nc * 64, 128]
+  in  aqk: f32[nb * nc * 64, 64]
+  in  qg:  f32[nb * nc * 64, 128]
+  in  kdt: f32[nb * nc * 128, 64]
+  in  el:  f32[nb * nc, 64]
+  out o:   f32[nb * nc * 64, 64]
+  out sf:  f32[nb * 128, 64]
+{
+  grid h over nb
+  let s0 = zeros f32[128, 64]
+  let s = for i in 0 .. nc with s0 {
+    let wt  = load w[(h * nc + i) * 64, 0 ; 64, 128]
+    let ws  = matmul wt &s0
+    let ut  = load u[(h * nc + i) * 64, 0 ; 64, 64]
+    let vn  = ut - ws
+    let qt  = load qg[(h * nc + i) * 64, 0 ; 64, 128]
+    let o1  = matmul qt &s0
+    let at  = load aqk[(h * nc + i) * 64, 0 ; 64, 64]
+    let o2  = matmul at &vn
+    store o1 + o2 -> o[(h * nc + i) * 64, 0]
+    let kt  = load kdt[(h * nc + i) * 128, 0 ; 128, 64]
+    let ups = matmul kt vn
+    let ev  = load el[h * nc + i, 0 ; 1, 64]
+    let sd  = s0 * ev
+    yield sd + ups
+  }
+  store s -> sf[h * 128, 0]
+}
+
+schedule state_scan_matmul for apple-m-series { threads 256 }
+schedule state_scan_matmul for nvidia-ada     { threads 256 }

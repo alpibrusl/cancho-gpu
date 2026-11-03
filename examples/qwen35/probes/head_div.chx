@@ -1,0 +1,14 @@
+// PROBE offset
+// ARGS nv=48
+// Value head h reads key head h / 3 (the layer's repeat_interleave): a division of a grid coordinate is not an affine offset.
+algo head_div(nv)
+  in  k: f32[nv / 3, 128]
+  out y: f32[nv, 128]
+{
+  grid h over nv
+  let kt = load k[h / 3, 0 ; 1, 128]
+  store kt * 2 -> y[h, 0]
+}
+
+schedule head_div for apple-m-series { threads 128 }
+schedule head_div for nvidia-ada     { threads 128 }

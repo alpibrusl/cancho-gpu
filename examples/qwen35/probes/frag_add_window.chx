@@ -1,0 +1,20 @@
+// PROBE ok
+// ARGS nc=2
+// The accumulator starting from a loaded block instead of zeros, so that a step like Pi' = Pi + Pi P' is ONE launch (the sum folded into the fragment): add_window on a fragment is accepted by both targets, and on the Metal device y = x + a b agrees with numpy to 9e-6 of a peak 36 (measured by hand with f16 a and b; the gate cannot run a device).
+algo frag_add_window(nc)
+  in  a:  f16[nc * 64, 64]
+  in  b:  f16[nc * 64, 64]
+  in  x:  f32[nc * 64, 64]
+  out y:  f32[nc * 64, 64]
+{
+  grid c over nc
+  let at = load a[c * 64, 0 ; 64, 64] @shared
+  let bt = load b[c * 64, 0 ; 64, 64] @shared
+  let z = zeros f32[64, 64] @frag
+  let z2 = add_window z x[c * 64, 0]
+  let r = mma_nn z2 at bt
+  store r -> y[c * 64, 0]
+}
+
+schedule frag_add_window for apple-m-series { threads 128 warps 2 2 }
+schedule frag_add_window for nvidia-ada     { threads 128 warps 2 2 }

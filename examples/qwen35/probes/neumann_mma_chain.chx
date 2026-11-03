@@ -1,0 +1,21 @@
+// PROBE type
+// ARGS nc=2
+// The repeated-squaring form of the solve, (I - N)(I + N^2)(I + N^4)..., on the matrix unit inside ONE kernel: the product N N lands in a fragment, and its result is needed as the next product's operand. A fragment can be accumulated into, stored or carried and nothing else, so it cannot be staged to threadgroup memory: each squaring would be its own launch with the block through memory.
+algo neumann_mma_chain(nc)
+  in  n: f16[nc * 64, 64]
+  out y: f32[nc * 64, 64]
+{
+  grid c over nc
+  let a  = load n[c * 64, 0 ; 64, 64] @shared
+  let b  = load n[c * 64, 0 ; 64, 64] @shared
+  let acc = zeros f32[64, 64] @frag
+  let sq = mma acc a b
+  let s2 = stage f16 sq
+  let acc2 = zeros f32[64, 64] @frag
+  let s3 = &s2 * 1
+  let q4 = mma acc2 s2 s3
+  store q4 -> y[c * 64, 0]
+}
+
+schedule neumann_mma_chain for apple-m-series { threads 128 warps 2 2 }
+schedule neumann_mma_chain for nvidia-ada     { threads 128 warps 2 2 }

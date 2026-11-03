@@ -1,0 +1,22 @@
+// PROBE ok
+// ARGS nb=48
+// The state update of a chunk, U = Kd^T v_new, on the matrix unit: v_new = u - P recomputed (elementwise, cheaper than a round trip), staged f16, and mma_tn with Kd stored [chunk, keys]; one threadgroup a (block, half of the keys).
+algo scan_mma_bu(nb)
+  in  u:  f32[nb * 64, 64]
+  in  p:  f32[nb * 64, 64]
+  in  kd: f16[nb * 64, 128]
+  out up: f32[nb * 128, 64]
+{
+  grid b over nb, h over 2
+  let ut = load u[b * 64, 0 ; 64, 64]
+  let pt = load p[b * 64, 0 ; 64, 64]
+  let vn = ut - pt
+  let vo = stage f16 vn
+  let kt = load kd[b * 64, h * 64 ; 64, 64] @shared
+  let u0 = zeros f32[64, 64] @frag
+  let u1 = mma_tn u0 kt vo
+  store u1 -> up[b * 128 + h * 64, 0]
+}
+
+schedule scan_mma_bu for apple-m-series { threads 128 warps 2 2 }
+schedule scan_mma_bu for nvidia-ada     { threads 128 warps 2 2 }

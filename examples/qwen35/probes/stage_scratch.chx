@@ -1,0 +1,20 @@
+// PROBE ok
+// ARGS nb=48
+// ACCEPTED by `check` on both targets and REFUSED by the Metal session at lowering (`error[budget]: lowering needs 65536 B of threadgroup memory (32768 B of tiles + 32768 B of staging scratch)`, measured with examples/qwen35/time_probes.py's session): staging a whole COMPUTED [128, 64] f32 tile (here st * 2) to f16 needs 32 KiB of tiles and 32 KiB of staging scratch that `check` does not count (the same tile staged straight from a load does not: measured). scan_mma_a.chx does the same work in blocks of 32 keys.
+algo stage_scratch(nb)
+  in  s:  f32[nb * 128, 64]
+  in  w:  f16[nb * 64, 128]
+  out pp: f32[nb * 64, 64]
+{
+  grid b over nb
+  let st = load s[b * 128, 0 ; 128, 64]
+  let sd = st * 2
+  let sh = stage f16 sd
+  let wt = load w[b * 64, 0 ; 64, 128] @shared
+  let acc = zeros f32[64, 64] @frag
+  let acc = mma_nn acc wt sh
+  store acc -> pp[b * 64, 0]
+}
+
+schedule stage_scratch for apple-m-series { threads 128 warps 2 2 }
+schedule stage_scratch for nvidia-ada     { threads 128 warps 2 2 }

@@ -1,0 +1,20 @@
+// PROBE ok
+// ARGS nc=2
+// The same chain with the generic matmul, which takes COMPUTED register tiles (attention.chx's softmax output is one): accepted, a chain of squarings in one kernel. The price is the generic product's speed (resident.md section 14: 0.3 TFLOPS against the matrix unit's 2.2 in the same tiling, 7x).
+algo neumann_matmul_chain(nc)
+  in  n: f32[nc * 64, 64]
+  out y: f32[nc * 64, 64]
+{
+  grid c over nc
+  let a  = load n[c * 64, 0 ; 64, 64]
+  let b  = load n[c * 64, 0 ; 64, 64]
+  let p2 = matmul a b
+  let c2 = &p2 * 1
+  let p4 = matmul c2 p2
+  let c4 = &p4 * 1
+  let p8 = matmul c4 p4
+  store p8 -> y[c * 64, 0]
+}
+
+schedule neumann_matmul_chain for apple-m-series { threads 128 }
+schedule neumann_matmul_chain for nvidia-ada     { threads 128 }

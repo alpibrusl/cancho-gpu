@@ -1,0 +1,16 @@
+// PROBE ok
+// ARGS nc=4
+// The in-chunk prefix sum of the log-decay (gc = cumsum(g)), which has no operation of its own, as a product with a lower-triangular table of ones (and, with the table transposed, the reverse cumulative sum the backward needs). f32 generic matmul: a 64 x 64 by 64 x 1 product a chunk.
+algo cumsum_tri(nc)
+  in  g:   f32[nc * 64, 1]
+  in  tri: f32[64, 64]
+  out gc:  f32[nc * 64, 1]
+{
+  grid c over nc
+  let gt = load g[c * 64, 0 ; 64, 1]
+  let tt = load tri
+  store matmul tt gt -> gc[c * 64, 0]
+}
+
+schedule cumsum_tri for apple-m-series { threads 64 }
+schedule cumsum_tri for nvidia-ada     { threads 64 }

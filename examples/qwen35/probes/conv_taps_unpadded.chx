@@ -1,0 +1,17 @@
+// PROBE bounds
+// ARGS t=512 c=256
+// The same convolution reading x[t - 3 + j] directly: the first block's window starts at row -3, outside the tensor on iteration 0, and a window must stay inside the tensor on every iteration. (The padded form of conv_taps_padded.chx is the answer.)
+algo conv_taps_unpadded(t, c)
+  in  x:  f32[t, c]
+  in  w:  f32[4, c]
+  out y:  f32[t, c]
+  tile bm
+{
+  grid i over t / bm
+  let x0 = load x[i * bm - 3, 0 ; bm, c]
+  let w0 = load w[0, 0 ; 1, c]
+  store x0 * w0 -> y[i * bm, 0]
+}
+
+schedule conv_taps_unpadded for apple-m-series { threads 128 bm 8 }
+schedule conv_taps_unpadded for nvidia-ada     { threads 128 bm 8 }

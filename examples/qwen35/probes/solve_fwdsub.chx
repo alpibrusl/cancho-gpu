@@ -1,0 +1,30 @@
+// PROBE numeric
+// ARGS nc=2 nv=128
+// The triangular solve (I + Ls) X = R by forward substitution, in registers: X is kept TRANSPOSED ([nv value columns, 64 chunk rows]; with the right-hand side the identity and nv = 64 it is the inverse itself, HF's `attn` loop) so that the dot of row i of Ls with the already solved rows is a rowsum over a [1, 64] broadcast, and the new row is written into column i by multiplying with a one-hot row of an identity table (a computed tile cannot be sliced, nor can a column be assigned). 64 dependent steps in a loop; each touches the whole [nv, 64] tile.
+algo solve_fwdsub(nc, nv)
+  in  ls:  f32[nc * 64, 64]
+  in  rt:  f32[nc * nv, 64]
+  in  eye: f32[64, 64]
+  out xt:  f32[nc * nv, 64]
+{
+  grid c over nc
+  let x0 = zeros f32[nv, 64]
+  let x = for i in 0 .. 64 with x0 {
+    let lrow = load ls[c * 64 + i, 0 ; 1, 64]
+    let prod = &x0 * lrow
+    let dot  = rowsum prod
+    let rcol = load rt[c * nv, i ; nv, 1]
+    let za   = zeros f32[nv, 64]
+    let zb   = zeros f32[nv, 64]
+    let dd   = za + dot
+    let rr   = zb + rcol
+    let df   = rr - dd
+    let e    = load eye[i, 0 ; 1, 64]
+    let upd  = df * e
+    yield x0 + upd
+  }
+  store x -> xt[c * nv, 0]
+}
+
+schedule solve_fwdsub for apple-m-series { threads 128 }
+schedule solve_fwdsub for nvidia-ada     { threads 128 }

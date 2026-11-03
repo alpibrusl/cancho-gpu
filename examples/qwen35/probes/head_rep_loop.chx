@@ -1,0 +1,18 @@
+// PROBE ok
+// ARGS nk=16
+// The same sharing written without a division: the grid is over KEY heads and a loop of 3 visits the value heads (offset 3 i + r is affine). The key gradient is the sum over the three, a carried accumulator: dk_i = sum_r dkh_{3i+r}.
+algo head_rep_loop(nk)
+  in  dkh: f32[nk * 3, 128]
+  out dk:  f32[nk, 128]
+{
+  grid i over nk
+  let a0 = zeros f32[1, 128]
+  let a = for r in 0 .. 3 with a0 {
+    let t = load dkh[i * 3 + r, 0 ; 1, 128]
+    yield a0 + t
+  }
+  store a -> dk[i, 0]
+}
+
+schedule head_rep_loop for apple-m-series { threads 128 }
+schedule head_rep_loop for nvidia-ada     { threads 128 }

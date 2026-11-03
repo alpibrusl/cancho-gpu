@@ -1,0 +1,18 @@
+// PROBE budget
+// ARGS nc=2
+// Staging the whole 128 x 128 state as an f16 matrix-unit operand (32,768 B: Metal's entire threadgroup budget) next to a chunk's [64, 128] factor (16,384 B more): refused on Metal (49,152 B against 32,768), accepted on CUDA (48 KiB static). The value columns of the state are independent, so a threadgroup takes a slice (state_scan_matmul.chx: 64 columns).
+algo state_whole_budget(nc)
+  in  s: f16[nc * 128, 128]
+  in  w: f16[nc * 64, 128]
+  out y: f32[nc * 64, 128]
+{
+  grid c over nc
+  let acc = zeros f32[64, 128] @frag
+  let st = load s[c * 128, 0 ; 128, 128] @shared
+  let wt = load w[c * 64, 0 ; 64, 128] @shared
+  let acc2 = mma_nn acc wt st
+  store acc2 -> y[c * 64, 0]
+}
+
+schedule state_whole_budget for apple-m-series { threads 256 warps 2 4 }
+schedule state_whole_budget for nvidia-ada     { threads 256 warps 2 4 }

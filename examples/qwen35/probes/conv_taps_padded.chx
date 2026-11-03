@@ -1,0 +1,31 @@
+// PROBE ok
+// ARGS t=512 c=256
+// The causal depthwise convolution of a gated-delta layer over a whole sequence: tap j of output row t reads input row t + j - 3, so the input carries three zero rows in front (the previous kernel, the in_proj product, writes its output at row offset 3 of a zeroed buffer) and every offset is affine. y = silu(sum_j w_j x_{t+j-3}).
+algo conv_taps_padded(t, c)
+  in  x:  f32[t + 3, c]
+  in  w:  f32[4, c]
+  out y:  f32[t, c]
+  tile bm
+{
+  grid i over t / bm
+  let x0 = load x[i * bm + 0, 0 ; bm, c]
+  let x1 = load x[i * bm + 1, 0 ; bm, c]
+  let x2 = load x[i * bm + 2, 0 ; bm, c]
+  let x3 = load x[i * bm + 3, 0 ; bm, c]
+  let w0 = load w[0, 0 ; 1, c]
+  let w1 = load w[1, 0 ; 1, c]
+  let w2 = load w[2, 0 ; 1, c]
+  let w3 = load w[3, 0 ; 1, c]
+  let a = x0 * w0
+  let b = x1 * w1
+  let d = x2 * w2
+  let e = x3 * w3
+  let ab = a + b
+  let de = d + e
+  let s = ab + de
+  let sg = sigmoid &s
+  store s * sg -> y[i * bm, 0]
+}
+
+schedule conv_taps_padded for apple-m-series { threads 128 bm 8 }
+schedule conv_taps_padded for nvidia-ada     { threads 128 bm 8 }

@@ -1,0 +1,35 @@
+// PROBE budget
+// ARGS nb=48
+// o and U in one kernel (scan_mma_bo.chx + scan_mma_bu.chx fused): v_new staged twice, the state, q e^g, Aqk and Kd all resident: 57,344 B of threadgroup memory against Metal's 32,768 (CUDA's 48 KiB would take it only after the same loop over blocks of keys). Two launches instead of one.
+algo scan_mma_b_fused(nb)
+  in  u:   f32[nb * 64, 64]
+  in  p:   f32[nb * 64, 64]
+  in  s:   f32[nb * 128, 64]
+  in  qg:  f16[nb * 64, 128]
+  in  aqk: f16[nb * 64, 64]
+  in  kd:  f16[nb * 64, 128]
+  out o:   f32[nb * 64, 64]
+  out up:  f32[nb * 128, 64]
+{
+  grid b over nb
+  let ut = load u[b * 64, 0 ; 64, 64]
+  let pt = load p[b * 64, 0 ; 64, 64]
+  let vn = ut - pt
+  let vh = stage f16 &vn
+  let vo = stage f16 vn
+  let st = load s[b * 128, 0 ; 128, 64]
+  let sh = stage f16 st
+  let qt = load qg[b * 64, 0 ; 64, 128] @shared
+  let at = load aqk[b * 64, 0 ; 64, 64] @shared
+  let acc = zeros f32[64, 64] @frag
+  let acc = mma_nn acc qt sh
+  let acc = mma_nn acc at vh
+  store acc -> o[b * 64, 0]
+  let kt = load kd[b * 64, 0 ; 64, 128] @shared
+  let u0 = zeros f32[128, 64] @frag
+  let u1 = mma_tn u0 kt vo
+  store u1 -> up[b * 128, 0]
+}
+
+schedule scan_mma_b_fused for apple-m-series { threads 128 warps 2 2 }
+schedule scan_mma_b_fused for nvidia-ada     { threads 128 warps 2 2 }
