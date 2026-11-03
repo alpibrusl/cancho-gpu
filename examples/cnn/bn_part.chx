@@ -1,0 +1,20 @@
+// BatchNorm statistics, the first level: for each block of rb rows, the sums over the valid (non-border) rows of z and of z^2, per channel. v is 1 on a valid row and 0 on a border row
+// (and so the junk the convolution leaves on the border does not count). One threadgroup for each block; bn_fin adds the blocks.
+algo bn_part(rp, c, rb)
+  in  z:  f32[rp, c]
+  in  v:  f32[1, rp]
+  out s1: f32[rp / rb, c]
+  out s2: f32[rp / rb, c]
+{
+  grid i over rp / rb
+  let zz = load z[i * rb, 0 ; rb, c]
+  let vv = load v[0, i * rb ; 1, rb]
+  let q  = &zz * &zz
+  let a1 = matmul &vv zz
+  store a1 -> s1[i, 0]
+  let a2 = matmul vv q
+  store a2 -> s2[i, 0]
+}
+
+schedule bn_part for apple-m-series { threads 128 }
+schedule bn_part for nvidia-ada     { threads 128 }

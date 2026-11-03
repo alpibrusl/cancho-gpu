@@ -1,0 +1,17 @@
+// The gradient of pool_fwd: the row y of the pooled gradient (f32, no guard) multiplied by pt [h + 2, h/2 + 2] (the transpose of pm) is the gradient of both input rows 2y+1 and 2y+2.
+// The border rows of the result are never written and stay zero.
+algo pool_bwd(n, h, c)
+  in  gr: f32[n * (h / 2 + 2) * (h / 2 + 2), c]
+  in  pt: f32[h + 2, h / 2 + 2]
+  out gi: f32[n * (h + 2) * (h + 2), c]
+{
+  grid b over n, y over h / 2
+  let t = load gr[b * (h / 2 + 2) * (h / 2 + 2) + (y + 1) * (h / 2 + 2), 0 ; h / 2 + 2, c]
+  let p = load pt
+  let r = matmul p t
+  store &r * 1.0 -> gi[b * (h + 2) * (h + 2) + (2 * y + 1) * (h + 2), 0]
+  store r -> gi[b * (h + 2) * (h + 2) + (2 * y + 2) * (h + 2), 0]
+}
+
+schedule pool_bwd for apple-m-series { threads 128 }
+schedule pool_bwd for nvidia-ada     { threads 128 }

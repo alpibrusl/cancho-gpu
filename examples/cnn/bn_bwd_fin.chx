@@ -1,0 +1,29 @@
+// BatchNorm backward, the second level of the reductions: add the nb blocks of bn_bwd_part (cb at a time): dbeta = sum of d, dgamma = sum of d * xhat, per channel.
+algo bn_bwd_fin(nb, c, cb, bc)
+  in  p1:     f32[nb, c]
+  in  p2:     f32[nb, c]
+  in  ones:   f32[1, cb]
+  out dbeta:  f32[1, c]
+  out dgamma: f32[1, c]
+{
+  grid j over c / bc
+  let z1 = zeros f32[1, bc]
+  let t1 = for q in 0 .. nb / cb with z1 {
+    let o = load ones
+    let t = load p1[q * cb, j * bc ; cb, bc]
+    let r = matmul o t
+    yield z1 + r
+  }
+  store t1 -> dbeta[0, j * bc]
+  let z2 = zeros f32[1, bc]
+  let t2 = for q in 0 .. nb / cb with z2 {
+    let o = load ones
+    let t = load p2[q * cb, j * bc ; cb, bc]
+    let r = matmul o t
+    yield z2 + r
+  }
+  store t2 -> dgamma[0, j * bc]
+}
+
+schedule bn_bwd_fin for apple-m-series { threads 32 }
+schedule bn_bwd_fin for nvidia-ada     { threads 32 }

@@ -1,0 +1,16 @@
+// dw = the sum of the `ns` pieces conv3_dw wrote: part is [ns * r, k] (piece q is rows q * r .. q * r + r), out is [r, k].
+algo wsum(ns, r, k, bm, bn)
+  in  part: f32[ns * r, k]
+  out dw:   f32[r, k]
+{
+  grid i over r / bm, j over k / bn
+  let acc = zeros f32[bm, bn]
+  let acc = for q in 0 .. ns with acc {
+    let t = load part[q * r + i * bm, j * bn ; bm, bn]
+    yield acc + t
+  }
+  store acc -> dw[i * bm, j * bn]
+}
+
+schedule wsum for apple-m-series { threads 128 }
+schedule wsum for nvidia-ada     { threads 128 }
