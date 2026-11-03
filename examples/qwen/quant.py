@@ -203,8 +203,8 @@ def dequant(qdir, out):
             if os.path.lexists(dst):
                 os.remove(dst)
             os.symlink(os.path.abspath(os.path.join(qdir, f"{name}.{ext}")), dst)
-    import shutil
-    shutil.copy(os.path.join(qdir, "manifest.json"), out)
+    man.pop("quant")  # the result is an f16 directory
+    json.dump(man, open(os.path.join(out, "manifest.json"), "w"), indent=1)
 
 
 if __name__ == "__main__":

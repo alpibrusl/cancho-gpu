@@ -424,6 +424,7 @@ and accumulates in f32: `gemm_mma.chx` takes **121 microseconds for a 512 x 512 
 * **`mma_nn`, `mma_tn`, `mma_tt`** (`docs/chx.md`): `mma` with the left tile stored `[k, m]` and/or the right tile stored `[k, n]` (Metal: `simdgroup_load` with or without its transpose flag; CUDA: the `wmma` fragment's `row_major` or `col_major`; the CUDA text is held by goldens and has not run). A forward product is `mma`, a layer's input gradient `mma_nn`,
   a weight gradient `mma_tn`: no transposed copy of anything. `gemm_mma_nn.chx` and `gemm_mma_tn.chx` are held to float64 references (`tests/kernels.py`) with mutants, **and run on the Metal GPU against numpy: the three layouts at 512 x 512 x 512 agree to 3e-5 of a peak of 40, in 121 to 124 us each.**
 * **`f16` after a `resident` or `table` file** reads binary16 words (the same cap-free binary form as `f32`, section 12.4).
+* **`i8` after a `resident` file** reads bytes as signed 8-bit codes for an `i8` parameter (section 26; `table` takes no `i8`).
 
 `examples/train/mp_session.py` is `deep_session.py` rewritten for them: master weights and Adam's moments in f32; an f16 copy of each weight matrix written by the Adam kernel (`adam_h.chx`) beside the f32 one; activations and the gradients of the pre-activations in f16; every product on the matrix unit with f32 accumulation;
 a bias-and-ReLU epilogue (`bias_relu_h`), a ReLU-gradient mask (`step_mask_h`), a gridded bias gradient (`rowvec_mm`; `bwd_db.chx` has no grid). The surface has no conversion between dtypes but `stage f16`/`stage f32`, which is how the epilogues narrow and widen. Widths must be multiples of 64, the input width of 32.
@@ -1054,9 +1055,9 @@ Setup of 24.1 with 300 steps: the corpus and held-out set of 24.4 (300 batches o
 * **Measured** (`finetune_full.py WORK train --steps 4 --lr 2e-5 --every 4 --segment 2` with `QWEN_WEIGHTS` the 1.5B's, two sessions of two steps, the handover of 24.7 on the 1.5B too): **peak footprint 44.27 GB** (the prediction within 0.1 GB), **4,191 ms a step** (4,203 and 4,179), 977 tokens a second, step-1 loss 1.44162 (equal to the LoRA run's step 1 in 23.5, as it must: the same forward pass), then 2.883, 2.771, 2.512. It runs, on an otherwise ordinary desktop, with about 20 GB of the 64 not used by it.
 * **What this does not show.** Four steps are a feasibility check, not a fine-tuning run: no held-out loss, **no comparison with torch** (not run: torch float32 would hold 16 bytes a parameter, 24.7 GB, next to activations that were 34 GB for the 0.5B and would be about 80 GB at 1.5B by that ratio **[estimate]**, so it does not fit this machine), no gradient check against autograd at 1.5B. The step is 1.70 times the 1.5B LoRA step (2,467 ms) and 3.03 times the 0.5B full step (1,381). Headroom is thin: another process holding a few GB would make the allocation fail, and the lean step (23.4: -5.7 GB for the LoRA session) is not ported to `qwen_full.py`, which would give back about 5.7 GB **[estimate]**.
 
-## 25. A 4-bit base (QLoRA) and a 7B model: a design with probes (roadmap M7.5; nothing built)
+## 25. A 4-bit base (QLoRA) and a 7B model: a design with probes (roadmap M7.5; built in sections 26 and 27)
 
-> **Status: design, written before any kernel.** Marks: **[measured]** (a probe or a run, with its command), **[read]** (from source or documents), **[estimate]** (arithmetic from measured numbers, to be replaced by a measurement), **[open]**. Nothing was downloaded and no kernel was added: the probes are five refused and two accepted `.chx` files (`experimental/m75/`, `experimental/m75/probes.sh`), a host quantiser (`examples/qwen/quant.py`) and sessions of existing kernels.
+> **Status: design, written before any kernel; the prototype of 25.7 is built and measured in section 26, the 7B in section 27 (corrections to this section are marked *corrected* where they are).** Marks: **[measured]** (a probe or a run, with its command), **[read]** (from source or documents), **[estimate]** (arithmetic from measured numbers, to be replaced by a measurement), **[open]**. Nothing was downloaded and no kernel was added: the probes are five refused and two accepted `.chx` files (`experimental/m75/`, `experimental/m75/probes.sh`), a host quantiser (`examples/qwen/quant.py`) and sessions of existing kernels.
 
 ### 25.1 What is asked, and what a 7B model changes
 Qwen2.5-7B **[read: its model card; the parameter count below reproduces its 7.6156 B]**: 28 layers, hidden 3,584, 28 query heads over 4 key/value heads of 128 (a group of 7, as the 0.5B has), SwiGLU of 18,944, vocabulary 152,064, **untied** output layer. Parameters by the formula of `qwen_ref.shapes` plus a separate head: 6.526 B in the blocks, 0.545 B in the embedding and 0.545 B in the head, 7.616 B in all **[measured: arithmetic, `m75/mem7.py`]**. Against the 1.5B (1.310 B in blocks) the blocks are 5.0 times larger.
@@ -1069,13 +1070,13 @@ Every shape passes the session writer's assertions (a 7B-shaped LoRA session was
 | arithmetic on an `i8` tile (`i8_arithmetic.chx`: `a * 0.0625`) | refused, `type`, the same advice |
 | `stage i8` (`stage_i8.chx`) | refused, `syntax`: `i8 is not a staging dtype (f16, f32)` |
 | an `i8` tile stored into an f32 tensor | refused, `type` |
-| an f32 tile stored into an `i8` tensor (`f32_store_i8.chx`) | refused, `narrowing`: `use `convert``. **There is no `convert` in the grammar** (`chx.md` section 3): the message names an operation that does not exist. A kernel cannot produce `i8` at all: the encoder is host code |
+| an f32 tile stored into an `i8` tensor (`f32_store_i8.chx`) | refused, `narrowing`: `use `convert``. **There is no `convert` in the grammar** (`chx.md` section 3): the message named an operation that does not exist (*corrected* in section 26: it now says that no kernel produces an I8, or to round with `stage f16`). A kernel cannot produce `i8` at all: the encoder is host code |
 | shifts, `%`, bit operations | **not in the grammar** [read: `chx.md` section 3; an `i8` is not arithmetic, so the nibble tricks (`b - 16 round(b / 16)`) cannot be reached either] |
 | `dequant_fp4 q s g G` -> `stage f16` -> `mma` (`tests/chx/ported/gemm_fp4.chx`) | compiles on both targets and runs on the interpreter for G = 16, 32 and 64 (64 needs `bk 64`; G = 128 at `bm 64 bk 128` is refused, `budget`: 49,152 B against 32,768) |
 | the same for the backward product `dx = dy W` (`gemm_mma_nn_fp4.chx`: `mma_nn` with the dequantised `W` stored `[out, in]`, the row scale on the out dimension) | compiles on both targets; against numpy `dy @ W_hat` on the interpreter: **3.1e-7 of a peak 2.67** |
 | `dequant_fp4` -> `stage f16` -> `store` to an f16 tensor (`dequant_to_f16.chx`: the layer's weights into a scratch matrix) | compiles on both targets, runs on the interpreter |
 | the host packing of `quant.py` (`pack_nvfp4`: two codes a byte, low nibble first; e4m3 scale bytes; an f32 per row) against the real `dequant_fp4` (`quant.py validate`, through `cancho-gpu run gemm_fp4`) | **16,384 of 16,384 weights equal** once rounded to f16, at G = 16, 32 and 64; the mutant with the two nibbles of a byte swapped differs at 15,186 of 16,384 and fails the check (`validate` is in the gate) |
-| an `i8` file as a `resident` of a session (`resident dq.wq FILE i8`) | refused by the session: `error[session]: line 2: resident PROGRAM.PARAM FILE [f32\|f16]`. **No quantised weights can enter a session today** |
+| an `i8` file as a `resident` of a session (`resident dq.wq FILE i8`) | refused by the session: `error[session]: line 2: resident PROGRAM.PARAM FILE [f32\|f16]`. **No quantised weights could enter a session** (*corrected*: the flag `i8` exists since section 26, message `[f32\|f16\|i8]`) |
 
 **So the only 4-bit unpack in the surface is `dequant_fp4`, whose codebook is fixed: E2M1 (0, 0.5, 1, 1.5, 2, 3, 4, 6 and their negatives) times an E4M3 scale per G values times an f32 per row.** Plain int4 and NF4 are not expressible (no `i8` arithmetic, no table lookup by data: 24.1's `error[offset]`). The question is therefore only whether that format is good enough, and it is measured below. A generic `dequant_lut q s codebook G` atom would express NF4 and int4 at the price of a language change (the maintainer's call, as `kernels.md` section 4 says of `max`); 25.3 says it is not worth it.
 
@@ -1123,7 +1124,7 @@ Weights: `quant.py` packs the 1.5B's f16 blocks (the cached bf16 safetensors via
 Exit clause: 1 to 3 pass and the step is within 1.2 times of the f16 base's time; both numbers stated whichever way they fall. It would say nothing of 7B beyond the shapes, which it shares with the 1.5B (heads of 128).
 
 ### 25.8 The list of gaps, in order of what blocks what
-1. **`resident` takes only f32 and f16** (measured, 25.2): an `i8` flag, the upload of bytes (the 24.3 chunking exists), and `tests/session.py` checks with a mutant. Runtime and shim, not the compiler. **Blocks everything.**
+1. **`resident` takes only f32 and f16** (measured, 25.2; *done*, section 26): an `i8` flag, the upload of bytes (the 24.3 chunking exists), and `tests/session.py` checks with a mutant. Runtime and shim, not the compiler. **Blocks everything.**
 2. **The dequantise kernel and its session wiring**: `dequant_to_f16.chx` exists as a probe (it compiles and runs on the interpreter); needed are its tile schedule on Metal, the programs per layer with `alias`, and its test against `quant.py` (bitwise, the packing is validated) with mutants (scale of the wrong group, nibble order).
 3. **The converter/session for quantised bases**: `convert.py --quant nvfp4:G`, `qwen_session.write(..., quant=)` reading `q`/`s`/`g` in place of `w.f16` for the four matrices of a block; `qwen_ref`'s specification loaded from the dequantisation.
 4. **The untied head** (7B only): `head.f16` in the converter, the manifest and the session writers; `qwen_ref.head` takes it. Small, and a test on a random untied 2-layer model.
@@ -1138,3 +1139,60 @@ Exit clause: 1 to 3 pass and the step is within 1.2 times of the f16 base's time
 
 ### 25.10 Limits of this section
 One model (the 1.5B) and one evaluation (16 k tokens) for the format comparison; no QLoRA run, so the 0.049-nat cost of the 4-bit base is the starting cost and not the final one; every 7B memory and time figure is an estimate built on the 0.5B and 1.5B measurements (the accounting is within 5% of a measured footprint at 1.5B, 24.9 within 0.1 GB at full fine-tuning; the time assumes the 7B's matrices run at the rate of the smaller models' and that the dequantisation overhead of 25.4 holds); the bandwidth figure is a copy of one matrix on a shared machine; the CUDA path was not touched (`dequant_fp4` is lowered for it and held by goldens only).
+
+## 26. A 4-bit base in the training session: the 1.5B prototype (roadmap M7.5, part A; measured)
+
+Section 25.7 asked for the prototype that needs no download: the cached Qwen2.5-1.5B with its blocks quantised to NVFP4 by the host, a session that keeps the 4-bit bytes resident and dequantises a layer at a time into an f16 scratch, and four numbers. This section is that prototype, built and measured (Apple M4 Max, 64 GB; the machine ran nothing else on the GPU during the timed runs, which waited for it; commands in `examples/qwen/`).
+
+### 26.1 What was built
+* **The `i8` flag of `resident`** (`src/session.cho`, `src/runcmd.cho` `load_i8`): `resident PROGRAM.PARAM FILE i8` reads a binary file of bytes as signed 8-bit codes, one byte a code. A device session needed no change (a binary resident file already goes up in chunks as bytes, and an `i8` tensor is one byte an element; the shim and `device/` were not touched). The flag must match the parameter's type (`usage`, as for `f32` and `f16`) and the file's size (`usage`). The interpreter holds the signed value, but its only consumer, `dequant_fp4`, masks it with 255, so the sign wrap cannot be observed by any session and has no mutant. *Found on the way:* a resident file whose path had two dots in a row reached the runtime's `Fs` trap (status 132, nothing on stderr); it is now refused (`session`, `the file of a resident has two dots...`) with a test and a mutant; `table` paths still are not checked.
+* **`examples/qwen/dq_fp4.chx`**: `wq` (two E2M1 codes a byte), `ws` (an E4M3 scale byte per 16 values) and `wg` (an f32 per row) into an f16 matrix `[n, k]` laid out as the f16 weight file is, so that the products of sections 21 to 23 take it as their `.w` unchanged (`dequant_fp4` takes the group size as a number, so the session writer rewrites it for 32 and 64). Tile: 32 rows by 256 columns (128 threads).
+* **`nvfp4.py`** (encoder in blocks of rows, `pack_rows`; decoder from the bytes alone, `unpack_rows`), **`quant.py pack` / `dequant`**, **`convert.py --quant nvfp4:G`** (the matrices are written as `NAME.q`, `NAME.s`, `NAME.g` from their f16 values; the manifest says `"quant"`), `qwen_ref.load_one` (the specification of a quantised matrix is the decoded bytes rounded to f16).
+* **The session**: `qwen_train.write` and `qwen_session.write` take a quantised weights directory. Before each product that reads a block matrix a program `dqf_<matrix>_<layer>` (forward) or `dqb_...` (backward) dequantises it; the scratch of one matrix kind is **one buffer for all layers and for the forward and the backward** (`alias` chains `dqf_0 ... dqf_27, dqb_27 ... dqb_0`; 8 programs a layer more, 2,053 programs against 1,829). The scratch is the four matrices of one layer: 94 MB at 1.5B. The i8 files are read by the forward and the backward programs and are one device buffer each (section 23.4's sharing).
+* **Tools**: `compare_quant.py` (the forward exits), `peft_reference.override_base` / `hf_reference.py --base` / `peft_finetune.py --base` (transformers and peft over the dequantised weights), `peft_finetune.py --checkpoint` (activation checkpointing, for a float32 run next to other work), `finetune.py --nb`.
+* **Defect fixed, `check.cho`**: the `narrowing` refusal said "use `convert`", an operation the grammar does not have (25.2); it now says that no kernel produces an I8 (the host writes the codes) or to round with `stage f16`, and the `type` refusal names `dequant_fp4`.
+* **Tests** (all in the gate): `tests/session.py` (the flag: the dequantise kernel over three binary files equals the decoding of those bytes exactly, for G = 16 and 32, with all 256 byte values; five refusals; six mutants: file longer accepted, code read one too high, type not checked, flag read as f32, path trap, wrong flag list) on the CPU and, run by hand, on Metal; `tests/qwen_quant.py`: the packing (decoder equals the encoder's dequantisation, blocks equal the whole), the converter, and a 2-layer Qwen-shaped model whose blocks are `.q/.s/.g`: the forward session (loss of each position, arg max, residual stream) and **all 28 adapter gradients equal the specification's on the dequantised weights** at G = 16 and 32, on the CPU and Metal, with tiles that cut k so that the scale window moves, and three kernel mutants (the row scale of the first block of rows, a scale window or a code window that does not move with k), each far from the specification (cosine 0.51, 0.31, -0.19).
+
+### 26.2 Exit 1, the forward pass (`compare_quant.py`; the fixed batch, 8 x 512)
+| | loss | arg max |
+|---|---|---|
+| 1.5B f16 (section 23.2, for scale) | 2.237675 | |
+| **4-bit base, session (dequantise kernel + f16 products)** | **2.303474** | |
+| the same weights dequantised on the host, run through the unchanged f16 session | 2.303474 | equal at 100.00% |
+| transformers float32 on the CPU, on those weights | 2.303388 (session +8.6e-5) | equal at 99.95% (2 of 4,096 positions, gaps of 0.0015 and 0.001 between its two largest logits) |
+**The session equals the fake-quant forward exactly (largest per-position difference 0.0; the dequantise kernel produces the f16 matrices of the host's decoding bit for bit) and is 8.6e-5 from transformers (exit: 2e-3). Met.** The 4-bit base costs 0.0658 nats on this batch. The forward takes 1,114.6 ms against 1,115.1 for the f16 base.
+
+### 26.3 Exit 2, the gradients (`compare_lora.py --weights q15 --lean`, peft 0.21 float32 on the CPU over the dequantised weights)
+**All 392 adapter matrices (randB) at cosine 0.997738 or better (exit 0.995), largest relative norm error 6.7e-2**; with B = 0 (peft's initial state) the 196 B matrices at 0.998723 and the A gradients exactly zero in both; the loss 2.346409 against peft's 2.346304. Per projection the worst is the key projection (cosine 0.9977 for B, 0.9980 for A; q 0.9994): with the f16 base (23.3) the smallest cosine over the 392 was 0.99938. The key projection's gradient is the one the quantised base makes noisiest (a cause was not looked for); **met**, with less margin than before.
+
+### 26.4 Exit 3, the 150-step run (`finetune.py WORK train --steps 150 --segment 30 --lean`, the setting of 23.5; `peft_finetune.py --dtype float32 --base q15 --checkpoint`)
+The corpus is rebuilt from the machine's files and its held-out loss at step 0 for the f16 base is the same as in 23.5 (2.24870). peft is peft float32 on MPS over the dequantised weights with activation checkpointing (so that it fits next to other work; the numbers are the same up to rounding, the time is not comparable).
+
+| step | f16 base, cancho-gpu | 4-bit base, cancho-gpu | 4-bit base, peft float32 |
+|---|---|---|---|
+| train 1 | 1.44162 | 1.46645 | 1.46641 |
+| train 30 | | 1.09122 | 1.09123 |
+| train 90 | | 1.82670 | 1.82674 |
+| train 150 | 1.50999 | 1.53440 | 1.53443 |
+| held-out 0 | 2.24870 | 2.29786 | 2.29788 |
+| held-out 30 | 1.97617 | 2.01048 | 2.01049 |
+| held-out 60 | 1.86170 | 1.89313 | 1.89312 |
+| held-out 90 | 1.81625 | 1.84393 | 1.84395 |
+| held-out 120 | 1.77977 | 1.80695 | 1.80695 |
+| **held-out 150** | **1.77138** | **1.79812** | 1.79811 |
+**Training loss against peft float32 on the same weights: at most 2.3e-4 apart (mean 3e-5, step 80); held-out at most 2e-5 (exit: 1e-3 on average). Met.**
+**What QLoRA is for: the 4-bit base starts 0.0492 nats above the f16 base (2.2979 against 2.2487) and ends 0.0267 above it (1.7981 against 1.7714). The adapters won back 0.0224 nats, 45.6% of the cost; 54.4% remains.** One seed, one data order, 150 steps; the remaining gap was still falling at step 150 (0.0272 at step 120, 0.0300 at 90) but slowly.
+
+### 26.5 Exit 4, the step and the memory (the 150-step runs, and `compare_lora.py --time --steps 10`, 3 requests)
+| | ms a step | tokens a second | peak footprint (`/usr/bin/time -l`) |
+|---|---|---|---|
+| f16 base, 150-step run (median; 5th to 95th percentile 2,473 to 2,493) | 2,480.6 | 1,651 | 19.29 GB |
+| **4-bit base, 150-step run** (2,478 to 2,491) | **2,483.1** (+0.10%) | 1,650 | **17.52 GB** (-1.77) |
+| f16 base, `--time` | 2,450.8 | 1,671 | 18.83 GB |
+| 4-bit base, `--time` | 2,464.4 (+0.55%) | 1,662 | 17.07 GB (-1.76) |
+| 4-bit base, `--time`, dequantise kernels skipped (`CANCHOGPU_SKIP=dq_fp4`; wrong numbers, right schedule) | 2,454.8 | | 17.06 GB |
+The 448 dequantise launches a step cost **9.6 ms (0.39%)** (25.7 predicted 17 ms plus launches, from the copy probe's 391 GB/s; the measured cost is lower; the other +0.15% of the +0.55% of `--time` is not explained and is within the spread between the two runs' repeats, 2,449 to 2,473). **Predictions of 25.7: 2,480 to 2,500 ms (met: 2,483 and 2,464 against the f16 base's 2,481 and 2,451, 1.001 and 1.006 times) and about 17 GB (met: 17.5 and 17.1).** The blocks fall from 2.62 to 0.74 GB resident (-1.88) and the scratch is +0.09 (one layer, shared by the forward and the backward, not the 0.19 of 25.7's two scratches).
+
+### 26.6 Exit clause, plainly
+25.7: "1 to 3 pass and the step is within 1.2 times of the f16 base's". **Met in all four parts**: the forward equals the fake-quant forward (identical) and transformers (8.6e-5, bound 2e-3); the 392 gradients at cosine 0.9977 (bound 0.995); the run within 2.3e-4 of peft (bound 1e-3 on average); the step 1.001 to 1.006 times the f16 base's (bound 1.2). Memory 1.8 GB lower.
+**Not shown / limits.** One model and one seed; 150 steps; the key projection's gradients are the least exact (0.9977); `table` paths are not checked for two dots; the CUDA session was not touched (`dequant_fp4` and `dq_fp4.chx` are held by `check` on both targets and, on the CUDA target, by nothing that runs); the quantiser is the host's (an NVFP4 encoder in numpy, 33 s for the 1.5B); G = 16 only was run end to end on the GPU (G = 32 on the tiny model, both targets); the peft run used activation checkpointing, so its time and memory (4,231 ms, 23.3 GB) say nothing about torch's cost. Nothing about 7B beyond the shapes, which this model shares (heads of 128): section 27.

@@ -454,6 +454,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if ir.param_writable(m, prm) {
             return bad(m, t, m[raw + 3], text.f1(m, t, "`$` is written by the kernel: it cannot be resident", m[raw + 1]));
         }
+        if unsafe_path(t, m[raw + 2]) {
+            return bad(m, t, m[raw + 3], text.lit(m, t, "the file of a resident has two dots in a row or is over 4,000 bytes"));
+        }
         let cell = mem.get(m, supplied, pi) + ai;
         if m[cell] != 0 {
             return bad(m, t, m[raw + 3], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));

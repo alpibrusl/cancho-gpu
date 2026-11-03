@@ -176,4 +176,4 @@ def compare(work, names):
 if __name__ == "__main__":
     work, cmd = sys.argv[1], sys.argv[2]
     cfg = R.config_of(WDIR, 512, NB)
-    {"train": lambda: train(work, cfg), "eval": lambda: evaluate(work, cfg), "compare": lambda: compare(work, [a for a in sys.argv[3:] if not a.startswith("--")])}[cmd]()
+    {"train": lambda: train(work, cfg), "eval": lambda: evaluate(work, cfg), "compare": lambda: compare(work, [a for i, a in enumerate(sys.argv) if i > 2 and not a.startswith("--") and not sys.argv[i - 1].startswith("--weights") and not sys.argv[i - 1].startswith("--nb")])}[cmd]()

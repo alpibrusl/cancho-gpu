@@ -38,7 +38,7 @@ def main():
     c = R.config_of(qdir, 512, nb)
     tok = data.fixed_batch(c.nb, c.t)
     assert (np.load(os.path.join(hdir, "tokens.npy")) == tok).all(), "the reference was made on another batch"
-    work = os.path.join(hdir, "..", "compare_quant_" + os.path.basename(os.path.normpath(qdir)))
+    work = os.path.join(os.path.dirname(os.path.abspath(hdir)), "compare_quant_" + os.path.basename(os.path.normpath(qdir)))  # no ".." in a path: the session's Fs traps on it
     os.makedirs(work, exist_ok=True)
     hl = float(np.load(os.path.join(hdir, "loss.npy"))[0])
     href = np.load(os.path.join(hdir, "argmax.npy"))
