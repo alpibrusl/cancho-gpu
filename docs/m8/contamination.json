@@ -1,0 +1,369 @@
+{
+ "dropped": {
+  "md": 5,
+  "cho": 9,
+  "instr": 2,
+  "fix": 11
+ },
+ "dropped_tokens": 11067,
+ "by_family": {
+  "eval-other": 24,
+  "oracle": 22,
+  "plan": 20,
+  "reference": 22,
+  "tests": 19,
+  "brief": 6,
+  "item-other": 2,
+  "results": 5,
+  "facts": 2
+ },
+ "examples": [
+  {
+   "id": "cancho-code/docs/plan-guide.md#9",
+   "kind": "md",
+   "frac": 0.357,
+   "longest_run": 54,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/docs/plan.md#0",
+   "kind": "md",
+   "frac": 0.182,
+   "longest_run": 30,
+   "families": [
+    "eval-other",
+    "oracle",
+    "brief",
+    "plan",
+    "reference",
+    "item-other"
+   ]
+  },
+  {
+   "id": "cancho-code/docs/plan.md#13",
+   "kind": "md",
+   "frac": 0.078,
+   "longest_run": 30,
+   "families": [
+    "results"
+   ]
+  },
+  {
+   "id": "cancho-code/docs/reference.md#0",
+   "kind": "md",
+   "frac": 0.074,
+   "longest_run": 34,
+   "families": [
+    "results"
+   ]
+  },
+  {
+   "id": "cancho-code/src/cases.cho#39",
+   "kind": "cho",
+   "frac": 0.274,
+   "longest_run": 57,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/src/cases.cho#40",
+   "kind": "cho",
+   "frac": 0.227,
+   "longest_run": 66,
+   "families": [
+    "eval-other",
+    "oracle",
+    "facts",
+    "plan",
+    "reference",
+    "tests",
+    "results"
+   ]
+  },
+  {
+   "id": "cancho-code/src/cases.cho#41",
+   "kind": "cho",
+   "frac": 0.124,
+   "longest_run": 31,
+   "families": [
+    "eval-other",
+    "oracle",
+    "facts",
+    "plan",
+    "reference",
+    "tests",
+    "results"
+   ]
+  },
+  {
+   "id": "cancho-code/tests/fixtures/cases/synthetic_ref.cho#0",
+   "kind": "cho",
+   "frac": 0.158,
+   "longest_run": 15,
+   "families": [
+    "eval-other",
+    "oracle",
+    "brief",
+    "plan",
+    "reference",
+    "item-other",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/tests/fixtures/cases/synthetic_ref.cho#1",
+   "kind": "cho",
+   "frac": 0.192,
+   "longest_run": 9,
+   "families": [
+    "eval-other",
+    "oracle",
+    "brief",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/tests/library/diff/project.cho#1",
+   "kind": "cho",
+   "frac": 0.224,
+   "longest_run": 16,
+   "families": [
+    "eval-other",
+    "oracle",
+    "brief",
+    "plan",
+    "reference"
+   ]
+  },
+  {
+   "id": "cancho-forge/docs/cancho-code-audit.md#0",
+   "kind": "md",
+   "frac": 0.063,
+   "longest_run": 28,
+   "families": [
+    "eval-other",
+    "results"
+   ]
+  },
+  {
+   "id": "cancho-forge/tests/repo_task_test.cho#2",
+   "kind": "cho",
+   "frac": 0.201,
+   "longest_run": 7,
+   "families": [
+    "eval-other",
+    "oracle",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-forge/tests/task_test.cho#4",
+   "kind": "cho",
+   "frac": 0.164,
+   "longest_run": 7,
+   "families": [
+    "eval-other",
+    "oracle",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-afm/host/regs.cho#2",
+   "kind": "cho",
+   "frac": 0.182,
+   "longest_run": 7,
+   "families": [
+    "eval-other",
+    "reference"
+   ]
+  },
+  {
+   "id": "cancho/packages/x509/.cancho-vcs/x509_names/sources/eb70b128f5070752408d0bfd9937850bfbf92050b3a4e9671ce1a8d58dac6f0f.cho::same",
+   "kind": "instr",
+   "frac": 0.186,
+   "longest_run": 17,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-oci/src/http/http.cho::same_name",
+   "kind": "instr",
+   "frac": 0.152,
+   "longest_run": 15,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho/examples/tls_echo/front.cho::number::drop-effect-row",
+   "kind": "fix",
+   "frac": 0.165,
+   "longest_run": 12,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference"
+   ]
+  },
+  {
+   "id": "cancho/packages/x509/.cancho-vcs/x509_names/sources/eb70b128f5070752408d0bfd9937850bfbf92050b3a4e9671ce1a8d58dac6f0f.cho::same::misspell-keyword",
+   "kind": "fix",
+   "frac": 0.181,
+   "longest_run": 17,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho/packages/x509/.cancho-vcs/x509_names/sources/eb70b128f5070752408d0bfd9937850bfbf92050b3a4e9671ce1a8d58dac6f0f.cho::same::drop-close-brace",
+   "kind": "fix",
+   "frac": 0.19,
+   "longest_run": 17,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho/packages/x509/.cancho-vcs/x509_names/sources/eb70b128f5070752408d0bfd9937850bfbf92050b3a4e9671ce1a8d58dac6f0f.cho::same::missing-semicolon",
+   "kind": "fix",
+   "frac": 0.195,
+   "longest_run": 17,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/src/loop_check.cho::same_signature::drop-effect-row",
+   "kind": "fix",
+   "frac": 0.168,
+   "longest_run": 15,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/tests/fixtures/cases/synthetic_ref.cho::syn_first::drop-return",
+   "kind": "fix",
+   "frac": 0.165,
+   "longest_run": 9,
+   "families": [
+    "eval-other",
+    "oracle",
+    "brief",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-code/tests/fixtures/cases/synthetic_ref.cho::syn_first::wrong-return-type",
+   "kind": "fix",
+   "frac": 0.155,
+   "longest_run": 9,
+   "families": [
+    "eval-other",
+    "oracle",
+    "brief",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-oci/src/http/http.cho::same_name::misspell-keyword",
+   "kind": "fix",
+   "frac": 0.151,
+   "longest_run": 15,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-oci/src/http/http.cho::same_name::missing-semicolon",
+   "kind": "fix",
+   "frac": 0.15,
+   "longest_run": 15,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-oci/src/http/http.cho::same_name::drop-effect-row",
+   "kind": "fix",
+   "frac": 0.168,
+   "longest_run": 15,
+   "families": [
+    "eval-other",
+    "oracle",
+    "plan",
+    "reference",
+    "tests"
+   ]
+  },
+  {
+   "id": "cancho-afm/host/regs.cho::nfields::param-type",
+   "kind": "fix",
+   "frac": 0.207,
+   "longest_run": 8,
+   "families": [
+    "reference"
+   ]
+  }
+ ],
+ "generic_name_hits": [
+  "cancho-afm/sim/lockin.cho basics",
+  "cancho/examples/rational.cho basics",
+  "cancho/std/bigmod.cho basics",
+  "cancho/std/math.cho basics",
+  "cancho/tests/programs/f32_convert_gate.cho basics"
+ ],
+ "items_before": 20778,
+ "items_after": 20751
+}

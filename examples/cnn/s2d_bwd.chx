@@ -1,0 +1,27 @@
+// The gradient of s2d_fwd (its transpose, the inverse permutation): a block of wb pixels of the row Y of the gradient of S [n (h+2) (w+2), 4 c] (f32, no guard) times the transposed selection
+// matrices (selt0, selt1: [2 wb, wb]) is the gradient of 2 wb pixels of the two input rows 2Y+1 and 2Y+2. The border of the result is never written (zero).
+algo s2d_bwd(n, h, w, c, wb)
+  in  gs:   f32[n * (h + 2) * (w + 2), 4 * c]
+  in  selt0: f32[2 * wb, wb]
+  in  selt1: f32[2 * wb, wb]
+  out gi:   f32[n * (2 * h + 2) * (2 * w + 2), c]
+{
+  grid b over n, y over h, xb over w / wb
+  let a00 = load gs[b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, 0 ; wb, c]
+  let a01 = load gs[b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, c ; wb, c]
+  let a10 = load gs[b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, 2 * c ; wb, c]
+  let a11 = load gs[b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, 3 * c ; wb, c]
+  let p0 = load selt0
+  let p1 = load selt1
+  let u00 = matmul &p0 a00
+  let u01 = matmul &p1 a01
+  let u10 = matmul p0 a10
+  let u11 = matmul p1 a11
+  let r0 = u00 + u01
+  let r1 = u10 + u11
+  store r0 -> gi[b * (2 * h + 2) * (2 * w + 2) + (2 * y + 1) * (2 * w + 2) + 2 * xb * wb + 1, 0]
+  store r1 -> gi[b * (2 * h + 2) * (2 * w + 2) + (2 * y + 2) * (2 * w + 2) + 2 * xb * wb + 1, 0]
+}
+
+schedule s2d_bwd for apple-m-series { threads 128 }
+schedule s2d_bwd for nvidia-ada     { threads 128 }

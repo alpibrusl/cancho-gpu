@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The forward exits of roadmap M7.5 (docs/resident.md section 26): the forward pass of a 4-bit base in a Metal session against the same weights dequantised on the host and run through the unchanged f16 session,
+"""The forward exits of roadmap M7.5 (docs/resident.md section 27): the forward pass of a 4-bit base in a Metal session against the same weights dequantised on the host and run through the unchanged f16 session,
 and against transformers (float32 on the CPU) on those dequantised weights.
 
     python3 examples/qwen/compare_quant.py QWEIGHTS HFDIR [--fake FWEIGHTS] [--nb 8] [--reps 3] [--metal build/cancho-gpu-metal-session]

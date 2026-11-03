@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""docs/resident.md section 26 (roadmap M7.5): a Qwen2 LoRA session over a 4-bit base, held to the binary64 specification of examples/qwen/qwen_ref.py on the dequantised weights.
+"""docs/resident.md section 27 (roadmap M7.5): a Qwen2 LoRA session over a 4-bit base, held to the binary64 specification of examples/qwen/qwen_ref.py on the dequantised weights.
 
     python3 tests/qwen_quant.py build/cancho-gpu-session [build/cancho-gpu-metal-session]
 

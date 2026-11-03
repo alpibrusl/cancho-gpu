@@ -1,0 +1,19 @@
+// dw = (the sum of the `ns` pieces convk_dw wrote) * mk: part is [ns * r, k], mk is [1, k], out is [r, k]. The mask is 1 where the weight is a weight of the network and 0 where the
+// space-to-depth layout holds a zero that must stay zero (a 7x7 kernel in a 4x4 window of 2x2 blocks has 192 - 147 of them per channel pair): Adam moves a weight by a gradient only.
+algo wsum_mask(ns, r, k, bm, bn)
+  in  part: f32[ns * r, k]
+  in  mk:   f32[1, k]
+  out dw:   f32[r, k]
+{
+  grid i over r / bm, j over k / bn
+  let acc = zeros f32[bm, bn]
+  let acc = for q in 0 .. ns with acc {
+    let t = load part[q * r + i * bm, j * bn ; bm, bn]
+    yield acc + t
+  }
+  let m = load mk[0, j * bn ; 1, bn]
+  store acc * m -> dw[i * bm, j * bn]
+}
+
+schedule wsum_mask for apple-m-series { threads 128 }
+schedule wsum_mask for nvidia-ada     { threads 128 }

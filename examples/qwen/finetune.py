@@ -32,7 +32,7 @@ arg = lambda n, d: sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
 WDIR = arg("--weights", data.WEIGHTS)
 METAL = arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 EVERY = int(arg("--every", 30))
-NB = int(arg("--nb", 8))  # sequences of 512 a step (4 for the 7B: docs/resident.md section 26)
+NB = int(arg("--nb", 8))  # sequences of 512 a step (4 for the 7B: docs/resident.md section 28)
 R_, ALPHA = 16, 32.0
 LEAN = "--lean" in sys.argv  # the memory-lean session (docs/resident.md section 23.4)
 

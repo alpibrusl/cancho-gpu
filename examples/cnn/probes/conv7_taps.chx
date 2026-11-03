@@ -1,0 +1,28 @@
+// PROBE ok
+// ARGS rp=64 cin=8 cout=32 wp=8 g=64
+// A 7x7 stride-1 convolution on the padded matrix as 49 shifted windows (the ResNet stem's kernel, without its stride). The taps are loops; the shift (dy-3) wp + (dx-3) is affine in them.
+// Border 1 only reaches 1 pixel: this probe is about the language (the offset is accepted), the stem as built (resident.md section 26) is a 4x4 convolution on a space-to-depth image.
+algo conv7_taps(rp, cin, cout, wp, g)
+  in  x: f16[rp + 2 * g, cin]
+  in  w: f16[cout, 49 * cin]
+  out y: f32[rp, cout]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dy in 0 .. 7 with c {
+    let c = for dx in 0 .. 7 with c {
+      let c = for p in 0 .. cin / bk with c {
+        let at = load x[g + i * bm + dy * wp + dx - 3 * wp - 3, p * bk ; bm, bk] @shared
+        let wt = load w[j * bn, 7 * dy * cin + dx * cin + p * bk ; bn, bk] @shared
+        yield mma c at wt
+      }
+      yield c
+    }
+    yield c
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule conv7_taps for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 8 }
+schedule conv7_taps for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 8 }

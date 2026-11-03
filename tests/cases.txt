@@ -286,3 +286,21 @@ examples/cnn/conv3_dw.chx rp=1152 cin=32 cout=64 wp=34 g=64 rs=384
 examples/cnn/pool_fwd.chx n=2 h=8 c=32 g=64
 examples/cnn/gap_fwd.chx n=2 h=8 c=32 g=64 rc=20
 examples/cnn/bn_fin.chx nb=18 c=32 cb=6 bc=32 m=1024 eps=0.00001 mom=0.1
+# The ResNet-18-class backbone of docs/resident.md section 26 (roadmap M9, V1): the convolution with any window and shift, the space-to-depth permutation and its gradient, 3x3 stride-2
+# max-pooling by step-select and its gradient by a triangle, the non-square frame's global average and packing, BatchNorm without the ReLU. What they compute is held by tests/resnet.py.
+examples/cnn/convk.chx rp=1280 cx=64 cin=64 cout=64 wp=18 g=192 kh=3 kw=3 oy=1 ox=1
+examples/cnn/convk.chx rp=1280 cx=128 cin=32 cout=64 wp=18 g=192 kh=1 kw=1 oy=0 ox=0
+examples/cnn/convk_dx.chx rp=1280 cx=64 cin=64 cout=64 wp=18 g=192 kh=2 kw=2 oy=1 ox=1
+examples/cnn/convk_dw.chx rp=1280 cx=64 cin=64 cout=64 wp=18 g=192 kh=4 kw=4 oy=2 ox=2 rs=320
+examples/cnn/wsum_mask.chx ns=4 r=64 k=256 bm=16 bn=128
+examples/cnn/s2d_fwd.chx n=2 h=12 w=16 c=32 g=192 wb=16
+examples/cnn/s2d_bwd.chx n=2 h=12 w=16 c=32 wb=16
+examples/cnn/maxpool_fwd.chx rp=1280 c=64 wp=18 g=192 bm=8
+examples/cnn/maxpool_bwd.chx rp=1280 c=64 wp=18 g=192 bm=8
+examples/cnn/gap2_fwd.chx n=2 h=3 w=4 c=512 g=192 rc=6
+examples/cnn/gap2_bwd.chx n=2 h=3 w=4 c=512 rc=6
+examples/cnn/pack_hw.chx n2=1 h=96 w=128 cin=3 cp=4 g=192
+examples/cnn/add2g.chx r=128 c=64 bm=8 g=192
+examples/cnn/bn_apply_lin.chx rp=128 c=64 bm=8 g=192
+examples/cnn/bn_bwd_part_lin.chx rp=128 c=64 rb=8
+examples/cnn/bn_bwd_apply_lin.chx rp=128 c=64 bm=8 g=192 m=100

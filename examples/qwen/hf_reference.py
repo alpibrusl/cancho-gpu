@@ -24,7 +24,7 @@ def run(out, nb, t, device="cpu", base=None):
     tokens = data.fixed_batch(nb, t)
     np.save(os.path.join(out, "tokens.npy"), tokens)
     model = AutoModelForCausalLM.from_pretrained(data.snapshot(), torch_dtype=torch.float32).to(device).eval()
-    if base:  # the block matrices of a (dequantised 4-bit) weights directory, docs/resident.md section 26
+    if base:  # the block matrices of a (dequantised 4-bit) weights directory, docs/resident.md section 27
         import peft_reference
         peft_reference.override_base(model, R.config_of(base), base, device, torch.float32)
     ids = torch.tensor(tokens, device=device)

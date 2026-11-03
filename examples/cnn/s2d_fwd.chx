@@ -1,0 +1,32 @@
+// Space to depth: each 2x2 block of pixels of the padded image X [g + n (2h+2) (2w+2) + g, c] becomes one pixel of the padded image S [g + n (h+2) (w+2) + g, 4 c], the channel group
+// (2 py + px) holding the pixel (2Y + py, 2X + px). A permutation, written as the product with a 0/1 selection matrix (sel0, sel1: [wb, 2 wb], row j has its 1 at column 2j + px): the language has
+// no strided window. One threadgroup takes a block of wb output pixels of one row Y of one image: the 2 wb input pixels of each of the two input rows. The output's border is never written.
+algo s2d_fwd(n, h, w, c, g, wb)
+  in  x:    f16[n * (2 * h + 2) * (2 * w + 2) + 2 * g, c]
+  in  sel0: f32[wb, 2 * wb]
+  in  sel1: f32[wb, 2 * wb]
+  out s:    f16[n * (h + 2) * (w + 2) + 2 * g, 4 * c]
+{
+  grid b over n, y over h, xb over w / wb
+  let r0 = load x[g + b * (2 * h + 2) * (2 * w + 2) + (2 * y + 1) * (2 * w + 2) + 2 * xb * wb + 1, 0 ; 2 * wb, c]
+  let r1 = load x[g + b * (2 * h + 2) * (2 * w + 2) + (2 * y + 2) * (2 * w + 2) + 2 * xb * wb + 1, 0 ; 2 * wb, c]
+  let f0 = stage f32 r0
+  let f1 = stage f32 r1
+  let a0 = load sel0
+  let a1 = load sel1
+  let t00 = matmul &a0 &f0
+  let t01 = matmul &a1 f0
+  let t10 = matmul a0 &f1
+  let t11 = matmul a1 f1
+  let h00 = stage f16 t00
+  let h01 = stage f16 t01
+  let h10 = stage f16 t10
+  let h11 = stage f16 t11
+  store h00 -> s[g + b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, 0]
+  store h01 -> s[g + b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, c]
+  store h10 -> s[g + b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, 2 * c]
+  store h11 -> s[g + b * (h + 2) * (w + 2) + (y + 1) * (w + 2) + xb * wb + 1, 3 * c]
+}
+
+schedule s2d_fwd for apple-m-series { threads 128 }
+schedule s2d_fwd for nvidia-ada     { threads 128 }

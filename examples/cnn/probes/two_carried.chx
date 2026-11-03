@@ -1,0 +1,21 @@
+// PROBE carry
+// ARGS r=16 c=8
+// A running maximum and its index in one loop (max-pooling with the argmax the backward needs): a loop carries one tile.
+algo two_carried(r, c)
+  in  x: f32[3 * r, c]
+  out m: f32[r, c]
+  out ix: f32[r, c]
+{
+  grid i over r / 8
+  let best = load x[i * 8, 0 ; 8, c]
+  let at = zeros f32[8, c]
+  let best = for t in 1 .. 3 with best, at {
+    let v = load x[t * r + i * 8, 0 ; 8, c]
+    yield v
+  }
+  store best -> m[i * 8, 0]
+  store at -> ix[i * 8, 0]
+}
+
+schedule two_carried for apple-m-series { threads 128 }
+schedule two_carried for nvidia-ada     { threads 128 }

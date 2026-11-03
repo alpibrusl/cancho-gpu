@@ -8,7 +8,7 @@ zero, and refuses a weight that overflows), vectors (norm gains and biases) as f
     lLL.ln1.f32 [d]   lLL.wqkv.f16 [d + 2 dkv, d] (q, k, v rows one after another)   lLL.bqkv.f32 [d + 2 dkv]   lLL.wo.f16 [d, d]
     lLL.ln2.f32 [d]   lLL.wgu.f16 [2 ff, d] (gate rows, then up rows)                lLL.wd.f16 [d, ff]
 and norm.f32 [d], emb.f16 [vocabulary, d] (the input embedding and, tied, the output layer). manifest.json holds the configuration and the report.
-With `--quant nvfp4:G` (docs/resident.md section 26) the four matrices of a block are written, from their f16 values, as the three files `NAME.q`, `NAME.s`, `NAME.g` of nvfp4.py instead of `NAME.f16`, and the manifest
+With `--quant nvfp4:G` (docs/resident.md section 27) the four matrices of a block are written, from their f16 values, as the three files `NAME.q`, `NAME.s`, `NAME.g` of nvfp4.py instead of `NAME.f16`, and the manifest
 says `"quant": {"format": "nvfp4", "group": G}`; a session then keeps 0.56 bytes a weight resident and dequantises a layer at a time."""
 import glob
 import json

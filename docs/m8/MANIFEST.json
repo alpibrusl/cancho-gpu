@@ -1,0 +1,169 @@
+{
+ "benchmark": {
+  "files": 215,
+  "ngrams": 198220,
+  "tokens_by_family": {
+   "brief": 12045,
+   "eval-other": 259871,
+   "facts": 6240,
+   "item-other": 2140,
+   "oracle": 49310,
+   "plan": 51568,
+   "reference": 25795,
+   "results": 246967,
+   "tests": 54106
+  }
+ },
+ "chunk_tokens": 512,
+ "common_min": 20,
+ "compiler": "cancho 0.0.0 (rev a49ea779d01207bfe83337ee79f4f003319c5f06-dirty, host aarch64-apple-darwin)",
+ "files": {
+  "pairs_fix.jsonl": {
+   "by_split": {
+    "heldout_files": {
+     "records": 378,
+     "tokens": 136488
+    },
+    "heldout_repos": {
+     "records": 414,
+     "tokens": 170779
+    },
+    "train": {
+     "records": 3525,
+     "tokens": 1281769
+    }
+   },
+   "records": 4317,
+   "sha256": "ddb6c8b47c90576e542fdf35d3c1f999815a1928f475f5a9592a3f885fabff77",
+   "tokens": 1589036
+  },
+  "pairs_instr.jsonl": {
+   "by_split": {
+    "heldout_files": {
+     "records": 128,
+     "tokens": 34615
+    },
+    "heldout_repos": {
+     "records": 140,
+     "tokens": 40240
+    },
+    "train": {
+     "records": 1217,
+     "tokens": 333757
+    }
+   },
+   "records": 1485,
+   "sha256": "f4eba290a28bef049ebece03729f5ef27e8efed879f741b90097342c0968646b",
+   "tokens": 408612
+  },
+  "raw_cho.jsonl": {
+   "by_split": {
+    "heldout_files": {
+     "records": 341,
+     "tokens": 152509
+    },
+    "heldout_repos": {
+     "records": 796,
+     "tokens": 364794
+    },
+    "train": {
+     "records": 5695,
+     "tokens": 2521822
+    }
+   },
+   "records": 6832,
+   "sha256": "570f136a083ce5446f477f2ee9d3c8402f3a8c220a25417bc39caa1c1c7fd945",
+   "tokens": 3039125
+  },
+  "raw_md.jsonl": {
+   "by_split": {
+    "heldout_files": {
+     "records": 171,
+     "tokens": 79903
+    },
+    "heldout_repos": {
+     "records": 203,
+     "tokens": 91636
+    },
+    "train": {
+     "records": 3367,
+     "tokens": 1546725
+    }
+   },
+   "records": 3741,
+   "sha256": "64c0c8c26c51c368209a5e22663edf719243658545f500298294dec120b2ea03",
+   "tokens": 1718264
+  },
+  "raw_rs.jsonl": {
+   "by_split": {
+    "heldout_files": {
+     "records": 183,
+     "tokens": 86809
+    },
+    "heldout_repos": {
+     "records": 0,
+     "tokens": 0
+    },
+    "train": {
+     "records": 4193,
+     "tokens": 2003660
+    }
+   },
+   "records": 4376,
+   "sha256": "8acdc1317399e5ee69fcae1b69f7fea434fb80f7f52985e11b7fb49310238433",
+   "tokens": 2090469
+  }
+ },
+ "fix_operators": {
+  "assign-op": 97,
+  "drop-close-brace": 597,
+  "drop-edition": 17,
+  "drop-effect-row": 632,
+  "drop-import": 157,
+  "drop-return": 524,
+  "let-for-var": 163,
+  "missing-semicolon": 647,
+  "misspell-keyword": 634,
+  "param-type": 216,
+  "unknown-name": 232,
+  "wrong-return-type": 401
+ },
+ "fix_rule_tags": {
+  "assign-to-immutable": 163,
+  "linear-value-unconsumed": 69,
+  "missing-return": 455,
+  "module-not-imported": 157,
+  "not-a-function": 32,
+  "type-mismatch": 3176,
+  "unknown-name": 265
+ },
+ "held_repos": [
+  "cancho-hdl",
+  "cancho-opt",
+  "cancho-cache"
+ ],
+ "instruction_candidates": 4861,
+ "instruction_dropped": {
+  "not standalone": 3371
+ },
+ "ngram": 8,
+ "overlap_frac": 0.15,
+ "repos": {
+  "cancho": "7bf3628c1089ed6e46d26062435267f8991d114f",
+  "cancho-afm": "d58f75b4053a05b63759062b350b7d5757c8074b",
+  "cancho-cache": "09cb5995a85abbec42480880f233f8c3f0f45a92",
+  "cancho-code": "6fcac189cdf4361d1c4fd57bc09ec5de8cabb4ef",
+  "cancho-forge": "a6833334f43c77403e2ac3c2aa044c7e097dfe5f",
+  "cancho-gpu": "e182536ee970ee3488cd26c0ebb73111313eb5d1",
+  "cancho-hdl": "c938ed6acb8a02b37723b84cbbc3102182577f22",
+  "cancho-oci": "4549c83ddd68c58052f1a611aebc09b314a2e1f4",
+  "cancho-opt": "70768605f4cc1b709ede81e16e2314df8556625d",
+  "cancho-robot": "6192833762b87c4147a79fc48d79f1b0634a1d23",
+  "cancho-ui": "35d0c45795c950d98c80987754f4c7bc9f0969ac",
+  "cancho-web": "7ebc2edb3e6c90159e2dfb1dce221173155eac0a",
+  "cancho-www": "36e672f004761b50846af0f247b5d8c4f508f49a",
+  "lex-gpu": "03ceacc47efe4f9b5008664531b511462414b7d4"
+ },
+ "run_max": 24,
+ "seed": 20261103
+}

@@ -1,0 +1,15 @@
+// PROBE syntax
+// ARGS rp=64 c=16
+// A strided window: every second row of x (what a stride-2 convolution reads). The window syntax has offsets and extents and no step.
+algo stride_window(rp, c)
+  in  x: f16[2 * rp, c]
+  out y: f32[rp, c]
+{
+  grid i over rp / 16
+  let t = load x[2 * i * 16, 0 ; 16, c ; 2] @shared
+  let f = stage f32 t
+  store f -> y[i * 16, 0]
+}
+
+schedule stride_window for apple-m-series { threads 128 }
+schedule stride_window for nvidia-ada     { threads 128 }
