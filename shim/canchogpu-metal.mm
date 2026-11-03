@@ -265,6 +265,22 @@ int64_t cgpu_download(int64_t buf, char *p, int64_t n) {
     return n;
 }
 
+// Read `n` bytes of a buffer from `offset`: a save larger than the session's byte pool goes out a chunk at a time (docs/resident.md section 24).
+int64_t cgpu_download_at(int64_t buf, int64_t offset, char *p, int64_t n) {
+    if (buf < 0 || buf >= g.n_buffers) {
+        return fail("cgpu_download_at", "no such buffer");
+    }
+    if (offset < 0 || n < 0 || offset > g.sizes[buf] - n) {
+        return fail("cgpu_download_at", "the bytes run past the end of the buffer");
+    }
+    char *contents = (char *)[g.buffers[buf] contents];
+    if (!contents) {
+        return fail("cgpu_download_at", "failed to get buffer contents");
+    }
+    memcpy(p, contents + offset, (size_t)n);
+    return n;
+}
+
 int64_t cgpu_arg(int64_t buf) {
     if (buf < 0 || buf >= g.n_buffers) {
         return fail("cgpu_arg", "no such buffer");

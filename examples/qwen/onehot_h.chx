@@ -1,0 +1,26 @@
+// The one-hot matrix of a step's token ids, y[i, j] = 1 where j is the id of row i, as f16 [r, c] over the (padded) vocabulary: the embedding lookup of a step is the product `y E` and the scatter-add
+// of its gradient into the table rows is `y^T dx` (docs/resident.md section 24: with a vocabulary of 152 k these two products cost what the output layer's own do, and need no gather). ids and
+// `jrow` are 1-based as in ce_stats; the same selection `relu(1 - |j - id|)`. One threadgroup per row and chunk.
+algo onehot_h(r, c, bc)
+  in  ids:  f32[r, 1]
+  in  jrow: f32[1, c]
+  out y:    f16[r, c]
+{
+  grid i over r, q over c / bc
+  let j  = load jrow[0, q * bc ; 1, bc]
+  let zz = zeros f32[1, bc]
+  let jb = zz + j
+  let t  = load ids[i, 0 ; 1, 1]
+  let db = jb - t
+  let zn = zeros f32[1, bc]
+  let dn = zn - &db
+  let df = relu db + relu dn
+  let zo = zeros f32[1, bc]
+  let on = zo + 1.0
+  let oh = relu (on - df)
+  let hh = stage f16 oh
+  store hh -> y[i, q * bc]
+}
+
+schedule onehot_h for apple-m-series { threads 128 }
+schedule onehot_h for nvidia-ada     { threads 128 }

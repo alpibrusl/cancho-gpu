@@ -1,0 +1,21 @@
+// The part of the gain's gradient of an RMSNorm that is summed over rows afterwards (colsum): u[i, :] = dy[i, :] x[i, :] rsqrt(mean(x[i, :]^2) + eps), f32. The gain's gradient is the column sum of u.
+algo rms_dg(r, c, bm, eps)
+  in  dy: f32[r, c]
+  in  x:  f32[r, c]
+  out u:  f32[r, c]
+{
+  grid i over r / bm
+  let xx = load x[i * bm, 0 ; bm, c]
+  let sq = &xx * &xx
+  let s  = rowsum sq
+  let ms = s * (1 / c)
+  let me = ms + eps
+  let rs = rsqrt me
+  let d  = load dy[i * bm, 0 ; bm, c]
+  let p  = d * xx
+  let q  = p * rs
+  store q -> u[i * bm, 0]
+}
+
+schedule rms_dg for apple-m-series { threads 128 }
+schedule rms_dg for nvidia-ada     { threads 128 }

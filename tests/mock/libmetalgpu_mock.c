@@ -67,6 +67,14 @@ int64_t cgpu_download(int64_t buf, char *d, int64_t n) {
     return n;
 }
 
+int64_t cgpu_download_at(int64_t buf, int64_t offset, char *d, int64_t n) {
+    if (buf < 0 || buf >= n_blocks || offset < 0 || n < 0) {
+        return -1;
+    }
+    memcpy(d, (char *)blocks[buf].p + offset, (size_t)n);
+    return n;
+}
+
 static int64_t bound[64];
 static int n_bound;
 

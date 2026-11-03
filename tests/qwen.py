@@ -16,11 +16,14 @@
    specification's, on the CPU interpreter and the GPU; the three-kernel cross-entropy's gradient `ce_grad`; the grouped-query sum of `att_dkv` for a group of 3; AdamW on the adapters over a table of batches against
    a float64 AdamW (the fused block-diagonal B keeps its zeros); mutants of the specification's backward and of the kernels, each far from the session's gradients.
 6. Heads of 128 dimensions (docs/resident.md section 23; roadmap M7.4): a 1-layer model with 4 query heads over 2 key/value heads of 128: forward, every adapter gradient, and a rotation-sign mutant.
-7. A run in several sessions (docs/resident.md section 22; roadmap M7.3): 3 + 3 steps with the adapters, Adam's moments and the step count handed over equal 6 steps in one session, exactly; with the moments
+7. Full fine-tuning (docs/resident.md section 24; roadmap M7.4 part B): the lookup and its gradient as one-hot products, the column sums, AdamW on every tensor; the specification's gradients against finite
+   differences, the session's 6 steps against a float64 AdamW on all parameters, four mutants.
+8. A run in several sessions (docs/resident.md section 22; roadmap M7.3): 3 + 3 steps with the adapters, Adam's moments and the step count handed over equal 6 steps in one session, exactly; with the moments
    dropped or the step count restarted they do not.
 Needs numpy; without it the test says so and passes. The converter check needs torch and safetensors and is skipped without them."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +35,7 @@ try:
     import qwen_ref as R
     import qwen_session as S
     import qwen_train as T
+    import qwen_full as FU
 except ImportError:
     print("skip: numpy is not installed")
     sys.exit(0)
@@ -529,6 +533,128 @@ def restart_check(binary, extra, d, label, mutate=None):
     say(err == 0.0 and dl == 0.0, f"{label}: 6 steps in two sessions of 3 equal 6 steps in one (losses and adapters differ by {dl:.1e} / {err:.1e}); the loss fell from {whole[0]:.3f} to {whole[-1]:.3f}")
 
 
+def full_kernel_checks(binary, extra, d, label):
+    """The kernels of full fine-tuning (docs/resident.md section 24) against numpy: the one-hot matrix of ids (ids in every chunk), the column sums in f32 and of an f16 matrix, the part of a norm gain's gradient
+    that is summed over rows, and AdamW on a whole tensor (`adamw_f`) and with the table's two gradients (`adamw_e`)."""
+    rng = np.random.default_rng(1)
+    q = lambda f: os.path.join(S.HERE, f)
+
+    def go(L, ans):
+        open(os.path.join(d, "k.session"), "w").write("\n".join(L + ["steps"] + [f"answer {a}" for a in ans]) + "\n")
+        return np.array(run(binary, os.path.join(d, "k.session"), extra, "1\n")[0].split(), dtype=np.float64)
+
+    r, c, bc = 8, 384, 128
+    ids = np.array([1, 128, 129, 300, 384, 5, 5, 77])
+    S.put(os.path.join(d, "ids"), ids)
+    S.put(os.path.join(d, "jrow"), np.arange(1, c + 1))
+    got = go([f"program o {q('onehot_h.chx')} r={r} c={c} bc={bc}", f"resident o.ids {d}/ids f32", f"resident o.jrow {d}/jrow f32"], ["o.y"]).reshape(r, c)
+    want = np.zeros((r, c))
+    want[np.arange(r), ids - 1] = 1
+    say(np.array_equal(got, want), f"{label}: onehot_h puts a 1 at each row's id (ids in all three chunks, the first and the last column, a repeated id)")
+    for k, dt in (("colsum.chx", "f32"), ("colsum_h.chx", "f16")):
+        x = rng.standard_normal((256, 192))
+        x = x.astype(np.float16) if dt == "f16" else x
+        S.put(os.path.join(d, "x"), x, "<f2" if dt == "f16" else "<f4")
+        got = go([f"program s {q(k)} r=256 c=192 bm=16 bn=64", f"resident s.x {d}/x {dt}"], ["s.y"])
+        e = float(np.abs(got - x.astype(np.float64).sum(0)).max())
+        say(e < 1e-4, f"{label}: {k[:-4]} sums the 256 rows of every column ({dt}; largest difference {e:.1e}); the sum of the first 16 rows alone is {np.abs(x[:16].astype(np.float64).sum(0) - x.astype(np.float64).sum(0)).max():.1f} away")
+    dy, x = rng.standard_normal((16, 128)), rng.standard_normal((16, 128)) * 3
+    S.put(os.path.join(d, "dy"), dy)
+    S.put(os.path.join(d, "x"), x)
+    got = go([f"program g {q('rms_dg.chx')} r=16 c=128 bm=1 eps=1e-6", f"resident g.dy {d}/dy f32", f"resident g.x {d}/x f32"], ["g.u"]).reshape(16, 128)
+    rs = 1 / np.sqrt((x * x).mean(1, keepdims=True) + 1e-6)
+    e = float(np.abs(got - dy * x * rs).max())
+    say(e < 1e-5, f"{label}: rms_dg is dy x rsqrt(mean(x^2) + eps) (largest difference {e:.1e})")
+    n = 256
+    w, g, g2, m, v = rng.standard_normal(n), rng.standard_normal(n), rng.standard_normal(n), rng.standard_normal(n) * 0.1, rng.random(n) * 0.1
+    for k in ("f", "e"):
+        for nm, a in (("w", w), ("m", m), ("v", v), ("g", g), ("g2", g2)):
+            S.put(f"{d}/{nm}", a)
+        S.put(d + "/sch", np.array([0.01, 1.5]))
+        L = [f"program a {q('adamw_%s.chx' % k)} n={n} bn=128 gs=0.5 b1=0.9 b2=0.999 eps=1e-8 lwd=0.0", f"resident a.w {d}/w f32", f"resident a.m {d}/m f32", f"resident a.v {d}/v f32",
+             f"resident a.grad {d}/g f32", f"resident a.s {d}/sch f32"] + ([f"resident a.grad2 {d}/g2 f32"] if k == "e" else [])
+        got = go(L, ["a.wo", "a.mo"])
+        gg = (g + (g2 if k == "e" else 0)) * 0.5
+        m1, v1 = 0.9 * m + 0.1 * gg, 0.999 * v + 0.001 * gg * gg
+        wn = w - 0.01 * m1 / (1.5 * np.sqrt(v1) + 1e-8)
+        e = max(float(np.abs(got[:n] - wn).max()), float(np.abs(got[n:] - m1).max()))
+        say(e < 1e-5, f"{label}: adamw_{k} equals AdamW on the {'sum of the two gradients' if k == 'e' else 'gradient'} (largest difference of the weights and the first moment {e:.1e})")
+
+
+def full_run(binary, extra, d, c, P, toks, steps, lr, kmut=(), tune=None):
+    """`steps` AdamW steps of the full fine-tuning session over the batches `toks` (round and round), against the specification's float64 AdamW: (largest relative loss difference, {name: error of the
+    saved parameter relative to how far the specification moved it})."""
+    wdir = os.path.join(d, "w")
+    S.write_files(wdir, c, P)
+    ck = os.path.join(d, "ck")
+    os.makedirs(ck, exist_ok=True)
+    sess = FU.write(os.path.join(d, "s"), c, wdir, np.stack([toks[s % len(toks)] for s in range(steps)]), steps=steps, lr=lr, loss_scale=64.0, save=ck, tune=dict(bc=128, **(tune or {})), kmut=kmut)
+    ss = S.Session(binary, sess, extra)
+    got = [float(ss.ask("1")[0].split()[0]) for _ in range(steps)]
+    ss.checkpoint()
+    ss.close()
+    Q = {k: v.copy() for k, v in P.items()}
+    m = {k: np.zeros_like(v) for k, v in Q.items()}
+    v2 = {k: np.zeros_like(v) for k, v in Q.items()}
+    want = []
+    for s in range(steps):
+        loss, G = R.full_loss_grads(c, Q, toks[s % len(toks)])
+        want.append(loss)
+        for k in Q:
+            m[k] = 0.9 * m[k] + 0.1 * G[k]
+            v2[k] = 0.999 * v2[k] + 0.001 * G[k] ** 2
+            Q[k] = Q[k] - lr * (m[k] / (1 - 0.9 ** (s + 1))) / (np.sqrt(v2[k] / (1 - 0.999 ** (s + 1))) + 1e-8)
+    errs = {}
+    for k in Q:
+        f32 = k.split(".")[-1] in ("ln1", "ln2", "bqkv", "norm")
+        a = np.fromfile(os.path.join(ck, k + (".f32" if f32 else ".f16")), dtype="<f4" if f32 else "<f2").astype(np.float64)
+        a = a.reshape(Q[k].shape) if k != "emb" else a.reshape(-1, c.d)[:c.v]
+        ref, ini = Q[k], P[k]
+        if k.endswith("bqkv"):
+            # the elements of a key bias on the low-frequency rotary pairs (the pair index j of a head's half-width above its half) have a gradient of 1e-6 to 1e-4 against 1e-2 for the others (a
+            # bias added to every key moves the scores by q . R_j b, and R_j is the identity as the frequency goes to 0): Adam moves them by rounding noise, as it moves layer 0's q B rows
+            # in section 22.4, so they are left out of the comparison
+            idx = np.arange(c.d + 2 * c.dkv)
+            keep = (idx < c.d) | (idx >= c.d + c.dkv) | ((idx - c.d) % c.dh % (c.dh // 2) < c.dh // 4)
+            a, ref, ini = a[keep], ref[keep], ini[keep]
+        errs[k] = float(np.linalg.norm(a - ref) / max(np.linalg.norm(ref - ini), 1e-12))
+    return max(abs(a - b) / abs(b) for a, b in zip(got, want)), errs, got, want
+
+
+def full_checks(cpu, metal, d):
+    """docs/resident.md section 24: the specification's gradients of every parameter (the table's included) against finite differences; the session's AdamW steps on all parameters against the
+    specification's; and mutants (the ids of the lookup, the table's second gradient, the bias column sum, the gain's gradient) that it must not match."""
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=1)
+    P["emb"] = P["emb"] * 0.3
+    toks = np.random.default_rng(0).integers(0, c.v, (3, c.nb, c.t))
+    fd, loss = R.fd_check_full(c, P, toks[0])
+    say(max(fd.values()) < 1e-5, f"spec: the hand-written full backward equals finite differences for all {len(fd)} parameters, the table, the gains and the biases included (largest relative difference {max(fd.values()):.1e}; loss {loss:.4f})")
+    for binary, extra, sub, label in ((cpu, ["--target", "nvidia-ada"], "fc", "CPU session"), (metal, [], "fg", "Metal session")):
+        if not binary:
+            continue
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+        full_kernel_checks(binary, extra, os.path.join(d, sub), label)
+        dd = os.path.join(d, sub, "run")
+        os.makedirs(dd, exist_ok=True)
+        le, errs, got, want = full_run(binary, extra, dd, c, P, toks, 6, 3e-3)
+        worst = max(errs, key=errs.get)
+        say(le < 2e-3 and want[3] < want[0] - 0.5 and errs[worst] < 0.1,
+            f"{label}: 6 AdamW steps on all {len(errs)} parameters over 3 batches: the losses equal the float64 AdamW's to {le:.1e} ({[round(x, 3) for x in got]}) and every parameter after them is within "
+            f"{errs[worst]:.1e} of it relative to how far it moved (worst: {worst}; the table's {errs['emb']:.1e})")
+    cases = (("onehot_h reads the first row's id for every row", [("onehot_h.chx", "let t  = load ids[i, 0 ; 1, 1]", "let t  = load ids[0, 0 ; 1, 1]")]),
+             ("adamw_e drops the table's second gradient", [("adamw_e.chx", "let g1 = g0 + g2", "let g1 = g0 + g2 * 0.0")]),
+             ("colsum_h sums the first tile of rows only", [("colsum_h.chx", "for p in 0 .. r / bm with acc", "for p in 0 .. 1 with acc")]),
+             ("rms_dg adds the row's rsqrt instead of multiplying by it", [("rms_dg.chx", "let q  = p * rs", "let q  = p + rs")]))
+    for name, mut in cases:
+        dd = os.path.join(d, "fm")
+        shutil.rmtree(dd, ignore_errors=True)
+        os.makedirs(dd, exist_ok=True)
+        le, errs, _, _ = full_run(cpu, ["--target", "nvidia-ada"], dd, c, P, toks, 6, 3e-3, kmut=tuple(mut))
+        worst = max(errs, key=errs.get)
+        say(le > 2e-3 or errs[worst] > 0.1, f"full kernel mutant ({name}): the losses are {le:.1e} from the specification's and {worst} is {errs[worst]:.1e} of its movement off, so the check fails")
+
+
 def main():
     cpu = os.path.abspath(sys.argv[1])
     metal = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 and os.path.exists(sys.argv[2]) else None
@@ -559,6 +685,7 @@ def main():
     lora_group3_check(cpu, metal, d)
     wide_head_check(cpu, metal, d)
     kernel_mutants_lora(cpu, d)
+    full_checks(cpu, metal, d)
     adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "lc2"), "CPU session")
     for i, mut in enumerate(([("adamw_l.chx", "let g1 = g0 * k0", "let g1 = g0 * (k0 + 1.0)")], [("adamw_l.chx", "let ws = wn * osc", "let ws = wn * 1.0")])):
         os.makedirs(os.path.join(d, f"le{i}"), exist_ok=True)

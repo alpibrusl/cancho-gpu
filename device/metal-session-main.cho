@@ -37,6 +37,11 @@ fn bytes_cap() -> [] int {
     return 536870912;
 }
 
+// 128 MiB: the chunks a resident file goes up in.
+fn chunk_cap() -> [] int {
+    return 134217728;
+}
+
 fn floats_cap() -> [] int {
     return 32000000;
 }
@@ -262,13 +267,11 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             // the buffer already holds this file: an earlier declaration uploaded it
             e0 = 0;
         } else if m[rec + 2] >= 0 {
-            // a binary resident file: its bytes are the device's, and go up as they are
+            // a binary resident file: its bytes are the device's, and go up as they are, a chunk at a time, so that a file larger than the byte pool (Qwen2.5-0.5B's f32 table is 545 MB,
+            // docs/resident.md section 24) is not refused: the pool only has to hold one chunk
             let want = m[g + 3] * kinds.size_bytes(m[g]);
-            let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[rec + 2]), want + 1);
-            if ftop == 0 - 2 {
-                let e = err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes, more than the session's byte pool holds (512 MiB)", m[rec + 2], text.num(m, t, fsize)));
-                return (0 - 1, 0 - 1);
-            }
+            let path = text.bytes(t, m[rec + 2]);
+            let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 1);
             if ftop < 0 {
                 let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
                 return (0 - 1, 0 - 1);
@@ -277,9 +280,26 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                 let e = err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes", m[rec + 2], text.num(m, t, fsize)));
                 return (0 - 1, 0 - 1);
             }
-            if metal.cgpu_upload(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[ftop..ftop + want]) < 0 {
-                let e = device_fail(m, t, ffi, "uploading resident data");
-                return (0 - 1, 0 - 1);
+            var off = 0;
+            while off < want {
+                var piece = want - off;
+                if piece > chunk_cap() {
+                    piece = chunk_cap();
+                }
+                let at = m[mem.text_slot()];
+                if piece > len(t) - at {
+                    let e = err.fail(m, t, "usage", text.f1(m, t, "the byte pool cannot hold a chunk of $", m[rec + 2]));
+                    return (0 - 1, 0 - 1);
+                }
+                if fileio.read_at(t, fs, text.bytes(t, m[rec + 2]), off, at, piece) != piece {
+                    let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
+                    return (0 - 1, 0 - 1);
+                }
+                if metal.cgpu_upload_at(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), off, t[at..at + piece]) < 0 {
+                    let e = device_fail(m, t, ffi, "uploading resident data");
+                    return (0 - 1, 0 - 1);
+                }
+                off = off + piece;
             }
         } else {
             let at = devcodec.encode(m, t, fm, g);
@@ -389,14 +409,23 @@ fn save_group[&m, &t, &f, &s](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetal
                     let rec = mem.get(m, saves, j);
                     let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
                     let bytes = m[g + 3] * kinds.size_bytes(m[g]);
-                    let at = devcodec.reserve(m, bytes);
-                    if metal.cgpu_download(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), t[at..at + bytes]) < 0 {
-                        failed = true;
-                    } else {
-                        status = ckpt.write_all(w, t[at..at + bytes]);
-                        total = total + bytes;
+                    // an output larger than a chunk (the 0.5B's f32 table gradient is 545 MB, the pool 512 MiB) goes out a chunk at a time
+                    var off = 0;
+                    while off < bytes && status == 0 && !failed {
+                        var piece = bytes - off;
+                        if piece > chunk_cap() {
+                            piece = chunk_cap();
+                        }
+                        let at = devcodec.reserve(m, piece);
+                        if metal.cgpu_download_at(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), off, t[at..at + piece]) < 0 {
+                            failed = true;
+                        } else {
+                            status = ckpt.write_all(w, t[at..at + piece]);
+                            total = total + piece;
+                        }
+                        m[mem.text_slot()] = at;
+                        off = off + piece;
                     }
-                    m[mem.text_slot()] = at;
                     j = j + 1;
                 }
                 if status == 0 && !failed {

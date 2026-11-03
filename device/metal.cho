@@ -25,6 +25,9 @@ extern fn cgpu_error[&f, &s](ffi: &f Ffi("libmetalgpu"), out: &!s [byte]) -> [ff
 
 extern fn cgpu_close[&f](ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int;
 
+// Read `out.len` bytes of buffer `buf` from byte `offset`.
+extern fn cgpu_download_at[&f, &s](ffi: &f Ffi("libmetalgpu"), buf: int, offset: int, out: &!s [byte]) -> [ffi("libmetalgpu")] int;
+
 // Write `data` into buffer `buf` from byte `offset`.
 extern fn cgpu_upload_at[&f, &s](ffi: &f Ffi("libmetalgpu"), buf: int, offset: int, data: &s [byte]) -> [ffi("libmetalgpu")] int;
 
