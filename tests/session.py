@@ -289,6 +289,16 @@ answer add.wo
     open(os.path.join(tdir, "widen-f32.session"), "w").write(wbody.replace(" f16\n", " f32\n"))
     status, out, err = talk(binary, os.path.join(tdir, "widen-f32.session"), "\n")
     say(status == 1 and out == [] and err.startswith("error[usage]"), "refused as usage: an f32 flag on an f16 parameter")
+    if METAL:
+        # a binary file bigger than the session's byte pool (512 MiB) is refused, not trapped (found in docs/resident.md section 20: Qwen's 272 MB output matrix did not fit the old 256 MiB pool and the process died silently, status 132)
+        m_, k_ = 4096, 73216
+        with open(os.path.join(tdir, "huge.bin"), "wb") as f:
+            f.truncate(m_ * k_ * 2)  # a sparse 600 MB file
+        with open(os.path.join(tdir, "w16.bin"), "wb") as f:
+            f.truncate(64 * k_ * 2)
+        open(os.path.join(tdir, "huge.session"), "w").write(f"program g {os.path.join(ROOT, 'tests/chx/ported/gemm_mma.chx')} m={m_} n=64 k={k_}\nresident g.a {os.path.join(tdir, 'huge.bin')} f16\nresident g.w {os.path.join(tdir, 'w16.bin')} f16\nanswer g.y\n")
+        status, out, err = talk(binary, os.path.join(tdir, "huge.session"), "\n")
+        say(status == 1 and out == [] and err.startswith("error[usage]") and "byte pool" in err, f"refused as usage: an f16 binary file larger than the byte pool (status {status}, {err[:90]!r})")
     # without `steps` a request is just its inputs, once
     open(os.path.join(tdir, "once.session"), "w").write(body.replace("steps\n", ""))
     status, out, err = talk(binary, os.path.join(tdir, "once.session"), "\n\n")

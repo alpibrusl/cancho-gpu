@@ -31,8 +31,10 @@ fn words() -> [] int {
     return 100000000;
 }
 
+// 512 MiB: the largest tensor a session stages (a resident file, a table, a download) must fit it. Qwen2.5-0.5B's tied output matrix is 272 MB in f16
+// (docs/resident.md section 20), which the 256 MiB of the CPU session and of section 19 could not hold.
 fn bytes_cap() -> [] int {
-    return 268435456;
+    return 536870912;
 }
 
 fn floats_cap() -> [] int {
@@ -176,6 +178,10 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             // a binary table: the file's bytes are the device's, and go up as they are
             let want = m[g + 3] * m[tb + 3] * kinds.size_bytes(m[g]);
             let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[tb + 4]), want + 1);
+            if ftop == 0 - 2 {
+                let e = err.fail(m, t, "usage", text.f2(m, t, "the binary table $ has $ bytes, more than the session's byte pool holds (512 MiB)", m[tb + 4], text.num(m, t, fsize)));
+                return (0 - 1, 0 - 1);
+            }
             if ftop < 0 {
                 let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[tb + 4]));
                 return (0 - 1, 0 - 1);
@@ -210,6 +216,10 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             // a binary resident file: its bytes are the device's, and go up as they are
             let want = m[g + 3] * kinds.size_bytes(m[g]);
             let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[rec + 2]), want + 1);
+            if ftop == 0 - 2 {
+                let e = err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes, more than the session's byte pool holds (512 MiB)", m[rec + 2], text.num(m, t, fsize)));
+                return (0 - 1, 0 - 1);
+            }
             if ftop < 0 {
                 let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
                 return (0 - 1, 0 - 1);

@@ -1,0 +1,17 @@
+// y = f16(silu(g) u) for the fused gate/up product gu [r, 2 f] (the gate in columns 0 .. f, the up projection in f .. 2 f): the input of the down projection.
+algo swiglu_h(r, f, bm, bc)
+  in  gu: f32[r, 2 * f]
+  out y:  f16[r, f]
+{
+  grid i over r / bm, q over f / bc
+  let g  = load gu[i * bm, q * bc ; bm, bc]
+  let u  = load gu[i * bm, f + q * bc ; bm, bc]
+  let sg = sigmoid &g
+  let a  = g * sg
+  let p  = a * u
+  let h  = stage f16 p
+  store h -> y[i * bm, q * bc]
+}
+
+schedule swiglu_h for apple-m-series { threads 128 }
+schedule swiglu_h for nvidia-ada     { threads 128 }

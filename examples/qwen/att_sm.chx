@@ -1,0 +1,21 @@
+// p = softmax(s * scale + mask) over each row of the scores of every (sequence, head) pair (mask: 0 or -1e9 above the diagonal, [t, t]), as f16 for the product with v.
+algo att_sm(nbh, t, bm, scale)
+  in  s:    f32[nbh * t, t]
+  in  mask: f32[t, t]
+  out p:    f16[nbh * t, t]
+{
+  grid b over nbh, i over t / bm
+  let a  = load s[b * t + i * bm, 0 ; bm, t]
+  let mk = load mask[i * bm, 0 ; bm, t]
+  let sm = a * scale + mk
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let pr = e / z
+  let ph = stage f16 pr
+  store ph -> p[b * t + i * bm, 0]
+}
+
+schedule att_sm for apple-m-series { threads 128 }
+schedule att_sm for nvidia-ada     { threads 128 }
