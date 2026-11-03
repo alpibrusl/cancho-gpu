@@ -20,6 +20,8 @@
    differences, the session's 6 steps against a float64 AdamW on all parameters, four mutants.
 8. A run in several sessions (docs/resident.md section 22; roadmap M7.3): 3 + 3 steps with the adapters, Adam's moments and the step count handed over equal 6 steps in one session, exactly; with the moments
    dropped or the step count restarted they do not.
+9. The same for full fine-tuning (docs/resident.md section 24.7; roadmap M7.4c): the f32 masters and both moments of every parameter handed over equal one session byte for byte; with the moments zeroed,
+   the step count restarted or the masters rounded to f16 they do not.
 Needs numpy; without it the test says so and passes. The converter check needs torch and safetensors and is skipped without them."""
 import json
 import os
@@ -655,6 +657,63 @@ def full_checks(cpu, metal, d):
         say(le > 2e-3 or errs[worst] > 0.1, f"full kernel mutant ({name}): the losses are {le:.1e} from the specification's and {worst} is {errs[worst]:.1e} of its movement off, so the check fails")
 
 
+def full_restart_check(binary, extra, d, label, mutate=None):
+    """Full fine-tuning in two sessions (docs/resident.md section 24.7): 6 steps as 3 + 3, the f32 masters and both Adam moments of every parameter handed over through `save_state` / `state` (the f16
+    matrices through the `save` directory, the step count through `first_step`), equal 6 steps in one session: the losses, every saved parameter and the state after the last step, byte for byte (the
+    CPU interpreter is deterministic). `mutate`: 'state' hands over with zero moments, 'first' restarts the bias correction and the schedule at step 1, 'master' hands over masters rounded to f16 (what
+    restarting from the f16 checkpoint alone gives, the masters being lost): then the second session differs, so the check fails."""
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=1)
+    P["emb"] = P["emb"] * 0.3
+    toks = np.random.default_rng(0).integers(0, c.v, (6, c.nb, c.t))
+    wdir = os.path.join(d, "w")
+    S.write_files(wdir, c, P)
+    lr_fn = lambda t: 3e-3 * (t / 2 if t <= 2 else 0.5 * (1 + np.cos(np.pi * (t - 2) / 4)))
+    names = list(P)
+
+    def run(name, wd, batches, steps, **more):
+        ck, st = os.path.join(d, name, "ck"), os.path.join(d, name, "st")
+        sess = FU.write(os.path.join(d, name, "s"), c, wd, batches, steps=steps, lr=3e-3, lr_fn=lr_fn, loss_scale=64.0, save=ck, save_state=st, tune=dict(bc=128), **more)
+        ss = S.Session(binary, sess, extra)
+        got = [float(ss.ask("1")[0].split()[0]) for _ in range(steps)]
+        ss.checkpoint()
+        ss.close()
+        return got, ck, st
+
+    def files(ck, st):
+        out = {}
+        for k in names:
+            out[k] = open(os.path.join(ck, k + (".f32" if k.split(".")[-1] in ("ln1", "ln2", "bqkv", "norm") else ".f16")), "rb").read()
+            for ext in ("w32", "m", "v"):
+                out[k + "/" + ext] = open(os.path.join(st, f"{k}.{ext}"), "rb").read()
+        return out
+
+    whole, ck_w, st_w = run("whole", wdir, toks, 6)
+    first, ck1, st1 = run("half1", wdir, toks[:3], 3)
+    st = st1
+    if mutate in ("state", "master"):
+        st = os.path.join(d, "mut_state")
+        shutil.rmtree(st, ignore_errors=True)
+        shutil.copytree(st1, st)
+        for k in names:
+            if mutate == "state":
+                for ext in ("m", "v"):
+                    np.zeros_like(np.fromfile(os.path.join(st, f"{k}.{ext}"), dtype="<f4")).tofile(os.path.join(st, f"{k}.{ext}"))
+            elif k.split(".")[-1] not in ("ln1", "ln2", "bqkv", "norm"):
+                a = np.fromfile(os.path.join(st, k + ".w32"), dtype="<f4")
+                a.astype("<f2").astype("<f4").tofile(os.path.join(st, k + ".w32"))
+    second, ck2, st2 = run("half2", ck1, toks[3:], 3, state=st, first_step=0 if mutate == "first" else 3)
+    a, b = files(ck_w, st_w), files(ck2, st2)
+    bad_keys = [k for k in a if a[k] != b[k]]
+    dl = max(abs(x - y) for x, y in zip(first + second, whole))
+    err = max(float(np.abs(np.frombuffer(a[k], dtype="<f4" if "/" in k or k.split(".")[-1] in ("ln1", "ln2", "bqkv", "norm") else "<f2").astype(np.float64)
+                           - np.frombuffer(b[k], dtype="<f4" if "/" in k or k.split(".")[-1] in ("ln1", "ln2", "bqkv", "norm") else "<f2").astype(np.float64)).max()) for k in a)
+    if mutate:
+        say(bool(bad_keys) or dl > 0, f"{label}: full restart mutant ({mutate}): {len(bad_keys)} of {len(a)} files differ from the single session's (largest value difference {err:.1e}, losses {dl:.1e}), so the check fails")
+        return
+    say(not bad_keys and dl == 0.0, f"{label}: 6 full fine-tuning steps in two sessions of 3 equal 6 in one: the losses, the {len(names)} parameters and their {3 * len(names)} state files (masters, both moments) are identical byte for byte ({len(a)} files); the loss fell from {whole[0]:.3f} to {whole[-1]:.3f}")
+
+
 def main():
     cpu = os.path.abspath(sys.argv[1])
     metal = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 and os.path.exists(sys.argv[2]) else None
@@ -695,6 +754,12 @@ def main():
     for i, mut in enumerate((None, "state", "first")):
         os.makedirs(os.path.join(d, f"lr{i}"), exist_ok=True)
         restart_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, f"lr{i}"), "CPU session", mutate=mut)
+    for i, mut in enumerate((None, "state", "first", "master")):
+        os.makedirs(os.path.join(d, f"fr{i}"), exist_ok=True)
+        full_restart_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, f"fr{i}"), "CPU session", mutate=mut)
+    if metal:
+        os.makedirs(os.path.join(d, "frm"), exist_ok=True)
+        full_restart_check(metal, [], os.path.join(d, "frm"), "Metal session")
     print(f"{'qwen: ok' if not bad else f'qwen: {bad} FAILED'}")
     sys.exit(1 if bad else 0)
 

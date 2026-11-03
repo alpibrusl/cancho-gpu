@@ -64,11 +64,30 @@ def master_files(directory, c, wdir, vp):
     return out, zfile
 
 
-def write(directory, c, wdir, tokens, steps=1, lr=1e-5, lr_fn=None, wd=0.0, betas=(0.9, 0.999), eps_adam=1e-8, loss_scale=16.0, save=None, tune=None, reuse=True, kmut=(), grads=None):
+STATE_EXT = (("w32", "wo"), ("m", "mo"), ("v", "vo"))
+
+
+def state_paths(state, pname):
+    """The three f32 files of one parameter in a saved-state directory: its master, first and second moment. A missing one is a refusal naming it (nothing is guessed: a zero moment would run, and be wrong)."""
+    out = []
+    for ext, _ in STATE_EXT:
+        path = os.path.abspath(os.path.join(state, f"{pname}.{ext}"))
+        if not os.path.exists(path):
+            raise SystemExit(f"error[usage]: the state directory {state} has no {pname}.{ext} (a run is resumed from the directory a `save_state` run wrote, whole)")
+        out.append(path)
+    return out
+
+
+def write(directory, c, wdir, tokens, steps=1, lr=1e-5, lr_fn=None, wd=0.0, betas=(0.9, 0.999), eps_adam=1e-8, loss_scale=16.0, save=None, tune=None, reuse=True, kmut=(), grads=None, state=None,
+          first_step=0, save_state=None):
     """Writes the session over the batches `tokens` ([S, nb, t], one per step, taken in order; a request is a count of steps) from the f16 weights of `wdir`; answers the path of the session file.
     The answer is the mean loss of the last step's batch. With `save` (a directory) the request `checkpoint` writes the trained parameters there as a weights directory (f16 matrices, f32 vectors; what
     qwen_session.write and convert.py's readers take), so that its forward pass can be measured. With `grads` (a path) the raw f32 gradient of every parameter (the table's as its two parts) is saved there on
-    `checkpoint` in the order of `grad_names` (the weight-gradient buffers are then not shared between layers)."""
+    `checkpoint` in the order of `grad_names` (the weight-gradient buffers are then not shared between layers).
+    A run in several sessions (docs/resident.md section 24.7): with `save_state` (a directory) `checkpoint` also writes, for every parameter, the f32 master (`NAME.w32`; the table's padded to its
+    chunked row count), the first (`NAME.m`) and the second moment (`NAME.v`), and the next session starts from them with `state` (that directory) and `first_step` (the steps already taken, which the
+    bias correction and the learning-rate schedule count from); `wdir` of the next session is the `save` directory of the last, whose f16 matrices are the roundings of those masters. The batches
+    `tokens` of a continued session are the ones after the steps already taken."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     w = lambda name: os.path.abspath(os.path.join(wdir, name))
@@ -115,8 +134,8 @@ def write(directory, c, wdir, tokens, steps=1, lr=1e-5, lr_fn=None, wd=0.0, beta
                 assert a in src, (name, a)
                 src = src.replace(a, b)
         open(p(name), "w").write(src)
-    masters, zfile = master_files(os.path.join(directory, "master"), c, wdir, vp)
-    sched = np.array(T.schedule(steps, lr_fn, b1, b2, 0)).reshape(-1)
+    masters, zfile = master_files(os.path.join(directory, "master"), c, wdir, vp) if not state else ({}, None)
+    sched = np.array(T.schedule(steps, lr_fn, b1, b2, first_step)).reshape(-1)
     S.put(p("sched"), sched)
 
     def kernel(name, nv=False, **sched_):
@@ -174,14 +193,17 @@ def write(directory, c, wdir, tokens, steps=1, lr=1e-5, lr_fn=None, wd=0.0, beta
 
     def adam(pname, grad, grad2=None, flat=None):
         """AdamW for the parameter file `pname`: the master in f32 (the f32 file itself for the vectors), the moments from a zero file, the gradient from the output `grad`."""
-        mfile = masters[pname][0]
+        if state:
+            mfile, mom_m, mom_v = state_paths(state, pname)
+        else:
+            mfile, mom_m, mom_v = masters[pname][0], zfile(flat), zfile(flat)
         nel = flat
         nm = "ad_" + pname.replace(".", "_")
         kern = "adamw_e.chx" if grad2 else "adamw_f.chx"
         prog(nm, kernel(kern), n=nel, bn=adam_block(nel, tn["adam_bn"]), gs=repr(1.0 / (ncount * loss_scale)), b1=b1, b2=b2, eps=eps_adam, lwd=repr(lr * wd))
         res(f"{nm}.w", mfile)
-        res(f"{nm}.m", zfile(nel))
-        res(f"{nm}.v", zfile(nel))
+        res(f"{nm}.m", mom_m)
+        res(f"{nm}.v", mom_v)
         link(grad, f"{nm}.grad")
         if grad2:
             link(grad2, f"{nm}.grad2")
@@ -399,12 +421,18 @@ def write(directory, c, wdir, tokens, steps=1, lr=1e-5, lr_fn=None, wd=0.0, beta
     L.append("steps")
     L.append(f"answer ls.dw scale 1/{ncount:g}")
     if save:
+        os.makedirs(save, exist_ok=True)
         for pname, nm, _, _ in adams:
             kind = pname.split(".")[-1]
             if kind in ("norm", "ln1", "ln2", "bqkv"):
                 L.append(f"save {nm}.wo {os.path.abspath(save)}/{pname}.f32 f32")
             else:
                 L.append(f"save {nm}.wh {os.path.abspath(save)}/{pname}.f16 f16")
+    if save_state:
+        os.makedirs(save_state, exist_ok=True)
+        for pname, nm, _, _ in adams:
+            for ext, o in STATE_EXT:
+                L.append(f"save {nm}.{o} {os.path.abspath(save_state)}/{pname}.{ext} f32")
     if grads:
         for pname, nm, g1, g2 in adams:
             for g in (g1, g2):
