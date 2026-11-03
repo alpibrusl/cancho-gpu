@@ -1,0 +1,26 @@
+{
+ "seq": 512,
+ "splits": {
+  "train": {
+   "sequences": 5492,
+   "tokens": 2811904,
+   "loss_tokens": 2214700
+  },
+  "heldout_repos": {
+   "sequences": 1316,
+   "tokens": 673792,
+   "loss_tokens": 523539
+  },
+  "heldout_files": {
+   "sequences": 968,
+   "tokens": 495616,
+   "loss_tokens": 365807
+  }
+ },
+ "corpus_npz": {
+  "train_sequences": 5488,
+  "heldout_sequences": 968
+ },
+ "packed.npz": "fc5159503bbba81891843bcedf3c2dff9c525049dd127c3b96a9a9a9575a93d6",
+ "corpus.npz": "0d3710c8005532efede7460b8f035e95d93c194b4811f66af664186388ff4192"
+}
