@@ -1,0 +1,14 @@
+// out[1, k] = v[1, b] x[b, k] with x in f32: with v a one-hot row, the row of x it selects (the logits of one position of a window, for generation).
+algo row_select(b, k, bk)
+  in  v:   f32[1, b]
+  in  x:   f32[b, k]
+  out out: f32[1, k]
+{
+  grid j over k / bk
+  let a = load v
+  let c = load x[0, j * bk ; b, bk]
+  store matmul a c -> out[0, j * bk]
+}
+
+schedule row_select for apple-m-series { threads 128 }
+schedule row_select for nvidia-ada     { threads 128 }
