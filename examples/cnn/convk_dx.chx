@@ -1,0 +1,26 @@
+// The gradient of convk with respect to its input: gx[p] = sum over taps of dz[p - shift(tap)] W_tap (`mma_nn`: the right operand is read as stored). It is [rp, cx] wide and only the first cin
+// columns are computed (the others stay zero in a session's zeroed buffer): the 1x1 stride-2 convolution's gradient lands in the (0,0) quarter of the space-to-depth image's gradient.
+algo convk_dx(rp, cx, cin, cout, wp, g, kh, kw, oy, ox)
+  in  dz: f16[rp + 2 * g, cout]
+  in  w:  f16[cout, kh * kw * cin]
+  out gx: f32[rp, cx]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cin / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dy in 0 .. kh with c {
+    let c = for dx in 0 .. kw with c {
+      let c = for p in 0 .. cout / bk with c {
+        let at = load dz[g + i * bm + oy * wp + ox - dy * wp - dx, p * bk ; bm, bk] @shared
+        let wt = load w[p * bk, kw * dy * cin + dx * cin + j * bn ; bk, bn] @shared
+        yield mma_nn c at wt
+      }
+      yield c
+    }
+    yield c
+  }
+  store c -> gx[i * bm, j * bn]
+}
+
+schedule convk_dx for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule convk_dx for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

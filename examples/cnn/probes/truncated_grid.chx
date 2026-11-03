@@ -1,0 +1,14 @@
+// PROBE offset
+// ARGS rp=100 c=8 bm=16
+// A grid of rp / bm instances with rp not a multiple of bm: the compiler refuses it (`offset`, "does not divide") rather than dropping the last rows. (rp = 100, bm = 16.)
+algo truncated_grid(rp, c, bm)
+  in  x: f32[rp, c]
+  out y: f32[rp, c]
+{
+  grid i over rp / bm
+  let t = load x[i * bm, 0 ; bm, c]
+  store t -> y[i * bm, 0]
+}
+
+schedule truncated_grid for apple-m-series { threads 128 }
+schedule truncated_grid for nvidia-ada     { threads 128 }

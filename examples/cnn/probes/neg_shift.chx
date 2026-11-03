@@ -1,0 +1,15 @@
+// PROBE syntax
+// ARGS rp=64 c=8 wp=8 g=64
+// A unary minus in a constant expression (the backward's reversed shift written as -dy * wp): the grammar has binary minus only, so the generator writes `c - dy * wp`.
+algo neg_shift(rp, c, wp, g)
+  in  x: f16[rp + 2 * g, c]
+  out y: f32[rp, c]
+{
+  grid i over rp / 16
+  let t = load x[g + i * 16 + -wp, 0 ; 16, c] @shared
+  let f = stage f32 t
+  store f -> y[i * 16, 0]
+}
+
+schedule neg_shift for apple-m-series { threads 128 }
+schedule neg_shift for nvidia-ada     { threads 128 }

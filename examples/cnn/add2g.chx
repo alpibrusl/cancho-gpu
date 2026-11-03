@@ -1,0 +1,14 @@
+// y = a + b (f32), written into a guarded matrix (g zero rows on each side): the gradient that goes around a block meets the one through it, for a consumer (maxpool_bwd) whose windows start before row 0.
+algo add2g(r, c, bm, g)
+  in  a: f32[r, c]
+  in  b: f32[r, c]
+  out y: f32[r + 2 * g, c]
+{
+  grid i over r / bm
+  let x = load a[i * bm, 0 ; bm, c]
+  let z = load b[i * bm, 0 ; bm, c]
+  store x + z -> y[g + i * bm, 0]
+}
+
+schedule add2g for apple-m-series { threads 128 }
+schedule add2g for nvidia-ada     { threads 128 }
