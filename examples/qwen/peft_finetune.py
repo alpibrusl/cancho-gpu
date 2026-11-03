@@ -2,7 +2,7 @@
 """peft's side of the 300-step fine-tuning run of roadmap M7.3 (docs/resident.md section 22): the same batches (finetune_data.py), the same initial adapters and the same AdamW and schedule as finetune.py,
 on MPS in float16 autocast or float32.
 
-    python3 examples/qwen/peft_finetune.py WORK --dtype float16|float32 [--steps 300] [--lr 2e-4] [--every 30] [--loss-scale 1] [--tag NAME] [--base DIR]      # WORK/peft_<dtype>.json, WORK/peft_<dtype>_final.npz
+    python3 examples/qwen/peft_finetune.py WORK --dtype float16|float32 [--steps 300] [--lr 2e-4] [--every 30] [--loss-scale 1] [--tag NAME] [--base DIR] [--checkpoint]      # WORK/peft_<dtype>.json, WORK/peft_<dtype>_final.npz
 
 With `--base DIR` the block matrices are those of the f16 weights directory DIR (the dequantised 4-bit base of a QLoRA run: quant.py dequant).
 With `--loss-scale S` the loss is multiplied by S before the backward pass and the gradients divided by S before the optimiser (a static scale, as the session has), and the files are named `peft_<dtype>_<tag>`.
@@ -33,10 +33,16 @@ def main():
     steps, lr, every = int(arg("--steps", 300)), float(arg("--lr", 2e-4)), int(arg("--every", 30))
     scale = float(arg("--loss-scale", 1.0))
     tag = dtn + (("_" + arg("--tag", "scaled")) if scale != 1.0 or "--tag" in sys.argv else "")
-    c = R.config_of(F.WDIR)
+    c = R.config_of(F.WDIR, 512, F.NB)
     batches, held = F.load(work)
     lr_fn = F.lr_schedule(steps, lr)
     model, handles = PR.build(c, F.initial_adapters(c), device="mps", dtype=dt, base=arg("--base", None))
+    if "--checkpoint" in sys.argv:
+        # activation checkpointing (recomputes each block in the backward: the same numbers, a third more time, a fraction of the memory): for a model whose float32 activations do not fit next to the rest of the machine
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=dict(use_reentrant=False))
+        model.enable_input_require_grads()
+        model.config.use_cache = False
+        model.train()
     opt = torch.optim.AdamW(list(handles.values()), lr=lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)
     ac = lambda: torch.autocast("mps", dtype=dt, enabled=dt != torch.float32)
 

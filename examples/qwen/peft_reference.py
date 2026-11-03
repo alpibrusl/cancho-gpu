@@ -23,19 +23,20 @@ MODULE = {"q": "self_attn.q_proj", "k": "self_attn.k_proj", "v": "self_attn.v_pr
 def override_base(model, c, base, device, dtype):
     """Replace the block matrices of the loaded model by those of the f16 weights directory `base` (a dequantised 4-bit base, quant.py dequant): the model the session's QLoRA run is a LoRA run of (docs/resident.md
     section 26). Everything else (embeddings, norms, biases) stays the checkpoint's."""
-    P = R.load_params(base, c)
     t = lambda a: torch.tensor(a, dtype=dtype, device=device)
+    sh = R.shapes(c)
+    get = lambda name: R.load_one(base, name, sh[name])  # one matrix at a time: a 7B model's binary64 copy would not fit
     for l in range(c.layers):
         ly = model.model.layers[l]
-        w = P[f"l{l:02d}.wqkv"]
+        w = get(f"l{l:02d}.wqkv")
         ly.self_attn.q_proj.weight.data = t(w[:c.d])
         ly.self_attn.k_proj.weight.data = t(w[c.d:c.d + c.dkv])
         ly.self_attn.v_proj.weight.data = t(w[c.d + c.dkv:])
-        ly.self_attn.o_proj.weight.data = t(P[f"l{l:02d}.wo"])
-        w = P[f"l{l:02d}.wgu"]
+        ly.self_attn.o_proj.weight.data = t(get(f"l{l:02d}.wo"))
+        w = get(f"l{l:02d}.wgu")
         ly.mlp.gate_proj.weight.data = t(w[:c.ff])
         ly.mlp.up_proj.weight.data = t(w[c.ff:])
-        ly.mlp.down_proj.weight.data = t(P[f"l{l:02d}.wd"])
+        ly.mlp.down_proj.weight.data = t(get(f"l{l:02d}.wd"))
 
 
 def build(c, AB, r=16, alpha=32, device="cpu", dtype=torch.float32, base=None):
