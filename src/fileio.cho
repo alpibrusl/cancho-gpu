@@ -40,7 +40,9 @@ fn fill[&t, &h](t: &!t [byte], hr: &!h File, at: int, to: int, want: int) -> [fi
 
 // The first `min(size, cap)` bytes of `path`, appended to the text pool:
 // `(position of the first byte, bytes read, the file's size)`, or
-// `(-1, 0, 0)` when the file cannot be opened or read.
+// `(-1, 0, 0)` when the file cannot be opened or read, or `(-2, 0, size)`
+// when those bytes do not fit what is left of the pool (a caller that tests
+// `< 0` refuses; one that wants to say why tests for `-2`).
 pub fn prefix[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: &p [byte], cap: int) -> [fs_read(""), file_read] (int, int, int) {
     let top = m[mem.text_slot()];
     var start = 0 - 1;
@@ -60,10 +62,14 @@ pub fn prefix[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: 
                         if want > cap {
                             want = cap;
                         }
-                        let read = fill(t, hr, 0, top, want);
-                        if read >= 0 {
-                            start = top;
-                            got = read;
+                        if want > len(t) - top {
+                            start = 0 - 2;
+                        } else {
+                            let read = fill(t, hr, 0, top, want);
+                            if read >= 0 {
+                                start = top;
+                                got = read;
+                            }
                         }
                     }
                     Done::Failed(e) => {

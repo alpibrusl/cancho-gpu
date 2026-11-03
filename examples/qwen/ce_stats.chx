@@ -1,0 +1,49 @@
+// The first of the three kernels of a cross-entropy over a large vocabulary: per row i and chunk q of bc columns, the chunk's maximum, the sum of exp(logit - maximum), the logit of the
+// target if it is in the chunk (else 0), and the 1-based column of the chunk's arg max. jrow holds 1 .. c as f32 and tgt the 1-based target; both are exact in f32 up to 2^24.
+// maskv is 0 for a real column and -1e9 for the padding columns that round the vocabulary up to a whole number of chunks. Outputs are flat [r nq] (row-major [r, nq]); one threadgroup takes one row and one chunk. No `max a b` is needed.
+algo ce_stats(r, c, bc, nq)
+  in  lg:   f32[r, c]
+  in  tgt:  f32[r, 1]
+  in  jrow: f32[1, c]
+  in  maskv: f32[1, c]
+  out cm:   f32[r * nq]
+  out cs:   f32[r * nq]
+  out ct:   f32[r * nq]
+  out ci:   f32[r * nq]
+{
+  grid i over r, q over nq
+  let a0 = load lg[i, q * bc ; 1, bc]
+  let mk = load maskv[0, q * bc ; 1, bc]
+  let a  = a0 + mk
+  let mx = rowmax &a
+  let sh = &a - &mx
+  let e  = exp &sh
+  let z  = rowsum e
+  store z -> cs[i * nq + q]
+  store mx -> cm[i * nq + q]
+  let j  = load jrow[0, q * bc ; 1, bc]
+  let zz = zeros f32[1, bc]
+  let jb = zz + j
+  let t  = load tgt[i, 0 ; 1, 1]
+  let db = &jb - t
+  let zn = zeros f32[1, bc]
+  let dn = zn - &db
+  let df = relu db + relu dn
+  let zo = zeros f32[1, bc]
+  let on = zo + 1.0
+  let oh = relu (on - df)
+  let ol = oh * a
+  let tl = rowsum ol
+  store tl -> ct[i * nq + q]
+  let u  = sh * 10000000.0
+  let u1 = u + 1.0
+  let r1 = relu u1
+  let r2 = r1 - 0.5
+  let eq = step r2
+  let ej = eq * jb
+  let ix = rowmax ej
+  store ix -> ci[i * nq + q]
+}
+
+schedule ce_stats for apple-m-series { threads 128 }
+schedule ce_stats for nvidia-ada     { threads 128 }

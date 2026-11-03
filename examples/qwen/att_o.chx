@@ -1,0 +1,19 @@
+// o[p t + i, :] = sum_j p[p t + i, j] v[p t + j, :] for every (sequence, head) pair p: probabilities (f16) times heads-major values (f16), f32 out, on the matrix unit.
+algo att_o(nbh, t, dh)
+  in  pr: f16[nbh * t, t]
+  in  v:  f16[nbh * t, dh]
+  out o:  f32[nbh * t, dh]
+  tile bm, bk
+{
+  grid p over nbh, i over t / bm
+  let acc = zeros f32[bm, dh] @frag
+  let acc = for c in 0 .. t / bk with acc {
+    let at = load pr[p * t + i * bm, c * bk ; bm, bk] @shared
+    let wt = load v[p * t + c * bk, 0 ; bk, dh] @shared
+    yield mma_nn acc at wt
+  }
+  store acc -> o[p * t + i * bm, 0]
+}
+
+schedule att_o for apple-m-series { threads 128 warps 2 2 bm 64 bk 32 }
+schedule att_o for nvidia-ada     { threads 128 warps 2 2 bm 64 bk 32 }

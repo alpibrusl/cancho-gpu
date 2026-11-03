@@ -227,6 +227,9 @@ pub fn load_f32[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float]
     }
     let mark = m[mem.text_slot()];
     let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 4 * n + 1);
+    if ftop == 0 - 2 {
+        return err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes, more than the session's byte pool holds", text.from_bytes(m, t, path), text.num(m, t, fsize)));
+    }
     if ftop < 0 {
         return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
     }
@@ -250,6 +253,9 @@ pub fn load_f16[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float]
     }
     let mark = m[mem.text_slot()];
     let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 2 * n + 1);
+    if ftop == 0 - 2 {
+        return err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes, more than the session's byte pool holds", text.from_bytes(m, t, path), text.num(m, t, fsize)));
+    }
     if ftop < 0 {
         return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
     }

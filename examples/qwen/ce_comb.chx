@@ -1,0 +1,34 @@
+// The second kernel: the loss of each row, log(sum_q cs_q exp(cm_q - M)) + M - sum_q ct_q with M the largest chunk maximum, and the 1-based column of the largest logit.
+algo ce_comb(r, nq, bm)
+  in  cm:   f32[r, nq]
+  in  cs:   f32[r, nq]
+  in  ct:   f32[r, nq]
+  in  ci:   f32[r, nq]
+  out loss: f32[r]
+  out am:   f32[r]
+{
+  grid i over r / bm
+  let m  = load cm[i * bm, 0 ; bm, nq]
+  let mx = rowmax &m
+  let sh = m - &mx
+  let e  = exp &sh
+  let s  = load cs[i * bm, 0 ; bm, nq]
+  let ps = s * e
+  let z  = rowsum ps
+  let lz = log z
+  let tt = load ct[i * bm, 0 ; bm, nq]
+  let tl = rowsum tt
+  store lz + mx - tl -> loss[i * bm]
+  let u  = sh * 10000000.0
+  let u1 = u + 1.0
+  let r1 = relu u1
+  let r2 = r1 - 0.5
+  let eq = step r2
+  let c1 = load ci[i * bm, 0 ; bm, nq]
+  let ej = eq * c1
+  let ix = rowmax ej
+  store ix -> am[i * bm]
+}
+
+schedule ce_comb for apple-m-series { threads 128 }
+schedule ce_comb for nvidia-ada     { threads 128 }

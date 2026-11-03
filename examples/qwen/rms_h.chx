@@ -1,0 +1,22 @@
+// RMSNorm of r rows of c: y = x rsqrt(mean(x^2) + eps) gain, written as f16 for the matrix-unit product that follows (Qwen2: no mean, no bias). One threadgroup takes bm rows.
+algo rms_h(r, c, bm, eps)
+  in  x:    f32[r, c]
+  in  gain: f32[1, c]
+  out y:    f16[r, c]
+{
+  grid i over r / bm
+  let xx = load x[i * bm, 0 ; bm, c]
+  let sq = &xx * &xx
+  let s  = rowsum sq
+  let ms = s * (1 / c)
+  let me = ms + eps
+  let rs = rsqrt me
+  let xn = xx * rs
+  let g  = load gain
+  let yy = xn * g
+  let h  = stage f16 yy
+  store h -> y[i * bm, 0]
+}
+
+schedule rms_h for apple-m-series { threads 128 }
+schedule rms_h for nvidia-ada     { threads 128 }

@@ -1,0 +1,13 @@
+// y[b t + i, h dh + j] = f16(o[(b nh + h) t + i, j]): the heads-major attention output back to a [tokens, nh dh] matrix, the input of the o projection.
+algo unheads(nb, nh, t, dh, bm)
+  in  o: f32[nb * nh * t, dh]
+  out y: f16[nb * t, nh * dh]
+{
+  grid b over nb, h over nh, i over t / bm
+  let a = load o[(b * nh + h) * t + i * bm, 0 ; bm, dh]
+  let x = stage f16 a
+  store x -> y[b * t + i * bm, h * dh]
+}
+
+schedule unheads for apple-m-series { threads 128 }
+schedule unheads for nvidia-ada     { threads 128 }

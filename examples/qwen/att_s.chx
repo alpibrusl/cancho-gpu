@@ -1,0 +1,19 @@
+// Attention scores of every (sequence, head) pair p of heads-major q and k ([nb nh t, dh], f16): s[p t + i, j] = q_i . k_j (unscaled, f32), on the matrix unit, tiled over key columns.
+algo att_s(nbh, t, dh)
+  in  q: f16[nbh * t, dh]
+  in  k: f16[nbh * t, dh]
+  out s: f32[nbh * t, t]
+  tile bm, bn, bk
+{
+  grid p over nbh, i over t / bm, j over t / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for c in 0 .. dh / bk with acc {
+    let at = load q[p * t + i * bm, c * bk ; bm, bk] @shared
+    let wt = load k[p * t + j * bn, c * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> s[p * t + i * bm, j * bn]
+}
+
+schedule att_s for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule att_s for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

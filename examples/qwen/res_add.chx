@@ -1,0 +1,14 @@
+// y = res + z: a projection added to the residual stream (f32), no bias (Qwen2's o and down projections have none).
+algo res_add(r, c, bm)
+  in  z:   f32[r, c]
+  in  res: f32[r, c]
+  out y:   f32[r, c]
+{
+  grid i over r / bm
+  let a  = load z[i * bm, 0 ; bm, c]
+  let rr = load res[i * bm, 0 ; bm, c]
+  store rr + a -> y[i * bm, 0]
+}
+
+schedule res_add for apple-m-series { threads 128 }
+schedule res_add for nvidia-ada     { threads 128 }
