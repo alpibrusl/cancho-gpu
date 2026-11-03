@@ -38,10 +38,12 @@ def main():
         ids = m.tok(text, add_special_tokens=False)["input_ids"]
         resp, reason, n_prompt, n_new, tp, td, reused = m.generate(text, a.new, 0.0, 0, 1.0, 0, 1 << 20)
         ours = m.tok(resp, add_special_tokens=False)["input_ids"]
+        S.GROUPED_DECODE[0] = False      # the reference is the library's own attention
         with torch.no_grad():
             x = torch.tensor([ids], device=a.device)
             out = m.model.generate(input_ids=x, attention_mask=torch.ones_like(x), max_new_tokens=a.new, do_sample=False, repetition_penalty=1.0,
                                    temperature=None, top_p=None, top_k=None, eos_token_id=list(m.eos), pad_token_id=m.tok.eos_token_id)
+        S.GROUPED_DECODE[0] = True
         hf = out[0, len(ids):].tolist()
         hf = hf[:hf.index(min(m.eos & set(hf)))] if m.eos & set(hf) else hf
         n = min(len(ours), len(hf))

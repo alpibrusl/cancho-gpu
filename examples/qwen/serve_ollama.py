@@ -29,9 +29,25 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AttentionInterface, AutoModelForCausalLM, AutoTokenizer
 
 LOCK = threading.Lock()
+GROUPED_DECODE = [True]     # check_serve.py turns it off to compare with the library's own attention
+
+
+def _decode_attention(module, q, k, v, mask, dropout=0.0, scaling=None, **kw):
+    """Attention for one query position: the library's sdpa path repeats the key/value heads to the query heads and builds a mask, which at a context of 10,000 tokens made a decode step 3 to 5 times slower
+    (measured, docs/roadmap-models.md M8). Here the 6 query heads that share a key/value head are given to sdpa as 6 query positions of that one head (no repeat, no mask: all of them see the whole cache)."""
+    from transformers.integrations.sdpa_attention import sdpa_attention_forward
+    if q.shape[2] != 1 or not GROUPED_DECODE[0]:
+        return sdpa_attention_forward(module, q, k, v, mask, dropout=dropout, scaling=scaling, **kw)
+    b, h, _, d = q.shape
+    g = k.shape[1]
+    o = torch.nn.functional.scaled_dot_product_attention(q.view(b, g, h // g, d), k, v, scale=scaling)
+    return o.reshape(b, 1, h, d), None
+
+
+AttentionInterface.register("sdpa", _decode_attention)
 
 
 def snapshot(path):

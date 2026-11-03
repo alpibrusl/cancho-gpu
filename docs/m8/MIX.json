@@ -1,0 +1,84 @@
+{
+ "weights": {
+  "cho": 0.5,
+  "instr": 0.12,
+  "fix": 0.18,
+  "md": 0.15,
+  "rs": 0.05
+ },
+ "available_tokens": {
+  "cho": 2521822,
+  "instr": 333757,
+  "fix": 1281769,
+  "md": 1546725,
+  "rs": 2003660
+ },
+ "total_tokens_target": 2781308,
+ "pools": {
+  "cho": {
+   "records": 3162,
+   "tokens": 1390834,
+   "share": 0.4999
+  },
+  "instr": {
+   "records": 1217,
+   "tokens": 333757,
+   "share": 0.12
+  },
+  "fix": {
+   "records": 1372,
+   "tokens": 500720,
+   "share": 0.18
+  },
+  "md": {
+   "records": 905,
+   "tokens": 417393,
+   "share": 0.15
+  },
+  "rs": {
+   "records": 290,
+   "tokens": 139395,
+   "share": 0.0501
+  }
+ },
+ "train_tokens": 2782099,
+ "train_records": 6946,
+ "files": {
+  "train.jsonl": {
+   "records": 6946,
+   "tokens": 2782099,
+   "sha256": "37e4e8d1f135385b0ba6bc05dcfedd5f97ab2624fd09d495c558cb222dcad01f",
+   "by_kind": {
+    "cho": 1390834,
+    "md": 417393,
+    "rs": 139395,
+    "instr": 333757,
+    "fix": 500720
+   }
+  },
+  "heldout_repos.jsonl": {
+   "records": 1553,
+   "tokens": 667449,
+   "sha256": "a97828fb44114109c59af2e4f5b618d71e7c1152ecc594245905af34e51c4df2",
+   "by_kind": {
+    "cho": 364794,
+    "md": 91636,
+    "rs": 0,
+    "instr": 40240,
+    "fix": 170779
+   }
+  },
+  "heldout_files.jsonl": {
+   "records": 1201,
+   "tokens": 490324,
+   "sha256": "c0bc673b27675cea9c57396073ddca028895da471f35698dd47ab9d9033cb492",
+   "by_kind": {
+    "cho": 152509,
+    "md": 79903,
+    "rs": 86809,
+    "instr": 34615,
+    "fix": 136488
+   }
+  }
+ }
+}
