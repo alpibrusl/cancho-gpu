@@ -7,7 +7,7 @@ Matrices are written as little-endian f16 (bf16 narrows to f16 exactly for every
 zero, and refuses a weight that overflows), vectors (norm gains and biases) as f32. Per layer l (two digits), the files are
     lLL.ln1.f32 [d]   lLL.wqkv.f16 [d + 2 dkv, d] (q, k, v rows one after another)   lLL.bqkv.f32 [d + 2 dkv]   lLL.wo.f16 [d, d]
     lLL.ln2.f32 [d]   lLL.wgu.f16 [2 ff, d] (gate rows, then up rows)                lLL.wd.f16 [d, ff]
-and norm.f32 [d], emb.f16 [vocabulary, d] (the input embedding and, tied, the output layer). manifest.json holds the configuration and the report.
+and norm.f32 [d], emb.f16 [vocabulary, d] (the input embedding and, when the checkpoint ties them, the output layer; an untied checkpoint, `tie_word_embeddings` false, adds head.f16 [vocabulary, d]). manifest.json holds the configuration and the report.
 With `--quant nvfp4:G` (docs/resident.md section 26) the four matrices of a block are written, from their f16 values, as the three files `NAME.q`, `NAME.s`, `NAME.g` of nvfp4.py instead of `NAME.f16`, and the manifest
 says `"quant": {"format": "nvfp4", "group": G}`; a session then keeps 0.56 bytes a weight resident and dequantises a layer at a time."""
 import glob
@@ -23,22 +23,45 @@ F16_MAX = 65504.0
 F16_MIN_SUB = 2.0 ** -24
 
 
+class Tensors:
+    """name -> float32 numpy array (bf16 is widened exactly), read from the shards of a checkpoint one tensor at a time: a 7B model's float32 copy (30 GB) is never held whole."""
+
+    def __init__(self, path):
+        from safetensors import safe_open
+        self.path = path
+        if path.endswith(".json"):  # model.safetensors.index.json: tensor name -> shard
+            base = os.path.dirname(path)
+            wm = json.load(open(path))["weight_map"]
+            self.shard = {k: os.path.join(base, v) for k, v in wm.items()}
+        else:
+            with safe_open(path, "pt") as s:
+                self.shard = {k: path for k in s.keys()}
+        self.open = {}
+        self._safe_open = safe_open
+
+    def __contains__(self, name):
+        return name in self.shard
+
+    def __getitem__(self, name):
+        import torch
+        f = self.shard[name]
+        if f not in self.open:
+            self.open[f] = self._safe_open(f, "pt")
+        return self.open[f].get_tensor(name).to(torch.float32).numpy()
+
+
 def load_tensors(path):
-    """name -> float32 numpy array (bf16 is widened exactly)."""
-    import torch
-    from safetensors import safe_open
-    out = {}
-    with safe_open(path, "pt") as s:
-        for k in s.keys():
-            out[k] = s.get_tensor(k).to(torch.float32).numpy()
-    return out
+    return Tensors(path)
 
 
 def find(arg):
+    """(the checkpoint's file: model.safetensors, or model.safetensors.index.json for a sharded one, and config.json)."""
     if os.path.isfile(arg):
         return arg, os.path.join(os.path.dirname(arg), "config.json")
     snaps = glob.glob(os.path.join(arg, "snapshots", "*")) or [arg]
-    return os.path.join(snaps[0], "model.safetensors"), os.path.join(snaps[0], "config.json")
+    index = os.path.join(snaps[0], "model.safetensors.index.json")
+    single = os.path.join(snaps[0], "model.safetensors")
+    return (single if os.path.exists(single) or not os.path.exists(index) else index), os.path.join(snaps[0], "config.json")
 
 
 class Report:
@@ -93,6 +116,9 @@ def convert(src, config, outdir, quant=None):
         wrote.append(name)
 
     put("emb", T["model.embed_tokens.weight"], "f16")
+    if not cfg.get("tie_word_embeddings", True):
+        # an untied output layer (Qwen2.5-7B and larger) is a matrix of its own: head.f16 [vocabulary, d]; a tied one is the embedding table, as before
+        put("head", T["lm_head.weight"], "f16")
     put("norm", T["model.norm.weight"], "f32")
     for l in range(cfg["num_hidden_layers"]):
         q = f"model.layers.{l}."

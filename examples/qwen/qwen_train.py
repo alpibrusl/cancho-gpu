@@ -171,11 +171,12 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     S.put(p("zeros_nd"), np.zeros((n, d)))
     bc = min(tn["bc"], -(-v // 128) * 128)
     vp = -(-v // bc) * bc
-    exact = vp == v and os.path.getsize(w("emb.f16")) == v * d * 2
-    wlm = w("emb.f16") if exact else p("wlm.f16")
+    lm_file = w("emb.f16" if c.tied else "head.f16")  # the output layer: the embedding table when tied, else a matrix of its own (docs/resident.md section 26)
+    exact = vp == v and os.path.getsize(lm_file) == v * d * 2
+    wlm = lm_file if exact else p("wlm.f16")
     if not exact:
         with open(wlm, "wb") as f:
-            f.write(emb.tobytes())
+            f.write(np.fromfile(lm_file, dtype="<f2").reshape(-1, d)[:v].tobytes())
             f.write(np.zeros((vp - v, d), dtype="<f2").tobytes())
     S.put(p("jrow"), np.arange(1, vp + 1))
     S.put(p("maskv"), np.where(np.arange(vp) < v, 0.0, -1e9))

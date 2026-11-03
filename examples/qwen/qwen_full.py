@@ -88,6 +88,7 @@ def write(directory, c, wdir, tokens, steps=1, lr=1e-5, lr_fn=None, wd=0.0, beta
     chunked row count), the first (`NAME.m`) and the second moment (`NAME.v`), and the next session starts from them with `state` (that directory) and `first_step` (the steps already taken, which the
     bias correction and the learning-rate schedule count from); `wdir` of the next session is the `save` directory of the last, whose f16 matrices are the roundings of those masters. The batches
     `tokens` of a continued session are the ones after the steps already taken."""
+    assert c.tied, "full fine-tuning is built for a tied embedding table (docs/resident.md section 24); an untied head (docs/resident.md section 26) is trained with adapters only"
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     w = lambda name: os.path.abspath(os.path.join(wdir, name))

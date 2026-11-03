@@ -27,6 +27,7 @@ class Config:
     nb: int = 8      # sequences of a batch
     eps: float = 1e-6
     theta: float = 1e6
+    tied: bool = True   # the output layer is the embedding table (Qwen2.5-0.5B, 1.5B); False: a matrix `head` of its own (7B)
 
     @property
     def n(self):
@@ -44,7 +45,7 @@ class Config:
 def from_hf(cfg, t=512, nb=8):
     return Config(layers=cfg["num_hidden_layers"], d=cfg["hidden_size"], h=cfg["num_attention_heads"], hkv=cfg["num_key_value_heads"],
                   dh=cfg["hidden_size"] // cfg["num_attention_heads"], ff=cfg["intermediate_size"], v=cfg["vocab_size"], t=t, nb=nb,
-                  eps=cfg["rms_norm_eps"], theta=cfg["rope_theta"])
+                  eps=cfg["rms_norm_eps"], theta=cfg["rope_theta"], tied=cfg.get("tie_word_embeddings", True))
 
 
 def layer_names(l):
@@ -52,11 +53,13 @@ def layer_names(l):
 
 
 def names(c):
-    return ["emb", "norm"] + [n for l in range(c.layers) for n in layer_names(l)]
+    return ["emb", "norm"] + ([] if c.tied else ["head"]) + [n for l in range(c.layers) for n in layer_names(l)]
 
 
 def shapes(c):
     out = {"emb": (c.v, c.d), "norm": (c.d,)}
+    if not c.tied:
+        out["head"] = (c.v, c.d)
     for l in range(c.layers):
         p = f"l{l:02d}."
         out.update({p + "ln1": (c.d,), p + "wqkv": (c.d + 2 * c.dkv, c.d), p + "bqkv": (c.d + 2 * c.dkv,), p + "wo": (c.d, c.d), p + "ln2": (c.d,),
@@ -74,7 +77,7 @@ def init_params(c, seed=1):
             w = 1.0 + 0.2 * rng.standard_normal(sh)
         elif kind == "bqkv":
             w = 0.3 * rng.standard_normal(sh)
-        elif kind == "emb":
+        elif kind in ("emb", "head"):
             w = 0.5 * rng.standard_normal(sh)
         else:
             w = rng.standard_normal(sh) / np.sqrt(sh[1])
@@ -175,6 +178,11 @@ def forward(c, P, tokens, layers=None):
     return xs
 
 
+def out_matrix(P):
+    """The output layer: the untied `head`, or the embedding table."""
+    return P["head"] if "head" in P else P["emb"]
+
+
 def head(c, P, x, targets, chunk=16384):
     """The final norm, the tied output layer and the cross-entropy: per row, lse(logits) - logits[target], and the arg max of the logits. Chunked over the vocabulary."""
     h = rms(x, P["norm"], c.eps)
@@ -185,7 +193,7 @@ def head(c, P, x, targets, chunk=16384):
     best = np.zeros(n, dtype=np.int64)
     tg = np.asarray(targets).reshape(-1)
     for j in range(0, c.v, chunk):
-        lg = h @ P["emb"][j:j + chunk].T
+        lg = h @ out_matrix(P)[j:j + chunk].T
         cm = lg.max(-1)
         am = lg.argmax(-1) + j
         nm = np.maximum(m, cm)
@@ -325,6 +333,7 @@ def lora_forward(c, P, AB, tokens, s):
 
 def head_back(c, P, x, tokens, chunk=16384):
     """Loss (mean over the positions with a next token), and the gradient of it with respect to the residual stream x entering the final norm. Two passes over the vocabulary in chunks."""
+    W = out_matrix(P)
     h = rms(x, P["norm"], c.eps)
     tg = next_targets(tokens).reshape(-1)
     w = np.ones((c.nb, c.t))
@@ -336,18 +345,18 @@ def head_back(c, P, x, tokens, chunk=16384):
     m = np.full(c.n, -np.inf)
     z = np.zeros(c.n)
     for j in range(0, c.v, chunk):
-        lg = h @ P["emb"][j:j + chunk].T
+        lg = h @ W[j:j + chunk].T
         nm = np.maximum(m, lg.max(-1))
         z = z * np.exp(m - nm) + np.exp(lg - nm[:, None]).sum(-1)
         m = nm
     lse = np.log(z) + m
     dh = np.zeros_like(h)
     for j in range(0, c.v, chunk):
-        lg = h @ P["emb"][j:j + chunk].T
+        lg = h @ W[j:j + chunk].T
         dl = np.exp(lg - lse[:, None])
         inside = (tg >= j) & (tg < j + chunk)
         dl[np.nonzero(inside)[0], tg[inside] - j] -= 1.0
-        dh += (dl * (w / nc)[:, None]) @ P["emb"][j:j + chunk]
+        dh += (dl * (w / nc)[:, None]) @ W[j:j + chunk]
     return float((rows * w).sum() / nc), rms_back(dh, x, P["norm"], c.eps)
 
 
@@ -417,6 +426,7 @@ def rms_back_full(dy, x, g, eps):
 
 def head_back_full(c, P, x, tokens, chunk=16384):
     """Like head_back, and also the gradients of the final norm's gain and of the table's rows through the output layer. Returns (loss, dx, dnorm, demb [v, d])."""
+    assert c.tied, "full fine-tuning (docs/resident.md section 24) is built for a tied embedding table"
     h = rms(x, P["norm"], c.eps)
     tg = next_targets(tokens).reshape(-1)
     w = np.ones((c.nb, c.t))

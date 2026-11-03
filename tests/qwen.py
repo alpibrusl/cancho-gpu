@@ -15,6 +15,7 @@
    a random B so that every gradient is non-zero, and with B = 0 where A's gradient is exactly zero); the session's gradient of every adapter matrix (per projection, split out of the fused matrices) against the
    specification's, on the CPU interpreter and the GPU; the three-kernel cross-entropy's gradient `ce_grad`; the grouped-query sum of `att_dkv` for a group of 3; AdamW on the adapters over a table of batches against
    a float64 AdamW (the fused block-diagonal B keeps its zeros); mutants of the specification's backward and of the kernels, each far from the session's gradients.
+6'. An untied output layer (docs/resident.md section 26): forward and every adapter gradient with a `head` that is not the embedding table.
 6. Heads of 128 dimensions (docs/resident.md section 23; roadmap M7.4): a 1-layer model with 4 query heads over 2 key/value heads of 128: forward, every adapter gradient, and a rotation-sign mutant.
 7. Full fine-tuning (docs/resident.md section 24; roadmap M7.4 part B): the lookup and its gradient as one-hot products, the column sums, AdamW on every tensor; the specification's gradients against finite
    differences, the session's 6 steps against a float64 AdamW on all parameters, four mutants.
@@ -420,6 +421,42 @@ def wide_head_check(cpu, metal, d):
     say(e > 5 * TOL, f"kernel mutant (heads of 128, the rotation's sign): the session's residual stream is {e:.1e} from the specification's, so the check fails")
 
 
+def untied_head_check(cpu, metal, d):
+    """An untied output layer (docs/resident.md section 26: Qwen2.5-7B and larger have `lm_head.weight`, a matrix of its own; the 0.5B and 1.5B tie it to the embedding table): a 2-layer model whose `head` differs from
+    its `emb`: the forward pass (loss, arg max) and every adapter gradient of the session equal the specification's, which reads `head`; and the specification reading the table instead (the tied one) is far
+    from both, so the check would fail on a session that took the table for the head."""
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2, tied=False)
+    P = R.init_params(c, seed=6)
+    P["emb"] = P["emb"] * 0.3
+    P["head"] = P["head"] * 0.3
+    assert "head" in P and not np.array_equal(P["head"], P["emb"])
+    tok = np.random.default_rng(3).integers(0, c.v, (c.nb, c.t))
+    xs = R.forward(c, P, tok)
+    rows, best = R.head(c, P, xs[-1], R.next_targets(tok), chunk=100)
+    Pt = {k: v for k, v in P.items() if k != "head"}
+    ct = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2, tied=True)
+    rows_t, best_t = R.head(ct, Pt, xs[-1], R.next_targets(tok), chunk=100)
+    valid = np.arange(c.n) % c.t != c.t - 1
+    say(float(np.abs(rows - rows_t)[valid].max()) > 0.5 and (best != best_t).mean() > 0.5, f"spec: an untied model's loss differs from the tied reading of the same files by {float(np.abs(rows - rows_t)[valid].max()):.2f} at most, the arg max at {(best != best_t).mean() * 100:.0f}% of positions")
+    AB = R.init_lora(c, 16, 5, b_std=0.05)
+    fd, _ = R.fd_check(c, P, AB, tok)
+    say(max(fd.values()) < 1e-5, f"spec: the backward through an untied head equals finite differences for all {len(fd)} adapter matrices ({max(fd.values()):.1e})")
+    _, G = R.lora_loss_grads(c, P, AB, tok)
+    for binary, extra, sub, label in ((cpu, ["--target", "nvidia-ada"], "ua", "CPU session"), (metal, [], "ub", "Metal session")):
+        if not binary:
+            continue
+        dd = os.path.join(d, sub)
+        os.makedirs(dd, exist_ok=True)
+        forward_check(binary, extra, dd, label + " (untied head)", c, P, tok, xs, rows, best)
+        rel, cos, _, _ = lora_check(binary, extra, dd, label, c, P, tok, AB, G)
+        say(rel < 4e-3 and cos > 0.9995, f"{label}: with an untied head the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {rel:.1e}, smallest cosine {cos:.5f})")
+        if label.startswith("CPU"):
+            # the writer's mutant: the same files read as a tied model (the embedding table taken for the output layer)
+            os.makedirs(os.path.join(dd, "tied"), exist_ok=True)
+            relm, cosm, _, _ = lora_check(binary, extra, os.path.join(dd, "tied"), label, ct, P, tok, AB, G)
+            say(relm > 5 * 4e-3, f"writer mutant (the embedding table taken for the head of an untied model): the gradients are {relm:.1e} from the specification's, so the check fails")
+
+
 def kernel_mutants_lora(cpu, d):
     c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
     P = R.init_params(c, seed=1)
@@ -743,6 +780,7 @@ def main():
     lora_checks(cpu, metal, d)
     lora_group3_check(cpu, metal, d)
     wide_head_check(cpu, metal, d)
+    untied_head_check(cpu, metal, d)
     kernel_mutants_lora(cpu, d)
     full_checks(cpu, metal, d)
     adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "lc2"), "CPU session")
