@@ -6,7 +6,8 @@ edition 5;
 //
 // The kernels are compiled and the resident data read once; then one request line on standard input (the numbers of the `input`
 // directives) is answered by one line on standard output (the numbers of the `answer` directives), until standard input ends.
-// A program of its own because reading standard input is an authority `cancho-gpu` does not have (`tests/authority.sh`).
+// A program of its own because reading standard input is an authority `cancho-gpu` does not have (`tests/authority.sh`). It writes files only for the
+// `save` directives of the session file, on the request `checkpoint` (`docs/resident.md` section 19).
 //
 // Built by `scripts/build-session.sh`.
 
@@ -16,6 +17,7 @@ import text;
 import err;
 import cli;
 import session;
+import ckpt;
 
 fn words() -> [] int {
     return 100000000;
@@ -39,7 +41,7 @@ fn usage[&i](io: &!i Io) -> [err_write] int {
     return 2;
 }
 
-fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_read, io_write, err_write, fs_read(""), file_read, args] int {
+fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_read, io_write, err_write, fs_read(""), fs_write(""), file_read, file_write, args] int {
     if arg_count(args) != 2 && arg_count(args) != 4 {
         return usage(io);
     }
@@ -86,7 +88,7 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
             more = false;
         } else {
             m[mem.text_slot()] = tmark + n;
-            if session.serve_line(m, t, fm, io, sess, text.handle(tmark, n)) < 0 {
+            if ckpt.serve_cpu(m, t, fm, io, fs, sess, text.handle(tmark, n)) < 0 {
                 return cli.report(m, t, io);
             }
             mem.release_to(m, mark);

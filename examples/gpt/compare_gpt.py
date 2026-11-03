@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Train the same GPT on the same text with cancho-gpu (a Metal session) and torch (MPS, float32 and float16 autocast; CPU with --cpu), and compare the loss curves and the time
-(docs/resident.md section 15). The text is the Markdown documentation of two directories (no download), characters as tokens; the model, its start (gpt_ref.init_params), the
+(docs/resident.md sections 15, 17, 18). The text is the Markdown documentation of two directories (no download), characters as tokens; the model, its start (gpt_ref.init_params), the
 batches and AdamW are the same for both.
 
     python3 examples/gpt/compare_gpt.py [--steps 1500] [--layers 4] [--d 256] [--heads 4] [--t 128] [--b 32] [--lr 1e-3] [--only cancho,torch-mps,torch-mps-amp]"""
@@ -45,38 +45,29 @@ def val_loss(c, params, val_x, val_y):
 
 def run_cancho(c, params, tok, tgt, val_x, val_y):
     import subprocess
-    # the time: a session that answers only the loss (a parameter dump of 3 million numbers would be most of a request)
-    sess = G.write(os.path.join(DIR, "cancho-time"), c, tok, tgt, STEPS, lr=LR, wd=WD, params=params, lr_fn=lr_at)
+    # One session that answers only the loss. The time is the requests that run steps; at each stretch's end a `checkpoint` request (not timed) has the device program write the
+    # parameters to a file (`save`, docs/resident.md section 19) and the validation loss is the float64 forward of what that file holds.
+    ckpt = os.path.join(DIR, "cancho-ckpt.bin")
+    if os.path.exists(ckpt):
+        os.remove(ckpt)
+    sess = G.write(os.path.join(DIR, "cancho"), c, tok, tgt, STEPS, lr=LR, wd=WD, params=params, lr_fn=lr_at, save=ckpt)
     p = subprocess.Popen([SESSION, sess], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     p.stdin.write("1\n")
     p.stdin.flush()
-    if not p.stdout.readline():
+    first = p.stdout.readline()
+    if not first:
         raise SystemExit("cancho session: " + p.stderr.read()[:300])
-    secs, done = 0.0, 1
+    curve, secs, done = [(1, float(first.split()[0]), None)], 0.0, 1
     while done < STEPS:
         k = min(EVAL_EVERY, STEPS - done)
         t0 = time.perf_counter()
         p.stdin.write(f"{k}\n")
         p.stdin.flush()
-        p.stdout.readline()
+        loss = float(p.stdout.readline().split()[0])
         secs += time.perf_counter() - t0
         done += k
-    p.stdin.close()
-    p.wait()
-    # the curve: the same training, with every parameter in the answer after each stretch
-    sess = G.write(os.path.join(DIR, "cancho"), c, tok, tgt, STEPS, lr=LR, wd=WD, params=params, lr_fn=lr_at, dump=True)
-    p = subprocess.Popen([SESSION, sess], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    p.stdin.write("1\n")
-    p.stdin.flush()
-    first = p.stdout.readline()
-    curve, done = [(1, float(first.split()[0]), None)], 1
-    while done < STEPS:
-        k = min(EVAL_EVERY, STEPS - done)
-        p.stdin.write(f"{k}\n")
-        p.stdin.flush()
-        nums = [float(v) for v in p.stdout.readline().split()]
-        done += k
-        curve.append((done, nums[0], val_loss(c, G.parse_dump(c, params, nums), val_x, val_y)))
+        G.checkpoint(p, c)
+        curve.append((done, loss, val_loss(c, G.read_checkpoint(c, ckpt), val_x, val_y)))
     p.stdin.close()
     p.wait()
     return secs / (STEPS - 1) * 1000, curve

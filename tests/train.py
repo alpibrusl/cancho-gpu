@@ -8,6 +8,7 @@
 3. (Metal session given) a 32-32-1 network on 4096 samples, 100 steps: the loss after 1, 10 and 100 steps equals the reference's to 1e-3 relative, and the CPU session's at the small size to 1e-4;
    the device trains in float32 and the reference in float64, so they part company later (after 1000 steps the loss is 0.00076 against 0.00108), and this does not claim more than 100.
 3c. A GPT (examples/gpt: attention, LayerNorm, GELU, a cross-entropy over a padded vocabulary, AdamW, all on the matrix unit): the gradients of all 28 tensors against a hand-written float64 backward (finite-difference checked in gpt_ref.py) and 25 AdamW steps against a float64 AdamW.
+3d. A GPT checkpoint (docs/resident.md section 19): the same 25 steps with `save` directives, the request `checkpoint` writes one file, and it holds bit for bit the parameters the session answers (CPU and Metal).
 3a. A mixed-precision network (f16 weights and activations, `mma` kernels, f32 accumulation): near the float64 reference to 2e-3 early, learning, and the Metal session equal to the CPU one to 2e-2.
 3b. Minibatches (`batch` in mlp_session.write): the same checks on a table of 8 batches, through two laps.
 4. (torch given) torch.optim.Adam in float32 on the same data and start gives the loss of the device after 100 steps to 1e-3 relative.
@@ -167,6 +168,22 @@ def main():
     if metal:
         out_lm = serve(metal, lsess, "1\n4\n5\n15\n")
         say(all(close(a[0], b[0], 5e-2) for a, b in zip(out_lm, out_l)), f"Metal session on the GPT equals the CPU session's losses to 5e-2: {[round(v[0], 4) for v in out_lm]}")
+    # checkpoints (docs/resident.md section 19): the same 25 steps, with every AdamW master weight a `save` into one file; the request `checkpoint` writes it, and it holds exactly the
+    # parameters the session answers (a text answer of the same tensors, f32 values printed shortest-that-reads-back), in the order of names()
+    for who, prog_, extra_ in (("CPU", cpu, ["--target", "apple-m-series"]), ("Metal", metal, [])):
+        if prog_ is None:
+            continue
+        raw = os.path.join(d, f"gpt-{who}.bin")
+        ksess = GS.write(os.path.join(d, f"gpt-save-{who}"), gc, gtok, learn_tgt, 25, lr=3e-3, wd=0.1, save=raw, dump=True)
+        got = serve(prog_, ksess, "25\ncheckpoint\n", extra_)
+        words = np.fromfile(raw, dtype="<f4")
+        want_words = sum(int(np.prod(sh)) for sh in GS.shapes(gc).values())
+        say(words.size == want_words and got[1] == [4.0 * want_words], f"{who} session, a GPT checkpoint: {words.size} f32 words in the file, {int(got[1][0])} bytes answered")
+        say(np.array_equal(words, np.array(got[0][1:], dtype=np.float32)), f"{who} session, a GPT checkpoint: the file holds, bit for bit, the parameters the session answers after the same steps")
+        back = GS.read_checkpoint(gc, raw)
+        ref_back = GS.parse_dump(gc, gparams, got[0])
+        say(all(np.array_equal(back[k], ref_back[k].astype(np.float32).astype(np.float64)) and back[k].shape == gparams[k].shape for k in back), f"{who} session, a GPT checkpoint: read_checkpoint gives every tensor its shape and values")
+        say(not np.array_equal(words, np.concatenate([gparams[k].astype(np.float32).reshape(-1) for k in GS.names(gc)[0] + GS.names(gc)[1]])), f"{who} session, a GPT checkpoint: the file is the trained parameters, not the start")
     # serving (docs/resident.md section 16): a forward-only session answers one position's logits of a window; they equal the float64 forward's
     sc = GR.Config(v=65, vp=128, t=64, d=128, h=2, layers=2, b=1)
     sp = GR.init_params(sc, 3)

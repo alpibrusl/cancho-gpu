@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Serve the GPT that gpt_session.py trains (docs/resident.md section 16; roadmap M2). `train` trains it in a Metal session and saves a checkpoint (an .npz of the parameters and the
-vocabulary); `generate` loads the checkpoint, starts a forward-only Metal session (gpt_session.write(serve=True)) and decodes greedily, checking every token against torch on the same
+"""Serve the GPT that gpt_session.py trains (docs/resident.md section 16; roadmap M2). `train` trains it in a Metal session whose `save` directives write the checkpoint (the f32 weights, `ckpt.bin`; docs/resident.md section 19) and keeps it as an .npz with the
+vocabulary; `generate` loads the checkpoint, starts a forward-only Metal session (gpt_session.write(serve=True)) and decodes greedily, checking every token against torch on the same
 weights (float32 on MPS, recomputing the window as the session does, and with a key/value cache), and reports tokens a second.
 
     python3 examples/gpt/serve_gpt.py train    [--steps 1500] [--layers 4] [--d 256] [--heads 4] [--t 128] [--ckpt build/gpt/ckpt.npz]
@@ -43,7 +43,9 @@ def train():
         warm = max(1, steps // 20)
         return lr * s / warm if s <= warm else lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * (s - warm) / max(1, steps - warm))))
 
-    sess = G.write(os.path.join(DIR, "train"), c, tok, tgt, steps, lr=lr, params=params, lr_fn=lr_at, dump=True)
+    # the parameters leave the session through `save` (docs/resident.md section 19): the raw f32 weights in CKPT.bin, written by the device program on `checkpoint`
+    raw = os.path.splitext(CKPT)[0] + ".bin"
+    sess = G.write(os.path.join(DIR, "train"), c, tok, tgt, steps, lr=lr, params=params, lr_fn=lr_at, save=raw)
     p = spawn(sess)
     t0 = time.perf_counter()
     p.stdin.write(f"{steps}\n")
@@ -51,11 +53,12 @@ def train():
     nums = [float(v) for v in p.stdout.readline().split()]
     if not nums:
         raise SystemExit("session: " + p.stderr.read()[:300])
+    written = G.checkpoint(p, c)
     p.stdin.close()
     p.wait()
-    trained = G.parse_dump(c, params, nums)
+    trained = G.read_checkpoint(c, raw)
     np.savez(CKPT, vocab=np.array(vocab), cfg=np.array([len(vocab), 128, t, d, heads, layers]), **trained)
-    print(f"trained {steps} steps in {time.perf_counter() - t0:.0f} s, last batch loss {nums[0]:.3f}; checkpoint {CKPT}")
+    print(f"trained {steps} steps in {time.perf_counter() - t0:.0f} s, last batch loss {nums[0]:.3f}; checkpoint {raw} ({written[0]} bytes) and {CKPT}")
 
 
 def load():

@@ -27,7 +27,9 @@ never touches
 if [ "$report" != "$want" ]; then
   echo "authority changed:"; echo "$report"; exit 1
 fi
-# `cancho-gpu-session` (session/main.cho) reads standard input, which `cancho-gpu` may not, and writes no file.
+# `cancho-gpu-session` (session/main.cho) reads standard input, which `cancho-gpu` may not. It also writes files, for the `save` directives of its session file
+# on the request `checkpoint` (docs/resident.md section 19): that `fs_write` and `file_write` were added to its report is the owner's decision (docs/resident.md section 19,
+# "The authority"), and a change to this list is made the same way.
 "$CANCHO" authority --std $(ls src/*.cho | grep -v '/main\.cho$') session/main.cho > "${TMPDIR:-/tmp}/cancho-gpu-session-authority.$$" 2>&1
 trap 'rm -f "${TMPDIR:-/tmp}/cancho-gpu-authority.$$" "${TMPDIR:-/tmp}/cancho-gpu-session-authority.$$"' EXIT
 report=$(sed -n '/^performs/,/^provably pure/p' "${TMPDIR:-/tmp}/cancho-gpu-session-authority.$$" | sed '$d')
@@ -35,7 +37,9 @@ want='performs
     args
     err_write
     file_read
+    file_write
     fs_read("")
+    fs_write("")
     heap
     io_read
     io_write
@@ -48,4 +52,4 @@ if [ "$report" != "$want" ]; then
   echo "the session program's authority changed:"; echo "$report"; exit 1
 fi
 echo "authority: args, err_write, file_read, fs_read, fs_write, heap, io_write; no network, no foreign code"
-echo "authority of cancho-gpu-session: args, err_write, file_read, fs_read, heap, io_read, io_write; no fs_write, no network, no foreign code"
+echo "authority of cancho-gpu-session: args, err_write, file_read, file_write, fs_read, fs_write (for save, on checkpoint; owner-approved), heap, io_read, io_write; no network, no foreign code"
