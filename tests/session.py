@@ -186,6 +186,11 @@ def check(binary, quiet=False):
             alias_checks(binary, d)
         except Exception as e:
             say(False, f"the alias checks crashed: {e!r}")
+        if METAL:
+            try:
+                share_checks(binary, d)
+            except Exception as e:
+                say(False, f"the shared-resident checks crashed: {e!r}")
     finally:
         shutil.rmtree(d)
     return bad == 0
@@ -415,6 +420,44 @@ schedule chain for nvidia-ada     { threads 128 }
             answers.append(r.stdout.strip())
         say(answers[0] == answers[1] and float(answers[0]) == 1.0 + kk * 0.5, f"a chain of {kk} programs with 32 MB outputs answers {answers[0]} with and without aliases")
         say(peaks[0] > 0 and peaks[1] > 0 and peaks[0] - peaks[1] > 400 * 1024 * 1024, f"the aliased chain's peak memory is {peaks[1] / 1e6:.0f} MB, the unaliased one's {peaks[0] / 1e6:.0f} MB (at least 400 MB less)")
+
+
+def share_checks(binary, d):
+    """docs/resident.md section 23.4: on the device a binary resident file that several programs read (a layer's weights, taken by its forward and its backward) is ONE buffer, and a carry's
+    destination never is. 12 programs reading the same 32 MB file peak far below 12 programs reading 12 copies of it, with the same answers; and a program whose resident `a` is carried to
+    (q1.y -> q1.a) leaves the program reading the same file (q2) unchanged: q2 answers 1.5 on every request while q1's grows (a shared buffer would grow q2's too)."""
+    import numpy as np
+    adir = os.path.join(d, "alias")
+    chain = os.path.join(adir, "chain.chx")
+    big, kk = 1 << 23, 12
+    for i in range(kk):
+        shutil.copyfile(os.path.join(adir, "big_a"), os.path.join(adir, f"copy{i}"))
+
+    def session(shared):
+        t = [f"program q{i} {chain} n={big} bn=1024" for i in range(1, kk + 1)]
+        t += [f"resident q{i}.a {adir}/{'big_a' if shared else f'copy{i - 1}'} f32" for i in range(1, kk + 1)]
+        t += [f"resident q{i}.b {adir}/big_b f32" for i in range(1, kk + 1)]
+        t += ["steps"] + [f"answer q{i}.s" for i in (1, kk)]
+        return "\n".join(t) + "\n"
+
+    peaks, answers = [], []
+    for shared in (False, True):
+        sp = os.path.join(adir, f"share{int(shared)}.session")
+        open(sp, "w").write(session(shared))
+        r = subprocess.run(["/usr/bin/time", "-l", binary, sp], input="1\n", capture_output=True, text=True, timeout=300)
+        peak = [int(line.split()[0]) for line in r.stderr.split("\n") if "peak memory footprint" in line]
+        peaks.append(peak[0] if peak else -1)
+        answers.append(r.stdout.strip())
+    say(answers[0] == answers[1] and answers[0] != "", f"{kk} programs reading one file and {kk} reading copies of it answer the same ({answers[0]})")
+    say(peaks[0] > 0 and peaks[1] > 0 and peaks[0] - peaks[1] > 250 * 1024 * 1024, f"the programs reading one resident file hold {peaks[1] / 1e6:.0f} MB, those reading {kk} copies {peaks[0] / 1e6:.0f} MB (at least 250 MB less)")
+    t = [f"program q1 {chain} n={big} bn=1024", f"program q2 {chain} n={big} bn=1024", f"resident q1.a {adir}/big_a f32", f"resident q2.a {adir}/big_a f32",
+         f"resident q1.b {adir}/big_b f32", f"resident q2.b {adir}/big_b f32", "carry q1.y -> q1.a", "steps", "answer q1.s", "answer q2.s"]
+    sp = os.path.join(adir, "carry_share.session")
+    open(sp, "w").write("\n".join(t) + "\n")
+    r = subprocess.run([binary, sp], input="1\n1\n1\n", capture_output=True, text=True, timeout=300)
+    rows = [[float(x) for x in line.split()] for line in r.stdout.strip().split("\n")]
+    say(len(rows) == 3 and all(abs(x[1] - 1.5) < 1e-6 for x in rows) and rows[1][0] > 1.9 and rows[2][0] > 1.9,
+        f"a carried resident file is not shared with the program that reads the same file (q1 grows as it carries, q2 stays 1.5; a shared buffer would grow q2 too): {rows}")
 
 
 def save_checks(binary, d):

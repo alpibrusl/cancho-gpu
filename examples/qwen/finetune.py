@@ -23,15 +23,17 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import data  # noqa: E402
 import qwen_ref as R  # noqa: E402
 import qwen_session as S  # noqa: E402
 import qwen_train as T  # noqa: E402
 
 arg = lambda n, d: sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
-WDIR = arg("--weights", "/private/tmp/claude-502/t/qwen05")
+WDIR = arg("--weights", data.WEIGHTS)
 METAL = arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 EVERY = int(arg("--every", 30))
 R_, ALPHA = 16, 32.0
+LEAN = "--lean" in sys.argv  # the memory-lean session (docs/resident.md section 23.4)
 
 
 def lr_schedule(steps, lr):
@@ -92,7 +94,7 @@ def train(work, c):
         n = min(seg, steps - s0)
         d = os.path.join(work, "s_train")
         sess = T.write(d, c, WDIR, batches[s0:s0 + n], AB, r=R_, alpha=ALPHA, loss_scale=16.0, train=True, steps=n, lr=lr, lr_fn=lr_fn, save=os.path.join(d, "ad.bin"), save_state=os.path.join(d, "st"),
-                       state=state, first_step=s0)
+                       state=state, first_step=s0, lean=LEAN)
         p = spawn(sess)
         for j in range(n):
             out, secs = ask(p, "1")
@@ -118,7 +120,7 @@ def train(work, c):
 
 def heldout_loss(c, tokens, AB, d):
     """The mean loss over the held-out batches ([k, 8, 512]) of a forward pass with the adapters AB (the session of training with no optimiser; one batch a request)."""
-    sess = T.write(d, c, WDIR, tokens, AB, r=R_, alpha=ALPHA, loss_scale=16.0, train=False, steps=1)
+    sess = T.write(d, c, WDIR, tokens, AB, r=R_, alpha=ALPHA, loss_scale=16.0, train=False, steps=1, lean=LEAN)
     p = spawn(sess)
     ls = [float(ask(p, "1")[0].split()[0]) for _ in range(len(tokens))]
     close(p)

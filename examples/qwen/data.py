@@ -9,7 +9,9 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-MODEL = os.path.expanduser("~/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B")
+# The model of the run: QWEN_MODEL names its Hugging Face cache directory (docs/resident.md section 23: the same code runs Qwen2.5-0.5B and 1.5B) and QWEN_WEIGHTS the directory convert.py wrote.
+MODEL = os.path.expanduser(os.environ.get("QWEN_MODEL", "~/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B"))
+WEIGHTS = os.environ.get("QWEN_WEIGHTS", "/private/tmp/claude-502/t/qwen05")
 
 
 def snapshot(model=MODEL):

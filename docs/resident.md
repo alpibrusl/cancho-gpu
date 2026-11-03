@@ -860,3 +860,91 @@ The run is also what the section 21 text guessed ("not a defect of the gradients
 * **`tests/session.py --mutants`, run to the end with no pipe (the M7.2 run had only the 4 `alias` mutants alone): 34 of 34 mutants killed (the 30 earlier and the 4 of `alias`: an alias onto the buffer of an output a later program still reads, backwards, of an answered output, an output aliased twice), 145 checks `ok`, none failing, exit 0.** The first complete run reported one `FAIL`: the text of the mutant "a link from a program to itself is accepted" (`if sp >= dp {`) occurs twice in `src/session.cho` since `alias` added its own copy of that test, so the mutant was applied to the first occurrence and the harness (rightly) refused an ambiguous edit. The mutant now includes the line after it and is unique; this is a bug of the test, found only by running the whole thing.
 * New check: the handover between sessions (`tests/qwen.py`, `restart_check`: 3 checks, equality and two mutants that must fail; in the gate).
 * **Limits.** One run of each runtime (the 300-step curve is one seed, one data order; the timings are medians over 295 to 298 steps of one run). The held-out set is 7 files and 16 k tokens. cancho-gpu's held-out numbers come from separate sessions after the run, peft's from inline evaluations; both use the same 4 batches. peft's reference is MPS float32, not the CPU of section 21 (the 40-step run of 22.4 is the CPU one). The float16 autocast baseline was run as the roadmap's table runs it (no loss scaling) and then once with a loss scale of 1024, whose step time (1,178 ms median, 1,314 mean) is *not* reported as a speed: it ran at the same time as the CPU job of 22.4. A 60-step session limit (a 512 MiB table) means five session starts in a 300-step run; a longer run needs the embedding gather (M7.4's G1) or a larger pool. Generation recomputes the window and starts a session per token. Contexts above 512, other models, other machines, NVIDIA: not done.
+
+
+## 23. Qwen2.5-1.5B with LoRA (roadmap M7.4, part A; measured)
+
+`docs/roadmap-models.md` section 6 asked, as the first half of M7.4, for the same fine-tuning on Qwen2.5-1.5B (3.1 GB of f16 weights, activations "21 GB at most" at 4 x 512), and for the memory clause that M7.3 missed. Full fine-tuning of the 0.5B model (G1, the embedding gather and scatter-add) is part B, section 24.
+
+### 23.1 Design (written before the numbers)
+* **The model.** `config.json` of Qwen/Qwen2.5-1.5B (read, from the Hugging Face cache; nothing downloaded): 28 layers, hidden 1,536, **12 query heads over 2 key/value heads of 128 dimensions** (groups of 6; the 0.5B has 14 over 2 of 64, groups of 7), intermediate 8,960, vocabulary 151,936 (padded to 152,064 as before), tied embeddings, rope theta 1e6, rms eps 1e-6, biases on q/k/v. 1,543,569,408 matrix values (233 M of them the tied embedding) = 3.09 GB as f16; non-embedding 1.31 B.
+* **What should change in the code: nothing but a tile.** `qwen_session.py` and `qwen_train.py` already read every dimension from the configuration (`qwen_ref.Config`, `from_hf`), the converter reads the checkpoint's config, and no kernel names 64 or 896 outside its schedule. The one risk, from section 20's tile measurements ("every 64 x 128 tile falls to 0.6 to 1.7 TFLOPS: the accumulator no longer fits the registers"), is `att_o`, whose output tile is `[bm, dh]` and was 64 x 64; with `dh` = 128 it is 64 x 128. `att_dkv` has the same `dh` columns at `bm 32`. **Prediction: `att_o` needs `bm 32` (a 32 x 128 accumulator) and everything else runs as it is.**
+* **Sessions.** A step's embeddings are an f16 `table` of 4,096 x 1,536 x 2 B = 12.6 MB, so the 512 MiB table of a session holds 35 steps at most (60 for the 0.5B): runs are sessions of 30 handing the adapters and Adam's moments over (section 22.1).
+* **Work.** A forward pass is 13.0 TFLOP (2 x 4,096 x 1.543 B for the products, 0.36 for the attention), a LoRA step about 26 TFLOP; at the 11 to 12 TFLOPS of section 20 that is 1.1 s and 2.3 to 2.4 s. torch's baseline is expected near 1.2x slower as in M7.3.
+* **Memory.** The 0.5B step peaks at 15.6 GB with `alias`. Scaling the pieces (the f32 gate/up product 4,096 x 17,920 is 293 MB a layer, against 159 MB) gives about 2 times for the 1.5B, so **about 30 GB (measured: 27.98 GB, 23.4); torch's footprint is expected near 2 times its 0.5B 26 to 31 GB (measured: 40 to 47 GB, 23.5), so the half-of-torch clause is out of reach without work on where the memory goes (23.4: it was reached, narrowly)**.
+* **Run.** The corpus, split, schedule (linear warm-up over a tenth of the steps, cosine, lr 2e-4), optimiser and initial adapters (`init_lora` seed 7) of section 22, **150 steps** (not 300: a step is 2.5 s and torch's 2.8 s; three torch runs plus ours is the budget) in 5 sessions of 30, held-out loss every 30 steps; peft on MPS in float32 and float16 autocast, the latter with a **loss scale of 1024** (section 22.2 showed the unscaled run is off) and, once, unscaled. The corpus is rebuilt from this machine's files: the held-out tokens are those of M7.3 (sha1 `fb2bb7a45830`), the training tokens are not (`4f21275189df` against `72f23a2d9f25`: the checkouts changed).
+
+### 23.2 The forward pass (`python3 examples/qwen/compare_qwen.py WORK --torch --spec`, with `QWEN_MODEL` and `QWEN_WEIGHTS` naming the 1.5B)
+`data.py` takes the model from `QWEN_MODEL` (default: the 0.5B) and the scripts take the converted weights from `QWEN_WEIGHTS`; the converter, the specification, both session writers and the comparison scripts needed nothing else (the 0.5B path and its tests are unchanged). The fixed batch of 8 x 512 (the committed tokens), transformers 5.2 float32 on the CPU:
+
+| | cancho-gpu session | transformers float32 | exit |
+|---|---|---|---|
+| mean loss over the 4,088 positions with a next token | **2.237675** | 2.237670 | within 2e-3: **+5.2e-6** |
+| arg max of the logits equal at | **99.93%** (3 of 4,096 differ) | | at least 99% |
+| the 3 that differ: transformers' gap between its two largest logits | 0.0005, 0.0006, 0.0008 | | near-ties |
+| the binary64 specification | loss 2.237743 (+7.3e-5), arg max equal at 100.00%; the session is -6.9e-5 from it | | |
+| residual stream after block k, relative L2 | 1.7e-3 (k = 1), 2.4e-4 (2), 1.4e-4 to 1.5e-4 (3 to 14), 1.7e-4 to 2.9e-4 (20 to 26), 7.5e-4 (27), **8.3e-4 (28)** | | |
+
+The error is set in the first block (1.7e-3, Qwen's outlier channels again) and falls to 1.4e-4; only the last two blocks, where the residual stream's largest values appear, raise it (relative to the largest value, 1.1e-2 at block 27).
+**Speed** (4,096 tokens, loss included): cancho-gpu **1,116 ms** (median of 5 requests; first 1,881), **3,669 tokens a second**; torch MPS float32 1,258 ms (3,257), float16 autocast 1,188 ms (3,449): **1.13 and 1.06 times faster**; 13.0 TFLOP in 1.116 s is **11.7 TFLOPS**.
+**The prediction held, with a measured cost of missing it.** With the 0.5B's `att_o` schedule (`bm 64`: a 64 x 128 accumulator) the forward took 1,314 ms, `att_o` alone 219 ms (7.7 ms a layer, 14 times what `att_s` takes for the same output); `bm 32` takes 0.63 ms a layer (17.6 ms in all) and `bm 16` 0.73, and the forward falls to 1,117 ms. `qwen_session.py` and `qwen_train.py` now choose `bm 32` when the head has more than 64 dimensions. Nothing else changed: the five products are 91% of the 1,117 ms of kernels (1,015 ms for 12.6 TFLOP: 12.4 TFLOPS).
+
+### 23.3 The gradients and the step (`compare_lora.py WORK`, peft 0.21 float32 on the CPU)
+Rank 16, alpha 32, all seven projections of the 28 blocks (18.5 M adapter parameters; 392 matrices). Smallest cosine / largest relative norm error over the 28 layers:
+
+| projection | A cos | A rel | B cos | B rel |
+|---|---|---|---|---|
+| q | 0.999506 | 3.18e-2 | 0.999564 | 2.95e-2 |
+| k | 0.999382 | 3.52e-2 | 0.999566 | 2.95e-2 |
+| v | 0.999954 | 9.67e-3 | 0.999948 | 1.02e-2 |
+| o | 0.999977 | 6.89e-3 | 0.999973 | 7.31e-3 |
+| gate | 0.999962 | 8.67e-3 | 0.999964 | 8.52e-3 |
+| up | 0.999958 | 9.28e-3 | 0.999968 | 7.99e-3 |
+| down | 0.999974 | 7.22e-3 | 0.999973 | 7.34e-3 |
+
+**Exit (cosine at least 0.995): 392 of 392 matrices at 0.99938 or better** (with B = 0, the 196 B matrices at 0.999507; every A gradient exactly 0 in both). The loss is peft's to +5.5e-6 (B = 0) and +6.4e-5 (random B). The error is concentrated in **layer 0** (3.5% relative; 0.3% to 0.9% from layer 1 on, 0.3% in the last layers) and in q and k, as the 0.5B's was (1.7%): the layer-0 residual stream holds the outlier channels, and the f16 operands round them. The mutants of the gradient (section 21) run on a model with 128-dimensional heads too (`tests/qwen.py`, `wide_head_check`: forward, all 14 adapter gradients on the CPU and the GPU and a rotation-sign mutant, killed).
+**The step: 2,460 ms (3 runs 2,460.2, 2,457.3, 2,462.8), 1,665 tokens a second, 28.0 GB peak footprint**; the step is 26 TFLOP, so 10.6 TFLOPS. Where it goes (`CANCHOGPU_PROFILE=2`): the four large LoRA products and their input gradients are 1,548 ms (63%: gate/up forward 515 and input gradient 526, down 263 and 244), the head 150 and 186, the q/k/v and o products and their input gradients 206, the adapters' own narrow products about 100, attention 150 (`att_dkv` 52, `att_o` 34, `att_s` 31, `att_dsoft` 21, `att_sm` 11), `swiglu` 53, the cross-entropy 20, norms and residuals 20.
+
+### 23.4 Where the memory goes, and what was done about it
+`examples/qwen/session_memory.py SESSION` adds up what a session file declares (every program output, aliases sharing a buffer, every resident file) from the kernels' declared shapes. For the step above it gives **20.57 GB of outputs + 6.82 GB of resident declarations (3.64 GB of distinct files) = 27.4 GB, against the process's 27.98 GB measured**: the accounting is the measure. The outputs, per kind summed over the 28 layers: the f32 gate/up product 8.22 GB (`gu.y`, 293 MB a layer: it is read by the backward), the logits 2.49 (f32, 4,096 x 152,064), the SwiGLU output 2.06 (f16), the probabilities 1.41, the two f32 residual streams 1.41, the logits' gradient 1.25 (f16), the f16 RMSNorm outputs 0.71, the heads-major q, k, v 0.35 each and the attention output 0.35; the rest is under 0.15 each. So **the gate/up product is 40% of the activations and the logits 12%**; attention is small because the scores are aliased across layers (section 21.4).
+Two changes, each held to the accounting before it was believed:
+* **A resident file that two programs read is one buffer** (`device/metal-session-main.cho`; the weights of a layer are taken by its forward and by its backward, and the session uploaded each program's copy: section 21.5's "+1.3 GB" is 3.2 GB here). A read-only parameter whose file and size match one already given a buffer takes it; a carry's destination is never shared (it is written). Predicted -3.18 GB (6.82 declared - 3.64 distinct); **measured 27.98 -> 24.84 GB (-3.14)**, step time unchanged (2,455 ms). `tests/session.py --metal`: 12 programs reading one 32 MB file hold 675 MB, reading 12 copies 1,044 MB, with the same answers; and a program whose resident file is carried to leaves another program reading the same file unchanged (growing, 1.5 and 1.5, against the mutant that shares carried buffers: 2.0 and 2.0 and so on, which the check fails on).
+* **The memory-lean step** (`qwen_train.write(..., lean=True)`, `--lean`): `swiglu_h2` writes the SwiGLU output and an f16 copy of the gate/up product, so the f32 product is needed only inside its layer and is aliased across layers (293 MB, not 8.2 GB), the backward reads the f16 copy (`swiglu_bwd16`), and the SwiGLU output the down projection's weight gradient needs is recomputed there from the copy (`swiglu_h16`, 0.7 ms a layer) instead of being kept for every layer. Predicted -5.8 GB (-7.9 +4.1 -2.0); **measured 24.84 -> 19.11 GB (-5.73)**, for +15 ms (2,470 ms a step, +0.6%). The price is that gate and up are rounded to f16 before the SiLU (they already were f16 operands of the products that follow): the gradients are unchanged at the table's precision (`compare_lora.py --lean`: 392 matrices, smallest cosine 0.999383, largest relative error 3.51e-2, against 0.999382 and 3.52e-2), and the 150-step run below uses it. `tests/qwen.py`: the lean gradients equal the specification's on the CPU and the GPU, and two mutants of its kernels are killed.
+What is **not** done: the logits (2.49 + 1.25 GB) are still made whole, and the f16 copy of the gate/up product (4.1 GB) is still kept for every layer (recomputing the product would cost a third of the forward).
+
+### 23.5 A 150-step fine-tuning run against peft (`finetune.py WORK train --steps 150 --segment 30 --lean`; `peft_finetune.py WORK --dtype ... --steps 150`)
+The setup of section 22.1 with 150 steps in 5 sessions of 30, held-out loss every 30 steps; cancho-gpu's session is the lean one with the shared weights. Training loss (the loss of the batch the step trains on, before the step) and held-out loss (the 32 sequences of 7 unseen files, the same as M7.3's):
+
+| step | cancho-gpu | peft float32 | peft f16 autocast, scale 1024 | peft f16 autocast, unscaled |
+|---|---|---|---|---|
+| 1 | 1.44162 | 1.44158 | 1.44144 | 1.44144 |
+| 30 | 1.05672 | 1.05668 | 1.05689 | 1.07406 |
+| 60 | 2.43601 | 2.43604 | 2.43653 | 2.46233 |
+| 90 | 1.80558 | 1.80554 | 1.80546 | 1.82972 |
+| 120 | 3.40720 | 3.40727 | 3.40723 | 3.45285 |
+| 150 | 3.17892 | 3.17895 | 3.17864 | 3.21097 |
+| held-out 0 | 2.24870 | 2.24869 | 2.24880 | 2.24880 |
+| held-out 30 | 1.97617 | 1.97615 | 1.97640 | 1.99798 |
+| held-out 60 | 1.86170 | 1.86167 | 1.86192 | 1.88434 |
+| held-out 90 | 1.81625 | 1.81623 | 1.81636 | 1.84870 |
+| held-out 120 | 1.77977 | 1.77976 | 1.77982 | 1.80743 |
+| held-out 150 | **1.77148** | **1.77146** | 1.77166 | 1.79928 |
+
+**The held-out loss falls from 2.2487 to 1.7715 (-0.477), monotonically at every checkpoint, in every runtime.** Largest |difference| over the 150 steps (`finetune.py compare`): **cancho-gpu against peft float32: training loss 3.7e-4 (mean 4e-5, step 80), held-out 3e-5**; against float16 autocast with the loss scale of 1024: 2.0e-3 (mean 2.6e-4), held-out 2.3e-4; **peft float16 autocast with no loss scale is again the one that is off** (training loss 0.059 from float32's, held-out 0.032: it ends at 1.799). The adapters after 150 steps against float32 peft's: smallest cosine 0.9870 (layer 0's q B), median relative norm error 0.21%, largest 16.2% (layer 0's q B), then 9.9% (layer 0's k B), 5.3% (layer 15's q B), 4.3% (layer 0's gate B): the weak spot of section 22.4 (Adam amplifying the two runtimes' gradient difference on near-zero rows); torch's scaled float16 has the same rows off (11.0% and 8.3% at layer 0's k and q B) from float32's. Not isolated again here.
+
+| runtime | ms a step | tokens a second | peak memory: footprint (driver) |
+|---|---|---|---|
+| **cancho-gpu (Metal session), lean** | **2,467.3** (mean of 145 timed steps 2,469, range 2,459 to 2,496) | **1,660** | **19.38 GB** (all five sessions) |
+| torch MPS float16 autocast, scale 1024 | 2,743.8 | 1,493 | 39.93 GB (37.75) |
+| torch MPS float16 autocast, unscaled | 2,742.2 | 1,494 | 39.93 GB (37.75) |
+| torch MPS float32 | 2,980.3 | 1,374 | 46.76 GB (45.51) |
+
+The measures are those of section 22.3 (footprint: `/usr/bin/time -l`'s peak for every process; driver: `torch.mps.driver_allocated_memory()` over the first 30 steps); the machine ran nothing else for the GPU or the CPU during the four runs (5th to 95th percentile of the cancho-gpu steps 2,461 to 2,485 ms), one run of each.
+**Exit "within 1.2x of torch's step time OR the memory under half of torch's with equal curves":**
+* **Step time: met.** cancho-gpu takes 0.90 of torch float16 autocast's time (**1.11 times faster**) and 0.83 of float32's (**1.21 times**), with the curves equal to float32 peft's. The margin over torch is smaller than the 0.5B's (1.28 to 1.39 times): the 1.5B's attention is 128-wide and torch's products are as efficient at this size.
+* **Memory: met this time, narrowly against float16 autocast.** 19.38 GB is **41.4% of torch float32's footprint and 48.5% of float16 autocast's**; by torch's *driver* numbers it is 42.6% and **51.3%**, so against float16 autocast the clause holds on the footprint measure of section 22.3 and not on the driver measure. Without the two changes of 23.4 it would not hold: 27.98 GB is 70% of float16 autocast's. M7.3's 0.5B figure (16.1 GB, 59%) stays as it was.
+
+### 23.6 Tests, bugs, limits
+* `tests/qwen.py` (in the gate): `wide_head_check` (heads of 128: forward, gradients, a mutant), the lean gradients and two lean-kernel mutants. `tests/session.py --metal`: `share_checks` (above). The gate does not run the Metal checks (they need a Mac): they were run here.
+* **Found by this work.** (1) `att_o` at `bm 64` with 128-wide heads costs 14 times what it should (23.2): a throughput bug that no test sees, only the profile; it is now chosen by the head size. (2) A fragment cannot be staged (`error[type]: staged tile is a matrix fragment`): the first form of the lean step wrote the gate/up product as f16 from the product's own kernel; the copy had to come from `swiglu_h2`, after the f32 product. (3) The f32 gate/up product, the logits and the doubly uploaded weights were 8.2 + 2.5 + 3.2 GB of the 28; a plan that scaled the 0.5B's 15.6 GB by two (23.1: "about 30 GB") was right about the total (27.98) and wrong about what could be cut.
+* **Limits.** One run of each runtime, 150 steps (not 300), one seed and one data order; the held-out set is 7 files and 16 k tokens; the training tokens of this corpus are not M7.3's (the checkouts changed), so the 0.5B and 1.5B curves are not the same data. torch's peak memory is the footprint of a process that also holds the evaluation's activations. `tests/qwen.py`'s lean checks are on a 2-layer model. The weights are resident once now but the forward and backward programs are still separate programs (1,500 programs a step). The f16 gate/up copy (4.1 GB) and the logits are the next memory. Contexts above 512, other machines and NVIDIA: not done.

@@ -68,7 +68,7 @@ if __name__ == "__main__":
     arg = lambda n, d: sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
     os.makedirs(out, exist_ok=True)
     torch.set_num_threads(os.cpu_count())
-    wdir = arg("--weights", "/private/tmp/claude-502/t/qwen05")
+    wdir = arg("--weights", data.WEIGHTS)
     c = R.config_of(wdir)
     tok = data.fixed_batch(c.nb, c.t)
     for tag, bstd in (("init", 0.0), ("randB", float(arg("--b-std", 0.02)))):

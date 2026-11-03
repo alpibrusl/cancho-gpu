@@ -84,6 +84,7 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
     let funcs = mem.list(m);
     let bufs = mem.list(m);
     let groups = mem.list(m);
+    let rfiles = mem.list(m);
     var q = 0;
     while q < mem.size(m, progs) {
         let pr = mem.get(m, progs, q);
@@ -160,6 +161,29 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                 }
                 k = k + 1;
             }
+            // a binary resident file that two programs read (the weights of a layer, which its forward and its backward both take) is one buffer: read-only parameters of the same file and size share it.
+            // A carry's destination is written, so it is never shared (docs/resident.md section 23.4).
+            var rpath = 0 - 1;
+            if shared < 0 && group_src < 0 {
+                k = 0;
+                while k < mem.size(m, resident) {
+                    let rr = mem.get(m, resident, k);
+                    if m[rr] == q && m[rr + 1] == i && m[rr + 2] >= 0 {
+                        rpath = m[rr + 2];
+                    }
+                    k = k + 1;
+                }
+                if rpath >= 0 {
+                    k = 0;
+                    while k < mem.size(m, rfiles) {
+                        let rf = mem.get(m, rfiles, k);
+                        if m[rf + 1] == m[g + 3] * kinds.size_bytes(m[g]) && text.eq(t, m[rf], rpath) {
+                            shared = m[rf + 2];
+                        }
+                        k = k + 1;
+                    }
+                }
+            }
             if shared >= 0 {
                 mem.push(m, mine, shared);
             } else {
@@ -171,6 +195,9 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                 mem.push(m, mine, buf);
                 if group_src >= 0 {
                     mem.push(m, groups, mem.rec3(m, group_src, group_par, buf));
+                }
+                if rpath >= 0 {
+                    mem.push(m, rfiles, mem.rec3(m, rpath, m[g + 3] * kinds.size_bytes(m[g]), buf));
                 }
             }
             i = i + 1;
@@ -222,7 +249,19 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         let rec = mem.get(m, resident, r);
         let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
         let mark = m[mem.text_slot()];
-        if m[rec + 2] >= 0 {
+        var again = false;
+        var e0 = 0;
+        while e0 < r {
+            let prev = mem.get(m, resident, e0);
+            if m[prev + 2] >= 0 && buffer_of(m, bufs, m[prev], m[prev + 1]) == buffer_of(m, bufs, m[rec], m[rec + 1]) {
+                again = true;
+            }
+            e0 = e0 + 1;
+        }
+        if again {
+            // the buffer already holds this file: an earlier declaration uploaded it
+            e0 = 0;
+        } else if m[rec + 2] >= 0 {
             // a binary resident file: its bytes are the device's, and go up as they are
             let want = m[g + 3] * kinds.size_bytes(m[g]);
             let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[rec + 2]), want + 1);

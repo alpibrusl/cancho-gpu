@@ -66,7 +66,7 @@ def train_run(work, wdir, c, steps, lr, k):
         json.dump(ref, open(fp, "w"))
         del model, handles
     d = os.path.join(work, "s_train")
-    sess = T.write(d, c, wdir, batches, AB, r=16, loss_scale=float(arg("--loss-scale", 16.0)), train=True, steps=steps, lr=lr, lr_fn=lr_fn, save=os.path.join(d, "ad.bin"))
+    sess = T.write(d, c, wdir, batches, AB, r=16, loss_scale=float(arg("--loss-scale", 16.0)), train=True, steps=steps, lr=lr, lr_fn=lr_fn, save=os.path.join(d, "ad.bin"), lean="--lean" in sys.argv)
     ss = S.Session(arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session")), sess)
     got, times = [], []
     for s in range(steps):
@@ -101,7 +101,7 @@ def timing(work, wdir, c, steps):
     tok = data.fixed_batch(c.nb, c.t)
     AB = R.init_lora(c, 16, 7, b_std=0.0)
     d = os.path.join(work, "s_time")
-    sess = T.write(d, c, wdir, tok, AB, r=16, loss_scale=float(arg("--loss-scale", 16.0)), train=True, steps=100, lr=1e-4)
+    sess = T.write(d, c, wdir, tok, AB, r=16, loss_scale=float(arg("--loss-scale", 16.0)), train=True, steps=100, lr=1e-4, lean="--lean" in sys.argv)
     p = subprocess.Popen(["/usr/bin/time", "-l", arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session")), sess], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def ask(line):
@@ -133,7 +133,7 @@ def timing(work, wdir, c, steps):
 
 def main():
     work = sys.argv[1]
-    wdir = arg("--weights", "/private/tmp/claude-502/t/qwen05")
+    wdir = arg("--weights", data.WEIGHTS)
     ls = float(arg("--loss-scale", 16.0))
     bstd = float(arg("--b-std", 0.02))
     metal = arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
@@ -155,7 +155,7 @@ def main():
         refl = float(ref["loss"][0])
         AB = R.init_lora(c, 16, 7, b_std=b_std)
         d = os.path.join(work, f"s_{tag}")
-        sess = T.write(d, c, wdir, tok, AB, r=16, loss_scale=ls, train=False, grads=os.path.join(d, "grads.bin"))
+        sess = T.write(d, c, wdir, tok, AB, r=16, loss_scale=ls, train=False, grads=os.path.join(d, "grads.bin"), lean="--lean" in sys.argv)
         ss = S.Session(metal, sess)
         out, first = ss.ask("1")
         loss = float(out.split()[0])
