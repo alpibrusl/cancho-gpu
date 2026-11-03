@@ -1220,7 +1220,7 @@ The corpus is rebuilt from the machine's files and its held-out loss at step 0 f
 | held-out 120 | 1.77977 | 1.80695 | 1.80695 |
 | **held-out 150** | **1.77138** | **1.79812** | 1.79811 |
 **Training loss against peft float32 on the same weights: at most 2.3e-4 apart (mean 3e-5, step 80); held-out at most 2e-5 (exit: 1e-3 on average). Met.**
-**What QLoRA is for: the 4-bit base starts 0.0492 nats above the f16 base (2.2979 against 2.2487) and ends 0.0267 above it (1.7981 against 1.7714). The adapters won back 0.0224 nats, 45.6% of the cost; 54.4% remains.** One seed, one data order, 150 steps; the remaining gap was still falling at step 150 (0.0272 at step 120, 0.0300 at 90) but slowly.
+**What QLoRA is for: the 4-bit base starts 0.0492 nats above the f16 base (2.2979 against 2.2487) and ends 0.0267 above it (1.7981 against 1.7714). The adapters won back 0.0224 nats, 45.6% of the cost; 54.4% remains.** One seed, one data order, 150 steps; the remaining gap was still falling at step 150 (0.0314 at step 60, 0.0277 at 90, 0.0272 at 120, 0.0267 at 150) but slowly.
 
 ### 27.5 Exit 4, the step and the memory (the 150-step runs, and `compare_lora.py --time --steps 10`, 3 requests)
 | | ms a step | tokens a second | peak footprint (`/usr/bin/time -l`) |
