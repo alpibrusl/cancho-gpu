@@ -141,6 +141,16 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                     k = k + 1;
                 }
             }
+            // an alias puts the output in the buffer of the root of its group (docs/resident.md section 21.4): the session file's checks leave nothing reading the root's value by then
+            let aliases = m[sess + session.s_aliases()];
+            k = 0;
+            while k < mem.size(m, aliases) {
+                let al = mem.get(m, aliases, k);
+                if m[al + 2] == q && m[al + 3] == i {
+                    shared = buffer_of(m, bufs, m[al], m[al + 1]);
+                }
+                k = k + 1;
+            }
             var table_blocks = 1;
             k = 0;
             while k < mem.size(m, tables) {

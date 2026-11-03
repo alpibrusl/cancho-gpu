@@ -1,0 +1,39 @@
+// The third kernel of the cross-entropy over a large vocabulary: the gradient of the loss with respect to the logits, dl = (exp(logit - lse) - onehot(target)) wt, as f16, where lse is the row's
+// log-sum-exp (ce_comb's third output) and wt the row's weight: loss_scale for a position with a next token, 0 for the last of a sequence. The padding columns are masked as in ce_stats.
+// One threadgroup per row and chunk, the same grid as ce_stats; the logits are read again (2.5 GB at 4,096 x 152,064) and the gradient written (1.2 GB).
+algo ce_grad(r, c, bc, nq)
+  in  lg:    f32[r, c]
+  in  tgt:   f32[r, 1]
+  in  jrow:  f32[1, c]
+  in  maskv: f32[1, c]
+  in  lse:   f32[r, 1]
+  in  wt:    f32[r, 1]
+  out dl:    f16[r, c]
+{
+  grid i over r, q over nq
+  let a0 = load lg[i, q * bc ; 1, bc]
+  let mk = load maskv[0, q * bc ; 1, bc]
+  let a  = a0 + mk
+  let ls = load lse[i, 0 ; 1, 1]
+  let sh = a - ls
+  let p  = exp sh
+  let j  = load jrow[0, q * bc ; 1, bc]
+  let zz = zeros f32[1, bc]
+  let jb = zz + j
+  let t  = load tgt[i, 0 ; 1, 1]
+  let db = jb - t
+  let zn = zeros f32[1, bc]
+  let dn = zn - &db
+  let df = relu db + relu dn
+  let zo = zeros f32[1, bc]
+  let on = zo + 1.0
+  let oh = relu (on - df)
+  let g0 = p - oh
+  let w  = load wt[i, 0 ; 1, 1]
+  let g  = g0 * w
+  let gh = stage f16 g
+  store gh -> dl[i, q * bc]
+}
+
+schedule ce_grad for apple-m-series { threads 128 }
+schedule ce_grad for nvidia-ada     { threads 128 }

@@ -11,6 +11,10 @@
    128 positions, the arg max of its logits and the residual stream after each block equal the specification's (f16 products, f32 accumulation: 3e-3 relative), on the CPU interpreter and, when given, on the GPU.
 4. Mutants of the specification (rotary pairs adjacent elements instead of halves; no bias on q/k/v; a head reading key/value head h % 2 instead of h // 2; no causal mask; gate and up exchanged;
    RMSNorm with the mean taken off): each differs from the session's residual stream by more than the tolerance, so the check in 3 would fail on a kernel that did that.
+5. LoRA and the backward (docs/resident.md section 21; roadmap M7.2): the specification's hand-written backward against finite differences (all 28 adapter matrices of a 2-layer Qwen-shaped model, with
+   a random B so that every gradient is non-zero, and with B = 0 where A's gradient is exactly zero); the session's gradient of every adapter matrix (per projection, split out of the fused matrices) against the
+   specification's, on the CPU interpreter and the GPU; the three-kernel cross-entropy's gradient `ce_grad`; the grouped-query sum of `att_dkv` for a group of 3; AdamW on the adapters over a table of batches against
+   a float64 AdamW (the fused block-diagonal B keeps its zeros); mutants of the specification's backward and of the kernels, each far from the session's gradients.
 Needs numpy; without it the test says so and passes. The converter check needs torch and safetensors and is skipped without them."""
 import json
 import os
@@ -24,6 +28,7 @@ try:
     import numpy as np
     import qwen_ref as R
     import qwen_session as S
+    import qwen_train as T
 except ImportError:
     print("skip: numpy is not installed")
     sys.exit(0)
@@ -117,15 +122,29 @@ def ce_check(binary, extra, d, label):
     q = lambda f: os.path.join(S.HERE, f)
     L = [f"program cs {q('ce_stats.chx')} r={r} c={vp} bc={bc} nq={nq}", f"resident cs.lg {d}/lg f32", f"resident cs.tgt {d}/tgt f32", f"resident cs.jrow {d}/jrow f32", f"resident cs.maskv {d}/maskv f32",
          f"program cc {q('ce_comb.chx')} r={r} nq={nq} bm=2"]
-    L += [f"link cs.{o} -> cc.{o}" for o in ("cm", "cs", "ct", "ci")] + ["steps", "answer cc.loss", "answer cc.am"]
+    L += [f"link cs.{o} -> cc.{o}" for o in ("cm", "cs", "ct", "ci")]
+    # the third kernel: the gradient of the loss with respect to the logits, weighted per row (the last position of a sequence has weight 0)
+    wt = np.array([1, 1, 0, 1, 1, 1, 0, 1]) * 64.0
+    S.put(os.path.join(d, "wt"), wt)
+    L += [f"program cg {q('ce_grad.chx')} r={r} c={vp} bc={bc} nq={nq}", f"resident cg.lg {d}/lg f32", f"resident cg.tgt {d}/tgt f32", f"resident cg.jrow {d}/jrow f32",
+          f"resident cg.maskv {d}/maskv f32", "link cc.lse -> cg.lse", f"resident cg.wt {d}/wt f32"]
+    L += ["steps", "answer cc.loss", "answer cc.am", "answer cg.dl"]
     open(os.path.join(d, "ce.session"), "w").write("\n".join(L) + "\n")
     out = run(binary, os.path.join(d, "ce.session"), extra, "1\n")
     got = np.array(out[0].split(), dtype=np.float64)
+    dl = got[2 * r:].reshape(r, vp)
     real = lg[:, :v]
     m = real.max(1)
     want = np.log(np.exp(real - m[:, None]).sum(1)) + m - real[np.arange(r), tgt]
     say(float(np.abs(got[:r] - want).max()) < 2e-5 * max(1.0, float(np.abs(want).max())), f"{label}: the three-kernel cross-entropy equals numpy's on 8 rows over 3 chunks, targets in every chunk (largest difference {np.abs(got[:r] - want).max():.1e})")
-    say(np.array_equal(got[r:].astype(int) - 1, real.argmax(1)), f"{label}: the arg max of each row is numpy's (the padding columns hold 50 and are masked), {[int(x) for x in got[r:] - 1]}")
+    say(np.array_equal(got[r:2 * r].astype(int) - 1, real.argmax(1)), f"{label}: the arg max of each row is numpy's (the padding columns hold 50 and are masked), {[int(x) for x in got[r:2 * r] - 1]}")
+    pr = np.exp(real - m[:, None])
+    pr /= pr.sum(1, keepdims=True)
+    pr[np.arange(r), tgt] -= 1.0
+    want_dl = pr * wt[:, None]
+    err = float(np.abs(dl[:, :v] - want_dl).max())
+    say(err < 2e-3 * 64.0 and float(np.abs(dl[:, v:]).max()) == 0.0 and float(np.abs(dl[wt == 0]).max()) == 0.0,
+        f"{label}: the gradient of the loss with respect to the logits (ce_grad: (p - onehot) times the row's weight, f16) equals numpy's to {err:.1e} (f16 rounding), is 0 on the padding columns and on the rows of weight 0")
 
 
 def forward_check(binary, extra, d, label, c, P, tok, xs, rows, best):
@@ -223,6 +242,211 @@ def kernel_mutants(binary, extra, d, c, P, tok, xs):
         say(e > 5 * TOL, f"kernel mutant ({name}): the session's residual stream is {e:.1e} from the specification's, so the check fails")
 
 
+def attention_group_check(binary, extra, d, label):
+    """att_dkv: the gradient of a key (or value) head is the sum over the query heads of its group, as one reduction. A group of 3 (nh 6, hkv 2), t 64, dh 32, against numpy."""
+    rng = np.random.default_rng(11)
+    nb, nh, hkv, t, dh = 2, 6, 2, 64, 32
+    gp = nh // hkv
+    ds = rng.standard_normal((nb * nh * t, t)).astype(np.float16)
+    q = rng.standard_normal((nb * nh * t, dh)).astype(np.float16)
+    S.put(os.path.join(d, "ds"), ds, "<f2")
+    S.put(os.path.join(d, "qh"), q, "<f2")
+    k = os.path.join(S.HERE, "att_dkv.chx")
+    L = [f"program dk {k} nb={nb} nh={nh} hkv={hkv} t={t} dh={dh}", f"resident dk.ds {d}/ds f16", f"resident dk.q {d}/qh f16", "steps", "answer dk.dk"]
+    open(os.path.join(d, "dk.session"), "w").write("\n".join(L) + "\n")
+    got = np.array(run(binary, os.path.join(d, "dk.session"), extra, "1\n")[0].split(), dtype=np.float64).reshape(nb * t, hkv * dh)
+    D, Q = ds.astype(np.float64).reshape(nb, nh, t, t), q.astype(np.float64).reshape(nb, nh, t, dh)
+    want = np.zeros((nb, t, hkv, dh))
+    for g in range(hkv):
+        for h in range(g * gp, (g + 1) * gp):
+            want[:, :, g] += np.einsum("bij,bid->bjd", D[:, h], Q[:, h])
+    want = want.reshape(nb * t, hkv * dh)
+    e = float(np.abs(got - want).max() / np.abs(want).max())
+    say(e < 1e-4, f"{label}: att_dkv sums the gradient of a key head over the {gp} query heads of its group, as one product (relative difference {e:.1e})")
+    first = np.zeros((nb, t, hkv, dh))
+    for g in range(hkv):
+        first[:, :, g] = np.einsum("bij,bid->bjd", D[:, g * gp], Q[:, g * gp])
+    say(float(np.abs(first.reshape(nb * t, -1) - want).max() / np.abs(want).max()) > 0.1, f"{label}: a sum over the first query head of each group alone is far from it, so the check would fail on a kernel that did that")
+
+
+def lora_check(binary, extra, d, label, c, P, tok, AB, ref, ls=64.0, mut=None, expect_fail=False):
+    """The session's gradients of all adapter matrices (split per projection) against the specification's `ref` ({name: array}); with expect_fail the same comparison must NOT hold (a mutant)."""
+    wdir = os.path.join(d, "w")
+    S.write_files(wdir, c, P)
+    sess = T.write(os.path.join(d, "g"), c, wdir, tok, AB, r=16, loss_scale=ls, train=False, grads=os.path.join(d, "grads.bin"), tune=dict(bc=128, kmut=mut or []))
+    ss = S.Session(binary, sess, extra)
+    out, _ = ss.ask("1")
+    ss.checkpoint()
+    ss.close()
+    got = T.split_grads(c, 16, T.read_fused(c, 16, os.path.join(d, "grads.bin")), float(c.nb * (c.t - 1)), ls)
+    worst_rel, worst_cos = 0.0, 1.0
+    for k in ref:
+        a, b = got[k].ravel(), ref[k].ravel()
+        if np.linalg.norm(b) == 0:
+            worst_rel = max(worst_rel, float(np.linalg.norm(a)))
+            continue
+        worst_rel = max(worst_rel, float(np.linalg.norm(a - b) / np.linalg.norm(b)))
+        worst_cos = min(worst_cos, float(a @ b / np.linalg.norm(a) / np.linalg.norm(b)) if np.linalg.norm(a) > 0 else 0.0)
+    return worst_rel, worst_cos, float(out.split()[0]), got
+
+
+def lora_checks(cpu, metal, d):
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=1)
+    P["emb"] = P["emb"] * 0.3  # a flatter softmax than the random model's default, so the gradients are not those of a saturated one
+    tok = np.random.default_rng(0).integers(0, c.v, (c.nb, c.t))
+    # the specification against finite differences
+    AB = R.init_lora(c, 16, 7, b_std=0.05)
+    fd, loss = R.fd_check(c, P, AB, tok)
+    say(max(fd.values()) < 1e-5, f"spec: the hand-written backward equals finite differences for all {len(fd)} adapter matrices (largest relative difference {max(fd.values()):.1e}; loss {loss:.4f})")
+    AB0 = R.init_lora(c, 16, 7)
+    fd0, _ = R.fd_check(c, P, AB0, tok)
+    _, G0 = R.lora_loss_grads(c, P, AB0, tok)
+    say(max(fd0.values()) < 1e-5 and all(float(np.abs(G0[k]).max()) == 0.0 for k in G0 if k.endswith(".A")) and all(float(np.abs(G0[k]).max()) > 0 for k in G0 if k.endswith(".B")),
+        f"spec: with B = 0 (peft's initial state) the gradients of every A are exactly zero and those of every B are not, and equal finite differences ({max(fd0.values()):.1e})")
+    # a one-token change is seen by the adapters of the layers above and below it
+    _, G = R.lora_loss_grads(c, P, AB, tok)
+    tol, ctol = 4e-3, 0.9995
+    os.makedirs(os.path.join(d, "lc"), exist_ok=True)
+    rel, cos, lossc, _ = lora_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "lc"), "CPU", c, P, tok, AB, G)
+    say(rel < tol and cos > ctol, f"CPU session: the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {rel:.1e}, smallest cosine {cos:.5f}; tolerance {tol:g})")
+    if metal:
+        os.makedirs(os.path.join(d, "lg"), exist_ok=True)
+        relg, cosg, _, _ = lora_check(metal, [], os.path.join(d, "lg"), "GPU", c, P, tok, AB, G)
+        say(relg < tol and cosg > ctol, f"Metal session: the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {relg:.1e}, smallest cosine {cosg:.5f})")
+    # mutants of the specification's backward: each far from the session's gradients
+    saved = (R.attention_back, R.rope_back, R.rms_back)
+
+    def with_patch(**kw):
+        try:
+            for k_, v_ in kw.items():
+                setattr(R, k_, v_)
+            return R.lora_loss_grads(c, P, AB, tok)[1]
+        finally:
+            R.attention_back, R.rope_back, R.rms_back = saved
+
+    def no_group_sum(do, q, k, v, pr, cc):
+        dq, dk, dv = saved[0](do, q, k, v, pr, cc)
+        # key/value gradients from the first query head of each group only
+        dkk, dvv = np.zeros_like(dk).reshape(cc.nb, cc.t, cc.hkv, cc.dh), np.zeros_like(dv).reshape(cc.nb, cc.t, cc.hkv, cc.dh)
+        qh, kh, vh, doh = q.reshape(cc.nb, cc.t, cc.h, cc.dh), k.reshape(cc.nb, cc.t, cc.hkv, cc.dh), v.reshape(cc.nb, cc.t, cc.hkv, cc.dh), do.reshape(cc.nb, cc.t, cc.h, cc.dh)
+        for g in range(cc.hkv):
+            h = g * cc.group
+            p = pr[:, h]
+            dp = np.einsum("bid,bjd->bij", doh[:, :, h], vh[:, :, g])
+            ds = p * (dp - (dp * p).sum(-1, keepdims=True)) / np.sqrt(cc.dh)
+            dkk[:, :, g] = np.einsum("bij,bid->bjd", ds, qh[:, :, h])
+            dvv[:, :, g] = np.einsum("bij,bid->bjd", p, doh[:, :, h])
+        return dq, dkk.reshape(dk.shape), dvv.reshape(dv.shape)
+
+    def rope_forward_as_back(dy, cs, sn, heads, cc):
+        return R.rope(dy, cs, sn, heads, cc)
+
+    def rms_no_mean(dy, x, g, eps):
+        return dy * g / np.sqrt((x * x).mean(-1, keepdims=True) + eps)
+
+    def row_of(G_, name):
+        return np.linalg.norm(G_[name] - G[name]) / np.linalg.norm(G[name])
+
+    for name, kw in (("dk and dv from the first query head of each group only", dict(attention_back=no_group_sum)), ("the rotary backward is the forward rotation", dict(rope_back=rope_forward_as_back)),
+                     ("RMSNorm's backward without the mean(u x) term", dict(rms_back=rms_no_mean))):
+        Gm = with_patch(**kw)
+        e = max(row_of(Gm, k_) for k_ in G if np.linalg.norm(G[k_]) > 0)
+        say(e > 5 * tol, f"mutant of the specification ({name}): differs from the original's gradients by {e:.1e}, so the check would fail")
+
+
+def lora_group3_check(cpu, metal, d):
+    """The same gradient check on a model whose query heads are in groups of 3 (6 query heads over 2 key/value heads), the odd group size the real model's 7 stands for."""
+    c = R.Config(layers=1, d=384, h=6, hkv=2, dh=64, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=2)
+    P["emb"] = P["emb"] * 0.3
+    tok = np.random.default_rng(1).integers(0, c.v, (c.nb, c.t))
+    AB = R.init_lora(c, 16, 5, b_std=0.05)
+    _, G = R.lora_loss_grads(c, P, AB, tok)
+    for binary, extra, sub, label in ((cpu, ["--target", "nvidia-ada"], "g3c", "CPU session"), (metal, [], "g3g", "Metal session")):
+        if not binary:
+            continue
+        dd = os.path.join(d, sub)
+        os.makedirs(dd, exist_ok=True)
+        rel, cos, _, _ = lora_check(binary, extra, dd, label, c, P, tok, AB, G)
+        say(rel < 4e-3 and cos > 0.9995, f"{label}: with 6 query heads over 2 key/value heads (groups of 3) the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {rel:.1e}, smallest cosine {cos:.5f})")
+
+
+def kernel_mutants_lora(cpu, d):
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=1)
+    P["emb"] = P["emb"] * 0.3
+    tok = np.random.default_rng(0).integers(0, c.v, (c.nb, c.t))
+    AB = R.init_lora(c, 16, 7, b_std=0.05)
+    _, G = R.lora_loss_grads(c, P, AB, tok)
+    cases = (("att_dkv sums over one query head only", [("att_dkv.chx", "nh / hkv * t / bk", "t / bk")]),
+             ("the rotary backward's sign", [("rope_bwd.chx", "let hi{} = u{} - w{}", "let hi{} = u{} + w{}")]),
+             ("swiglu_bwd: the gate gradient without the sigmoid's slope term", [("swiglu_bwd.chx", "let dsl = sg - t", "let dsl = sg + t")]),
+             ("gemm_lora: no adapter product in the forward", [("gemm_lora.chx", "r2 / 16", "0")]),
+             ("dx_lora: no adapter term in the input gradient", [("dx_lora.chx", "r2 / 16", "0")]),
+             ("ce_grad: the target's one-hot dropped", [("ce_grad.chx", "let g0 = p - oh", "let g0 = p - oh * 0.0")]),
+             ("rms_bwd: no residual gradient", [("rms_bwd.chx", "store t3 + dr", "store t3 + dr * 0.0")]))
+    for name, mut in cases:
+        mut2 = []
+        for kf, a, b in mut:
+            if kf == "rope_bwd.chx":
+                # the generated kernel names its temporaries by head: mutate the first query head's
+                a, b = a.format("q0", "q0", "q0"), b.format("q0", "q0", "q0")
+            mut2.append((kf, a, b))
+        dd = os.path.join(d, "km")
+        os.makedirs(dd, exist_ok=True)
+        try:
+            rel, cos, _, _ = lora_check(cpu, ["--target", "nvidia-ada"], dd, "CPU", c, P, tok, AB, G, mut=mut2)
+        except SystemExit as e:
+            say(True, f"kernel mutant ({name}): the session cannot even be built or run ({str(e)[:60]})")
+            continue
+        say(rel > 5 * 4e-3 or cos < 0.99, f"kernel mutant ({name}): the gradients are {rel:.1e} from the specification's, so the check fails")
+
+
+def adam_check(binary, extra, d, label, mut=None):
+    """AdamW on the adapters over a table of 3 batches (6 steps) against a float64 AdamW on the specification's gradients: the loss at each step, the adapters after the last, the zeros of the fused B."""
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=1)
+    P["emb"] = P["emb"] * 0.3
+    toks = np.random.default_rng(0).integers(0, c.v, (3, c.nb, c.t))
+    AB = R.init_lora(c, 16, 7, b_std=0.02)
+    wdir = os.path.join(d, "w")
+    S.write_files(wdir, c, P)
+    steps, lr = 6, 3e-3
+    sess = T.write(os.path.join(d, "t"), c, wdir, toks, AB, r=16, loss_scale=64.0, train=True, steps=steps, lr=lr, save=os.path.join(d, "ad.bin"), tune=dict(bc=128, kmut=mut or []))
+    ss = S.Session(binary, sess, extra)
+    got = [float(ss.ask("1")[0].split()[0]) for _ in range(steps)]
+    ss.checkpoint()
+    ss.close()
+    m = {k: np.zeros_like(v) for k, v in AB.items()}
+    v2 = {k: np.zeros_like(v) for k, v in AB.items()}
+    ref, want = dict(AB), []
+    for s in range(steps):
+        loss, G = R.lora_loss_grads(c, P, ref, toks[s % 3], 2.0)
+        want.append(loss)
+        for k in ref:
+            m[k] = 0.9 * m[k] + 0.1 * G[k]
+            v2[k] = 0.999 * v2[k] + 0.001 * G[k] ** 2
+            ref[k] = ref[k] - lr * (m[k] / (1 - 0.9 ** (s + 1))) / (np.sqrt(v2[k] / (1 - 0.999 ** (s + 1))) + 1e-8)
+    le = max(abs(a - b) / abs(b) for a, b in zip(got, want))
+    if mut:
+        fa = T.read_fused(c, 16, os.path.join(d, "ad.bin"))
+        off = max(float(np.abs(fa[(l, "qkv", "B")][:c.d, 16:]).max()) for l in range(c.layers))
+        say(le > 2e-3 or off > 0.0, f"{label}: optimiser mutant ({mut[0][1]} -> {mut[0][2]}): the losses are {le:.1e} from the float64 AdamW's and the off-diagonal blocks of B reach {off:.1e}, so the check fails")
+        return got
+    say(le < 2e-3 and want[3] < want[0] - 0.1, f"{label}: the loss at each of 6 AdamW steps over 3 batches equals the float64 AdamW's to {le:.1e} (relative): {[round(x, 4) for x in got]}")
+    fa = T.read_fused(c, 16, os.path.join(d, "ad.bin"))
+    err = 0.0
+    for l in range(c.layers):
+        sp = T.split_params(c, 16, {g: (fa[(l, g, "A")], fa[(l, g, "B")]) for g in T.group_dims(c, 16)}, l)
+        for k, vv in sp.items():
+            err = max(err, float(np.linalg.norm(vv - ref[k]) / (np.linalg.norm(ref[k] - AB[k]) + 1e-12)))
+    off = max(float(np.abs(fa[(l, "qkv", "B")][:c.d, 16:]).max()) for l in range(c.layers))
+    off = max(off, max(float(np.abs(fa[(l, "gu", "B")][:c.ff, 16:]).max()) for l in range(c.layers)))
+    say(err < 0.1 and off == 0.0, f"{label}: the adapters after 6 steps equal the float64 AdamW's (error relative to how far they moved: {err:.1e}); the off-diagonal blocks of the fused B are exactly 0")
+    return got
+
+
 def main():
     cpu = os.path.abspath(sys.argv[1])
     metal = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 and os.path.exists(sys.argv[2]) else None
@@ -244,6 +468,20 @@ def main():
         forward_check(metal, [], os.path.join(d, "gpu"), "Metal session", c, P, tok, xs, rows, best)
     mutants(c, P, tok, acts)
     kernel_mutants(cpu, ["--target", "nvidia-ada"], d, c, P, tok, xs)
+    for sub in ("la", "lb", "lc2", "ld"):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+    attention_group_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "la"), "CPU session")
+    if metal:
+        attention_group_check(metal, [], os.path.join(d, "lb"), "Metal session")
+    lora_checks(cpu, metal, d)
+    lora_group3_check(cpu, metal, d)
+    kernel_mutants_lora(cpu, d)
+    adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "lc2"), "CPU session")
+    for i, mut in enumerate(([("adamw_l.chx", "let g1 = g0 * k0", "let g1 = g0 * (k0 + 1.0)")], [("adamw_l.chx", "let ws = wn * osc", "let ws = wn * 1.0")])):
+        os.makedirs(os.path.join(d, f"le{i}"), exist_ok=True)
+        adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, f"le{i}"), "CPU session", mut=mut)
+    if metal:
+        adam_check(metal, [], os.path.join(d, "ld"), "Metal session")
     print(f"{'qwen: ok' if not bad else f'qwen: {bad} FAILED'}")
     sys.exit(1 if bad else 0)
 

@@ -1,0 +1,13 @@
+// The inverse layout change of unheads: o[(b nh + h) t + i, :] = f16(y[b t + i, h dh ..]), a [tokens, nh dh] f32 matrix into the heads-major f16 layout the attention kernels read.
+algo heads_h(nb, nh, t, dh, bm)
+  in  y: f32[nb * t, nh * dh]
+  out o: f16[nb * nh * t, dh]
+{
+  grid b over nb, h over nh, i over t / bm
+  let a = load y[b * t + i * bm, h * dh ; bm, dh]
+  let x = stage f16 a
+  store x -> o[(b * nh + h) * t + i * bm, 0]
+}
+
+schedule heads_h for apple-m-series { threads 128 }
+schedule heads_h for nvidia-ada     { threads 128 }

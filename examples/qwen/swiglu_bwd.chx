@@ -1,0 +1,27 @@
+// The backward of swiglu_h: for a = silu(g) u with the fused gate/up product gu [r, 2 f] (gate in columns 0 .. f, up in f .. 2 f) and da = d a (f32),
+// dg = da u silu'(g) and du = da silu(g), written f16 as the fused gradient dgu [r, 2 f] (the input of the gate/up projections' backward). silu'(g) = s + g s (1 - s), s = sigmoid(g).
+algo swiglu_bwd(r, f, bm, bc)
+  in  da:  f32[r, f]
+  in  gu:  f32[r, 2 * f]
+  out dgu: f16[r, 2 * f]
+{
+  grid i over r / bm, q over f / bc
+  let g  = load gu[i * bm, q * bc ; bm, bc]
+  let u  = load gu[i * bm, f + q * bc ; bm, bc]
+  let d  = load da[i * bm, q * bc ; bm, bc]
+  let sg = sigmoid &g
+  let a  = g * &sg
+  let om = &sg - 1.0
+  let t  = &a * om
+  let dsl = sg - t
+  let du = &d * a
+  let dh = d * u
+  let dg = dh * dsl
+  let gh = stage f16 dg
+  store gh -> dgu[i * bm, q * bc]
+  let uh = stage f16 du
+  store uh -> dgu[i * bm, f + q * bc]
+}
+
+schedule swiglu_bwd for apple-m-series { threads 128 }
+schedule swiglu_bwd for nvidia-ada     { threads 128 }
