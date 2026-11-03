@@ -165,7 +165,7 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 <header class="top"><div class="wrap">
   <a class="brand" href="#top"><img src="assets/cancho-gpu-logo-256.png" alt="">cancho-gpu</a>
   <nav aria-label="Sections">
-    <a href="#how" class="opt">How it works</a><a href="#stories">Stories</a><a href="#kernel" class="opt">A kernel</a><a href="#model" class="opt">The model</a><a href="#results" class="opt">Evidence</a><a href="#try">Try it</a><a href="#docs" class="opt">Docs</a>
+    <a href="#how" class="opt">How it works</a><a href="#stories">Stories</a><a href="#kernel" class="opt">A kernel</a><a href="#model" class="opt">The model</a><a href="#trained" class="opt">Training</a><a href="#standing" class="opt">Against torch</a><a href="#gaps" class="opt">Gaps</a><a href="#results" class="opt">Evidence</a><a href="#try">Try it</a><a href="#docs" class="opt">Docs</a>
     <a href="https://github.com/alpibrusl/cancho-gpu">GitHub</a>
   </nav>
 </div></header>
@@ -173,7 +173,7 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 <main id="main" class="wrap">
 
 <div class="hero2" id="top">
-  <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model on a Metal GPU</a>
+  <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model and trains models on a Metal GPU</a>
   <h1>GPU kernels that say what they can do.</h1>
   <p class="lead">Write a tile kernel once. The compiler checks it, refuses what is wrong and names the rule, and writes <b>CUDA C</b> and <b>Metal</b>. The same kernels run Qwen3.8&#8209;27B on a Mac's GPU.</p>
   <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn ghost" href="#results">See the evidence</a></div>
@@ -182,14 +182,14 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 <section id="why">
 <div class="cards">
   <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
-  <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, recorded for 214 emitting cases and 26 refusals, each held byte for byte to the previous record (they first agreed with the Rust implementation this language began as).</p></div>
-  <div class="card"><h3>Held to numbers</h3><p>Every numeric kernel is checked against a float64 reference written from the mathematics, and fifteen are checked to fail when broken on purpose. The goldens are a regression record of this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
+  <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, recorded for 245 emitting cases and 27 refusals, each held byte for byte to the previous record (they first agreed with the Rust implementation this language began as).</p></div>
+  <div class="card"><h3>Held to numbers</h3><p>Every numeric kernel is checked against a float64 reference written from the mathematics, and nineteen are checked to fail when broken on purpose. The goldens are a regression record of this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
   <div class="card"><h3>Runs a real model</h3><p>Qwen3.8-27B decodes at 27.4 tokens a second on a Metal GPU (39.9 with speculative decoding), with the same tokens and top five as a reference's log-probabilities.</p></div>
-  <div class="card"><h3>Trains on the GPU</h3><p>A network trained with Adam without its parameters leaving the GPU: the loss equals a float64 reference's and <code>torch.optim.Adam</code>'s to six digits, and a step takes 0.30 ms (torch: 0.37 on the CPU, 0.87 on MPS).</p></div>
-  <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, the 27B decodes at 88% of Ollama's speed with speculation (60% without), and attention stops at 1024 positions in the runner. Each is in the status section.</p></div>
+  <div class="card"><h3>Trains and fine-tunes on the GPU</h3><p>A network trained with Adam without its parameters leaving the GPU (the loss equals <code>torch.optim.Adam</code>'s to six digits), then a GPT of up to 59.95 M parameters (167.8 ms a step against torch MPS's 196.7) and Qwen2.5 with LoRA (889.2 ms against 1,142.0 for float16 autocast), with loss curves equal to peft's. The CNN is 1.7 times slower than torch. <a href="#standing">The table</a>.</p></div>
+  <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, the 27B decodes at 88% of Ollama's speed with speculation (60% without), attention stops at 1024 positions in the runner, every training comparison is one run on one machine, and no tuned model for the cancho-code experiment exists yet. <a href="#gaps">The list</a>.</p></div>
   <div class="card"><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code says so.</p></div>
 </div>
-<p class="note">What the promise does <b>not</b> establish: that a kernel is fast (speed is measured for the 27B model, where it is below Ollama's, and for a small training step), that CUDA works on a real GPU (it has run only against a mock driver), or that a kernel computes what you meant (the checker proves linearity, bounds and shapes, not intent). The stories below say what each run shows and what it does not.</p>
+<p class="note">What the promise does <b>not</b> establish: that a kernel is fast (speed is measured, against torch for training and against Ollama and MLX-LM for decoding: faster than torch on the GPT and the Qwen fine-tuning steps, slower on the CNN and below Ollama on the 27B), that CUDA works on a real GPU (it has run only against a mock driver), or that a kernel computes what you meant (the checker proves linearity, bounds and shapes, not intent). The stories below say what each run shows and what it does not.</p>
 </section>
 
 <section id="stories">
@@ -212,7 +212,7 @@ error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op</p
       <p>A least-squares fit whose loss and gradient are computed by cancho-gpu kernels, driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS: 12 evaluations to within 1.1e-5 of the normal-equations solution, at 28 to 36 ms an evaluation.</p>
 <pre class="code">$ opt minimize --method bfgs --x0 0,0,0 -- python3 examples/train/lsq_objective.py ...
 {"method":"bfgs","x":[1.5065,-2.0052,0.4572],"nfev":12,"converged":true, ...}</pre>
-      <p class="note">Shows: a kernel as an optimiser's objective, on the CPU interpreter (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/examples/train/README.md">examples</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">training.md</a>). Does not show: training on a GPU, more than 32 parameters, or any speed claim.</p></article>
+      <p class="note">Shows: a kernel as an optimiser's objective, on the CPU interpreter (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/examples/train/README.md">examples</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">training.md</a>). Does not show: more than 32 parameters or any speed claim; this is the CPU path, and training on the GPU is done in sessions (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>).</p></article>
     <article class="story"><h3>A 27B model on the same kernels</h3>
       <p>Qwen3.8-27B (NVFP4, read from Ollama's store) generating on a Metal GPU: 27.4 tokens a second, 39.9 with speculative decoding, against 45.3 for Ollama in the same invocation, on one Apple M4 Max.</p>
 <pre class="code">$ cancho-gpu-run35 &lt;ollama store&gt; tests/chx "&lt;prompt&gt;" 64</pre>
@@ -220,7 +220,7 @@ error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op</p
     <article class="story"><h3>Compared with OpenNN</h3>
       <p>A two-layer sigmoid network, forward only, the same weights in both: outputs agree to 1.4e-7 of a binary64 reference. OpenNN's call takes about 2.5 microseconds in process; cancho-gpu's CPU interpreter takes milliseconds as two processes. <b>No ratio is claimed</b>: they measure different things.</p>
 <pre class="code">$ python3 bench/opennn/compare.py --opennn build/forward_opennn --gpu build/cancho-gpu</pre>
-      <p class="note">Shows: agreement and the two timings, with the differences and where cancho-gpu is worse (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>). Does not show: any GPU, training, or a larger network.</p></article>
+      <p class="note">Shows: agreement and the two timings, with the differences and where cancho-gpu is worse (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>). Does not show: any GPU, training, or a larger network (the one training comparison, against OpenNN's CPU path only, is in resident.md sections 13 and 14).</p></article>
   </div>
 <!--/stories-->
 </section>
@@ -377,7 +377,7 @@ schedule k for nvidia-ada { threads 32 }</pre>
       <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
       <tr><th>How do I know the output is right?</th><td>Numbers: every numeric kernel is held to a float64 reference written from the mathematics, and a device program compares the GPU against the CPU interpreter. Text: the CUDA and Metal output is recorded in goldens, which are a regression record of this compiler, not an answer. They first agreed byte for byte with a Rust implementation of the language, which was the oracle until it was retired; for CUDA, which no machine here can run, that was the only independent check, and nothing replaces it yet.</td></tr>
       <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
-      <tr><th>Is it an inference runtime?</th><td>A first one. <code>cancho-gpu-run</code> and <code>cancho-gpu-run35</code> run Qwen2.5-0.5B and Qwen3.8-27B: every layer is a compiled kernel on a Metal GPU. The 0.5B model gives the same greedy tokens as Hugging Face transformers; the 27B (NVFP4 weights from Ollama's store, 48 gated-delta layers) matches a reference implementation's golden log-probabilities to 1e-4 and decodes at 27.4 tokens a second (39.9 with speculative decoding), against 45.3 for Ollama in the same benchmark run. It also serves an OpenAI-compatible chat endpoint with streaming (one request at a time).</td></tr>
+      <tr><th>Is it an inference runtime?</th><td>A first one (and a training stack, below). <code>cancho-gpu-run</code> and <code>cancho-gpu-run35</code> run Qwen2.5-0.5B and Qwen3.8-27B: every layer is a compiled kernel on a Metal GPU. The 0.5B model gives the same greedy tokens as Hugging Face transformers; the 27B (NVFP4 weights from Ollama's store, 48 gated-delta layers) matches a reference implementation's golden log-probabilities to 1e-4 and decodes at 27.4 tokens a second (39.9 with speculative decoding), against 45.3 for Ollama in the same benchmark run. It also serves an OpenAI-compatible chat endpoint with streaming (one request at a time).</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -466,7 +466,7 @@ timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms
 
 <section id="train">
   <div class="center"><h2>Run a kernel on your own numbers.</h2>
-  <p class="sub"><code>cancho-gpu run</code> executes a kernel on the CPU interpreter over inputs you give it and prints the whole output. It exists so a kernel can be the objective of an optimiser, and a small model has been trained that way. It does not run on a GPU yet.</p></div>
+  <p class="sub"><code>cancho-gpu run</code> executes a kernel on the CPU interpreter over inputs you give it and prints the whole output. It exists so a kernel can be the objective of an optimiser, and a small model has been trained that way. The command does not run on a GPU; training on the GPU is done in sessions (below).</p></div>
   <pre class="code">$ printf '1 2\n3 4\n' &gt; dy; printf '1 0 2\n0 1 3\n' &gt; w
 $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
     --in dy dy --in w w --out dx
@@ -474,7 +474,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
   <div class="cards">
     <div class="card"><h3>Backward kernels</h3><p><code>dx</code>, <code>dw</code>, <code>db</code> and the sigmoid's, held, element by element, to a reference that is itself checked against finite differences.</p></div>
     <div class="card"><h3>A fit, with kernels as the objective</h3><p>A least-squares fit driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS, loss and gradient computed by these kernels: 12 evaluations, within 1.1e-5 of the normal-equations solution, 28 to 36 ms an evaluation on the CPU interpreter.</p></div>
-    <div class="card"><h3>What it cannot do yet</h3><p>No ReLU, no <code>A<sup>T</sup>B</code> product, no atomics; at most 32 parameters through <code>opt</code>; nothing on a GPU. Whether a GPU even helps at this size is unmeasured.</p></div>
+    <div class="card"><h3>What it cannot do</h3><p>At most 32 parameters through <code>opt</code>, and the CPU interpreter only. Whether a GPU helps at that size: with text on a pipe it cannot (training.md); the sessions, with the data on the device, are the GPU path.</p></div>
   </div>
   <p class="note">Design, gates and numbers: <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">the run document</a> and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">the training document</a>, which also says why training does not belong in the compiler yet. Examples: <a href="https://github.com/alpibrusl/cancho-gpu/tree/main/examples/train">cancho-gpu</a> and <a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">cancho-opt</a>.</p>
 </section>
@@ -486,13 +486,14 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
       <li>Compiling <code>.chx</code> tile kernels to CUDA C and Metal with a small, auditable toolchain</li>
       <li>Checking a kernel on the CPU before a GPU is involved</li>
       <li>Trying a cancho program that drives a GPU through a thin C shim</li>
+      <li>Training and fine-tuning small models on a Mac's GPU, checked against a float64 specification and torch (one machine, one run each)</li>
     </ul></div>
     <div class="no"><h3>Not yet</h3><ul>
       <li>CUDA on real hardware, Hopper, AMD</li>
-      <li>Speed on the 27B model, long contexts (it needs a change to the language), concurrent requests</li>
+      <li>Decoding as fast as Ollama on the 27B (88% with speculation), long contexts (it needs a change to the language), concurrent requests</li>
       <li>Attention over more than 1364 positions (it needs a change to the language)</li>
-      <li>Training on a GPU: kernels run on your inputs on the CPU interpreter only, and the device programs do not take input yet</li>
-      <li>Speed: reach and agreement are measured, timing is not</li>
+      <li>Training contexts above 128 (GPT) or 512 (Qwen), a CNN as fast as torch, 90% on CIFAR-10, a 4-bit base or 7B (in progress, not merged)</li>
+      <li>Results of the cancho-code fine-tuning experiment: the design and the untuned baselines exist, no tuned model does</li>
     </ul></div>
   </div>
 </section>
@@ -500,9 +501,9 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
 <section class="status" id="status">
   <h2>Status: alpha</h2>
   <ul>
-    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, four backward kernels, and <code>run</code> (a kernel on your inputs, CPU interpreter).</li>
-    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs.</li>
-    <li>Unproven: CUDA on a real GPU; training on any GPU; the kernels' speed against the best runtimes (about half of Ollama's on the 27B).</li>
+    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, backward kernels, <code>run</code> (a kernel on your inputs, CPU interpreter), and training sessions on Metal: a GPT (trained and served), a CNN, Qwen2.5 LoRA and full fine-tuning, a ResNet-18-class backbone (equal to torch, not timed).</li>
+    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs, the cancho-code fine-tuning experiment's tuned arms (M8), the vision backbone's timing (M9 V2), and a 4-bit base and 7B (QLoRA), which is in progress on another branch and not merged.</li>
+    <li>Unproven: CUDA on a real GPU (so every training number is Metal); any result on a second machine or a second seed; the 27B's decode speed against Ollama's (88% with speculation, 60% without).</li>
   </ul>
 </section>
 
@@ -523,13 +524,85 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
   </div>
 </section>
 
+<section id="trained">
+  <div class="center"><h2>Not only run: trained, on the same kernels.</h2>
+  <p class="sub">Training happens in <em>sessions</em>: compile and upload once, then run many steps for one request, with the parameters, the optimiser's state and the data staying on the GPU. Every model below is held to a float64 specification written for it and to torch or peft. All of it is Metal, on one Apple M4 Max, one run and one seed each (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>).</p></div>
+  <div class="cards">
+    <div class="card"><h3>A GPT, trained and served</h3><p>3.26 M to 59.95 M parameters, on characters and on a 2,048-token byte-pair vocabulary built here (sections 15 to 17, 19). The 59.95 M model takes 167.8 ms a step against torch MPS's 196.7, with validation curves within 0.013 nats. Served from a forward-only session, all 576 greedy tokens equal torch's, at 650 tokens a second against torch's 340.</p></div>
+    <div class="card"><h3>A CNN on real CIFAR-10</h3><p>A 0.85 M-parameter ResNet reaches 87.4% test accuracy, torch's 87.0%, with no augmentation (section 18). <b>The roadmap's 90% is not met by any runtime</b>, and a step takes 17.6 ms against torch MPS's 10.6: 1.7 times slower.</p></div>
+    <div class="card"><h3>Qwen2.5, fine-tuned</h3><p>The forward pass equals transformers' (loss within 1.2e-4 on the 0.5B, 5.2e-6 on the 1.5B); LoRA gradients at cosine 0.99986 and 0.99938 or better against peft; a 300-step run (0.5B) and a 150-step run (1.5B) whose loss curves equal peft float32's; full fine-tuning of the 0.5B with the embedding table trained, equal to torch float32 (sections 20 to 24).</p></div>
+    <div class="card"><h3>Speed and memory against torch</h3><p>0.5B LoRA step: 889.2 ms and 16.14 GB against float16 autocast's 1,142.0 ms and 27.48 GB. 1.5B: 2,467.3 ms and 19.38 GB against 2,743.8 ms and 39.93 GB. Full fine-tuning of the 0.5B: 1,381.4 ms and 21.03 GB against 1,450.8 ms and 44.56 GB (torch float32). The memory clause of the 0.5B LoRA exit was <b>not</b> met: 59% of torch's, not under half.</p></div>
+    <div class="card"><h3>A vision backbone for a robot</h3><p>A ResNet-18-class network (11,181,632 parameters, 96 &times; 128 input) trained in a session, its loss and gradients equal to torch's: loss 2.78119 against torch float32's 2.78022 on Metal (section 26). <b>Not timed</b>: no step time is claimed, and no robot data exist yet.</p></div>
+    <div class="card"><h3>An experiment with no result yet</h3><p>Does fine-tuning a small model on cancho make it better at cancho-code's job? The design is fixed before any result, the data (6,946 records, 2.78 M tokens, with a contamination check) is built, and the two untuned baselines are near zero: 0.012 of the oracle's points for the better arm. <b>No tuned model has been trained, and no training result is in</b> (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/roadmap-models.md">roadmap-models.md</a> section 7). A 4-bit base and 7B (QLoRA) is in progress on another branch and is not merged.</p></div>
+  </div>
+</section>
+
+<section id="standing">
+  <h2>Where it stands against torch and others.</h2>
+  <p class="sub">Every number is measured and copied from the section named. One machine (Apple M4 Max, 64 GB), torch 2.12 on MPS unless marked, one run and one seed each, torch run by default (not compiled, no MPS graphs). Memory is the process's peak footprint unless marked <i>driver</i>. The rows where cancho-gpu is slower or larger are in the table on purpose.</p>
+  <div class="fitwrap"><table class="fit wide">
+    <thead><tr><th>Workload</th><th>cancho-gpu (Metal)</th><th>Reference</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><th>Adam step, 4096 &times; 32 &times; 32 (1,089 parameters)</th><td>0.301 ms</td><td>torch CPU 0.372 ms, MPS 0.870 ms</td><td>resident.md 12.1</td></tr>
+      <tr><th>Adam step, 16384 &times; 64 &times; 128</th><td>1.013 ms</td><td>torch CPU 1.333 ms, MPS 1.011 ms</td><td>resident.md 12.1</td></tr>
+      <tr><th>Epoch, 64-512-512-512-1, 200,000 samples</th><td>0.198 s mixed precision (0.941 s in float32; section 13 measured that at 2.6 times torch MPS's time)</td><td>torch MPS float32 0.377 s, autocast 0.457 s; OpenNN CPU 1.550 s</td><td>resident.md 13, 14</td></tr>
+      <tr><th>GPT, 10.80 M parameters, 4,096 tokens a step</th><td>37.0 ms</td><td>torch MPS float32 41.3 ms, autocast 44.5 ms</td><td>resident.md 15</td></tr>
+      <tr><th>GPT, 27.4 M parameters</th><td>81.0 ms</td><td>86.0 ms, 91.7 ms</td><td>resident.md 17</td></tr>
+      <tr><th>GPT, 59.95 M parameters</th><td>167.8 ms</td><td>196.7 ms, 201.1 ms</td><td>resident.md 19.1</td></tr>
+      <tr><th>GPT decoding, 3.26 M parameters</th><td>650 tokens a second</td><td>torch MPS 340 (recompute), 273 (key/value cache)</td><td>resident.md 16</td></tr>
+      <tr class="us"><th>CNN, 0.85 M-parameter ResNet, batch 128</th><td>17.6 ms a step: <b>1.7 times slower</b>; CIFAR-10 accuracy 0.8740</td><td>torch MPS float32 10.6 ms, 0.8697; autocast 11.0 ms, 0.8674</td><td>resident.md 18.2, 18.1</td></tr>
+      <tr><th>Qwen2.5-0.5B forward, 4,096 tokens</th><td>382.1 ms; 16.35 GB</td><td>torch MPS float32 488 ms, 14.4 GB (driver); autocast 474 ms, 15.0 GB (driver)</td><td>resident.md 20</td></tr>
+      <tr><th>Qwen2.5-0.5B LoRA step</th><td>889.2 ms; 16.14 GB</td><td>autocast 1,142.0 ms, 27.48 GB; float32 1,237.9 ms, 31.49 GB</td><td>resident.md 22.3</td></tr>
+      <tr><th>Qwen2.5-1.5B forward</th><td>1,116 ms</td><td>float32 1,258 ms; autocast 1,188 ms</td><td>resident.md 23.2</td></tr>
+      <tr><th>Qwen2.5-1.5B LoRA step</th><td>2,467.3 ms; 19.38 GB</td><td>autocast 2,743.8 ms, 39.93 GB; float32 2,980.3 ms, 46.76 GB</td><td>resident.md 23.5</td></tr>
+      <tr><th>Qwen2.5-0.5B full fine-tuning step</th><td>1,381.4 ms; 21.03 GB</td><td>torch float32 1,450.8 ms; 44.56 GB</td><td>resident.md 24.4</td></tr>
+      <tr><th>Qwen2.5-1.5B full fine-tuning step</th><td>4,191 ms; 44.27 GB (four steps)</td><td>no comparison: not run</td><td>resident.md 24.9</td></tr>
+      <tr><th>ResNet-18-class backbone, 11,181,632 parameters</th><td>equal to torch's loss and gradients; no time measured</td><td></td><td>resident.md 26.3, 26.4</td></tr>
+      <tr class="us"><th>Decoding Qwen3.8-27B (NVFP4), tokens a second</th><td>27.4; 39.9 with speculative decoding</td><td><b>Ollama 45.3</b>, MLX-LM 29.6</td><td>benchmark.md</td></tr>
+      <tr class="us"><th>Decoding Qwen2.5-0.5B (bf16), tokens a second</th><td>180.4</td><td><b>MLX-LM 347.2</b>; transformers on the CPU, float32 67.0</td><td>benchmark.md</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note"><b>Reading it.</b> For the GPT and for Qwen2.5 fine-tuning cancho-gpu takes less time a step than torch on MPS (1.28 times faster than float16 autocast on the 0.5B LoRA step, 1.11 times on the 1.5B's, 1.05 times on the 0.5B's full fine-tuning), with loss curves equal to the digits in the sections, and uses less memory in the three fine-tuning rows that have a torch number; the 0.5B forward pass uses more. It is slower on the CNN, and its decoding is slower than Ollama's on the 27B (88% of it with speculation) and than MLX-LM's on the 0.5B model. This is not a claim about torch tuned (compiled, with graphs), another machine or NVIDIA, and the fine-tuning rows are on this repository's own Markdown, Rust and cancho files: a measure of agreement with torch, not of how good a tuned model is.</p>
+  <p class="note"><b>Against OpenNN.</b> <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a> is the forward pass of one small two-layer sigmoid network on a CPU: both agree with a binary64 reference to 1.4e-7, and no timing ratio is claimed because the two measure different things. It has no GPU in it and no training. The only training comparison with OpenNN (resident.md sections 13 and 14, the third row above) is against OpenNN's <i>CPU</i> path, which was built without BLAS and so is not its best. <b>No comparison against OpenNN's GPU path exists</b>, for the forward pass or for training.</p>
+</section>
+
+<section id="gaps">
+  <h2>Known gaps.</h2>
+  <p class="sub">Assembled from the limits paragraphs of the sections cited. None of them is hidden by the table above.</p>
+  <div class="cols">
+    <div><h3>Hardware and method</h3><ul>
+      <li><b>CUDA has never run on hardware</b>: a mock driver only, no Hopper, no AMD. All training numbers are Metal on one Apple M4 Max.</li>
+      <li><b>One run, one seed</b> for every comparison with torch; a 0.01-nat difference between GPT runtimes is inside what another seed would move (resident.md 19.1).</li>
+      <li>The Qwen held-out set is 7 files and 16,384 tokens; the 1.5B run is 150 steps; full fine-tuning is 40 and 300 steps at one untuned learning rate. Some step times were measured with another process on the machine, and the sections say which.</li>
+    </ul></div>
+    <div><h3>Where it misses</h3><ul>
+      <li><b>M4's 90% is unmet</b>: 87.4% on real CIFAR-10 with no augmentation; torch gets 87.0% (18.1).</li>
+      <li><b>The CNN is slower than torch</b> (17.6 ms against 10.6): 186 launches a step, and the ResNet-18-class network has <b>287</b>; the one fusion the surface allows would remove about 14% of them (estimate; 18.2, 26.3, roadmap 8.4).</li>
+      <li><b>M7.3's memory clause is unmet for the 0.5B</b>: 59% of torch float16 autocast's footprint, not under half. Met narrowly for the 1.5B (48.5% by footprint, 51.3% by torch's driver number) after two memory changes (22.3, 23.5).</li>
+      <li>Decoding is slower than Ollama on the 27B and than MLX-LM on the 0.5B model.</li>
+    </ul></div>
+    <div><h3>Costs and ceilings</h3><ul>
+      <li><b>The vocabulary</b> is a one-hot product, since the surface has no gather or atomics: +14% of a GPT step at 2,048 tokens, about 203 ms of a 1,380 ms Qwen step (15%) at 151,936. A GPT vocabulary above about 2,048 is not built (17, 24.5).</li>
+      <li><b>Contexts</b>: the GPT trains at 128, Qwen at 512; the decode runners stop at 1,024 positions (256 for the 0.5B runner); split-KV is not built.</li>
+      <li><b>Precision</b>: a static loss scale of 16 (above 64 it is silently wrong); f16 gradients make Adam move near-zero rows by noise, 11.3% off peft in layer 0's q <code>B</code> after 300 steps, with the held-out loss equal to 6e-5; whether an f32 gradient would remove it was not tried (22.4).</li>
+    </ul></div>
+    <div><h3>Not done or not merged</h3><ul>
+      <li><b>1.5B full fine-tuning</b> is four steps: it fits (44.27 GB of 64), with no held-out loss and no torch comparison (24.9).</li>
+      <li><b>A 4-bit base and 7B (QLoRA)</b> is in progress on another branch and is not merged; on <code>main</code> a <code>resident</code> file takes only <code>f32</code> and <code>f16</code> (25.8).</li>
+      <li><b>M8 has no training result</b>; the untuned baselines are near zero (A: 0.012, B: 0.000; Claude Haiku 5.5: 0.99) and the tuned arms will be read on compile rate and refusal tags.</li>
+      <li><b>M9</b>: the backbone is not timed; no robot or synthetic data, no regression head (26.4, roadmap 8.3).</li>
+      <li>A text resident file is capped at 16 MiB (binary is not); a <code>table</code> must fit the 512 MiB byte pool, so a 300-step Qwen run is five or six sessions.</li>
+    </ul></div>
+  </div>
+</section>
+
 <section id="results">
   <h2>Measured, not promised.</h2>
-  <p class="sub">"It works" is a comparison with an independent reference, not an opinion; the CUDA text, which no machine here can run, is the exception. <b>Who ran what:</b> the case counts and the interpreter runs are checked by CI on every push (<code>scripts/gate.sh</code>); the 27B and Metal numbers were made by hand on one Apple M4 Max and are reported in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>; the OpenNN numbers are one run on a 4-vCPU container, in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>. Where a claim turned out false, the design document was corrected in place.</p>
+  <p class="sub">"It works" is a comparison with an independent reference, not an opinion; the CUDA text, which no machine here can run, is the exception. <b>Who ran what:</b> the case counts and the interpreter runs are checked by CI on every push (<code>scripts/gate.sh</code>); the 27B and Metal numbers were made by hand on one Apple M4 Max and are reported in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>, the training and fine-tuning numbers (one run each) in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>; the OpenNN numbers are one run on a 4-vCPU container, in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>. Where a claim turned out false, the design document was corrected in place.</p>
   <div class="stats">
-    <div><b>226</b><span>cases held to recorded goldens (200 emit, 26 refused); 218 of them first agreed byte for byte with the Rust implementation, now retired as the oracle</span></div>
-    <div><b>51</b><span>interpreter runs with the same summary as the Rust's, f32 order included</span></div>
-    <div><b>~5,000</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
+    <div><b>272</b><span>cases held to recorded goldens (245 emit, 27 refused); 218 of the first ones agreed byte for byte with the Rust implementation, now retired as the oracle</span></div>
+    <div><b>65</b><span>interpreter runs recorded as goldens; 51 of them had the same summary as the Rust's when it was the oracle, f32 order included</span></div>
+    <div><b>4,987</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
     <div><b>0</b><span>differences from the independent readers on 6 real GGUF models and 3,379 Qwen3.8 tensors; the sampler's picks match on 2,269 rows. the tokenizer agrees with Hugging Face on 5,300+ records of real and random text across two real Qwen tokenizers (it did not, until issue #51 was fixed)</span></div>
   </div>
   <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where each reader differs from its oracle, and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">the kernels document</a> the context limit.</p>
@@ -555,6 +628,9 @@ build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">Design</a>: how the compiler is built, what it cost and every difference from the Rust</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">Run</a>: a kernel on your own inputs, with its gates and numbers</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">Training</a>: whether training belongs here, and what the surface can express of a backward pass</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">Sessions</a>: training on the device, a GPT, a CNN, Qwen2.5 LoRA and full fine-tuning, a vision backbone, every number with its conditions</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/roadmap-models.md">Roadmap of models</a>: the milestones M1 to M9, the cancho-code experiment (M8) and the vision job (M9)</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/tree/main/docs/m8">M8 data</a>: the manifests, the mix and the contamination check of the training data</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">Compared with OpenNN</a>: a forward pass measured on a CPU, and where cancho-gpu is worse</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">Device</a>: driving a GPU, and what stays unproven</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">Runtime</a>: the GGUF and safetensors readers, the tokenizer and the sampler</li>

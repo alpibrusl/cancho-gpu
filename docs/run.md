@@ -118,8 +118,9 @@ cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME FILE ...] [--
   about a large one.
 * One point per call. Evaluating many points in one process, to amortise the
   start, is **[open]**.
-* It adds no ReLU, no `AᵀB` product and no atomics; those remain the surface
-  gaps of `training.md` §4.
+* It adds no ReLU, no `AᵀB` product and no atomics. (Since written: `relu` and `step` are
+  surface operations, `resident.md` 12.3; the matrix-unit `mma_tn` is an `AᵀB` product,
+  section 14; atomics are still not in the surface, section 24.1.)
 
 ## 6. Measured
 
@@ -245,8 +246,8 @@ argument that is not `name=value`.
 
 ### 7.3 Known limits carried over, not fixed here
 
-`opt` takes at most 32 parameters; the surface has no ReLU, no `AᵀB` and no
-atomics (`training.md` §4); the order of a batch sum on a GPU is not pinned
+`opt` takes at most 32 parameters; the surface had no ReLU, no `AᵀB` and no
+atomics when this was written (`training.md` §4; ReLU and `mma_tn` exist now, atomics do not); the order of a batch sum on a GPU is not pinned
 (`training.md` §7).
 
 ### 7.4 Measured, and what was not run
