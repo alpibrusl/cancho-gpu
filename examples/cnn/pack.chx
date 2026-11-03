@@ -1,0 +1,29 @@
+// The input images into the padded, guarded layout conv3 reads: two tables of n2 images each (xa and xb: the two halves of a batch, each a block [n2 h h, cin] f16, so that a table
+// of a whole epoch stays under the 256 MiB a session stages a file in), one row y of one image a threadgroup. A row of h pixels times cmat [cin, cp] gives its channels padded with zeros
+// to cp (a multiple of 8, the matrix unit's atom), and times em [h + 2, h] puts the pixels one column in, between the zero border columns; the border rows and the guards are never written.
+algo pack(n2, h, cin, cp, g)
+  in  xa:   f16[n2 * h * h, cin]
+  in  xb:   f16[n2 * h * h, cin]
+  in  cmat: f32[cin, cp]
+  in  em:   f32[h + 2, h]
+  out o:    f16[2 * n2 * (h + 2) * (h + 2) + 2 * g, cp]
+{
+  grid b over n2, y over h
+  let la = load xa[b * h * h + y * h, 0 ; h, cin]
+  let fa = stage f32 la
+  let c1 = load cmat
+  let ra = matmul fa &c1
+  let e1 = load em
+  let pa = matmul &e1 ra
+  let ha = stage f16 pa
+  store ha -> o[g + b * (h + 2) * (h + 2) + (y + 1) * (h + 2), 0]
+  let lb = load xb[b * h * h + y * h, 0 ; h, cin]
+  let fb = stage f32 lb
+  let rb = matmul fb c1
+  let pb = matmul e1 rb
+  let hb = stage f16 pb
+  store hb -> o[g + (n2 + b) * (h + 2) * (h + 2) + (y + 1) * (h + 2), 0]
+}
+
+schedule pack for apple-m-series { threads 128 }
+schedule pack for nvidia-ada     { threads 128 }

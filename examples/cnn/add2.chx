@@ -1,0 +1,14 @@
+// y = a + b (f32): the gradient that goes around a block on its skip connection meets the one that goes through it.
+algo add2(r, c, bm)
+  in  a: f32[r, c]
+  in  b: f32[r, c]
+  out y: f32[r, c]
+{
+  grid i over r / bm
+  let x = load a[i * bm, 0 ; bm, c]
+  let z = load b[i * bm, 0 ; bm, c]
+  store x + z -> y[i * bm, 0]
+}
+
+schedule add2 for apple-m-series { threads 128 }
+schedule add2 for nvidia-ada     { threads 128 }

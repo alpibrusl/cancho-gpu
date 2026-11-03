@@ -1,0 +1,24 @@
+// a = f16(relu(z sc + sh) * mk), written into the guarded padded matrix the next convolution reads (rows g .. g + rp): mk is 1 on a valid row and 0 on a border row, so
+// the border stays zero.
+algo bn_apply(rp, c, bm, g)
+  in  z:  f32[rp, c]
+  in  sc: f32[1, c]
+  in  sh: f32[1, c]
+  in  mk: f32[rp, 1]
+  out a:  f16[rp + 2 * g, c]
+{
+  grid i over rp / bm
+  let zz = load z[i * bm, 0 ; bm, c]
+  let s  = load sc
+  let b  = load sh
+  let y0 = zz * s + b
+  let y  = y0 * 1.0
+  let r  = relu y
+  let m  = load mk[i * bm, 0 ; bm, 1]
+  let o  = r * m
+  let h  = stage f16 o
+  store h -> a[g + i * bm, 0]
+}
+
+schedule bn_apply for apple-m-series { threads 128 }
+schedule bn_apply for nvidia-ada     { threads 128 }

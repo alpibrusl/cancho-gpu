@@ -1,0 +1,44 @@
+// BatchNorm backward, the second level: dz = gamma istd (d - dbeta / m - xhat dgamma / m) on the valid rows, f16, into the guarded padded matrix the convolution's backward reads
+// (the border and the guard stay zero). d and xhat are as in bn_bwd_part.
+algo bn_bwd_apply(rp, c, bm, g, m)
+  in  gr:   f32[rp, c]
+  in  z:    f32[rp, c]
+  in  sc:   f32[1, c]
+  in  sh:   f32[1, c]
+  in  mean: f32[1, c]
+  in  istd: f32[1, c]
+  in  gamma: f32[1, c]
+  in  dbeta: f32[1, c]
+  in  dgamma: f32[1, c]
+  in  mk:   f32[rp, 1]
+  out dz:   f16[rp + 2 * g, c]
+{
+  grid i over rp / bm
+  let gg = load gr[i * bm, 0 ; bm, c]
+  let zz = load z[i * bm, 0 ; bm, c]
+  let s  = load sc
+  let b  = load sh
+  let y0 = &zz * s + b
+  let y  = y0 * 1.0
+  let st = step y
+  let d  = gg * st
+  let mu = load mean
+  let is = load istd
+  let xc = zz - mu
+  let xh = xc * &is
+  let ga = load gamma
+  let db = load dbeta
+  let dg = load dgamma
+  let k  = ga * is
+  let t1 = d - db * (1 / m)
+  let t2 = xh * dg * (1 / m)
+  let t3 = t1 - t2
+  let t4 = t3 * k
+  let mm = load mk[i * bm, 0 ; bm, 1]
+  let t5 = t4 * mm
+  let h  = stage f16 t5
+  store h -> dz[g + i * bm, 0]
+}
+
+schedule bn_bwd_apply for apple-m-series { threads 128 }
+schedule bn_bwd_apply for nvidia-ada     { threads 128 }

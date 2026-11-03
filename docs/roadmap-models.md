@@ -1,7 +1,7 @@
 # Training and serving real models with cancho-gpu: the gaps, and a plan
 
 > **Status: a plan (a design written before the code), with measured starting points.** Marks as elsewhere: **[measured]**, **[read]** (from source or documents, not run), **[open]**.
-> Written after `resident.md` section 14: the training stack reaches 2 TFLOPS on the matrix unit and trains MLPs faster than torch on MPS. **M1 is built and met its exits (`resident.md` section 15)**; the rest below is still a plan.
+> Written after `resident.md` section 14: the training stack reaches 2 TFLOPS on the matrix unit and trains MLPs faster than torch on MPS. **M1 to M3 are built (`resident.md` sections 15 to 17) and M4 is built on a synthetic image set (section 18)**; the rest below is still a plan.
 
 ## 1. What the machine can do, and what cancho-gpu can do now
 
@@ -26,7 +26,7 @@ What does not: everything in section 2.
 | **G8 range of f16** | deep or large models | f16 overflows at 65504 | bf16 tiles on the matrix unit (does Metal on this OS take `bfloat`? **[open]**), or loss scaling | S to M |
 | **G9 data beyond memory** | any real dataset | tables are loaded into the interpreter's binary64 memory (8 bytes an element) before being uploaded; integer ids need an integer dtype | upload tables to the device directly from the file in chunks, `i32` dtype, no interpreter copy | M |
 | **G10 checkpoints** | training then serving | a session can only print text | `save P.PARAM FILE` (binary) and a reader in the runners | S |
-| **G11 convolution** | vision, speech front-ends | conv2d/conv1d, forward and both gradients | in NHWC with a zero-padded border, a convolution is a **loop over the kernel taps** of `mma` on shifted row windows of one flattened `[N*H*W, C]` matrix (a rectangular load at a computed row offset), and the gradients are `mma_nn` and `mma_tn` over the same taps: **no new operation**, only the kernels; strides above 1 and max-pooling need `max a b` | M |
+| **G11 convolution** (built for 3x3 stride 1 conv2d, `resident.md` section 18) | vision, speech front-ends | conv2d/conv1d, forward and both gradients | in NHWC with a zero-padded border, a convolution is a **loop over the kernel taps** of `mma` on shifted row windows of one flattened `[N*H*W, C]` matrix (a rectangular load at a computed row offset), and the gradients are `mma_nn` and `mma_tn` over the same taps: **no new operation**, only the kernels; strides above 1 and max-pooling need `max a b` | M |
 | **G12 generic serving** | any open model | a decoder runner for any llama-family model (RMSNorm, RoPE, grouped-query attention, SwiGLU), from its files, with a prefill on the matrix unit | today's runners hardcode Qwen2 and Qwen3.8, and prefill takes 8 tokens at a time; a configuration-driven runner on `mma` | L |
 | **G13 weight formats** | serving | bf16/f16 dense (trivial) and 4/8-bit groups (Q4_K_M, Q8_0, AWQ/GPTQ) | each is a dequantising matvec like `matvec_fp4`; NVFP4 exists | S per format |
 | **G14 contexts beyond 1024** | long prompts | split-KV attention with its merge | G4's running max and multi-tile loops | L |
@@ -46,7 +46,7 @@ Exit: the generated tokens equal torch's greedy tokens for the same weights; tok
 **M3. A real vocabulary and a real dataset. Partly built (`resident.md` section 17): a 2,048-token BPE, a 27 M-parameter GPT, curves equal to torch's, 81 ms a step against 86; no gather/scatter needed at that vocabulary; not done: 30 to 60 M parameters (blocked by the answer path, needs a device-side `save`), larger vocabularies, memory.** (original plan follows) (G1, G7, G9). Index-valued load and scatter-add (atomics, or the sort-and-segment form measured against them), device-direct tables, a BPE-tokenised corpus; a 30 to 60 M parameter GPT on TinyStories-scale text.
 Exit: the loss curve agrees with torch's; tokens a second in training against torch; memory against torch.
 
-**M4. A CIFAR-10 convolutional network** (G11, BatchNorm of G2, `max`). A ResNet-style network of about 1 M parameters. Exit: 90% test accuracy in the time torch needs on this machine, the curves agreeing.
+**M4. A CIFAR-10 convolutional network. Partly built (`resident.md` section 18): a 0.85 M-parameter ResNet (13 convolutions, BatchNorm, residual blocks) trained in a Metal session with no new operation, every kernel and the network held to a float64 specification; on a synthetic image set (CIFAR-10 is not on this machine and its download needs the owner's permission) the curves equal torch's (final test accuracy 0.911 against 0.913 and 0.908) and a step takes 17.6 ms against torch MPS's 10.6; not done: CIFAR-10 itself and its 90%, max-pooling (average pooling was used, so `max a b` was not needed), augmentation.** (original plan follows) (G11, BatchNorm of G2, `max`). A ResNet-style network of about 1 M parameters. Exit: 90% test accuracy in the time torch needs on this machine, the curves agreeing.
 
 **M5. Serve an open LLM** (G12, G13, G14 optional). A llama-family model of 1 to 3 B parameters (Llama-3.2, Qwen2.5) from its safetensors or GGUF files with a mixed-precision prefill. Exit: its tokens equal the reference's on a fixed prompt set (`scripts/model-check.sh` style) and its speed is reported against Ollama and MLX-LM as `benchmark.md` does.
 
