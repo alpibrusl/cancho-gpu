@@ -566,7 +566,7 @@ MUTANTS = [
     ("session/main.cho", "mem.release_to(m, mark);", "m[mem.text_slot()] = tmark;", "memory is not given back after a request"),
     ("session/main.cho", "if c < 0 && n == 0 {", "if c < 0 {", "a last line without its newline is dropped"),
     ("src/session.cho", "while pos < n && space(text.at(t, line, pos)) {\n        pos = pos + 1;\n    }\n    if pos < n {", "while pos < n && space(text.at(t, line, pos)) {\n        pos = pos + 1;\n    }\n    if pos < 0 {", "a request with too many numbers is accepted"),
-    ("src/session.cho", "if sp >= dp {", "if sp > dp {", "a link from a program to itself is accepted"),
+    ("src/session.cho", "if sp >= dp {\n            return bad(m, t, m[raw + 4], text.lit(m, t, \"a link goes", "if sp > dp {\n            return bad(m, t, m[raw + 4], text.lit(m, t, \"a link goes", "a link from a program to itself is accepted"),
     ("src/session.cho", "return (truncate(v), text.sub(line, pos, n));", "return (truncate(v) + 1, text.sub(line, pos, n));", "the count of steps is one too many"),
     ("src/session.cho", "m[sess + s_count()] = m[sess + s_count()] + 1;\n        j = j + 1;", "j = j + 1;", "the table position does not advance"),
     ("src/session.cho", "fm[m[gd + 2] + e] = fm[m[gs + 2] + e];", "fm[m[gd + 2] + e] = fm[m[gd + 2] + e];", "a carry copies nothing"),

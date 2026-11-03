@@ -72,9 +72,9 @@ def fused_names(c, r):
     return [(l, g, ab) for l in range(c.layers) for g in group_dims(c, r) for ab in ("A", "B")]
 
 
-def schedule(steps, lr_fn, b1, b2):
-    """Per step: [lr_t / (1 - beta1^t), 1 / sqrt(1 - beta2^t)] (binary64): the learning-rate schedule is in the table."""
-    return [(lr_fn(t) / (1.0 - b1 ** t), 1.0 / math.sqrt(1.0 - b2 ** t)) for t in range(1, steps + 1)]
+def schedule(steps, lr_fn, b1, b2, first=0):
+    """Per step: [lr_t / (1 - beta1^t), 1 / sqrt(1 - beta2^t)] (binary64): the learning-rate schedule is in the table. `first` steps were taken before (a session continued from a checkpoint)."""
+    return [(lr_fn(t) / (1.0 - b1 ** t), 1.0 / math.sqrt(1.0 - b2 ** t)) for t in range(first + 1, first + steps + 1)]
 
 
 def rope_bwd_source(c, bm):
@@ -118,12 +118,15 @@ schedule rope_bwd for nvidia-ada     { threads 128 }
 
 
 def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr_fn=None, wd=0.0, betas=(0.9, 0.999), eps_adam=1e-8, loss_scale=16.0, train=True,
-          grads=None, save=None, probes=(), tune=None, reuse=True):
+          grads=None, save=None, probes=(), tune=None, reuse=True, state=None, first_step=0, save_state=None):
     """Writes the session over the batches `tokens` ([S, nb, t], taken round and round, one per step) and the adapters `AB` ({'l00.q.A': [r, in], ...}); answers the path of the session file.
     A request is a count of steps; the answer is the mean loss of the last step's batch (positions with a next token). With train=False no optimiser runs (the adapters stay as they are) and with
     `grads` (a path) the raw gradient of every fused adapter matrix is saved there on the request `checkpoint` (see `read_grads`). With train=True and `save` (a path) the f32 fused adapter matrices are
     saved on `checkpoint`. `probes`: program outputs ('rm1_0.y') to answer after the loss, for debugging. With `reuse` (the default) the temporaries that only one layer needs share one buffer across
-    layers (`alias`, docs/resident.md section 21.4); the session file's checks refuse an alias that would overwrite a value a later program reads."""
+    layers (`alias`, docs/resident.md section 21.4); the session file's checks refuse an alias that would overwrite a value a later program reads.
+    A run longer than a session's table can hold (a table is a file of at most 512 MiB: 60 batches of 8 x 512) is several sessions: with `save_state` (a path) the first and second moments are saved
+    beside the adapters (`<path>.m`, `<path>.v`, as `read_fused` reads them) and the next session starts from them with `state` ({(l, group, 'A'|'B'): (m, v)}) and `first_step` (the steps already
+    taken, which the bias correction and the learning-rate schedule count from; docs/resident.md section 22)."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     w = lambda name: os.path.abspath(os.path.join(wdir, name))
@@ -184,11 +187,14 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             S.put(p(f"Bh{q}"), scale * B, "<f2")
             if train:
                 for nm, arr in (("A", A), ("B", B)):
-                    S.put(p(f"z{nm}{q}"), np.zeros_like(arr))
+                    m0, v0 = state[(l, g, nm)] if state else (np.zeros_like(arr), np.zeros_like(arr))
+                    assert m0.shape == arr.shape and v0.shape == arr.shape, (l, g, nm, m0.shape, arr.shape)
+                    S.put(p(f"zm{nm}{q}"), m0)
+                    S.put(p(f"zv{nm}{q}"), v0)
                 S.put(p(f"mA{q}"), np.ones_like(A))
                 S.put(p(f"mB{q}"), mask)
     if train:
-        S.put(p("sched"), np.array(schedule(steps, lr_fn, b1, b2)).reshape(-1))
+        S.put(p("sched"), np.array(schedule(steps, lr_fn, b1, b2, first_step)).reshape(-1))
 
     def kernel(name, nv=False, **sched):
         """The kernel file with its apple-m-series schedule replaced by `sched` (and, for a tile that is not a multiple of the CUDA atoms, the nvidia-ada one by a single warp over the same block, which is
@@ -440,8 +446,8 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
                     nel = sizes[ab]
                     prog(nm, kernel("adamw_l.chx"), n=nel, bn=S.block(nel, 128), gs=repr(gs * (scale if ab == "B" else 1.0)), b1=b1, b2=b2, eps=eps_adam, lwd=repr(lr * wd), osc=repr(scale if ab == "B" else 1.0))
                     res(f"{nm}.w", p(f"{ab}{k}"))
-                    res(f"{nm}.m", p(f"z{ab}{k}"))
-                    res(f"{nm}.v", p(f"z{ab}{k}"))
+                    res(f"{nm}.m", p(f"zm{ab}{k}"))
+                    res(f"{nm}.v", p(f"zv{ab}{k}"))
                     res(f"{nm}.mk", p(f"m{ab}{k}"))
                     tab(f"{nm}.s", p("sched"), steps)
                     link(gradout[(l, g)][0 if ab == "A" else 1], f"{nm}.grad")
@@ -475,6 +481,12 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             for g in G:
                 for ab in ("A", "B"):
                     L.append(f"save a{ab}{l:02d}_{g}.wo {os.path.abspath(save)} f32")
+    if save_state and train:
+        for o, ext in (("mo", "m"), ("vo", "v")):
+            for l in range(ll):
+                for g in G:
+                    for ab in ("A", "B"):
+                        L.append(f"save a{ab}{l:02d}_{g}.{o} {os.path.abspath(save_state)}.{ext} f32")
     open(p("session"), "w").write("\n".join(L) + "\n")
     return p("session")
 
