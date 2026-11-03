@@ -1,0 +1,24 @@
+// PROBE ok
+// ARGS nc=1536
+// One step of the repeated-squaring solve as its own launch, through memory: P' = P P (mma_nn on the f16 copies) and Pi' = Pi P' (the other product), both stored as f32 blocks; Pi + Pi P' is the next launch's elementwise pass (or the following step's operand load adds them). Five steps and five passes make (I + Ls)^-1 for a chunk of 64.
+algo neumann_mma_step(nc)
+  in  p:  f16[nc * 64, 64]
+  in  pi: f16[nc * 64, 64]
+  out p2: f32[nc * 64, 64]
+  out q:  f32[nc * 64, 64]
+{
+  grid c over nc
+  let a = load p[c * 64, 0 ; 64, 64] @shared
+  let b = load p[c * 64, 0 ; 64, 64] @shared
+  let z = zeros f32[64, 64] @frag
+  let r = mma_nn z a b
+  store r -> p2[c * 64, 0]
+  let m = load pi[c * 64, 0 ; 64, 64] @shared
+  let n = load p[c * 64, 0 ; 64, 64] @shared
+  let z2 = zeros f32[64, 64] @frag
+  let r2 = mma_nn z2 m n
+  store r2 -> q[c * 64, 0]
+}
+
+schedule neumann_mma_step for apple-m-series { threads 128 warps 2 2 }
+schedule neumann_mma_step for nvidia-ada     { threads 128 warps 2 2 }

@@ -1,0 +1,21 @@
+// PROBE ok
+// ARGS nc=8
+// The chunk's (beta k) k^T: a [64, 128] by [64, 128]^T product on the matrix unit, one threadgroup a (head, chunk), stored as a [64, 64] f32 block. The decay and the strict-lower mask cannot be applied in this kernel (a fragment is stored, not scaled): decay_mask.chx is the next launch.
+algo kkt_mma(nc)
+  in  kb: f16[nc * 64, 128]
+  in  k:  f16[nc * 64, 128]
+  out a:  f32[nc * 64, 64]
+  tile bk
+{
+  grid c over nc
+  let acc = zeros f32[64, 64] @frag
+  let acc = for p in 0 .. 128 / bk with acc {
+    let at = load kb[c * 64, p * bk ; 64, bk] @shared
+    let bt = load k[c * 64, p * bk ; 64, bk] @shared
+    yield mma acc at bt
+  }
+  store acc -> a[c * 64, 0]
+}
+
+schedule kkt_mma for apple-m-series { threads 128 warps 2 2 bk 32 }
+schedule kkt_mma for nvidia-ada     { threads 128 warps 2 2 bk 32 }

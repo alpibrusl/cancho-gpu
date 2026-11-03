@@ -1,0 +1,23 @@
+// PROBE type
+// ARGS nc=4
+// The cross-chunk carry S = S exp(g_last) + Kd^T v_new with S as the matrix-unit accumulator: the decay multiplies the accumulator every chunk, and a fragment cannot be scaled (frag_scale.chx in examples/cnn/probes is the same refusal). Folding exp(g_last) into the operands instead would make the products cumulative over chunks.
+algo state_frag_decay(nc)
+  in  kd: f16[nc * 64, 128]
+  in  vn: f16[nc * 64, 64]
+  in  e:  f32[nc, 64]
+  out so: f32[128, 64]
+{
+  grid h over 1
+  let s0 = zeros f32[128, 64] @frag
+  let s = for i in 0 .. nc with s0 {
+    let at = load kd[i * 64, 0 ; 64, 128] @shared
+    let bt = load vn[i * 64, 0 ; 64, 64] @shared
+    let ev = load e[i, 0 ; 1, 64]
+    let sd = s0 * ev
+    yield mma_tn sd at bt
+  }
+  store s -> so[0, 0]
+}
+
+schedule state_frag_decay for apple-m-series { threads 128 warps 2 2 }
+schedule state_frag_decay for nvidia-ada     { threads 128 warps 2 2 }

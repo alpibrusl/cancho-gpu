@@ -1,0 +1,30 @@
+// PROBE ok
+// ARGS nb=48
+// Half of one chunk's step of the state scan ON THE MATRIX UNIT: v_new = u - P (P = w S from the previous launch, through memory: an elementwise tile) is STAGED to f16 and is the operand of o = (q e^g) S + Aqk v_new, two accumulations into one fragment, the first a loop over the keys in blocks of 32 so that the staged tiles stay inside Metal's 32 KiB. The fragment is stored, never touched. (The state update U = Kd^T v_new is scan_mma_bu.chx; the decay and the addition are scan_mma_a.chx. A single kernel doing o and U together is refused: budget, 57,344 B on Metal.)
+algo scan_mma_bo(nb)
+  in  u:   f32[nb * 64, 64]
+  in  p:   f32[nb * 64, 64]
+  in  s:   f32[nb * 128, 64]
+  in  qg:  f16[nb * 64, 128]
+  in  aqk: f16[nb * 64, 64]
+  out o:   f32[nb * 64, 64]
+{
+  grid b over nb
+  let ut = load u[b * 64, 0 ; 64, 64]
+  let pt = load p[b * 64, 0 ; 64, 64]
+  let vn = ut - pt
+  let vh = stage f16 vn
+  let a0 = zeros f32[64, 64] @frag
+  let a1 = for q in 0 .. 4 with a0 {
+    let st = load s[b * 128 + q * 32, 0 ; 32, 64]
+    let sh = stage f16 st
+    let qt = load qg[b * 64, q * 32 ; 64, 32] @shared
+    yield mma_nn a0 qt sh
+  }
+  let at = load aqk[b * 64, 0 ; 64, 64] @shared
+  let a2 = mma_nn a1 at vh
+  store a2 -> o[b * 64, 0]
+}
+
+schedule scan_mma_bo for apple-m-series { threads 128 warps 2 2 }
+schedule scan_mma_bo for nvidia-ada     { threads 128 warps 2 2 }

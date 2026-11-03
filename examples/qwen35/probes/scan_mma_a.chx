@@ -1,0 +1,29 @@
+// PROBE ok
+// ARGS nb=48
+// The other half: S_i = S_{i-1} e^{g_last} + U_{i-1} (elementwise, in registers, the decay row loaded as 64 copies), written back as the f32 master, then staged to f16 as the right operand of P = w S_i (the next v_new's subtrahend). In blocks of 32 keys: staging a whole computed [128, 64] f32 tile costs 32 KiB of tiles and 32 KiB of staging scratch (Metal session: 65,536 B; `check` does not see the scratch).
+algo scan_mma_a(nb)
+  in  s:  f32[nb * 128, 64]
+  in  up: f32[nb * 128, 64]
+  in  el: f32[nb, 64]
+  in  w:  f16[nb * 64, 128]
+  out sn: f32[nb * 128, 64]
+  out pp: f32[nb * 64, 64]
+{
+  grid b over nb
+  let a0 = zeros f32[64, 64] @frag
+  let a1 = for q in 0 .. 4 with a0 {
+    let st = load s[b * 128 + q * 32, 0 ; 32, 64]
+    let ut = load up[b * 128 + q * 32, 0 ; 32, 64]
+    let ev = load el[b, 0 ; 1, 64]
+    let sd = st * ev
+    let sn_ = sd + ut
+    let sh = stage f16 &sn_
+    store sn_ -> sn[b * 128 + q * 32, 0]
+    let wt = load w[b * 64, q * 32 ; 64, 32] @shared
+    yield mma_nn a0 wt sh
+  }
+  store a1 -> pp[b * 64, 0]
+}
+
+schedule scan_mma_a for apple-m-series { threads 128 warps 2 2 }
+schedule scan_mma_a for nvidia-ada     { threads 128 warps 2 2 }
