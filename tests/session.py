@@ -205,7 +205,11 @@ def i8_checks(binary, tdir):
     """docs/resident.md section 27: the `i8` flag of `resident`, a binary file of bytes read as signed 8-bit codes. The only kernel that consumes an i8 tensor is the dequantiser (`dequant_fp4`: no
     arithmetic, staging or conversion of an i8 is expressible), so the check is the dequantise kernel of a QLoRA session (examples/qwen/dq_fp4.chx) over the three files of a 4-bit matrix packed by
     examples/qwen/nvfp4.py: its f16 output equals the decoding of those bytes, exactly, for two group sizes and several tiles (the bytes include every value from 0 to 255 as nibble pairs)."""
-    import numpy as np
+    try:
+        import numpy as np
+    except ImportError:
+        print("skip i8_checks: numpy is not installed")
+        return
     sys.path.insert(0, os.path.join(ROOT, "examples", "qwen"))
     import nvfp4
     n_, k_ = 64, 128
