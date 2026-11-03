@@ -15,6 +15,8 @@
    a random B so that every gradient is non-zero, and with B = 0 where A's gradient is exactly zero); the session's gradient of every adapter matrix (per projection, split out of the fused matrices) against the
    specification's, on the CPU interpreter and the GPU; the three-kernel cross-entropy's gradient `ce_grad`; the grouped-query sum of `att_dkv` for a group of 3; AdamW on the adapters over a table of batches against
    a float64 AdamW (the fused block-diagonal B keeps its zeros); mutants of the specification's backward and of the kernels, each far from the session's gradients.
+6. A run in several sessions (docs/resident.md section 22; roadmap M7.3): 3 + 3 steps with the adapters, Adam's moments and the step count handed over equal 6 steps in one session, exactly; with the moments
+   dropped or the step count restarted they do not.
 Needs numpy; without it the test says so and passes. The converter check needs torch and safetensors and is skipped without them."""
 import json
 import os
@@ -447,6 +449,44 @@ def adam_check(binary, extra, d, label, mut=None):
     return got
 
 
+def restart_check(binary, extra, d, label, mutate=None):
+    """A run of 6 steps in two sessions of 3 (the adapters and Adam's moments handed over through `save` and `state`, the step count through `first_step`; docs/resident.md section 22) equals the
+    run of 6 steps in one session: the loss at every step and the adapters after the last, exactly (the CPU interpreter is deterministic). `mutate` hands over without the moments ('state') or restarts the
+    bias correction and the schedule at step 1 ('first'): then the second session differs, so the check fails."""
+    c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=1)
+    P["emb"] = P["emb"] * 0.3
+    toks = np.random.default_rng(0).integers(0, c.v, (3, c.nb, c.t))
+    AB = R.init_lora(c, 16, 7, b_std=0.02)
+    wdir = os.path.join(d, "w")
+    S.write_files(wdir, c, P)
+    lr_fn = lambda t: 3e-3 * (t / 2 if t <= 2 else 0.5 * (1 + np.cos(np.pi * (t - 2) / 4)))
+    kw = dict(r=16, loss_scale=64.0, train=True, lr=3e-3, lr_fn=lr_fn, tune=dict(bc=128))
+
+    def run(name, steps, ab, **more):
+        sess = T.write(os.path.join(d, name), c, wdir, toks, ab, steps=steps, save=os.path.join(d, name, "ad.bin"), save_state=os.path.join(d, name, "st"), **kw, **more)
+        ss = S.Session(binary, sess, extra)
+        got = [float(ss.ask("1")[0].split()[0]) for _ in range(steps)]
+        ss.checkpoint()
+        ss.close()
+        fa = T.read_fused(c, 16, os.path.join(d, name, "ad.bin"))
+        m, v = T.read_fused(c, 16, os.path.join(d, name, "st.m")), T.read_fused(c, 16, os.path.join(d, name, "st.v"))
+        return got, fa, {k: (m[k], v[k]) for k in m}
+
+    whole, fw, _ = run("whole", 6, AB)
+    first, f1, st = run("half1", 3, AB)
+    ab2 = {}
+    for l in range(c.layers):
+        ab2.update(T.split_params(c, 16, {g: (f1[(l, g, "A")], f1[(l, g, "B")]) for g in T.group_dims(c, 16)}, l))
+    second, f2, _ = run("half2", 3, ab2, state=None if mutate == "state" else st, first_step=0 if mutate == "first" else 3)
+    err = max(float(np.abs(f2[k] - fw[k]).max()) for k in fw)
+    dl = max(abs(a - b) for a, b in zip(first + second, whole))
+    if mutate:
+        say(err > 1e-6 or dl > 1e-6, f"{label}: restart mutant ({mutate}): the two sessions end {err:.1e} from the single session's adapters (losses {dl:.1e}), so the check fails")
+        return
+    say(err == 0.0 and dl == 0.0, f"{label}: 6 steps in two sessions of 3 equal 6 steps in one (losses and adapters differ by {dl:.1e} / {err:.1e}); the loss fell from {whole[0]:.3f} to {whole[-1]:.3f}")
+
+
 def main():
     cpu = os.path.abspath(sys.argv[1])
     metal = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 and os.path.exists(sys.argv[2]) else None
@@ -482,6 +522,9 @@ def main():
         adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, f"le{i}"), "CPU session", mut=mut)
     if metal:
         adam_check(metal, [], os.path.join(d, "ld"), "Metal session")
+    for i, mut in enumerate((None, "state", "first")):
+        os.makedirs(os.path.join(d, f"lr{i}"), exist_ok=True)
+        restart_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, f"lr{i}"), "CPU session", mutate=mut)
     print(f"{'qwen: ok' if not bad else f'qwen: {bad} FAILED'}")
     sys.exit(1 if bad else 0)
 

@@ -761,3 +761,102 @@ Without reuse a step kept the output of every program of every layer: **30.3 GB*
 * A gradient test at peft's initial state tests nothing for A (zero); the checks use a random B too, and `tests/qwen.py` asserts that A's gradients are exactly 0 at B = 0.
 * The constant on the left of an operator is refused (`1.0 - s`); `s - 1.0` is the form. A skinny tile on the CUDA schedule needs its own line (the CPU tests run `--target nvidia-ada`).
 * Weights are resident twice (the forward and backward programs each upload their copies: +1.3 GB; there is no way to link a resident). No causal skipping (the upper triangle of `dP`, `dS`, `dK`, `dV` is computed and masked), `t` = 512 only, 8 sequences, one machine, nothing run on NVIDIA. The static loss scale (above). Block-diagonal waste. The run is 40 steps of M7.2, not M7.3's curve. peft ran in float32 on the CPU, torch's timings are MPS.
+
+
+## 22. A 300-step fine-tuning run against peft (roadmap M7.3; measured)
+
+`docs/roadmap-models.md` section 6 asked, as its third step, for a fine-tuning run of 300 steps on a real corpus, the same batches and the same initial adapters in cancho-gpu and in peft, the loss curves equal and the held-out loss falling, with ms a step and memory against torch. It is built. **Against peft in float32 the curves are equal (largest difference of the training loss 1.2e-3, mean 5e-5; of the held-out loss 6e-5), the held-out loss falls from 2.4522 to 1.8699, the step is 889 ms against torch MPS's 1,142 (float16 autocast) and 1,238 (float32), and the memory is 16.1 GB against 25.9 to 29.9 (59% to 54%: not under half).** The exit is met by its speed clause, not by its memory clause (22.3). torch's float16 autocast, run as the baseline of the roadmap runs it, does *not* produce the same curve (22.2).
+
+### 22.1 What was run
+`examples/qwen/`: `finetune_data.py` (the corpus), `finetune.py` (`train`, `eval`, `compare`: cancho-gpu's side and the comparison), `peft_finetune.py` (peft on MPS, `--dtype float16|float32`, `--loss-scale`), `adam_noise.py` (22.4), `generate.py` (22.5); `qwen_train.write` gained `state`, `first_step` and `save_state` (below); `tests/qwen.py` gained a check of the handover.
+* **Model and optimiser.** Qwen2.5-0.5B, rank-16 LoRA, alpha 32, on all seven linear layers of the 24 blocks (8.8 M parameters); A initialised as peft does (`qwen_ref.init_lora`, seed 7), B = 0, the same arrays for both runtimes. AdamW (betas 0.9/0.999, eps 1e-8, no decay), lr 2e-4, linear warm-up over 30 steps then cosine to 0 (one `lr_schedule` for both), 300 steps of 8 sequences of 512 (4,096 tokens, 1,228,800 in all, **no batch repeated**). cancho-gpu: f16 weights and operands, f32 accumulation, loss scale 16 (the M7.2 session); peft: transformers 5.2, peft 0.21, torch 2.12 on MPS, the model loaded as float16 with float32 adapters under `torch.autocast` (the roadmap's baseline), and as float32.
+* **The corpus** (`finetune_data.py`, no download): the Markdown, Rust and cancho files of this machine's `cancho` and `cancho-gpu` checkouts (4,169 distinct contents, 80 MB; identical contents kept once, files over 100 KB left out), tokenized with Qwen's own tokenizer (`tokenizers`, from the Hugging Face cache) with the end-of-text token after each file, in the order of their content hash, packed into sequences of 512. **The split is by file name** (a base name hashing into 1 of 20 goes to the held-out side with all its copies: the same document in two checkouts, edited, is a near-duplicate and would measure memorisation). Train: the first 225 files of the train side (124 cancho, 54 Rust, 47 Markdown) make the 2,400 sequences; held-out: **32 sequences = 16,384 tokens from 7 files** (4 cancho, 2 Markdown, 1 Rust), 4 batches of 8. That is a narrow held-out set; it is what a 16 k-token measure of "unseen files of this kind" is. The tokens depend on the files the machine has, so they are not committed (sha1 of the int32 arrays: train `72f23a2d9f25`, held-out `fb2bb7a45830`); `corpus.txt` lists the files.
+* **Five sessions of 60 steps.** A session's `table` is one file of at most 512 MiB (the byte pool, section 20), and a step's embeddings are 7.3 MB of f16, so a table holds 60 batches and the 300 distinct batches (2.2 GB) do not fit one. Each session of 60 saves the adapters **and Adam's two moments** with `save` / `checkpoint` (the `.wo`, `.mo` and `.vo` outputs of `adamw_l`) and the next one starts from them (`state`) with the step count (`first_step`: the bias correction and the learning-rate table count from it). The handover is **exact**: `tests/qwen.py` runs 6 steps as 3 + 3 and as 6 on the CPU interpreter and requires equal losses and adapters (they are, to 0.0), and two mutants (moments dropped; step count restarted) end 2.6e-3 and 7.9e-3 from the single session's adapters and 0.23 and 0.43 in loss. On the real model a 6-step run as 3 + 3 and as 6 gave bit-identical losses and adapters. A session start (weights up, kernels built, first request) is a few seconds and is not in the ms a step.
+* **Held-out loss** every 30 steps. cancho-gpu: each checkpoint's adapters in a separate session after the run (the forward and backward programs with no optimiser, four requests of one batch each); peft: inline under `no_grad` (not in its step time). Both are the mean loss over the 4 batches.
+
+### 22.2 The curves
+Training loss (the loss of the batch the step trains on, before the step; batches differ in difficulty, so the curve is jagged by construction and only the columns are comparable):
+
+| step | cancho-gpu | peft float32 | peft f16 autocast | peft f16 autocast, loss scale 1024 |
+|---|---|---|---|---|
+| 1 | 1.52868 | 1.52865 | 1.52896 | 1.52896 |
+| 30 | 1.25509 | 1.25509 | 1.28860 | 1.25533 |
+| 60 | 2.68567 | 2.68560 | 2.72444 | 2.68617 |
+| 90 | 1.78401 | 1.78405 | 1.81635 | 1.78422 |
+| 120 | 2.94940 | 2.94937 | 3.02508 | 2.94974 |
+| 150 | 3.17197 | 3.17199 | 3.23906 | 3.17196 |
+| 180 | 2.69026 | 2.69026 | 2.76878 | 2.69083 |
+| 210 | 1.01507 | 1.01519 | 1.05001 | 1.01521 |
+| 240 | 1.24932 | 1.24926 | 1.28005 | 1.24949 |
+| 270 | 2.17968 | 2.17962 | 2.25287 | 2.17990 |
+| 300 | 2.68905 | 2.68898 | 2.75562 | 2.68918 |
+
+Held-out loss (the 32 sequences of unseen files):
+
+| step | cancho-gpu | peft float32 | peft f16 autocast | peft f16 autocast, loss scale 1024 |
+|---|---|---|---|---|
+| 0 | 2.45223 | 2.45222 | 2.45214 | 2.45214 |
+| 30 | 2.21175 | 2.21175 | 2.25219 | 2.21184 |
+| 60 | 2.07885 | 2.07887 | 2.12128 | 2.07910 |
+| 90 | 2.02850 | 2.02849 | 2.07565 | 2.02862 |
+| 120 | 1.96763 | 1.96765 | 2.01687 | 1.96785 |
+| 150 | 1.94124 | 1.94119 | 1.99472 | 1.94121 |
+| 180 | 1.90546 | 1.90551 | 1.95844 | 1.90574 |
+| 210 | 1.87807 | 1.87809 | 1.93683 | 1.87822 |
+| 240 | 1.87588 | 1.87589 | 1.93218 | 1.87600 |
+| 270 | 1.87050 | 1.87049 | 1.92422 | 1.87071 |
+| 300 | **1.86992** | **1.86992** | 1.92317 | 1.87011 |
+
+**The held-out loss falls from 2.4522 to 1.8699 (-0.582), monotonically at every checkpoint, in both runtimes.** Largest |difference| of the loss over the 300 steps (`finetune.py compare`):
+
+| pair | training loss: largest (mean) | held-out: largest |
+|---|---|---|
+| cancho-gpu vs peft float32 | **1.2e-3 (5e-5)**, at step 242; three steps are above 2e-4 (209, 217, 242), the 99th percentile is 1.6e-4 | **6e-5** |
+| cancho-gpu vs peft float16 autocast | 0.132 (0.052), step 139 | 0.059 |
+| peft float16 autocast vs peft float32 | 0.132 (0.052) | 0.059 |
+| cancho-gpu vs peft float16 autocast with a loss scale of 1024 | 1.9e-3 (2.9e-4) | 1.9e-4 |
+| peft float32 vs the same with scale 1024 | 1.9e-3 (3.0e-4) | 1.9e-4 |
+
+**torch's float16 autocast is the one that is off**, by as much as cancho-gpu is not: with no loss scaling its gradients are damaged (the adapters after 300 steps are at cosine 0.62 and a relative error of 0.9 from float32 peft's in the last layers, median over the 336 matrices 18%) and it learns less (1.923 against 1.870); the same run with the loss multiplied by 1024 before the backward pass and the gradients divided by it before the optimiser (the static scale the session has, 16) follows float32 to the table's last column. One run each. So "the curves are equal" holds against peft float32 and against scaled float16, and not against the unscaled autocast of the roadmap's baseline, which is a different (worse) training run; the speed baseline is unchanged by that.
+cancho-gpu's adapters after the 300 steps against float32 peft's, per matrix: **smallest cosine 0.9936, median relative norm error 0.16%**, largest 11.3% (layer 0's q B, 22.4), then 1.8% (layer 8's q B), 1.1% (layer 0's k B and layer 1's q B), 0.9% (layer 0's o B).
+
+### 22.3 Speed and memory, and the exit
+Per-step wall time of the training request (forward, backward, AdamW, loss; the first request of each session, which compiles and warms, left out) and, for torch, of `zero_grad`, forward, backward and `step` with `torch.mps.synchronize()`; the held-out evaluations are not timed. Medians of 295 and 298 steps:
+
+| runtime | ms a step | tokens a second | peak memory: footprint (driver) |
+|---|---|---|---|
+| **cancho-gpu (Metal session)** | **889.2** (mean 888.9, range 876.7 to 903.5) | **4,606** | **16.14 GB** (five sessions: 16.11 to 16.14) |
+| torch MPS float16 autocast | 1,142.0 (5th to 95th percentile 1,138.7 to 1,146.7) | 3,587 | 27.48 GB (25.92) |
+| torch MPS float32 | 1,237.9 (1,234.0 to 1,242.6) | 3,309 | 31.49 GB (29.90) |
+
+(Footprint is `/usr/bin/time -l`'s peak memory footprint of the process, the same measure for all three; torch's "driver" is `torch.mps.driver_allocated_memory()` over its first 30 steps, the number of `roadmap-models.md`'s table. cancho-gpu's includes the 440 MB table of the session.) The machine was quiet for the GPU (the spread above is ±1.5%; the only other job was the CPU-only `tests/session.py --mutants` during the cancho-gpu run, and a pre-run of 6 steps gave 887.6 ms), so the rounds of section 18 were not interleaved. The M7.2 measurement (886.7 ms) is reproduced to 0.3%; the peak is 0.5 GB above M7.2's because of the table of 60 batches (M7.2 had 8).
+**Exit: "within 1.2x of torch's step time OR the memory under half of torch's with equal curves".**
+* **Step time: met, with room.** cancho-gpu takes 0.78 of torch float16 autocast's time (it is **1.28 times faster**) and 0.72 of float32's (1.39 times faster), and the curves are equal to float32 peft's.
+* **Memory: not met.** 16.14 GB is 59% of torch float16 autocast's footprint (62% of its driver number) and 51% of float32's (54%). It is a 41 to 49% saving, not the half the roadmap hoped for; the activations of a step (about 10 GB) and the 2.5 GB logits dominate and the forward and backward programs still hold the weights twice (+1.3 GB, section 21.5).
+The step is 8.4 TFLOP, so 9.4 TFLOPS.
+
+### 22.4 The layer-0 q B (the weak spot of section 21.2), isolated
+`adam_noise.py`: the 40-step run of section 21.2 again (lr 2e-4, 5-step warm-up, 8 batches round and round, here from this corpus), peft float32 on the CPU and the session, the gradient of four matrices recorded at **every step** in both (peft's by a hook before `opt.step()`, the session's by `save` after each step), then Adam in float64 fed those gradients. The loss agreed to 1.7e-4 at most over the 40 steps, and **the weak spot is back: layer 0's q B ends 20.1% from peft's in relative norm (cosine 0.980)**, layer 8's 2.4%, layer 12's 0.45%. Relative error of the final matrix:
+
+| matrix | peft's own against float64 AdamW fed peft's gradients | the session's own against float64 AdamW fed the session's gradients | float64 AdamW on the session's gradients against on peft's | the session's against peft's |
+|---|---|---|---|---|
+| layer 0 q B | 1.5e-7 | 6.4e-6 | **0.201** | 0.201 (cos 0.980) |
+| layer 8 q B | 1.4e-7 | 6.5e-6 | 0.024 | 0.024 |
+| layer 12 q B | 1.4e-7 | 6.5e-6 | 0.0045 | 0.0045 |
+| layer 0 q A | 1.6e-7 | 4.7e-7 | 1.2e-3 | 1.2e-3 |
+
+* **It is not the optimiser, in either runtime.** peft's float32 Adam equals a float64 Adam on the same gradients to 1.5e-7 (so torch's Adam shows no noise of its own), and `adamw_l` equals one to 6.4e-6 on its own gradients. The whole 20% is reproduced by feeding the two *gradient sequences* to the same float64 Adam: **it is the difference between the two runtimes' gradients that Adam amplifies.**
+* **Why those rows.** At step 1 (identical weights) the session's gradient of this matrix is 1.55e-2 from peft's in relative norm (cosine 0.99988: the f16 noise of section 21.2), with an rms of 3.1e-5. 168 of its 896 rows have a gradient under 1e-3 of the largest row's (rms 3.9e-7 at most): in those rows the mean relative error of the final matrix is 0.30 against 0.02 in the others, and for the eight worst rows (87, 95, 114, 119, 120, 121, 124, 127) the signal is 4e-8 to 1.2e-7 (rms over the run) while the session's gradient differs from peft's by 1.6e-7 to 7.7e-7: **noise 3 to 20 times the signal**. The error of an f16-operand product is set by the matrix's overall magnitude, not the row's, so a row whose true gradient is small gets an absolute error that is not; Adam's step is `lr m / (sqrt(v) + 1e-8)`, and 1e-7 to 1e-6 is 10 to 100 times its epsilon, so those rows move by about lr per step in a direction set by the noise. (Layer 8's q B has one such row and layer 12's none: 1.0e-6 of difference against a signal of 1.5e-4 and 1.8e-4.)
+* **It does not matter for the loss.** Held-out loss (float32, MPS) of peft's adapters after the 40 steps: 2.28009; with layer 0's q B replaced by the session's: **2.28009 (+0.00000)**; with layers 0, 8 and 12's: 2.28009; with *every* matrix from the session: 2.28003 (-0.00006). The directions that are noise in those rows are directions the model does not use. After the 300 steps the same layer is 11.3% off and the held-out losses are equal to 6e-5 (22.2).
+The run is also what the section 21 text guessed ("not a defect of the gradients but a property of Adam that the f16 gradients make visible"), now measured; what is **not** shown is that a wider gradient (an f32 `dy^T mid`) would remove it, which was not tried.
+
+### 22.5 The fine-tuned model writes (generation)
+`generate.py`: the 336 adapters of the 300-step run are merged into the f16 weights (`f16(W + (alpha/r) B A)` per projection, the fused q/k/v and gate/up as the converter wrote them), and 8 held-out prompts (the first 64 tokens of the 8 sequences of the first held-out batch) are continued by 32 tokens, greedily, by the M7.1 forward session with the window recomputed for each token (as `serve_gpt.py`): the 8 windows are the 8 sequences of a batch, the new token is the arg max the session answers at the last prompt position (the mask is causal, so what follows does not matter), and **each new token is a new session** (the request line cannot carry a 4,096 x 896 embedded batch; 0.9 s a token including the start, 29 s for the 32). transformers (float32, CPU) is given the same merged f16 values and generates the same way.
+* **Against transformers on the same weights: 8 of 8 continuations are identical for all 32 tokens, for the base and for the merged model.**
+* The merged model's held-out loss through the forward session is **1.86993** against 1.86992 for the unmerged adapters (and 2.45223 for the base): the merge to f16 loses nothing measurable.
+* The continuations changed in the direction of the corpus. Prompt 0 (a source comment about overflow checks ending "the same gap `docs/"): the base continues `mandelbrot.cho` has.\n//\n// The `mandelbrot` function is...`, the fine-tuned model ``threads.md`'s own section 2.1 says\n// `cancho run --threads 1`'s is: the same program, the`` (a docs path of this repository's kind; the text was `overflow-cost.md`). Prompt 3 (a cancho function `name_seen` ending in `var at = 0`): the base continues `;\n var seen = 0;\n for i in 0..limit {` (Rust syntax, which cancho lacks), the fine-tuned model `;\n while at < len(name) {\n if name[at] != '.' {...` (cancho's `while` loop, `[]`-indexing and `{}` blocks). The share of the 256 generated tokens equal to the held-out text's is 11.3% for the base and 12.1% for the fine-tuned model: a handful of tokens, not significant, and a reminder that greedy continuation of 32 tokens is a weak measure of anything but style. The evidence beyond the loss number is that the text moved toward this corpus's idiom and that two implementations agree on every token of it.
+
+### 22.6 Tests, bugs, limits
+* **`tests/session.py --mutants`, run to the end with no pipe (the M7.2 run had only the 4 `alias` mutants alone): 34 of 34 mutants killed (the 30 earlier and the 4 of `alias`: an alias onto the buffer of an output a later program still reads, backwards, of an answered output, an output aliased twice), 145 checks `ok`, none failing, exit 0.** The first complete run reported one `FAIL`: the text of the mutant "a link from a program to itself is accepted" (`if sp >= dp {`) occurs twice in `src/session.cho` since `alias` added its own copy of that test, so the mutant was applied to the first occurrence and the harness (rightly) refused an ambiguous edit. The mutant now includes the line after it and is unique; this is a bug of the test, found only by running the whole thing.
+* New check: the handover between sessions (`tests/qwen.py`, `restart_check`: 3 checks, equality and two mutants that must fail; in the gate).
+* **Limits.** One run of each runtime (the 300-step curve is one seed, one data order; the timings are medians over 295 to 298 steps of one run). The held-out set is 7 files and 16 k tokens. cancho-gpu's held-out numbers come from separate sessions after the run, peft's from inline evaluations; both use the same 4 batches. peft's reference is MPS float32, not the CPU of section 21 (the 40-step run of 22.4 is the CPU one). The float16 autocast baseline was run as the roadmap's table runs it (no loss scaling) and then once with a loss scale of 1024, whose step time (1,178 ms median, 1,314 mean) is *not* reported as a speed: it ran at the same time as the CPU job of 22.4. A 60-step session limit (a 512 MiB table) means five session starts in a 300-step run; a longer run needs the embedding gather (M7.4's G1) or a larger pool. Generation recomputes the window and starts a session per token. Contexts above 512, other models, other machines, NVIDIA: not done.
