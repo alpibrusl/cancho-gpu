@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The f16 range of a Qwen2 forward pass (docs/resident.md sections 25.8 gap 6 and 26; roadmap G8): which activation of the session is rounded to f16, and how close its largest value comes to f16's 65,504.
+"""The f16 range of a Qwen2 forward pass (docs/resident.md sections 25.8 gap 6 and 28; roadmap G8): which activation of the session is rounded to f16, and how close its largest value comes to f16's 65,504.
 
     python3 examples/qwen/range_check.py [--base WEIGHTS_DIR] [--nb 4] [--t 512] [--dtype float32]      # QWEN_MODEL names the checkpoint's cache directory
 
