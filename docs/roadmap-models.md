@@ -61,3 +61,42 @@ Exit: the loss curve agrees with torch's; tokens a second in training against to
 ## 5. Order, and the first step
 
 G5 and `max a b` (S, language), then G2 and G4 forward and backward as kernels held to numpy, then the GPT session (M1). M1 needs no new directive and no new dtype, so it can start at once; it is the first test of whether the kernel set reaches a transformer.
+
+## 6. M7: fine-tune a Qwen with LoRA (design, written before the code)
+
+> Marks as above. Everything here is a plan except the torch baseline, which is measured (`examples/qwen/torch_baseline.py`).
+
+**The target.** Qwen2.5-0.5B and 1.5B are on this machine already (the Hugging Face cache; bf16 safetensors; no download needed), and torch 2.12, transformers 5.2 and peft 0.21 are installed, so the reference is the real library. Both are Qwen2 models **[measured, `config.json`]**: 0.5B has 24 layers, hidden 896, 14 query heads over 2 key/value heads of 64, SwiGLU of 4,864, vocabulary 151,936 and tied input/output embeddings (136 M of its 494 M parameters); 1.5B has 28 layers, hidden 1,536, 12 query heads over 2, SwiGLU of 8,960, tied embeddings (233 M of 1.54 B).
+**The baseline to beat** (torch MPS, rank-16 LoRA on every linear layer of the blocks, 4,096 tokens a step as 8 sequences of 512, AdamW, random ids, speed only **[measured]**):
+
+| model | dtype | trainable | ms a step | tokens a second | peak driver memory |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B | float32 | 8.8 M | 1,230 | 3,330 | 27.2 GB |
+| Qwen2.5-0.5B | float16 autocast | 8.8 M | 1,157 | 3,540 | 26.0 GB |
+| Qwen2.5-1.5B | float16 autocast, 4 x 512 | 18.5 M | 1,388 | 1,476 | 20.5 GB |
+
+**What to expect, and what not.** A LoRA step costs about `4 N tokens` FLOPs (forward and the input gradient of every frozen weight; the frozen weights need no weight gradient), which for the 0.5B model and 4,096 tokens is 8.1 TFLOP; torch's 1.157 s is **7.0 TFLOPS**, about what our own GPT runs reach (7.2 to 8.8 TFLOPS in `resident.md` sections 15 and 19). So unlike the small models, where cancho-gpu won by 6 to 15% on launch overhead and fusion, **a 0.5B model is matrix-product bound and parity is the realistic speed exit**. What cancho-gpu can win is memory: the weights as f16 (1 GB), adapters with Adam (0.12 GB) and about 10 GB of activations and logits, derived from the saved tensors (about 55 KB a token a layer, 2.5 GB of f32 logits and 1.2 GB of their gradient) against torch's 26 GB. **[derived, to be measured]**
+
+**What is not needed.**
+* **No embedding gather or scatter-add (G1).** With LoRA the embeddings (tied with the output layer) are frozen: the token embeddings of a step are rows of a fixed table, so the host writes them as an f16 `table` (4,096 x 896 x 2 B = 7.3 MB a step) and the output layer's backward is an ordinary product with the frozen matrix. Full fine-tuning (training the embeddings) is the later M7.4 and is when G1 is paid.
+* **No flash attention up to a context of 1,024.** The scores of a head are tiled over key columns and written to memory, the softmax takes a row of 512 or 1,024 columns a threadgroup (`ce` already runs a 2,048-column row with `bm=1`), `P V` and the backward products are the ones of section 15. Probabilities cost 14 heads x t^2 x 2 B a sequence a layer: 7 MB at 512, 29 MB at 1,024, 4 sequences x 24 layers x 29 MB = 2.8 GB. Beyond 1,024 it is G14.
+* **No `max a b`.** The softmax and the large-vocabulary loss are three kernels: per-chunk maxima and sums of exponentials, a combine over the chunk row, and the normalisation / gradient pass, all `rowmax`, `rowsum`, `exp`.
+
+**What is needed** (each a kernel held to a numpy specification, as section 15 does):
+1. **RMSNorm forward and backward** (the `ported/rmsnorm.chx` is batch 1): `rowsum` of squares, `rsqrt`; the gain's gradient is a column sum (`rowvec_mm`).
+2. **RoPE forward and backward** on a `[tokens, heads x 64]` matrix with the position of each row: the backward is the inverse rotation. The position of a tile is affine in the grid coordinates if the grid is (sequence, row tile), so no division of an index is needed.
+3. **Grouped-query attention**: 14 query heads read 2 key/value heads, and a head's group is `h / 7`, a division the surface forbids. Grid over (sequence, key/value head, row tile) with a `for` over the 7 queries of the group; the key/value gradients sum over that loop. **[open]**: measure this against repeating K and V to 14 heads with a copy kernel and summing back with a small product.
+4. **SwiGLU forward and backward** (`silu` is `x sigmoid(x)`, both exist) and the **biases of q, k and v** (`bias_h` exists).
+5. **The loss over 151,936 columns**: the three kernels above; the logits of a step are 2.5 GB in f32, which fits, and the head product `[4096, 896] x [896, 151936]` is 0.56 TFLOP forward, a quarter of the step: its tile schedule gets its own measurement.
+6. **LoRA**: `y = x W^T + (alpha / r) (x A^T) B^T`. Both added products are the existing `mma` layouts with a 16-wide middle dimension; `B` starts at zero; gradients `dB = s dy^T (x A^T)`, `dA = s (dy B)^T x`, and `dx` gets two more terms. Adam on f32 masters, f16 copies, as section 14.
+7. **Weights**: a converter script writes the safetensors as f16 and f32 binary files in the order the session names them (bf16 narrows to f16 exactly for every value in its range, `inference.md` section 1, which the existing runner already relies on; a check for values outside it is part of the converter).
+8. **Data**: Qwen's own tokenizer (`tokenizers`) on the Markdown, Rust and cancho files of this machine (the `bpe.py` corpus), packed to sequences of 512; held-out loss as the measure. No download.
+
+**Milestones, each ending at a number:**
+* **M7.1 The forward pass equals Hugging Face's.** Qwen2.5-0.5B on the matrix unit over a batch (this is also M5's prefill). Exit: the loss of a fixed batch within 2e-3 of transformers' in float32, and the logits' arg max equal at 99% of 4,096 positions (f16 products against bf16); tokens a second of the forward against torch's.
+* **M7.2 The LoRA gradients equal autograd's.** Exit: every adapter gradient of every layer, on the real weights, with cosine at least 0.995 against peft's float32 gradients, and the specification's finite-difference check on a 2-layer Qwen-shaped model first (the section 15 pattern, with the f16-rounding caveat of the CNN's section 18: single ReLU/SiLU elements falling on either side of a rounding boundary give a few percent of noise that does not shrink with the batch).
+* **M7.3 A fine-tuning run equals peft's.** 300 steps of rank-16 LoRA on the local corpus, the same batches and initial adapters: the loss curves agree and the held-out loss falls; ms a step, tokens a second and peak memory against the table above. Exit: within 1.2 x of torch's step time **or** the memory under half of torch's with the curves equal; both stated whichever way they fall.
+* **M7.4 1.5B, and the embeddings.** Qwen2.5-1.5B with LoRA (3.1 GB of f16 weights, 21 GB at most of activations at 4 x 512), then full fine-tuning of the 0.5B model (14 bytes a parameter: 6.9 GB plus activations), which needs G1: a scatter-add into the tied 151,936-row table (atomics, or the host sorts each step's token ids into segments, since the ids are known before the step).
+* **M7.5 A 4-bit base (QLoRA) and 7B.** A dequantising matrix-unit product (the NVFP4 matvec exists for decode, G13), so that a 7B base is 3.5 GB; not planned in detail until M7.4 shows where the time goes.
+
+**Limits stated now.** One machine, Apple's matrix unit only (nothing runs on NVIDIA; the CUDA text for the new kernels is generated and held by goldens). Context at most 1,024. Instruction-tuning data and chat templates are not part of this plan: the measure is the loss on held-out local text, not a benchmark score. Speeds are f16 products with f32 accumulation; torch's float32 baseline is slower per step for the same data, so the equal-loss comparison is against its float16 autocast row.
