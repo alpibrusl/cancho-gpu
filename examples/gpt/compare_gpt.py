@@ -46,7 +46,7 @@ def val_loss(c, params, val_x, val_y):
 def run_cancho(c, params, tok, tgt, val_x, val_y):
     import subprocess
     # One session that answers only the loss. The time is the requests that run steps; at each stretch's end a `checkpoint` request (not timed) has the device program write the
-    # parameters to a file (`save`, docs/resident.md section 18) and the validation loss is the float64 forward of what that file holds.
+    # parameters to a file (`save`, docs/resident.md section 19) and the validation loss is the float64 forward of what that file holds.
     ckpt = os.path.join(DIR, "cancho-ckpt.bin")
     if os.path.exists(ckpt):
         os.remove(ckpt)

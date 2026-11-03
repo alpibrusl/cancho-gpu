@@ -8,7 +8,7 @@
 3. (Metal session given) a 32-32-1 network on 4096 samples, 100 steps: the loss after 1, 10 and 100 steps equals the reference's to 1e-3 relative, and the CPU session's at the small size to 1e-4;
    the device trains in float32 and the reference in float64, so they part company later (after 1000 steps the loss is 0.00076 against 0.00108), and this does not claim more than 100.
 3c. A GPT (examples/gpt: attention, LayerNorm, GELU, a cross-entropy over a padded vocabulary, AdamW, all on the matrix unit): the gradients of all 28 tensors against a hand-written float64 backward (finite-difference checked in gpt_ref.py) and 25 AdamW steps against a float64 AdamW.
-3d. A GPT checkpoint (docs/resident.md section 18): the same 25 steps with `save` directives, the request `checkpoint` writes one file, and it holds bit for bit the parameters the session answers (CPU and Metal).
+3d. A GPT checkpoint (docs/resident.md section 19): the same 25 steps with `save` directives, the request `checkpoint` writes one file, and it holds bit for bit the parameters the session answers (CPU and Metal).
 3a. A mixed-precision network (f16 weights and activations, `mma` kernels, f32 accumulation): near the float64 reference to 2e-3 early, learning, and the Metal session equal to the CPU one to 2e-2.
 3b. Minibatches (`batch` in mlp_session.write): the same checks on a table of 8 batches, through two laps.
 4. (torch given) torch.optim.Adam in float32 on the same data and start gives the loss of the device after 100 steps to 1e-3 relative.
@@ -168,7 +168,7 @@ def main():
     if metal:
         out_lm = serve(metal, lsess, "1\n4\n5\n15\n")
         say(all(close(a[0], b[0], 5e-2) for a, b in zip(out_lm, out_l)), f"Metal session on the GPT equals the CPU session's losses to 5e-2: {[round(v[0], 4) for v in out_lm]}")
-    # checkpoints (docs/resident.md section 18): the same 25 steps, with every AdamW master weight a `save` into one file; the request `checkpoint` writes it, and it holds exactly the
+    # checkpoints (docs/resident.md section 19): the same 25 steps, with every AdamW master weight a `save` into one file; the request `checkpoint` writes it, and it holds exactly the
     # parameters the session answers (a text answer of the same tensors, f32 values printed shortest-that-reads-back), in the order of names()
     for who, prog_, extra_ in (("CPU", cpu, ["--target", "apple-m-series"]), ("Metal", metal, [])):
         if prog_ is None:

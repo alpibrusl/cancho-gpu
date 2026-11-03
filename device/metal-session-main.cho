@@ -9,7 +9,7 @@ edition 5;
 // output of one kernel and the input of the next (no trip through the host). A request line then uploads the `input` parameters,
 // launches the kernels in order, reads the `answer` outputs back and writes them as one line.
 //
-// A `save` directive writes an output buffer to a file on the request `checkpoint` (`docs/resident.md` section 18).
+// A `save` directive writes an output buffer to a file on the request `checkpoint` (`docs/resident.md` section 19).
 //
 // Linked with `shim/canchogpu-metal.mm` (`scripts/build-metal-session.sh`).
 
@@ -310,7 +310,7 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
     return 0;
 }
 
-// One file of a checkpoint (`docs/resident.md` section 18): the saves `k` up to `end`, each downloaded from its device buffer and written as it is, to a temporary
+// One file of a checkpoint (`docs/resident.md` section 19): the saves `k` up to `end`, each downloaded from its device buffer and written as it is, to a temporary
 // file that is made durable and renamed. Answers the bytes written, or -1 with a refusal.
 fn save_group[&m, &t, &f, &s](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), sess: int, bufs: int, k: int, end: int) -> [ffi("libmetalgpu"), fs_write(""), file_write] int {
     let progs = m[sess + session.s_progs()];

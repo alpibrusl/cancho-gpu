@@ -1,0 +1,28 @@
+// 3x3 convolution, stride 1, zero padding, NHWC, on the matrix unit (docs/resident.md section 18). The input x is a padded image matrix [g + rp + g, cin]: rp = n (h+2) (w+2)
+// rows (the images with a border of zeros, flattened), and g zero rows on each side (g >= wp + 1, wp = w + 2). The output at row p reads the input rows p + (dy-1) wp + (dx-1):
+// nine shifted windows of one matrix, each multiplied by that tap's [cout, cin] slice of w [cout, 9 cin] (tap t = 3 dy + dx). The rows of y that are border are junk: the epilogue
+// masks them. The taps are loops (dy, dx, then the channels): unrolled they would each keep their own tiles in threadgroup memory and the budget would allow only small ones.
+algo conv3(rp, cin, cout, wp, g)
+  in  x: f16[rp + 2 * g, cin]
+  in  w: f16[cout, 9 * cin]
+  out y: f32[rp, cout]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dy in 0 .. 3 with c {
+    let c = for dx in 0 .. 3 with c {
+      let c = for p in 0 .. cin / bk with c {
+        let at = load x[g + i * bm + dy * wp + dx - wp - 1, p * bk ; bm, bk] @shared
+        let wt = load w[j * bn, 3 * dy * cin + dx * cin + p * bk ; bn, bk] @shared
+        yield mma c at wt
+      }
+      yield c
+    }
+    yield c
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule conv3 for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv3 for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

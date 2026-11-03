@@ -33,5 +33,6 @@ python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"
 CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
 python3 tests/train.py build/cancho-gpu-session
+python3 tests/cnn.py build/cancho-gpu-session
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"

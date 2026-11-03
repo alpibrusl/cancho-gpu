@@ -278,3 +278,11 @@ tests/chx/ported/gemm_mma_tn.chx m=256 n=256 k=128
 tests/chx/ported/gemm_mma_tn.chx m=128 n=128 k=64 --run
 tests/chx/colbcast.chx r=8 c=16
 tests/chx/colbcast.chx r=4 c=8 --run
+# The convolution network of docs/resident.md section 18: nested loops that carry a matrix-unit fragment (conv3, conv3_dx), stores inside loops (conv3_dw), loads at computed row
+# offsets, a constant-matrix product for the pooling. What they compute is held by tests/cnn.py (numpy, CPU and Metal).
+examples/cnn/conv3.chx rp=1152 cin=32 cout=64 wp=34 g=64
+examples/cnn/conv3_dx.chx rp=1152 cin=32 cout=64 wp=34 g=64
+examples/cnn/conv3_dw.chx rp=1152 cin=32 cout=64 wp=34 g=64 rs=384
+examples/cnn/pool_fwd.chx n=2 h=8 c=32 g=64
+examples/cnn/gap_fwd.chx n=2 h=8 c=32 g=64 rc=20
+examples/cnn/bn_fin.chx nb=18 c=32 cb=6 bc=32 m=1024 eps=0.00001 mom=0.1

@@ -1,0 +1,55 @@
+// BatchNorm statistics, the second level: add the nb blocks of bn_part (cb at a time) and finish. m is the number of valid rows (the batch, times h, times w).
+// mean = s1 / m, var = s2 / m - mean^2 (biased, what normalises), istd = rsqrt(var + eps), sc = gamma istd, sh = beta - mean sc, so that y = z sc + sh. The running statistics
+// move by `mom` toward the batch's, the variance with the unbiased factor m / (m - 1), as torch does.
+algo bn_fin(nb, c, cb, bc, m, eps, mom)
+  in  s1:    f32[nb, c]
+  in  s2:    f32[nb, c]
+  in  ones:  f32[1, cb]
+  in  gamma: f32[1, c]
+  in  beta:  f32[1, c]
+  in  rm:    f32[1, c]
+  in  rv:    f32[1, c]
+  out sc:    f32[1, c]
+  out sh:    f32[1, c]
+  out mean:  f32[1, c]
+  out istd:  f32[1, c]
+  out rmo:   f32[1, c]
+  out rvo:   f32[1, c]
+{
+  grid j over c / bc
+  let z1 = zeros f32[1, bc]
+  let t1 = for q in 0 .. nb / cb with z1 {
+    let o = load ones
+    let t = load s1[q * cb, j * bc ; cb, bc]
+    let r = matmul o t
+    yield z1 + r
+  }
+  let z2 = zeros f32[1, bc]
+  let t2 = for q in 0 .. nb / cb with z2 {
+    let o = load ones
+    let t = load s2[q * cb, j * bc ; cb, bc]
+    let r = matmul o t
+    yield z2 + r
+  }
+  let mu = t1 * (1 / m)
+  let ex = t2 * (1 / m)
+  let vr = ex - &mu * &mu
+  let ve = &vr + eps
+  let is = rsqrt ve
+  let g  = load gamma[0, j * bc ; 1, bc]
+  let b  = load beta[0, j * bc ; 1, bc]
+  let s  = g * &is
+  store &s * 1.0 -> sc[0, j * bc]
+  store b - &mu * s -> sh[0, j * bc]
+  store is -> istd[0, j * bc]
+  let r0 = load rm[0, j * bc ; 1, bc]
+  let r1 = r0 * (1 - mom) + &mu * mom
+  store r1 -> rmo[0, j * bc]
+  store mu -> mean[0, j * bc]
+  let w0 = load rv[0, j * bc ; 1, bc]
+  let w1 = w0 * (1 - mom) + vr * (mom * m / (m - 1))
+  store w1 -> rvo[0, j * bc]
+}
+
+schedule bn_fin for apple-m-series { threads 32 }
+schedule bn_fin for nvidia-ada     { threads 32 }

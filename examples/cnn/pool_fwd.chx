@@ -1,0 +1,22 @@
+// 2x2 average pooling of n padded images (h x h inside a border of zeros, c channels) into n padded images (h/2 x h/2): no new operation, a product with a constant matrix. One
+// threadgroup takes one output row y of one image: the two input rows 2y+1 and 2y+2 (padded rows) are added and multiplied by pm [h/2 + 2, h + 2], whose row x + 1 holds 0.25 at the
+// columns 2x+1 and 2x+2 (and whose border rows are zero, so the output's border columns are zero). The output's border rows are never written and stay zero (a session's buffers start zeroed).
+algo pool_fwd(n, h, c, g)
+  in  a:  f16[n * (h + 2) * (h + 2) + 2 * g, c]
+  in  pm: f32[h / 2 + 2, h + 2]
+  out o:  f16[n * (h / 2 + 2) * (h / 2 + 2) + 2 * g, c]
+{
+  grid b over n, y over h / 2
+  let ra = load a[g + b * (h + 2) * (h + 2) + (2 * y + 1) * (h + 2), 0 ; h + 2, c]
+  let rb = load a[g + b * (h + 2) * (h + 2) + (2 * y + 2) * (h + 2), 0 ; h + 2, c]
+  let fa = stage f32 ra
+  let fb = stage f32 rb
+  let s  = fa + fb
+  let p  = load pm
+  let r  = matmul p s
+  let hh = stage f16 r
+  store hh -> o[g + b * (h / 2 + 2) * (h / 2 + 2) + (y + 1) * (h / 2 + 2), 0]
+}
+
+schedule pool_fwd for apple-m-series { threads 128 }
+schedule pool_fwd for nvidia-ada     { threads 128 }

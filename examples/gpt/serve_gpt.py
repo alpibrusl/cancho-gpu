@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the GPT that gpt_session.py trains (docs/resident.md section 16; roadmap M2). `train` trains it in a Metal session whose `save` directives write the checkpoint (the f32 weights, `ckpt.bin`; docs/resident.md section 18) and keeps it as an .npz with the
+"""Serve the GPT that gpt_session.py trains (docs/resident.md section 16; roadmap M2). `train` trains it in a Metal session whose `save` directives write the checkpoint (the f32 weights, `ckpt.bin`; docs/resident.md section 19) and keeps it as an .npz with the
 vocabulary; `generate` loads the checkpoint, starts a forward-only Metal session (gpt_session.write(serve=True)) and decodes greedily, checking every token against torch on the same
 weights (float32 on MPS, recomputing the window as the session does, and with a key/value cache), and reports tokens a second.
 
@@ -43,7 +43,7 @@ def train():
         warm = max(1, steps // 20)
         return lr * s / warm if s <= warm else lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * (s - warm) / max(1, steps - warm))))
 
-    # the parameters leave the session through `save` (docs/resident.md section 18): the raw f32 weights in CKPT.bin, written by the device program on `checkpoint`
+    # the parameters leave the session through `save` (docs/resident.md section 19): the raw f32 weights in CKPT.bin, written by the device program on `checkpoint`
     raw = os.path.splitext(CKPT)[0] + ".bin"
     sess = G.write(os.path.join(DIR, "train"), c, tok, tgt, steps, lr=lr, params=params, lr_fn=lr_at, save=raw)
     p = spawn(sess)

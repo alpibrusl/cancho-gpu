@@ -68,7 +68,7 @@ pub fn s_count() -> [] int {
     return 8;
 }
 
-// save records (program, param, file, kind, line): kind 0 and 1 are f32 words, 2 is f16 words (docs/resident.md section 18)
+// save records (program, param, file, kind, line): kind 0 and 1 are f32 words, 2 is f16 words (docs/resident.md section 19)
 pub fn s_saves() -> [] int {
     return 9;
 }
@@ -652,7 +652,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
 
     // Saves: (program, param, file, kind, line). A save writes a file, so what it may name is checked here, before any device work: an output of a
     // kernel, held in the type the flag says; a path the runtime will not trap on; a file that is not one the session reads; and the saves to one file
-    // listed together, because they are one file written once (docs/resident.md section 18).
+    // listed together, because they are one file written once (docs/resident.md section 19).
     let saves = mem.list(m);
     i = 0;
     while i < mem.size(m, save_raw) {

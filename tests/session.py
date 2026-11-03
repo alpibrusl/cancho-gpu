@@ -296,7 +296,7 @@ answer add.wo
 
 
 def save_checks(binary, d):
-    """docs/resident.md section 18: `save` and the request `checkpoint`. Two accumulating programs (tests/chx/step_add.chx) whose outputs are written as little-endian words
+    """docs/resident.md section 19: `save` and the request `checkpoint`. Two accumulating programs (tests/chx/step_add.chx) whose outputs are written as little-endian words
     to files the session file names, atomically; and the refusals of a directive that writes."""
     import struct
     n, blocks = 5, 2

@@ -7,7 +7,7 @@ edition 5;
 // The kernels are compiled and the resident data read once; then one request line on standard input (the numbers of the `input`
 // directives) is answered by one line on standard output (the numbers of the `answer` directives), until standard input ends.
 // A program of its own because reading standard input is an authority `cancho-gpu` does not have (`tests/authority.sh`). It writes files only for the
-// `save` directives of the session file, on the request `checkpoint` (`docs/resident.md` section 18).
+// `save` directives of the session file, on the request `checkpoint` (`docs/resident.md` section 19).
 //
 // Built by `scripts/build-session.sh`.
 

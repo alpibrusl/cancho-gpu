@@ -40,7 +40,7 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
     """Writes the session. `tokens` and `targets`: int arrays [steps_data, N] (a batch for each step of the table, taken round and round). `c`: a gpt_ref.Config.
     Answers the path of the session file. With `serve`, a forward-only session for generation (docs/resident.md section 16): a request is the `n` token ids of a window and
     an `n`-long one-hot selector of the position to read, the answer is that position's `vp` logits; `tokens` and `targets` are not used.
-    With `save` (a path), the f32 master weights are `save` directives to that one file, in the order of `names(c)`, written on the request `checkpoint` (docs/resident.md section 18):
+    With `save` (a path), the f32 master weights are `save` directives to that one file, in the order of `names(c)`, written on the request `checkpoint` (docs/resident.md section 19):
     read them back with `read_checkpoint`."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)

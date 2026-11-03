@@ -1,0 +1,27 @@
+// The gradient of conv3 with respect to its input: dx[p] = sum over taps of dz[p - shift(t)] W_t, with W_t the [cout, cin] slice of w that conv3 used for tap t (`mma_nn`: the right
+// operand is read in its stored layout). dz is a guarded padded matrix like conv3's x, zero on the border rows (so a border pixel contributes nothing); the rows of dx that are
+// border are junk and masked by the consumer.
+algo conv3_dx(rp, cin, cout, wp, g)
+  in  dz: f16[rp + 2 * g, cout]
+  in  w:  f16[cout, 9 * cin]
+  out gx: f32[rp, cin]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cin / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dy in 0 .. 3 with c {
+    let c = for dx in 0 .. 3 with c {
+      let c = for p in 0 .. cout / bk with c {
+        let at = load dz[g + i * bm + wp + 1 - dy * wp - dx, p * bk ; bm, bk] @shared
+        let wt = load w[p * bk, 3 * dy * cin + dx * cin + j * bn ; bk, bn] @shared
+        yield mma_nn c at wt
+      }
+      yield c
+    }
+    yield c
+  }
+  store c -> gx[i * bm, j * bn]
+}
+
+schedule conv3_dx for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv3_dx for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

@@ -1,7 +1,7 @@
 edition 5;
 module ckpt;
 
-// Checkpoints (`docs/resident.md` section 18): the `save P.OUT FILE [f32|f16]` directives of a session, written on the request `checkpoint`.
+// Checkpoints (`docs/resident.md` section 19): the `save P.OUT FILE [f32|f16]` directives of a session, written on the request `checkpoint`.
 //
 // A save writes the bytes of an output buffer to a file, little-endian, straight from where the session holds them (the CPU session's
 // interpreter memory, a device session's download), with no text and no number parsed. The file is written whole to `FILE.tmp`, made

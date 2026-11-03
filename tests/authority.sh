@@ -28,7 +28,7 @@ if [ "$report" != "$want" ]; then
   echo "authority changed:"; echo "$report"; exit 1
 fi
 # `cancho-gpu-session` (session/main.cho) reads standard input, which `cancho-gpu` may not. It also writes files, for the `save` directives of its session file
-# on the request `checkpoint` (docs/resident.md section 18): that `fs_write` and `file_write` were added to its report is the owner's decision (docs/resident.md section 18,
+# on the request `checkpoint` (docs/resident.md section 19): that `fs_write` and `file_write` were added to its report is the owner's decision (docs/resident.md section 19,
 # "The authority"), and a change to this list is made the same way.
 "$CANCHO" authority --std $(ls src/*.cho | grep -v '/main\.cho$') session/main.cho > "${TMPDIR:-/tmp}/cancho-gpu-session-authority.$$" 2>&1
 trap 'rm -f "${TMPDIR:-/tmp}/cancho-gpu-authority.$$" "${TMPDIR:-/tmp}/cancho-gpu-session-authority.$$"' EXIT

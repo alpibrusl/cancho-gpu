@@ -1,0 +1,36 @@
+// BatchNorm backward, the first level. d = gr * step(z sc + sh) is the gradient of the BatchNorm output (gr is the gradient of the ReLU's output, step its derivative); for each
+// block of rb rows, the sums over the valid rows of d (the shift's gradient) and of d * xhat (the scale's), xhat = (z - mean) istd. bn_bwd_fin adds the blocks.
+algo bn_bwd_part(rp, c, rb)
+  in  gr:   f32[rp, c]
+  in  z:    f32[rp, c]
+  in  sc:   f32[1, c]
+  in  sh:   f32[1, c]
+  in  mean: f32[1, c]
+  in  istd: f32[1, c]
+  in  v:    f32[1, rp]
+  out p1:   f32[rp / rb, c]
+  out p2:   f32[rp / rb, c]
+{
+  grid i over rp / rb
+  let gg = load gr[i * rb, 0 ; rb, c]
+  let zz = load z[i * rb, 0 ; rb, c]
+  let s  = load sc
+  let b  = load sh
+  let y0 = &zz * s + b
+  let y  = y0 * 1.0
+  let st = step y
+  let d  = gg * st
+  let mu = load mean
+  let is = load istd
+  let xc = zz - mu
+  let xh = xc * is
+  let dx = &d * xh
+  let vv = load v[0, i * rb ; 1, rb]
+  let a1 = matmul &vv d
+  store a1 -> p1[i, 0]
+  let a2 = matmul vv dx
+  store a2 -> p2[i, 0]
+}
+
+schedule bn_bwd_part for apple-m-series { threads 128 }
+schedule bn_bwd_part for nvidia-ada     { threads 128 }
