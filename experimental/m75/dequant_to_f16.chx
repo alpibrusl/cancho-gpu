@@ -1,0 +1,17 @@
+// probe: NVFP4 weights -> f16 matrix (a layer's weights dequantised into a scratch the unchanged f16 products read)
+algo dq(n, k, bn, bk)
+  in  wq: i8[n, k / 2]
+  in  ws: i8[n, k / 16]
+  in  wg: f32[n]
+  out wh: f16[n, k]
+{
+  grid i over n / bn, j over k / bk
+  let q = load wq[i * bn, j * (bk / 2) ; bn, bk / 2]
+  let s = load ws[i * bn, j * (bk / 16) ; bn, bk / 16]
+  let g = load wg[i * bn ; bn]
+  let w = dequant_fp4 q s g 16
+  let wt = stage f16 w
+  store wt -> wh[i * bn, j * bk]
+}
+schedule dq for apple-m-series { threads 128 }
+schedule dq for nvidia-ada     { threads 128 }

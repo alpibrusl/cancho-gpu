@@ -1,0 +1,10 @@
+// P5: the store of an f32 tile into an i8 tensor (the encoder side)
+algo p5(n)
+  in  x: f32[1, n]
+  out y: i8[1, n]
+{
+  let a = load x
+  store a -> y
+}
+schedule p5 for apple-m-series { threads 64 }
+schedule p5 for nvidia-ada     { threads 64 }
