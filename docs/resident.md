@@ -494,3 +494,26 @@ f16 products could flip an arg max where two logits are within rounding; on this
 | torch MPS float32, key/value cache | 273 |
 
 cancho-gpu is 1.9x torch's same algorithm and 2.4x torch's cached decoder. Torch eager on MPS at batch 1 is bound by launching its ~100 small operations a token, and so is this (40 launches, one command buffer); neither number is compute. `torch.compile` and MPS graphs were not tried. Not claimed: anything for a window longer than 128 (the sliding window is not implemented), sampling quality, other models, NVIDIA.
+
+## 17. A real vocabulary and a larger model (roadmap M3, first part; measured)
+
+**The tokenizer and the data** (`examples/gpt/bpe.py`): a byte-pair encoding trained here, on text already on this machine and without a download: the ASCII of the Markdown, Rust and cancho files under the parent of this repository (each distinct file once), split into words, 1,951 merges learned on the first 8 M characters, **a vocabulary of 2,048 tokens and 15.5 M tokens** (90% to train, the last 10% to validate; a run sees 6 M of them, so no epoch repeats). TinyStories, the roadmap's data, needs a download and was not used; the numbers below are not comparable with its.
+
+**Embedding without a new operation.** The roadmap expected G1 (an index-valued load and a scatter-add) here. At 2,048 tokens it is not needed: the one-hot product of section 15 is `[4096, 2048 + 128] x [2176, d]`, as large as the output layer's product, which every language model pays anyway. Two kernels had to stop holding a whole row in one tile (a threadgroup has 32 KiB): `onehot.chx` takes its columns in chunks of 128 (a second grid axis) and `ce.chx` takes one row a threadgroup (`bm=1`). Cost, measured on the 4-layer, d 256 model: **15.4 ms a step with 128 characters, 17.6 with 2,048 tokens** (+14%), and torch (which does gather the embedding) takes 17.8.
+
+**Training** (`compare_gpt.py --bpe 2048`; 4,096 tokens a step, 1,500 steps, AdamW 1e-3, the same start and batches for every runtime, M4 Max):
+
+| model | runtime | ms a step | tokens a second | validation loss (nats a token) |
+|---|---|---|---|---|
+| 4 layers, d 256, 4.24 M parameters | **cancho-gpu** | 17.6 | 233,000 | 3.257 |
+| | torch MPS float32 | 17.8 | 230,000 | 3.248 |
+| 8 layers, d 512, 8 heads, 27.4 M parameters | **cancho-gpu** | **81.0** | **50,600** | 2.989 |
+| | torch MPS float32 | 86.0 | 47,600 | 2.982 |
+| | torch MPS float16 autocast | 91.7 | 44,700 | 3.100 |
+
+The validation curves agree at every point (27.4 M model at 250, 500, 750, 1000, 1250, 1500 steps: 4.250 / 3.712 / 3.423 / 3.202 / 3.060 / 2.989 for cancho-gpu, 4.280 / 3.706 / 3.411 / 3.199 / 3.057 / 2.982 for torch), 6% faster than torch float32 and 13% faster than its mixed precision. Two minutes for the whole run.
+
+**What stops short of the roadmap's exit, and why.**
+* **27 M parameters, not 30 to 60 M.** A d 768, 8-layer (57 M) session is accepted and runs, but the curve needs the parameters in an answer, and a run's tensors must fit the interpreter's memory (32 M numbers): the answer path refuses above it ("the run's tensors do not fit the interpreter's memory"). The way past is a device-side `save` (G10 proper), which needs the session to have `fs_write`, a widening of `cancho-gpu-session`'s authority that is the owner's decision, not made here. Training itself has no such cap (tables and residents go straight to the device, section 15).
+* **Vocabularies above about 2,048.** `ce` still holds a row of the logits in a tile; a larger vocabulary needs it in column chunks with a two-pass maximum and sum, and, past about 8 k tokens, the one-hot product stops being cheap and G1 (gather, and a scatter-add with atomics or a sort-and-segment) starts to pay. Not built, not measured.
+* **Memory against torch** was not measured. The context is still 128.

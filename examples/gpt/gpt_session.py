@@ -46,7 +46,7 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
     assert dh % 32 == 0 and d % 64 == 0 and t % 64 == 0 and n % 64 == 0 and vp % 64 == 0 and (vp + t) % 64 == 0 and t in (64, 128)
     nsteps = len(tokens)
     P = params or R.init_params(c, seed)
-    bm = 2 if d >= 384 else 4 if d >= 256 else 8  # rows an elementwise threadgroup takes: its staged tiles (the 4 d wide ones) must fit in 32 KiB
+    bm = 1 if d >= 640 else 2 if d >= 384 else 4 if d >= 256 else 8  # rows an elementwise threadgroup takes: its staged tiles (the 4 d wide ones) must fit in 32 KiB
     lr_fn = lr_fn or (lambda s: lr)
     # constants and data
     put(p("ones"), np.ones(n))
@@ -111,7 +111,7 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
     k = lambda f: kernel(f)
 
     # ---- forward
-    prog("oh", k("onehot.chx"), r=n, c=vp + t, bm=bm)
+    prog("oh", k("onehot.chx"), r=n, c=vp + t, bm=bm, bc=block(vp + t, 128))
     if serve:
         L.append("input oh.tok")
     else:
@@ -188,7 +188,7 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
         with open(p("session"), "w") as f:
             f.write("\n".join(L) + "\n")
         return p("session")
-    prog("ce", k("ce.chx"), r=n, c=vp, bm=bm, scale=LOSS_SCALE)
+    prog("ce", k("ce.chx"), r=n, c=vp, bm=1 if vp >= 1024 else bm, scale=LOSS_SCALE)
     link("lm.y", "ce.lg")
     tab("ce.tgt", p("tgt"), nsteps)
     res("ce.jrow", p("jrow_v"))

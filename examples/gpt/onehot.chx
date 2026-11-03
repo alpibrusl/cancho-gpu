@@ -1,32 +1,32 @@
 // One-hot rows for the embedding product: oh[i, j] = 1 where j is the token id of row i, plus 1 where j is its position id (the columns of the embedding matrix are
 // the vocabulary, then the positions). Ids are small whole numbers held as f32; relu(1 - |j - id|) is 1 at the id and 0 at every other whole number. f16 out.
-algo onehot(r, c, bm)
+algo onehot(r, c, bm, bc)
   in  tok:  f32[r, 1]
   in  pos:  f32[r, 1]
   in  jrow: f32[1, c]
   out oh:   f16[r, c]
 {
-  grid i over r / bm
-  let j  = load jrow
-  let z  = zeros f32[bm, c]
+  grid i over r / bm, q over c / bc
+  let j  = load jrow[0, q * bc ; 1, bc]
+  let z  = zeros f32[bm, bc]
   let jb = z + j
   let t  = load tok[i * bm, 0 ; bm, 1]
   let tb = &jb - t
-  let zt = zeros f32[bm, c]
+  let zt = zeros f32[bm, bc]
   let tm = zt - &tb
   let ta = relu tb + relu tm
   let p  = load pos[i * bm, 0 ; bm, 1]
   let pb = jb - p
-  let zp = zeros f32[bm, c]
+  let zp = zeros f32[bm, bc]
   let pm = zp - &pb
   let pa = relu pb + relu pm
-  let z1 = zeros f32[bm, c]
+  let z1 = zeros f32[bm, bc]
   let on = z1 + 1.0
   let d1 = &on - ta
   let d2 = on - pa
   let o  = relu d1 + relu d2
   let h  = stage f16 o
-  store h -> oh[i * bm, 0]
+  store h -> oh[i * bm, q * bc]
 }
 
 schedule onehot for apple-m-series { threads 128 }

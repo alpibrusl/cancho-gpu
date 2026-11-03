@@ -15,6 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "examples", "train"))
+import bpe  # noqa: E402
 import corpus  # noqa: E402
 import gpt_ref as R  # noqa: E402
 import gpt_session as G  # noqa: E402
@@ -137,15 +138,19 @@ def run_torch(c, params, tok, tgt, val_x, val_y, device, amp):
 
 def main():
     layers, d, heads, t, b = int(arg("--layers", 4)), int(arg("--d", 256)), int(arg("--heads", 4)), int(arg("--t", 128)), int(arg("--b", 32))
-    ids, vocab = corpus.load([os.path.join(ROOT, "docs"), os.path.join(ROOT, "..", "cancho", "docs")])
+    nbpe = int(arg("--bpe", 0))  # 0: characters of the Markdown docs; N: a BPE vocabulary of N tokens over the Markdown, Rust and cancho files on this machine
+    if nbpe:
+        ids, vocab = bpe.corpus_ids(nbpe)
+    else:
+        ids, vocab = corpus.load([os.path.join(ROOT, "docs"), os.path.join(ROOT, "..", "cancho", "docs")])
     cut = int(len(ids) * 0.9)
-    c = R.Config(v=len(vocab), vp=128, t=t, d=d, h=heads, layers=layers, b=b)
+    c = R.Config(v=len(vocab), vp=nbpe or 128, t=t, d=d, h=heads, layers=layers, b=b)
     params = R.init_params(c, 1)
     tok, tgt = corpus.batches(ids[:cut], t, b, STEPS, 1)
     vx, vy = corpus.batches(ids[cut:], t, b, 4, 99)
     val_x, val_y = list(vx), list(vy)
     nparams = sum(int(np.prod(v.shape)) for v in params.values())
-    print(f"GPT: {layers} layers, d {d}, {heads} heads, context {t}, batch {b} ({b * t} tokens a step), {nparams / 1e6:.2f} M parameters; {len(ids)} characters ({len(vocab)} distinct), {STEPS} steps, AdamW {LR}", flush=True)
+    print(f"GPT: {layers} layers, d {d}, {heads} heads, context {t}, batch {b} ({b * t} tokens a step), {nparams / 1e6:.2f} M parameters; {len(ids)} {"tokens" if nbpe else "characters"} ({len(vocab)} distinct), {STEPS} steps, AdamW {LR}", flush=True)
     rows = []
     for name in ONLY:
         os.makedirs(DIR, exist_ok=True)
