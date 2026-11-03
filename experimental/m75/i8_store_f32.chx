@@ -1,0 +1,10 @@
+// P4: store i8 tensor to f32 tensor
+algo p4(n)
+  in  q: i8[1, n]
+  out y: f32[1, n]
+{
+  let a = load q
+  store a -> y
+}
+schedule p4 for apple-m-series { threads 64 }
+schedule p4 for nvidia-ada     { threads 64 }

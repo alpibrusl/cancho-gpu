@@ -1,0 +1,24 @@
+// probe: dx = dy W with W NVFP4 [k = out, n = in]: the backward of a quantised linear layer, dequantised inside the product
+algo nnq(m, n, k)
+  in  a:  f16[m, k]
+  in  wq: i8[k, n / 2]
+  in  ws: i8[k, n / 16]
+  in  wg: f32[k]
+  out y:  f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let q  = load wq[p * bk, j * (bn / 2) ; bk, bn / 2]
+    let s  = load ws[p * bk, j * (bn / 16) ; bk, bn / 16]
+    let g  = load wg[p * bk ; bk]
+    let w  = dequant_fp4 q s g 16
+    let wt = stage f16 w
+    yield mma_nn acc at wt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+schedule nnq for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule nnq for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }

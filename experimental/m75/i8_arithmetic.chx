@@ -1,0 +1,11 @@
+// P2: arithmetic on an i8 tile
+algo p2(n)
+  in  q: i8[1, n]
+  out y: f32[1, n]
+{
+  let a = load q
+  let b = a * 0.0625
+  store b -> y
+}
+schedule p2 for apple-m-series { threads 64 }
+schedule p2 for nvidia-ada     { threads 64 }

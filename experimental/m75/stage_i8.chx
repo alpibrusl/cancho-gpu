@@ -1,0 +1,12 @@
+// P3: f32 -> i8 by stage (round to nearest, saturating) and the store to an i8 tensor
+algo p3(n)
+  in  x: f32[1, n]
+  out y: i8[1, n]
+{
+  let a = load x
+  let b = a * 0.0625
+  let c = stage i8 b
+  store c -> y
+}
+schedule p3 for apple-m-series { threads 64 }
+schedule p3 for nvidia-ada     { threads 64 }

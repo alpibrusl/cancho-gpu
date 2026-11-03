@@ -34,6 +34,7 @@ CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
 python3 tests/train.py build/cancho-gpu-session
 python3 tests/cnn.py build/cancho-gpu-session
+python3 examples/qwen/quant.py validate
 python3 tests/qwen.py build/cancho-gpu-session
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"

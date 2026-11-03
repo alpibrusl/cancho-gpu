@@ -1,0 +1,11 @@
+// P1: an i8 tile converted by stage
+algo p1(n)
+  in  q: i8[1, n]
+  out y: f32[1, n]
+{
+  let a = load q
+  let b = stage f32 a
+  store b -> y
+}
+schedule p1 for apple-m-series { threads 64 }
+schedule p1 for nvidia-ada     { threads 64 }
