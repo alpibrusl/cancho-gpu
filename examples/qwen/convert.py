@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """Qwen2 safetensors (bf16) -> the binary files of a session (docs/resident.md section 20, roadmap M7.1).
 
-    python3 examples/qwen/convert.py [MODEL_DIR_OR_SAFETENSORS] OUTDIR
+    python3 examples/qwen/convert.py [MODEL_DIR_OR_SAFETENSORS] OUTDIR [--quant nvfp4:G]
 
 Matrices are written as little-endian f16 (bf16 narrows to f16 exactly for every value inside f16's range; the converter counts the values outside it and the ones f16 flushes to
 zero, and refuses a weight that overflows), vectors (norm gains and biases) as f32. Per layer l (two digits), the files are
     lLL.ln1.f32 [d]   lLL.wqkv.f16 [d + 2 dkv, d] (q, k, v rows one after another)   lLL.bqkv.f32 [d + 2 dkv]   lLL.wo.f16 [d, d]
     lLL.ln2.f32 [d]   lLL.wgu.f16 [2 ff, d] (gate rows, then up rows)                lLL.wd.f16 [d, ff]
-and norm.f32 [d], emb.f16 [vocabulary, d] (the input embedding and, tied, the output layer). manifest.json holds the configuration and the report."""
+and norm.f32 [d], emb.f16 [vocabulary, d] (the input embedding and, tied, the output layer). manifest.json holds the configuration and the report.
+With `--quant nvfp4:G` (docs/resident.md section 26) the four matrices of a block are written, from their f16 values, as the three files `NAME.q`, `NAME.s`, `NAME.g` of nvfp4.py instead of `NAME.f16`, and the manifest
+says `"quant": {"format": "nvfp4", "group": G}`; a session then keeps 0.56 bytes a weight resident and dequantises a layer at a time."""
 import glob
 import json
 import os
 import sys
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 F16_MAX = 65504.0
 F16_MIN_SUB = 2.0 ** -24
@@ -59,12 +63,16 @@ class Report:
         return dict(values=self.n, max_abs=self.max_abs, overflow=self.overflow, flushed_to_zero=self.flushed, f16_subnormal=self.subnormal)
 
 
-def convert(src, config, outdir):
+def convert(src, config, outdir, quant=None):
     cfg = json.load(open(config))
     T = load_tensors(src)
     os.makedirs(outdir, exist_ok=True)
     rep = Report()
     wrote = []
+
+    qg = int(quant.partition(":")[2]) if quant and quant.partition(":")[2].isdigit() else 0
+    if quant and (quant.partition(":")[0] != "nvfp4" or qg not in (16, 32, 64)):
+        raise SystemExit(f"{quant}: only nvfp4:16, nvfp4:32 and nvfp4:64 can be read by a session")
 
     def put(name, arr, dt):
         arr = np.ascontiguousarray(arr)
@@ -73,6 +81,12 @@ def convert(src, config, outdir):
             if (np.abs(arr) > F16_MAX).any():
                 raise SystemExit(f"{name}: a weight does not fit f16 (largest {np.abs(arr).max()})")
             arr = arr.astype("<f2")
+            if quant and name.split(".")[-1] in ("wqkv", "wo", "wgu", "wd"):
+                import nvfp4
+                for suffix, part in zip("qsg", nvfp4.pack_rows(arr, qg)):
+                    part.tofile(os.path.join(outdir, f"{name}.{suffix}"))
+                wrote.append(name)
+                return
         else:
             arr = arr.astype("<f4")
         arr.tofile(os.path.join(outdir, f"{name}.{dt}"))
@@ -92,16 +106,23 @@ def convert(src, config, outdir):
         put(n + "wgu", np.concatenate([T[q + "mlp.gate_proj.weight"], T[q + "mlp.up_proj.weight"]]), "f16")
         put(n + "wd", T[q + "mlp.down_proj.weight"], "f16")
     man = dict(config=cfg, report=rep.dict(), files=wrote)
+    if quant:
+        man["quant"] = dict(format="nvfp4", group=qg)
     json.dump(man, open(os.path.join(outdir, "manifest.json"), "w"), indent=1)
     return man
 
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
+    quant = None
+    if "--quant" in args:
+        i = args.index("--quant")
+        quant = args[i + 1]
+        del args[i:i + 2]
     default = os.path.expanduser("~/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B")
     src, out = (default, args[0]) if len(args) == 1 else (args[0], args[1])
     s, c = find(src)
-    m = convert(s, c, out)
+    m = convert(s, c, out, quant)
     r = m["report"]
     print(f"{len(m['files'])} files in {out}; {r['values']} matrix values, largest |w| {r['max_abs']:.4g} (f16 max {F16_MAX:g}): "
           f"{r['overflow']} overflow, {r['flushed_to_zero']} nonzero values flushed to zero (below 2^-25), {r['f16_subnormal']} become f16 subnormals")

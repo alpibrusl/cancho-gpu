@@ -89,6 +89,16 @@ def load_params(directory, c):
         kind = name.split(".")[-1]
         dt = "<f4" if kind in ("ln1", "ln2", "norm", "bqkv") else "<f2"
         ext = "f32" if dt == "<f4" else "f16"
+        if os.path.exists(os.path.join(directory, name + ".q")):
+            # a quantised matrix (quant.py pack; docs/resident.md section 26): the specification is what the session's dequantise kernel produces, the decoded bytes rounded to f16
+            import nvfp4
+            G = json.load(open(os.path.join(directory, "manifest.json")))["quant"]["group"]
+            n_, k_ = sh
+            q = np.fromfile(os.path.join(directory, name + ".q"), dtype=np.uint8).reshape(n_, k_ // 2)
+            sc = np.fromfile(os.path.join(directory, name + ".s"), dtype=np.uint8).reshape(n_, k_ // G)
+            rw = np.fromfile(os.path.join(directory, name + ".g"), dtype="<f4")
+            P[name] = nvfp4.unpack_rows(q, sc, rw, G).astype(np.float16).astype(np.float64)
+            continue
         a = np.fromfile(os.path.join(directory, f"{name}.{ext}"), dtype=dt)
         if a.size != int(np.prod(sh)):
             raise SystemExit(f"{name}: {a.size} words, the model has {int(np.prod(sh))}")

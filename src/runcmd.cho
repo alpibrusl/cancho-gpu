@@ -272,6 +272,37 @@ pub fn load_f16[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float]
     return 0;
 }
 
+// The same for `n` bytes read as signed 8-bit codes (the `i8` flag): only an i8 parameter. A 4-bit weight format keeps two codes in a byte and reads the byte's bits; the code of the
+// byte 0xA7 is -89, as the device's int8 holds it (docs/resident.md section 25).
+pub fn load_i8[&m, &t, &x, &f, &p](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), path: &p [byte], name: int, dt: int, at: int, n: int) -> [fs_read(""), file_read] int {
+    if dt != kinds.i8() {
+        return err.fail(m, t, "usage", text.f1(m, t, "`$` is not an i8 parameter: an i8 file holds bytes", name));
+    }
+    let mark = m[mem.text_slot()];
+    let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, n + 1);
+    if ftop == 0 - 2 {
+        return err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes, more than the session's byte pool holds", text.from_bytes(m, t, path), text.num(m, t, fsize)));
+    }
+    if ftop < 0 {
+        return err.fail(m, t, "io", text.f1(m, t, "cannot read $", text.from_bytes(m, t, path)));
+    }
+    if fsize != n {
+        return err.fail(m, t, "usage", text.fmt(m, t, "the binary file for `$` has $ bytes; the parameter holds $ i8 codes ($ bytes)", mem.of4(m, name, text.num(m, t, fsize), text.num(m, t, n), text.num(m, t, n))));
+    }
+    var j = 0;
+    while j < n {
+        let b = int_of(t[ftop + j]);
+        var code = b;
+        if b >= 128 {
+            code = b - 256;
+        }
+        fm[at + j] = float_of(code);
+        j = j + 1;
+    }
+    m[mem.text_slot()] = mark;
+    return 0;
+}
+
 // Read each `--in` file into the tensor of `globals` it names, rounded once to
 // the parameter's dtype. Answers 0, or -1 with a refusal (see `load_one`).
 pub fn load[&m, &t, &x, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), args: &a Args, prog: int, globals: int, ins: int) -> [fs_read(""), file_read, args] int {

@@ -2,8 +2,9 @@
 """peft's side of the 300-step fine-tuning run of roadmap M7.3 (docs/resident.md section 22): the same batches (finetune_data.py), the same initial adapters and the same AdamW and schedule as finetune.py,
 on MPS in float16 autocast or float32.
 
-    python3 examples/qwen/peft_finetune.py WORK --dtype float16|float32 [--steps 300] [--lr 2e-4] [--every 30] [--loss-scale 1] [--tag NAME]      # WORK/peft_<dtype>.json, WORK/peft_<dtype>_final.npz
+    python3 examples/qwen/peft_finetune.py WORK --dtype float16|float32 [--steps 300] [--lr 2e-4] [--every 30] [--loss-scale 1] [--tag NAME] [--base DIR]      # WORK/peft_<dtype>.json, WORK/peft_<dtype>_final.npz
 
+With `--base DIR` the block matrices are those of the f16 weights directory DIR (the dequantised 4-bit base of a QLoRA run: quant.py dequant).
 With `--loss-scale S` the loss is multiplied by S before the backward pass and the gradients divided by S before the optimiser (a static scale, as the session has), and the files are named `peft_<dtype>_<tag>`.
 
 Records the loss of every step, the time of every step (forward, backward and optimiser, synchronised; the held-out evaluations are not timed), the held-out loss every `--every` steps (and before the first)
@@ -31,11 +32,11 @@ def main():
     dt = getattr(torch, dtn)
     steps, lr, every = int(arg("--steps", 300)), float(arg("--lr", 2e-4)), int(arg("--every", 30))
     scale = float(arg("--loss-scale", 1.0))
-    tag = dtn + (("_" + arg("--tag", "scaled")) if scale != 1.0 else "")
+    tag = dtn + (("_" + arg("--tag", "scaled")) if scale != 1.0 or "--tag" in sys.argv else "")
     c = R.config_of(F.WDIR)
     batches, held = F.load(work)
     lr_fn = F.lr_schedule(steps, lr)
-    model, handles = PR.build(c, F.initial_adapters(c), device="mps", dtype=dt)
+    model, handles = PR.build(c, F.initial_adapters(c), device="mps", dtype=dt, base=arg("--base", None))
     opt = torch.optim.AdamW(list(handles.values()), lr=lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)
     ac = lambda: torch.autocast("mps", dtype=dt, enabled=dt != torch.float32)
 

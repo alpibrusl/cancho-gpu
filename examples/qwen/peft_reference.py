@@ -15,15 +15,36 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import data  # noqa: E402
 import qwen_ref as R  # noqa: E402
+import qwen_session as S  # noqa: E402
 
 MODULE = {"q": "self_attn.q_proj", "k": "self_attn.k_proj", "v": "self_attn.v_proj", "o": "self_attn.o_proj", "gate": "mlp.gate_proj", "up": "mlp.up_proj", "down": "mlp.down_proj"}
 
 
-def build(c, AB, r=16, alpha=32, device="cpu", dtype=torch.float32):
-    """The peft model with the adapters set to AB (float64 arrays, rounded to float32)."""
+def override_base(model, c, base, device, dtype):
+    """Replace the block matrices of the loaded model by those of the f16 weights directory `base` (a dequantised 4-bit base, quant.py dequant): the model the session's QLoRA run is a LoRA run of (docs/resident.md
+    section 26). Everything else (embeddings, norms, biases) stays the checkpoint's."""
+    P = R.load_params(base, c)
+    t = lambda a: torch.tensor(a, dtype=dtype, device=device)
+    for l in range(c.layers):
+        ly = model.model.layers[l]
+        w = P[f"l{l:02d}.wqkv"]
+        ly.self_attn.q_proj.weight.data = t(w[:c.d])
+        ly.self_attn.k_proj.weight.data = t(w[c.d:c.d + c.dkv])
+        ly.self_attn.v_proj.weight.data = t(w[c.d + c.dkv:])
+        ly.self_attn.o_proj.weight.data = t(P[f"l{l:02d}.wo"])
+        w = P[f"l{l:02d}.wgu"]
+        ly.mlp.gate_proj.weight.data = t(w[:c.ff])
+        ly.mlp.up_proj.weight.data = t(w[c.ff:])
+        ly.mlp.down_proj.weight.data = t(P[f"l{l:02d}.wd"])
+
+
+def build(c, AB, r=16, alpha=32, device="cpu", dtype=torch.float32, base=None):
+    """The peft model with the adapters set to AB (float64 arrays, rounded to float32); with `base` (a weights directory) its block matrices are that directory's."""
     from peft import LoraConfig, get_peft_model
     from transformers import AutoModelForCausalLM
     model = AutoModelForCausalLM.from_pretrained(data.snapshot(), torch_dtype=dtype).to(device)
+    if base:
+        override_base(model, c, base, device, dtype)
     model = get_peft_model(model, LoraConfig(r=r, lora_alpha=alpha, target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"], lora_dropout=0.0))
     mods = dict(model.named_modules())
     handles = {}
@@ -73,7 +94,7 @@ if __name__ == "__main__":
     tok = data.fixed_batch(c.nb, c.t)
     for tag, bstd in (("init", 0.0), ("randB", float(arg("--b-std", 0.02)))):
         AB = R.init_lora(c, 16, int(arg("--seed", 7)), b_std=bstd)
-        model, handles = build(c, AB)
+        model, handles = build(c, AB, base=wdir if S.quant_group(wdir) else None)
         t0 = time.time()
         loss, grads = loss_and_grads(model, handles, tok)
         print(f"{tag}: loss {loss:.6f}, {time.time() - t0:.1f} s")

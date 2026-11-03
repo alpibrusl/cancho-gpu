@@ -57,7 +57,7 @@ def train_run(work, wdir, c, steps, lr, k):
     if os.path.exists(fp):
         ref = json.load(open(fp))
     else:
-        model, handles = PR.build(c, AB)
+        model, handles = PR.build(c, AB, base=wdir if S.quant_group(wdir) else None)
         t0 = time.time()
         losses, final = PR.train(model, handles, batches, steps, lr, lr_fn=lr_fn)
         print(f"peft: {steps} steps in {time.time() - t0:.0f} s")
