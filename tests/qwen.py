@@ -457,6 +457,27 @@ def untied_head_check(cpu, metal, d):
             say(relm > 5 * 4e-3, f"writer mutant (the embedding table taken for the head of an untied model): the gradients are {relm:.1e} from the specification's, so the check fails")
 
 
+def rope_bwd_budget_check(d):
+    """The backward of the rotary embedding stages the f16 gradients of every head of a row block at once (docs/resident.md section 28): with the 7B's 28 + 4 + 4 heads of 128, 8 rows are 73,728 bytes of threadgroup
+    memory against the 32,768 Metal allows (`budget`), the first thing the 7B session hit; the writer picks the largest block of rows that fits (2 for the 7B, 8 for the 1.5B). The kernel for the 7B's
+    shape at the writer's block lowers (`emit`), and at 8 rows is refused."""
+    gpu = os.path.join(ROOT, "build", "cancho-gpu")
+    if not os.path.exists(gpu):
+        print("skip: build/cancho-gpu is not built")
+        return
+    for name, c, bm, ok in (("7B", R.Config(layers=1, d=3584, h=28, hkv=4, dh=128, ff=18944, v=152064, nb=4), 2, True), ("7B at 8 rows", R.Config(layers=1, d=3584, h=28, hkv=4, dh=128, ff=18944, v=152064, nb=4), 8, False),
+                            ("1.5B", R.Config(layers=1, d=1536, h=12, hkv=2, dh=128, ff=8960, v=151936, nb=8), 8, True)):
+        path = os.path.join(d, "rope_bwd_check.chx")
+        open(path, "w").write(T.rope_bwd_source(c, bm))
+        out = os.path.join(d, "rope_bwd_emit")
+        os.makedirs(out, exist_ok=True)
+        r = subprocess.run([gpu, "emit", path, out, f"nb={c.nb}", "t=512", f"bm={bm}", "hf=64"], capture_output=True, text=True)
+        say((r.returncode == 0) == ok and (ok or "error[budget]" in r.stderr), f"rope_bwd for the {name} (bm {bm}): {'lowers' if ok else 'is refused as budget'} ({(r.stderr or r.stdout).strip().splitlines()[0][:90] if (r.stderr or r.stdout).strip() else 'ok'})")
+    for cfg, want in ((R.Config(layers=1, d=3584, h=28, hkv=4, dh=128, ff=18944, v=152064, nb=4), 2), (R.Config(layers=1, d=1536, h=12, hkv=2, dh=128, ff=8960, v=151936, nb=8), 8), (R.Config(layers=1, d=896, h=14, hkv=2, dh=64, ff=4864, v=151936, nb=8), 8)):
+        got = next(b for b in (8, 4, 2, 1) if 2 * (cfg.d + 2 * cfg.dkv) * b <= 32768 and cfg.t % b == 0)
+        say(got == want, f"the writer's block of rows for rope_bwd at d {cfg.d}: {got} (expected {want})")
+
+
 def kernel_mutants_lora(cpu, d):
     c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
     P = R.init_params(c, seed=1)
@@ -781,6 +802,7 @@ def main():
     lora_group3_check(cpu, metal, d)
     wide_head_check(cpu, metal, d)
     untied_head_check(cpu, metal, d)
+    rope_bwd_budget_check(d)
     kernel_mutants_lora(cpu, d)
     full_checks(cpu, metal, d)
     adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "lc2"), "CPU session")
