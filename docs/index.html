@@ -492,7 +492,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
       <li>CUDA on real hardware, Hopper, AMD</li>
       <li>Decoding as fast as Ollama on the 27B (88% with speculation), long contexts (it needs a change to the language), concurrent requests</li>
       <li>Attention over more than 1364 positions (it needs a change to the language)</li>
-      <li>Training contexts above 128 (GPT) or 512 (Qwen), a CNN as fast as torch, 90% on CIFAR-10, a 4-bit base or 7B (in progress, not merged)</li>
+      <li>Training contexts above 128 (GPT) or 512 (Qwen), a CNN as fast as torch, 90% on CIFAR-10, a 7B model (the 4-bit base is built for the 1.5B; the 7B is in progress)</li>
       <li>Results of the cancho-code fine-tuning experiment: the design and the untuned baselines exist, no tuned model does</li>
     </ul></div>
   </div>
@@ -502,7 +502,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
   <h2>Status: alpha</h2>
   <ul>
     <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, backward kernels, <code>run</code> (a kernel on your inputs, CPU interpreter), and training sessions on Metal: a GPT (trained and served), a CNN, Qwen2.5 LoRA and full fine-tuning, a ResNet-18-class backbone (equal to torch, not timed).</li>
-    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs, the cancho-code fine-tuning experiment's tuned arms (M8), the vision backbone's timing (M9 V2), and a 4-bit base and 7B (QLoRA), which is in progress on another branch and not merged.</li>
+    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs, the cancho-code fine-tuning experiment's tuned arms (M8), the vision backbone's timing (M9 V2), and the 7B model for the 4-bit base (QLoRA is built for the 1.5B, section 27; the 7B is in progress).</li>
     <li>Unproven: CUDA on a real GPU (so every training number is Metal); any result on a second machine or a second seed; the 27B's decode speed against Ollama's (88% with speculation, 60% without).</li>
   </ul>
 </section>
@@ -530,10 +530,10 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
   <div class="cards">
     <div class="card"><h3>A GPT, trained and served</h3><p>3.26 M to 59.95 M parameters, on characters and on a 2,048-token byte-pair vocabulary built here (sections 15 to 17, 19). The 59.95 M model takes 167.8 ms a step against torch MPS's 196.7, with validation curves within 0.013 nats. Served from a forward-only session, all 576 greedy tokens equal torch's, at 650 tokens a second against torch's 340.</p></div>
     <div class="card"><h3>A CNN on real CIFAR-10</h3><p>A 0.85 M-parameter ResNet reaches 87.4% test accuracy, torch's 87.0%, with no augmentation (section 18). <b>The roadmap's 90% is not met by any runtime</b>, and a step takes 17.6 ms against torch MPS's 10.6: 1.7 times slower.</p></div>
-    <div class="card"><h3>Qwen2.5, fine-tuned</h3><p>The forward pass equals transformers' (loss within 1.2e-4 on the 0.5B, 5.2e-6 on the 1.5B); LoRA gradients at cosine 0.99986 and 0.99938 or better against peft; a 300-step run (0.5B) and a 150-step run (1.5B) whose loss curves equal peft float32's; full fine-tuning of the 0.5B with the embedding table trained, equal to torch float32 (sections 20 to 24).</p></div>
+    <div class="card"><h3>Qwen2.5, fine-tuned</h3><p>The forward pass equals transformers' (loss within 1.2e-4 on the 0.5B, 5.2e-6 on the 1.5B); LoRA gradients at cosine 0.99986 and 0.99938 or better against peft; a 300-step run (0.5B) and a 150-step run (1.5B) whose loss curves equal peft float32's; full fine-tuning of the 0.5B with the embedding table trained, equal to torch float32 (sections 20 to 24). A 4-bit NVFP4 base for the 1.5B's LoRA (section 27): the loss 8.6e-5 from transformers', gradients at cosine 0.997738 or better, the adapters winning back 45.6% of the 4-bit base's 0.0492-nat cost, at 2,483.1 ms a step against 2,480.6 on an f16 base and 17.52 GB against 19.29.</p></div>
     <div class="card"><h3>Speed and memory against torch</h3><p>0.5B LoRA step: 889.2 ms and 16.14 GB against float16 autocast's 1,142.0 ms and 27.48 GB. 1.5B: 2,467.3 ms and 19.38 GB against 2,743.8 ms and 39.93 GB. Full fine-tuning of the 0.5B: 1,381.4 ms and 21.03 GB against 1,450.8 ms and 44.56 GB (torch float32). The memory clause of the 0.5B LoRA exit was <b>not</b> met: 59% of torch's, not under half.</p></div>
     <div class="card"><h3>A vision backbone for a robot</h3><p>A ResNet-18-class network (11,181,632 parameters, 96 &times; 128 input) trained in a session, its loss and gradients equal to torch's: loss 2.78119 against torch float32's 2.78022 on Metal (section 26). <b>Not timed</b>: no step time is claimed, and no robot data exist yet.</p></div>
-    <div class="card"><h3>An experiment with no result yet</h3><p>Does fine-tuning a small model on cancho make it better at cancho-code's job? The design is fixed before any result, the data (6,946 records, 2.78 M tokens, with a contamination check) is built, and the two untuned baselines are near zero: 0.012 of the oracle's points for the better arm. <b>No tuned model has been trained, and no training result is in</b> (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/roadmap-models.md">roadmap-models.md</a> section 7). A 4-bit base and 7B (QLoRA) is in progress on another branch and is not merged.</p></div>
+    <div class="card"><h3>An experiment with no result yet</h3><p>Does fine-tuning a small model on cancho make it better at cancho-code's job? The design is fixed before any result, the data (6,946 records, 2.78 M tokens, with a contamination check) is built, and the two untuned baselines are near zero: 0.012 of the oracle's points for the better arm. <b>No tuned model has been trained, and no training result is in</b> (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/roadmap-models.md">roadmap-models.md</a> section 7). The 7B model that the 4-bit work (QLoRA) was designed for has not been run and is in progress.</p></div>
   </div>
 </section>
 
@@ -555,6 +555,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
       <tr><th>Qwen2.5-0.5B LoRA step</th><td>889.2 ms; 16.14 GB</td><td>autocast 1,142.0 ms, 27.48 GB; float32 1,237.9 ms, 31.49 GB</td><td>resident.md 22.3</td></tr>
       <tr><th>Qwen2.5-1.5B forward</th><td>1,116 ms</td><td>float32 1,258 ms; autocast 1,188 ms</td><td>resident.md 23.2</td></tr>
       <tr><th>Qwen2.5-1.5B LoRA step</th><td>2,467.3 ms; 19.38 GB</td><td>autocast 2,743.8 ms, 39.93 GB; float32 2,980.3 ms, 46.76 GB</td><td>resident.md 23.5</td></tr>
+      <tr><th>Qwen2.5-1.5B LoRA step, 4-bit (NVFP4) base</th><td>2,483.1 ms; 17.52 GB</td><td>same step, f16 base: 2,480.6 ms, 19.29 GB; no torch time (peft ran with activation checkpointing)</td><td>resident.md 27.5</td></tr>
       <tr><th>Qwen2.5-0.5B full fine-tuning step</th><td>1,381.4 ms; 21.03 GB</td><td>torch float32 1,450.8 ms; 44.56 GB</td><td>resident.md 24.4</td></tr>
       <tr><th>Qwen2.5-1.5B full fine-tuning step</th><td>4,191 ms; 44.27 GB (four steps)</td><td>no comparison: not run</td><td>resident.md 24.9</td></tr>
       <tr><th>ResNet-18-class backbone, 11,181,632 parameters</th><td>equal to torch's loss and gradients; no time measured</td><td></td><td>resident.md 26.3, 26.4</td></tr>
@@ -586,9 +587,9 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
       <li><b>Contexts</b>: the GPT trains at 128, Qwen at 512; the decode runners stop at 1,024 positions (256 for the 0.5B runner); split-KV is not built.</li>
       <li><b>Precision</b>: a static loss scale of 16 (above 64 it is silently wrong); f16 gradients make Adam move near-zero rows by noise, 11.3% off peft in layer 0's q <code>B</code> after 300 steps, with the held-out loss equal to 6e-5; whether an f32 gradient would remove it was not tried (22.4).</li>
     </ul></div>
-    <div><h3>Not done or not merged</h3><ul>
+    <div><h3>Not done</h3><ul>
       <li><b>1.5B full fine-tuning</b> is four steps: it fits (44.27 GB of 64), with no held-out loss and no torch comparison (24.9).</li>
-      <li><b>A 4-bit base and 7B (QLoRA)</b> is in progress on another branch and is not merged; on <code>main</code> a <code>resident</code> file takes only <code>f32</code> and <code>f16</code> (25.8).</li>
+      <li><b>The 7B is not run.</b> The 4-bit base (QLoRA) is built and measured on the 1.5B only: one seed, 150 steps, group size 16 only on the GPU, 54.4% of its loss cost remaining; no torch comparison (27.4 to 27.6).</li>
       <li><b>M8 has no training result</b>; the untuned baselines are near zero (A: 0.012, B: 0.000; Claude Haiku 5.5: 0.99) and the tuned arms will be read on compile rate and refusal tags.</li>
       <li><b>M9</b>: the backbone is not timed; no robot or synthetic data, no regression head (26.4, roadmap 8.3).</li>
       <li>A text resident file is capped at 16 MiB (binary is not); a <code>table</code> must fit the 512 MiB byte pool, so a 300-step Qwen run is five or six sessions.</li>
