@@ -118,7 +118,7 @@ schedule rope_bwd for nvidia-ada     { threads 128 }
 
 
 def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr_fn=None, wd=0.0, betas=(0.9, 0.999), eps_adam=1e-8, loss_scale=16.0, train=True,
-          grads=None, save=None, probes=(), tune=None, reuse=True, state=None, first_step=0, save_state=None):
+          grads=None, save=None, probes=(), tune=None, reuse=True, state=None, first_step=0, save_state=None, lean=False):
     """Writes the session over the batches `tokens` ([S, nb, t], taken round and round, one per step) and the adapters `AB` ({'l00.q.A': [r, in], ...}); answers the path of the session file.
     A request is a count of steps; the answer is the mean loss of the last step's batch (positions with a next token). With train=False no optimiser runs (the adapters stay as they are) and with
     `grads` (a path) the raw gradient of every fused adapter matrix is saved there on the request `checkpoint` (see `read_grads`). With train=True and `save` (a path) the f32 fused adapter matrices are
@@ -126,7 +126,9 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     layers (`alias`, docs/resident.md section 21.4); the session file's checks refuse an alias that would overwrite a value a later program reads.
     A run longer than a session's table can hold (a table is a file of at most 512 MiB: 60 batches of 8 x 512) is several sessions: with `save_state` (a path) the first and second moments are saved
     beside the adapters (`<path>.m`, `<path>.v`, as `read_fused` reads them) and the next session starts from them with `state` ({(l, group, 'A'|'B'): (m, v)}) and `first_step` (the steps already
-    taken, which the bias correction and the learning-rate schedule count from; docs/resident.md section 22)."""
+    taken, which the bias correction and the learning-rate schedule count from; docs/resident.md section 22).
+    With `lean` the memory-lean variant of docs/resident.md section 23.4: the fused gate/up product is kept as f16 (`swiglu_h2` writes the copy) and the SwiGLU output the down projection
+    reads is not kept but recomputed from it in the backward, so that a layer's f32 gate/up product and f16 SwiGLU output are no longer saved for every layer."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     w = lambda name: os.path.abspath(os.path.join(wdir, name))
@@ -142,7 +144,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     G = group_dims(c, r)
     b1, b2 = betas
     lr_fn = lr_fn or (lambda s_: lr)
-    tn = dict(bc=2304, ebm=1, abm=2, rbm=8, cbm=8, sbm=1, sbc=S.block(ff, 256), attn=dict(threads=128, warps="2 2", bm=64, bn=64, bk=32), ao=dict(threads=128, warps="2 2", bm=64, bk=32),
+    tn = dict(bc=2304, ebm=1, abm=2, rbm=8, cbm=8, sbm=1, sbc=S.block(ff, 256), attn=dict(threads=128, warps="2 2", bm=64, bn=64, bk=32), ao=dict(threads=128, warps="2 2", bm=64 if dh <= 64 else 32, bk=32),
               gemm_sched={})
     tn.update(tune or {})
     emb = np.fromfile(w("emb.f16"), dtype="<f2").reshape(-1, d)[:v]
@@ -265,10 +267,10 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             prog(f"c{gname}_{s}", kernel("cast_h.chx"), r=n, c=gd["r2"], bm=8)
             link(f"{m}.y", f"c{gname}_{s}.x")
 
-        def lora_gemm(name, gname, a_src, wfile, nout, kin):
+        def lora_gemm(name, gname, a_src, wfile, nout, kin, kern="gemm_lora.chx"):
             gd = G[gname]
             k = f"{l:02d}_{gname}"
-            prog(name, kernel("gemm_lora.chx"), m=n, n=nout, k=kin, r2=gd["r2"])
+            prog(name, kernel(kern), m=n, n=nout, k=kin, r2=gd["r2"])
             link(a_src, f"{name}.a")
             res(f"{name}.w", wfile, "f16")
             link(f"c{gname}_{s}.y", f"{name}.mid")
@@ -307,7 +309,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         res(f"rm2_{s}.gain", w(q + "ln2.f32"))
         lora_mid("gu", f"rm2_{s}.y", d)
         lora_gemm("gu_" + s, "gu", f"rm2_{s}.y", w(q + "wgu.f16"), 2 * ff, d)
-        prog("sw_" + s, kernel("swiglu_h.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
+        prog("sw_" + s, kernel("swiglu_h2.chx" if lean else "swiglu_h.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
         link(f"gu_{s}.y", f"sw_{s}.gu")
         lora_mid("dn", f"sw_{s}.y", ff)
         lora_gemm("dn_" + s, "dn", f"sw_{s}.y", w(q + "wd.f16"), d, ff)
@@ -386,11 +388,16 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             gradout[(l, gname)] = (f"{ga}.y", f"{gb}.y")
             return dxn
 
-        dxn = adapter_back("dn", f"gc_{s}.y", f"sw_{s}.y", d, ff)
+        sw_in = f"sw_{s}.y"
+        if lean:
+            prog("swr_" + s, kernel("swiglu_h16.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
+            link(f"sw_{s}.gh", f"swr_{s}.gu")
+            sw_in = f"swr_{s}.y"
+        dxn = adapter_back("dn", f"gc_{s}.y", sw_in, d, ff)
         res(f"{dxn}.w", w(q + "wd.f16"), "f16")
-        prog("sb_" + s, kernel("swiglu_bwd.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
+        prog("sb_" + s, kernel("swiglu_bwd16.chx" if lean else "swiglu_bwd.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
         link(f"{dxn}.y", f"sb_{s}.da")
-        link(f"gu_{s}.y", f"sb_{s}.gu")
+        link(f"sw_{s}.gh" if lean else f"gu_{s}.y", f"sb_{s}.gu")
         dxn = adapter_back("gu", f"sb_{s}.dgu", f"rm2_{s}.y", 2 * ff, d)
         res(f"{dxn}.w", w(q + "wgu.f16"), "f16")
         prog("rm2b_" + s, kernel("rms_bwd.chx"), r=n, c=d, bm=tn["ebm"], eps=eps)
@@ -461,6 +468,9 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         fwd = ["qkv_{}.y", "sc_{}.s", "ao_{}.o", "wo_{}.y", "dn_{}.y"]
         bwd = ["gc_{}.y", "dxdn_{}.y", "sb_{}.dgu", "dxgu_{}.y", "rm2b_{}.dx", "gac_{}.y", "dxo_{}.y", "hdo_{}.o", "dpp_{}.s", "dsf_{}.ds", "dqh_{}.o", "dkk_{}.dk", "dvv_{}.dk", "rb_{}.y",
                "dxqkv_{}.y", "rm1b_{}.dx"]
+        if lean:
+            fwd += ["sw_{}.y", "gu_{}.y"]
+            bwd.append("swr_{}.y")
         for slot in fwd:
             for l in range(1, ll):
                 L.append(f"alias {slot.format(l - 1)} {slot.format(l)}")

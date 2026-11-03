@@ -15,7 +15,8 @@
    a random B so that every gradient is non-zero, and with B = 0 where A's gradient is exactly zero); the session's gradient of every adapter matrix (per projection, split out of the fused matrices) against the
    specification's, on the CPU interpreter and the GPU; the three-kernel cross-entropy's gradient `ce_grad`; the grouped-query sum of `att_dkv` for a group of 3; AdamW on the adapters over a table of batches against
    a float64 AdamW (the fused block-diagonal B keeps its zeros); mutants of the specification's backward and of the kernels, each far from the session's gradients.
-6. A run in several sessions (docs/resident.md section 22; roadmap M7.3): 3 + 3 steps with the adapters, Adam's moments and the step count handed over equal 6 steps in one session, exactly; with the moments
+6. Heads of 128 dimensions (docs/resident.md section 23; roadmap M7.4): a 1-layer model with 4 query heads over 2 key/value heads of 128: forward, every adapter gradient, and a rotation-sign mutant.
+7. A run in several sessions (docs/resident.md section 22; roadmap M7.3): 3 + 3 steps with the adapters, Adam's moments and the step count handed over equal 6 steps in one session, exactly; with the moments
    dropped or the step count restarted they do not.
 Needs numpy; without it the test says so and passes. The converter check needs torch and safetensors and is skipped without them."""
 import json
@@ -271,11 +272,11 @@ def attention_group_check(binary, extra, d, label):
     say(float(np.abs(first.reshape(nb * t, -1) - want).max() / np.abs(want).max()) > 0.1, f"{label}: a sum over the first query head of each group alone is far from it, so the check would fail on a kernel that did that")
 
 
-def lora_check(binary, extra, d, label, c, P, tok, AB, ref, ls=64.0, mut=None, expect_fail=False):
+def lora_check(binary, extra, d, label, c, P, tok, AB, ref, ls=64.0, mut=None, expect_fail=False, lean=False):
     """The session's gradients of all adapter matrices (split per projection) against the specification's `ref` ({name: array}); with expect_fail the same comparison must NOT hold (a mutant)."""
     wdir = os.path.join(d, "w")
     S.write_files(wdir, c, P)
-    sess = T.write(os.path.join(d, "g"), c, wdir, tok, AB, r=16, loss_scale=ls, train=False, grads=os.path.join(d, "grads.bin"), tune=dict(bc=128, kmut=mut or []))
+    sess = T.write(os.path.join(d, "g"), c, wdir, tok, AB, r=16, loss_scale=ls, train=False, grads=os.path.join(d, "grads.bin"), tune=dict(bc=128, kmut=mut or []), lean=lean)
     ss = S.Session(binary, sess, extra)
     out, _ = ss.ask("1")
     ss.checkpoint()
@@ -316,6 +317,13 @@ def lora_checks(cpu, metal, d):
         os.makedirs(os.path.join(d, "lg"), exist_ok=True)
         relg, cosg, _, _ = lora_check(metal, [], os.path.join(d, "lg"), "GPU", c, P, tok, AB, G)
         say(relg < tol and cosg > ctol, f"Metal session: the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {relg:.1e}, smallest cosine {cosg:.5f})")
+    # the memory-lean session (docs/resident.md section 23.4): the gate/up product kept in f16, the SwiGLU output recomputed in the backward; the same gradients
+    for binary, extra, sub, label in ((cpu, ["--target", "nvidia-ada"], "ln1", "CPU session"), (metal, [], "ln2", "Metal session")):
+        if not binary:
+            continue
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+        rl, cl, _, _ = lora_check(binary, extra, os.path.join(d, sub), label, c, P, tok, AB, G, lean=True)
+        say(rl < tol and cl > ctol, f"{label}, memory-lean (gate/up in f16, SwiGLU recomputed): the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {rl:.1e}, smallest cosine {cl:.5f})")
     # mutants of the specification's backward: each far from the session's gradients
     saved = (R.attention_back, R.rope_back, R.rms_back)
 
@@ -374,6 +382,38 @@ def lora_group3_check(cpu, metal, d):
         say(rel < 4e-3 and cos > 0.9995, f"{label}: with 6 query heads over 2 key/value heads (groups of 3) the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {rel:.1e}, smallest cosine {cos:.5f})")
 
 
+def wide_head_check(cpu, metal, d):
+    """Qwen2.5-1.5B's geometry (docs/resident.md section 23): heads of 128 dimensions (the 0.5B's are 64), so the rotary kernels rotate halves of 64, `att_o` and `att_dkv` hold accumulators of 32 x 128 and
+    the group size differs (6 in the 1.5B, 7 in the 0.5B). A 1-layer model with 4 query heads over 2 key/value heads of 128: the forward pass and every adapter gradient equal the
+    specification's, and a session with the rotation's sign flipped does not."""
+    c = R.Config(layers=1, d=512, h=4, hkv=2, dh=128, ff=256, v=320, t=64, nb=2)
+    P = R.init_params(c, seed=4)
+    P["emb"] = P["emb"] * 0.3
+    tok = np.random.default_rng(2).integers(0, c.v, (c.nb, c.t))
+    xs = R.forward(c, P, tok)
+    rows, best = R.head(c, P, xs[-1], R.next_targets(tok), chunk=100)
+    AB = R.init_lora(c, 16, 5, b_std=0.05)
+    _, G = R.lora_loss_grads(c, P, AB, tok)
+    for binary, extra, sub, label in ((cpu, ["--target", "nvidia-ada"], "wc", "CPU session"), (metal, [], "wg", "Metal session")):
+        if not binary:
+            continue
+        dd = os.path.join(d, sub)
+        os.makedirs(dd, exist_ok=True)
+        forward_check(binary, extra, dd, label + " (heads of 128)", c, P, tok, xs, rows, best)
+        rel, cos, _, _ = lora_check(binary, extra, dd, label, c, P, tok, AB, G)
+        say(rel < 4e-3 and cos > 0.9995, f"{label}: with heads of 128 dimensions the gradients of all {len(G)} adapter matrices equal the specification's (largest relative norm error {rel:.1e}, smallest cosine {cos:.5f})")
+    dd = os.path.join(d, "wm")
+    os.makedirs(dd, exist_ok=True)
+    S.write_files(os.path.join(dd, "w"), c, P)
+    sess = S.write(os.path.join(dd, "s"), c, os.path.join(dd, "w"), tok, acts=os.path.join(dd, "acts.bin"), tune=dict(bc=128, mutations=[("let lo = p1 - p2", "let lo = p1 + p2")]))
+    ss = S.Session(cpu, sess, ["--target", "nvidia-ada"])
+    ss.forward(c.n)
+    ss.checkpoint()
+    ss.close()
+    e = float(np.abs(S.read_acts(os.path.join(dd, "acts.bin"), c)[-1] - xs[-1]).max() / np.abs(xs[-1]).max())
+    say(e > 5 * TOL, f"kernel mutant (heads of 128, the rotation's sign): the session's residual stream is {e:.1e} from the specification's, so the check fails")
+
+
 def kernel_mutants_lora(cpu, d):
     c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
     P = R.init_params(c, seed=1)
@@ -384,11 +424,13 @@ def kernel_mutants_lora(cpu, d):
     cases = (("att_dkv sums over one query head only", [("att_dkv.chx", "nh / hkv * t / bk", "t / bk")]),
              ("the rotary backward's sign", [("rope_bwd.chx", "let hi{} = u{} - w{}", "let hi{} = u{} + w{}")]),
              ("swiglu_bwd: the gate gradient without the sigmoid's slope term", [("swiglu_bwd.chx", "let dsl = sg - t", "let dsl = sg + t")]),
+             ("lean: swiglu_bwd16 without the sigmoid's slope term", [("swiglu_bwd16.chx", "let dsl = sg - t", "let dsl = sg + t")], True),
+             ("lean: the SwiGLU recomputation reads the up half for the gate", [("swiglu_h16.chx", "let g0 = load gu[i * bm, q * bc ; bm, bc]", "let g0 = load gu[i * bm, f + q * bc ; bm, bc]")], True),
              ("gemm_lora: no adapter product in the forward", [("gemm_lora.chx", "r2 / 16", "0")]),
              ("dx_lora: no adapter term in the input gradient", [("dx_lora.chx", "r2 / 16", "0")]),
              ("ce_grad: the target's one-hot dropped", [("ce_grad.chx", "let g0 = p - oh", "let g0 = p - oh * 0.0")]),
              ("rms_bwd: no residual gradient", [("rms_bwd.chx", "store t3 + dr", "store t3 + dr * 0.0")]))
-    for name, mut in cases:
+    for name, mut, *more in [(x[0], x[1], *x[2:]) for x in cases]:
         mut2 = []
         for kf, a, b in mut:
             if kf == "rope_bwd.chx":
@@ -398,7 +440,7 @@ def kernel_mutants_lora(cpu, d):
         dd = os.path.join(d, "km")
         os.makedirs(dd, exist_ok=True)
         try:
-            rel, cos, _, _ = lora_check(cpu, ["--target", "nvidia-ada"], dd, "CPU", c, P, tok, AB, G, mut=mut2)
+            rel, cos, _, _ = lora_check(cpu, ["--target", "nvidia-ada"], dd, "CPU", c, P, tok, AB, G, mut=mut2, lean=bool(more))
         except SystemExit as e:
             say(True, f"kernel mutant ({name}): the session cannot even be built or run ({str(e)[:60]})")
             continue
@@ -515,6 +557,7 @@ def main():
         attention_group_check(metal, [], os.path.join(d, "lb"), "Metal session")
     lora_checks(cpu, metal, d)
     lora_group3_check(cpu, metal, d)
+    wide_head_check(cpu, metal, d)
     kernel_mutants_lora(cpu, d)
     adam_check(cpu, ["--target", "nvidia-ada"], os.path.join(d, "lc2"), "CPU session")
     for i, mut in enumerate(([("adamw_l.chx", "let g1 = g0 * k0", "let g1 = g0 * (k0 + 1.0)")], [("adamw_l.chx", "let ws = wn * osc", "let ws = wn * 1.0")])):

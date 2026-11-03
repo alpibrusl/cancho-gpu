@@ -102,7 +102,7 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
     tokens = np.asarray(tokens)
     assert tokens.shape == (nb, t)
     tn = dict(bc=2304, ebm=1, abm=2, rbm=8, cbm=8, sbm=1, sbc=block(ff, 256), gemm_sched={}, attn=dict(threads=128, warps="2 2", bm=64, bn=64, bk=32),
-              ao=dict(threads=128, warps="2 2", bm=64, bk=32))
+              ao=dict(threads=128, warps="2 2", bm=64 if dh <= 64 else 32, bk=32))
     tn.update(tune or {})
     tok = tokens.reshape(-1)
     emb = np.fromfile(w("emb.f16"), dtype="<f2").reshape(-1, d)[:v]

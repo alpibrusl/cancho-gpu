@@ -1,0 +1,23 @@
+// swiglu_h that also keeps its input in f16 (docs/resident.md section 23.4): y = f16(silu(g) u) for the fused gate/up product gu [r, 2 f] (f32, the gate in columns 0 .. f, the up projection in
+// f .. 2 f), and gh = f16(gu), the copy the backward reads, so that the f32 product itself need not be kept for every layer.
+algo swiglu_h2(r, f, bm, bc)
+  in  gu: f32[r, 2 * f]
+  out y:  f16[r, f]
+  out gh: f16[r, 2 * f]
+{
+  grid i over r / bm, q over f / bc
+  let g  = load gu[i * bm, q * bc ; bm, bc]
+  let u  = load gu[i * bm, f + q * bc ; bm, bc]
+  let gq = stage f16 &g
+  store gq -> gh[i * bm, q * bc]
+  let uq = stage f16 &u
+  store uq -> gh[i * bm, f + q * bc]
+  let sg = sigmoid &g
+  let a  = g * sg
+  let p  = a * u
+  let h  = stage f16 p
+  store h -> y[i * bm, q * bc]
+}
+
+schedule swiglu_h2 for apple-m-series { threads 128 }
+schedule swiglu_h2 for nvidia-ada     { threads 128 }
