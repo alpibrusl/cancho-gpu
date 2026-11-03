@@ -472,3 +472,25 @@ and a loss scale of 1024 on the f16 gradients overflowed after 300 steps (NaN), 
 **Reading.** The loss curves agree at every point (validation loss 2.263 / 1.780 / 1.600 / 1.499 / 1.431 / 1.403 for cancho-gpu and 2.263 / 1.776 / 1.596 / 1.492 / 1.430 / 1.400 for torch at steps 250, 500, 750, 1000, 1250, 1500), so it learns the same thing; the 10.8 M model reaches 1.376 nats a character, under the roadmap's 1.6.
 It is as fast as torch on MPS in float32 (3% faster at 3.3 M parameters, 10% at 10.8 M) and faster than torch's mixed precision, **after tuning**: the first working version took 28 ms a step; attention in 32-row tiles (the 64-row tiles of the first version left most of the GPU idle: 256 threadgroups of tiny work, 1.3 ms for the scores of a layer) and the weight gradients in 32 x 32 tiles (a reduction over 4096 tokens into a 256 x 256 result was 16 threadgroups) took it to 15.5.
 **Not claimed:** the contexts above 128 (the attention kernels keep a head's whole row of scores as one tile, `bn = t`, which is why `t` is 64 or 128), a vocabulary of more than 128 (a real tokenizer needs the embedding lookup of the roadmap's G1), dropout, gradient clipping, anything about NVIDIA; one run each, and the time of cancho-gpu is measured in a separate session that answers only the loss (a parameter dump is 3 million numbers of text a request).
+
+## 16. Serving what was trained (roadmap M2; measured)
+
+`examples/gpt/serve_gpt.py train` trains the 3.26 M-parameter GPT of section 15 (1,500 steps, 25 s) in a Metal session, with the parameters in the answer, and saves them with the vocabulary as a checkpoint (`.npz`).
+`serve_gpt.py generate` loads it into a **forward-only session** (`gpt_session.write(..., serve=True)`: the same kernels and the same f16 matrix-unit products as the forward of training, the optimiser and backward left out). A request is the 128 token ids of a window and a one-hot selector of the position to read, and the answer is that position's logits (`row_select.chx`: the selector times the f32 logits, so a request answers 128 numbers, not 16,384); the host takes the arg max (or samples).
+Causal attention means the positions after the one read cannot influence it, so the window is the sequence so far followed by anything.
+
+**Checkpoints are host-side.** The roadmap named a `save` directive; none was needed to reach the exit: the training session already answers every parameter (`dump`), and a checkpoint is those numbers written by the host. A device-side `save` would only matter for models whose parameters do not fit a text answer, which M5's models (billions) will.
+**No key/value cache.** Each token recomputes the 128-token window (about 40 launches). That is the *same algorithm* as the first torch column below, so the comparison with it is like for like; the cache is a better algorithm, and torch's own cached decoder is in the table as the stronger baseline. A cached decoder in the session needs a kernel that appends to a cache at a position taken from the request, which is the roadmap's M5 (G12).
+
+**Correctness.** `tests/train.py`: the logits of one position of a 2-layer GPT within 3e-4 of the float64 forward on the CPU interpreter and 3.6e-4 on Metal, same arg max. On the trained checkpoint, six held-out prompts of 32 characters, 96 greedy tokens each (`serve_gpt.py generate`, M4 Max): **all 6 continuations are identical to torch's (float32 on MPS), 576 of 576 tokens**, and torch's recompute and torch's cached decoder agree with each other too. Teacher-forced (cancho's choice at each position of torch's own continuation) it is also 576/576, so the identity is not a lucky cascade.
+f16 products could flip an arg max where two logits are within rounding; on this model and these prompts none does. That is a measurement on 576 tokens, not a guarantee, and the text is greedy-decoding's usual loop ("... that is not a second that is not ...").
+
+**Speed** (tokens a second, one sequence, the first prompt excluded from torch's means for warm-up, steady-state values): 
+
+| decoder | tokens a second |
+|---|---|
+| **cancho-gpu session** (recompute the window, request and answer as text on a pipe) | **650** |
+| torch MPS float32, recompute the window | 340 |
+| torch MPS float32, key/value cache | 273 |
+
+cancho-gpu is 1.9x torch's same algorithm and 2.4x torch's cached decoder. Torch eager on MPS at batch 1 is bound by launching its ~100 small operations a token, and so is this (40 launches, one command buffer); neither number is compute. `torch.compile` and MPS graphs were not tried. Not claimed: anything for a window longer than 128 (the sliding window is not implemented), sampling quality, other models, NVIDIA.

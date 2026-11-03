@@ -167,6 +167,20 @@ def main():
     if metal:
         out_lm = serve(metal, lsess, "1\n4\n5\n15\n")
         say(all(close(a[0], b[0], 5e-2) for a, b in zip(out_lm, out_l)), f"Metal session on the GPT equals the CPU session's losses to 5e-2: {[round(v[0], 4) for v in out_lm]}")
+    # serving (docs/resident.md section 16): a forward-only session answers one position's logits of a window; they equal the float64 forward's
+    sc = GR.Config(v=65, vp=128, t=64, d=128, h=2, layers=2, b=1)
+    sp = GR.init_params(sc, 3)
+    swin = np.random.RandomState(7).randint(0, sc.v, size=sc.n)
+    GR.forward(sc, sp, swin, swin, grads=True)
+    want = GR.DEBUG["logits"]
+    ssess = GS.write(os.path.join(d, "gpt-serve"), sc, np.zeros((1, sc.n)), np.zeros((1, sc.n)), 1, params=sp, serve=True)
+    req = " ".join(map(str, swin)) + " " + " ".join("1" if i == 20 else "0" for i in range(sc.n)) + "\n"
+    for who, prog_ in (("CPU", cpu), ("Metal", metal)):
+        if prog_ is None:
+            continue
+        got = np.array(serve(prog_, ssess, req, ["--target", "apple-m-series"] if who == "CPU" else [])[0])[: sc.v]
+        err = float(np.abs(got - want[20, : sc.v]).max())
+        say(err < 2e-2 * float(np.abs(want[20, : sc.v]).max()) and int(np.argmax(got)) == int(np.argmax(want[20, : sc.v])), f"{who} session, serving a GPT: the logits of one position within {err:.1e} of the float64 forward, the same arg max")
     if metal:
         dev_small = serve(metal, session, "1\n9\n20\n")
         say(all(close(a[0], b[0], 1e-4) for a, b in zip(dev_small, out)), f"Metal session on the small network equals the CPU session's loss to 1e-4: {[round(v[0], 6) for v in dev_small]}")

@@ -40,7 +40,7 @@ Each milestone is a separate change, designed before it is built, with gates tha
 Exit: the loss after 100 steps equals a float64 numpy implementation's to 1e-3 (CPU session) and torch's to 3 digits; the validation loss falls under 1.6 nats; step time and total time are within 1.5 of torch on MPS, or better.
 New kernels: LayerNorm forward/backward, causal attention forward/backward (non-fused first), GELU, the cross-entropy, AdamW. New language: `gelu`, `tanh` (G5), `max a b`.
 
-**M2. Serve what M1 trained** (G10, G12 in its smallest form). `save`/load the checkpoint; a decoder runner for this GPT with a KV cache (the attention-decode kernels exist); sample text with the existing sampler.
+**M2. Serve what M1 trained. Built (`resident.md` section 16): all 576 greedy tokens equal torch's, 650 tokens a second against torch MPS's 340 (recompute) and 273 (cached); the checkpoint is host-side, no key/value cache yet.** (original plan follows) (G10, G12 in its smallest form). `save`/load the checkpoint; a decoder runner for this GPT with a KV cache (the attention-decode kernels exist); sample text with the existing sampler.
 Exit: the generated tokens equal torch's greedy tokens for the same weights; tokens a second against torch on MPS.
 
 **M3. A real vocabulary and a real dataset** (G1, G7, G9). Index-valued load and scatter-add (atomics, or the sort-and-segment form measured against them), device-direct tables, a BPE-tokenised corpus; a 30 to 60 M parameter GPT on TinyStories-scale text.

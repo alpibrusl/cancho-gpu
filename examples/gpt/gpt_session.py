@@ -36,9 +36,10 @@ def schedule(steps, lr_fn):
     return [(lr_fn(t) / (1.0 - B1 ** t), 1.0 / math.sqrt(1.0 - B2 ** t)) for t in range(1, steps + 1)]
 
 
-def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None):
+def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, serve=False):
     """Writes the session. `tokens` and `targets`: int arrays [steps_data, N] (a batch for each step of the table, taken round and round). `c`: a gpt_ref.Config.
-    Answers the path of the session file."""
+    Answers the path of the session file. With `serve`, a forward-only session for generation (docs/resident.md section 16): a request is the `n` token ids of a window and
+    an `n`-long one-hot selector of the position to read, the answer is that position's `vp` logits; `tokens` and `targets` are not used."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     n, d, h, dh, t, nb, ll, vp, v = c.n, c.d, c.h, c.dh, c.t, c.b, c.layers, c.vp, c.v
@@ -63,7 +64,8 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
     vecs = ["lnfg", "lnfb"] + [f"{k}{l}" for l in range(ll) for k in ("ln1g", "ln1b", "bqkv", "bo", "ln2g", "ln2b", "b1", "b2")]
     for name in mats + vecs:
         put(p(name), P[name])
-        put(p("z" + name), np.zeros_like(P[name]))
+        if not serve:
+            put(p("z" + name), np.zeros_like(P[name]))
     for name in mats:
         put(p(name + ".h"), P[name], "<f2")
     # the kernels, with the schedules this shape needs
@@ -110,7 +112,10 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
 
     # ---- forward
     prog("oh", k("onehot.chx"), r=n, c=vp + t, bm=bm)
-    tab("oh.tok", p("tok"), nsteps)
+    if serve:
+        L.append("input oh.tok")
+    else:
+        tab("oh.tok", p("tok"), nsteps)
     res("oh.pos", p("pos"))
     res("oh.jrow", p("jrow_oh"))
     prog("ex", gnn, m=n, n=d, k=vp + t)
@@ -175,6 +180,14 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
     prog("lm", gemm, m=n, n=vp, k=d)
     link("lnf.y", "lm.a")
     res("lm.w", p("wlm.h"), "f16")
+    if serve:
+        prog("sel", k("row_select.chx"), b=n, k=vp, bk=block(vp, 32))
+        link("lm.y", "sel.x")
+        L.append("input sel.v")
+        L.append("answer sel.out")
+        with open(p("session"), "w") as f:
+            f.write("\n".join(L) + "\n")
+        return p("session")
     prog("ce", k("ce.chx"), r=n, c=vp, bm=bm, scale=LOSS_SCALE)
     link("lm.y", "ce.lg")
     tab("ce.tgt", p("tgt"), nsteps)
