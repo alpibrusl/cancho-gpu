@@ -1,0 +1,24 @@
+// PROBE numeric
+// ARGS r=16 c=8
+// max(a, b) with no `max a b`: the select s = step(a - b), m = s a - (s - 1) b (a literal takes its shape from the tile on its left, so `1 - s` is not written). s is exactly 0 or 1 and one of the two products is exactly 0, so the result is exactly a or b (no rounding), and the same s is the max-pool backward's mask.
+algo max_select(r, c)
+  in  a: f32[r, c]
+  in  b: f32[r, c]
+  out m: f32[r, c]
+  out s: f32[r, c]
+{
+  grid i over r / 8
+  let x = load a[i * 8, 0 ; 8, c]
+  let y = load b[i * 8, 0 ; 8, c]
+  let d = &x - &y
+  let t = step d
+  let u = &t - 1
+  let p = &t * x
+  let q = u * y
+  let m0 = p - q
+  store m0 -> m[i * 8, 0]
+  store t -> s[i * 8, 0]
+}
+
+schedule max_select for apple-m-series { threads 128 }
+schedule max_select for nvidia-ada     { threads 128 }

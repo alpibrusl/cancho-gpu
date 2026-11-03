@@ -1,0 +1,28 @@
+// A kh x kw convolution, stride 1, on the padded image matrix (docs/resident.md section 26), the M4 CNN's `conv3` with the window and the shift as constants. The input x is [g + rp + g, cx]
+// (rp = n (h+2) (w+2) rows, g zero rows on each side, g >= max shift); the output at row p reads the rows p + (dy - oy) wp + (dx - ox) for the taps (dy, dx), each multiplied by that tap's
+// [cout, cin] slice of w [cout, kh kw cin]. Only the first cin of the cx columns of x are read, which is how a 1x1 stride-2 convolution reads the (0,0) quarter of a space-to-depth image.
+// A tap may reach two pixels past an edge: the border of one pixel plus the neighbouring row's border absorb it (resident.md section 26.1). Rows of y that are border are junk; the epilogue masks.
+algo convk(rp, cx, cin, cout, wp, g, kh, kw, oy, ox)
+  in  x: f16[rp + 2 * g, cx]
+  in  w: f16[cout, kh * kw * cin]
+  out y: f32[rp, cout]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dy in 0 .. kh with c {
+    let c = for dx in 0 .. kw with c {
+      let c = for p in 0 .. cin / bk with c {
+        let at = load x[g + i * bm + dy * wp + dx - oy * wp - ox, p * bk ; bm, bk] @shared
+        let wt = load w[j * bn, kw * dy * cin + dx * cin + p * bk ; bn, bk] @shared
+        yield mma c at wt
+      }
+      yield c
+    }
+    yield c
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule convk for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule convk for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
