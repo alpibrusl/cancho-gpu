@@ -278,7 +278,7 @@ fn view[&m, &t](m: &!m [int], t: &!t [byte], c: int, vw: int, writing: bool) -> 
 
 fn numeric[&m, &t](m: &!m [int], t: &!t [byte], c: int, ty: int, what: &static [byte]) -> [] bool {
     if ir.dtype(m, ty) == kinds.i8() {
-        diag(m, t, c, "type", text.f1(m, t, "$ is quantised (I8); `dequant` it with its scales first", text.lit(m, t, what)));
+        diag(m, t, c, "type", text.f1(m, t, "$ is quantised (I8); `dequant_fp4` it with its scales first", text.lit(m, t, what)));
         return false;
     }
     return true;
@@ -286,7 +286,12 @@ fn numeric[&m, &t](m: &!m [int], t: &!t [byte], c: int, ty: int, what: &static [
 
 fn not_narrower[&m, &t](m: &!m [int], t: &!t [byte], c: int, from: int, to: int, what: &static [byte]) -> [] bool {
     if kinds.size_bytes(to) < kinds.size_bytes(from) {
-        diag(m, t, c, "narrowing", text.f3(m, t, "$ narrows $ to $ implicitly; use `convert`", text.lit(m, t, what), text.lit(m, t, kinds.dtype_name(from)), text.lit(m, t, kinds.dtype_name(to))));
+        // There is no `convert` in the grammar (docs/chx.md section 3): a value is narrowed by `stage`, and no kernel produces an I8 at all (the host writes the codes)
+        if to == kinds.i8() {
+            diag(m, t, c, "narrowing", text.f3(m, t, "$ narrows $ to $ implicitly; no kernel produces I8 (the host writes the codes)", text.lit(m, t, what), text.lit(m, t, kinds.dtype_name(from)), text.lit(m, t, kinds.dtype_name(to))));
+        } else {
+            diag(m, t, c, "narrowing", text.f3(m, t, "$ narrows $ to $ implicitly; round it explicitly with `stage f16`", text.lit(m, t, what), text.lit(m, t, kinds.dtype_name(from)), text.lit(m, t, kinds.dtype_name(to))));
+        }
         return false;
     }
     return true;

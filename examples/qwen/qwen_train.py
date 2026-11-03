@@ -10,6 +10,10 @@ matrix unit (`gemm_lora`: the base product and the 16-wide adapter product accum
 the optimiser masks their gradient), and `split_grads` / `split_params` give the per-projection matrices back. The scale alpha / r is folded into the f16 copy of B (`Bs = s B`): with it the adapter's
 forward is `mid Bs^T`, the gradient of mid is `dy Bs`, and the gradient of A is `(dy Bs)^T x` with no further factor; the gradient of B is `s dy^T mid`, whose factor s goes into B's gradient scale.
 
+A quantised base (docs/resident.md section 27; roadmap M7.5): when the weights directory holds `NAME.q`, `NAME.s`, `NAME.g` for the four matrices of a block (quant.py pack) the session keeps those i8 and f32 files resident
+(0.56 bytes a weight), and before each product that reads a matrix runs `dq_fp4.chx`, which dequantises it into an f16 scratch laid out as the f16 file would be; the products, the rest of the forward and the backward are
+the unchanged ones. The scratch of a matrix kind is one buffer shared by every layer and by the forward and the backward (`alias`), so one layer's matrices are all it costs.
+
 Mixed precision as in qwen_session.py: f16 weights and f16 operands of every product, f32 accumulation, f32 residual stream and gradient stream, f32 master adapters and Adam's moments with f16 copies.
 The gradient of the logits is scaled by `loss_scale` (f16 range) and the optimiser divides it and the number of counted positions out."""
 import math
@@ -141,6 +145,9 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     assert tokens.shape[1:] == (nb, t)
     assert dh % 32 == 0 and d % 64 == 0 and t % 64 == 0 and n % 64 == 0 and (d + 2 * dkv) % 64 == 0 and ff % 64 == 0 and h % hkv == 0 and dh == d // h and r % 16 == 0
     scale = alpha / r
+    QG = S.quant_group(wdir)
+    quantised = QG > 0
+    assert not quantised or reuse, "a quantised base needs the shared scratch (reuse)"
     G = group_dims(c, r)
     b1, b2 = betas
     lr_fn = lr_fn or (lambda s_: lr)
@@ -242,6 +249,28 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         link(a, f"{name}.a")
         res(f"{name}.w", wfile, "f16")
 
+    dims = {"wqkv": (d + 2 * dkv, d), "wo": (d, d), "wgu": (2 * ff, d), "wd": (d, ff)}
+    if quantised:
+        open(p("dq_fp4.chx"), "w").write(S.dq_text(QG))
+
+    def dq_emit(l_, mat, phase):
+        """The program that dequantises matrix `mat` of layer l_ into its f16 scratch (phase "f" for the forward, "b" for the backward), declared before the product that reads it; None for an f16 base."""
+        if not quantised:
+            return None
+        n_, k_ = dims[mat]
+        nm = f"dq{phase}_{mat}_{l_}"
+        tl = S.dq_tile(n_, k_, QG, tn)
+        prog(nm, kernel("dq_fp4.chx"), n=n_, k=k_, bn=tl["bn"], bk=tl["bk"])
+        for part, ext, flag in (("wq", "q", "i8"), ("ws", "s", "i8"), ("wg", "g", "f32")):
+            res(f"{nm}.{part}", w(f"l{l_:02d}.{mat}.{ext}"), flag)
+        return nm
+
+    def w_supply(target, l_, mat, nm):
+        if nm is None:
+            res(target, w(f"l{l_:02d}.{mat}.f16"), "f16")
+        else:
+            link(f"{nm}.wh", target)
+
     ahf = {}   # f16 users of each fused A / s B copy, for the optimiser's carry
     bhf = {}
     # ---- the embeddings of the step
@@ -267,18 +296,19 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             prog(f"c{gname}_{s}", kernel("cast_h.chx"), r=n, c=gd["r2"], bm=8)
             link(f"{m}.y", f"c{gname}_{s}.x")
 
-        def lora_gemm(name, gname, a_src, wfile, nout, kin, kern="gemm_lora.chx"):
+        def lora_gemm(name, gname, a_src, mat, nout, kin, kern="gemm_lora.chx"):
             gd = G[gname]
             k = f"{l:02d}_{gname}"
+            nmq = dq_emit(l, mat, "f")
             prog(name, kernel(kern), m=n, n=nout, k=kin, r2=gd["r2"])
             link(a_src, f"{name}.a")
-            res(f"{name}.w", wfile, "f16")
+            w_supply(f"{name}.w", l, mat, nmq)
             link(f"c{gname}_{s}.y", f"{name}.mid")
             res(f"{name}.bs", p(f"Bh{k}"), "f16")
             bhf.setdefault(k, []).append(f"{name}.bs")
 
         lora_mid("qkv", f"rm1_{s}.y", d)
-        lora_gemm("qkv_" + s, "qkv", f"rm1_{s}.y", w(q + "wqkv.f16"), d + 2 * dkv, d)
+        lora_gemm("qkv_" + s, "qkv", f"rm1_{s}.y", "wqkv", d + 2 * dkv, d)
         for nm, kern, nh_, c0 in (("rq", "rope_q.chx", h, 0), ("rk", "rope_k.chx", hkv, d)):
             prog(f"{nm}_{s}", p(kern), nb=nb, nh=nh_, t=t, w=d + 2 * dkv, c0=c0, bm=tn["rbm"], hf=hf)
             link(f"qkv_{s}.y", f"{nm}_{s}.qkv")
@@ -300,7 +330,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         prog("uh_" + s, kernel("unheads.chx"), nb=nb, nh=h, t=t, dh=dh, bm=tn["rbm"])
         link(f"ao_{s}.o", f"uh_{s}.o")
         lora_mid("o", f"uh_{s}.y", d)
-        lora_gemm("wo_" + s, "o", f"uh_{s}.y", w(q + "wo.f16"), d, d)
+        lora_gemm("wo_" + s, "o", f"uh_{s}.y", "wo", d, d)
         prog("r1_" + s, kernel("res_add.chx"), r=n, c=d, bm=tn["ebm"])
         link(f"wo_{s}.y", f"r1_{s}.z")
         link(x_in, f"r1_{s}.res")
@@ -308,11 +338,11 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         link(f"r1_{s}.y", f"rm2_{s}.x")
         res(f"rm2_{s}.gain", w(q + "ln2.f32"))
         lora_mid("gu", f"rm2_{s}.y", d)
-        lora_gemm("gu_" + s, "gu", f"rm2_{s}.y", w(q + "wgu.f16"), 2 * ff, d)
+        lora_gemm("gu_" + s, "gu", f"rm2_{s}.y", "wgu", 2 * ff, d)
         prog("sw_" + s, kernel("swiglu_h2.chx" if lean else "swiglu_h.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
         link(f"gu_{s}.y", f"sw_{s}.gu")
         lora_mid("dn", f"sw_{s}.y", ff)
-        lora_gemm("dn_" + s, "dn", f"sw_{s}.y", w(q + "wd.f16"), d, ff)
+        lora_gemm("dn_" + s, "dn", f"sw_{s}.y", "wd", d, ff)
         prog("r2_" + s, kernel("res_add.chx"), r=n, c=d, bm=tn["ebm"])
         link(f"dn_{s}.y", f"r2_{s}.z")
         link(f"r1_{s}.y", f"r2_{s}.res")
@@ -360,7 +390,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         prog("gc_" + s, kernel("cast_h.chx"), r=n, c=d, bm=tn["ebm"])
         link(gdx, f"gc_{s}.x")
 
-        def adapter_back(gname, dy16, x16, nout, nin):
+        def adapter_back(gname, dy16, x16, nout, nin, mat):
             """dmid, dx = dy W + dmid A (the name of its output), dB, dA for the fused group; `dy16`/`x16` are 'prog.out' names; the weight file is filled by the caller."""
             gd = G[gname]
             k = f"{l:02d}_{gname}"
@@ -373,9 +403,11 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             prog(f"dc{gname}_{s}", kernel("cast_h.chx"), r=n, c=r2, bm=8)
             link(f"{dm}.y", f"dc{gname}_{s}.x")
             dxn = f"dx{gname}_{s}"
+            nmq = dq_emit(l, mat, "b")
             prog(dxn, kernel("dx_lora.chx"), m=n, n=nin, k=nout, r2=r2)
             link(dy16, f"{dxn}.dy")
             link(f"dc{gname}_{s}.y", f"{dxn}.dmid")
+            w_supply(f"{dxn}.w", l, mat, nmq)
             res(f"{dxn}.a", p(f"Ah{k}"), "f16")
             ahf[k].append(f"{dxn}.a")
             gb, ga = f"gB{gname}_{s}", f"gA{gname}_{s}"
@@ -393,13 +425,11 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
             prog("swr_" + s, kernel("swiglu_h16.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
             link(f"sw_{s}.gh", f"swr_{s}.gu")
             sw_in = f"swr_{s}.y"
-        dxn = adapter_back("dn", f"gc_{s}.y", sw_in, d, ff)
-        res(f"{dxn}.w", w(q + "wd.f16"), "f16")
+        dxn = adapter_back("dn", f"gc_{s}.y", sw_in, d, ff, "wd")
         prog("sb_" + s, kernel("swiglu_bwd16.chx" if lean else "swiglu_bwd.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
         link(f"{dxn}.y", f"sb_{s}.da")
         link(f"sw_{s}.gh" if lean else f"gu_{s}.y", f"sb_{s}.gu")
-        dxn = adapter_back("gu", f"sb_{s}.dgu", f"rm2_{s}.y", 2 * ff, d)
-        res(f"{dxn}.w", w(q + "wgu.f16"), "f16")
+        dxn = adapter_back("gu", f"sb_{s}.dgu", f"rm2_{s}.y", 2 * ff, d, "wgu")
         prog("rm2b_" + s, kernel("rms_bwd.chx"), r=n, c=d, bm=tn["ebm"], eps=eps)
         link(f"{dxn}.y", f"rm2b_{s}.dy")
         link(f"r1_{s}.y", f"rm2b_{s}.x")
@@ -408,8 +438,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         ga_ = f"rm2b_{s}.dx"
         prog("gac_" + s, kernel("cast_h.chx"), r=n, c=d, bm=tn["ebm"])
         link(ga_, f"gac_{s}.x")
-        dxn = adapter_back("o", f"gac_{s}.y", f"uh_{s}.y", d, d)
-        res(f"{dxn}.w", w(q + "wo.f16"), "f16")
+        dxn = adapter_back("o", f"gac_{s}.y", f"uh_{s}.y", d, d, "wo")
         prog("hdo_" + s, kernel("heads_h.chx"), nb=nb, nh=h, t=t, dh=dh, bm=tn["rbm"])
         link(f"{dxn}.y", f"hdo_{s}.y")
         prog("dpp_" + s, kernel("att_s.chx", **tn["attn"]), nbh=nb * h, t=t, dh=dh)
@@ -433,8 +462,7 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         link(f"dvv_{s}.dk", f"rb_{s}.dv")
         res(f"rb_{s}.cs", p("cos"))
         res(f"rb_{s}.sn", p("sin"))
-        dxn = adapter_back("qkv", f"rb_{s}.y", f"rm1_{s}.y", d + 2 * dkv, d)
-        res(f"{dxn}.w", w(q + "wqkv.f16"), "f16")
+        dxn = adapter_back("qkv", f"rb_{s}.y", f"rm1_{s}.y", d + 2 * dkv, d, "wqkv")
         prog("rm1b_" + s, kernel("rms_bwd.chx"), r=n, c=d, bm=tn["ebm"], eps=eps)
         link(f"{dxn}.y", f"rm1b_{s}.dy")
         link(xs[l], f"rm1b_{s}.x")
@@ -474,6 +502,14 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         for slot in fwd:
             for l in range(1, ll):
                 L.append(f"alias {slot.format(l - 1)} {slot.format(l)}")
+        if quantised:
+            # the scratch of a matrix kind: one buffer through the forward (layer 0 up) and then the backward (layer ll - 1 down)
+            for mat in dims:
+                for l in range(1, ll):
+                    L.append(f"alias dqf_{mat}_{l - 1}.wh dqf_{mat}_{l}.wh")
+                L.append(f"alias dqf_{mat}_{ll - 1}.wh dqb_{mat}_{ll - 1}.wh")
+                for l in reversed(range(ll - 1)):
+                    L.append(f"alias dqb_{mat}_{l + 1}.wh dqb_{mat}_{l}.wh")
         for slot in bwd:
             for l in reversed(range(ll - 1)):
                 L.append(f"alias {slot.format(l + 1)} {slot.format(l)}")

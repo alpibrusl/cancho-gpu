@@ -7,7 +7,7 @@ batches and initial adapters in peft on MPS (peft_finetune.py).
     python3 examples/qwen/finetune.py WORK eval                                   # the held-out loss at every checkpoint (adds it to WORK/cancho.json)
     python3 examples/qwen/finetune.py WORK compare [peft_float16 peft_float32]    # the curves side by side and the largest differences
 
-The schedule is a linear warm-up over steps / 10 and a cosine decay to 0, AdamW (0.9, 0.999, 1e-8, no weight decay), batch t of the run is batch t of the corpus (8 sequences of 512, no repeats).
+The schedule is a linear warm-up over steps / 10 and a cosine decay to 0, AdamW (0.9, 0.999, 1e-8, no weight decay), batch t of the run is batch t of the corpus (`--nb` sequences of 512, 8 unless given; no repeats).
 A session's `table` is one file of at most 512 MiB, which holds 60 batches of embeddings (7.3 MB each), so the 300 steps are five sessions of 60 that hand the adapters and Adam's moments over through
 `save` / `checkpoint` (qwen_train.write `state`, `first_step`); the handover is exact (tests/qwen.py)."""
 import json
@@ -32,6 +32,7 @@ arg = lambda n, d: sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
 WDIR = arg("--weights", data.WEIGHTS)
 METAL = arg("--metal", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 EVERY = int(arg("--every", 30))
+NB = int(arg("--nb", 8))  # sequences of 512 a step (4 for the 7B: docs/resident.md section 28)
 R_, ALPHA = 16, 32.0
 LEAN = "--lean" in sys.argv  # the memory-lean session (docs/resident.md section 23.4)
 
@@ -43,7 +44,7 @@ def lr_schedule(steps, lr):
 
 def load(work):
     z = np.load(os.path.join(work, "corpus.npz"))
-    return z["train"].astype(np.int64).reshape(-1, 8, 512), z["heldout"].astype(np.int64).reshape(-1, 8, 512)
+    return z["train"].astype(np.int64).reshape(-1, NB, 512), z["heldout"].astype(np.int64).reshape(-1, NB, 512)
 
 
 def initial_adapters(c):
@@ -169,10 +170,10 @@ def compare(work, names):
             ha = [abs(float(runs[a]["heldout"][str(s)]) - float(runs[b]["heldout"][str(s)])) for s in hs]
             print(f"  {a} vs {b}: train {da.max():.5f} (mean {da.mean():.5f}, step {int(da.argmax()) + 1}); held-out {max(ha):.5f}")
     for n, r in runs.items():
-        print(f"{n}: median {r['median_ms']:.1f} ms a step, {4096 / r['median_ms'] * 1000:.0f} tokens a second, peak {r.get('peak_bytes', 0) / 1e9:.2f} GB")
+        print(f"{n}: median {r['median_ms']:.1f} ms a step, {NB * 512 / r['median_ms'] * 1000:.0f} tokens a second, peak {r.get('peak_bytes', 0) / 1e9:.2f} GB")
 
 
 if __name__ == "__main__":
     work, cmd = sys.argv[1], sys.argv[2]
-    cfg = R.config_of(WDIR)
-    {"train": lambda: train(work, cfg), "eval": lambda: evaluate(work, cfg), "compare": lambda: compare(work, [a for a in sys.argv[3:] if not a.startswith("--")])}[cmd]()
+    cfg = R.config_of(WDIR, 512, NB)
+    {"train": lambda: train(work, cfg), "eval": lambda: evaluate(work, cfg), "compare": lambda: compare(work, [a for i, a in enumerate(sys.argv) if i > 2 and not a.startswith("--") and not sys.argv[i - 1].startswith("--weights") and not sys.argv[i - 1].startswith("--nb")])}[cmd]()

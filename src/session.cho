@@ -243,8 +243,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, progs_raw, mem.rec4(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno));
             } else if text.is(t, head, "resident") {
-                if nw != 3 && !(nw == 4 && (text.is(t, mem.get(m, words, 3), "f32") || text.is(t, mem.get(m, words, 3), "f16"))) {
-                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE [f32|f16]"));
+                if nw != 3 && !(nw == 4 && (text.is(t, mem.get(m, words, 3), "f32") || text.is(t, mem.get(m, words, 3), "f16") || text.is(t, mem.get(m, words, 3), "i8"))) {
+                    return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE [f32|f16|i8]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -255,6 +255,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     binary = 1;
                     if text.is(t, mem.get(m, words, 3), "f16") {
                         binary = 2;
+                    }
+                    if text.is(t, mem.get(m, words, 3), "i8") {
+                        binary = 3;
                     }
                 }
                 mem.push(m, res_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), lineno, binary));
@@ -451,6 +454,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if ir.param_writable(m, prm) {
             return bad(m, t, m[raw + 3], text.f1(m, t, "`$` is written by the kernel: it cannot be resident", m[raw + 1]));
         }
+        if unsafe_path(t, m[raw + 2]) {
+            return bad(m, t, m[raw + 3], text.lit(m, t, "the file of a resident has two dots in a row or is over 4,000 bytes"));
+        }
         let cell = mem.get(m, supplied, pi) + ai;
         if m[cell] != 0 {
             return bad(m, t, m[raw + 3], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
@@ -462,7 +468,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if device && m[raw + 4] != 0 {
             direct = true;
             let dt = ir.param_dtype(m, prm);
-            if m[raw + 4] == 1 && dt != kinds.f32() || m[raw + 4] == 2 && dt != kinds.f16() {
+            if m[raw + 4] == 1 && dt != kinds.f32() || m[raw + 4] == 2 && dt != kinds.f16() || m[raw + 4] == 3 && dt != kinds.i8() {
                 return err.fail(m, t, "usage", text.f1(m, t, "`$` has another type than the binary file's flag says", m[raw + 1]));
             }
             mem.push(m, resident, mem.rec3(m, pi, ai, m[raw + 2]));
@@ -474,6 +480,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             var loaded = 0;
             if m[raw + 4] == 2 {
                 loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
+            } else if m[raw + 4] == 3 {
+                loaded = runcmd.load_i8(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
             } else if m[raw + 4] == 1 {
                 loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), m[g + 2], m[g + 3]);
             } else {

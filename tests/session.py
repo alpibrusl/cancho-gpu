@@ -201,6 +201,64 @@ def f32(x):
     return struct.unpack("f", struct.pack("f", x))[0]
 
 
+def i8_checks(binary, tdir):
+    """docs/resident.md section 27: the `i8` flag of `resident`, a binary file of bytes read as signed 8-bit codes. The only kernel that consumes an i8 tensor is the dequantiser (`dequant_fp4`: no
+    arithmetic, staging or conversion of an i8 is expressible), so the check is the dequantise kernel of a QLoRA session (examples/qwen/dq_fp4.chx) over the three files of a 4-bit matrix packed by
+    examples/qwen/nvfp4.py: its f16 output equals the decoding of those bytes, exactly, for two group sizes and several tiles (the bytes include every value from 0 to 255 as nibble pairs)."""
+    import numpy as np
+    sys.path.insert(0, os.path.join(ROOT, "examples", "qwen"))
+    import nvfp4
+    n_, k_ = 64, 128
+    w_ = np.random.default_rng(5).standard_normal((n_, k_)) * 0.05
+    w_[3, 7] = 0.8
+    w_[10] = 0.0
+    for G in (16, 32):
+        q, s, g = nvfp4.pack_rows(w_, G)
+        for nm, arr in (("q", q), ("s", s), ("g", g)):
+            arr.tofile(os.path.join(tdir, f"dq{G}.{nm}"))
+        src = open(os.path.join(ROOT, "examples", "qwen", "dq_fp4.chx")).read()
+        if G != 16:
+            src = src.replace("k / 16", f"k / {G}").replace("dequant_fp4 q s r 16", f"dequant_fp4 q s r {G}")
+        open(os.path.join(tdir, f"dq{G}.chx"), "w").write(src)
+        body = (f"program dq {os.path.join(tdir, f'dq{G}.chx')} n={n_} k={k_} bn=32 bk=64\nresident dq.wq {os.path.join(tdir, f'dq{G}.q')} i8\nresident dq.ws {os.path.join(tdir, f'dq{G}.s')} i8\n"
+                f"resident dq.wg {os.path.join(tdir, f'dq{G}.g')} f32\nanswer dq.wh\n")
+        open(os.path.join(tdir, f"dq{G}.session"), "w").write(body)
+        status, out, err = talk(binary, os.path.join(tdir, f"dq{G}.session"), "\n")
+        got = np.array(out[0].split(), dtype=np.float64) if status == 0 and out else np.zeros(0)
+        want = nvfp4.unpack_rows(q, s, g, G).astype(np.float16).astype(np.float64).reshape(-1)
+        say(got.size == want.size and bool((got == want).all()) and len(set(q.ravel().tolist())) > 200,
+            f"an i8 resident file is read as bytes: the dequantise kernel (G = {G}) over three binary files gives the {n_ * k_} weights of the decoding of those bytes exactly ({int((got == want).sum()) if got.size == want.size else 0} equal; {len(set(q.ravel().tolist()))} distinct bytes in q)")
+        if G == 16:
+            q0 = os.path.join(tdir, "dq16.q")
+            body16 = open(os.path.join(tdir, "dq16.session")).read()
+            for what, edit, tag in (("an i8 file one byte short", lambda: open(os.path.join(tdir, "short.q"), "wb").write(open(q0, "rb").read()[:-1]), "usage"),
+                                    ("an i8 file one byte long", lambda: open(os.path.join(tdir, "short.q"), "wb").write(open(q0, "rb").read() + b"\0"), "usage")):
+                edit()
+                open(os.path.join(tdir, "bad.session"), "w").write(body16.replace(q0, os.path.join(tdir, "short.q")))
+                status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
+                say(status == 1 and out == [] and err.startswith(f"error[{tag}]"), f"refused as {tag}: {what}")
+            # a file of exactly the size the flag asks for, so that only the parameter's type can refuse it
+            for what, param, flag, size in (("an f32 flag on an i8 parameter", "wq", "f32", 4 * n_ * k_ // 2), ("an f16 flag on an i8 parameter", "wq", "f16", 2 * n_ * k_ // 2),
+                                            ("an i8 flag on an f32 parameter", "wg", "i8", n_)):
+                open(os.path.join(tdir, "typed.bin"), "wb").write(bytes(size))
+                old = dq16_line(param, {"wq": "i8", "wg": "f32"}[param]).replace("DIR", tdir)
+                open(os.path.join(tdir, "bad.session"), "w").write(body16.replace(old, f"resident dq.{param} {os.path.join(tdir, 'typed.bin')} {flag}"))
+                status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
+                say(status == 1 and out == [] and err.startswith("error[usage]") and ("not an" in err or "another type" in err), f"refused as usage: {what}")
+    sub = os.path.join(tdir, "sub")
+    os.makedirs(sub, exist_ok=True)
+    open(os.path.join(tdir, "bad.session"), "w").write(body16.replace(os.path.join(tdir, "dq16.q"), os.path.join(sub, "..", "dq16.q")))
+    status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
+    say(status == 1 and out == [] and err.startswith("error[session]") and "two dots" in err, f"refused as session, not a trap: a resident file whose path has two dots in a row (status {status})")
+    open(os.path.join(tdir, "bad.session"), "w").write(body16.replace("dq.wq DIR/dq16.q i8".replace("DIR", tdir), "dq.wq DIR/dq16.q i4".replace("DIR", tdir)))
+    status, out, err = talk(binary, os.path.join(tdir, "bad.session"), "\n")
+    say(status == 1 and out == [] and err.startswith("error[session]") and "[f32|f16|i8]" in err, "refused as session: a flag that is not f32, f16 or i8 (the message lists the three)")
+
+
+def dq16_line(param, flag):
+    return f"resident dq.{param} DIR/dq16.{ {'wq': 'q', 'ws': 's', 'wg': 'g'}[param] } {flag}"
+
+
 def training_checks(binary, d):
     """docs/resident.md section 12: `steps`, `carry` and `table`, on a kernel that adds a table's block to a carried parameter."""
     n, blocks = 5, 3
@@ -298,6 +356,7 @@ answer add.wo
     open(os.path.join(tdir, "widen-f32.session"), "w").write(wbody.replace(" f16\n", " f32\n"))
     status, out, err = talk(binary, os.path.join(tdir, "widen-f32.session"), "\n")
     say(status == 1 and out == [] and err.startswith("error[usage]"), "refused as usage: an f32 flag on an f16 parameter")
+    i8_checks(binary, tdir)
     if METAL:
         # a binary resident file goes up a chunk (128 MiB) at a time, so one bigger than the session's byte pool (512 MiB) is read, not refused or trapped (docs/resident.md sections 20 and 24: Qwen's 272 MB output
         # matrix did not fit the old 256 MiB pool and the process died silently, status 132; the 0.5B's f32 table, 545 MB, does not fit the 512 MiB one). A 640 MB file of values that say where they are:
@@ -666,6 +725,11 @@ MUTANTS = [
     ("src/runcmd.cho", "f32.from_bits32(int_of(t[b]) | int_of(t[b + 1]) << 8", "f32.from_bits32(int_of(t[b]) | int_of(t[b + 1]) << 7", "a binary word's second byte is shifted wrongly"),
     ("src/runcmd.cho", "if fsize != 4 * n {", "if fsize < 4 * n {", "a binary file longer than the parameter is accepted"),
     ("src/runcmd.cho", "f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 8)", "f32.from_bits16(int_of(t[b]) | int_of(t[b + 1]) << 7)", "an f16 word's second byte is shifted wrongly"),
+    ("src/runcmd.cho", "if fsize != n {", "if fsize < n {", "an i8 file longer than the parameter is accepted"),
+    ("src/runcmd.cho", "fm[at + j] = float_of(code);", "fm[at + j] = float_of(code + 1);", "an i8 code is read one too high"),
+    ("src/runcmd.cho", "if dt != kinds.i8() {", "if dt < 0 {", "an i8 file is accepted for a parameter of another type"),
+    ("src/session.cho", "binary = 3;", "binary = 1;", "the i8 flag is read as the f32 one"),
+    ("src/session.cho", "if unsafe_path(t, m[raw + 2]) {\n            return bad(m, t, m[raw + 3], text.lit(m, t, \"the file of a resident", "if text.size(m[raw + 2]) < 0 {\n            return bad(m, t, m[raw + 3], text.lit(m, t, \"the file of a resident", "a resident file whose path reaches the runtime's trap is accepted"),
     ("src/session.cho", "if m[mem.get(m, supplied, dp) + da] != 1 {", "if m[mem.get(m, supplied, dp) + da] < 0 {", "a carry to a parameter that is not resident is accepted"),
     ("src/session.cho", "if ir.param_dtype(m, prm) != want_type {", "if ir.param_dtype(m, prm) < 0 {", "a save in another type than the output's is accepted"),
     ("src/session.cho", "if text.size(path) == 0 || text.size(path) + 4 >= 4096 {", "if text.size(path) == 0 {", "a save to a path of 4,096 bytes or more reaches the runtime's trap"),

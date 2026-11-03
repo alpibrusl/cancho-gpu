@@ -1,0 +1,21 @@
+// A layer's 4-bit weights -> an f16 matrix (docs/resident.md section 25.4 and 27): the dequantisation of the QLoRA base into a scratch buffer that the unchanged f16 products read.
+//
+// `wq` holds two E2M1 codes a byte (low nibble first), `ws` one E4M3 scale byte per 16 values (a group size is a number in `dequant_fp4`, so the session writer substitutes 32 or 64 in a copy), `wg` one f32 per row: exactly what `dequant_fp4` reads. The output is the matrix `[n, k]` the
+// f16 products take as their weight (`y = x w^T`, and `dx = dy w` with the same layout), so nothing downstream knows the base was quantised. The window of codes is `bk / 2` bytes wide.
+algo dq_fp4(n, k, bn, bk)
+  in  wq: i8[n, k / 2]
+  in  ws: i8[n, k / 16]
+  in  wg: f32[n]
+  out wh: f16[n, k]
+{
+  grid i over n / bn, j over k / bk
+  let q = load wq[i * bn, j * (bk / 2) ; bn, bk / 2]
+  let s = load ws[i * bn, j * (bk / 16) ; bn, bk / 16]
+  let r = load wg[i * bn ; bn]
+  let w = dequant_fp4 q s r 16
+  let wt = stage f16 w
+  store wt -> wh[i * bn, j * bk]
+}
+
+schedule dq_fp4 for apple-m-series { threads 128 }
+schedule dq_fp4 for nvidia-ada     { threads 128 }

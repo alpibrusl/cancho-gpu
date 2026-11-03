@@ -82,18 +82,29 @@ def init_params(c, seed=1):
     return P
 
 
+def load_one(directory, name, sh, G=None):
+    """One parameter (binary64) from the files convert.py wrote. A quantised matrix (`NAME.q`, `.s`, `.g`: quant.py pack, convert.py --quant; docs/resident.md section 27) is the decoded bytes rounded to f16,
+    which is what the session's dequantise kernel produces; `G`, its group size, is read from the manifest when not given."""
+    kind = name.split(".")[-1]
+    dt = "<f4" if kind in ("ln1", "ln2", "norm", "bqkv") else "<f2"
+    ext = "f32" if dt == "<f4" else "f16"
+    if os.path.exists(os.path.join(directory, name + ".q")):
+        import nvfp4
+        G = G or json.load(open(os.path.join(directory, "manifest.json")))["quant"]["group"]
+        n_, k_ = sh
+        q = np.fromfile(os.path.join(directory, name + ".q"), dtype=np.uint8).reshape(n_, k_ // 2)
+        sc = np.fromfile(os.path.join(directory, name + ".s"), dtype=np.uint8).reshape(n_, k_ // G)
+        rw = np.fromfile(os.path.join(directory, name + ".g"), dtype="<f4")
+        return nvfp4.unpack_rows(q, sc, rw, G).astype(np.float16).astype(np.float64)
+    a = np.fromfile(os.path.join(directory, f"{name}.{ext}"), dtype=dt)
+    if a.size != int(np.prod(sh)):
+        raise SystemExit(f"{name}: {a.size} words, the model has {int(np.prod(sh))}")
+    return a.astype(np.float64).reshape(sh)
+
+
 def load_params(directory, c):
     """The parameters (binary64) from the files convert.py wrote."""
-    P = {}
-    for name, sh in shapes(c).items():
-        kind = name.split(".")[-1]
-        dt = "<f4" if kind in ("ln1", "ln2", "norm", "bqkv") else "<f2"
-        ext = "f32" if dt == "<f4" else "f16"
-        a = np.fromfile(os.path.join(directory, f"{name}.{ext}"), dtype=dt)
-        if a.size != int(np.prod(sh)):
-            raise SystemExit(f"{name}: {a.size} words, the model has {int(np.prod(sh))}")
-        P[name] = a.astype(np.float64).reshape(sh)
-    return P
+    return {name: load_one(directory, name, sh) for name, sh in shapes(c).items()}
 
 
 def config_of(directory, t=512, nb=8):

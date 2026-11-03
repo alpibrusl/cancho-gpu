@@ -2,7 +2,7 @@
 """transformers' answers for the fixed batch (docs/resident.md section 20): the loss (labels = input ids, float32 on the CPU), the arg max of every position's logits and the hidden
 state after every block, written to a directory so that the session's answers can be held to them. Also checks the binary64 specification (qwen_ref.py) against them.
 
-    python3 examples/qwen/hf_reference.py OUTDIR [--nb 8] [--t 512]"""
+    python3 examples/qwen/hf_reference.py OUTDIR [--nb 8] [--t 512] [--base WEIGHTS_DIR]"""
 import os
 import sys
 import time
@@ -13,16 +13,20 @@ import torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import data  # noqa: E402
+import qwen_ref as R  # noqa: E402
 
 arg = lambda n, d: sys.argv[sys.argv.index(n) + 1] if n in sys.argv else d
 
 
-def run(out, nb, t, device="cpu"):
+def run(out, nb, t, device="cpu", base=None):
     from transformers import AutoModelForCausalLM
     os.makedirs(out, exist_ok=True)
     tokens = data.fixed_batch(nb, t)
     np.save(os.path.join(out, "tokens.npy"), tokens)
     model = AutoModelForCausalLM.from_pretrained(data.snapshot(), torch_dtype=torch.float32).to(device).eval()
+    if base:  # the block matrices of a (dequantised 4-bit) weights directory, docs/resident.md section 27
+        import peft_reference
+        peft_reference.override_base(model, R.config_of(base), base, device, torch.float32)
     ids = torch.tensor(tokens, device=device)
     t0 = time.time()
     last = []
@@ -46,4 +50,4 @@ def run(out, nb, t, device="cpu"):
 
 
 if __name__ == "__main__":
-    run(sys.argv[1], int(arg("--nb", 8)), int(arg("--t", 512)))
+    run(sys.argv[1], int(arg("--nb", 8)), int(arg("--t", 512)), base=arg("--base", None))

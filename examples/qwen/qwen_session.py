@@ -11,6 +11,7 @@ RMSNorm, the fused gate/up product, SwiGLU (swiglu_h), the down projection and r
 Grouped-query attention (14 query heads over 2 key/value heads of 64, a head's group being h / 7, a division the surface forbids): the key and value heads are written once per query
 head of their group by the kernel that rotates them (`group` stores of the same tile), in a heads-major layout [sequence, head, position, 64] shared with q, so that every attention
 kernel has the one grid coordinate p = sequence * heads + head and every offset stays affine. The alternative, a loop over the group inside the kernel, is measured in section 20."""
+import json
 import math
 import os
 import subprocess
@@ -22,6 +23,33 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import qwen_ref as R  # noqa: E402
+
+
+MATRICES = {"wqkv": lambda c: (c.d + 2 * c.dkv, c.d), "wo": lambda c: (c.d, c.d), "wgu": lambda c: (2 * c.ff, c.d), "wd": lambda c: (c.d, c.ff)}
+
+
+def quant_group(wdir):
+    """The group size of a quantised weights directory (quant.py pack, convert.py --quant), or 0 for an f16 one. The files and the manifest must agree."""
+    mf = os.path.join(wdir, "manifest.json")
+    meta = json.load(open(mf)).get("quant") if os.path.exists(mf) else None
+    has = os.path.exists(os.path.join(wdir, "l00.wqkv.q"))
+    assert has == bool(meta), "a quantised weights directory has files .q/.s/.g and a manifest with \"quant\""
+    return meta["group"] if meta else 0
+
+
+def dq_text(group):
+    """examples/qwen/dq_fp4.chx for a group size (`dequant_fp4` takes a number, so the text is rewritten for 32 and 64)."""
+    text = open(os.path.join(HERE, "dq_fp4.chx")).read()
+    if group != 16:
+        text = text.replace("k / 16", f"k / {group}").replace("dequant_fp4 q s r 16", f"dequant_fp4 q s r {group}")
+    return text
+
+
+def dq_tile(n_, k_, group, tune=None):
+    """The tile of the dequantise kernel for a matrix [n_, k_]: whole groups across and a block of rows down (`tune['dq']` overrides)."""
+    out = dict(bn=next(b for b in (32, 16, 8, 4, 2, 1) if n_ % b == 0), bk=next(b for b in (256, 128, 64) if k_ % b == 0 and b % max(16, group) == 0))
+    out.update((tune or {}).get("dq", {}))
+    return out
 
 
 def block(n, cap):
@@ -101,6 +129,7 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
     assert dh % 32 == 0 and d % 64 == 0 and t % 64 == 0 and n % 64 == 0 and (d + 2 * dkv) % 64 == 0 and ff % 64 == 0 and h % hkv == 0 and dh == d // h
     tokens = np.asarray(tokens)
     assert tokens.shape == (nb, t)
+    QG = quant_group(wdir)
     tn = dict(bc=2304, ebm=1, abm=2, rbm=8, cbm=8, sbm=1, sbc=block(ff, 256), gemm_sched={}, attn=dict(threads=128, warps="2 2", bm=64, bn=64, bk=32),
               ao=dict(threads=128, warps="2 2", bm=64 if dh <= 64 else 32, bk=32))
     tn.update(tune or {})
@@ -144,7 +173,27 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
     prog = lambda name, kern, **kw: L.append(f"program {name} {kern} " + " ".join(f"{k}={v_}" for k, v_ in kw.items()))
     res = lambda target, path, flag="f32": L.append(f"resident {target} {path} {flag}")
     link = lambda a, b: L.append(f"link {a} -> {b}")
-    gemm = lambda name, a, wfile, m, nn, kk: (prog(name, kernel("gemm_mma.chx", **tn["gemm_sched"].get((m, nn, kk), {})), m=m, n=nn, k=kk), link(a, f"{name}.a"), res(f"{name}.w", wfile, "f16"))
+    if QG:
+        open(p("dq_fp4.chx"), "w").write(dq_text(QG))
+
+    def gemm(name, a, wfile, m, nn, kk, dq=None):
+        """A product with a weight file; `dq` = (layer, matrix) when the base is 4-bit: the matrix is dequantised into an f16 scratch (shared by the layers, `alias`) by the program declared first."""
+        if QG and dq:
+            l_, mat = dq
+            nm = f"dq_{mat}_{l_}"
+            tl = dq_tile(nn, kk, QG, tune)
+            prog(nm, kernel("dq_fp4.chx"), n=nn, k=kk, bn=tl["bn"], bk=tl["bk"])
+            for part, ext, flag in (("wq", "q", "i8"), ("ws", "s", "i8"), ("wg", "g", "f32")):
+                res(f"{nm}.{part}", w(f"l{l_:02d}.{mat}.{ext}"), flag)
+            dqs.setdefault(mat, []).append(nm)
+        prog(name, kernel("gemm_mma.chx", **tn["gemm_sched"].get((m, nn, kk), {})), m=m, n=nn, k=kk)
+        link(a, f"{name}.a")
+        if QG and dq:
+            link(f"{nm}.wh", f"{name}.w")
+        else:
+            res(f"{name}.w", wfile, "f16")
+
+    dqs = {}
     eps = repr(c.eps if eps_override is None else eps_override)
     nbh = nb * h
     x_in = None
@@ -158,7 +207,7 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
         else:
             link(x_in, f"rm1_{s}.x")
         res(f"rm1_{s}.gain", w(q + "ln1.f32"))
-        gemm("qkv_" + s, f"rm1_{s}.y", w(q + "wqkv.f16"), n, d + 2 * dkv, d)
+        gemm("qkv_" + s, f"rm1_{s}.y", w(q + "wqkv.f16"), n, d + 2 * dkv, d, (l, "wqkv"))
         for nm, kern, nh_, c0 in (("rq", "rope_q.chx", h, 0), ("rk", "rope_k.chx", hkv, d)):
             prog(f"{nm}_{s}", p(kern), nb=nb, nh=nh_, t=t, w=d + 2 * dkv, c0=c0, bm=tn["rbm"], hf=hf)
             link(f"qkv_{s}.y", f"{nm}_{s}.qkv")
@@ -179,7 +228,7 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
         link(f"rv_{s}.y", f"ao_{s}.v")
         prog("uh_" + s, kernel("unheads.chx"), nb=nb, nh=h, t=t, dh=dh, bm=tn["rbm"])
         link(f"ao_{s}.o", f"uh_{s}.o")
-        gemm("wo_" + s, f"uh_{s}.y", w(q + "wo.f16"), n, d, d)
+        gemm("wo_" + s, f"uh_{s}.y", w(q + "wo.f16"), n, d, d, (l, "wo"))
         prog("r1_" + s, kernel("res_add.chx"), r=n, c=d, bm=tn["ebm"])
         link(f"wo_{s}.y", f"r1_{s}.z")
         if x_in is None:
@@ -189,10 +238,10 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
         prog("rm2_" + s, kernel("rms_h.chx"), r=n, c=d, bm=tn["ebm"], eps=eps)
         link(f"r1_{s}.y", f"rm2_{s}.x")
         res(f"rm2_{s}.gain", w(q + "ln2.f32"))
-        gemm("gu_" + s, f"rm2_{s}.y", w(q + "wgu.f16"), n, 2 * ff, d)
+        gemm("gu_" + s, f"rm2_{s}.y", w(q + "wgu.f16"), n, 2 * ff, d, (l, "wgu"))
         prog("sw_" + s, kernel("swiglu_h.chx"), r=n, f=ff, bm=tn["sbm"], bc=tn["sbc"])
         link(f"gu_{s}.y", f"sw_{s}.gu")
-        gemm("dn_" + s, f"sw_{s}.y", w(q + "wd.f16"), n, d, ff)
+        gemm("dn_" + s, f"sw_{s}.y", w(q + "wd.f16"), n, d, ff, (l, "wd"))
         prog("r2_" + s, kernel("res_add.chx"), r=n, c=d, bm=tn["ebm"])
         link(f"dn_{s}.y", f"r2_{s}.z")
         link(f"r1_{s}.y", f"r2_{s}.res")
@@ -214,6 +263,9 @@ def write(directory, c, wdir, tokens, acts=None, tune=None, eps_override=None):
     prog("cc", kernel("ce_comb.chx"), r=n, nq=nq, bm=tn["cbm"])
     for o in ("cm", "cs", "ct", "ci"):
         link(f"cs.{o}", f"cc.{o}")
+    for chain in dqs.values():  # the scratch of one matrix kind is one buffer through the layers
+        for a, b in zip(chain, chain[1:]):
+            L.append(f"alias {a}.wh {b}.wh")
     L.append("steps")
     L.append("answer cc.loss")
     L.append("answer cc.am")

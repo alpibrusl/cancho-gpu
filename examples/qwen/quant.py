@@ -4,10 +4,13 @@
     python3 examples/qwen/quant.py errors WEIGHTS [--layers 0,14,27]          # the weight error of each format on the matrices of those layers, and the bits a weight costs
     python3 examples/qwen/quant.py validate                                    # the packing below against the real `dequant_fp4` of the interpreter (cancho-gpu run gemm_fp4)
     python3 examples/qwen/quant.py fake WEIGHTS OUT FORMAT                     # a weights directory whose matrices are quantised and dequantised (f16): the forward pass of an existing session measures the loss
+    python3 examples/qwen/quant.py pack WEIGHTS OUT nvfp4:G                    # a weights directory whose four matrices of every block are the files `NAME.q`, `NAME.s`, `NAME.g` that a QLoRA session reads (section 27)
+    python3 examples/qwen/quant.py dequant QWEIGHTS OUT                        # the f16 weights directory those files stand for, decoded from their bytes (what the session's dequantise kernel produces)
 
 Formats: nvfp4:G (E2M1 codes, an E4M3 scale per G values, one f32 per row: exactly what the surface's `dequant_fp4` reads; G = 16, 32, 64), int4:G (symmetric absmax, f16 scale, levels -8..7),
 nf4:G (QLoRA's 16 levels, absmax in f16), e2m1:G (the E2M1 codebook with an f16 scale per group: the codebook of nvfp4 without its 8-bit scale), int8:G.
 The quantisers are numpy (binary64). They are the *measurement* of what a format costs in accuracy; the surface can read only nvfp4 (section 25.2)."""
+import json
 import os
 import subprocess
 import sys
@@ -19,58 +22,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import qwen_ref as R  # noqa: E402
+from nvfp4 import E2M1, E4M3, round_e4m3, round_codebook, groups, nvfp4, pack_nvfp4, pack_rows, unpack_rows  # noqa: E402,F401
 
-E2M1 = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])  # codes 0..7; code + 8 is the negative (the interpreter's FP4_V)
 NF4 = np.array([-1.0, -0.6961928009986877, -0.5250730514526367, -0.39491748809814453, -0.28444138169288635, -0.18477343022823334, -0.09105003625154495, 0.0,
                 0.07958029955625534, 0.16093020141124725, 0.24611230194568634, 0.33791524171829224, 0.44070982933044434, 0.5626170039176941, 0.7229568362236023, 1.0])
 
 
-def e4m3_table():
-    """All 126 non-negative finite OCP e4m3fn values with their byte (exponent 4 bits, bias 7, mantissa 3 bits, subnormals at exponent 0, 0x7F is NaN)."""
-    vals = []
-    for b in range(0x7F):
-        e, m = (b >> 3) & 15, b & 7
-        vals.append(m * 2.0 ** -9 if e == 0 else (1 + m / 8) * 2.0 ** (e - 7))
-    return np.array(vals)
-
-
-E4M3 = e4m3_table()
-
-
-def round_e4m3(x):
-    """The byte (0..126) of the e4m3 value nearest to x >= 0 (ties to the lower one, which can differ from ties-to-even only on exact midpoints) and the value."""
-    i = np.clip(np.searchsorted(E4M3, x), 1, len(E4M3) - 1)
-    lo, hi = E4M3[i - 1], E4M3[i]
-    i = np.where(x - lo <= hi - x, i - 1, i)
-    return i, E4M3[i]
-
-
-def round_codebook(x, book):
-    """The index of the nearest entry of the sorted `book` for every element of x."""
-    mid = (book[1:] + book[:-1]) / 2
-    return np.searchsorted(mid, x)
-
-
-def groups(w, g):
-    n, k = w.shape
-    assert k % g == 0, (k, g)
-    return w.reshape(n, k // g, g)
-
-
-def nvfp4(w, g=16):
-    """(dequantised, codes [n, k] in 0..15, scale bytes [n, k/g], row scale [n]) in the format of `dequant_fp4`: e2m1(code) * e4m3(scale) * row. The row scale is amax / (6 * 448), so that the
-    largest group's scale is at most 448; a group's scale is its amax / 6 over the row scale, rounded to e4m3."""
-    gw = groups(w, g)
-    row = np.abs(w).max(1) / (6 * 448)
-    row = np.where(row == 0, 1.0, row).astype(np.float32).astype(np.float64)
-    amax = np.abs(gw).max(2)
-    sb, sv = round_e4m3(amax / 6 / row[:, None])
-    eff = sv * row[:, None]
-    z = np.where(eff[:, :, None] > 0, gw / np.where(eff > 0, eff, 1)[:, :, None], 0.0)
-    mag = round_codebook(np.abs(z), E2M1)
-    code = mag + 8 * (z < 0)
-    deq = np.sign(z) * E2M1[mag] * eff[:, :, None]
-    return deq.reshape(w.shape), code.reshape(w.shape), sb, row
 
 
 def int4(w, g=64):
@@ -114,14 +71,6 @@ def bits(fmt, k=1536):
     kind, _, g = fmt.partition(":")
     g = int(g or 64)
     return {"nvfp4": 4 + 8 / g + 32 / k, "int4": 4 + 16 / g, "nf4": 4 + 16 / g, "e2m1": 4 + 16 / g, "int8": 8 + 16 / g}[kind]
-
-
-def pack_nvfp4(w, g=16, swap=False):
-    """The three arrays `dequant_fp4` reads, as the interpreter's text files want them: q i8[n, k/2] (two codes a byte, the low nibble the first of the pair), s i8[n, k/g], row f32[n]; and the
-    dequantised matrix the packing stands for."""
-    deq, code, sb, row = nvfp4(w, g)
-    byte = (code[:, 1::2] | (code[:, 0::2] << 4)) if swap else (code[:, 0::2] | (code[:, 1::2] << 4))  # swap: the nibbles in the wrong order (the mutant of `validate`)
-    return byte.astype(np.uint8).astype(np.int8), sb.astype(np.uint8).astype(np.int8), row, deq
 
 
 def validate(mutants=True):
@@ -202,6 +151,62 @@ def fake(wdir, out, fmt):
     print(f"{out}: {fmt}, {len(sh)} tensors")
 
 
+MATRICES = ("wqkv", "wo", "wgu", "wd")
+
+
+def pack(wdir, out, fmt):
+    """The quantised weights directory: every matrix of a block as `.q`, `.s`, `.g` (nvfp4:G only: it is the one format the surface reads); the other files and the manifest as they are, with the format added."""
+    kind, _, g = fmt.partition(":")
+    if kind != "nvfp4" or not g.isdigit():
+        raise SystemExit(f"{fmt}: only nvfp4:G (G = 16, 32 or 64) can be read by a session")
+    G = int(g)
+    c = R.config_of(wdir)
+    sh = R.shapes(c)
+    os.makedirs(out, exist_ok=True)
+    for name in sh:
+        base = name.split(".")[-1]
+        ext = "f32" if base in ("ln1", "ln2", "norm", "bqkv") else "f16"
+        src = os.path.join(wdir, f"{name}.{ext}")
+        if base in MATRICES:
+            w = np.fromfile(src, dtype="<f2").reshape(sh[name])
+            q, s, r = pack_rows(w, G)
+            for suffix, arr in (("q", q), ("s", s), ("g", r)):
+                arr.tofile(os.path.join(out, f"{name}.{suffix}"))
+        else:
+            dst = os.path.join(out, f"{name}.{ext}")
+            if os.path.lexists(dst):
+                os.remove(dst)
+            os.symlink(os.path.abspath(src), dst)
+    man = json.load(open(os.path.join(wdir, "manifest.json")))
+    man["quant"] = dict(format="nvfp4", group=G)
+    json.dump(man, open(os.path.join(out, "manifest.json"), "w"), indent=1)
+    print(f"{out}: nvfp4:{G}, {len(sh)} tensors")
+
+
+def dequant(qdir, out):
+    man = json.load(open(os.path.join(qdir, "manifest.json")))
+    G = man["quant"]["group"]
+    c = R.config_of(qdir)
+    sh = R.shapes(c)
+    os.makedirs(out, exist_ok=True)
+    for name in sh:
+        base = name.split(".")[-1]
+        ext = "f32" if base in ("ln1", "ln2", "norm", "bqkv") else "f16"
+        dst = os.path.join(out, f"{name}.{ext}")
+        if base in MATRICES:
+            n, k = sh[name]
+            q = np.fromfile(os.path.join(qdir, name + ".q"), dtype=np.uint8).reshape(n, k // 2)
+            s = np.fromfile(os.path.join(qdir, name + ".s"), dtype=np.uint8).reshape(n, k // G)
+            r = np.fromfile(os.path.join(qdir, name + ".g"), dtype="<f4")
+            unpack_rows(q, s, r, G).astype("<f2").tofile(dst)
+        else:
+            if os.path.lexists(dst):
+                os.remove(dst)
+            os.symlink(os.path.abspath(os.path.join(qdir, f"{name}.{ext}")), dst)
+    man.pop("quant")  # the result is an f16 directory
+    json.dump(man, open(os.path.join(out, "manifest.json"), "w"), indent=1)
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "errors":
@@ -209,7 +214,11 @@ if __name__ == "__main__":
         errors(sys.argv[2], ls)
     elif cmd == "validate":
         validate()
+    elif cmd == "pack":
+        pack(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif cmd == "dequant":
+        dequant(sys.argv[2], sys.argv[3])
     elif cmd == "fake":
         fake(sys.argv[2], sys.argv[3], sys.argv[4])
     else:
-        raise SystemExit("usage: quant.py errors WEIGHTS | validate | fake WEIGHTS OUT FORMAT")
+        raise SystemExit("usage: quant.py errors WEIGHTS | validate | fake WEIGHTS OUT FORMAT | pack WEIGHTS OUT nvfp4:G | dequant QWEIGHTS OUT")

@@ -39,5 +39,6 @@ python3 tests/probes.py build/cancho-gpu build/cancho-gpu-session
 python3 tests/resnet.py build/cancho-gpu-session
 python3 examples/qwen/quant.py validate
 python3 tests/qwen.py build/cancho-gpu-session
+python3 tests/qwen_quant.py build/cancho-gpu-session
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"
