@@ -272,6 +272,28 @@ install_case src CANCHO_RELEASE=source
 hasnt "$W/src.calls" "releases" "CANCHO_RELEASE=source asks for no release"
 has "$W/src.txt" "id=source:$PIN" "CANCHO_RELEASE=source builds the pin"
 
+# --- a plain `clang` on PATH (cancho runs it by name) ------------------------
+mkdir -p "$W/cl/bin" "$W/cl/local" "$W/cl/usr" "$W/cl/home/cancho-gpu"
+printf '#!/bin/sh\necho "Ubuntu clang version 18.1.3"\n' > "$W/cl/bin/clang-18"
+printf '#!/bin/sh\nexec "$@"\n' > "$W/cl/bin/sudo"
+chmod +x "$W/cl/bin/clang-18" "$W/cl/bin/sudo"
+cp "$ROOT/cancho.toml" "$W/cl/home/cancho-gpu/"
+# A PATH with the tools the script needs and no clang (this Mac has an Xcode shim in /usr/bin).
+mkdir -p "$W/cl/tools"
+for t in sed ln head mkdir cat bash sh dirname env cut awk tr grep find seq sleep uname dpkg; do
+  p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$W/cl/tools/$t"
+done
+( cd "$W/cl/home/cancho-gpu" && HOME=$W/cl/home PATH="$W/cl/local:$W/cl/bin:$W/cl/tools" REMOTE_CUDA_LIB=1 \
+  PLAIN_CLANG_DIR=$W/cl/local PLAIN_CLANG_ALT=$W/cl/usr bash -c '
+    . '"$G"'/remote_cuda.sh; mkdir -p $HOME/results
+    command -v clang >/dev/null && echo "BEFORE: clang exists"
+    pick_clang && plain_clang; echo "rc=$? CLANG=$CLANG"; command -v clang; clang --version' ) > "$W/cl.txt" 2>&1
+hasnt "$W/cl.txt" "BEFORE: clang exists" "setup: no plain clang to begin with"
+has "$W/cl.txt" "rc=0 CLANG=clang-18" "clang-18 is chosen"
+has "$W/cl.txt" "$W/cl/local/clang" "a plain clang now resolves, first on PATH"
+has "$W/cl.txt" "clang version 18" "and it is the chosen version"
+has "$G/remote_cuda.sh" "^  plain_clang || return 1" "apt_tools calls plain_clang"
+
 # --- the driver survives its own file changing mid-run --------------------
 new_case edit
 git clone -q "$ROOT" "$W/tree" 2>/dev/null || mkdir -p "$W/tree"

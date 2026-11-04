@@ -35,6 +35,16 @@ import torch
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
+def cuda_include():
+    """The CUDA toolkit's include dir (it has crt/mma.h). NOT the pip wheels':
+    nvidia/cuda_runtime/include in the venv has mma.h without crt/, and cupy
+    would otherwise find that one ("cannot open source file crt/mma.h")."""
+    for d in (os.environ.get("CUDA_HOME"), os.environ.get("CUDA_PATH"), "/usr/local/cuda", "/usr/local/cuda-12.9"):
+        if d and os.path.exists(os.path.join(d, "include", "crt", "mma.h")):
+            return os.path.join(d, "include")
+    return None
+
+
 def emit(binary, m, n, k):
     d = tempfile.mkdtemp()
     p = subprocess.run([binary, "emit", os.path.join(ROOT, "tests/chx/ported/gemm_mma.chx"), d,
@@ -74,6 +84,7 @@ def main():
     props = cp.cuda.runtime.getDeviceProperties(0)
     gpu = props["name"].decode()
     cc = f"sm_{props['major']}{props['minor']}"
+    print(f"toolkit include for NVRTC: {cuda_include()}")
     print(f"{gpu} ({cc}), torch {torch.__version__}, cupy {cp.__version__}")
     if cc != "sm_89":
         print(f"NOTE: {cc} is not Ada; the emitted kernel is Ada's lowering (docs/cloud.md)")
@@ -82,7 +93,9 @@ def main():
         n = k = m
         flops = 2.0 * m * n * k
         src, entry, threads, grid = emit(a.cancho_gpu, m, n, k)
-        mod = cp.RawModule(code=src, options=("--std=c++17",))
+        inc = cuda_include()
+        opts = (("-I" + inc,) if inc else ()) + ("--std=c++17",)
+        mod = cp.RawModule(code=src, options=opts)
         kern = mod.get_function(entry)
         ta = torch.randn(m, k, device="cuda", dtype=torch.float16) * 0.1
         tw = torch.randn(n, k, device="cuda", dtype=torch.float16) * 0.1

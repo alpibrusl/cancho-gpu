@@ -190,6 +190,15 @@ garbage from its own file and skipped the final copy of the results, so its body
 is now one function called on the last line and the results are also copied by
 the cleanup trap. (`tests/gcp.sh` reproduces the second against the old script.)
 
+**Second run (same day):** toolchain installed the release binary in 85 s
+(`NOT-PINNED`, as designed) and `nvrtc` passed again; `gate`, `device_cases` and
+`gemm_bench` failed on two VM-side defects, fixed since: cancho runs a plain
+`clang` by name, which an image with only `clang-NN` lacks (the script now makes
+`clang` resolve to a version >= 15 and prints `clang --version` into
+`machine.txt`), and `cupy.RawModule` found the pip wheel's `mma.h` (no `crt/`)
+instead of the toolkit's (`gemm_bench.py` now passes the toolkit include first).
+Which gate units then fail for a real reason is for the next run to say.
+
 ## What this does not establish
 
 Not run against Google; not run on a GPU. In particular unverified: that

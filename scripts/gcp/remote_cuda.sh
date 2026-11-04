@@ -86,7 +86,24 @@ apt_tools() {
     done
   fi
   pick_clang || { echo "no clang >= 15 (the compiler's default backend shells out to it)"; return 1; }
+  plain_clang || return 1
   echo "CLANG=$CLANG ($("$CLANG" --version | head -1))"
+  { echo "CLANG=$CLANG"; clang --version; } >> "$R/machine.txt" 2>&1
+}
+plain_clang() {
+  # cancho runs a plain `clang` found by NAME on PATH in places, not only $CLANG
+  # ("cannot run `clang`: No such file or directory" on an image with only
+  # clang-18). Make `clang` resolve to a version it can read (>= 15): a symlink
+  # first on PATH when it is missing or too old.
+  local v
+  v=$(clang --version 2>/dev/null | sed -n 's/.*version \([0-9]*\)\..*/\1/p' | head -1)
+  if [ "${v:-0}" -lt 15 ]; then
+    sudo ln -sf "$(command -v "$CLANG")" "${PLAIN_CLANG_DIR:-/usr/local/bin}/clang" || return 1
+    hash -r
+  fi
+  [ -e "${PLAIN_CLANG_ALT:-/usr/bin}/clang" ] || sudo ln -sf "$(command -v "$CLANG")" "${PLAIN_CLANG_ALT:-/usr/bin}/clang" || true
+  v=$(clang --version 2>/dev/null | sed -n 's/.*version \([0-9]*\)\..*/\1/p' | head -1)
+  [ "${v:-0}" -ge 15 ] || { echo "plain \`clang\` is still not >= 15"; return 1; }
 }
 pick_clang() {
   # The LLVM IR the compiler writes is too new for clang 14 (Ubuntu 22.04's
