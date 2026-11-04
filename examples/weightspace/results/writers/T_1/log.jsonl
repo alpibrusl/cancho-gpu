@@ -1,0 +1,2 @@
+{"seq": 1, "time": 1793793513.94711, "call": "init", "args": {"budget": 0, "init": "zeros", "spec": "chain", "backend": "session", "session": "/Users/alfonso/Workspace/alpibrusl/cancho-gpu-ws2/build/cancho-gpu-session", "timeout": 20.0}, "result": {"ok": true}}
+{"seq": 2, "time": 1793793572.878567, "call": "describe", "args": {}, "result": {"ok": true}}

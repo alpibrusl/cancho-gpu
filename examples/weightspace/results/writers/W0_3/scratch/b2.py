@@ -1,0 +1,32 @@
+import numpy as np
+J=[((0.0388353,-8.97657e-09,0.0624),(3.14159,4.18253e-17,-3.14159)),
+((-0.0303992,-0.0182778,-0.0542),(-1.5708,-1.5708,0.0)),
+((-0.11257,-0.028,1.73763e-16),(-3.63608e-16,8.74301e-16,1.5708)),
+((-0.1349,0.0052,3.62355e-17),(4.02456e-15,8.67362e-16,-1.5708)),
+((5.55112e-17,-0.0611,0.0181),(1.5708,0.0486795,3.14159)),
+((-0.0079,-0.000218121,-0.0981274),(0.0,3.14159,0.0))]
+LIM=[(-1.91986,1.91986),(-1.74533,1.74533),(-1.69,1.69),(-1.65806,1.65806),(-2.74385,2.84121)]
+def Rx(a):c,s=np.cos(a),np.sin(a);return np.array([[1,0,0],[0,c,-s],[0,s,c]])
+def Ry(a):c,s=np.cos(a),np.sin(a);return np.array([[c,0,s],[0,1,0],[-s,0,c]])
+def Rz(a):c,s=np.cos(a),np.sin(a);return np.array([[c,-s,0],[s,c,0],[0,0,1]])
+def fk(q):
+    T=np.eye(4)
+    for i,(xyz,rpy) in enumerate(J):
+        M=np.eye(4);M[:3,:3]=Rz(rpy[2])@Ry(rpy[1])@Rx(rpy[0]);M[:3,3]=xyz
+        T=T@M
+        if i<5:
+            Q=np.eye(4);Q[:3,:3]=Rz(q[i]);T=T@Q
+    return T[:3,3]
+K=12
+C=np.array([(a+b)/2 for a,b in LIM])
+def knots(j):
+    a,b=LIM[j];return np.linspace(a,b,K+1)  # K+1 knots, K steps
+def steps(j):
+    t=knots(j);d=t[1]-t[0];return (t[:-1]+t[1:])/2,1.5/d
+def coef(j):
+    t=knots(j);g=[]
+    for v in t:
+        q=C.copy();q[j]=v;g.append(fk(q))
+    g=np.array(g);return np.diff(g,axis=0)  # K x 3
+b2=np.zeros(64)
+tensor=b2
