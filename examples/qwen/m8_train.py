@@ -10,8 +10,16 @@ The stream of micro-steps is, in a fixed shuffled order (seed 20261103):
           `--primer-samples` of them, spread evenly through the stream (this is what makes the tuned model see the primer-in-context prompts the benchmark gives it); gradient checkpointing for these
 An optimizer step accumulates micro-steps until 16,384 tokens have been seen (a long sample weighs its tokens / 16,384), so there are about 170 steps for the short stream plus the long samples' share.
 Every `--eval-every` optimizer steps (and at step 0 and the end) it measures the loss on: heldout_repos (64 sequences), heldout_files (64) and 6 held-out pairs with the primer; adapter checkpoints are saved to OUT_DIR/step<N>/.
-The checkpoint to use is chosen afterwards by the held-out-repos loss alone (`--choose`), never by a benchmark score. Writes OUT_DIR/train.json (every micro-step loss, the evaluations, seconds, the memory)."""
+The checkpoint to use is chosen afterwards by the held-out-repos loss alone (`--choose`), never by a benchmark score. Writes OUT_DIR/train.json (every micro-step loss, the evaluations, seconds, the memory).
+
+Memory (measured, 64 GB machine): the live tensors are about 6.5 GB at every micro-step (`current_gb`), but the MPS caching allocator keeps every block it has ever taken (the short and the long micro-steps ask for different sizes, an evaluation for others), so the driver memory
+(`driver_gb`) only grew: 32 GB after the first evaluation, 42 GB after six micro-steps, 75 GB in the first run, which then swapped and went from 1.6 s to 55-91 s per micro-step. `torch.mps.empty_cache()` after every micro-step and every evaluation holds it at
+about 15 GB (short) to 25 GB (long) at the peak; it does not change a number (the losses are bit-identical). A guard aborts cleanly (adapter saved to OUT_DIR/abort_step<N>) when the process's driver memory exceeds `--memory-limit-gb` (40) or the swap in use grows by more than `--swap-growth-gb` (2).
+
+NOT SAVED: the optimizer state (Adam's moments) and the position in the micro-step stream. There is no resume: loading a checkpoint and continuing would restart Adam from zero moments, which is not the pre-registered run."""
 import argparse
+import ctypes
+import ctypes.util
 import glob
 import hashlib
 import json
@@ -24,7 +32,7 @@ import time
 import numpy as np
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
-from transformers import AutoModelForCausalLM
+from transformers import AttentionInterface, AutoModelForCausalLM
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -33,12 +41,51 @@ import m8_pack as K  # noqa: E402
 SEED = 20261103
 
 
+CHUNK_Q = 1024
+
+
+def _chunked_attention(module, q, k, v, mask, dropout=0.0, scaling=None, **kw):
+    """Causal attention for a long sequence in blocks of CHUNK_Q query rows (batch of one, no padding: the long samples). The library's sdpa materialises the whole [heads, T, T] score matrix in float32,
+    which for T = 10,800 took 62 GB of driver memory in a trial (4 k: 9 GB, 8 k: 35 GB); a block holds [heads, 1024, up to T]."""
+    from transformers.integrations.sdpa_attention import repeat_kv, sdpa_attention_forward
+    T = q.shape[2]
+    if T <= 2048:
+        return sdpa_attention_forward(module, q, k, v, mask, dropout=dropout, scaling=scaling, **kw)
+    k, v = repeat_kv(k, module.num_key_value_groups), repeat_kv(v, module.num_key_value_groups)
+    outs = []
+    for i in range(0, T, CHUNK_Q):
+        j = min(T, i + CHUNK_Q)
+        m = torch.ones(j - i, j, dtype=torch.bool, device=q.device).tril(diagonal=i)
+        outs.append(torch.nn.functional.scaled_dot_product_attention(q[:, :, i:j], k[:, :, :j], v[:, :, :j], attn_mask=m, scale=scaling))
+    return torch.cat(outs, 2).transpose(1, 2).contiguous(), None
+
+
+AttentionInterface.register("sdpa", _chunked_attention)
+
+
 def masked_loss(model, x, m):
-    logits = model(input_ids=x, use_cache=False).logits[:, :-1].float()
+    """Mean cross-entropy over the positions the mask marks. The output layer is applied to those positions only: a full [11,000 x 151,936] float32 logits matrix (6.6 GB, with its gradient and the
+    float copy about 20 GB) is what made the first trial of an 11 k-token sample take 71 to 77 GB of driver memory on a 64 GB machine."""
+    inner = model.base_model.model
+    h = inner.model(input_ids=x, use_cache=False).last_hidden_state[:, :-1]
     tgt = x[:, 1:]
-    w = m[:, 1:].float()
-    ce = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]), tgt.reshape(-1), reduction="none").reshape(tgt.shape)
-    return (ce * w).sum() / w.sum().clamp(min=1), int(w.sum().item())
+    w = m[:, 1:].bool()
+    logits = inner.lm_head(h[w]).float()
+    loss = torch.nn.functional.cross_entropy(logits, tgt[w], reduction="mean")
+    return loss, int(w.sum().item())
+
+
+def swap_used_gb():
+    """Swap in use (macOS vm.swapusage: xsw_usage {total, avail, used: u64; pagesize: u32; encrypted: bool}), read through sysctlbyname; 0.0 where it is not available."""
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        buf = ctypes.create_string_buffer(32)
+        n = ctypes.c_size_t(32)
+        if libc.sysctlbyname(b"vm.swapusage", buf, ctypes.byref(n), None, ctypes.c_size_t(0)) != 0:
+            return 0.0
+        return int.from_bytes(buf.raw[16:24], "little") / 1e9
+    except Exception:
+        return 0.0
 
 
 def long_sample(tok, primer, rec):
@@ -63,6 +110,8 @@ def evaluate(model, dev, z, long_eval):
             ls.append(masked_loss(model, torch.tensor([ids], device=dev), torch.tensor([mask], device=dev))[0].item())
         out["heldout_pairs_with_primer"] = float(np.mean(ls))
     model.train()
+    if str(dev).startswith("mps"):
+        torch.mps.empty_cache()
     return out
 
 
@@ -76,6 +125,8 @@ def main():
     ap.add_argument("--eval-every", type=int, default=20)
     ap.add_argument("--tokens-per-step", type=int, default=16384)
     ap.add_argument("--steps-limit", type=int, default=0, help="stop after this many optimizer steps (a trial); 0: the whole epoch")
+    ap.add_argument("--memory-limit-gb", type=float, default=40.0, help="abort cleanly (after saving an adapter checkpoint) when the process's own MPS driver memory exceeds this; 0: no guard")
+    ap.add_argument("--swap-growth-gb", type=float, default=2.0, help="abort cleanly when the swap in use grows by more than this over its value at the start; 0: no guard")
     ap.add_argument("--device", default="mps")
     ap.add_argument("--model", default="~/.cache/huggingface/hub/models--Qwen--Qwen2.5-1.5B-Instruct")
     ap.add_argument("--choose", action="store_true", help="print the checkpoint with the lowest held-out-repos loss of OUT/train.json and exit")
@@ -130,6 +181,7 @@ def main():
     opt.zero_grad()
     seen, t_step, acc = 0, 0, 0
     t0 = time.time()
+    swap0 = swap_used_gb()
     for kind, idx in stream:
         if kind == "short":
             x, m = torch.tensor(X[idx:idx + 4], dtype=torch.long, device=dev), torch.tensor(M[idx:idx + 4], device=dev)
@@ -145,6 +197,22 @@ def main():
         if dev == "mps":
             torch.mps.synchronize()
         res["micro"].append({"kind": kind, "tokens": ntok, "loss": loss.item(), "loss_tokens": nl, "seconds": round(time.time() - t1, 2)})
+        if dev == "mps":
+            res["micro"][-1]["driver_gb"] = round(torch.mps.driver_allocated_memory() / 1e9, 2)
+            res["micro"][-1]["current_gb"] = round(torch.mps.current_allocated_memory() / 1e9, 2)
+        del loss
+        if dev == "mps":
+            drv = res["micro"][-1]["driver_gb"]  # the guard looks at the peak, before the cache is handed back
+            torch.mps.empty_cache()  # the allocator's cached blocks go back to the system: otherwise the driver memory only grows (see the doc comment)
+            res["micro"][-1]["driver_after_empty_gb"] = round(torch.mps.driver_allocated_memory() / 1e9, 2)
+        else:
+            drv = 0.0
+        swp = swap_used_gb() - swap0
+        if (a.memory_limit_gb and drv > a.memory_limit_gb) or (a.swap_growth_gb and swp > a.swap_growth_gb):
+            model.save_pretrained(os.path.join(a.out, "abort_step%d" % t_step))
+            res["aborted"] = {"driver_gb": drv, "swap_growth_gb": swp, "optimizer_step": t_step, "micro": len(res["micro"])}
+            json.dump(res, open(os.path.join(a.out, "train.json"), "w"))
+            sys.exit(f"memory guard: driver memory {drv:.1f} GB (limit {a.memory_limit_gb}), swap grew {swp:.1f} GB (limit {a.swap_growth_gb}) at optimizer step {t_step}, micro-step {len(res['micro'])}; adapter saved to abort_step{t_step} (optimizer state is not saved)")
         acc += ntok
         if acc >= a.tokens_per_step:
             t_step += 1
