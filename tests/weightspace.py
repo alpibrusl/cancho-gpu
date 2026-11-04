@@ -135,14 +135,36 @@ h2 = new_run("review_clean", budget=1)
 h2.write("w1", CLOSED)
 expect("a run of clean code is clean, exit 0", review.review_run(h2.dir)[1] == "clean" and review.main([h2.dir]) == 0)
 
+def unlock(h):
+    """Marks the run as written without a logged write (for the tests that are about the budget, not about writing)."""
+    st = h._state()
+    st["stored"] = 1
+    h._save_state(st)
+    return h
+
+
+# 2b -- forward before any successful write (docs/weight-space.md 12.4: 6 of 6 first calls scored the untouched network) -------------------------------------------------------------------------
+h = new_run("unwritten", budget=3)
+r = h.forward(8)
+expect("forward before any write is refused (forward.unwritten) and spends no pass", not r["ok"] and r["rule"] == "forward.unwritten" and h.status()["passes_used"] == 0, r)
+w = h.write("w1", "W1 = np.zeros(SHAPE)\n")
+expect("a write that does not define `tensor` stores nothing and says so (NOTHING WAS STORED, stored false)", not w["ok"] and w["stored"] is False and w["error"].startswith("NOTHING WAS STORED"), w)
+expect("a failed write does not unlock forward", h.forward(8)["rule"] == "forward.unwritten" and h.status()["passes_used"] == 0)
+w = h.write("w1", "tensor = np.zeros(SHAPE)\n")
+expect("a successful write reports stored true", w["ok"] and w["stored"] is True, w)
+r = h.forward(8)
+expect("after one successful write forward answers and spends one pass", r["ok"] and h.status()["passes_used"] == 1, r)
+expect("the unlock survives reopening the run", H.Harness(h.dir, draw_seed=7).forward(8)["ok"])
+expect("an old run's state without the counter is treated as unwritten", (lambda hh: (hh._save_state({"used": 0, "writes": 0, "calls": 0}), hh.forward(1))[1]["rule"] == "forward.unwritten")(new_run("legacy", budget=1)))
+
 # 3 -- the budget ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-h = new_run("budget", budget=2)
+h = unlock(new_run("budget", budget=2))
 r1, r2, r3 = h.forward(10), h.forward(10), h.forward(10)
 expect("two forward calls within the budget of 2 answer", r1["ok"] and r2["ok"], (r1, r2))
 expect("the third is refused (forward.budget) and the count does not move", not r3["ok"] and r3["rule"] == "forward.budget" and h.status()["passes_used"] == 2, r3)
 expect("reopening the run does not reset the count", not H.Harness(h.dir, draw_seed=7).forward(5)["ok"] and H.Harness(h.dir).status()["passes_used"] == 2)
-expect("budget 0 refuses the first call", new_run("b0", budget=0).forward(1)["rule"] == "forward.budget")
-h = new_run("range", budget=5)
+expect("budget 0 refuses the first call", unlock(new_run("b0", budget=0)).forward(1)["rule"] == "forward.budget")
+h = unlock(new_run("range", budget=5))
 expect("n_poses 0, 257 and a float are refused (forward.n) without spending a pass", all(h.forward(n).get("rule") == "forward.n" for n in (0, 257, 3.5)) and h.status()["passes_used"] == 0)
 r = h.forward(64)
 expect("a forward answers exactly one number (plus counters), no per-pose values", set(r) == {"ok", "score_mm", "n_poses", "passes_used", "passes_left"} and all(isinstance(v, (int, float, bool)) for v in r.values()), r)
@@ -216,6 +238,7 @@ if session and os.path.exists(session):
     p = task.init_params()
     hs = H.Harness(os.path.join(tmp, "fwd_session"), budget=2, init="random", backend="session", session=session, draw_seed=11)
     hn = H.Harness(os.path.join(tmp, "fwd_numpy"), budget=2, init="random", backend="numpy", draw_seed=11)
+    unlock(hs), unlock(hn)
     a, b = hs.forward(200), hn.forward(200)
     expect("forward through the CPU session equals the binary64 forward (%.6f and %.6f mm)" % (a["score_mm"], b["score_mm"]), abs(a["score_mm"] - b["score_mm"]) < 1e-3, (a, b))
     q, pos = task.train_set(1000)

@@ -52,7 +52,7 @@ class Harness:
             os.makedirs(os.path.join(self.dir, "weights"), exist_ok=True)
             cfg = {"budget": budget, "init": init, "spec": spec, "backend": backend, "session": os.path.abspath(session or DEFAULT_SESSION), "timeout": timeout}
             json.dump(cfg, open(cfg_path, "w"), indent=1)
-            self._save_state({"used": 0, "writes": 0, "calls": 0})
+            self._save_state({"used": 0, "writes": 0, "calls": 0, "stored": 0})
             p = task.zero_params() if init == "zeros" else task.init_params()
             for n in task.NAMES:
                 self._store(n, p[n])
@@ -124,8 +124,14 @@ class Harness:
                 res.update(ok=False, rule="write.finite", error="the tensor has NaN or infinite values; nothing was stored")
             else:
                 self._store(tensor, arr)
+                st = self._state()
+                st["stored"] = st.get("stored", 0) + 1
+                self._save_state(st)
         else:
             res.update(rule=r.rule or "write.error", error=r.error)
+        res["stored"] = bool(res["ok"])
+        if not res["ok"]:
+            res["error"] = "NOTHING WAS STORED (the tensor %s is unchanged). %s" % (tensor, res.get("error", ""))
         res["output"] = r.output
         self._log("write", {"tensor": tensor, "source": source}, res, tokens)
         return res
@@ -137,6 +143,8 @@ class Harness:
         st = self._state()
         if st["used"] >= self.cfg["budget"]:
             return self._refuse("forward", args, "forward.budget", "the budget of %d forward passes is spent" % self.cfg["budget"], tokens, used=st["used"], left=0)
+        if st.get("stored", 0) == 0:                 # no pass is spent: scoring the initial network tells the writer nothing it did not know (seen in 6 of 6 runs of docs/weight-space.md 12.4)
+            return self._refuse("forward", args, "forward.unwritten", "no write has succeeded since the run began, so the network is still the initial one and the pass was NOT spent; a write that fails stores nothing (the program must define a variable named exactly `tensor`)", tokens, used=st["used"], left=self.cfg["budget"] - st["used"])
         st["used"] += 1                              # counted before the pass runs: a crash buys nothing
         self._save_state(st)
         seed = self.draw_seed if self.draw_seed is not None else int.from_bytes(os.urandom(8), "little")
@@ -178,7 +186,7 @@ def _describe(cfg):
              "INITIAL WEIGHTS. " + ("all zero." if cfg["init"] == "zeros" else "the trainer's random initialisation (Glorot-uniform weights, zero biases)."),
              "",
              "TOOLS. show(tensor, start, count): the stored weights as text. write(tensor, source): runs your python (numpy only; no network, no files outside a scratch directory, no subprocesses, "
-             "a time limit of %.0f s) and stores the array `tensor` it defines (its shape is in `SHAPE`; `CURRENT` holds the stored tensors; `np` is numpy). forward(n_poses): scores the CURRENT network on n_poses "
+             "a time limit of %.0f s) and stores the array `tensor` it defines (the variable must be named exactly `tensor`; a program that does not define it, or that fails, stores NOTHING and the tensor is unchanged; forward is refused, without spending a pass, until one write has succeeded) (its shape is in `SHAPE`; `CURRENT` holds the stored tensors; `np` is numpy). forward(n_poses): scores the CURRENT network on n_poses "
              "(1..%d) fresh random poses and returns only the mean Euclidean position error in millimetres. You have %d forward calls in all; calls beyond that are refused. Nothing else tells you how good "
              "the network is." % (cfg["timeout"], MAX_POSES, cfg["budget"]), ""]
     if cfg["spec"] == "chain":
