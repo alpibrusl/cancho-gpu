@@ -1,6 +1,6 @@
 # M11: can a model write the weights of a network we then run in cancho? (design, written before any run)
 
-> **Status: a design; W2a (the harness) and W2b's arms Z, R and G(N) are built and measured, section 11 (2026-11-04). No writer arm (W, T) and no W0/W1 has been run.** Marks as in `roadmap-models.md`: **[measured]**, **[read]** (from a document or source, not run), **[estimate]**, **[choice]**, **[open]**. The decision rules in sections 5 to 7 are fixed now and are not edited after a result is seen; facts that turn out different are corrected in place, with the date.
+> **Status: a design; W2a (the harness) and W2b's arms Z, R and G(N) are built and measured, section 11 (2026-11-04). No writer arm (W, T) and no W0/W1 has been run.** W1's plan, with the download list for approval, and its script are section 13 (2026-11-04); nothing of it has been run on a model. Marks as in `roadmap-models.md`: **[measured]**, **[read]** (from a document or source, not run), **[estimate]**, **[choice]**, **[open]**. The decision rules in sections 5 to 7 are fixed now and are not edited after a result is seen; facts that turn out different are corrected in place, with the date.
 > Order against the other open work (maintainer, 2026-11-04): M8's training and the MLX 27B step (`roadmap-models.md` 9.8, unknown 2) come first and own the GPU. **Everything in W0 and W2 below runs on the CPU path of the session, so it does not compete for the GPU**; W1 does, and waits.
 
 ## 1. The claim, and how well we know it
@@ -56,10 +56,11 @@ Written before any loop number was computed from a real run. Code: `examples/qwe
 
 ## 6. W1: does the post's Qwen3.5-0.8B edit reproduce? (needs the GPU and two downloads)
 
-**Needs the maintainer's permission to download** the base Qwen3.5-0.8B and the edited model `RikiyaT/Qwen3.5-0.8B-weight-space-programming` (sizes unchecked, **[estimate]** about 1.6 GB each in bf16). Run after M8 and the MLX 27B step, with MLX if `mlx-lm` 0.31.3 loads the architecture **[open: not tried]**, else transformers on MPS.
+**Needs the maintainer's permission to download** the base Qwen3.5-0.8B and the edited model `RikiyaT/Qwen3.5-0.8B-weight-space-programming` (sizes **[measured 2026-11-04, from the Hub's file metadata, nothing downloaded]**: the weights file of each is 1,746,942,600 and 1,746,943,032 bytes, 1.63 GiB; the estimate of about 1.6 GB was right in GiB; the whole list is section 13.2). Run after M8 and the MLX 27B step, with MLX if `mlx-lm` 0.31.3 loads the architecture **[open: the installed `mlx_lm` 0.31.3 and `transformers` 5.2.0 both have a `qwen3_5` module (import checked 2026-11-04); loading the weights is not tried]**, else transformers on MPS.
 * **Protocol** (a reduced version of the post's: the post's 32,768-token cap with 4 samples over 500 problems is about 65 M generated tokens for a model that hits the cap 93% of the time, which at an assumed 200 tokens a second is days **[estimate]**): GSM8K test, the first 200 problems, one sample each; thinking on; temperature 0.6, top-p 0.95, top-k 20, presence penalty 1.5 (the post's); cap 8,192 tokens; both models, same seeds. The reduced cap favours finding an effect (a looping model loses more answers to a lower cap), so a second run at 16,384 tokens on a 60-problem subset checks that the effect is not made by the cap.
 * **Statistic and rule (pre-registered)**: accuracy A and token-limit rate L, each with a 95% bootstrap interval (10,000 resamples of the 200 problems, numpy seed 20261104). **Reproduces** iff the edited model's accuracy exceeds the base's by more than the base's interval half-width **and** L falls by more than 20 points. If only accuracy rises or only L falls, reported as partial with both numbers. If neither, "not reproduced at this protocol", which says nothing about the post's full protocol.
 * **Also**: the edit is a few lines of weight arithmetic. If the authors' logs give the layers and the direction, apply it to our base ourselves and compare with their published model (a check that the published weights are what the logs describe): the number of weights that differ and their positions.
+  *(2026-11-04: the logs give the edit as a bit-exact diff with the sha256 of both tensors; section 13.1. The check becomes `diff --w1-expect`: the two checkpoints are compared and held to the published counts and hashes, so nothing is re-applied.)*
 
 ## 7. W2: weights written by reasoning against weights found by gradient descent, on a task with an exact oracle (CPU)
 
@@ -227,3 +228,73 @@ The scores the agents saw in `forward` (256 fresh held-in poses) agree with the 
 
 ### 12.5 What this says for the next step
 Nothing yet for cancho-robot (section 7's last paragraph stands). For the question the milestone was built to ask: a model **can** write a 5-64-64-3 network that computes the SO-101's forward kinematics to 0.3 to 1 mm, with no gradient step, and the written network's error is the same inside and outside the held-out band, which gradient descent on samples did not achieve (5 to 7 times worse in the band). The cost is an agent run (about 100 k tokens, a few minutes) per network, against 5.8 CPU-minutes for the trained one. Whether that trade is useful depends on the task having a structure a writer can read off a specification, and the pose estimator's early layers (edge and capsule detectors on a synthetic frame) are the candidate that has one; that needs the renderer of `roadmap-models.md` 8.3 (V3) and is another milestone.
+
+## 13. W1 prepared: what is reproduced, the rule, the cost and the download list, 2026-11-04 (pre-registered; nothing here has been run on a model)
+
+Written before any model file is on this machine and before any generation. The rule in 13.3 is fixed now and is not edited after a result is seen; a fact that turns out different is corrected in place with its date. **Needs the maintainer's approval of the download list in 13.2, and a free GPU** (M8's training owns it; the script refuses to start without `--gpu-free`).
+What was done to prepare it: the blog post, the model pages' file metadata (Hub API, sizes only), the edited model's README and the authors' `exp8_math/runs/p50c/edit/manifest.json`, `code/apply_edit.py`, `code/make_edit_diff.py`, `code/evaluate.py` and `eval/RESULTS_excerpt.md` were **read as text** (all **[read]**); no model file, dataset or `edit.npz` was fetched, and the GPU was not used.
+
+### 13.1 What is reproduced
+**The edit, as the authors' own files describe it [read].** Base `Qwen/Qwen3.5-0.8B` @ `2fc06364715b967f1860aea9cf38778875588b17`, edited `RikiyaT/Qwen3.5-0.8B-weight-space-programming` @ `d1671a178705bcab7644806d23c535517f35723b`. Exactly two tensors differ, both `down_proj` of the language model's MLP, bfloat16, shape [1024, 3584] (rows = hidden, columns = MLP units):
+
+| tensor | changed entries | changed columns | changed rows | norm of delta / norm of weight |
+|---|---|---|---|---|
+| `model.language_model.layers.15.mlp.down_proj.weight` | 65,260 | 64 | 1,024 | 0.1064 |
+| `model.language_model.layers.19.mlp.down_proj.weight` | 64,928 | 64 | 1,023 | 0.0811 |
+
+The post's 131,072 weights are 2 x 64 x 1,024; the manifest counts 130,188 because entries that round back to the same bfloat16 value are not counted. The post says "one direction subtracted from 64 columns": a rank-1 delta supported on 64 columns. The authors give neither the rank nor the magnitudes, and their diff file calls the form "sparse" (under 30% of entries), which is not a rank statement. **Two things are reproduced, separately:**
+1. **The weights** (CPU, minutes, no GPU): `examples/weightspace/w1.py diff BASE EDITED --w1-expect` reads both checkpoints, reports every tensor that differs, and checks them against the table above and against the published sha256 of the base and edited tensors (README and manifest). It also reports what the authors do not: the rank of the delta on its support (at tolerances 0.1, 0.01, 0.001 of the largest singular value), its top-1 energy, and the share of the delta in the changed columns. **Pre-registered expectation, not part of the pass/fail [estimate]:** top-1 energy at least 0.9 and rank 1 at tolerance 0.1 in both tensors (the bfloat16 rounding of the result puts noise of about 2^-9 of each entry in the delta, so higher ranks at 0.001 are expected and mean nothing). If it is not so, the post's description of the edit as one direction is loose, and that is reported.
+2. **The behaviour** (GPU, hours): does the edited model score higher and loop less than the base, on a reduced protocol. This is section 6's, with the details it left open fixed in 13.3.
+
+### 13.2 Download list (for the maintainer's approval; nothing downloaded yet)
+Sizes in bytes are the Hub's file sizes, read 2026-11-04. Both repositories are Apache-2.0 and not gated. Pinned to the revisions above.
+
+| item | file | bytes |
+|---|---|---|
+| base | `model.safetensors-00001-of-00001.safetensors` | 1,746,942,600 |
+| base | `tokenizer.json` 12,807,982; `vocab.json` 6,722,759; `merges.txt` 3,353,259; `tokenizer_config.json` 16,709; `chat_template.jinja` 7,755; `config.json` 2,907; `model.safetensors.index.json` 50,900; `preprocessor_config.json` 390; `video_preprocessor_config.json` 385 | 22,963,046 |
+| edited | `model.safetensors-00001-of-00001.safetensors` | 1,746,943,032 |
+| edited | the same nine small files (same sizes as the base's) | 22,963,046 |
+| data | `openai/gsm8k`, `main/test-00000-of-00001.parquet` (1,319 problems, the first 200 used) | 419,088 |
+| **total** | 21 files | **3,540,230,812 (3.30 GiB)** |
+
+Not downloaded: the edited repository's `eval/` (four files, 9.4 MB: the authors' MATH-500 samples), `README.md`, `LICENSE`, and the authors' `edit.npz` (387,619 bytes; not needed, the hashes are in the script). The commands, to be run only after approval:
+```
+hf download Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --local-dir ~/models/qwen35-08b-base --exclude README.md --exclude LICENSE --exclude .gitattributes
+hf download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision d1671a178705bcab7644806d23c535517f35723b --local-dir ~/models/qwen35-08b-edited --exclude "eval/*" --exclude README.md --exclude LICENSE --exclude .gitattributes
+hf download openai/gsm8k main/test-00000-of-00001.parquet --repo-type dataset --local-dir ~/models/gsm8k
+```
+Disk: 3.3 GiB for the files, plus under 100 MB of results; the free space on this machine is 168 GB (2026-11-04). No Hugging Face cache is used (`--local-dir`).
+
+**Corrected 2026-11-04 after the download**: the commands as first written passed the names after one `--exclude`, which `hf` read as files to fetch (it downloaded only LICENSE and README); each pattern needs its own `--exclude`. The commands above are the corrected ones. All 21 files were then downloaded (approved by the maintainer 2026-11-04) and their sizes match the table.
+
+**W1 weight diff, run 2026-11-04** (`diff --w1-expect`, CPU, seconds; `results/w1_diff.json`): exactly the two published tensors changed (layers 15 and 19 `mlp.down_proj`), 130,188 of 873,438,784 weights (0.0149%), with 65,260 and 64,928 changed entries in 64 columns each, and every `--w1-expect` check passes, sha256 of base and edited included. Each delta on its support is **rank 1** (top-1 energy 1.0000, second singular value about 1e-3 against 1.749 and 1.399), so the post's "one direction subtracted from 64 columns" holds as measured. This is the weight half of W1; the behavioural half has not been run.
+
+### 13.3 Protocol and the rule (fixed now)
+* **Run, in this order.** (a) `diff --w1-expect`; if it fails, the edited checkpoint is not the published edit and `behave` refuses to start (override `--no-verify`, reported as such). (b) A smoke run (`--n 8 --max-new 512`) to check that the weights load and to measure tokens per second; it is not a result. (c) The main run. (d) The cap check, only if (c) is "reproduces" or "partial".
+* **Main run.** GSM8K test, problems 0 to 199 of the parquet's order, **one sample each**, thinking on (`enable_thinking=True` in the chat template), temperature 0.6, top-p 0.95, top-k 20, presence penalty 1.5 over the generated tokens, **cap 8,192 new tokens**, base and edited with the same per-batch seeds (seed 0 + the first problem's index; the two models consume the random numbers differently, so "same seeds" means the same seeding and not the same draws). The prompt is the authors': the question, a newline, "Please reason step by step, and put your final answer within \boxed{}."
+* **Grading.** The last `\boxed{...}` in the generation, compared as a number with the gold after `####` (commas, dollar signs, percent signs, `\text{}` units and a plain `\frac{a}{b}` are accepted). Not math-verify, which the authors used; for GSM8K's integer answers the difference should be small and is **[unmeasured]**. A generation without a `\boxed{}` is wrong. **Hit the token limit**: the generation ended at the cap without an end-of-sequence token.
+* **Statistic.** Accuracy A and token-limit rate L, each with a 95% percentile bootstrap interval (10,000 resamples of the 200 problems, `numpy.random.default_rng(20261104)`).
+* **Rule (as section 6, made exact).** **Reproduces** iff (accuracy) the edited A minus the base A is **strictly greater than** the half-width of the base's A interval **and** (loops) the base's L minus the edited L is **strictly greater than 20 points**. Exactly one of the two: **partial**, with both numbers reported. Neither: **not reproduced at this protocol**, which says nothing about the authors' full protocol (32,768 tokens, 4 to 16 samples, MATH-500 and eight other benchmarks).
+* **Cap check.** The first 60 problems again with cap 16,384, base and edited, and the same rule applied to those 60 (own intervals). Reading: main "reproduces" and the cap check "reproduces": **the effect does not depend on the 8,192 cap**; main "reproduces" and the cap check does not: **reproduces at 8,192 only (cap-dependent)**; main "partial": the cap check is reported next to it and changes nothing in the verdict.
+* **What the post and its re-run report, for reference, not as targets [read].** Base/edited at 32,768 tokens: GSM8K 13.8/67.1 %, MATH-500 7.9/48.1 %, token limit on MATH-500 93.0/33.1 %. An independent re-run of the published checkpoint (README): MATH-500 51.0 %, 31.6 % at the limit; a 25-problem smoke run of the base 5.0 %, 95 % at the limit. At our lower cap the base can only lose more answers, and with 200 single samples the base's interval will be several points wide; the rule is on differences, not on matching these numbers.
+
+### 13.4 Hardware, time, memory (estimates; the smoke run in 13.3(b) replaces them)
+* **Diff**: CPU, numpy only. Compares the tensors as raw bytes in 64 MB chunks, converts only the two that differ; memory under 1 GB; **seconds to a minute** (a synthetic 1,024 x 3,584 pair with 64 changed columns took 0.33 s, **[measured]**, in memory; the 1.75 GB files from disk are **[estimate]**, I/O bound).
+* **Behaviour**: this Mac (Apple silicon, 64 GB unified memory), bfloat16, `transformers` on MPS (`--backend mlx` is written and not tried). Weights 1.75 GB per model, one loaded at a time; the key-value cache is only in the 6 full-attention layers: 2 heads x 256 x 2 (K, V) x 2 bytes x 6 = 12 KB per token, so batch 8 at 16,384 tokens is 1.6 GB; **peak well under 8 GB [estimate]**. Memory is not the constraint; the GPU being free is.
+* **Tokens to generate [estimate]**: main run, base about 0.93 x 8,192 per problem x 200 = 1.5 M, edited about 0.8 M; cap check, 60 problems at 16,384: 0.9 M and 0.4 M. About **3.6 M tokens** in all. At an assumed 100 to 500 tokens per second (batched, the linear-attention layers in plain PyTorch; **unmeasured, the range is wide**) that is **2 to 10 hours** of GPU time; the smoke run says which. The run is resumable (a rerun skips the finished problems in `DIR/*.jsonl`).
+
+### 13.5 Command, once the download is approved and the GPU is free
+```
+python3 examples/weightspace/w1.py diff ~/models/qwen35-08b-base ~/models/qwen35-08b-edited --w1-expect --json results/w1_diff.json
+python3 examples/weightspace/w1.py behave --base ~/models/qwen35-08b-base --edited ~/models/qwen35-08b-edited \
+    --data ~/models/gsm8k/main/test-00000-of-00001.parquet --out results/w1_smoke --n 8 --max-new 512 --gpu-free
+python3 examples/weightspace/w1.py behave --base ... --edited ... --data ... --out results/w1 --n 200 --max-new 8192 --gpu-free
+python3 examples/weightspace/w1.py behave --base ... --edited ... --data ... --out results/w1 --n 60 --max-new 16384 --gpu-free   # only if the rule says so
+```
+`tests/w1.py` (in the gate) holds the diff, the grading, the bootstrap and the rule to synthetic checkpoints and a fake generator: a planted rank-1 edit on 4 columns is found as that and a rank-2 plant is not called rank 1; 400 random corruptions of a valid file raise only `ReadError`; the 20-point and half-width boundaries are strict; a rerun after a crash resumes. **Not tested**: the two generation backends (`transformers_generator`, `mlx_generator`), which need the weights; their first test is the smoke run. The loading path (`AutoModelForCausalLM`, falling back to `AutoModelForImageTextToText` for the multimodal release) is a guess until then **[open]**.
+
+### 13.6 What this would and would not show
+* A "reproduces" is evidence that the published edit changes the behaviour of the published base on one benchmark at a reduced cap with one sample per problem, under our sampler and grader. It says nothing about how the edit was found (the claim about the writer), nor about M8's model (W0 decides that).
+* A weight diff that matches the hashes shows the checkpoint is the one described; it does not show the description of the mechanism ("one direction") is the cause of the behaviour. Ablating the edit (restoring one of the two layers and rerunning) would; not planned.
+* Sampling differences (HF on MPS instead of vLLM, batched seeds) can move the numbers; a "partial" or "not reproduced" is read with that in mind and is not a refutation of the post.
