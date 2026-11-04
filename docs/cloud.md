@@ -168,6 +168,28 @@ rate on every run, or when the scripts are being iterated on.
 | image | needed (Ollama, 20 GB models) | optional | see above |
 | tests | none | `tests/gcp.sh` in the gate | the guard rails are the part that costs money when wrong |
 
+## First real-hardware finding (2026-11-04, L4, driver 580, CUDA 12.9, Ubuntu 24.04)
+
+The `nvrtc` step, the first thing here to run against a real toolchain:
+**246 of 246 golden kernels compile under NVRTC 12.9 for `compute_89`** and
+assemble with `ptxas` for sm_89. **One spills:** `batch_fp4_b=16_n=128_k=4096`
+uses **255 registers and spills 1172 B** (the next heaviest,
+`batch_fp4_b=2_n=200_k=256`, uses 168 and spills nothing). That is the cap
+ptxas can give a thread, so the kernel's register pressure, not the card, sets
+its speed; tracked in the issue titled "CUDA: batch_fp4 kernel spills 1172 B at
+255 registers on sm_89". Only compilation was measured: no kernel ran in that
+run, because the toolchain step failed (below), so `device_cases` and
+`gemm_bench` had no `cancho-gpu`.
+
+That run also found two defects in these scripts, since fixed: the compiler
+built from the source archive (no `.git`) did not know its commit and the
+project refused it, so the source fallback now builds with `CANCHO_REV=<pin>`
+(`summary.tsv`: `PINNED-by-CANCHO_REV`) and a release binary is used only if its
+`--version` reports its rev; and the local driver, edited while running, read
+garbage from its own file and skipped the final copy of the results, so its body
+is now one function called on the last line and the results are also copied by
+the cleanup trap. (`tests/gcp.sh` reproduces the second against the old script.)
+
 ## What this does not establish
 
 Not run against Google; not run on a GPU. In particular unverified: that

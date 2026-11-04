@@ -206,7 +206,7 @@ cp "$f" "$out"
 STUB
 cat > "$W/cb/cargo" <<'STUB'
 #!/bin/sh
-echo "cargo $*" >> "$STUB_CURL_LOG"
+echo "cargo $* CANCHO_REV=${CANCHO_REV:-unset}" >> "$STUB_CURL_LOG"
 mkdir -p target/release && printf '#!/bin/sh\necho built-from-source\n' > target/release/cancho && chmod +x target/release/cancho
 STUB
 cat > "$W/cb/git" <<'STUB'
@@ -218,7 +218,7 @@ STUB
 chmod +x "$W/cb/curl" "$W/cb/cargo" "$W/cb/git"
 name=cancho-rust-$REL-linux-x86_64
 mkdir -p "$W/pk/$name/bin"
-printf '#!/bin/sh\necho released\n' > "$W/pk/$name/bin/cancho"; chmod +x "$W/pk/$name/bin/cancho"
+printf '#!/bin/sh\necho "cancho 0.0.0 (rev 5a5dd1f2…, host x86_64)"\n' > "$W/pk/$name/bin/cancho"; chmod +x "$W/pk/$name/bin/cancho"
 tar -czf "$W/rel/$name.tar.gz" -C "$W/pk" "$name"
 sum=$( (sha256sum "$W/rel/$name.tar.gz" 2>/dev/null || shasum -a 256 "$W/rel/$name.tar.gz") | cut -d' ' -f1)
 printf '%s  %s.tar.gz\n' "$sum" "$name" > "$W/rel/$name.tar.gz.sha256"
@@ -250,10 +250,19 @@ printf '%064d  %s.tar.gz\n' 0 "$name" > "$W/rel/$name.tar.gz.sha256"
 install_case bad
 has "$W/bad.txt" "sha256 MISMATCH" "a sha256 mismatch is reported"
 has "$W/bad.txt" "falling back to building the pinned commit $PIN" "a mismatch falls back to the source build"
-has "$W/bad.calls" "cargo build --release -p cancho" "the fallback builds with cargo"
+has "$W/bad.calls" "cargo build --release -p cancho CANCHO_REV=$PIN" "the source build stamps the pinned rev (CANCHO_REV)"
 has "$W/bad.txt" "id=source:$PIN rev=$PIN" "the fallback binary is the pinned one"
 hasnt "$W/bad.txt" "ignore-rev" "a pinned source build needs no --ignore-compiler-rev"
 cp "$W/rel/good.sha" "$W/rel/$name.tar.gz.sha256"
+# A release binary that does not say which commit it is would be refused by the project: not used.
+cp "$W/pk/$name/bin/cancho" "$W/anon.bak"
+printf '#!/bin/sh\necho "cancho 0.0.0"\n' > "$W/pk/$name/bin/cancho"
+tar -czf "$W/rel/$name.tar.gz" -C "$W/pk" "$name"
+printf '%s  %s.tar.gz\n' "$( (sha256sum "$W/rel/$name.tar.gz" 2>/dev/null || shasum -a 256 "$W/rel/$name.tar.gz") | cut -d' ' -f1)" "$name" > "$W/rel/$name.tar.gz.sha256"
+install_case anon
+has "$W/anon.txt" "does not report rev" "a release binary that does not report its rev is not used"
+has "$W/anon.txt" "id=source:$PIN" "and the pinned source build replaces it"
+cp "$W/anon.bak" "$W/pk/$name/bin/cancho"
 # No release at all (download fails): the same fallback.
 rm -f "$W/rel/$name.tar.gz"
 install_case gone
@@ -262,6 +271,24 @@ has "$W/gone.txt" "falling back to building the pinned commit" "a failed downloa
 install_case src CANCHO_RELEASE=source
 hasnt "$W/src.calls" "releases" "CANCHO_RELEASE=source asks for no release"
 has "$W/src.txt" "id=source:$PIN" "CANCHO_RELEASE=source builds the pin"
+
+# --- the driver survives its own file changing mid-run --------------------
+new_case edit
+git clone -q "$ROOT" "$W/tree" 2>/dev/null || mkdir -p "$W/tree"
+mkdir -p "$W/tree/scripts/gcp"; cp "$G/cuda_test.sh" "$W/tree/scripts/gcp/cuda_test.sh"
+DC=$W/tree/scripts/gcp/cuda_test.sh
+STUB_SSH_SLEEP=3 PATH=$W/bin:$PATH GCP_PROJECT=fake-project OUT_DIR=$W/edit.out \
+  bash "$DC" > "$W/edit.txt" 2>&1 &
+pid=$!
+for _ in $(seq 1 100); do [ -f "$S/ssh_running" ] && break; sleep 0.1; done
+# Shift every byte offset, and append garbage that is not valid shell, in place.
+{ echo '# edited while running'; cat "$G/cuda_test.sh"; printf 'echo (garbage\n)(\n'; } > "$W/driver_new.sh"
+cat "$W/driver_new.sh" > "$DC"
+wait "$pid"; rc=$?
+[ "$rc" = 0 ] && ok "editing the driver mid-run does not break the run (exit 0)" || bad "mid-run edit: exit $rc: $(tail -3 "$W/edit.txt")"
+hasnt "$W/edit.txt" "syntax error" "no syntax error from the edited file"
+[ -f "$S/results_copied" ] && ok "results copied home after a mid-run edit" || bad "results not copied after a mid-run edit"
+has "$L" "instances delete" "VM deleted after a mid-run edit"
 
 # --- sweep ------------------------------------------------------------------
 new_case sweep0

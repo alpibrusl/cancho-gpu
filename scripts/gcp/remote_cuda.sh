@@ -139,6 +139,13 @@ fetch_release() {
   bin=$(find "$d" -path '*/bin/cancho' -type f | head -1)
   [ -n "$bin" ] || { echo "no bin/cancho in $name.tar.gz"; rm -rf "$d"; return 1; }
   mkdir -p "$HOME/cancho-bin" && cp "$bin" "$CANCHO_BIN" && chmod +x "$CANCHO_BIN" || { rm -rf "$d"; return 1; }
+  # A release must know which commit it is, or the project refuses it
+  # ("does not know which commit it was built from"). The rust asset prints
+  # `cancho 0.0.0 (rev <sha8>...`; the standalone one has no --version yet.
+  if [ "$CANCHO_FLAVOUR" = rust ] && ! "$CANCHO_BIN" --version 2>&1 | grep -q "${REL_REV:0:8}"; then
+    echo "the release binary does not report rev ${REL_REV:0:8} in --version: not used"
+    rm -f "$CANCHO_BIN"; return 1
+  fi
   echo "$REL_REV" > "$HOME/cancho-bin/rev"
   echo "release:$REL_TAG:$CANCHO_FLAVOUR" > "$ID_FILE"
   rm -rf "$d"
@@ -159,7 +166,10 @@ build_compiler_source() {
   else
     git clone -q "$CANCHO_REPO" "$HOME/cancho" && git -C "$HOME/cancho" checkout -q "$REV" || return 1
   fi
-  (cd "$HOME/cancho" && cargo build --release -p cancho) || return 1
+  # The source arrives without .git (git archive), and the compiler stamps the
+  # commit it was built from, then refuses a project that pins another: stamp
+  # the pin explicitly (CANCHO_REV) or every project build is refused.
+  (cd "$HOME/cancho" && CANCHO_REV="$REV" cargo build --release -p cancho) || return 1
   mkdir -p "$HOME/cancho-bin" && cp "$HOME/cancho/target/release/cancho" "$CANCHO_BIN" \
     && echo "$REV" > "$HOME/cancho-bin/rev" && echo "source:$REV" > "$ID_FILE"
 }
@@ -376,7 +386,9 @@ else
 fi
 
 if [ -f "$HOME/cancho-bin/rev" ]; then
-  if [ "$(cat "$HOME/cancho-bin/rev")" = "$REV" ]; then st=PINNED; else st=NOT-PINNED-ignore-compiler-rev; fi
+  if [ "$(cat "$HOME/cancho-bin/rev")" != "$REV" ]; then st=NOT-PINNED-ignore-compiler-rev
+  elif [ "$(cut -d: -f1 "$ID_FILE" 2>/dev/null)" = source ]; then st=PINNED-by-CANCHO_REV
+  else st=PINNED; fi
   printf 'compiler\t%s\t%s (cancho.toml pin %s)\n' "$st" "$(cat "$ID_FILE" 2>/dev/null)" "$REV" | tee -a "$R/summary.tsv" > "$R/compiler.txt"
 fi
 echo; echo "=== summary"; column -t -s "$(printf '\t')" "$R/summary.tsv" 2>/dev/null || cat "$R/summary.tsv"

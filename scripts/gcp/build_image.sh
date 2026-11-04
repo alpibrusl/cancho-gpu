@@ -26,6 +26,11 @@
 # boot already carries a driver for its kernel, which this keeps by holding the
 # kernel packages and checks at the end, as lex-gpu's prepare_image.sh does.
 set -euo pipefail
+# The whole body is one function, called on the LAST line: bash reads a script
+# incrementally, so editing this file while a run is in progress used to make it
+# parse garbage mid-run (and skip the final results copy). A function is read
+# whole before it runs, and the last line is read before main starts.
+main() {
 MACHINE="${MACHINE:-e2-standard-16}"
 ZONES="${ZONES:-europe-west4-a europe-west4-b europe-west1-b europe-west1-c us-central1-a us-central1-b us-east1-b}"
 IMAGE_FAMILY="${IMAGE_FAMILY:-cancho-gpu-l4}"
@@ -151,3 +156,5 @@ else
     --sort-by=~creationTimestamp --format="value(name)" | tail -n +"$((KEEP_IMAGES + 1))" |
     while read -r old; do gc compute images delete "$old" >/dev/null && echo "deleted old image $old"; done
 fi
+}
+main "$@"; exit $?

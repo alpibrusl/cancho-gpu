@@ -66,6 +66,11 @@
 # (not by remembered zone); every VM carries label purpose=cancho-gpu-test so
 # scripts/gcp/sweep.sh can find strays.
 set -euo pipefail
+# The whole body is one function, called on the LAST line: bash reads a script
+# incrementally, so editing this file while a run is in progress used to make it
+# parse garbage mid-run (and skip the final results copy). A function is read
+# whole before it runs, and the last line is read before main starts.
+main() {
 
 GPU="${GPU:-l4}"
 SPOT="${SPOT:-1}"
@@ -158,6 +163,18 @@ else
 fi
 
 ZONE=""
+RESULTS_DONE=0
+SIGNALLED=0
+# The results come home exactly once, from the normal path or, failing that,
+# from the cleanup trap: whatever ends the script after the VM exists, its
+# ~/results are fetched before the VM is deleted (not after a signal: someone
+# who pressed Ctrl-C wants out).
+collect_results() {
+  [ "$RESULTS_DONE" = 1 ] && return 0
+  [ -n "$ZONE" ] || return 0
+  RESULTS_DONE=1
+  gc compute scp --zone "$ZONE" --recurse "$NAME:~/results/*" "$OUT/" || true
+}
 # Where the VM named $NAME is, if it exists anywhere in the project. Asked by
 # name, not remembered: a request is made per *region* and Google picks the
 # zone, so an interrupt between "created" and "we know the zone" would leave
@@ -171,6 +188,7 @@ cleanup() {
   local z
   z="$(where)"
   [ -n "$z" ] || return 0
+  [ "$SIGNALLED" = 1 ] || collect_results
   if [ "$KEEP" = 1 ]; then
     echo "KEEP=1: $NAME is still running in $z. Delete it with:"
     echo "  gcloud --project $GCP_PROJECT compute instances delete $NAME --zone $z"
@@ -186,6 +204,7 @@ cleanup() {
 # and is `wait`ed for (wait is interrupted by a trapped signal).
 on_signal() {
   trap - EXIT
+  SIGNALLED=1
   echo "signal $1: stopping and deleting $NAME" >&2
   # shellcheck disable=SC2046
   kill $(jobs -p) 2>/dev/null || true
@@ -283,7 +302,7 @@ else
   wait $!
   status=$(cat "$OUT/remote.status" 2>/dev/null || echo 255)
 fi
-gc compute scp --zone "$ZONE" --recurse "$NAME:~/results/*" "$OUT/" || true
+collect_results
 echo "results in $OUT (remote exit $status)"
 # A Spot VM Google took back is not a failed run: it is no run, and says
 # nothing about the code. Exit 75 (EX_TEMPFAIL) so a caller can retry.
@@ -294,3 +313,5 @@ if [ "$status" != 0 ] && [ -n "$(gc compute operations list \
   exit 75
 fi
 exit "$status"
+}
+main "$@"; exit $?
