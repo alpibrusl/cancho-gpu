@@ -1,6 +1,6 @@
 # M11: can a model write the weights of a network we then run in cancho? (design, written before any run)
 
-> **Status: a design.** Nothing here is built or run. Marks as in `roadmap-models.md`: **[measured]**, **[read]** (from a document or source, not run), **[estimate]**, **[choice]**, **[open]**. The decision rules in sections 5 to 7 are fixed now and are not edited after a result is seen; facts that turn out different are corrected in place, with the date.
+> **Status: a design; W2a (the harness) and W2b's arms Z, R and G(N) are built and measured, section 11 (2026-11-04). No writer arm (W, T) and no W0/W1 has been run.** Marks as in `roadmap-models.md`: **[measured]**, **[read]** (from a document or source, not run), **[estimate]**, **[choice]**, **[open]**. The decision rules in sections 5 to 7 are fixed now and are not edited after a result is seen; facts that turn out different are corrected in place, with the date.
 > Order against the other open work (maintainer, 2026-11-04): M8's training and the MLX 27B step (`roadmap-models.md` 9.8, unknown 2) come first and own the GPU. **Everything in W0 and W2 below runs on the CPU path of the session, so it does not compete for the GPU**; W1 does, and waits.
 
 ## 1. The claim, and how well we know it
@@ -50,7 +50,7 @@ The post's repair works on a model that **loops**. Our M8 tuned model may loop t
 
 ## 7. W2: weights written by reasoning against weights found by gradient descent, on a task with an exact oracle (CPU)
 
-**Task.** The SO-101 forward kinematics of `cancho-robot` (`src/kinematics.cho`, generated from `tests/fixtures/urdf/so101_new_calib.urdf`; differential tests C4 hold it to 0.1 mm against placo **[read]**): the five joint angles (radians) → the gripper's position (x, y, z, metres). **[choice]** Not a product: the exact function exists and the controller keeps it. It is a testbed because the oracle is exact and free, the structure (rotations about fixed axes, link offsets) is textbook for a model to program, and it is small enough to inspect.
+**Task.** The SO-101 forward kinematics of `cancho-robot` (`src/kinematics.cho`, generated from `tests/fixtures/urdf/so101_new_calib.urdf`; differential tests C4 hold it to 0.1 mm against placo **[read]** *(corrected 2026-11-04: the test, `tests/differential_kinematics.py`, gates at 1e-9 m, a nanometre; 0.1 mm was the proposal the measurement replaced **[read]**; section 11.3 checks the numpy reference below against `kinematics.cho` itself)*): the five joint angles (radians) → the gripper's position (x, y, z, metres). **[choice]** Not a product: the exact function exists and the controller keeps it. It is a testbed because the oracle is exact and free, the structure (rotations about fixed axes, link offsets) is textbook for a model to program, and it is small enough to inspect.
 **Network.** 5 → 64 → 64 → 3, tanh **[choice]** (tanh gives smooth nonlinearities from which products of sines and cosines can be built by a writer; ReLU would force a piecewise-linear table). About 4.6 k weights, so the weights fit in text, and the writer may also write Python that generates them.
 **Held-out sets (fixed before any run).** Poses sampled from the URDF joint limits, with the M9 split: an **interior** set, and a **band** set (a held-out interval of `shoulder_pan` and the extreme third of `wrist_flex`), 2,000 poses each, fresh seeds, never shown to any arm or to `forward` (which draws its own).
 **Metric.** Mean Euclidean position error in millimetres, per set, with a 95% bootstrap interval (10,000 resamples, seed 20261104).
@@ -58,9 +58,9 @@ The post's repair works on a model that **loops**. Our M8 tuned model may loop t
 **Arms.**
 | arm | what | notes |
 |---|---|---|
-| Z | all weights zero | the null; the error of predicting the mean |
+| Z | all weights zero | the null; the error of predicting the mean *(corrected 2026-11-04: all-zero weights output exactly (0, 0, 0) m, the base frame's origin, not the mean position; the error of the mean position is 308.3 mm interior, 271.5 band, section 11.5)* |
 | R | random init (the trainer's) | a second null |
-| G(N) | the same network trained by cancho-gpu's training stack on N sampled poses, N in {10^3, 10^4, 10^5, 10^6}, Adam, the M1 recipe | the gradient-descent curve; uses the CPU session path, or the GPU if free |
+| G(N) | the same network trained by cancho-gpu's training stack on N sampled poses, N in {10^3, 10^4, 10^5, 10^6}, Adam, the M1 recipe *(2026-11-04: the schedule is M1's, 5% warm-up and a cosine; the learning rate is 1e-2, chosen on a validation set, not M1's 1e-3; section 11.5)* | the gradient-descent curve; uses the CPU session path, or the GPU if free |
 | W(B) | the writer's network, B forward passes, B in {0, 10, 50}, 3 independent runs each | the weight-writing arm |
 | T | the writer is asked to write the *kinematics as Python* and not a network | a control: if T is exact and W(0) is not, the bottleneck is encoding, not understanding |
 
@@ -81,7 +81,7 @@ If W2's harness exists, `show` over the weights of two of our own networks (the 
 | step | needs | cost | gate |
 |---|---|---|---|
 | W0 repeat detector on M8 journals | M8's results | minutes | decision in section 5 |
-| W2 harness, then arms Z, R, G | CPU session | harness ~400 lines **[estimate]**; G(10^6) minutes | none until arms exist |
+| W2 harness, then arms Z, R, G | CPU session | harness ~400 lines **[estimate; measured 2026-11-04: 591 lines for the harness, sandbox and review checklist, 1,222 with the task, trainer, arms and kernels]**; G(10^6) minutes **[measured: 347 s on the CPU session, section 11.5]** | none until arms exist |
 | W2 arm T, then W(0), W(10), W(50), 3 runs each | an agent with the harness | 12 agent runs **[estimate]**; each tens of minutes | section 7 |
 | W1 reproduction | M8 done, MLX step done, download permission | hours of generation | section 6 |
 | W3 | W2 | small | none |
@@ -94,3 +94,79 @@ The harness and its tests (a planted violator that fits by `lstsq` must be caugh
 * That a model writing weights is useful: W2 compares error and cost on one task.
 * That one task generalises: the kinematics function is a favourable case (exact, structured, known to the writer).
 * That compliance with "no training" is enforced: it is reviewed (section 4).
+
+## 11. W2a and W2b (arms Z, R, G) built and measured, 2026-11-04
+
+Everything in this section was produced by the files of `examples/weightspace/` and `tests/weightspace.py` (in the gate), on an Apple M4 Max, numpy 2.4.6, Python 3.14.5, the compiler `a49ea779` as built locally (`-dirty`, so `--ignore-compiler-rev`). The M8 training job owned the GPU and some CPU during all of it; **nothing here used the GPU** (the interpreter session, `build/cancho-gpu-session`, and numpy). The decision rules of sections 5 to 7 are unchanged.
+
+### 11.1 What was built
+
+| file | what |
+|---|---|
+| `task.py`, `so101_chain.py`, `gen_chain.py` | the task: the SO-101 chain copied from the URDF (with its sha256), the numpy float64 reference `fk`, the pose space and its split, the fixed seeds, the network's shapes, `bootstrap_ci` |
+| `check_fk.py` | task.fk against cancho-robot's `kinematics.cho` (builds its test driver into a temporary directory; cancho-robot is read, not written) |
+| `sandbox.py` | the restricted subprocess of `write` |
+| `harness.py` | `describe`, `show`, `write`, `forward`, the state, the JSONL log; a command line for an agent that drives it from a shell |
+| `review.py` | the review checklist: a static check over the logged code |
+| `tanh_fwd.chx`, `lin_out.chx`, `tanh_bwd.chx`, `trainer.py` | the gradient arm: a tanh regression network trained with Adam on the CPU session, and the forward program the harness's `forward` uses |
+| `arms.py`, `results/` | the arms Z, R, G(N), the evaluator, the trained parameters and the numbers below |
+| `tests/weightspace.py` | the tests, wired into `scripts/gate.sh` after `tests/probes.py` |
+
+### 11.2 Choices made while building, fixed before any arm was run
+
+* **The split of section 7 ("the M9 split") as numbers [choice].** Box: the URDF's limits of the five moving joints (`shoulder_pan` +-1.91986, `shoulder_lift` +-1.74533, `elbow_flex` +-1.69, `wrist_flex` +-1.65806, `wrist_roll` -2.74385..2.84121 rad). **Band:** `shoulder_pan` in [0.64, 1.28] rad (a sixth of its range) **or** `wrist_flex` above a third of its upper limit, 0.55269 rad (the "extreme third" read as the top third of the range, one end, which is 1/3 of the range; reading it as both ends would make the band two thirds of the wrist range). Held-in region: the box minus the band. `forward` and the G arms draw only from the held-in region; the **interior** set is fresh held-in draws, the **band** set fresh band draws; both uniform within their region. 2,000 poses each, numpy `default_rng` seeds 20261104001 (interior) and 20261104002 (band); training stream seed 20261104003 (the arms nest: G(10^3) is a prefix of G(10^4)); initialisation seed 20261104004. The two held-out sets are made by `arms.py eval` only; the harness does not import them.
+* **`forward(n_poses)`:** one call is one pass of the budget, 1 <= n_poses <= 256 (the post's pass is "up to 256 positions"); the count is saved before the pass runs; it returns the mean error in mm and the counters and nothing else (the draw's seed is in the log's `private` part, which the agent has no path to). It runs the CPU session on 256 padded rows (so the cost does not depend on n_poses).
+* **What the writer is told [choice, open for the maintainer]:** `describe()` gives the task, the network, the rules of section 4 and, by default (`--spec chain`), the URDF chain table and the joint limits. With `--spec none` it gives only the limits. W(0) with the table is "write from the spec"; without it, W(0) can only be a guess, so the default is the former. The writer is *not* told the band or the held-in region ("poses within the joint limits").
+* **Initial weights** of a writer run: zeros by default (`--init random` for R's).
+* **G's recipe [choice]:** Adam (beta 0.9, 0.999, eps 1e-8, no weight decay), batches of 250 (so that N/250 is whole for every N), **40,000 steps for every N**, 5% linear warm-up then cosine to zero (M1's shape), loss e^T e / 2b on targets standardised per axis (mean and standard deviation of the training set), folded exactly into the last layer afterwards so the network is an ordinary one in metres. R's initialisation is `deep_session.init`'s (Glorot-uniform weights, zero biases), and every G starts from it.
+* **Learning rate, chosen on a validation set, never on the held-out sets** (2,000 fresh held-in draws, seed 20261104005), mean error in mm: N = 10^4, 4,000 steps: 3e-4 38.78, 1e-3 16.96, 3e-3 9.30; N = 10^4, 20,000 steps: 1e-3 3.93, 3e-3 2.38, 1e-2 1.73; **N = 10^5, 40,000 steps: 3e-3 1.38, 1e-2 1.25, 3e-2 1.95**. Chosen: **1e-2** for every N (M1's 1e-3 is 2.3 times worse at N = 10^4 and 20,000 steps, 3.93 against 1.73 mm; it was not run at N = 10^5). The choice favours the gradient arm; a W that beats G beats a tuned G.
+
+### 11.3 The reference is checked against `kinematics.cho` [measured]
+
+`python3 examples/weightspace/check_fk.py ../cancho-robot <cancho> 2000`: `tests/kinematics_driver.cho` + `src/kinematics.cho` + `src/so101.cho` built with the local compiler and run on the zero pose, 2,000 poses inside the box and 500 beyond it (+-3.5 rad), compared with the numpy chain on the same angles (kinematics.cho takes degrees and multiplies by pi/180; the check feeds the radians it really used): **largest difference of any position component 2.2e-16 m**. The zero pose is (0.391361, -0.0000092, 0.226470) m in both. 25 of those poses and the driver's outputs are recorded in `tests/weightspace/fk_fixture.json`, which the gate compares with `task.fk` (1.1e-16 m), so the gate needs no other checkout. Not checked by me: placo itself (cancho-robot's C4 does it, to 1e-9 m).
+
+### 11.4 What the tests hold (`tests/weightspace.py`, 5 groups; mutants noted)
+
+* A planted violator written through the harness (it fits a tensor by `np.linalg.lstsq` against sampled outputs) is read back from the log and **caught by the review checklist** (`fit-call`); a closed form is clean; the inverse of a fixed matrix is reported **borderline** (`linalg`), not dropped; a hill climber (`random-search`) and a gradient loop (`update-loop`) are caught; and with each rule switched off its plant passes (so the tests can fail). The checklist is a heuristic over the source text, not a proof (its docstring lists what it cannot see).
+* `forward` beyond the budget is refused (`forward.budget`), does not run, and the count survives reopening the run; budget 0 refuses the first call; n_poses out of range is refused without spending a pass; the answer is one scalar and counters.
+* The sandbox refuses a file read and a file write outside its scratch directory, the harness's own log, a listing of the repository, a network call (`import socket`, `urllib`, `_socket`; a listener the test opens sees no connection), a subprocess, `os.system`, `os.fork`, `ctypes`, `scipy.optimize`, and kills an endless loop at the time limit (each with a `sandbox.*` rule tag); a good program runs. It is run with and without the macOS profile (`WS_NO_OS_SANDBOX=1`, which is what Linux has).
+* **What the sandbox does not stop**, pinned in the tests as known behaviour: a program can learn whether an outside path exists (`os.stat` is not audited), it can read the whole Python installation, burn its CPU time, and anything that reaches the OS without a Python audit event is not seen. It is a restricted subprocess, **not a security boundary** (docstring of `sandbox.py`).
+* The forward through the CPU session equals the binary64 forward (score 794.105604 vs 794.105605 mm on a random network; the largest output difference over the evaluated networks, 4.4e-7 m); the Adam session's loss at step 1 equals a binary64 numpy implementation of the same training and **all 4,611 parameters after 30 steps agree to 1.6e-7**; a mutant of `tanh_bwd.chx` (the derivative (1+h)(2-h) for (1+h)(1-h)) is 2.5e-2 off and is caught.
+* On CI the numpy-dependent steps of the gate skip when numpy is not installed (`ci-numpy`, #83), so there this file prints "skip"; the numbers here are from a machine with numpy.
+
+### 11.5 Arms Z, R and G(N), 2,000 poses per set [measured]
+
+Mean Euclidean position error, mm, with the 95% percentile bootstrap interval (10,000 resamples of the 2,000 poses, `default_rng(20261104)`). One training run per N (the interval is over poses, not over training seeds). G: 40,000 Adam steps of 250, lr 1e-2, the four runs started together on the CPU session (a step is 8.7 ms alone; running four together made no measurable difference, 346 to 348 s each), the M8 job and the gate running beside them. "Wall" is the session's: process start, loading the tables and 40,000 steps; generating 10^6 poses and their kinematics in numpy took 0.8 s more.
+
+| arm | wall | interior, mm [95% CI] | band, mm [95% CI] | band / interior |
+|---|---|---|---|---|
+| Z (all weights zero) | 0 | 371.42 [366.03, 376.64] | 294.66 [288.34, 300.86] | 0.8 |
+| (constant at the mean training position, for reference) | 0 | 308.28 [305.35, 311.21] | 271.55 [268.06, 274.95] | 0.9 |
+| R (Glorot-uniform init) | 0 | 769.27 [757.65, 780.92] | 735.84 [723.00, 749.05] | 1.0 |
+| G(10^3) | 347 s | 2.70 [2.58, 2.82] | 13.89 [13.22, 14.56] | 5.1 |
+| G(10^4) | 346 s | 1.48 [1.42, 1.53] | 8.61 [8.17, 9.06] | 5.8 |
+| G(10^5) | 348 s | 1.28 [1.24, 1.32] | 8.28 [7.83, 8.74] | 6.5 |
+| G(10^6) | 347 s | 1.29 [1.25, 1.34] | 9.11 [8.63, 9.60] | 7.1 |
+
+Reading it (without applying the W rules of section 7, which have no W to apply to):
+* **The CPU session path is not too slow for 10^6 samples**: the step does not depend on N (tables of minibatches), so every arm costs 40,000 x 8.7 ms; nothing was cut and nothing is labelled as reduced. What is not done is more steps for larger N: at the same step count G(10^5) and G(10^6) are the same within the intervals (1.28 and 1.29 mm interior), so the curve flattens by 10^5 for this recipe, and **it may be the step count or the learning rate, not the data**, that sets the floor; not tested.
+* **G(N) beats Z and R by two orders of magnitude and is under the "useful" line of 5 mm on the interior at every N, but not on the band**: the band error is 5 to 7 times the interior error, so by the rule of section 7 (band within 2x of interior) **no G arm captures the structure outside the data**: the networks interpolate. A writer that captures the rotation structure would show a ratio near 1, which is what the band set is for.
+* The thresholds W has to beat, by the section 7 rule (median interior error below G(N)'s lower bound): 2.58 (10^3), 1.42 (10^4), 1.24 (10^5), 1.25 (10^6) mm.
+* R is worse than Z (769 against 371 mm): a random tanh network outputs values of order one metre where the arm moves within about half a metre.
+* G(10^3) has 40,000 steps over 4 minibatches (10,000 epochs) and still generalises to 2.7 mm interior; it was not early-stopped (the recipe is fixed; early stopping on a validation set would help it).
+
+### 11.6 What the design had wrong, found while building (corrected in place above, with this date)
+
+1. "Differential tests C4 hold it to 0.1 mm against placo": the test gates at 1e-9 m (section 7, first paragraph).
+2. "Z ... the error of predicting the mean": all-zero weights predict the origin (section 7 table). Z is a weaker null than the mean predictor (371 against 308 mm).
+3. "Adam, the M1 recipe": M1's learning rate (1e-3) is 2.3 times worse than 1e-2 at N = 10^4 and 20,000 steps (not run at 10^5); the shape (warm-up, cosine) is M1's (section 7 table).
+4. "harness ~400 lines": 591 for the harness, sandbox and checklist; 1,222 with everything else; "G(10^6) minutes": 5.8 minutes (section 9 table).
+5. The training stack had no tanh, no regression and no multi-output kernels: three small kernels were written (`tanh_fwd.chx`, `lin_out.chx`, `tanh_bwd.chx`); no compiler change was needed. Two surface facts learned: an operation that borrows and moves the same tile is refused (`moved-while-borrowed`), and so is a `1 - h*h`, so the derivative is written (1 + h)(1 - h) with the second factor as `0 - h` plus one; and a local named like a parameter (`b` for a tile in a kernel with a parameter `b`) is a leak error (the same trap as cancho#236, here in `.chx`).
+6. Section 4 says the agent "never receives the scorer's samples" and "forward draws fresh held-in samples": true, but a `describe()` that gives the URDF table lets a writer compute the same function itself in its sandbox; the score then only confirms. That is intended (the post's writers have the rules), and it makes W(0) with `--spec chain` the strong form of the arm and T (kinematics as Python) the control for the encoding. Whether to give the table is the choice recorded in 11.2.
+
+### 11.7 Not done
+
+* No writer arm (W, T), no agent run: the harness is built and tested, nothing has driven it. Per-pose logging, the authors' log format (section 4, **[open]**) and token counting are the driver's: the harness logs the counts the driver passes with `--tokens-in/--tokens-out` and nothing else.
+* The checklist and the sandbox have not been tried against an agent trying to evade them; the tests use planted programs written by the author of the checklist, which is the weakest kind of test for a heuristic.
+* No second training seed, no longer G runs, no validation of G beyond the learning rate.
+* Metal / GPU: not used (by instruction). The gate's GPU-less steps all ran; see the report for what CI will run.

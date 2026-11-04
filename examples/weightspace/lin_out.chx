@@ -1,0 +1,28 @@
+// The linear output layer of a regression on a minibatch: y = h w^T + bias [b, n]; with targets t the residual e = y - t, written as it is and transposed
+// (et = eye e^T, a product with the identity, since the surface has no transposing store). The loss e^T e / 2b and the gradient are the caller's (the 1/b is the optimiser's `gs`).
+algo lin_out(b, k, n, bm)
+  in  hin:  f32[b, k]
+  in  w:    f32[n, k]
+  in  bias: f32[1, n]
+  in  t:    f32[b, n]
+  in  eye:  f32[n, n]
+  out y:    f32[b, n]
+  out e:    f32[b, n]
+  out et:   f32[n, b]
+{
+  grid i over b / bm
+  let x  = load hin[i * bm, 0 ; bm, k]
+  let wt = load w
+  let z  = matmul_nt x wt
+  let bt = load bias
+  let yb = z + bt
+  store &yb * 1.0 -> y[i * bm, 0]
+  let tt = load t[i * bm, 0 ; bm, n]
+  let d  = yb - tt
+  store &d * 1.0 -> e[i * bm, 0]
+  let ey = load eye
+  store matmul_nt ey d -> et[0, i * bm]
+}
+
+schedule lin_out for apple-m-series { threads 128 }
+schedule lin_out for nvidia-ada     { threads 128 }
