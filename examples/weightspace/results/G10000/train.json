@@ -1,0 +1,9 @@
+{
+ "arm": "G(10000)",
+ "n": 10000,
+ "steps": 40000,
+ "batch": 250,
+ "lr": 0.01,
+ "train_seconds": 346.0039749145508,
+ "last_minibatch_loss_standardised": 3.821782721206546e-05
+}

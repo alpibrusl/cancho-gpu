@@ -1,0 +1,29 @@
+// The backward of a tanh layer: from the gradient dzn [b, n2] of the layer above and its weights w [n2, n], dh = dzn w and dz = dh (1 - h^2) for this layer's activations h [b, n]
+// (1 - h^2 is written (1 + h) (1 - h), the second factor as 0 - h plus 1: a constant has no shape of its own, docs/training.md section 4); dz is written as it is and transposed (dzt = eye dz^T).
+// (examples/train/hid_bwd.chx with the derivative of tanh for that of relu.)
+algo tanh_bwd(b, n, n2, bm)
+  in  dzn:  f32[b, n2]
+  in  w:    f32[n2, n]
+  in  h:    f32[b, n]
+  in  eye:  f32[n, n]
+  out dz:   f32[b, n]
+  out dzt:  f32[n, b]
+{
+  grid i over b / bm
+  let d  = load dzn[i * bm, 0 ; bm, n2]
+  let wt = load w
+  let dh = matmul d wt
+  let hh = load h[i * bm, 0 ; bm, n]
+  let hp = &hh + 1.0
+  let z  = zeros f32[bm, n]
+  let nh = z - hh
+  let hm = nh + 1.0
+  let u  = hp * hm
+  let g  = dh * u
+  store &g * 1.0 -> dz[i * bm, 0]
+  let e  = load eye
+  store matmul_nt e g -> dzt[0, i * bm]
+}
+
+schedule tanh_bwd for apple-m-series { threads 128 }
+schedule tanh_bwd for nvidia-ada     { threads 128 }
