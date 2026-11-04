@@ -185,6 +185,84 @@ for sig in TERM HUP; do
   pkill -f "sleep 60" 2>/dev/null || true
 done
 
+# --- the compiler install (remote_cuda.sh sourced as a library) -------------
+# Stub curl serves a fake release from $W/rel; a stub cargo and git stand in for
+# the source build. Nothing leaves the machine.
+PIN=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' "$ROOT/cancho.toml")
+REL=5a5dd1f21250b96b3f735a45b781489374219466
+mkdir -p "$W/cb" "$W/rel"
+cat > "$W/cb/curl" <<'STUB'
+#!/bin/sh
+out=""; url=""; wfmt=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o|--output) out=$2; shift ;; -w) wfmt=$2; shift ;; -*) ;; *) url=$1 ;; esac
+  shift
+done
+echo "curl $url" >> "$STUB_CURL_LOG"
+if [ -n "$wfmt" ]; then echo "https://github.com/x/cancho/releases/tag/cancho-$STUB_REL"; exit 0; fi
+f="$STUB_REL_DIR/$(basename "$url")"
+[ -f "$f" ] || exit 22
+cp "$f" "$out"
+STUB
+cat > "$W/cb/cargo" <<'STUB'
+#!/bin/sh
+echo "cargo $*" >> "$STUB_CURL_LOG"
+mkdir -p target/release && printf '#!/bin/sh\necho built-from-source\n' > target/release/cancho && chmod +x target/release/cancho
+STUB
+cat > "$W/cb/git" <<'STUB'
+#!/bin/sh
+echo "git $*" >> "$STUB_CURL_LOG"
+[ "$1" = clone ] && eval "mkdir -p \"\${$#}\""
+exit 0
+STUB
+chmod +x "$W/cb/curl" "$W/cb/cargo" "$W/cb/git"
+name=cancho-rust-$REL-linux-x86_64
+mkdir -p "$W/pk/$name/bin"
+printf '#!/bin/sh\necho released\n' > "$W/pk/$name/bin/cancho"; chmod +x "$W/pk/$name/bin/cancho"
+tar -czf "$W/rel/$name.tar.gz" -C "$W/pk" "$name"
+sum=$( (sha256sum "$W/rel/$name.tar.gz" 2>/dev/null || shasum -a 256 "$W/rel/$name.tar.gz") | cut -d' ' -f1)
+printf '%s  %s.tar.gz\n' "$sum" "$name" > "$W/rel/$name.tar.gz.sha256"
+install_case() { # name, extra env words; runs install and the summary logic in a fresh HOME
+  local c=$1; shift
+  export STUB_CURL_LOG=$W/$c.calls STUB_REL=$REL STUB_REL_DIR=$W/rel; : > "$STUB_CURL_LOG"
+  local h=$W/$c.home; mkdir -p "$h/cancho-gpu"; cp "$ROOT/cancho.toml" "$h/cancho-gpu/"
+  ( cd "$h/cancho-gpu" && env HOME="$h" PATH="$W/cb:$PATH" REMOTE_CUDA_LIB=1 STEPS=toolchain "$@" bash -c '
+      . '"$G"'/remote_cuda.sh; build_compiler; echo "rc=$? id=$(cat $HOME/cancho-bin/id) rev=$(cat $HOME/cancho-bin/rev)"; echo "cmd=$(cancho_cmd)"' ) > "$W/$c.txt" 2>&1
+}
+install_case rel
+has "$W/rel.txt" "rc=0 id=release:cancho-$REL:rust rev=$REL" "release path chosen: latest resolved, rust asset installed"
+has "$W/rel.txt" "sha256 ok" "the sha256 was checked"
+hasnt "$W/rel.calls" "cargo\|git clone\|rustup" "no Rust and no source build when a release is used"
+has "$W/rel.calls" "cancho-rust-$REL-linux-x86_64.tar.gz.sha256" "the .sha256 asset is fetched"
+if [ "$PIN" != "$REL" ]; then
+  has "$W/rel.txt" "cmd=.*cancho-ignore-rev" "rev differs from the pin: the --ignore-compiler-rev wrapper is used"
+  has "$W/rel.home/cancho-bin/cancho-ignore-rev" '--ignore-compiler-rev' "the wrapper adds the flag to project-mode build/test"
+fi
+# The same release when it IS the pin: no flag.
+mkdir -p "$W/same.home/cancho-gpu"
+sed "s/^cancho = \"[0-9a-f]*\"/cancho = \"$REL\"/" "$ROOT/cancho.toml" > "$W/same.home/cancho-gpu/cancho.toml"
+( cd "$W/same.home/cancho-gpu" && STUB_CURL_LOG=$W/same.calls STUB_REL=$REL STUB_REL_DIR=$W/rel HOME=$W/same.home PATH=$W/cb:$PATH \
+  REMOTE_CUDA_LIB=1 bash -c '. '"$G"'/remote_cuda.sh; build_compiler >/dev/null; echo "cmd=$(cancho_cmd)"' ) > "$W/same.txt" 2>&1
+hasnt "$W/same.txt" "ignore-rev" "rev equal to the pin: no --ignore-compiler-rev"
+# A published hash that does not match: refused, the pinned commit is built.
+cp "$W/rel/$name.tar.gz.sha256" "$W/rel/good.sha"
+printf '%064d  %s.tar.gz\n' 0 "$name" > "$W/rel/$name.tar.gz.sha256"
+install_case bad
+has "$W/bad.txt" "sha256 MISMATCH" "a sha256 mismatch is reported"
+has "$W/bad.txt" "falling back to building the pinned commit $PIN" "a mismatch falls back to the source build"
+has "$W/bad.calls" "cargo build --release -p cancho" "the fallback builds with cargo"
+has "$W/bad.txt" "id=source:$PIN rev=$PIN" "the fallback binary is the pinned one"
+hasnt "$W/bad.txt" "ignore-rev" "a pinned source build needs no --ignore-compiler-rev"
+cp "$W/rel/good.sha" "$W/rel/$name.tar.gz.sha256"
+# No release at all (download fails): the same fallback.
+rm -f "$W/rel/$name.tar.gz"
+install_case gone
+has "$W/gone.txt" "falling back to building the pinned commit" "a failed download falls back to the source build"
+# CANCHO_RELEASE=source never touches the release.
+install_case src CANCHO_RELEASE=source
+hasnt "$W/src.calls" "releases" "CANCHO_RELEASE=source asks for no release"
+has "$W/src.txt" "id=source:$PIN" "CANCHO_RELEASE=source builds the pin"
+
 # --- sweep ------------------------------------------------------------------
 new_case sweep0
 PATH=$W/bin:$PATH GCP_PROJECT=fake-project bash "$G/sweep.sh" > "$W/sweep0.txt" 2>&1; rc=$?

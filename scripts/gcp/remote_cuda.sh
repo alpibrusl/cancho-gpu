@@ -23,6 +23,11 @@
 # (1024,2048,4096,8192), DTYPES ("float32 float16"), BASE_MODELS ("Qwen/Qwen2.5-0.5B
 # Qwen/Qwen2.5-1.5B"), KNOWN_OPEN (gate steps expected to fail: "tests/sampler.sh"),
 # TORCH_INDEX (https://download.pytorch.org/whl/cu126), CANCHO_REPO.
+# The compiler: CANCHO_RELEASE (default latest; a tag, a sha, or `source`) installs
+# the cancho-rust-<sha>-linux-x86_64 release asset after checking its published
+# sha256, and builds the pinned commit from source if that fails. CANCHO_FLAVOUR
+# (rust | standalone). A release whose rev is not the cancho.toml pin runs with
+# --ignore-compiler-rev, and summary.tsv says NOT-PINNED.
 #
 # THE EMULATOR HOOK: another branch (cuda-emu) is building a CUDA-on-CPU
 # emulating mock driver. When it lands, its entry point is run by the `gate`
@@ -62,21 +67,88 @@ SKIP=77
 want() { case " $STEPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- the toolchain: the same on a pre-built image and on a stock one --------
+need_python_ml() { want gemm_bench || want baselines || [ "${WITH_BASELINE_LIBS:-0}" = 1 ]; }
 apt_tools() {
-  command -v clang >/dev/null && command -v cc >/dev/null && python3 -c 'import numpy, jinja2' 2>/dev/null \
-    && python3 -c 'import venv, ensurepip' 2>/dev/null && return 0
-  sudo apt-get update -qq
-  # clang: the cancho compiler's default backend shells out to it.
-  # jinja2, numpy: tests/chat.sh and the kernel references (CI installs jinja2 too).
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential clang python3-venv \
-    python3-jinja2 python3-numpy git curl
+  # Only what the requested steps use. build-essential: `cc` for the shim and
+  # the mock drivers. numpy/jinja2: the gate's references (CI installs jinja2
+  # too). venv: the benchmark's torch/cupy. git: only to build from source.
+  local pkgs="build-essential curl ca-certificates" p missing=""
+  if [ "$MODE" = prepare ] || want gate; then pkgs="$pkgs python3-jinja2 python3-numpy"; fi
+  if [ "$MODE" = prepare ] || need_python_ml; then pkgs="$pkgs python3-venv"; fi
+  if [ "${CANCHO_RELEASE:-latest}" = source ]; then pkgs="$pkgs git"; fi
+  for p in $pkgs; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+  if [ -n "$missing" ] || ! pick_clang; then
+    sudo apt-get update -qq
+    # shellcheck disable=SC2086
+    [ -z "$missing" ] || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $missing
+    pick_clang || for c in clang-18 clang-17 clang-16 clang-15 clang; do
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$c" && break
+    done
+  fi
+  pick_clang || { echo "no clang >= 15 (the compiler's default backend shells out to it)"; return 1; }
+  echo "CLANG=$CLANG ($("$CLANG" --version | head -1))"
 }
-build_compiler() {
-  # The compiler is the commit in cancho.toml (CI reads it the same way). An
-  # image carries a build of it, marked with the rev.
-  if [ -x "$CANCHO_BIN" ] && [ "$(cat "$HOME/cancho-bin/rev" 2>/dev/null)" = "$REV" ]; then
+pick_clang() {
+  # The LLVM IR the compiler writes is too new for clang 14 (Ubuntu 22.04's
+  # default `clang`; docs/standalone-cancho.md), and the Rust build reads $CLANG.
+  local c v
+  for c in clang-18 clang-17 clang-16 clang-15 clang; do
+    command -v "$c" >/dev/null || continue
+    v=$("$c" --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p' | head -1)
+    if [ "${v:-0}" -ge 15 ]; then export CLANG="$c"; return 0; fi
+  done
+  return 1
+}
+RELEASES="${CANCHO_RELEASES_BASE:-https://github.com/alpibrusl/cancho/releases}"
+CANCHO_RELEASE="${CANCHO_RELEASE:-latest}"   # latest | cancho-<sha> | <sha> | source
+CANCHO_FLAVOUR="${CANCHO_FLAVOUR:-rust}"     # rust (CI's compiler; reads $CLANG) | standalone
+ID_FILE="$HOME/cancho-bin/id"
+resolve_release() {
+  # The repository is public, so the VM downloads. (A private one: ship a
+  # local checkout with CANCHO_REPO=<dir> and CANCHO_RELEASE=source.)
+  local final
+  case "$CANCHO_RELEASE" in
+    latest)
+      final=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASES/latest") || return 1
+      REL_TAG="${final##*/tag/}" ;;
+    cancho-*) REL_TAG="$CANCHO_RELEASE" ;;
+    *) REL_TAG="cancho-$CANCHO_RELEASE" ;;
+  esac
+  case "$REL_TAG" in cancho-[0-9a-f]*) ;; *) echo "not a release tag: $REL_TAG"; return 1 ;; esac
+  REL_REV="${REL_TAG#cancho-}"
+}
+fetch_release() {
+  local base name d want got bin
+  case "$CANCHO_FLAVOUR" in
+    rust) name="cancho-rust-$REL_REV-linux-x86_64" ;;
+    standalone) name="cancho-$REL_REV-linux-x86_64" ;;
+    *) echo "CANCHO_FLAVOUR must be rust or standalone"; return 1 ;;
+  esac
+  d=$(mktemp -d)
+  base="$RELEASES/download/$REL_TAG"
+  curl -fsSL -o "$d/$name.tar.gz" "$base/$name.tar.gz" && curl -fsSL -o "$d/$name.tar.gz.sha256" "$base/$name.tar.gz.sha256" \
+    || { echo "download of $name failed"; rm -rf "$d"; return 1; }
+  want=$(awk '{print $1; exit}' "$d/$name.tar.gz.sha256")
+  got=$(sha256sum "$d/$name.tar.gz" | awk '{print $1}')
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    echo "sha256 MISMATCH for $name.tar.gz (published $want, got $got): not used"
+    rm -rf "$d"; return 1
+  fi
+  echo "sha256 ok: $got"
+  tar -xzf "$d/$name.tar.gz" -C "$d" || { rm -rf "$d"; return 1; }
+  bin=$(find "$d" -path '*/bin/cancho' -type f | head -1)
+  [ -n "$bin" ] || { echo "no bin/cancho in $name.tar.gz"; rm -rf "$d"; return 1; }
+  mkdir -p "$HOME/cancho-bin" && cp "$bin" "$CANCHO_BIN" && chmod +x "$CANCHO_BIN" || { rm -rf "$d"; return 1; }
+  echo "$REL_REV" > "$HOME/cancho-bin/rev"
+  echo "release:$REL_TAG:$CANCHO_FLAVOUR" > "$ID_FILE"
+  rm -rf "$d"
+}
+build_compiler_source() {
+  # The pinned commit, built here: needs Rust (installed only on this path).
+  if [ -x "$CANCHO_BIN" ] && [ "$(cat "$ID_FILE" 2>/dev/null)" = "source:$REV" ]; then
     echo "compiler $REV already built ($CANCHO_BIN)"; return 0
   fi
+  if ! command -v git >/dev/null; then sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git || return 1; fi
   if ! command -v cargo >/dev/null; then
     curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null || return 1
     . "$HOME/.cargo/env"
@@ -89,7 +161,42 @@ build_compiler() {
   fi
   (cd "$HOME/cancho" && cargo build --release -p cancho) || return 1
   mkdir -p "$HOME/cancho-bin" && cp "$HOME/cancho/target/release/cancho" "$CANCHO_BIN" \
-    && echo "$REV" > "$HOME/cancho-bin/rev"
+    && echo "$REV" > "$HOME/cancho-bin/rev" && echo "source:$REV" > "$ID_FILE"
+}
+build_compiler() {
+  # A release binary by default, checked against its published sha256; on any
+  # failure (no network, no release, mismatch) the pinned commit is built.
+  if [ "$CANCHO_RELEASE" != source ]; then
+    if resolve_release; then
+      if [ -x "$CANCHO_BIN" ] && [ "$(cat "$ID_FILE" 2>/dev/null)" = "release:$REL_TAG:$CANCHO_FLAVOUR" ]; then
+        echo "compiler $REL_TAG ($CANCHO_FLAVOUR) already installed"; return 0
+      fi
+      fetch_release && return 0
+    fi
+    echo "release install failed: falling back to building the pinned commit $REV from source"
+  fi
+  build_compiler_source
+}
+# The compiler command the steps use. cancho-gpu refuses any compiler but the
+# one in cancho.toml for project builds; when the installed one is a different
+# rev, a wrapper adds --ignore-compiler-rev to project-mode build/test (file
+# mode takes no such flag). Results are then NOT pinned-compiler results, and
+# the summary says so.
+cancho_cmd() {
+  if [ "$(cat "$HOME/cancho-bin/rev" 2>/dev/null)" = "$REV" ]; then echo "$CANCHO_BIN"; return; fi
+  local w="$HOME/cancho-bin/cancho-ignore-rev"
+  mkdir -p "$HOME/cancho-bin"
+  cat > "$w" <<WRAP
+#!/bin/sh
+REAL=$CANCHO_BIN
+case "\$1" in
+  build|test)
+    for a in "\$@"; do case "\$a" in *.cho) exec "\$REAL" "\$@" ;; esac; done
+    exec "\$REAL" "\$@" --ignore-compiler-rev ;;
+  *) exec "\$REAL" "\$@" ;;
+esac
+WRAP
+  chmod +x "$w"; echo "$w"
 }
 pyenv() {
   # torch and cupy for the benchmark; transformers and peft only for baselines.
@@ -120,6 +227,8 @@ if [ "$MODE" = prepare ]; then
   exit 0
 fi
 
+[ "${REMOTE_CUDA_LIB:-0}" = 1 ] && return 0   # tests/gcp.sh sources the functions above
+
 # ---- steps ------------------------------------------------------------------
 s_machine() {
   # The pre-built image carries the driver already; with no module for the
@@ -143,7 +252,12 @@ s_toolchain() {
   apt_tools || return 1
   build_compiler || return 1
   "$CANCHO_BIN" --version 2>&1 | head -1
-  CANCHO="$CANCHO_BIN" "$CANCHO_BIN" build || return 1
+  echo "compiler: $(cat "$ID_FILE"); cancho.toml pins $REV; installed rev $(cat "$HOME/cancho-bin/rev")"
+  if [ "$(cat "$HOME/cancho-bin/rev")" != "$REV" ]; then
+    echo "NOT THE PINNED COMPILER: building and testing with --ignore-compiler-rev"
+  fi
+  local cc_; cc_="$(cancho_cmd)"
+  CANCHO="$cc_" "$cc_" build || return 1
   ls -l build/cancho-gpu
 }
 gate_units() {
@@ -158,7 +272,7 @@ gate_units() {
 is_known_open() { case " $KNOWN_OPEN " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 s_gate() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
-  export CANCHO="$CANCHO_BIN" ROOT="$SRC"
+  export CANCHO="$(cancho_cmd)" ROOT="$SRC"
   local fails=0 known=0 n=0 line unit head rc
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -181,7 +295,7 @@ s_gate() {
 }
 emulator_hook() {
   [ -f "$EMU_ENTRY" ] || { echo "no $EMU_ENTRY yet (the cuda-emu branch): nothing to run"; return $SKIP; }
-  CANCHO="$CANCHO_BIN" bash "$EMU_ENTRY"
+  CANCHO="$(cancho_cmd)" bash "$EMU_ENTRY"
 }
 s_nvrtc() {
   local files
@@ -192,7 +306,7 @@ s_nvrtc() {
 }
 s_device_cases() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
-  CANCHO="$CANCHO_BIN" scripts/build-device.sh || return 1
+  CANCHO="$(cancho_cmd)" scripts/build-device.sh || return 1
   nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
   python3 scripts/gcp/device_cases.py --bin build/cancho-gpu-device --timeout "$CASE_TIMEOUT" \
     --jobs "$JOBS" --json "$R/device_cases.json"
@@ -210,7 +324,7 @@ s_gemm_bench() {
 }
 s_job() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
-  export CANCHO="$CANCHO_BIN"
+  export CANCHO="$(cancho_cmd)"
   cat "$HOME/job.sh"
   bash -e -o pipefail "$HOME/job.sh"
 }
@@ -261,6 +375,10 @@ else
   want baselines && run_step baselines s_baselines
 fi
 
+if [ -f "$HOME/cancho-bin/rev" ]; then
+  if [ "$(cat "$HOME/cancho-bin/rev")" = "$REV" ]; then st=PINNED; else st=NOT-PINNED-ignore-compiler-rev; fi
+  printf 'compiler\t%s\t%s (cancho.toml pin %s)\n' "$st" "$(cat "$ID_FILE" 2>/dev/null)" "$REV" | tee -a "$R/summary.tsv" > "$R/compiler.txt"
+fi
 echo; echo "=== summary"; column -t -s "$(printf '\t')" "$R/summary.tsv" 2>/dev/null || cat "$R/summary.tsv"
 if grep -q "FAIL" "$R/summary.tsv"; then exit 1; fi
 exit 0

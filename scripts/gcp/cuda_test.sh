@@ -42,6 +42,17 @@
 #                URL (default https://github.com/alpibrusl/cancho) or a LOCAL
 #                checkout, from which the pinned commit is shipped by `git
 #                archive` (use this if the repository is private).
+#   CANCHO_RELEASE the compiler the VM INSTALLS instead of building: `latest`
+#                (default), a release tag/sha, or `source` (build the pinned
+#                commit from CANCHO_REPO, which needs Rust and minutes). The
+#                VM downloads cancho-rust-<sha>-linux-x86_64.tar.gz from
+#                github.com/alpibrusl/cancho/releases (public), checks its
+#                published sha256 and, if the download or the check fails,
+#                falls back to building from source. A release whose rev is not
+#                the cancho.toml pin is run with --ignore-compiler-rev and
+#                summary.tsv says NOT-PINNED: such a run is not a pinned-compiler
+#                result. CANCHO_FLAVOUR=rust (default; CI's compiler, reads
+#                $CLANG) or standalone (built by cancho; untested here).
 #   OUT_DIR      where results go (default results/gcp/<time>-<gpu>).
 #   More (CASE_TIMEOUT, JOBS, SIZES, DTYPES, KNOWN_OPEN, TORCH_INDEX) are
 #   passed through to remote_cuda.sh; its header lists them.
@@ -255,7 +266,7 @@ fi
 
 # Settings the remote script reads, passed as one quoted env prefix.
 fwd=""
-for v in CASE_TIMEOUT JOBS SIZES DTYPES KNOWN_OPEN TORCH_INDEX BASE_MODELS; do
+for v in CASE_TIMEOUT JOBS SIZES DTYPES KNOWN_OPEN TORCH_INDEX BASE_MODELS CANCHO_RELEASE CANCHO_FLAVOUR; do
   if [ -n "${!v:-}" ]; then fwd="$fwd $v='${!v}'"; fi
 done
 remote_cmd="mkdir -p cancho-gpu && tar -xzf src.tar.gz -C cancho-gpu && STEPS='$STEPS' CANCHO_REPO='$REMOTE_REPO' JOB='${JOB:+1}' GPU='$GPU'$fwd bash cancho-gpu/scripts/gcp/remote_cuda.sh"

@@ -29,7 +29,7 @@ and a step whose prerequisite failed says `SKIP`. `summary.tsv` has the verdicts
 | step | what | answers |
 |---|---|---|
 | `machine` | `nvidia-smi`, driver, CUDA, CPU, machine type | what was this run on |
-| `toolchain` | clang, Rust, the compiler **at the `cancho.toml` pin**, `cancho build` | prerequisite of the rest |
+| `toolchain` | clang (>= 15), the compiler **installed from a release** (sha256-checked; built from source at the pin only as a fallback), `cancho build` | prerequisite of the rest |
 | `gate` | `scripts/gate.sh`'s own lines, one at a time | does everything GPU-free pass on Linux |
 | `nvrtc` | every `golden/*/*.cu` under the **real NVRTC**, `compute_89`, then `ptxas -v` | does the emitted CUDA compile, with per-case errors, registers and spills |
 | `device_cases` | `tests/cases.txt` through `cancho-gpu-device` on the GPU against the interpreter | do the numbers agree at the program's threshold (2e-2 of the output's peak), per case |
@@ -92,8 +92,17 @@ kernel.
 | `ZONES` | zones in order; default EU first, then US, then Asia (no user data on these runs, which is why leaving the EU is allowed; pin a region by setting it) |
 | `STEPS`, `BASELINES=1`, `JOB` | which steps; opt-in baselines; one command alone |
 | `IMAGE_FAMILY` | boot from `cancho-gpu-l4` if it exists in the project (`build_image.sh`), else the stock Deep Learning image |
-| `CANCHO_REPO` | git URL (default `https://github.com/alpibrusl/cancho`) **or a local checkout**, from which the pinned commit is shipped (for a private repository) |
+| `CANCHO_RELEASE` | the compiler to install: `latest` (default), a tag or sha, or `source`. The VM downloads `cancho-rust-<sha>-linux-x86_64.tar.gz` and its `.sha256` from the public `alpibrusl/cancho` releases (so on the VM, not via `gh` and scp), verifies the hash, and **falls back to building the pinned commit** if the download or the check fails. Rust is installed only on that fallback. `CANCHO_FLAVOUR=rust` (default: what CI builds, reads `$CLANG`) or `standalone` (built by cancho; reads `/usr/bin/clang`; untested here) |
+| `CANCHO_REPO` | for the source fallback or `CANCHO_RELEASE=source`: git URL (default `https://github.com/alpibrusl/cancho`) **or a local checkout**, from which the pinned commit is shipped (for a private repository) |
 | `OUT_DIR`, `CASE_TIMEOUT`, `JOBS`, `SIZES`, `DTYPES`, `BASE_MODELS`, `KNOWN_OPEN`, `TORCH_INDEX` | results dir; step 4/5/7 settings |
+
+**Pinned or not.** `cancho.toml` pins a commit with no release, so the usual
+release differs from the pin. The script prints pin and release rev, runs
+project-mode `build`/`test` through a wrapper that adds `--ignore-compiler-rev`
+only when they differ, and writes `compiler NOT-PINNED-ignore-compiler-rev` to
+`summary.tsv` (and `compiler.txt`). Such a run is not a pinned-compiler result;
+quote it as "compiler `<rev>`". Only `CANCHO_RELEASE=source` (or a release equal
+to the pin) gives `PINNED`.
 
 ## Cost guard rails
 
@@ -140,8 +149,9 @@ The cap is the guard: even a stuck run costs at most `MAX_RUN` of the VM.
 `scripts/gcp/build_image.sh` builds `cancho-gpu-l4` on a Spot CPU VM (toolchain,
 the compiler at the pin, the venv with torch and cupy, optionally the Qwen
 weights with `WITH_BASELINE_LIBS=1`). It is **not needed for a first run**: the
-compiler is 120k lines of Rust, minutes to build, and clang plus Rust a minute or
-two, which is cents at Spot prices (measured on the first run, not before). It
+compiler is a downloaded release binary (about 1 MB), so only clang and a few apt
+packages remain (a minute); building it from source, the fallback, is minutes plus
+Rust. Neither is measured yet. It
 pays when the ~4 GB of wheels and ~4 GB of weights are downloaded at the GPU's
 rate on every run, or when the scripts are being iterated on.
 

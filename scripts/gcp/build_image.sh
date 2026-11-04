@@ -6,9 +6,9 @@
 #   DRY_RUN=1 scripts/gcp/build_image.sh        # print the gcloud commands
 #
 # Why this is optional, and when it earns its keep (docs/cloud.md): the cancho
-# compiler is ~120k lines of Rust in 134 crates, and a release build of it on
-# the GPU VM's 8 vCPUs is minutes (not measured: the first run will say), the
-# Rust toolchain and clang a minute or two. At Spot L4 prices that is cents per
+# compiler is installed from a ~1 MB release binary (CANCHO_RELEASE; building
+# it from source is the fallback), so what a run installs is clang and a few apt
+# packages, about a minute (not measured). At Spot L4 prices that is cents per
 # run, so a single run does not need an image. What does: torch + cupy (~4 GB of
 # wheels) and, with WITH_BASELINE_LIBS=1, transformers/peft and the Qwen weights
 # (~4 GB) fetched at the GPU's hourly rate on every run, and a loop of runs
@@ -128,7 +128,7 @@ else
 fi
 # `prepare` leaves ~/cancho-src.tar.gz and the source behind; a run brings its own source.
 gc compute ssh "$NAME" --zone "$ZONE" --command \
-  "mkdir -p cancho-gpu && tar -xzf src.tar.gz -C cancho-gpu && CANCHO_REPO='$REMOTE_REPO' WITH_BASELINE_LIBS='$WITH_BASELINE_LIBS' bash cancho-gpu/scripts/gcp/remote_cuda.sh prepare" \
+  "mkdir -p cancho-gpu && tar -xzf src.tar.gz -C cancho-gpu && CANCHO_REPO='$REMOTE_REPO' CANCHO_RELEASE='${CANCHO_RELEASE:-latest}' WITH_BASELINE_LIBS='$WITH_BASELINE_LIBS' bash cancho-gpu/scripts/gcp/remote_cuda.sh prepare" \
   2>&1 | tee "$OUT/prepare.log"
 if [ "$DRY_RUN" != 1 ]; then
   grep -q "image contents ready" "$OUT/prepare.log" || { echo "preparation did not finish; no image made" >&2; exit 1; }
