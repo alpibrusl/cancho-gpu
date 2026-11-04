@@ -350,3 +350,6 @@ Feasible, in kernels the surface already expresses; the cost is launches, not a 
 
 ### 9.9 Limits of this section
 One machine; every 27B number is arithmetic on a model calibrated on the 7B run and on forward probes, except the manifest bytes, the dense MLX rates, the probe times and the tiny-model MLX runs; the probe times are single launches alone with zero inputs (the shim's profile adds up to 60 us to small kernels); the backward launches, the full-attention layer's specification (gate, q/k norm, partial RoPE, `(1 + w)` norms) and the session writer for the architecture are not written; the f16 error is measured on synthetic data; nothing ran on CUDA; no 27B weight was read except the manifest and the config.
+
+## 10. M11: weights written by a model, run in cancho (design: `weight-space.md`)
+A design, written before any run, for testing the claims of "Sparks of Weight-Space Programming" (2026-11-02) with what this repository has: a free diagnostic on M8's outputs (does the tuned model loop?), a reduced reproduction of the Qwen3.5-0.8B edit, and a comparison on the SO-101 forward kinematics of weights written by a model against the same network trained by cancho-gpu. Nothing is built.
