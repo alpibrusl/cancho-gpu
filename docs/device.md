@@ -320,7 +320,7 @@ only:
   model-sized cases whose tensors the interpreter cannot hold (`error[interp]`,
   `noref` in `tests/cuda-emu-known.txt`): `tests/cuda_emu_big.py` runs them at
   full size with random inputs and the checks that need no reference, and
-  BIGRESULT. A second full run under another seed (`CANCHOGPU_EMU_SEED=7`)
+  **11 of them run clean at full size** (the largest, `matvec_rows n=151936` and `matvec_fp4_rows n=248320`, 31040 blocks, in 102 s and 165 s for both schedules); the 12th, `gemm_fp4_res m=512 n=5120 k=17408` (45 G multiply-adds), was run at `m=128` (same `n`, `k` and kernel; 409 s) and is clean; the `m=512` grid did not finish in half an hour and was stopped. A second full run under another seed (`CANCHOGPU_EMU_SEED=7`)
   also passes (234 agree, 12 `noref`, no finding). About two minutes cold, a quarter of that with the compile cache.
 * **No hardware-free check found a bug at the sizes the goldens record.** The
   bugs are at other sizes (below); a green `tests/cuda-emu.sh` says nothing
