@@ -1,0 +1,8 @@
+{
+ "budget": 0,
+ "init": "zeros",
+ "spec": "chain",
+ "backend": "session",
+ "session": "/Users/alfonso/Workspace/alpibrusl/cancho-gpu-ws2/build/cancho-gpu-session",
+ "timeout": 20.0
+}
