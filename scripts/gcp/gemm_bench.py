@@ -133,6 +133,37 @@ def timed(fn, warmup, iters, min_seconds):
     return statistics.median(ms), smp.summary()
 
 
+def occupancy(kern, threads, sms):
+    """(blocks per SM, source, [errors]). Tried in order: cupy's binding of
+    cuOccupancyMaxActiveBlocksPerMultiprocessor; the same driver call through ctypes
+    on libcuda; an ESTIMATE from the kernel's registers and static shared memory with
+    Ada's limits (65536 registers, 100 KB shared, 1536 threads, 24 blocks per SM),
+    labelled as such. Every failure is kept and printed, never a bare None."""
+    errs = []
+    try:
+        return int(cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(kern.ptr, threads, 0)), "cupy driver binding", errs
+    except Exception as e:  # noqa: BLE001
+        errs.append("cupy binding: %s: %s" % (type(e).__name__, str(e)[:80]))
+    try:
+        import ctypes
+        lib = ctypes.CDLL("libcuda.so.1")
+        n = ctypes.c_int(0)
+        rc = lib.cuOccupancyMaxActiveBlocksPerMultiprocessor(ctypes.byref(n), ctypes.c_void_p(kern.ptr), ctypes.c_int(threads), ctypes.c_size_t(0))
+        if rc == 0:
+            return n.value, "libcuda via ctypes", errs
+        errs.append("libcuda returned %d" % rc)
+    except Exception as e:  # noqa: BLE001
+        errs.append("ctypes: %s: %s" % (type(e).__name__, str(e)[:80]))
+    try:
+        regs = max(1, kern.num_regs)
+        by_regs = 65536 // (((regs * 32 + 255) // 256) * 256 * ((threads + 31) // 32))
+        by_smem = (102400 // (kern.shared_size_bytes + 1024)) if kern.shared_size_bytes else 24
+        return max(0, min(by_regs, by_smem, 1536 // threads, 24)), "ESTIMATE from regs/smem (API unavailable)", errs
+    except Exception as e:  # noqa: BLE001
+        errs.append("estimate: %s" % e)
+    return None, "", errs
+
+
 def kernel_info(kern, src, threads, grid, sms):
     info = {"grid": list(grid), "block": threads, "blocks_total": grid[0] * grid[1],
             "static_smem_bytes": kern.shared_size_bytes, "regs_cupy": kern.num_regs, "local_bytes_cupy": kern.local_size_bytes}
@@ -144,14 +175,15 @@ def kernel_info(kern, src, threads, grid, sms):
             info["ptxas"] = ptxas_report(ptx)
     except Exception as e:  # noqa: BLE001 - diagnostic only
         info["ptxas_error"] = str(e)[:100]
-    try:
-        per_sm = cp.cuda.driver.occupancyMaxActiveBlocksPerMultiprocessor(kern.ptr, threads, 0)
+    per_sm, how, errs = occupancy(kern, threads, sms)
+    if per_sm is None:
+        info["occupancy_error"] = "; ".join(errs)
+    else:
         info["blocks_per_sm"] = per_sm
+        info["occupancy_source"] = how
         info["resident_blocks"] = per_sm * sms
         info["waves"] = round(info["blocks_total"] / max(1, per_sm * sms), 2)
         info["occupancy_warps_pct"] = round(100.0 * per_sm * threads / 32 / 48, 1)  # Ada: 48 warps per SM
-    except Exception as e:  # noqa: BLE001
-        info["occupancy_error"] = str(e)[:100]
     return info
 
 
@@ -220,7 +252,7 @@ def main():
               f"throttle {o.get('throttle_reasons_or')}, {o.get('samples')} samples | cublas SM {c.get('sm_mhz_median')} MHz, {c.get('power_w_median')} W, throttle {c.get('throttle_reasons_or')}")
         px = ki.get("ptxas", {})
         print(f"    kernel: grid {ki['grid']} = {ki['blocks_total']} blocks x {ki['block']} threads, static smem {ki['static_smem_bytes']} B, "
-              f"regs {ki['regs_cupy']} (ptxas {px.get('registers')}, spill {px.get('spill_bytes')} B), blocks/SM {ki.get('blocks_per_sm')}, "
+              f"regs {ki['regs_cupy']} (ptxas {px.get('registers')}, spill {px.get('spill_bytes')} B), blocks/SM {ki.get('blocks_per_sm')} ({ki.get('occupancy_source', 'NOT AVAILABLE: ' + ki.get('occupancy_error', '?'))}), "
               f"warp occupancy {ki.get('occupancy_warps_pct')}%, waves {ki.get('waves')}")
         del ca, cw, ta, tw
         cp.get_default_memory_pool().free_all_blocks()

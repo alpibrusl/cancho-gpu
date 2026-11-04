@@ -108,6 +108,19 @@ under the 48 KB static limit in `src/dialect.cho`; `bk 64` at 128x256 would be 5
 refused, the 99 KB opt-in needing dynamic shared memory the shim does not set) and a different
 warp split; not expressible: software pipelining or `cp.async`.
 
+**Measured in run 4 (one run; the L4 is a single card on a single day).** The L4 is
+**power-capped** (72 W): in the 4096x4096x8192 shape ours ran at an SM clock of about
+**735 MHz against 922 MHz for cuBLAS**, with throttle reason `0x4` (SW power cap), so a
+part of the gap to cuBLAS is that ours draws more power per flop, not only its memory
+traffic. The block-order experiment helps ours at large sizes: **8192^3 from 47% to
+67% of the 60.6 TFLOPS measured peak, 6144^3 from 55% to 70%**, and slightly hurts at
+2048 to 4096 (**79% to 69% at 4096^3**). That supports block order (L2 reuse) as a
+cause of the large-size fall-off without proving it, and says a fixed grouped order is
+not a free win: it would want to depend on the size. The first run of this step
+(run 4) also printed `blocks/SM None`: the occupancy call returned nothing; it now falls
+back from cupy's binding to the driver call through ctypes to a labelled estimate, and
+prints the errors instead of `None`.
+
 **`sandbox_linux` and the gate on the VM.** The test reported `FAIL a network call is
 refused (None)` with the program run to completion. `audit_probe.py` tries the same
 three calls (`socket.create_connection`, `urllib.request.urlopen`,
@@ -249,6 +262,12 @@ the cleanup trap. (`tests/gcp.sh` reproduces the second against the old script.)
 `machine.txt`), and `cupy.RawModule` found the pip wheel's `mma.h` (no `crt/`)
 instead of the toolkit's (`gemm_bench.py` now passes the toolkit include first).
 Which gate units then fail for a real reason is for the next run to say.
+
+Run 4 also showed `shuffle_repro` and `sandbox_linux` never ran: defined, never
+dispatched by the main sequence. `tests/gcp.sh` now fails if any name in the default
+`STEPS` or any `s_*` function is not run by `main` (and I watched it fail by deleting the
+line), and `sandbox_linux` is dispatched last, after `shuffle_repro`, so it runs even if
+that step wedged the GPU.
 
 ## What this does not establish
 

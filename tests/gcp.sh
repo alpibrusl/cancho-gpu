@@ -393,6 +393,39 @@ has "$W/probe.txt" "=== 1. BARE" "audit_probe: bare part"
 has "$W/probe.txt" "=== 2. SANDBOXED" "audit_probe: sandboxed part"
 has "$W/probe.txt" "event socket.connect" "audit_probe: lists the socket.connect audit event"
 
+# --- every step in the default STEPS, and every s_* function, is dispatched --
+# (run 4 shipped two steps that were defined and never called)
+default_steps=$(sed -n 's/^STEPS="\${STEPS:-\(.*\)}"$/\1/p' "$G/cuda_test.sh" | head -1)
+remote_steps=$(sed -n 's/^STEPS="\${STEPS:-\(.*\)}"$/\1/p' "$G/remote_cuda.sh" | head -1)
+[ "$default_steps" = "$remote_steps" ] && ok "the driver and the remote script have the same default STEPS" || bad "default STEPS differ: [$default_steps] vs [$remote_steps]"
+for st in $default_steps baselines; do
+  if grep -q "^  want $st && .*run_step $st s_$st" "$G/remote_cuda.sh" || grep -q "^  want $st && { run_step $st s_$st" "$G/remote_cuda.sh" || grep -q "run_step $st s_$st" "$G/remote_cuda.sh"; then
+    ok "step $st is dispatched by main"
+  else bad "step $st is in STEPS but main never runs it"; fi
+done
+for fn in $(sed -n 's/^\(s_[a-z_]*\)() {.*/\1/p' "$G/remote_cuda.sh"); do
+  grep -q "run_step [a-z_]* $fn" "$G/remote_cuda.sh" && ok "$fn is called by a run_step" || bad "$fn is defined and never called"
+done
+a=$(grep -n "run_step shuffle_repro" "$G/remote_cuda.sh" | tail -1 | cut -d: -f1)
+b=$(grep -n "run_step sandbox_linux" "$G/remote_cuda.sh" | tail -1 | cut -d: -f1)
+[ -n "$a" ] && [ -n "$b" ] && [ "$b" -gt "$a" ] && ok "sandbox_linux is dispatched after shuffle_repro (it needs no GPU)" || bad "sandbox_linux must be dispatched after shuffle_repro"
+# gemm_bench's occupancy: with no API it must say so, or give a labelled estimate, never a bare None.
+python3 - "$G" > "$W/occ.txt" 2>&1 <<'PY'
+import sys, types
+cp = types.ModuleType("cupy"); cp.cuda = types.SimpleNamespace(driver=types.SimpleNamespace())
+sys.modules["cupy"] = cp; sys.modules["torch"] = types.ModuleType("torch")
+sys.path.insert(0, sys.argv[1])
+import gemm_bench as g
+k = types.SimpleNamespace(ptr=0, num_regs=128, shared_size_bytes=36864, local_size_bytes=0)
+n, how, errs = g.occupancy(k, 256, 58)
+print("ESTIMATE", n, how, errs)
+info = g.kernel_info(k, "", 256, (64, 64), 58)
+print("INFO", info.get("blocks_per_sm"), info.get("occupancy_source"), info.get("waves"), info.get("occupancy_warps_pct"))
+PY
+has "$W/occ.txt" "ESTIMATE 2 ESTIMATE from regs/smem" "occupancy falls back to a labelled estimate (128 regs, 36,864 B: 2 blocks/SM)"
+has "$W/occ.txt" "cupy binding" "and keeps the error of the API that failed"
+has "$W/occ.txt" "INFO 2 ESTIMATE" "kernel_info carries the source"
+
 # --- sweep ------------------------------------------------------------------
 new_case sweep0
 PATH=$W/bin:$PATH GCP_PROJECT=fake-project bash "$G/sweep.sh" > "$W/sweep0.txt" 2>&1; rc=$?

@@ -431,7 +431,10 @@ else
   want nvrtc && run_step nvrtc s_nvrtc
   want device_cases && run_step device_cases s_device_cases
   want gemm_bench && run_step gemm_bench s_gemm_bench
+  want shuffle_repro && run_step shuffle_repro s_shuffle_repro
   want baselines && run_step baselines s_baselines
+  # Last, and independent of the GPU: it must run even if shuffle_repro wedged it.
+  want sandbox_linux && run_step sandbox_linux s_sandbox_linux
 fi
 
 if [ -f "$HOME/cancho-bin/rev" ]; then
