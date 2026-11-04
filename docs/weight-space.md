@@ -247,11 +247,15 @@ Sizes in bytes are the Hub's file sizes, read 2026-11-04. Both repositories are 
 
 Not downloaded: the edited repository's `eval/` (four files, 9.4 MB: the authors' MATH-500 samples), `README.md`, `LICENSE`, and the authors' `edit.npz` (387,619 bytes; not needed, the hashes are in the script). The commands, to be run only after approval:
 ```
-hf download Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --local-dir ~/models/qwen35-08b-base --exclude README.md LICENSE .gitattributes
-hf download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision d1671a178705bcab7644806d23c535517f35723b --local-dir ~/models/qwen35-08b-edited --exclude "eval/*" README.md LICENSE .gitattributes
+hf download Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 --local-dir ~/models/qwen35-08b-base --exclude README.md --exclude LICENSE --exclude .gitattributes
+hf download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision d1671a178705bcab7644806d23c535517f35723b --local-dir ~/models/qwen35-08b-edited --exclude "eval/*" --exclude README.md --exclude LICENSE --exclude .gitattributes
 hf download openai/gsm8k main/test-00000-of-00001.parquet --repo-type dataset --local-dir ~/models/gsm8k
 ```
 Disk: 3.3 GiB for the files, plus under 100 MB of results; the free space on this machine is 168 GB (2026-11-04). No Hugging Face cache is used (`--local-dir`).
+
+**Corrected 2026-11-04 after the download**: the commands as first written passed the names after one `--exclude`, which `hf` read as files to fetch (it downloaded only LICENSE and README); each pattern needs its own `--exclude`. The commands above are the corrected ones. All 21 files were then downloaded (approved by the maintainer 2026-11-04) and their sizes match the table.
+
+**W1 weight diff, run 2026-11-04** (`diff --w1-expect`, CPU, seconds; `results/w1_diff.json`): exactly the two published tensors changed (layers 15 and 19 `mlp.down_proj`), 130,188 of 873,438,784 weights (0.0149%), with 65,260 and 64,928 changed entries in 64 columns each, and every `--w1-expect` check passes, sha256 of base and edited included. Each delta on its support is **rank 1** (top-1 energy 1.0000, second singular value about 1e-3 against 1.749 and 1.399), so the post's "one direction subtracted from 64 columns" holds as measured. This is the weight half of W1; the behavioural half has not been run.
 
 ### 13.3 Protocol and the rule (fixed now)
 * **Run, in this order.** (a) `diff --w1-expect`; if it fails, the edited checkpoint is not the published edit and `behave` refuses to start (override `--no-verify`, reported as such). (b) A smoke run (`--n 8 --max-new 512`) to check that the weights load and to measure tokens per second; it is not a result. (c) The main run. (d) The cap check, only if (c) is "reproduces" or "partial".
