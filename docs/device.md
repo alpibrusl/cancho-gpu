@@ -2,7 +2,8 @@
 
 > **Status: built (cancho#251 slice 8) and verified against a mock
 > driver, §7. CUDA: not yet run on a GPU — this repository's machines have
-> none. Metal: **run on real hardware** (Mac Studio, Apple Silicon, slice 10,
+> none — but the emitted CUDA is *executed* on the CPU by an emulating
+> driver (§5b, measured in §7), which found a real bug. Metal: **run on real hardware** (Mac Studio, Apple Silicon, slice 10,
 > issue #8) — first real Metal run proved reach and numerical agreement.
 
 cancho's `docs/gpu.md` §6 left one question open: *"can a cancho
@@ -142,15 +143,118 @@ one argument per parameter, each buffer the parameter's size. And it
 runs once with no driver at all, which must be `error[device]`, not a
 trap.
 
+## 5b. How it is checked without a GPU, by running it
+
+The mock (§5) checks the plumbing and runs nothing. `tests/emu/` is a driver
+and an NVRTC that **run the emitted CUDA on the CPU**, selected through the
+same `CANCHOGPU_LIBCUDA` / `CANCHOGPU_LIBNVRTC` names, so the unmodified device
+program and shim run end to end and the result is held to the interpreter at
+the program's own threshold (§3).
+
+* **`libnvrtc_emu.c`** compiles the source with the system C++ compiler
+  (`c++ -std=c++17 -O1 -ffp-contract=fast`, NVRTC's default `--fmad=true`; no
+  strict aliasing; clang's alignment sanitizer in trap mode) against
+  `tests/emu/include/{cuda_fp16.h,mma.h}`, which are `tests/emu/cuda_emu.h`. The
+  "PTX" it returns is the path of the shared object. Compile errors come back
+  in NVRTC's log format (`kernel.cu(12): error: ...`), and a static
+  `__shared__` over 48 KB is refused at compile time, as ptxas does.
+* **`cuda_emu.h`** is CUDA as C++: `threadIdx` and friends, `__global__`,
+  `__constant__`, `__shared__` (a static in its own section, so it can be sized
+  and poisoned), `__half` (binary16, round to nearest even, `_Float16`),
+  `float4`/`uint4` (aligned, and their copies check it), `min`/`max`, `rsqrtf`,
+  `__int_as_float`; `__syncthreads` as a barrier; `__shfl_sync`, `_down_`, `_up_`,
+  `_xor_` as warp collectives; and `nvcuda::wmma` with the documented 16x16x16
+  semantics for both operand layouts (`fill`, `load`, `mma`, `store`, and the
+  element-wise `x[]`/`num_elements`), where `load`/`mma`/`store` are warp
+  collectives that require all 32 lanes, one pointer and `ldm`, 256-bit
+  alignment and `ldm` a multiple of 16 bytes.
+* **Threads are fibers** (`ucontext`) on one OS thread, switching only where CUDA
+  synchronises (a barrier, a shuffle, a wmma call); a block runs to completion
+  before the next. A thread therefore runs alone between synchronisation points
+  and the *order* the scheduler picks decides what an unsynchronised program
+  does. **Two schedules run, and the bytes they leave in global memory must be
+  identical:** schedule 0 runs blocks and threads in order with shared memory
+  filled `0xFF`; schedule 1 shuffles blocks and threads with a seed
+  (`CANCHOGPU_EMU_SEED`, default 1, printed in the finding) and fills shared
+  memory `0x00`. A difference is `emu-race:` on standard error: a race, or a read
+  of `__shared__` nobody wrote. Everything is deterministic given the seed.
+* **`libcuda_emu.c`**: module load is `dlopen`; each allocation is its own
+  `MAP_SHARED` mapping with an inaccessible page on each side and the buffer
+  flush against the upper one, so one byte past the end faults (reported with
+  the buffer it overran) and a canary below and past the end is checked after
+  the launch. A launch runs in a forked child (a crash, a hang or a deadlock is
+  an error, not the end of the test) with a timeout. The launch is checked as
+  the driver would: at most 1024 threads, grid y at most 65535, no dynamic
+  shared memory.
+* **What it reports**, as `error[device]: launching the kernel: ...` (hard) or as
+  an `emu-warn:` line (legal on hardware in practice, undefined in the guide):
+  deadlock (a barrier or collective not everyone reaches); a warp collective whose
+  mask names a lane that exited or does not exist, or whose lanes disagree; a
+  barrier reached at different lines or after some threads exited; an illegal or
+  misaligned access; a write outside a buffer; a result that depends on the
+  schedule.
+
+`tests/cuda-emu.sh` (in the gate) runs every case of `tests/cases.txt` that
+emits through it, and fails on a mismatch past the program's 2e-2, **or past 2e-3
+of the peak** (the worst measured is 4.4e-4, §7, so this catches an error ten
+times smaller than the program's own check), on any hard finding, and on
+`emu-race`. A case whose interpreter cannot hold its tensors
+(`error[interp]`) is listed in `tests/cuda-emu-known.txt` as `noref`, and
+`tests/cuda_emu_big.py` runs those at full size without a reference. The
+real bugs found are in `tests/cuda-emu-bugs.txt` and must keep failing until
+fixed. `tests/cuda_static.py` checks the goldens without a compiler: static
+shared at most 48 KB (the 99 KB Ada opt-in needs dynamic shared memory and
+`cuFuncSetAttribute`, which the shim does not do), the header's `tg mem`
+matches what is declared, threads at most 1024, nothing sm_90/sm_100 (clusters,
+TMA, wgmma, tcgen05, fp4 types) and no inline PTX, one `__global__` entry whose
+parameters are all `__restrict__` pointers. `tests/cuda_emu_selftest.py`
+shows the emulator can fail: kernels written to be wrong (a missing barrier, an
+uninitialised shared read, a write past either end, a deadlock, a misaligned load,
+a partial-warp shuffle, a misaligned or partial wmma) must each be found, and the
+right ones must give the right numbers (shuffle semantics, half rounding, all four
+wmma layout pairs against a direct product). `tests/cuda-emu.sh` also breaks five
+emitted kernels on purpose (`CANCHOGPU_EMU_MUTATE`): a barrier removed, a
+store transposed, a loop bound overrun, a shared tile moved off 32 bytes, `expf`
+swapped for `exp2f`; each is refused for its reason.
+
+**What it cannot catch** (so a GPU run still has to):
+
+* *NVRTC accepting the source.* The emulator accepts a superset (any arithmetic
+  type converts to `__half`; `min`/`max` of any two types) and implements no
+  more of `cuda_fp16.h` than the emitter uses. `scripts/cuda_check.sh` or a real
+  NVRTC is the only check.
+* *Hardware numerics.* Tensor-core accumulation order and truncation (the emulator
+  uses `fmaf` in k order), `expf`/`tanhf`/`rsqrtf` ulp (the CPU libm's, not CUDA's),
+  FMA contraction choices (the C++ compiler's, not NVRTC's).
+* *Registers and resources.* "Too many resources requested for launch" (a
+  block of T threads gets 65536 / T registers each: 64 at 1024 threads; the
+  emitter's blocks are at most 256), local-memory spills, `__launch_bounds__`, occupancy, shared-memory
+  bank conflicts, performance.
+* *The memory model.* Blocks run one at a time and a thread runs alone between
+  synchronisation points, so a missing `__threadfence`/`volatile`, visibility
+  across blocks and warp-synchronous reductions that rely on lockstep are not
+  modelled; the two schedules find a race only if the order changes the bytes.
+* *Lane mapping inside a wmma fragment.* Every lane holds the whole tile, so
+  element-wise code (`x[t] += y[t]`, which the emitter writes) is right and code
+  that depends on which lane holds which element would be wrongly accepted.
+* *Uninitialised locals*, integer division by zero and out-of-range shifts (the CPU
+  answers differently from the GPU; the alignment sanitizer is the only UB check).
+* *The real driver*: `cuCtxCreate` flags, error codes, `cuLaunchKernel`'s
+  checks beyond the ones listed, JIT time.
+* *Sizes nobody ran.* It executes what it is given: the cases of
+  `tests/cases.txt`, and the sweep of §7. A size outside both is not covered.
+
 ## 6. What remains unproven
 
 * **CUDA on real hardware:** That the emitted CUDA *compiles* under NVRTC
   (lex-gpu checks this with `scripts/cuda_check.sh` on its own emitter's
-  output; ours is the same bytes, §9 of `design.md`), and that a real
-  driver accepts these calls and the results land within the threshold.
-  Those need a machine with a GPU — `scripts/gcp/cuda_test.sh` provisions an L4
-  (`docs/cloud.md`; written, not yet run) — and are the next measurement, not a claim this
-  document makes.
+  output; ours is the same bytes, §9 of `design.md`; the emulator compiles it
+  with a C++ compiler, which accepts a superset, §5b), that a real driver accepts
+  these calls, that the tensor-core and `libdevice` numerics land within the
+  threshold, and that the two bugs below behave on a GPU as the guide says they
+  may. Those need a machine with a GPU — `scripts/gcp/cuda_test.sh` provisions an L4
+  (`docs/cloud.md`) — and are the next measurement, not a claim this document
+  makes. What the emulator cannot see is listed at the end of §5b.
 * **Metal timing:** Reach is proved; speed is not yet measured.
 
 ## 7. Measured
@@ -199,6 +303,86 @@ unbounded by
 and the compiler itself, unchanged: `args, err_write, fs_read(""),
 fs_write(""), heap, io_write`, bounded.
 
+
+### CUDA (emulator)
+
+`scripts/build-emu.sh`, then `tests/cuda-emu.sh`, `tests/cuda_static.py` and
+`tests/cuda_emu_selftest.py`, all in the gate. Measured on an M-series Mac, CPU
+only:
+
+* **Every emitting case, run.** 246 of the 272 cases of `tests/cases.txt` emit a
+  kernel (the other 26 are refused, as `golden/` records). **234 run end to end through the
+  unmodified device program and shim on the emulator and agree with the
+  interpreter** (worst difference over all 275 outputs: 4.4e-4 of the peak, one
+  half-precision ulp in `pack_hw`; 115 outputs are bit-identical), with no
+  deadlock, no illegal or misaligned access, no write outside a buffer, no
+  `emu-warn`, and the two schedules leaving identical bytes. The other 12 are the
+  model-sized cases whose tensors the interpreter cannot hold (`error[interp]`,
+  `noref` in `tests/cuda-emu-known.txt`): `tests/cuda_emu_big.py` runs them at
+  full size with random inputs and the checks that need no reference, and
+  BIGRESULT. A second full run under another seed (`CANCHOGPU_EMU_SEED=7`)
+  also passes (234 agree, 12 `noref`, no finding). About two minutes cold, a quarter of that with the compile cache.
+* **No hardware-free check found a bug at the sizes the goldens record.** The
+  bugs are at other sizes (below); a green `tests/cuda-emu.sh` says nothing
+  about a size nobody ran.
+* **It can go red.** 20 self-tests (`tests/cuda_emu_selftest.py`): right kernels
+  give right numbers (shuffle down/up/xor/idx with widths, `__half` rounding at
+  ties and overflow, all four wmma layout pairs against a direct product), and
+  each wrong kernel is found: a missing `__syncthreads` and a read of
+  unwritten `__shared__` (`emu-race`, seed printed), a write one element past
+  and one before a buffer, a barrier and a shuffle waiting on each other, a
+  misaligned vector load, a full-mask shuffle in a partial warp and in divergent
+  code, a misaligned wmma pointer, wmma by half a warp, an ill-formed kernel
+  (NVRTC's `kernel.cu(5): error:` format), a static `__shared__` of 12289
+  floats, a 1025-thread block, grid y 65536, the static checks on seven
+  hand-broken sources. And five emitted kernels broken on purpose
+  (`CANCHOGPU_EMU_MUTATE`, in `tests/cuda-emu.sh`): the barriers of `rmsnorm`
+  removed (`device-mismatch`), `gemm_mma`'s store transposed (`device-mismatch`),
+  `rmsnorm`'s loop bound past the buffer (`past the end of buffer`), `gemm_mma`'s
+  `v6` tile moved 16 bytes (`256-bit`), `softmax`'s `expf` made `exp2f`
+  (`device-mismatch`); each is refused.
+* **Static checks** (`tests/cuda_static.py`, 246 kernels, no findings): most
+  static `__shared__` is 36864 B (`gemm_mma`), against 49152 B; threads per block
+  at most 256; no sm_90/sm_100 construct, no inline PTX, two includes, one entry
+  with only `__restrict__` pointer parameters, and each header's `tg mem` is
+  what the source declares. **Note for the Ada budget:** the headers say "of
+  101376 B" (the 99 KB opt-in), but nothing above 48 KB static can compile and
+  the shim opts in to nothing; no kernel is near it, so the larger number is
+  unused, not wrong.
+* **Sizes the goldens do not have**: `tests/cuda_emu_sweep.py 30 3` perturbs
+  every family's constants (the values its cases use, halved, doubled, moved by
+  1, 16, 32): 2299 variants (seed 3), of which 1007 ran clean on the emulator and agreed, 1268 the compiler refused by its own rules (`offset` 883, `unbound` 158, `bounds` 98, `lowering` 30, and the like), 1 was too slow for the emulator's 60 s, 1 too big for the interpreter, and **22 failed, all in the NVFP4 kernels (21 deadlocks, 1 wrong answer)**. The compiler refuses most variants by its own rules
+  (divisibility, bounds: cheap); of those it accepts, every family outside the NVFP4 ones runs
+  clean, including the attention, convolution, normalisation, rope, softmax,
+  fp16 matvec and wmma families.
+
+**Two real bugs in the emitted CUDA**, both the NVFP4 nibble lookup
+`__shfl_sync(0xffffffffu, fp4_lane, nibble)` (`src/lower.cho` `dequant_fp4`,
+through `dialect.shuffle`), a full-mask shuffle wherever a dequantised weight is
+read; `tests/cuda-emu-bugs.txt` holds a reproducer for each and the gate requires
+them to keep failing until the emitter is fixed:
+
+1. **A per-lane loop whose trip count differs between lanes.**
+   `for (p0 = lane; p0 < K; p0 += 32)` with `K = 16 (mod 32)` (legal: the scale
+   group is 16) gives lanes 0..15 one more trip than lanes 16..31, so the shuffle is
+   called with a mask naming lanes that have left the loop. Undefined in CUDA
+   (`shfl.sync` waits for the lanes it names; on sm_70+ those lanes next reach a
+   *different* shuffle). The emulator: deadlock. Seen in `batch_fp4`,
+   `matvec_fp4`, `matvec_fp4_rows`, `matvec_fp4_res`, `matvec_fp4_swiglu`,
+   `matvec_fp4_batch`, `matvec_fp4_res_batch`, `matvec_fp4_swiglu_batch`, at
+   `k` = 16, 48, 80, 112, 144, 240, 272, 4080, 5104, 5136, 17392, 17424,
+   with 6 reproducers (e.g. `batch_fp4 b=3 n=40 k=48`). Every golden has `K` a
+   multiple of 32 and Qwen's `K` are too, which is why nothing recorded or run
+   so far shows it.
+2. **The element-per-thread fallback with a count that is not a multiple of 32.**
+   `if (e < count) { ... __shfl_sync(0xffffffffu, ...) }`: in the last pass part of
+   a warp is active; the lookup for nibble `v` reads lane `v`, which may be one of
+   the inactive lanes. Wrong values, not just undefined ones: `batch_fp4 b=36
+   n=129 k=224` (count 4644 = 18 x 256 + 36) is off by 0.78 against a peak of
+   9.09 under the emulator (`device-mismatch`; on a GPU an inactive lane's value
+   is unspecified). The fix for both is the same family: index the 16-entry
+   table `FP4_V` (it is already `__constant__`) instead of a shuffle, or keep
+   the shuffle to code every lane of the warp provably executes.
 
 ### Metal (real hardware)
 

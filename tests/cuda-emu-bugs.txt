@@ -1,0 +1,18 @@
+# Real bugs in the emitted CUDA that the emulator found (docs/device.md section 5b), at sizes tests/cases.txt does not have,
+# found by tests/cuda_emu_sweep.py. tests/cuda-emu.sh requires each to keep failing as written.
+# <file> <consts>|<text the refusal must contain>|<diagnosis>
+#
+# Bug 1: the NVFP4 nibble lookup is `__shfl_sync(0xffffffffu, fp4_lane, nibble)` (src/lower.cho dequant_fp4, via dialect.shuffle), a full-mask
+# shuffle wherever the dequantised weight is read. In a per-lane loop `for (p0 = lane; p0 < K; p0 += 32)` with K = 16 mod 32 (legal: the scale
+# group is 16) lanes 0..15 take one more trip than lanes 16..31, so the shuffle is called with a mask naming lanes that have left the loop:
+# undefined in CUDA (a hang or a wrong lookup on sm_70+). Every golden has K a multiple of 32, so none records it.
+tests/chx/batch_fp4.chx b=3 n=40 k=48|deadlock|bug 1, tiled batch lowering
+tests/chx/matvec_fp4.chx n=2 k=80|deadlock|bug 1, per-lane loop inside a block that also has barriers
+tests/chx/matvec_fp4_rows.chx n=32 k=5104|deadlock|bug 1 at a model-like K (5104 = 159.5 x 32)
+tests/chx/matvec_fp4_res.chx n=32 k=48|deadlock|bug 1
+tests/chx/matvec_fp4_swiglu.chx n=17408 k=80|deadlock|bug 1
+tests/chx/matvec_fp4_res_batch.chx m=2 n=5152 k=144|deadlock|bug 1
+# Bug 2: the same shuffle in the element-per-thread fallback (src/lower.cho, the `owned1` branch of dequant_fp4): `if (e < count) { ... __shfl_sync(0xffffffffu, ...) }`.
+# When count is not a multiple of 32 the last pass has a partly active warp, and lanes that are inactive are still named by the mask and
+# still the source of lookups (nibble 4..15 read lane 4..15): wrong values, 0.78 of a peak of 9.09 here.
+tests/chx/batch_fp4.chx b=36 n=129 k=224|device-mismatch|bug 2, b*n = 4644 = 18 x 256 + 36
