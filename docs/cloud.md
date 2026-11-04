@@ -33,7 +33,9 @@ and a step whose prerequisite failed says `SKIP`. `summary.tsv` has the verdicts
 | `gate` | `scripts/gate.sh`'s own lines, one at a time | does everything GPU-free pass on Linux |
 | `nvrtc` | every `golden/*/*.cu` under the **real NVRTC**, `compute_89`, then `ptxas -v` | does the emitted CUDA compile, with per-case errors, registers and spills |
 | `device_cases` | `tests/cases.txt` through `cancho-gpu-device` on the GPU against the interpreter | do the numbers agree at the program's threshold (2e-2 of the output's peak), per case |
-| `gemm_bench` | our emitted `gemm_mma` vs cuBLAS (cupy) vs torch, 1024..8192 cubed | TFLOPS, as a fraction of **this card's measured** cuBLAS peak |
+| `gemm_bench` | our emitted `gemm_mma` vs cuBLAS (cupy) vs torch: 1024..8192 cubed incl. 3072 and 6144, and m=n=8192 with k=4096, 2048 and 4096^2 x 8192; clocks, power and throttle bits per shape at 100 ms; grid, smem, registers, spills, occupancy, waves | TFLOPS, as a fraction of **this card's measured** cuBLAS peak, and why it falls off |
+| `shuffle_repro` | the two NVFP4 lookup-shuffle bugs the CUDA emulator found (PR #103), on the GPU: `scripts/gcp/shuffle_repro.txt` through `cancho-gpu-device`, 60 s and one process per case, `nvidia-smi` between cases | are they seen on hardware (**FAIL = a bug was seen**) |
+| `sandbox_linux` | `tests/weightspace.py` verbose, then `audit_probe.py`: the network calls of its failing check, bare and sandboxed, with the audit events seen | why "a network call is refused" fails on Linux |
 | `job` | `$JOB`, alone, after `machine` and `toolchain` | anything else |
 | `baselines` | `BASELINES=1`: torch + peft LoRA, Qwen2.5-0.5B and 1.5B, 4x512 | the torch numbers on NVIDIA to put beside ours |
 
@@ -67,6 +69,55 @@ Notes on what each does and does not say:
   on CUDA: cancho-gpu's training sessions are Metal-only, so this gives the
   denominator, not a comparison.
 
+**`shuffle_repro` in detail.** The list is copied from the emulator branch's
+`tests/cuda-emu-bugs.txt` (seven reproducers: six deadlocks, one wrong value) with
+the emulator-only columns dropped, plus a sweep of the same families at
+K = 16 mod 32 and `batch_fp4` counts that are not a multiple of 32 or 256, and
+controls (K a multiple of 32) that must PASS. The emulator's own 22 findings
+(21 deadlocks, 1 wrong value) were not recorded as a list, only as families and
+`k` values, so this sweep is that grid, **not** those exact 22. Statuses: PASS,
+MISMATCH, TIMEOUT (killed after 60 s), ERROR (`error[device]`), REFUSED (the
+compiler's own rule; not a finding), WEDGED (the GPU stopped answering
+`nvidia-smi` or logged an Xid after a case: recorded, the step stops). A PASS does
+not clear a bug the CUDA guide calls undefined; a hang may leave the context
+unusable, which is why every case is its own process.
+
+**`gemm_bench` and the fall-off.** In the third run ours/cuBLAS was 0.97 at 2048^3,
+0.89 at 4096^3, 0.62 at 8192^3 with cuBLAS steady at 58.9 TFLOPS, so the card was
+not throttling. What the emitter writes (`golden/gemm_mma_*`, `tests/chx/ported/gemm_mma.chx`):
+one 128x128 tile of `y` per block, 256 threads in 2x4 warps, `bk` = 64 (the schedule
+line `threads 256 warps 2 4 bm 128 bn 128 bk 64`), tiles of `a` and `w` staged through
+36,864 B of static shared memory, a single buffer (`__syncthreads`, load, `__syncthreads`,
+mma; no `cp.async`, no double buffering), and `grid i over m/bm, j over n/bn` lowered to
+`gid = blockIdx.x, gid2 = blockIdx.y`, i.e. consecutive blocks take different row tiles
+of `a`. Hypothesis (to be read from the run's numbers, not assumed): a wave of ~120
+resident blocks touches ~120 distinct `a` tiles of 128 x k f16, 2 MB each at k = 8192,
+over the L4's 48 MB L2, so `a` streams from DRAM again for every column of blocks,
+while cuBLAS orders blocks for L2 reuse. The step records what would confirm or refute it:
+per-shape SM clock, power and throttle bits (timed loops of at least 3 s, sampled every
+100 ms); grid, block, static smem, registers and spills (cupy and ptxas); blocks per SM,
+warp occupancy and waves from the occupancy API (`ncu` is not installed and not
+needed); the shapes with k = 4096 / 2048 / 8192 (a short k shrinks each block's reads);
+and **`ours+swz`**, the same kernel with its block indices remapped to a grouped order
+by a text edit inside `gemm_bench.py` (an experiment; the emitter is unchanged). If
+`ours+swz` closes the gap at 8192, the cause is block order, and the fix is a
+rasterisation key in the schedule (not expressible today: the schedule keys are
+`threads warps bm bn bk`, and the grid order follows the `grid` line). Other things that
+are expressible without a compiler change: a larger tile (`bm 128 bn 256 bk 32` is 30,720 B,
+under the 48 KB static limit in `src/dialect.cho`; `bk 64` at 128x256 would be 55 KB and is
+refused, the 99 KB opt-in needing dynamic shared memory the shim does not set) and a different
+warp split; not expressible: software pipelining or `cp.async`.
+
+**`sandbox_linux` and the gate on the VM.** The test reported `FAIL a network call is
+refused (None)` with the program run to completion. `audit_probe.py` tries the same
+three calls (`socket.create_connection`, `urllib.request.urlopen`,
+`importlib.import_module('_socket')`) bare and through `sandbox.run`, with a recording
+audit hook installed ahead of the sandbox's own in the child, and prints which events
+(`import`, `socket.getaddrinfo`, `socket.connect`, ...) arrived and what the sandbox
+decided; the verdict is for the next run to read. The gate on the VM skips `tests/gcp.sh`
+(the shipped tree is a `git archive`, no `.git`, so it exits 128), and says so:
+`SKIPPED on VM` in the log and a `gate:tests/gcp.sh SKIPPED-ON-VM` row in `summary.tsv`.
+
 **The emulator.** Another branch (`cuda-emu`) builds a CUDA-on-CPU mock driver.
 When it lands, its entry point (`tests/cuda-emu.sh`, `EMU_ENTRY`) is run by
 `remote_cuda.sh`'s `emulator` step beside the real results, and it will be in
@@ -87,7 +138,7 @@ kernel.
 | `GPU` | `l4` (default, `g2-standard-8`, Ada **sm_89**, exactly the lowering target), `a100`, `h100`. For the last two a loud note is printed: **the lowering is Ada's only**; NVRTC compiles for the card's arch but tiles, atoms and schedules are Ada's, so a pass is not an Ampere/Hopper result |
 | `DRY_RUN=1` | print every `gcloud` command, run none (needs no login) |
 | `SPOT=0` | on-demand instead of Spot |
-| `MAX_RUN` | hard cap on the VM's life, default `2h` |
+| `MAX_RUN` | hard cap on the VM's life, default `90m` |
 | `KEEP=1` | leave the VM; the delete command is printed |
 | `ZONES` | zones in order; default EU first, then US, then Asia (no user data on these runs, which is why leaving the EU is allowed; pin a region by setting it) |
 | `STEPS`, `BASELINES=1`, `JOB` | which steps; opt-in baselines; one command alone |
@@ -108,7 +159,7 @@ to the pin) gives `PINNED`.
 
 * **Spot by default** (`--provisioning-model=SPOT`); exit status **75** means Google
   took the VM back: no result, retry.
-* **`--max-run-duration` (`MAX_RUN`, 2h) and `--instance-termination-action DELETE`**:
+* **`--max-run-duration` (`MAX_RUN`, 90m) and `--instance-termination-action DELETE`**:
   GCE deletes the VM when the cap expires, even if the script is killed.
 * **A cleanup trap that finds the VM by name** in the project, not by a remembered
   zone, on exit, error, SIGINT, SIGTERM and SIGHUP. A signal ends the script after
@@ -140,7 +191,7 @@ cents an hour; the image, if built, a dollar or two a month.
 |---|---|---|
 | default steps | 45-90 min (compiler build, the Linux gate, 180 cases with CPU references, the benchmark) | well under $1 |
 | `BASELINES=1` | + 20-40 min and ~10 GB of downloads | about $1 |
-| `MAX_RUN` hit | 2 h | about $0.6 |
+| `MAX_RUN` hit | 1.5 h | about $0.5 |
 
 The cap is the guard: even a stuck run costs at most `MAX_RUN` of the VM.
 

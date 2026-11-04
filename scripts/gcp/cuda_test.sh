@@ -27,7 +27,7 @@
 #                allowed here; set it to pin a region.
 #   SPOT=0       on-demand instead of the default Spot (60-70% cheaper, can be
 #                preempted: exit 75).
-#   MAX_RUN      hard cap on the VM's life (default 2h), enforced by GCE.
+#   MAX_RUN      hard cap on the VM's life (default 90m), enforced by GCE.
 #   KEEP=1       leave the VM running afterwards; you delete it.
 #   IMAGE_FAMILY boot from this family in GCP_PROJECT (default cancho-gpu-l4,
 #                made by build_image.sh), else the stock Deep Learning image.
@@ -35,7 +35,7 @@
 #                source tree, compiler built; CANCHO is exported):
 #                  JOB='scripts/build-device.sh && build/cancho-gpu-device run tests/chx/ported/gemm_mma.chx m=256 n=256 k=128'
 #   STEPS        which steps to run, default "machine toolchain gate nvrtc
-#                device_cases gemm_bench". Add "baselines" (or BASELINES=1).
+#                device_cases gemm_bench shuffle_repro sandbox_linux". Add "baselines" (or BASELINES=1).
 #   BASELINES=1  also the torch/peft LoRA baselines, Qwen2.5-0.5B and 1.5B at
 #                4x512 (public Hugging Face downloads; no user data).
 #   CANCHO_REPO  where the compiler at the cancho.toml pin comes from: a git
@@ -74,13 +74,13 @@ main() {
 
 GPU="${GPU:-l4}"
 SPOT="${SPOT:-1}"
-MAX_RUN="${MAX_RUN:-2h}"
+MAX_RUN="${MAX_RUN:-90m}"
 KEEP="${KEEP:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 YES="${YES:-0}"
 CONFIRM_SECS="${CONFIRM_SECS:-10}"
 BASELINES="${BASELINES:-0}"
-STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench}"
+STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro sandbox_linux}"
 [ "$BASELINES" = 1 ] && STEPS="$STEPS baselines"
 IMAGE_FAMILY="${IMAGE_FAMILY:-cancho-gpu-l4}"
 CANCHO_REPO="${CANCHO_REPO:-https://github.com/alpibrusl/cancho}"

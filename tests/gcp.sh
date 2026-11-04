@@ -93,7 +93,7 @@ PATH=$W/never:$PATH DRY_RUN=1 GCP_PROJECT=fake-project OUT_DIR=$W/dry.out \
 [ -e "$W/never.log" ] && bad "dry run called gcloud: $(cat "$W/never.log")" || ok "dry run called no gcloud"
 has "$W/dry.txt" "DRY_RUN> gcloud --project fake-project --quiet compute instances bulk create" "dry run prints the create"
 has "$W/dry.txt" "--provisioning-model=SPOT" "dry run: Spot by default"
-has "$W/dry.txt" "--max-run-duration 2h" "dry run: --max-run-duration 2h (MAX_RUN default)"
+has "$W/dry.txt" "--max-run-duration 90m" "dry run: --max-run-duration 90m (MAX_RUN default)"
 has "$W/dry.txt" "--instance-termination-action DELETE" "dry run: termination action DELETE"
 has "$W/dry.txt" "--labels purpose=cancho-gpu-test" "dry run: purpose label"
 has "$W/dry.txt" "--region europe-west4 " "dry run: EU region first"
@@ -146,7 +146,7 @@ run_driver ok STUB_SSH_STATUS=0
 [ "$rc" = 0 ] && ok "a passing run exits 0" || bad "a passing run exits $rc"
 has "$L" "instances bulk create --region europe-west4 --count 1 --predefined-names cancho-gpu-l4-" "create asks the first EU region for one VM"
 has "$L" "--provisioning-model=SPOT" "create is Spot"
-has "$L" "--max-run-duration 2h --instance-termination-action DELETE" "create has --max-run-duration and DELETE"
+has "$L" "--max-run-duration 90m --instance-termination-action DELETE" "create has --max-run-duration and DELETE"
 has "$L" "--labels purpose=cancho-gpu-test" "create is labelled"
 has "$L" "--location-policy europe-west4-a=allow,europe-west4-b=allow,europe-west4-c=allow" "create gives the region's zones"
 has "$L" "instances delete cancho-gpu-l4-" "the VM is deleted on a normal exit"
@@ -311,6 +311,87 @@ wait "$pid"; rc=$?
 hasnt "$W/edit.txt" "syntax error" "no syntax error from the edited file"
 [ -f "$S/results_copied" ] && ok "results copied home after a mid-run edit" || bad "results not copied after a mid-run edit"
 has "$L" "instances delete" "VM deleted after a mid-run edit"
+
+# --- the new steps -----------------------------------------------------------
+has "$W/dry.txt" "STEPS='machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro sandbox_linux'" "default STEPS include shuffle_repro and sandbox_linux"
+# gate on the VM: tests/gcp.sh is skipped VISIBLY; a known-open unit does not fail; a real failure does.
+mkdir -p "$W/gt/home/cancho-gpu/build" "$W/gt/home/results" "$W/gt/home/cancho-bin"
+cp "$ROOT/cancho.toml" "$W/gt/home/cancho-gpu/"
+printf '#!/bin/sh\n' > "$W/gt/home/cancho-gpu/build/cancho-gpu"; chmod +x "$W/gt/home/cancho-gpu/build/cancho-gpu"
+printf '#!/bin/sh\nexit 0\n' > "$W/gt/home/cancho-bin/cancho"; chmod +x "$W/gt/home/cancho-bin/cancho"
+echo "$PIN" > "$W/gt/home/cancho-bin/rev"
+cat > "$W/gt/gate.sh" <<'GATE'
+set -eu
+ROOT=x
+cd "$ROOT"
+true
+tests/sampler.sh
+tests/gcp.sh
+false
+if true; then
+  true
+fi
+echo "gate: ok"
+GATE
+for mode in known-only real-fail; do
+  gf=$W/gt/gate-$mode.sh
+  if [ $mode = known-only ]; then grep -v '^false$' "$W/gt/gate.sh" > "$gf"; else cp "$W/gt/gate.sh" "$gf"; fi
+  : > "$W/gt/home/results/summary.tsv"
+  ( cd "$W/gt/home/cancho-gpu" && HOME=$W/gt/home PATH="$W/cb:$PATH" REMOTE_CUDA_LIB=1 GATE_FILE=$gf bash -c '
+      . '"$G"'/remote_cuda.sh
+      sh() { if [ "$2" = "set -eu; tests/sampler.sh" ]; then return 3; fi; if [ "$2" = "set -eu; false" ]; then return 1; fi; return 0; }
+      s_gate; echo "gate rc=$?"' ) > "$W/gate-$mode.txt" 2>&1
+done
+has "$W/gate-known-only.txt" "SKIPPED on VM: tests/gcp.sh" "gate: tests/gcp.sh is skipped visibly on the VM"
+has "$W/gt/home/results/summary.tsv" "gate:tests/gcp.sh.SKIPPED-ON-VM" "gate: the skip is a row in summary.tsv"
+has "$W/gate-known-only.txt" "KNOWN-OPEN" "gate: the known-open sampler unit is reported as such"
+has "$W/gate-known-only.txt" "gate rc=0" "gate: known-open and skipped units do not fail the step"
+has "$W/gate-real-fail.txt" "FAIL: exit 1" "gate: a real failure is reported"
+has "$W/gate-real-fail.txt" "gate rc=1" "gate: and fails the step"
+# shuffle_repro.py: PASS, MISMATCH, TIMEOUT (killed, reported), ERROR, REFUSED, then a wedged GPU stops the step.
+mkdir -p "$W/sr/bin"
+cat > "$W/sr/dev" <<'DEV'
+#!/bin/sh
+case "$*" in
+  *pass*) echo "worst difference 1.0e-7 of peak 9.0"; exit 0 ;;
+  *mismatch*) echo "error[device-mismatch]: output y differs from the reference by 0.78 of peak 9.09" >&2; exit 1 ;;
+  *hang*) exec sleep 30 ;;
+  *error*) echo "error[device]: launching the kernel: an illegal instruction was encountered" >&2; exit 1 ;;
+  *refused*) echo "error[offset]: not a multiple" >&2; exit 1 ;;
+esac
+DEV
+chmod +x "$W/sr/dev"
+printf 'tests/chx/pass.chx n=1\ntests/chx/mismatch.chx n=1   # note\ntests/chx/hang.chx n=1\ntests/chx/error.chx n=1\ntests/chx/refused.chx n=1\n' > "$W/sr/cases.txt"
+printf '#!/bin/sh\necho "0 MiB, 0 %%"\n' > "$W/sr/bin/nvidia-smi"; chmod +x "$W/sr/bin/nvidia-smi"
+PATH=$W/sr/bin:$PATH python3 "$G/shuffle_repro.py" --bin "$W/sr/dev" --cases "$W/sr/cases.txt" --timeout 6 --json "$W/sr/o.json" > "$W/sr.txt" 2>&1; rc=$?
+[ "$rc" = 1 ] && ok "shuffle_repro exits 1 when a bug is seen" || bad "shuffle_repro exit $rc"
+for st in "PASS      tests/chx/pass" "MISMATCH  tests/chx/mismatch" "TIMEOUT   tests/chx/hang" "ERROR     tests/chx/error" "REFUSED   tests/chx/refused"; do
+  has "$W/sr.txt" "^$st" "shuffle_repro: $st"
+done
+has "$W/sr.txt" "BUG SEEN ON HARDWARE in 3 case" "shuffle_repro: counts MISMATCH, TIMEOUT and ERROR as the bug"
+# a hang is reported in about the timeout, not left stuck
+printf 'tests/chx/hang.chx n=1\ntests/chx/pass.chx n=1\n' > "$W/sr/cases2.txt"
+printf '#!/bin/sh\necho "NVRM nothing"; exit 9\n' > "$W/sr/bin/nvidia-smi"
+PATH=$W/sr/bin:$PATH python3 "$G/shuffle_repro.py" --bin "$W/sr/dev" --cases "$W/sr/cases2.txt" --timeout 6 > "$W/sr2.txt" 2>&1
+has "$W/sr2.txt" "^WEDGED" "shuffle_repro: a GPU that stops answering after a hang is WEDGED"
+has "$W/sr2.txt" "stopping the step here" "shuffle_repro: and the step stops cleanly"
+hasnt "$W/sr2.txt" "tests/chx/pass.chx n=1 .*PASS" "shuffle_repro: nothing runs after a wedge"
+# the case list parses and names files that exist
+bad_files=$(python3 - "$G/shuffle_repro.txt" "$ROOT" <<'PY'
+import os, sys
+for line in open(sys.argv[1]):
+    line = line.split("#")[0].strip()
+    if line and not os.path.exists(os.path.join(sys.argv[2], line.split()[0])):
+        print(line)
+PY
+)
+[ -z "$bad_files" ] && ok "shuffle_repro.txt names only existing .chx files" || bad "shuffle_repro.txt: missing files: $bad_files"
+# the audit probe runs and prints both parts (it is Python only)
+python3 "$G/audit_probe.py" > "$W/probe.txt" 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "audit_probe exits 0" || bad "audit_probe exit $rc"
+has "$W/probe.txt" "=== 1. BARE" "audit_probe: bare part"
+has "$W/probe.txt" "=== 2. SANDBOXED" "audit_probe: sandboxed part"
+has "$W/probe.txt" "event socket.connect" "audit_probe: lists the socket.connect audit event"
 
 # --- sweep ------------------------------------------------------------------
 new_case sweep0

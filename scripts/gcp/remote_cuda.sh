@@ -15,7 +15,9 @@
 #                    refusals/kernels vs float64/mock-driver device path/...)
 #   nvrtc         3. the CUDA in golden/ under the REAL NVRTC, compute_89 (+ ptxas)
 #   device_cases  4. tests/cases.txt through the GPU against the interpreter
-#   gemm_bench    5. our emitted GEMM vs cuBLAS vs torch, TFLOPS
+#   gemm_bench    5. our emitted GEMM vs cuBLAS vs torch, TFLOPS, with clocks/power/occupancy per shape
+#   shuffle_repro    the emulator's two NVFP4 shuffle bugs on the real GPU (shuffle_repro.txt)
+#   sandbox_linux    why tests/weightspace.py's network-call check fails on Linux (audit_probe.py)
 #   job           6. $JOB, alone (JOB=1 from the driver; the command is ~/job.sh)
 #   baselines     7. torch + peft LoRA, Qwen2.5-0.5B/1.5B at 4x512 (opt-in)
 #
@@ -40,10 +42,10 @@
 set -uo pipefail
 
 MODE="${1:-run}"
-STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench}"
+STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro sandbox_linux}"
 CASE_TIMEOUT="${CASE_TIMEOUT:-300}"
 JOBS="${JOBS:-4}"
-SIZES="${SIZES:-1024,2048,4096,8192}"
+SIZES="${SIZES:-}"                 # empty: gemm_bench.py's own sizes and shapes
 DTYPES="${DTYPES:-float32 float16}"
 BASE_MODELS="${BASE_MODELS:-Qwen/Qwen2.5-0.5B Qwen/Qwen2.5-1.5B}"
 KNOWN_OPEN="${KNOWN_OPEN:-tests/sampler.sh}"
@@ -73,7 +75,7 @@ apt_tools() {
   # the mock drivers. numpy/jinja2: the gate's references (CI installs jinja2
   # too). venv: the benchmark's torch/cupy. git: only to build from source.
   local pkgs="build-essential curl ca-certificates" p missing=""
-  if [ "$MODE" = prepare ] || want gate; then pkgs="$pkgs python3-jinja2 python3-numpy"; fi
+  if [ "$MODE" = prepare ] || want gate || want sandbox_linux; then pkgs="$pkgs python3-jinja2 python3-numpy"; fi
   if [ "$MODE" = prepare ] || need_python_ml; then pkgs="$pkgs python3-venv"; fi
   if [ "${CANCHO_RELEASE:-latest}" = source ]; then pkgs="$pkgs git"; fi
   for p in $pkgs; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
@@ -254,8 +256,6 @@ if [ "$MODE" = prepare ]; then
   exit 0
 fi
 
-[ "${REMOTE_CUDA_LIB:-0}" = 1 ] && return 0   # tests/gcp.sh sources the functions above
-
 # ---- steps ------------------------------------------------------------------
 s_machine() {
   # The pre-built image carries the driver already; with no module for the
@@ -294,7 +294,7 @@ gate_units() {
   awk '/^cd "\$ROOT"/{on=1; next} /^echo "gate: ok"/{on=0}
        on { if ($0 ~ /^if /) d++;
             if (d > 0) { buf = buf (buf == "" ? "" : "\001") $0 } else { print }
-            if ($0 ~ /^fi/) { d--; if (d == 0) { print buf; buf = "" } } }' scripts/gate.sh
+            if ($0 ~ /^fi/) { d--; if (d == 0) { print buf; buf = "" } } }' "${GATE_FILE:-scripts/gate.sh}"
 }
 is_known_open() { case " $KNOWN_OPEN " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 s_gate() {
@@ -307,6 +307,12 @@ s_gate() {
     head="${unit%%$'\n'*}"
     n=$((n + 1))
     echo "--- gate unit $n: $head"
+    if [ "$head" = tests/gcp.sh ]; then
+      # The shipped tree is a `git archive`: no .git, and that test archives HEAD (exit 128).
+      echo "SKIPPED on VM: tests/gcp.sh needs a git checkout (this tree has no .git); it runs in the repository's own gate"
+      printf 'gate:tests/gcp.sh\tSKIPPED-ON-VM\tno .git in the shipped tree\n' >> "$R/summary.tsv"
+      continue
+    fi
     sh -c "set -eu; $unit"; rc=$?
     if [ "$rc" = 0 ]; then
       is_known_open "$head" && echo "UNEXPECTED PASS of a known-open step: drop it from KNOWN_OPEN and fix the docs"
@@ -341,12 +347,36 @@ s_device_cases() {
 s_gemm_bench() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
   pyenv || return 1
+  # Clocks/power/throttle bits are sampled by gemm_bench.py itself, per shape and
+  # implementation, at 100 ms; this whole-step trace is the coarse companion.
   nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_throttle_reasons.active \
     --format=csv -lms 500 > "$R/gemm-clocks.csv" 2>&1 &
-  local smi=$!
-  "$VENV/bin/python" scripts/gcp/gemm_bench.py --cancho-gpu build/cancho-gpu --sizes "$SIZES" --json "$R/gemm.json"
+  local smi=$! sz=()
+  [ -z "$SIZES" ] || sz=(--sizes "$SIZES")
+  "$VENV/bin/python" scripts/gcp/gemm_bench.py --cancho-gpu build/cancho-gpu ${sz[@]+"${sz[@]}"} --json "$R/gemm.json"
   local rc=$?
   kill $smi 2>/dev/null
+  return $rc
+}
+ensure_device() {
+  [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
+  [ -x build/cancho-gpu-device ] || CANCHO="$(cancho_cmd)" scripts/build-device.sh
+}
+s_shuffle_repro() {
+  # FAIL here means a bug was SEEN on the hardware (shuffle_repro.py says so).
+  ensure_device || return $?
+  nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+  python3 scripts/gcp/shuffle_repro.py --bin build/cancho-gpu-device --timeout "${REPRO_TIMEOUT:-60}" --json "$R/shuffle_repro.json"
+}
+s_sandbox_linux() {
+  [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
+  [ -x build/cancho-gpu-session ] || CANCHO="$(cancho_cmd)" scripts/build-session.sh || return 1
+  echo "--- the failing check, verbose (PYTHONUNBUFFERED, every line kept)"
+  PYTHONUNBUFFERED=1 python3 tests/weightspace.py build/cancho-gpu-session
+  local rc=$?
+  echo "--- tests/weightspace.py exit $rc"
+  echo "--- the same network calls, bare and sandboxed, with the audit events seen"
+  python3 scripts/gcp/audit_probe.py
   return $rc
 }
 s_job() {
@@ -376,6 +406,8 @@ s_baselines() {
 }
 
 # ---- run --------------------------------------------------------------------
+[ "${REMOTE_CUDA_LIB:-0}" = 1 ] && return 0   # tests/gcp.sh sources the functions above
+
 : > "$R/summary.tsv"
 run_step() { # name function
   local name=$1 fn=$2 t0=$SECONDS rc
@@ -394,7 +426,7 @@ if [ -n "${JOB:-}" ]; then
   run_step job s_job
 else
   want machine && run_step machine s_machine
-  { want toolchain || want gate || want device_cases || want gemm_bench || want baselines; } && run_step toolchain s_toolchain
+  { want toolchain || want gate || want device_cases || want gemm_bench || want shuffle_repro || want sandbox_linux || want baselines; } && run_step toolchain s_toolchain
   want gate && { run_step gate s_gate; run_step emulator emulator_hook; }
   want nvrtc && run_step nvrtc s_nvrtc
   want device_cases && run_step device_cases s_device_cases
