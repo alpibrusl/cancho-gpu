@@ -1,0 +1,44 @@
+// One token of the delta rule for a model with ONE value head per key head (Qwen3.5-0.8B: 16 and 16;
+// delta_step.chx is the 27B's three value heads per key head):
+//
+//     S = S g;   S += (v - S k) beta  k^T;   y = S q
+//
+// S is a head's [128 value, 128 key] f32 state, rewritten in place. The rule is independent for each value row, so a
+// threadgroup takes br of the 128 rows of head i. q and k are the normalised rows of qk_norm; v is the value part of
+// the convolution's output; g and beta are rows of 128 copies (gates.chx) and, as the per-value vectors the
+// broadcasts need, beta and v are read flat. Head i of the values is the one that shares key head i. The numerics
+// are delta_step.chx's, line for line, for one head instead of three.
+algo delta_step1(nk)
+  in  s:  f32[nk * 128, 128]
+  in  q:  f32[nk, 128]
+  in  k:  f32[nk, 128]
+  in  v:  f32[nk * 128]
+  in  g:  f32[nk, 128]
+  in  bt: f32[nk * 128]
+  out so: f32[nk * 128, 128]
+  out y:  f32[nk * 128]
+  tile br
+{
+  grid i over nk, r over 128 / br
+  let kb  = load k[i, 0 ; 1, 128]
+  let qb  = load q[i, 0 ; 1, 128]
+  let s0  = load s[i * 128 + r * br, 0 ; br, 128]
+  let g0  = load g[i, 0 ; 1, 128]
+  let sg0 = s0 * g0
+  let p0  = &sg0 * &kb
+  let m0  = rowsum p0
+  let v0  = load v[i * 128 + r * br ; br]
+  let d0  = v0 - m0
+  let b0  = load bt[i * 128 + r * br ; br]
+  let e0  = d0 * b0
+  let z0  = zeros f32[br, 128]
+  let k0  = z0 + kb
+  let u0  = k0 * e0
+  let sn0 = sg0 + u0
+  let y0  = &sn0 * qb
+  store rowsum y0 -> y[i * 128 + r * br]
+  store sn0 -> so[i * 128 + r * br, 0]
+}
+
+schedule delta_step1 for apple-m-series { threads 256 br 8 }
+schedule delta_step1 for nvidia-ada     { threads 128 br 32 }

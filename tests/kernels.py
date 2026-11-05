@@ -704,6 +704,103 @@ def new_checks():
     got = run("colbcast", ["r=8", "c=16"])
     x, sc, tt = lcg([128, 8, 16])
     ok &= check("colbcast r=8 c=16", got["y"], [x[i * 16 + j] * sc[i] + tt[j] for i in range(8) for j in range(16)])
+    ok &= checks08()
+    return ok
+
+
+# ---- T3 (docs/weight-space.md section 14): the kernels at Qwen3.5-0.8B's shapes -----------------------------------------------------
+# One value head per key head (nk = 16 of each, 128 wide), conv width 6144 = 3 * 2048, qk_norm rows 16 + 16 + 16 = 48, gates h = 16,
+# attention at g = 4 (8 query heads over 2 key/value heads), q_proj as 8 heads of [query 256, gate 256], k as 2 heads.
+
+def delta_rows(nk, s, q, k, v, g, bt):
+    """The rule on flat inputs (delta_step1's parameters): head i's [128, 128] state, its own g, beta, v, and key head i's q, k."""
+    so, y = [0.0] * len(s), [0.0] * len(v)
+    for i in range(nk):
+        kb, qb, gi = k[i * 128:(i + 1) * 128], q[i * 128:(i + 1) * 128], g[i * 128:(i + 1) * 128]
+        for r in range(128):
+            row = i * 128 + r
+            sg = [s[row * 128 + c] * gi[c] for c in range(128)]
+            e = (v[row] - sum(sg[c] * kb[c] for c in range(128))) * bt[row]
+            sn = [sg[c] + kb[c] * e for c in range(128)]
+            so[row * 128:(row + 1) * 128] = sn
+            y[row] = sum(sn[c] * qb[c] for c in range(128))
+    return so, y
+
+
+def delta_step1(nk):
+    return delta_rows(nk, *lcg([nk * 128 * 128, nk * 128, nk * 128, nk * 128, nk * 128, nk * 128]))
+
+
+def delta_step1_vs_spec(nk=3):
+    """delta_rows against the specification (examples/qwen35/gdn_ref.py, numpy: HF's recurrent form, one token, nk heads of dk = dv = 128), so
+    that the rule is read from the mathematics a second time and not only from the kernel it checks. The spec's state is [dk, dv], the
+    kernel's [dv, dk]; the spec scales q by dk^-1/2 itself (the kernel's qk_norm does) and takes the log of the decay and one beta a head, so
+    the kernel's beta, constant over a head's rows, is the spec's. Returns the largest difference."""
+    import numpy as np
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "qwen35"))
+    import gdn_ref
+    rng = np.random.RandomState(7)
+    S = rng.normal(size=(nk, 128, 128)) * 0.3  # [head, value row, key col]
+    q, k, v = rng.normal(size=(nk, 128)), rng.normal(size=(nk, 128)), rng.normal(size=(nk, 128))
+    decay, beta = rng.uniform(0.3, 1.0, size=nk), rng.uniform(0.1, 0.9, size=nk)
+    so, y = delta_rows(nk, S.ravel().tolist(), q.ravel().tolist(), k.ravel().tolist(), v.ravel().tolist(),
+                       np.repeat(decay, 128).tolist(), np.repeat(beta, 128).tolist())
+    o, S1 = gdn_ref.recurrent((q * 128 ** 0.5)[:, None, :], k[:, None, :], v[:, None, :], np.log(decay)[:, None], beta[:, None], S0=S.transpose(0, 2, 1))
+    return max(abs(o[:, 0, :].ravel() - np.array(y)).max(), abs(S1.transpose(0, 2, 1).ravel() - np.array(so)).max())
+
+
+def checks08():
+    ok = True
+    # delta_step1: the whole of both outputs at nk = 2 and at the model's nk = 16, and the specification's own reading of the rule
+    for nk in (2, 16):
+        names, sizes = ["s", "q", "k", "v", "g", "bt"], [nk * 128 * 128, nk * 128, nk * 128, nk * 128, nk * 128, nk * 128]
+        want_so, want_y = delta_step1(nk)
+        ok &= check_full(f"delta_step1 so nk={nk}", "delta_step1", [f"nk={nk}"], names, sizes, "so", want_so)
+        ok &= check_full(f"delta_step1 y nk={nk}", "delta_step1", [f"nk={nk}"], names, sizes, "y", want_y)
+    try:
+        import numpy  # noqa: F401
+        worst = delta_step1_vs_spec()
+        good = worst <= 1e-9
+        print(f"{'ok  ' if good else 'FAIL'} delta_step1 reference == examples/qwen35/gdn_ref.py (HF's recurrent rule), 3 heads, largest difference {worst:.2e}")
+        ok &= good
+    except ImportError:
+        print("skip delta_step1 against examples/qwen35/gdn_ref.py: numpy is not installed")
+    # the other kernels, at the shapes of the 0.8B (their small cases are above and in the 27B's list)
+    got = run("conv_step", ["c=6144"])
+    want_y, want_ns = conv_step(6144)
+    ok &= check("conv_step y c=6144", got["y"], want_y)
+    ok &= check("conv_step ns c=6144", got["ns"], want_ns)
+    got = run("qk_norm", ["nk=16", "rows=48"])
+    want_q, want_k = qk_norm(16, 48)
+    ok &= check("qk_norm qn nk=16 rows=48", got["qn"], want_q)
+    ok &= check("qk_norm kn nk=16 rows=48", got["kn"], want_k)
+    got = run("gates", ["h=16"])
+    want_g, want_b = gates(16)
+    ok &= check("gates g h=16", got["g"], want_g)
+    ok &= check("gates bt h=16", got["bt"], want_b)
+    ok &= check("gated_norm h=16 n=128", run("gated_norm", ["h=16", "n=128", "eps=1e-6"])["y"], gated_norm(16, 128))
+    for r in (8, 2):
+        ok &= check(f"rope r={r} h=32 p=192", run("rope", [f"r={r}", "h=32", "p=192"])["y"], rope(r, 32, 192))
+        ok &= check(f"qnorm r={r} n=256", run("qnorm", [f"r={r}", "n=256", "eps=1e-6"])["y"], qnorm(r, 256))
+    ok &= check("attn_gate_q r=8 n=256", run("attn_gate_q", ["r=8", "n=256"])["y"], attn_gate_q(8, 256))
+    ok &= check("rmsnorm_rows r=1 n=1024", run("rmsnorm_rows", ["r=1", "n=1024", "eps=1e-6"])["y"], rmsnorm_rows(1, 1024))
+    ok &= check("swiglu n=3584", run("swiglu", ["n=3584"])["y"], swiglu(3584))
+    # attention at g = 4: the cache of the 0.8B is two heads of 256; t = 2046 is the most that Metal's 32 KiB lets one tile hold at g = 4 (cases.txt)
+    for t, tmax in ((64, 96), (2046, 2048)):
+        got = run("attention", ["nkv=2", "g=4", f"t={t}", "d=256", f"tmax={tmax}"])["o"]
+        ok &= check(f"attention nkv=2 g=4 t={t} d=256 tmax={tmax}", got, attention(2, 4, t, 256, tmax))
+    ok &= check("attention_scores nkv=2 g=4 t=256 ts=32", run("attention_scores", ["nkv=2", "g=4", "t=256", "ts=32", "d=256", "tmax=2048"])["sc"], attention_scores(2, 4, 256, 256, 2048))
+    ok &= check("attention_pv nkv=2 g=4 t=256 dw=32", run("attention_pv", ["nkv=2", "g=4", "t=256", "dw=32", "d=256", "tmax=2048"])["o"], attention_pv(2, 4, 256, 256, 2048))
+    # the matrix-vector products: f16 weights (the speed path), f32 weights (the exact widening of bf16), at the layer shapes. 1024 to 3584 terms
+    # summed in order in f32 held to 1e-5 (measured: all of them pass; the 1e-4 of matvec n=64 k=4096 above was for terms adding up to 254).
+    # The head's n = 248,320 rows do not fit the interpreter at k = 1024 (nor k = 128; the 27B's head is a known `noref`,
+    # tests/cuda-emu-known.txt), so the head is run at k = 32 and emitted at k = 1024 in cases.txt.
+    for n, k in ((3584, 1024), (6144, 1024), (248320, 32)):
+        ok &= check(f"matvec_rows_f16 n={n} k={k}", run("matvec_rows_f16", [f"n={n}", f"k={k}"])["y"], matvec16(n, k), tol=1e-5)
+    for k in (2048, 3584):
+        ok &= check(f"matvec_res_f16 n=1024 k={k}", run("matvec_res_f16", ["n=1024", f"k={k}"])["y"], matvec16(1024, k, "res"), tol=1e-5)
+    ok &= check("matvec_rows n=3584 k=1024", run("matvec_rows", ["n=3584", "k=1024"])["y"], matvec(3584, 1024), tol=1e-5)
+    ok &= check("matvec_res n=1024 k=3584", run("matvec_res", ["n=1024", "k=3584"])["y"], matvec(1024, 3584, "res"), tol=1e-5)
     return ok
 
 
@@ -735,6 +832,11 @@ MUTANTS = [
     ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
     ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),
+    # T3: the one-value-head delta step
+    ("delta_step1.chx", "let e0  = d0 * b0", "let e0  = d0 + b0", "delta_step1 adds beta to the error"),
+    ("delta_step1.chx", "let sg0 = s0 * g0", "let sg0 = s0 + g0", "delta_step1 adds the decay to the state"),
+    ("delta_step1.chx", "let g0  = load g[i, 0 ; 1, 128]", "let g0  = load g[0, 0 ; 1, 128]", "delta_step1 decays every head by the first head's gate"),
+    ("delta_step1.chx", "let v0  = load v[i * 128 + r * br ; br]", "let v0  = load v[r * br ; br]", "delta_step1 reads every head's values from the first head"),
 ]
 
 
