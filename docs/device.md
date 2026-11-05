@@ -403,14 +403,14 @@ fix), and `device_cases` is 176 PASS, 0 MISMATCH, 12 ERROR of 188 (the 12 the
 interpreter's memory, as before). A pass does not clear what the CUDA guide
 calls undefined for the old form; it shows the fixed form does not hang or
 misread on this card.
-A `__constant__` read with a divergent index serialises within a warp; the
-lookup's cost against the shuffle is measured by the `fp4_perf` step
-(`scripts/gcp/fp4_perf.py`, `docs/cloud.md`), **not yet run**. Note what it
-will find: the `matvec_fp4_rows`, `_res` and `_swiglu` kernels at the model's
-own `K` (5120, 17408) read the weights through `fp4_pair` and contain no table
-lookup at all (checked on the emitted CUDA), so the fix cannot change them; the
-lookup is in the generic path, which those families take when `K` is an odd
-multiple of 32 (5152, 17440), a `K` Qwen does not have.
+A `__constant__` read with a divergent index serialises within a warp; the `fp4_perf` step
+(`scripts/gcp/fp4_perf.py`, `docs/cloud.md`, run `20261105-115058-l4`) measured it on the L4. The
+`matvec_fp4_rows`, `_res` and `_swiglu` kernels at the model's own `K` (5120, 17408) read the
+weights through `fp4_pair` and contain no table lookup (checked on the emitted CUDA), so the
+fix cannot change them: old and new ran at the same 219 to 224 GB/s. The lookup is in the generic
+path, which those families take when `K` is an odd multiple of 32 (5152, 17440), a `K` Qwen does
+not have; there the table index is 16 to 25% slower than the old shuffle (about 43 to 51 GB/s
+against 52 to 67), and the old form hung or misread for such `K`, so it was no baseline.
 
 ### Metal (real hardware)
 
