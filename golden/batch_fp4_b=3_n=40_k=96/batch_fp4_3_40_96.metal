@@ -33,7 +33,6 @@ kernel void batch_fp4_3_40_96(
 {
     const uint gid = tgpos.x;
     threadgroup float scratch[120];
-    const float fp4_lane = FP4_V[tid & 15u];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     {
         const uint sgid = tid / 32u, lane = tid % 32u;
@@ -43,49 +42,69 @@ kernel void batch_fp4_3_40_96(
         s[2][0] = 0.0f; s[2][1] = 0.0f; s[2][2] = 0.0f;
         s[3][0] = 0.0f; s[3][1] = 0.0f; s[3][2] = 0.0f;
         s[4][0] = 0.0f; s[4][1] = 0.0f; s[4][2] = 0.0f;
-        for (uint p0 = lane * 1u; p0 < 96u; p0 += 32u) {
-            for (uint u = 0; u < 1u; u += 1u) {
+        for (uint p0 = lane * 16u; p0 < 96u; p0 += 512u) {
+            float sgr[5], mgr[5];
+            { const uint j = min(sgid * 5u + 0u, 39u); const uint grp = j * 6u + p0 / 16u; sgr[0] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[0] = 0.0f; }
+            { const uint j = min(sgid * 5u + 1u, 39u); const uint grp = j * 6u + p0 / 16u; sgr[1] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[1] = 0.0f; }
+            { const uint j = min(sgid * 5u + 2u, 39u); const uint grp = j * 6u + p0 / 16u; sgr[2] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[2] = 0.0f; }
+            { const uint j = min(sgid * 5u + 3u, 39u); const uint grp = j * 6u + p0 / 16u; sgr[3] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[3] = 0.0f; }
+            { const uint j = min(sgid * 5u + 4u, 39u); const uint grp = j * 6u + p0 / 16u; sgr[4] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[4] = 0.0f; }
+            float run[5][3];
+            run[0][0] = 0.0f; run[0][1] = 0.0f; run[0][2] = 0.0f;
+            run[1][0] = 0.0f; run[1][1] = 0.0f; run[1][2] = 0.0f;
+            run[2][0] = 0.0f; run[2][1] = 0.0f; run[2][2] = 0.0f;
+            run[3][0] = 0.0f; run[3][1] = 0.0f; run[3][2] = 0.0f;
+            run[4][0] = 0.0f; run[4][1] = 0.0f; run[4][2] = 0.0f;
+            for (uint u = 0; u < 16u; u += 2u) {
                 const uint p = p0 + u;
-                float xa[3][1];
+                float xa[3][2];
                 xa[0][0] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 0u))]));
                 xa[1][0] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 96u))]));
                 xa[2][0] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 192u))]));
+                xa[0][1] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 1u))]));
+                xa[1][1] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 97u))]));
+                xa[2][1] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 193u))]));
                 {
                     const uint j = min(sgid * 5u + 0u, 39u);
-                    const float w0 = float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
-                    s[0][0] += xa[0][0] * w0;
-                    s[0][1] += xa[1][0] * w0;
-                    s[0][2] += xa[2][0] * w0;
+                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((j * 48u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
+                    run[0][0] += xa[0][0] * w0 + xa[0][1] * w1;
+                    run[0][1] += xa[1][0] * w0 + xa[1][1] * w1;
+                    run[0][2] += xa[2][0] * w0 + xa[2][1] * w1;
                 }
                 {
                     const uint j = min(sgid * 5u + 1u, 39u);
-                    const float w0 = float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
-                    s[1][0] += xa[0][0] * w0;
-                    s[1][1] += xa[1][0] * w0;
-                    s[1][2] += xa[2][0] * w0;
+                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((j * 48u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
+                    run[1][0] += xa[0][0] * w0 + xa[0][1] * w1;
+                    run[1][1] += xa[1][0] * w0 + xa[1][1] * w1;
+                    run[1][2] += xa[2][0] * w0 + xa[2][1] * w1;
                 }
                 {
                     const uint j = min(sgid * 5u + 2u, 39u);
-                    const float w0 = float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
-                    s[2][0] += xa[0][0] * w0;
-                    s[2][1] += xa[1][0] * w0;
-                    s[2][2] += xa[2][0] * w0;
+                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((j * 48u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
+                    run[2][0] += xa[0][0] * w0 + xa[0][1] * w1;
+                    run[2][1] += xa[1][0] * w0 + xa[1][1] * w1;
+                    run[2][2] += xa[2][0] * w0 + xa[2][1] * w1;
                 }
                 {
                     const uint j = min(sgid * 5u + 3u, 39u);
-                    const float w0 = float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
-                    s[3][0] += xa[0][0] * w0;
-                    s[3][1] += xa[1][0] * w0;
-                    s[3][2] += xa[2][0] * w0;
+                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((j * 48u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
+                    run[3][0] += xa[0][0] * w0 + xa[0][1] * w1;
+                    run[3][1] += xa[1][0] * w0 + xa[1][1] * w1;
+                    run[3][2] += xa[2][0] * w0 + xa[2][1] * w1;
                 }
                 {
                     const uint j = min(sgid * 5u + 4u, 39u);
-                    const float w0 = float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
-                    s[4][0] += xa[0][0] * w0;
-                    s[4][1] += xa[1][0] * w0;
-                    s[4][2] += xa[2][0] * w0;
+                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((j * 48u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
+                    run[4][0] += xa[0][0] * w0 + xa[0][1] * w1;
+                    run[4][1] += xa[1][0] * w0 + xa[1][1] * w1;
+                    run[4][2] += xa[2][0] * w0 + xa[2][1] * w1;
                 }
             }
+            s[0][0] += run[0][0] * sgr[0]; s[0][1] += run[0][1] * sgr[0]; s[0][2] += run[0][2] * sgr[0];
+            s[1][0] += run[1][0] * sgr[1]; s[1][1] += run[1][1] * sgr[1]; s[1][2] += run[1][2] * sgr[1];
+            s[2][0] += run[2][0] * sgr[2]; s[2][1] += run[2][1] * sgr[2]; s[2][2] += run[2][2] * sgr[2];
+            s[3][0] += run[3][0] * sgr[3]; s[3][1] += run[3][1] * sgr[3]; s[3][2] += run[3][2] * sgr[3];
+            s[4][0] += run[4][0] * sgr[4]; s[4][1] += run[4][1] * sgr[4]; s[4][2] += run[4][2] * sgr[4];
         }
         for (uint d = 16u; d > 0; d /= 2) s[0][0] += simd_shuffle_down(s[0][0], d);
         for (uint d = 16u; d > 0; d /= 2) s[0][1] += simd_shuffle_down(s[0][1], d);

@@ -412,6 +412,27 @@ path, which those families take when `K` is an odd multiple of 32 (5152, 17440),
 not have; there the table index is 16 to 25% slower than the old shuffle (about 43 to 51 GB/s
 against 52 to 67), and the old form hung or misread for such `K`, so it was no baseline.
 
+**Why the generic path was about 4x slower, and the change (not yet measured).** At `K = 5152`
+the emitted rows kernel differed from `K = 5120` in one decision, `split_k_vec`
+(`src/matmul.cho`): a 32-lane group steps `lanes * vec` elements per round and the old code
+wanted `K % (lanes * vec) == 0`, i.e. `K % 512` for the 16-wide step. 5120 and 17408 are
+multiples of 512; 5152 and 17440 are not (nor of 256, 128 or 64), so `vec` fell to 1. Then the
+dequantisation was the lazy expression, `for (p = lane; p < K; p += 32)` doing, per element,
+a one-byte load of `wq`, a nibble shift, a `FP4_V[]` read, an `fp8_e4m3` decode and a `wg` read
+(with `/` and `%` by 5152, 322 and 16 in the address), a 4-byte `x` load, and no pair or vector
+load: 1 byte of weight per memory instruction against 8 bytes (`uint2`) plus `float4` `x` loads
+and `fp4_pair` for 16 values on the fast path. The L4 figures (about 220 GB/s against 45 to 67)
+are that difference, the lookup (16 to 25% of the slow path) being part of it. The loop was
+already `p0 < K` and a step is a whole number of groups, so a last, partial round (the lanes
+past the end idle) is exact whenever `K % 16 == 0`: `dq_vec` now takes the 16-wide step for
+that case and the generic path is left for what the fast one cannot do. The emitted code for
+`K = 5152` has no `FP4_V[` lookup and the same body as `K = 5120`; the goldens that changed
+are the cases with K not a multiple of 512 and the CPU emulator and `tests/kernels.py` agree.
+**The speed is not measured on hardware**: it needs an L4 run of `fp4_perf` (whose cases at K
+5152 and 17440 now report `lookups` 0 and old == new). The partial round leaves lanes idle in
+the last round (at most 15/16 of a round, about 0.1% of the work at K = 5152); for small K
+(48 to 160) most lanes idle where they used to share the work, and nothing was timed there.
+
 ### Metal (real hardware)
 
 First real Metal run on Mac Studio (Apple Silicon GPU):

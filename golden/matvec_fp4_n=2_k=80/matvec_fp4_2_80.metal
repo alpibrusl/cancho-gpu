@@ -33,14 +33,20 @@ kernel void matvec_fp4_2_80(
 {
     const uint gid = tgpos.x;
     threadgroup float scratch[2];
-    const float fp4_lane = FP4_V[tid & 15u];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     {
         const uint o = tid / 32u, lane = tid % 32u;
         float s = 0.0f;
         if (o < 2u) {
             const uint i = o / 2u, j = o % 2u;
-            for (uint p = lane; p < 80u; p += 32u) s += float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p))])) * float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 40u + (uint)(0) * 1u + ((((j * 80u + p) / 80u) * 40u + ((j * 80u + p) % 80u) / 2u))])) >> (((j * 80u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 5u + (uint)(0) * 1u + ((((j * 80u + p) / 80u) * 5u + ((j * 80u + p) % 80u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 80u + p) / 80u) * 5u + ((j * 80u + p) % 80u) / 16u)) / 5u))]))));
+            const float rs = float(float(p3_wg[(uint)(0) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 80u; p0 += 512u) {
+                const uint grp = j * 5u + p0 / 16u;
+                const float sg = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 5u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0) * 40u + (uint)(0) * 1u + ((j * 40u + p0 / 2u + u / 2u))])); const float2 w = fp4_pair(bq); run += float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p))])) * w.x + float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p + 1u))])) * w.y; }
+                s += run * (sg * 16384.0f);
+            }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
         if (o < 2u && lane == 0) scratch[0 + o] = s;

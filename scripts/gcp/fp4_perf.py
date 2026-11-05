@@ -19,9 +19,13 @@ in its own process with a timeout, and a timeout is reported as TIMEOUT, not wai
 Two kinds of case, and the report says which is which. At the model's own K (5120, 17408)
 the emitted rows kernels read the weights through `fp4_pair` and contain NO table lookup,
 so old and new are the same program (ratio ~1, "no lookup": a control). The lookup is in the
-generic path, taken (rows, res, swiglu, batch families, as emitted by the compiler of this
-commit) when K is an odd multiple of 32 (5152, 17440; K % 64 == 0 takes an fp4_pair path
-too), which is where the ratio means something. The `lookups` column is the number of
+generic path, which (rows, res, swiglu, batch families) was taken when K was not a multiple
+of 512 (5152, 17440, odd multiples of 32), which is where the ratio meant something. The
+compiler since takes `fp4_pair` there too, with a partial last round (docs/device.md 5b), so
+on a compiler with that change these cases report `lookups` 0 and old == new (the same program):
+the L4 numbers of run 20261105-115058-l4 are of the compiler before it, and the speed of the
+new emission is NOT yet measured. To measure the table-index cost again, the case must be one the
+compiler still sends to the generic path (find it with the `lookups` column). The `lookups` column is the number of
 sites found in the emitted CUDA, so a compiler that changes the paths shows up there.
 
 Needs cupy and numpy (the venv of the gemm_bench step); `--dry-run` needs neither. Exit 1
@@ -39,16 +43,16 @@ import time
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CHX = os.path.join(ROOT, "tests", "chx")
 # (file, consts, role). n x k at the Qwen3.8-27B-like shapes of tests/cases.txt; the K = 5152 and
-# 17440 are those K plus 32, the nearest odd multiples of 32 (they take the lookup path).
+# 17440 are those K plus 32, the nearest odd multiples of 32 (before the partial-round step they took the lookup path).
 CASES = [
     ("matvec_fp4_rows.chx", "n=17408 k=5120", "control: model K, no lookup"),
     ("matvec_fp4_rows.chx", "n=5120 k=17408", "control: model K, no lookup"),
-    ("matvec_fp4_rows.chx", "n=17408 k=5152", "lookup path"),
-    ("matvec_fp4_rows.chx", "n=5120 k=17440", "lookup path"),
-    ("matvec_fp4_res.chx", "n=5120 k=17440", "lookup path"),
-    ("matvec_fp4_swiglu.chx", "n=17408 k=5152", "lookup path"),
-    ("matvec_fp4_batch.chx", "m=4 n=17408 k=5152", "lookup path"),
-    ("matvec_fp4_res_batch.chx", "m=4 n=5120 k=17440", "lookup path"),
+    ("matvec_fp4_rows.chx", "n=17408 k=5152", "odd x32 K: was lookup path"),
+    ("matvec_fp4_rows.chx", "n=5120 k=17440", "odd x32 K: was lookup path"),
+    ("matvec_fp4_res.chx", "n=5120 k=17440", "odd x32 K: was lookup path"),
+    ("matvec_fp4_swiglu.chx", "n=17408 k=5152", "odd x32 K: was lookup path"),
+    ("matvec_fp4_batch.chx", "m=4 n=17408 k=5152", "odd x32 K: was lookup path"),
+    ("matvec_fp4_res_batch.chx", "m=4 n=5120 k=17440", "odd x32 K: was lookup path"),
 ]
 LANE_DEF = "    const float fp4_lane = FP4_V[tid & 15u];\n"
 # lines the emitter writes before the body; the lane definition goes after them

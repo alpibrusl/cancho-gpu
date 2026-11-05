@@ -103,6 +103,19 @@ fn param_dtype_of[&m, &t](m: &!m [int], t: &!t [byte], g: int, lv: int) -> [] in
     return ir.param_dtype(m, mem.get(m, p, i));
 }
 
+// The step of a split-K reduction over `kd`. Over NVFP4 weights (`d >= 0`)
+// the loop is `p0 < kd` with a `vec`-wide step, so `kd % vec == 0` makes a
+// last, partial round (some lanes idle) exact: `kd` need not be a multiple of
+// `lanes * vec` (5152 is not of 512, and used to fall to one element per step
+// and a table lookup per element: docs/device.md 5b).
+fn dq_vec[&m](m: &!m [int], d: int, kd: int, lanes: int, want: int) -> [] int {
+    let vec = split_k_vec(kd, lanes, want);
+    if d >= 0 && vec < want && kd % want == 0 && usable_dq(m, d, kd, want) {
+        return want;
+    }
+    return vec;
+}
+
 // The dequantisation a reduction may use.
 fn usable_dq[&m](m: &!m [int], d: int, kd: int, vec: int) -> [] bool {
     return vec > 1 && m[d + 3] == kd && m[d + 4] % vec == 0 && vec % 2 == 0;
@@ -185,7 +198,7 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
     if d >= 0 {
         want = 16;
     }
-    let vec = split_k_vec(kd, lanes, want);
+    let vec = dq_vec(m, d, kd, lanes, want);
     if d >= 0 && !usable_dq(m, d, kd, vec) {
         d = 0 - 1;
     }
@@ -409,7 +422,7 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
     if d >= 0 {
         want = 16;
     }
-    let vec = split_k_vec(kd, lanes, want);
+    let vec = dq_vec(m, d, kd, lanes, want);
     if d >= 0 && !usable_dq(m, d, kd, vec) {
         d = 0 - 1;
     }

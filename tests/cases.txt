@@ -314,3 +314,14 @@ tests/chx/matvec_fp4_res.chx n=32 k=48
 tests/chx/matvec_fp4_swiglu.chx n=17408 k=80
 tests/chx/matvec_fp4_res_batch.chx m=2 n=5152 k=144
 tests/chx/batch_fp4.chx b=36 n=129 k=224
+
+# K an odd multiple of 32 (5152, 17440): not a multiple of lanes * 16 = 512, so the fp4_pair loop ends on a partial round
+# (docs/device.md 5b); it used to take the one-element-per-step table path.
+tests/chx/matvec_fp4_rows.chx n=16 k=5152
+tests/chx/matvec_fp4_rows.chx n=16 k=17440
+tests/chx/matvec_fp4_res.chx n=16 k=17440
+tests/chx/matvec_fp4_swiglu.chx n=16 k=5152
+tests/chx/matvec_fp4_batch.chx m=4 n=16 k=5152
+tests/chx/matvec_fp4_res_batch.chx m=4 n=16 k=17440
+tests/chx/matvec_fp4_rows.chx n=16 k=96 --run
+tests/chx/matvec_fp4_batch.chx m=3 n=64 k=160 --run

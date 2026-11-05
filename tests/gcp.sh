@@ -439,7 +439,9 @@ sys.path.insert(0, sys.argv[1])
 import fp4_perf as f
 root = sys.argv[2]
 g = "golden/batch_fp4_b=3_n=40_k=96/batch_fp4_3_40_96.cu"
-new = open(root + "/" + g).read()
+# a kernel that still has table lookups: the golden as it was before the split-K step took a partial last round
+# (K = 96 is not a multiple of 512, so the emitter now writes fp4_pair here), kept as a fixture
+new = open(root + "/tests/fp4_lookup_fixture.cu").read()
 old, n = f.old_variant(new)
 print("LOOKUPS", n, "SHFL", old.count("__shfl_sync(0xffffffffu, fp4_lane, "), "LANEDEF", old.count(f.LANE_DEF), "LEFT", old.count("FP4_V[(") )
 # the declaration of the table is not a lookup

@@ -40,11 +40,11 @@ kernel void matvec_fp4_32_48(
         if (o < 32u) {
             const uint i = o / 32u, j = o % 32u;
             const float rs = float(float(p3_wg[(uint)(0) * 1u + ((j))]));
-            for (uint p0 = lane * 2u; p0 < 48u; p0 += 16u) {
+            for (uint p0 = lane * 16u; p0 < 48u; p0 += 128u) {
                 const uint grp = j * 3u + p0 / 16u;
                 const float sg = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 3u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * rs;
                 float run = 0.0f;
-                for (uint u = 0; u < 2u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0) * 24u + (uint)(0) * 1u + ((j * 24u + p0 / 2u + u / 2u))])); const float2 w = fp4_pair(bq); run += float(float(p0_x[(uint)(0) * 48u + (uint)(0) * 1u + ((i * 48u + p))])) * w.x + float(float(p0_x[(uint)(0) * 48u + (uint)(0) * 1u + ((i * 48u + p + 1u))])) * w.y; }
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0) * 24u + (uint)(0) * 1u + ((j * 24u + p0 / 2u + u / 2u))])); const float2 w = fp4_pair(bq); run += float(float(p0_x[(uint)(0) * 48u + (uint)(0) * 1u + ((i * 48u + p))])) * w.x + float(float(p0_x[(uint)(0) * 48u + (uint)(0) * 1u + ((i * 48u + p + 1u))])) * w.y; }
                 s += run * (sg * 16384.0f);
             }
         }

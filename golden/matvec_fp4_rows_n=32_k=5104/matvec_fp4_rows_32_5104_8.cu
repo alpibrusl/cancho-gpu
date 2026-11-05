@@ -52,7 +52,26 @@ extern "C" __global__ void matvec_fp4_rows_32_5104_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p = lane; p < 5104u; p += 32u) s += float(float(p0_x[(uint)(0) * 5104u + (uint)(0) * 1u + ((i * 5104u + p))])) * float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 2552u + (uint)(0) * 1u + ((((j * 5104u + p) / 5104u) * 2552u + ((j * 5104u + p) % 5104u) / 2u))])) >> (((j * 5104u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 8 * gid) * 319u + (uint)(0) * 1u + ((((j * 5104u + p) / 5104u) * 319u + ((j * 5104u + p) % 5104u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 5104u + p) / 5104u) * 319u + ((j * 5104u + p) % 5104u) / 16u)) / 319u))]))));
+            const float rs = float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 5104u; p0 += 512u) {
+                const uint grp = j * 319u + p0 / 16u;
+                const float sg = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 8 * gid) * 319u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * rs;
+                const uint2 wq = *reinterpret_cast<const uint2*>(&p1_wq[(uint)(0 + 8 * gid) * 2552u + (uint)(0) * 1u + ((j * 2552u + p0 / 2u))]);
+                const float4 x0 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 5104u + (uint)(0) * 1u + ((i * 5104u + p0 + 0u))]);
+                const float4 x1 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 5104u + (uint)(0) * 1u + ((i * 5104u + p0 + 4u))]);
+                const float4 x2 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 5104u + (uint)(0) * 1u + ((i * 5104u + p0 + 8u))]);
+                const float4 x3 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 5104u + (uint)(0) * 1u + ((i * 5104u + p0 + 12u))]);
+                float run = 0.0f;
+                { const float2 w = fp4_pair((wq.x >> 0u) & 0xFFu); run += x0.x * w.x + x0.y * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 8u) & 0xFFu); run += x0.z * w.x + x0.w * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 16u) & 0xFFu); run += x1.x * w.x + x1.y * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 24u) & 0xFFu); run += x1.z * w.x + x1.w * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 0u) & 0xFFu); run += x2.x * w.x + x2.y * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 8u) & 0xFFu); run += x2.z * w.x + x2.w * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 16u) & 0xFFu); run += x3.x * w.x + x3.y * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 24u) & 0xFFu); run += x3.z * w.x + x3.w * w.y; }
+                s += run * (sg * 16384.0f);
+            }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
         if (o < 8u && lane == 0) scratch[0 + o] = s;

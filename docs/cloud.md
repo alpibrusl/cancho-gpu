@@ -315,6 +315,8 @@ warp, so there it had no correct baseline. That path runs at about 50 GB/s again
 220 GB/s for `fp4_pair`, so the gap between the two paths is larger than the lookup's cost.
 One card, one run, a text-edit variant of the old form.
 
+Since this run the compiler takes `fp4_pair` for those K as well (docs/device.md 5b, "Why the generic path was about 4x slower"): the K = 5152 and 17440 rows above describe the compiler before it and are **not yet re-measured** on the L4.
+
 **The GEMM against cuBLAS (`gemm_bench`, run `20261104-212332-l4`; fractions of the 63.0
 TFLOPS this run measured for cuBLAS, the best of cuBLAS and torch over the shapes).**
 `gemm_mma` as emitted reaches **79 to 81%** of it at 2048, 3072 and 4096 cubed (49.7 to
