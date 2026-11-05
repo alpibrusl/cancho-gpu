@@ -1,0 +1,183 @@
+edition 5;
+module qwen08_dev;
+
+// `qwen08_dev` -- the Qwen3.5-0.8B checkpoint's tensors on a Metal device
+// (`docs/weight-space.md` section 14, T5): `src/qwen08_load.cho` reads and
+// converts a chunk, this module puts the chunks into one device buffer a
+// tensor and, for check C2, reads a buffer back and compares it with the file.
+//
+// The engine (T6) calls `upload` once per planned tensor and keeps the buffer
+// handles; `verify` is what `device/qwen08-load-main.cho` does after each.
+
+import mem;
+import text;
+import err;
+import fileio;
+import metal;
+import qwen08_load;
+
+fn device_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), what: &static [byte]) -> [ffi("libmetalgpu")] int {
+    let top = m[mem.text_slot()];
+    let n = metal.cgpu_error(ffi, t[top..top + 4096]);
+    var detail = text.lit(m, t, "no detail");
+    if n > 0 {
+        detail = text.from_bytes(m, t, t[top..top + n]);
+    }
+    return err.fail(m, t, "q08-device", text.f2(m, t, "$: $", text.lit(m, t, what), detail));
+}
+
+fn reserve[&m](m: &!m [int], n: int) -> [] int {
+    let at = m[mem.text_slot()];
+    m[mem.text_slot()] = at + n;
+    return at;
+}
+
+// Tensor `rec` of the plan into a new device buffer under `mode`, streamed in
+// chunks. `(buffer, values changed by the conversion)`, or `(-1, 0)`.
+pub fn upload[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, rec: int, mode: int, patch: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] (int, int) {
+    let elems = m[rec + qwen08_load.p_elems()];
+    let width = qwen08_load.out_width(m, rec, mode);
+    let buf = metal.cgpu_alloc(ffi, elems * width);
+    if buf < 0 {
+        device_fail(m, t, ffi, "allocating a weight");
+        return (0 - 1, 0);
+    }
+    let mark = m[mem.text_slot()];
+    var done = 0;
+    var changed = 0;
+    while done < elems {
+        var n = elems - done;
+        if n > qwen08_load.chunk_values() {
+            n = qwen08_load.chunk_values();
+        }
+        let raw = reserve(m, 4 * n);
+        let out = reserve(m, 4 * n);
+        let (bytes, c) = qwen08_load.load_chunk(m, t, fs, path, rec, mode, done, n, raw, out, patch);
+        if bytes < 0 {
+            return (0 - 1, 0);
+        }
+        if metal.cgpu_upload_at(ffi, buf, width * done, t[out..out + bytes]) < 0 {
+            device_fail(m, t, ffi, "uploading a weight");
+            return (0 - 1, 0);
+        }
+        changed = changed + c;
+        m[mem.text_slot()] = mark;
+        done = done + n;
+    }
+    return (buf, changed);
+}
+
+// The f32 bits an f16 widens to (exactly).
+pub fn half_to_f32_bits(h: int) -> [] int {
+    let sign = (h >> 15 & 1) << 31;
+    let e = h >> 10 & 31;
+    let mant = h & 1023;
+    if e == 0 {
+        if mant == 0 {
+            return sign;
+        }
+        var p = 9;
+        while mant >> p & 1 == 0 {
+            p = p - 1;
+        }
+        return sign | p + 103 << 23 | mant << 23 - p & 8388607;
+    }
+    if e == 31 {
+        return sign | 255 << 23 | mant << 13;
+    }
+    return sign | e + 112 << 23 | mant << 13;
+}
+
+// Adler-32 (RFC 1950; `zlib.adler32` in Python) of `t[at..at + n]`, continued
+// from `state` (1 to start): `b * 65536 + a`.
+pub fn adler[&t](t: &!t [byte], at: int, n: int, state: int) -> [] int {
+    var a = state % 65536;
+    var b = state / 65536;
+    var i = 0;
+    while i < n {
+        a = (a + int_of(t[at + i])) % 65521;
+        b = (b + a) % 65521;
+        i = i + 1;
+    }
+    return b * 65536 + a;
+}
+
+// Check C2 for one tensor: read buffer `buf` back and compare it with the file,
+// read again from `path` by a second route. An f32 buffer of a BF16 tensor must
+// be the file's two bytes under two zero bytes, an F32 tensor's the file's four,
+// every value; an f16 buffer is widened and compared with the bf16 original.
+// `(Adler-32 of the device bytes, values that differ from the file's)`, or
+// `(-1, 0)`. Under `mode_f32` a difference is a refusal (`q08-verify`); under
+// `mode_f16` it is the narrowing's, and the caller compares the count with the
+// loader's.
+pub fn verify[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, rec: int, mode: int, buf: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] (int, int) {
+    let elems = m[rec + qwen08_load.p_elems()];
+    let width = qwen08_load.out_width(m, rec, mode);
+    var fw = 2;
+    if qwen08_load.is_f32_file(m, rec) {
+        fw = 4;
+    }
+    let mark = m[mem.text_slot()];
+    var sum = 1;
+    var bad = 0;
+    var done = 0;
+    while done < elems {
+        var n = elems - done;
+        if n > qwen08_load.chunk_values() {
+            n = qwen08_load.chunk_values();
+        }
+        let raw = reserve(m, 4 * n);
+        let dev = reserve(m, 4 * n);
+        let got = fileio_read(t, fs, path, m[rec + qwen08_load.p_offset()] + fw * done, raw, fw * n);
+        if got != fw * n {
+            err.fail(m, t, "q08-read", text.f1(m, t, "short read of `$`", m[rec]));
+            return (0 - 1, 0);
+        }
+        if metal.cgpu_download_at(ffi, buf, width * done, t[dev..dev + width * n]) < 0 {
+            device_fail(m, t, ffi, "reading a weight back");
+            return (0 - 1, 0);
+        }
+        var i = 0;
+        if fw == 4 {
+            while i < n {
+                if t[dev + 4 * i] != t[raw + 4 * i] || t[dev + 4 * i + 1] != t[raw + 4 * i + 1] || t[dev + 4 * i + 2] != t[raw + 4 * i + 2] || t[dev + 4 * i + 3] != t[raw + 4 * i + 3] {
+                    bad = bad + 1;
+                }
+                i = i + 1;
+            }
+        } else if width == 4 {
+            while i < n {
+                if int_of(t[dev + 4 * i]) != 0 || int_of(t[dev + 4 * i + 1]) != 0 || t[dev + 4 * i + 2] != t[raw + 2 * i] || t[dev + 4 * i + 3] != t[raw + 2 * i + 1] {
+                    bad = bad + 1;
+                }
+                i = i + 1;
+            }
+        } else {
+            while i < n {
+                let h = int_of(t[dev + 2 * i]) | int_of(t[dev + 2 * i + 1]) << 8;
+                let b = int_of(t[raw + 2 * i]) | int_of(t[raw + 2 * i + 1]) << 8;
+                if half_to_f32_bits(h) != b << 16 {
+                    bad = bad + 1;
+                }
+                i = i + 1;
+            }
+        }
+        sum = adler(t, dev, width * n, sum);
+        m[mem.text_slot()] = mark;
+        done = done + n;
+    }
+    if bad > 0 && mode == qwen08_load.mode_f32() {
+        err.fail(m, t, "q08-verify", text.f2(m, t, "the device holds $ values of `$` that differ from the file's", text.num(m, t, bad), m[rec]));
+        return (0 - 1, 0);
+    }
+    return (sum, bad);
+}
+
+fn fileio_read[&t, &f](t: &!t [byte], fs: &f Fs(""), path: int, offset: int, to: int, want: int) -> [fs_read(""), file_read] int {
+    return fileio.read_at(t, fs, text.bytes(t, path), offset, to, want);
+}
+
+// Record why the device would not open.
+pub fn device_open_fail[&m, &t, &f](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
+    return device_fail(m, t, ffi, "opening the device");
+}

@@ -1,0 +1,31 @@
+// The product with v for any number of positions: head i's g query heads, the columns dc * dw .. (dc + 1) * dw of v,
+//
+//     o = sum over chunks of  exp(s - m) / z  v
+//
+// with the scores s from attention_scores.chx and the maximum m and the normaliser z of each query head from
+// attention_stats.chx. One carried [g, dw] accumulator over chunks of cs positions, so the tile is [g, cs] and not
+// [g, t]: there is no ceiling on t but the cache. The same arithmetic as attention_pv.chx (docs/weight-space.md 14.5).
+algo attention_pvl(nkv, g, t, cs, dw, d, tmax)
+  in  sc: f32[nkv * g, t]
+  in  m:  f32[nkv * g]
+  in  z:  f32[nkv * g]
+  in  v:  f32[nkv * tmax, d]
+  out o:  f32[nkv * g, d]
+{
+  grid i over nkv, dc over d / dw
+  let a0 = zeros f32[g, dw]
+  let acc = for c in 0 .. t / cs with a0 {
+    let sm = load sc[i * g, c * cs ; g, cs]
+    let mm = load m[i * g ; g]
+    let zz = load z[i * g ; g]
+    let sh = sm - mm
+    let e  = exp sh
+    let p  = e / zz
+    let vt = load v[i * tmax + c * cs, dc * dw ; cs, dw]
+    yield a0 + matmul p vt
+  }
+  store acc -> o[i * g, dc * dw]
+}
+
+schedule attention_pvl for apple-m-series { threads 256 }
+schedule attention_pvl for nvidia-ada     { threads 128 }

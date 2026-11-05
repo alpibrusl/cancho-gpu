@@ -14,3 +14,5 @@ matvec_fp4_rows_n=5120_k=17408|noref|the interpreter's memory cannot hold the te
 matvec_fp4_swiglu_batch_m=4_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_rows_n=151936_k=896|noref|the interpreter's memory cannot hold the tensors
+matvec_rows_f16_n=248320_k=1024|noref|the interpreter's memory cannot hold the tensors (the 0.8B's tied head)
+matvec_rows_n=248320_k=1024|noref|the interpreter's memory cannot hold the tensors (the 0.8B's tied head, f32 weights)
