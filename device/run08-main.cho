@@ -1,9 +1,18 @@
 edition 5;
 
-// `cancho-gpu-run08` -- feed token ids through the Qwen3.5-0.8B engine (`device/qwen08.cho`) and dump what checks C3 and C4
-// of `docs/weight-space.md` section 14 compare. Not the greedy runner (T7).
+// `cancho-gpu-run08` -- feed a prompt through the Qwen3.5-0.8B engine (`device/qwen08.cho`), dump what checks C3 and C4
+// of `docs/weight-space.md` section 14 compare (T6), and decode greedily (T7: checks C5, C6, C7).
 //
-//     cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <ids, comma separated> [--trace] [--logits] [--timing]
+//     cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <prompt> [--trace] [--logits] [--timing]
+//                      [--max-new N] [--force <ids>] [--batch <file>]
+//
+// `<prompt>` is token ids, comma separated, or `@<request.json>`: a chat request body that `cancho-gpu chat <request.json>
+// qwen35-08b-w1` renders (`src/chat_w1.cho`, the W1 prompt) and the model directory's `tokenizer.json` encodes
+// (`src/bpe.cho`). With `--batch <file>` the prompt is `-` and every line of the file is one job on the loaded engine:
+// `<max_new> <prompt> [<forced ids>]`, a prompt as above. With `--max-new N` (N >= 1) the runner decodes greedily after the
+// prompt: the largest logit, ties to the lower id, a stop on id 248044 or 248046 (the stop id is emitted, not fed), at most N
+// new tokens; `hit_limit` is 1 when the N-th token was not a stop id. With `--force <ids>` (teacher forcing) the given ids are
+// fed in place of the argmax, one step each, and `hit_limit` is 0.
 //
 // Every id is fed in order from position 0. With `--trace`, for each position and each slot a line
 //
@@ -12,7 +21,16 @@ edition 5;
 // with slot 0 the embedding, 1 to 24 the output of layer 0 to 23, 25 the final norm; with `--logits` the last position's
 // logits as `logits <pos> <248320 hex words>`. Always `top <pos> <id>:<hex> ...` (the 20 largest logits of the last position,
 // then the position's) and, with `--timing`, `timing: tokens=<n> total_ms=<ms> last_ms=<ms>` (the engine's wall time per
-// token, the logits read back included). Exit 0, or 1 with `error[<rule>]: ...`, or 2 for a usage mistake.
+// token, the logits read back included; `prompt_ms`, `gen_new` and `gen_ms` split the prompt from the decoding, where each
+// decoding step is one engine token, the readback of the logits row and the host's scan for the largest). A job prints
+//
+//     job <k> prompt_tokens=<n>
+//     ids <k> <the prompt's ids, comma separated>
+//     top <n - 1> <id>:<hex> ...                 (the 20 largest logits after the prompt; hex = the f32 bits)
+//     step <j> <chosen id> <id>:<hex> ... (5)    (the 5 largest logits predicting new token j; chosen = argmax or forced id)
+//     done <k> new=<count> hit_limit=<0|1> eos=<stop id or -1>
+//
+// A logit that is not finite is refused (`q08-nonfinite`). Exit 0, or 1 with `error[<rule>]: ...`, or 2 for a usage mistake.
 //
 // Linked with `shim/canchogpu-metal.mm` (`scripts/build-run08.sh`).
 
@@ -26,6 +44,9 @@ import metal;
 import qwen35;
 import qwen08_load;
 import qwen08;
+import bpe;
+import chat_w1;
+import fileio;
 
 fn words() -> [] int {
     return 100000000;
@@ -36,7 +57,7 @@ fn bytes_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <ids, comma separated> [--trace] [--logits] [--timing]\n");
+    io.error_all(io, "usage: cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <prompt: ids, comma separated, or @request.json> [--trace] [--logits] [--timing] [--max-new N] [--force <ids>] [--batch <file>]\n");
     return 2;
 }
 
@@ -66,6 +87,291 @@ fn hex_line[&m, &t](m: &!m [int], t: &!t [byte], head: int, from: int, n: int) -
     return text.finish(m, start);
 }
 
+// Integers separated by commas (empty pieces skipped) as a list, or -1 when a piece is not a number.
+fn parse_ids[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+    let ids = mem.list(m);
+    var cur = 0;
+    var have = false;
+    var d = 0;
+    while d <= text.size(s) {
+        var ch = 44;
+        if d < text.size(s) {
+            ch = text.at(t, s, d);
+        }
+        if ch == 44 {
+            if have {
+                mem.push(m, ids, cur);
+            }
+            cur = 0;
+            have = false;
+        } else if ch >= 48 && ch <= 57 && cur < 100000000 {
+            cur = cur * 10 + ch - 48;
+            have = true;
+        } else {
+            return 0 - 1;
+        }
+        d = d + 1;
+    }
+    return ids;
+}
+
+// A non-negative decimal number, or -1.
+fn parse_num[&t](t: &!t [byte], s: int) -> [] int {
+    var v = 0;
+    var d = 0;
+    if text.size(s) == 0 {
+        return 0 - 1;
+    }
+    while d < text.size(s) {
+        let ch = text.at(t, s, d);
+        if ch < 48 || ch > 57 || v > 1000000 {
+            return 0 - 1;
+        }
+        v = v * 10 + ch - 48;
+        d = d + 1;
+    }
+    return v;
+}
+
+// The f32 bits of a logit as an integer that orders like the number (-0 and +0 equal): no float is built in the scan of 248,320 logits.
+fn order_key(bits: int) -> [] int {
+    if bits >= 2147483648 {
+        return 2147483648 - bits;
+    }
+    return bits;
+}
+
+// The `k` largest logits of the row at t[lg..] as a list of ids, best first (ties to the lower id), or -1 with
+// `q08-nonfinite` when a logit is NaN or infinite.
+fn topk[&m, &t](m: &!m [int], t: &!t [byte], lg: int, k: int) -> [] int {
+    let ids = mem.list(m);
+    var floor = 0;
+    var j = 0;
+    while j < qwen08.vocab() {
+        let bits = qwen35.le32(t, lg + 4 * j);
+        if bits >> 23 & 255 == 255 {
+            return err.fail(m, t, "q08-nonfinite", text.f1(m, t, "the logit of id $ is not finite", text.num(m, t, j)));
+        }
+        let v = order_key(bits);
+        var n = mem.size(m, ids);
+        if n < k || v > floor {
+            if n == k {
+                mem.pop(m, ids);
+                n = n - 1;
+            }
+            var p = n;
+            while p > 0 && order_key(qwen35.le32(t, lg + 4 * mem.get(m, ids, p - 1))) < v {
+                p = p - 1;
+            }
+            mem.push(m, ids, j);
+            var q = n;
+            while q > p {
+                mem.set(m, ids, q, mem.get(m, ids, q - 1));
+                q = q - 1;
+            }
+            mem.set(m, ids, p, j);
+            if mem.size(m, ids) == k {
+                floor = order_key(qwen35.le32(t, lg + 4 * mem.get(m, ids, k - 1)));
+            }
+        }
+        j = j + 1;
+    }
+    return ids;
+}
+
+// `id:bits` of the first `n` entries of `ids`, separated by spaces.
+fn pairs[&m, &t](m: &!m [int], t: &!t [byte], lg: int, ids: int, n: int) -> [] int {
+    let parts = mem.list(m);
+    var r = 0;
+    while r < n {
+        let id = mem.get(m, ids, r);
+        mem.push(m, parts, text.f2(m, t, "$:$", text.num(m, t, id), text.num(m, t, qwen35.le32(t, lg + 4 * id))));
+        r = r + 1;
+    }
+    return text.joined(m, t, parts, " ");
+}
+
+fn joined_ids[&m, &t](m: &!m [int], t: &!t [byte], ids: int) -> [] int {
+    let parts = mem.list(m);
+    var r = 0;
+    while r < mem.size(m, ids) {
+        mem.push(m, parts, text.num(m, t, mem.get(m, ids, r)));
+        r = r + 1;
+    }
+    return text.joined(m, t, parts, ",");
+}
+
+// The prompt ids of `spec`: the ids themselves, or `@path` of a W1 request, rendered and encoded; -1 with a refusal.
+fn prompt_ids[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), tk: int, spec: int) -> [fs_read(""), file_read] int {
+    if text.size(spec) == 0 || text.at(t, spec, 0) != 64 {
+        return parse_ids(m, t, spec);
+    }
+    if tk < 0 {
+        return err.fail(m, t, "q08-io", text.lit(m, t, "no tokenizer was loaded for a request prompt"));
+    }
+    let path = text.sub(spec, 1, text.size(spec));
+    let (top, got, size) = fileio.prefix(m, t, fs, text.bytes(t, path), 1048576);
+    if top < 0 || size > got {
+        return err.fail(m, t, "q08-io", text.f1(m, t, "cannot read the request $ (at most 1 MiB)", path));
+    }
+    let p = chat_w1.render(m, t, top, got);
+    if p < 0 {
+        return 0 - 1;
+    }
+    return bpe.encode(m, t, tk, text.start(p), text.start(p) + text.size(p));
+}
+
+// One job on the loaded engine: a fresh conversation, the prompt, then (`want` > 0) that many greedy or forced steps.
+fn job[&m, &t, &i, &f, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), ffi: &g Ffi("libmetalgpu"), clock: &c Clock, eng: int, tk: int, tmax: int, lg: int, tr: int, k: int, spec: int, max_new: int, force: int, trace: bool, logits: bool, timing: bool) -> [io_write, err_write, fs_read(""), file_read, ffi("libmetalgpu"), clock] int {
+    let ids = prompt_ids(m, t, fs, tk, spec);
+    if ids < 0 {
+        return 0 - 1;
+    }
+    let n = mem.size(m, ids);
+    var want = max_new;
+    if force >= 0 {
+        want = mem.size(m, force);
+    }
+    if n == 0 || n + want > tmax {
+        return err.fail(m, t, "q08-range", text.lit(m, t, "the prompt (1 or more tokens) and the new tokens must fit tmax"));
+    }
+    if qwen08.reset(m, t, ffi, eng) < 0 {
+        return 0 - 1;
+    }
+    io.write_all(io, text.bytes(t, text.f2(m, t, "job $ prompt_tokens=$\n", text.num(m, t, k), text.num(m, t, n))));
+    io.write_all(io, text.bytes(t, text.f2(m, t, "ids $ $\n", text.num(m, t, k), joined_ids(m, t, ids))));
+    let t0 = clock_ms(clock);
+    var t_last = t0;
+    var fed = 0;
+    var p = 0;
+    while p < n {
+        var rd = 0 - 1;
+        if p == n - 1 {
+            rd = lg;
+        }
+        var wtr = 0 - 1;
+        if trace {
+            wtr = tr;
+        }
+        let t_before = clock_ms(clock);
+        if qwen08.feed_one(m, t, ffi, eng, mem.get(m, ids, p), p, rd, wtr) < 0 {
+            return 0 - 1;
+        }
+        fed = fed + 1;
+        t_last = clock_ms(clock) - t_before;
+        if trace {
+            var s = 0;
+            while s < qwen08.layers() + 2 {
+                let head = text.f2(m, t, "trace $ $", text.num(m, t, p), text.num(m, t, s));
+                io.write_all(io, text.bytes(t, hex_line(m, t, head, tr + 4 * qwen08.hidden() * s, qwen08.hidden())));
+                s = s + 1;
+            }
+        }
+        p = p + 1;
+    }
+    let t_prompt = clock_ms(clock);
+    // The decoding: step j reads the logits that predict new token j.
+    var j = 0;
+    var stop = false;
+    var hit = 0;
+    var eos = 0 - 1;
+    var count = 0;
+    while !stop {
+        var kk = 5;
+        if j == 0 {
+            kk = 20;
+        }
+        let best = topk(m, t, lg, kk);
+        if best < 0 {
+            return 0 - 1;
+        }
+        if j == 0 {
+            io.write_all(io, text.bytes(t, text.f2(m, t, "top $ $\n", text.num(m, t, n - 1), pairs(m, t, lg, best, 20))));
+        }
+        if want == 0 {
+            stop = true;
+        } else {
+            var chosen = mem.get(m, best, 0);
+            if force >= 0 {
+                chosen = mem.get(m, force, j);
+            }
+            io.write_all(io, text.bytes(t, text.f3(m, t, "step $ $ $\n", text.num(m, t, j), text.num(m, t, chosen), pairs(m, t, lg, best, 5))));
+            count = j + 1;
+            if force < 0 && (chosen == 248044 || chosen == 248046) {
+                eos = chosen;
+                stop = true;
+            } else if j + 1 == want {
+                stop = true;
+                if force < 0 {
+                    hit = 1;
+                }
+            } else {
+                let t_before = clock_ms(clock);
+                if qwen08.feed_one(m, t, ffi, eng, chosen, n + j, lg, 0 - 1) < 0 {
+                    return 0 - 1;
+                }
+                fed = fed + 1;
+                t_last = clock_ms(clock) - t_before;
+                j = j + 1;
+            }
+        }
+    }
+    let t_end = clock_ms(clock);
+    io.write_all(io, text.bytes(t, text.f4(m, t, "done $ new=$ hit_limit=$ eos=$\n", text.num(m, t, k), text.num(m, t, count), text.num(m, t, hit), text.num(m, t, eos))));
+    if logits {
+        io.write_all(io, text.bytes(t, hex_line(m, t, text.f1(m, t, "logits $", text.num(m, t, n - 1)), lg, qwen08.vocab())));
+    }
+    if timing {
+        io.write_all(io, text.bytes(t, text.f6(m, t, "timing: tokens=$ total_ms=$ last_ms=$ prompt_ms=$ gen_new=$ gen_ms=$\n", text.num(m, t, fed), text.num(m, t, t_end - t0), text.num(m, t, t_last), text.num(m, t, t_prompt - t0), text.num(m, t, count), text.num(m, t, t_end - t_prompt))));
+    }
+    return 0;
+}
+
+// The next line of `s` from `from`: the handle of the line without its newline (and any carriage return); `from` moves past it.
+fn line_end[&t](t: &!t [byte], s: int, from: int) -> [] int {
+    let e = text.index_of(t, s, 10, from);
+    if e < 0 {
+        return text.size(s);
+    }
+    return e;
+}
+
+// The jobs of a batch file: a list of `[max_new, prompt spec handle, forced ids list or -1]` records, or -1 (a mistake in a line).
+fn parse_batch[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+    let jobs = mem.list(m);
+    var from = 0;
+    while from < text.size(s) {
+        let e = line_end(t, s, from);
+        var line = text.sub(s, from, e);
+        from = e + 1;
+        if text.size(line) > 0 && text.at(t, line, text.size(line) - 1) == 13 {
+            line = text.sub(line, 0, text.size(line) - 1);
+        }
+        if text.size(line) > 0 {
+            let a = text.index_of(t, line, 32, 0);
+            if a < 0 {
+                return 0 - 1;
+            }
+            let b = text.index_of(t, line, 32, a + 1);
+            var spec = text.sub(line, a + 1, text.size(line));
+            var force = 0 - 1;
+            if b >= 0 {
+                spec = text.sub(line, a + 1, b);
+                force = parse_ids(m, t, text.sub(line, b + 1, text.size(line)));
+                if force < 0 || mem.size(m, force) == 0 {
+                    return 0 - 1;
+                }
+            }
+            let mx = parse_num(t, text.sub(line, 0, a));
+            if mx < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, jobs, mem.rec3(m, mx, spec, force));
+        }
+    }
+    return jobs;
+}
+
 fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &c Clock) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock] int {
     if arg_count(args) < 6 {
         return usage(io);
@@ -79,45 +385,17 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     } else if !text.is(t, ms, "f32") {
         return usage(io);
     }
-    var tmax = 0;
-    let ts = text.from_bytes(m, t, arg(args, 4));
-    var d = 0;
-    while d < text.size(ts) {
-        let ch = text.at(t, ts, d);
-        if ch < 48 || ch > 57 || tmax > 1000000 {
-            return usage(io);
-        }
-        tmax = tmax * 10 + ch - 48;
-        d = d + 1;
+    let tmax = parse_num(t, text.from_bytes(m, t, arg(args, 4)));
+    if tmax < 0 {
+        return usage(io);
     }
-    // The ids.
-    let ids = mem.list(m);
-    let idt = text.from_bytes(m, t, arg(args, 5));
-    var cur_id = 0;
-    var have = false;
-    d = 0;
-    while d <= text.size(idt) {
-        var ch = 44;
-        if d < text.size(idt) {
-            ch = text.at(t, idt, d);
-        }
-        if ch == 44 {
-            if have {
-                mem.push(m, ids, cur_id);
-            }
-            cur_id = 0;
-            have = false;
-        } else if ch >= 48 && ch <= 57 && cur_id < 100000000 {
-            cur_id = cur_id * 10 + ch - 48;
-            have = true;
-        } else {
-            return usage(io);
-        }
-        d = d + 1;
-    }
+    let spec = text.from_bytes(m, t, arg(args, 5));
     var trace = false;
     var logits = false;
     var timing = false;
+    var max_new = 0;
+    var force = 0 - 1;
+    var batch = 0 - 1;
     var ai = 6;
     while ai < arg_count(args) {
         let flag = text.from_bytes(m, t, arg(args, ai));
@@ -127,15 +405,75 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             logits = true;
         } else if text.is(t, flag, "--timing") {
             timing = true;
+        } else if (text.is(t, flag, "--max-new") || text.is(t, flag, "--force") || text.is(t, flag, "--batch")) && ai + 1 < arg_count(args) {
+            let vtext = text.from_bytes(m, t, arg(args, ai + 1));
+            if text.is(t, flag, "--max-new") {
+                max_new = parse_num(t, vtext);
+                if max_new < 0 {
+                    return usage(io);
+                }
+            } else if text.is(t, flag, "--force") {
+                force = parse_ids(m, t, vtext);
+                if force < 0 || mem.size(m, force) == 0 {
+                    return usage(io);
+                }
+            } else {
+                batch = vtext;
+            }
+            ai = ai + 1;
         } else {
             return usage(io);
         }
         ai = ai + 1;
     }
-    let n = mem.size(m, ids);
-    if n == 0 || n > tmax {
-        io.error_all(io, "error[q08-range]: the ids must be 1 to tmax tokens\n");
-        return 1;
+    var jobs = mem.list(m);
+    var need_tokenizer = false;
+    if batch >= 0 {
+        if !text.is(t, spec, "-") {
+            return usage(io);
+        }
+        let (bs, bgot, bsize) = fileio.prefix(m, t, fs, text.bytes(t, batch), 4194304);
+        if bs < 0 || bsize > bgot {
+            io.error_all(io, "error[q08-io]: cannot read the batch file (at most 4 MiB)\n");
+            return 1;
+        }
+        jobs = parse_batch(m, t, text.handle(bs, bgot));
+        if jobs < 0 {
+            io.error_all(io, "error: a batch line is `<max_new> <prompt> [<forced ids>]`\n");
+            return 2;
+        }
+        need_tokenizer = true;
+    } else {
+        mem.push(m, jobs, mem.rec3(m, max_new, spec, force));
+        if text.size(spec) > 0 && text.at(t, spec, 0) == 64 {
+            need_tokenizer = true;
+        } else {
+            // A prompt of ids is checked before the engine is loaded.
+            let ids = parse_ids(m, t, spec);
+            if ids < 0 {
+                return usage(io);
+            }
+            var want = max_new;
+            if force >= 0 {
+                want = mem.size(m, force);
+            }
+            if mem.size(m, ids) == 0 || mem.size(m, ids) + want > tmax {
+                io.error_all(io, "error[q08-range]: the prompt (1 or more tokens) and the new tokens must fit tmax\n");
+                return 1;
+            }
+        }
+    }
+    var tk = 0 - 1;
+    if need_tokenizer {
+        let (ts, tgot, tsize) = fileio.prefix(m, t, fs, text.bytes(t, text.cat(m, t, dir, text.lit(m, t, "/tokenizer.json"))), 100663296);
+        if ts < 0 || tsize > tgot {
+            io.error_all(io, "error[q08-io]: cannot read tokenizer.json in the model directory\n");
+            return 1;
+        }
+        tk = bpe.from_json(m, t, ts, tgot);
+        if tk < 0 {
+            return cli.report(m, t, io);
+        }
     }
     let eng = qwen08.load(m, t, ffi, fs, dir, kdir, mode, tmax);
     if eng < 0 {
@@ -143,66 +481,18 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     }
     let lg = qwen35.reserve(m, 4 * qwen08.vocab());
     let tr = qwen35.reserve(m, qwen08.trace_bytes());
-    let t0 = clock_ms(clock);
-    var t_last = t0;
-    var p = 0;
-    while p < n {
-        var want = 0 - 1;
-        if p == n - 1 {
-            want = lg;
-        }
-        var wtr = 0 - 1;
-        if trace {
-            wtr = tr;
-        }
-        let t_before = clock_ms(clock);
-        if qwen08.feed_one(m, t, ffi, eng, mem.get(m, ids, p), p, want, wtr) < 0 {
+    let mark_m = m[mem.top_slot()];
+    let mark_t = m[mem.text_slot()];
+    var jn = 0;
+    while jn < mem.size(m, jobs) {
+        let rec = mem.get(m, jobs, jn);
+        if job(m, t, io, fs, ffi, clock, eng, tk, tmax, lg, tr, jn, m[rec + 1], m[rec], m[rec + 2], trace, logits, timing) < 0 {
             return cli.report(m, t, io);
         }
-        t_last = clock_ms(clock) - t_before;
-        if trace {
-            var s = 0;
-            while s < qwen08.layers() + 2 {
-                let head = text.f2(m, t, "trace $ $", text.num(m, t, p), text.num(m, t, s));
-                io.write_all(io, text.bytes(t, hex_line(m, t, head, tr + 4 * qwen08.hidden() * s, qwen08.hidden())));
-                s = s + 1;
-            }
-        }
-        p = p + 1;
-    }
-    let t_end = clock_ms(clock);
-    // The 20 largest logits of the last position (ties to the lower id).
-    let top = mem.list(m);
-    let parts = mem.list(m);
-    var r = 0;
-    while r < 20 {
-        var best = 0 - 1;
-        var bv = 0.0;
-        var j = 0;
-        while j < qwen08.vocab() {
-            let v = f32.from_bits32(qwen35.le32(t, lg + 4 * j));
-            if !mem.contains(m, top, j) && (best < 0 || v > bv) {
-                best = j;
-                bv = v;
-            }
-            j = j + 1;
-        }
-        mem.push(m, top, best);
-        r = r + 1;
-    }
-    r = 0;
-    while r < 20 {
-        let id = mem.get(m, top, r);
-        let bits = qwen35.le32(t, lg + 4 * id);
-        mem.push(m, parts, text.f2(m, t, "$:$", text.num(m, t, id), text.num(m, t, bits)));
-        r = r + 1;
-    }
-    io.write_all(io, text.bytes(t, text.f2(m, t, "top $ $\n", text.num(m, t, n - 1), text.joined(m, t, parts, " "))));
-    if logits {
-        io.write_all(io, text.bytes(t, hex_line(m, t, text.f1(m, t, "logits $", text.num(m, t, n - 1)), lg, qwen08.vocab())));
-    }
-    if timing {
-        io.write_all(io, text.bytes(t, text.f3(m, t, "timing: tokens=$ total_ms=$ last_ms=$\n", text.num(m, t, n), text.num(m, t, t_end - t0), text.num(m, t, t_last))));
+        // Everything the job allocated goes back; the engine, the tokenizer and the jobs are below the marks.
+        mem.release_to(m, mark_m);
+        m[mem.text_slot()] = mark_t;
+        jn = jn + 1;
     }
     metal.cgpu_close(ffi);
     return 0;
