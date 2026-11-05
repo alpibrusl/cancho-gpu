@@ -262,7 +262,7 @@ static int run_once(struct fn *f, void **params, unsigned gx, unsigned gy, unsig
                 snprintf(last_msg, sizeof last_msg, "signal %d in %s", sig, where);
             }
         } else {
-            snprintf(last_msg, sizeof last_msg, "%s (%s)", info->msg, where);
+            snprintf(last_msg, sizeof last_msg, "%.80s (%.80s)", info->msg, where);
         }
         rc = EMU_ERR;
     } else if (WIFSIGNALED(st)) {
