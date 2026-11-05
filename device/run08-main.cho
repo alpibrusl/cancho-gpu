@@ -1,0 +1,247 @@
+edition 5;
+
+// `cancho-gpu-run08` -- feed token ids through the Qwen3.5-0.8B engine (`device/qwen08.cho`) and dump what checks C3 and C4
+// of `docs/weight-space.md` section 14 compare. Not the greedy runner (T7).
+//
+//     cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <ids, comma separated> [--trace] [--logits] [--timing]
+//
+// Every id is fed in order from position 0. With `--trace`, for each position and each slot a line
+//
+//     trace <pos> <slot> <1024 f32 as 8 hex digits each>
+//
+// with slot 0 the embedding, 1 to 24 the output of layer 0 to 23, 25 the final norm; with `--logits` the last position's
+// logits as `logits <pos> <248320 hex words>`. Always `top <pos> <id>:<hex> ...` (the 20 largest logits of the last position,
+// then the position's) and, with `--timing`, `timing: tokens=<n> total_ms=<ms> last_ms=<ms>` (the engine's wall time per
+// token, the logits read back included). Exit 0, or 1 with `error[<rule>]: ...`, or 2 for a usage mistake.
+//
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-run08.sh`).
+
+import std.io;
+import mem;
+import text;
+import err;
+import cli;
+import f32;
+import metal;
+import qwen35;
+import qwen08_load;
+import qwen08;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 268435456;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <ids, comma separated> [--trace] [--logits] [--timing]\n");
+    return 2;
+}
+
+fn hex_digit(d: int) -> [] int {
+    if d < 10 {
+        return 48 + d;
+    }
+    return 87 + d;
+}
+
+// The f32 words at t[from..from + 4 * n) as 8 hex digits each, separated by spaces, after `head`.
+fn hex_line[&m, &t](m: &!m [int], t: &!t [byte], head: int, from: int, n: int) -> [] int {
+    let start = text.begin(m);
+    text.put_str(m, t, head);
+    var i = 0;
+    while i < n {
+        text.put_byte(m, t, byte_of(32));
+        let bits = qwen35.le32(t, from + 4 * i);
+        var s = 28;
+        while s >= 0 {
+            text.put_byte(m, t, byte_of(hex_digit(bits >> s & 15)));
+            s = s - 4;
+        }
+        i = i + 1;
+    }
+    text.put_byte(m, t, byte_of(10));
+    return text.finish(m, start);
+}
+
+fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &c Clock) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock] int {
+    if arg_count(args) < 6 {
+        return usage(io);
+    }
+    let dir = text.from_bytes(m, t, arg(args, 1));
+    let kdir = text.from_bytes(m, t, arg(args, 2));
+    let ms = text.from_bytes(m, t, arg(args, 3));
+    var mode = qwen08_load.mode_f32();
+    if text.is(t, ms, "f16") {
+        mode = qwen08_load.mode_f16();
+    } else if !text.is(t, ms, "f32") {
+        return usage(io);
+    }
+    var tmax = 0;
+    let ts = text.from_bytes(m, t, arg(args, 4));
+    var d = 0;
+    while d < text.size(ts) {
+        let ch = text.at(t, ts, d);
+        if ch < 48 || ch > 57 || tmax > 1000000 {
+            return usage(io);
+        }
+        tmax = tmax * 10 + ch - 48;
+        d = d + 1;
+    }
+    // The ids.
+    let ids = mem.list(m);
+    let idt = text.from_bytes(m, t, arg(args, 5));
+    var cur_id = 0;
+    var have = false;
+    d = 0;
+    while d <= text.size(idt) {
+        var ch = 44;
+        if d < text.size(idt) {
+            ch = text.at(t, idt, d);
+        }
+        if ch == 44 {
+            if have {
+                mem.push(m, ids, cur_id);
+            }
+            cur_id = 0;
+            have = false;
+        } else if ch >= 48 && ch <= 57 && cur_id < 100000000 {
+            cur_id = cur_id * 10 + ch - 48;
+            have = true;
+        } else {
+            return usage(io);
+        }
+        d = d + 1;
+    }
+    var trace = false;
+    var logits = false;
+    var timing = false;
+    var ai = 6;
+    while ai < arg_count(args) {
+        let flag = text.from_bytes(m, t, arg(args, ai));
+        if text.is(t, flag, "--trace") {
+            trace = true;
+        } else if text.is(t, flag, "--logits") {
+            logits = true;
+        } else if text.is(t, flag, "--timing") {
+            timing = true;
+        } else {
+            return usage(io);
+        }
+        ai = ai + 1;
+    }
+    let n = mem.size(m, ids);
+    if n == 0 || n > tmax {
+        io.error_all(io, "error[q08-range]: the ids must be 1 to tmax tokens\n");
+        return 1;
+    }
+    let eng = qwen08.load(m, t, ffi, fs, dir, kdir, mode, tmax);
+    if eng < 0 {
+        return cli.report(m, t, io);
+    }
+    let lg = qwen35.reserve(m, 4 * qwen08.vocab());
+    let tr = qwen35.reserve(m, qwen08.trace_bytes());
+    let t0 = clock_ms(clock);
+    var t_last = t0;
+    var p = 0;
+    while p < n {
+        var want = 0 - 1;
+        if p == n - 1 {
+            want = lg;
+        }
+        var wtr = 0 - 1;
+        if trace {
+            wtr = tr;
+        }
+        let t_before = clock_ms(clock);
+        if qwen08.feed_one(m, t, ffi, eng, mem.get(m, ids, p), p, want, wtr) < 0 {
+            return cli.report(m, t, io);
+        }
+        t_last = clock_ms(clock) - t_before;
+        if trace {
+            var s = 0;
+            while s < qwen08.layers() + 2 {
+                let head = text.f2(m, t, "trace $ $", text.num(m, t, p), text.num(m, t, s));
+                io.write_all(io, text.bytes(t, hex_line(m, t, head, tr + 4 * qwen08.hidden() * s, qwen08.hidden())));
+                s = s + 1;
+            }
+        }
+        p = p + 1;
+    }
+    let t_end = clock_ms(clock);
+    // The 20 largest logits of the last position (ties to the lower id).
+    let top = mem.list(m);
+    let parts = mem.list(m);
+    var r = 0;
+    while r < 20 {
+        var best = 0 - 1;
+        var bv = 0.0;
+        var j = 0;
+        while j < qwen08.vocab() {
+            let v = f32.from_bits32(qwen35.le32(t, lg + 4 * j));
+            if !mem.contains(m, top, j) && (best < 0 || v > bv) {
+                best = j;
+                bv = v;
+            }
+            j = j + 1;
+        }
+        mem.push(m, top, best);
+        r = r + 1;
+    }
+    r = 0;
+    while r < 20 {
+        let id = mem.get(m, top, r);
+        let bits = qwen35.le32(t, lg + 4 * id);
+        mem.push(m, parts, text.f2(m, t, "$:$", text.num(m, t, id), text.num(m, t, bits)));
+        r = r + 1;
+    }
+    io.write_all(io, text.bytes(t, text.f2(m, t, "top $ $\n", text.num(m, t, n - 1), text.joined(m, t, parts, " "))));
+    if logits {
+        io.write_all(io, text.bytes(t, hex_line(m, t, text.f1(m, t, "logits $", text.num(m, t, n - 1)), lg, qwen08.vocab())));
+    }
+    if timing {
+        io.write_all(io, text.bytes(t, text.f3(m, t, "timing: tokens=$ total_ms=$ last_ms=$\n", text.num(m, t, n), text.num(m, t, t_end - t0), text.num(m, t, t_last))));
+    }
+    metal.cgpu_close(ffi);
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(net);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                borrow mut io as &!i in {
+                    borrow fs as &f in {
+                        borrow args as &a in {
+                            borrow gpu as &g in {
+                                borrow clock as &c in {
+                                    status = run(m, t, i, f, a, g, c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    release(clock);
+    return status;
+}

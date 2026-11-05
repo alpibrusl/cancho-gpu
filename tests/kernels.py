@@ -230,6 +230,17 @@ def qk_norm(nk, rows):
             [x for r in range(nk) for x in norm(nk + r, 0.08838834764831845)])
 
 
+def qk_l2norm(nk, rows):
+    """qk_norm for Hugging Face's l2norm: x * rsqrt(sum x^2 + 1e-6), the queries times 128^-1/2 (T6, docs/weight-space.md 14.9)."""
+    (c,) = lcg([rows * 128])
+    def norm(r, scale):
+        v = c[r * 128:(r + 1) * 128]
+        rs = 1 / math.sqrt(sum(a * a for a in v) + 1e-6)
+        return [a * rs * scale for a in v]
+    return ([x for r in range(nk) for x in norm(r, 0.08838834764831845)],
+            [x for r in range(nk) for x in norm(nk + r, 1.0)])
+
+
 def softplus_(x):
     return math.log1p(math.exp(-abs(x))) + max(x, 0.0)
 
@@ -774,6 +785,11 @@ def checks08():
     want_q, want_k = qk_norm(16, 48)
     ok &= check("qk_norm qn nk=16 rows=48", got["qn"], want_q)
     ok &= check("qk_norm kn nk=16 rows=48", got["kn"], want_k)
+    for nk_, rows_ in ((2, 6), (16, 48)):
+        got = run("qk_l2norm", [f"nk={nk_}", f"rows={rows_}"])
+        want_q, want_k = qk_l2norm(nk_, rows_)
+        ok &= check(f"qk_l2norm qn nk={nk_} rows={rows_}", got["qn"], want_q)
+        ok &= check(f"qk_l2norm kn nk={nk_} rows={rows_}", got["kn"], want_k)
     got = run("gates", ["h=16"])
     want_g, want_b = gates(16)
     ok &= check("gates g h=16", got["g"], want_g)
@@ -832,6 +848,10 @@ MUTANTS = [
     ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
     ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),
+    # T6: qk_norm with Hugging Face's epsilon
+    ("qk_l2norm.chx", "store qx * 0.08838834764831845 -> qn", "store qx -> qn", "qk_l2norm leaves the queries' 1/sqrt(128) out"),
+    ("qk_l2norm.chx", "store k * kr -> kn", "store k * kr * 0.08838834764831845 -> kn", "qk_l2norm scales the keys"),
+    ("qk_l2norm.chx", "let kr = rsqrt ke", "let kr = ke", "qk_l2norm multiplies the keys by the sum, not its reciprocal root"),
     # T3: the one-value-head delta step
     ("delta_step1.chx", "let e0  = d0 * b0", "let e0  = d0 + b0", "delta_step1 adds beta to the error"),
     ("delta_step1.chx", "let sg0 = s0 * g0", "let sg0 = s0 + g0", "delta_step1 adds the decay to the state"),

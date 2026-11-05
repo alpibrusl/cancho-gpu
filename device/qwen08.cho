@@ -1,0 +1,615 @@
+edition 5;
+module qwen08;
+
+// The Qwen3.5-0.8B decode engine on a Metal GPU (`docs/weight-space.md` section 14, ticket T6): 24 layers of hidden
+// size 1024, 18 gated-delta layers and 6 full-attention layers (3, 7, 11, 15, 19, 23), a tied embedding and head.
+//
+//     let eng = load(m, t, ffi, fs, dir, kdir, mode, tmax);   // kernels, weights, one conversation's buffers
+//     reset(m, t, ffi, eng);                                  // a new conversation
+//     feed_one(m, t, ffi, eng, token, pos, lg, tr);           // one token in, its logits (t[lg..]) out
+//
+// `dir` is the Hugging Face checkpoint, `kdir` the `.chx` kernels (`tests/chx/`), `mode` the loader's `mode_f32` or
+// `mode_f16` (`src/qwen08_load.cho`: how a matrix goes up; the recurrence constants stay F32 on both), `tmax` the
+// positions the key/value caches and the mask hold (a multiple of 64, up to 16,640). Positions must be fed 0, 1, 2 ...
+// in order after `reset`: the convolution window ping-pongs between two buffers by the position's parity.
+//
+// The weights go up through `qwen08_dev.upload` as they lie in the file (raw bf16 widened or narrowed). What the
+// kernels want and the file does not have is made on the host once, after the upload (`prep`): `1 + w` for the norms
+// that are stored as a delta from 1 (`Qwen3_5RMSNorm`), `exp(A_log)`, the convolution weight tap-major, and F32 for the
+// small vectors the kernels read as F32 on the f16 path.
+//
+// Attention: `attention_scores.chx`, `attention_stats.chx`, `attention_pvl.chx` (the long route of `docs/weight-space.md`
+// 14.5, no ceiling but the cache), compiled for 256, 512, 1,024 ... and `tmax` positions; a token uses the smallest that
+// covers its position. The plain `attention.chx` has a ceiling of 2,046 at g = 4 on Metal and is not used.
+//
+// The runner, with `--trace`, is `device/run08-main.cho`.
+
+import std.math;
+import mem;
+import text;
+import err;
+import f32;
+import metal;
+import qwen35;
+import qwen08_load;
+import qwen08_dev;
+
+pub fn hidden() -> [] int {
+    return 1024;
+}
+
+pub fn inter() -> [] int {
+    return 3584;
+}
+
+pub fn layers() -> [] int {
+    return 24;
+}
+
+pub fn vocab() -> [] int {
+    return 248320;
+}
+
+// Every fourth layer is full attention.
+pub fn is_attention(l: int) -> [] bool {
+    return l % 4 == 3;
+}
+
+pub fn max_tmax() -> [] int {
+    return 16640;
+}
+
+// The trace of a token: `(layers() + 2)` rows of `hidden()` f32: the embedding, the output of each layer, the final norm.
+pub fn trace_bytes() -> [] int {
+    return 4 * hidden() * (layers() + 2);
+}
+
+// The engine record: kernels 0..21, attention variants from 24 (four words each: scores, stats, pvl, positions),
+// buffers from 60, weights and state from 100.
+fn s_variants() -> [] int {
+    return 22;
+}
+
+fn s_vbase() -> [] int {
+    return 24;
+}
+
+fn s_embed() -> [] int {
+    return 100;
+}
+
+fn s_fnorm() -> [] int {
+    return 101;
+}
+
+fn s_lw() -> [] int {
+    return 102;
+}
+
+fn s_cwa() -> [] int {
+    return 103;
+}
+
+fn s_cwb() -> [] int {
+    return 104;
+}
+
+fn s_state() -> [] int {
+    return 105;
+}
+
+fn s_kc() -> [] int {
+    return 106;
+}
+
+fn s_vc() -> [] int {
+    return 107;
+}
+
+fn s_tmax() -> [] int {
+    return 108;
+}
+
+fn s_mode() -> [] int {
+    return 109;
+}
+
+fn ci[&m, &t](m: &!m [int], t: &!t [byte], list: int, name: &static [byte], x: int) -> [] int {
+    return qwen35.cv(m, t, list, name, float_of(x));
+}
+
+fn mrows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), kdir: int, mode: int, n: int, k: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    if mode == qwen08_load.mode_f32() {
+        return qwen35.compile_kernel(m, t, ffi, fs, kdir, "matvec_rows.chx", qwen35.c2(m, t, "n", n, "k", k));
+    }
+    return qwen35.compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16.chx", qwen35.c2(m, t, "n", n, "k", k));
+}
+
+fn mres[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), kdir: int, mode: int, n: int, k: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    if mode == qwen08_load.mode_f32() {
+        return qwen35.compile_kernel(m, t, ffi, fs, kdir, "matvec_res.chx", qwen35.c2(m, t, "n", n, "k", k));
+    }
+    return qwen35.compile_kernel(m, t, ffi, fs, kdir, "matvec_res_f16.chx", qwen35.c2(m, t, "n", n, "k", k));
+}
+
+fn find_rec[&m, &t](m: &!m [int], t: &!t [byte], plan: int, name: int) -> [] int {
+    var i = 0;
+    while i < mem.size(m, plan) {
+        let r = mem.get(m, plan, i);
+        if text.eq(t, m[r], name) {
+            return r;
+        }
+        i = i + 1;
+    }
+    return err.fail(m, t, "q08-engine", text.f1(m, t, "the plan has no tensor `$`", name));
+}
+
+// What the kernels read, made from the buffer the loader filled (`rec`, under `mode`): `op` 0 is the values as f32,
+// 1 is `1 + w`, 3 is `exp(w)`, 4 is a [c, 4] convolution weight as [4, c]. A buffer that is already f32 and needs
+// nothing is returned as it is. A new f32 buffer otherwise (the old one is left; these are the small vectors).
+fn prep[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), buf: int, rec: int, mode: int, op: int) -> [ffi("libmetalgpu")] int {
+    let elems = m[rec + qwen08_load.p_elems()];
+    let width = qwen08_load.out_width(m, rec, mode);
+    if width == 4 && op == 0 {
+        return buf;
+    }
+    let mark = m[mem.text_slot()];
+    let raw = qwen35.reserve(m, width * elems);
+    let out = qwen35.reserve(m, 4 * elems);
+    if metal.cgpu_download(ffi, buf, t[raw..raw + width * elems]) < 0 {
+        return qwen35.device_fail(m, t, ffi, "reading a weight back");
+    }
+    var i = 0;
+    while i < elems {
+        var bits = 0;
+        if width == 4 {
+            bits = qwen35.le32(t, raw + 4 * i);
+        } else {
+            bits = qwen08_dev.half_to_f32_bits(int_of(t[raw + 2 * i]) | int_of(t[raw + 2 * i + 1]) << 8);
+        }
+        if op == 1 {
+            bits = f32.bits32(f32.add(f32.from_bits32(bits), 1.0));
+        } else if op == 3 {
+            bits = f32.bits32(f32.exp32(f32.from_bits32(bits)));
+        }
+        var dst = i;
+        if op == 4 {
+            dst = i % 4 * (elems / 4) + i / 4;
+        }
+        qwen35.put_f32(t, out + 4 * dst, bits);
+        i = i + 1;
+    }
+    let nb = metal.cgpu_alloc(ffi, 4 * elems);
+    if nb < 0 {
+        return qwen35.device_fail(m, t, ffi, "allocating a weight");
+    }
+    if metal.cgpu_upload(ffi, nb, t[out..out + 4 * elems]) < 0 {
+        return qwen35.device_fail(m, t, ffi, "uploading a weight");
+    }
+    m[mem.text_slot()] = mark;
+    return nb;
+}
+
+// A matrix (or the embedding): on the device as the loader writes it.
+fn tensor[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, plan: int, name: int, mode: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let rec = find_rec(m, t, plan, name);
+    if rec < 0 {
+        return 0 - 1;
+    }
+    let (buf, changed) = qwen08_dev.upload(m, t, ffi, fs, path, rec, mode, 0 - 1);
+    return buf;
+}
+
+// A small vector or the convolution weight: uploaded, then made into what a kernel reads (`prep`).
+fn small[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, plan: int, name: int, mode: int, op: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let rec = find_rec(m, t, plan, name);
+    if rec < 0 {
+        return 0 - 1;
+    }
+    let (buf, changed) = qwen08_dev.upload(m, t, ffi, fs, path, rec, mode, 0 - 1);
+    if buf < 0 {
+        return 0 - 1;
+    }
+    return prep(m, t, ffi, buf, rec, mode, op);
+}
+
+fn dims_ok[&m](m: &!m [int], cfg: int) -> [] bool {
+    return m[cfg + qwen08_load.c_hidden()] == hidden() && m[cfg + qwen08_load.c_inter()] == inter() && m[cfg + qwen08_load.c_layers()] == layers() && m[cfg + qwen08_load.c_vocab()] == vocab() && m[cfg + qwen08_load.c_interval()] == 4 && m[cfg + qwen08_load.c_heads()] == 8 && m[cfg + qwen08_load.c_kv_heads()] == 2 && m[cfg + qwen08_load.c_head_dim()] == 256 && m[cfg + qwen08_load.c_lk_heads()] == 16 && m[cfg + qwen08_load.c_lk_dim()] == 128 && m[cfg + qwen08_load.c_lv_heads()] == 16 && m[cfg + qwen08_load.c_lv_dim()] == 128 && m[cfg + qwen08_load.c_conv()] == 4 && m[cfg + qwen08_load.c_gate()] == 1;
+}
+
+// Load the model: kernels, weights, the buffers of one conversation. The engine record, or -1 with the error recorded.
+pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), dir: int, kdir: int, mode: int, tmax: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    if tmax < 64 || tmax > max_tmax() || tmax % 64 != 0 {
+        return err.fail(m, t, "q08-tmax", text.lit(m, t, "tmax must be a multiple of 64 from 64 to 16,640"));
+    }
+    let cfg = qwen08_load.read_config(m, t, fs, text.f1(m, t, "$/config.json", dir));
+    if cfg < 0 {
+        return 0 - 1;
+    }
+    if !dims_ok(m, cfg) {
+        return err.fail(m, t, "q08-engine", text.lit(m, t, "this engine is Qwen3.5-0.8B's dimensions and no other's (the config differs)"));
+    }
+    let wf = qwen08_load.open_weights(m, t, fs, dir);
+    if wf < 0 {
+        return 0 - 1;
+    }
+    let path = m[wf + qwen08_load.w_path()];
+    let plan = qwen08_load.plan(m, t, m[wf + qwen08_load.w_header()], m[wf + qwen08_load.w_data()], cfg);
+    if plan < 0 {
+        return 0 - 1;
+    }
+    if metal.cgpu_open(ffi) < 0 {
+        return qwen35.device_fail(m, t, ffi, "opening the device");
+    }
+    let eng = mem.rec(m, 128);
+    let h = hidden();
+    let eps = f32.round(0.000001);
+    // The kernels.
+    m[eng] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "ported/rmsnorm.chx", qwen35.cv(m, t, qwen35.c1(m, t, "n", h), "eps", eps));
+    m[eng + 1] = mrows(m, t, ffi, fs, kdir, mode, 6144, h);
+    m[eng + 2] = mrows(m, t, ffi, fs, kdir, mode, 2048, h);
+    m[eng + 3] = mrows(m, t, ffi, fs, kdir, mode, 16, h);
+    m[eng + 4] = mres(m, t, ffi, fs, kdir, mode, h, 2048);
+    m[eng + 5] = mres(m, t, ffi, fs, kdir, mode, h, inter());
+    m[eng + 6] = mrows(m, t, ffi, fs, kdir, mode, vocab(), h);
+    m[eng + 7] = mrows(m, t, ffi, fs, kdir, mode, inter(), h);
+    m[eng + 8] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "swiglu.chx", qwen35.c1(m, t, "n", inter()));
+    m[eng + 9] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "conv_step.chx", qwen35.c1(m, t, "c", 6144));
+    m[eng + 10] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "qk_l2norm.chx", qwen35.c2(m, t, "nk", 16, "rows", 48));
+    m[eng + 11] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "gates.chx", qwen35.c1(m, t, "h", 16));
+    m[eng + 12] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "delta_step1.chx", qwen35.c1(m, t, "nk", 16));
+    m[eng + 13] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", qwen35.cv(m, t, qwen35.c2(m, t, "h", 16, "n", 128), "eps", eps));
+    m[eng + 14] = mrows(m, t, ffi, fs, kdir, mode, 4096, h);
+    m[eng + 15] = mrows(m, t, ffi, fs, kdir, mode, 512, h);
+    m[eng + 16] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", qwen35.cv(m, t, qwen35.c2(m, t, "r", 8, "n", 256), "eps", eps));
+    m[eng + 17] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", qwen35.cv(m, t, qwen35.c2(m, t, "r", 2, "n", 256), "eps", eps));
+    m[eng + 18] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "rope.chx", qwen35.cv(m, t, qwen35.c2(m, t, "r", 8, "h", 32), "p", 192.0));
+    m[eng + 19] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "rope.chx", qwen35.cv(m, t, qwen35.c2(m, t, "r", 2, "h", 32), "p", 192.0));
+    m[eng + 20] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "kv_row.chx", qwen35.cv(m, t, qwen35.c2(m, t, "nkv", 2, "tmax", tmax), "d", 256.0));
+    m[eng + 21] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", qwen35.c2(m, t, "r", 8, "n", 256));
+    // Attention for 256, 512, ... and `tmax` positions (capacities).
+    var cap = 256;
+    var nv = 0;
+    var last = false;
+    while !last {
+        var c = cap;
+        if c >= tmax {
+            c = tmax;
+            last = true;
+        }
+        let vb = eng + s_vbase() + 4 * nv;
+        let sc = qwen35.cv(m, t, qwen35.cv(m, t, ci(m, t, qwen35.c2(m, t, "nkv", 2, "g", 4), "t", c), "ts", 64.0), "d", 256.0);
+        m[vb] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "attention_scores.chx", ci(m, t, sc, "tmax", tmax));
+        m[vb + 1] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "attention_stats.chx", qwen35.cv(m, t, ci(m, t, qwen35.c2(m, t, "nkv", 2, "g", 4), "t", c), "cs", 64.0));
+        let pv = qwen35.cv(m, t, qwen35.cv(m, t, qwen35.cv(m, t, ci(m, t, qwen35.c2(m, t, "nkv", 2, "g", 4), "t", c), "cs", 64.0), "dw", 32.0), "d", 256.0);
+        m[vb + 2] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "attention_pvl.chx", ci(m, t, pv, "tmax", tmax));
+        m[vb + 3] = c;
+        nv = nv + 1;
+        cap = cap * 2;
+    }
+    m[eng + s_variants()] = nv;
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    // The weights: per layer a list of buffers (delta: 0 norm, 1 qkv, 2 z, 3 a, 4 b, 5 conv, 6 A, 7 dt_bias, 8 gated
+    // norm, 9 out, 10 post norm, 11 gate, 12 up, 13 down; attention: 0 norm, 1 q, 2 k, 3 v, 4 q norm, 5 k norm, 6 o,
+    // 7 to 9 unused, 10 to 13 as above).
+    let lw = mem.list(m);
+    var l = 0;
+    while l < layers() {
+        let w = mem.list(m);
+        mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "input_layernorm.weight"), mode, 1));
+        if is_attention(l) {
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "self_attn.q_proj.weight"), mode));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "self_attn.k_proj.weight"), mode));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "self_attn.v_proj.weight"), mode));
+            mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "self_attn.q_norm.weight"), mode, 1));
+            mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "self_attn.k_norm.weight"), mode, 1));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "self_attn.o_proj.weight"), mode));
+            mem.push(m, w, 0 - 1);
+            mem.push(m, w, 0 - 1);
+            mem.push(m, w, 0 - 1);
+        } else {
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.in_proj_qkv.weight"), mode));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.in_proj_z.weight"), mode));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.in_proj_a.weight"), mode));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.in_proj_b.weight"), mode));
+            mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.conv1d.weight"), mode, 4));
+            mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.A_log"), mode, 3));
+            mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.dt_bias"), mode, 0));
+            mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.norm.weight"), mode, 0));
+            mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "linear_attn.out_proj.weight"), mode));
+        }
+        mem.push(m, w, small(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "post_attention_layernorm.weight"), mode, 1));
+        mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "mlp.gate_proj.weight"), mode));
+        mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "mlp.up_proj.weight"), mode));
+        mem.push(m, w, tensor(m, t, ffi, fs, path, plan, qwen35.lname(m, t, l, "mlp.down_proj.weight"), mode));
+        mem.push(m, lw, w);
+        if err.failed(m) {
+            return 0 - 1;
+        }
+        l = l + 1;
+    }
+    m[eng + s_lw()] = lw;
+    m[eng + s_fnorm()] = small(m, t, ffi, fs, path, plan, text.lit(m, t, "model.language_model.norm.weight"), mode, 1);
+    m[eng + s_embed()] = tensor(m, t, ffi, fs, path, plan, text.lit(m, t, "model.language_model.embed_tokens.weight"), mode);
+    m[eng + s_tmax()] = tmax;
+    m[eng + s_mode()] = mode;
+    // Activations.
+    // 60 x, 61 x2, 62 n, 63 qkv, 64 conv (6144 each after the first), 65 qn, 66 kn, 67 z, 68 a, 69 b, 70 g, 71 bt, 72 y, 73 gn,
+    // 74 qg, 75 k, 76 v, 77 q2, 78 k2, 79 qr, 80 kr, 81 o, 82 og, 83 gate, 84 up, 85 act, 86 logits, 87 cos, 88 sin, 89 mask,
+    // 90 scores, 91 stats m, 92 stats z
+    m[eng + 60] = metal.cgpu_alloc(ffi, 4 * h);
+    m[eng + 61] = metal.cgpu_alloc(ffi, 4 * h);
+    m[eng + 62] = metal.cgpu_alloc(ffi, 4 * h);
+    m[eng + 63] = metal.cgpu_alloc(ffi, 4 * 6144);
+    m[eng + 64] = metal.cgpu_alloc(ffi, 4 * 6144);
+    m[eng + 65] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 66] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 67] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 68] = metal.cgpu_alloc(ffi, 4 * 16);
+    m[eng + 69] = metal.cgpu_alloc(ffi, 4 * 16);
+    m[eng + 70] = metal.cgpu_alloc(ffi, 4 * 16 * 128);
+    m[eng + 71] = metal.cgpu_alloc(ffi, 4 * 16 * 128);
+    m[eng + 72] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 73] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 74] = metal.cgpu_alloc(ffi, 4 * 4096);
+    m[eng + 75] = metal.cgpu_alloc(ffi, 4 * 512);
+    m[eng + 76] = metal.cgpu_alloc(ffi, 4 * 512);
+    m[eng + 77] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 78] = metal.cgpu_alloc(ffi, 4 * 512);
+    m[eng + 79] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 80] = metal.cgpu_alloc(ffi, 4 * 512);
+    m[eng + 81] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 82] = metal.cgpu_alloc(ffi, 4 * 2048);
+    m[eng + 83] = metal.cgpu_alloc(ffi, 4 * inter());
+    m[eng + 84] = metal.cgpu_alloc(ffi, 4 * inter());
+    m[eng + 85] = metal.cgpu_alloc(ffi, 4 * inter());
+    m[eng + 86] = metal.cgpu_alloc(ffi, 4 * vocab());
+    m[eng + 87] = metal.cgpu_alloc(ffi, 4 * 32);
+    m[eng + 88] = metal.cgpu_alloc(ffi, 4 * 32);
+    m[eng + 89] = metal.cgpu_alloc(ffi, 4 * tmax);
+    m[eng + 90] = metal.cgpu_alloc(ffi, 4 * 8 * tmax);
+    m[eng + 91] = metal.cgpu_alloc(ffi, 4 * 8);
+    m[eng + 92] = metal.cgpu_alloc(ffi, 4 * 8);
+    // State and caches, per layer (-1 where a layer has none).
+    let cwa = mem.list(m);
+    let cwb = mem.list(m);
+    let st = mem.list(m);
+    let kc = mem.list(m);
+    let vc = mem.list(m);
+    l = 0;
+    while l < layers() {
+        if is_attention(l) {
+            mem.push(m, cwa, 0 - 1);
+            mem.push(m, cwb, 0 - 1);
+            mem.push(m, st, 0 - 1);
+            mem.push(m, kc, metal.cgpu_alloc(ffi, 4 * 2 * tmax * 256));
+            mem.push(m, vc, metal.cgpu_alloc(ffi, 4 * 2 * tmax * 256));
+        } else {
+            mem.push(m, cwa, metal.cgpu_alloc(ffi, 4 * 3 * 6144));
+            mem.push(m, cwb, metal.cgpu_alloc(ffi, 4 * 3 * 6144));
+            mem.push(m, st, metal.cgpu_alloc(ffi, 4 * 16 * 128 * 128));
+            mem.push(m, kc, 0 - 1);
+            mem.push(m, vc, 0 - 1);
+        }
+        l = l + 1;
+    }
+    m[eng + s_cwa()] = cwa;
+    m[eng + s_cwb()] = cwb;
+    m[eng + s_state()] = st;
+    m[eng + s_kc()] = kc;
+    m[eng + s_vc()] = vc;
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    if reset(m, t, ffi, eng) < 0 {
+        return 0 - 1;
+    }
+    return eng;
+}
+
+// A new conversation: the recurrent states, the convolution windows and the caches zero, every position masked.
+pub fn reset[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
+    let tmax = m[eng + s_tmax()];
+    var l = 0;
+    while l < layers() {
+        if is_attention(l) {
+            metal.cgpu_zero(ffi, mem.get(m, m[eng + s_kc()], l));
+            metal.cgpu_zero(ffi, mem.get(m, m[eng + s_vc()], l));
+        } else {
+            metal.cgpu_zero(ffi, mem.get(m, m[eng + s_cwa()], l));
+            metal.cgpu_zero(ffi, mem.get(m, m[eng + s_cwb()], l));
+            metal.cgpu_zero(ffi, mem.get(m, m[eng + s_state()], l));
+        }
+        l = l + 1;
+    }
+    let mark = m[mem.text_slot()];
+    let mk = qwen35.reserve(m, 4 * tmax);
+    var z = 0;
+    while z < tmax {
+        qwen35.put_f32(t, mk + 4 * z, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
+        z = z + 1;
+    }
+    if metal.cgpu_upload(ffi, m[eng + 89], t[mk..mk + 4 * tmax]) < 0 {
+        return qwen35.device_fail(m, t, ffi, "writing the mask");
+    }
+    m[mem.text_slot()] = mark;
+    return 0;
+}
+
+// The attention record (scores, stats, pvl kernels and positions) for a token that attends over `upto` positions.
+fn variant[&m](m: &!m [int], eng: int, upto: int) -> [] int {
+    let n = m[eng + s_variants()];
+    var j = 0;
+    while j < n - 1 && upto > m[eng + s_vbase() + 4 * j + 3] {
+        j = j + 1;
+    }
+    return eng + s_vbase() + 4 * j;
+}
+
+// One token at position `pos` (0, 1, 2 ... after `reset`). With `lg` >= 0 the logits (`vocab()` f32) go to t[lg..]. With
+// `tr` >= 0 the trace (`trace_bytes()`: the embedding, each layer's output, the final norm) goes to t[tr..], which costs a
+// wait a layer.
+pub fn feed_one[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, token: int, pos: int, lg: int, tr: int) -> [ffi("libmetalgpu")] int {
+    let h = hidden();
+    let tmax = m[eng + s_tmax()];
+    if token < 0 || token >= vocab() || pos < 0 || pos >= tmax {
+        return err.fail(m, t, "q08-range", text.lit(m, t, "the token or the position is outside the vocabulary or the cache"));
+    }
+    let step_mark = m[mem.text_slot()];
+    // The embedding row of `token` (the tied table, on the device), widened to f32.
+    var ew = 4;
+    if m[eng + s_mode()] == qwen08_load.mode_f16() {
+        ew = 2;
+    }
+    let raw = qwen35.reserve(m, ew * h);
+    if metal.cgpu_download_at(ffi, m[eng + s_embed()], ew * h * token, t[raw..raw + ew * h]) < 0 {
+        return qwen35.device_fail(m, t, ffi, "reading an embedding row");
+    }
+    let wide = qwen35.reserve(m, 4 * h);
+    var col = 0;
+    while col < h {
+        if ew == 4 {
+            qwen35.put_f32(t, wide + 4 * col, qwen35.le32(t, raw + 4 * col));
+        } else {
+            qwen35.put_f32(t, wide + 4 * col, qwen08_dev.half_to_f32_bits(int_of(t[raw + 2 * col]) | int_of(t[raw + 2 * col + 1]) << 8));
+        }
+        col = col + 1;
+    }
+    var cur = m[eng + 60];
+    var nxt = m[eng + 61];
+    metal.cgpu_upload_at(ffi, cur, 0, t[wide..wide + 4 * h]);
+    if tr >= 0 {
+        copy_within(t, tr, wide, 4 * h);
+    }
+    // This position: the mask opens, the rotary tables (theta 10^7 over the first 64 dimensions of a head).
+    let zero = qwen35.reserve(m, 4);
+    qwen35.put_f32(t, zero, 0);
+    metal.cgpu_upload_at(ffi, m[eng + 89], 4 * pos, t[zero..zero + 4]);
+    let tab = qwen35.reserve(m, 256);
+    var jj = 0;
+    while jj < 32 {
+        let inv = math.pow(10000000.0, 0.0 - float_of(jj) / 32.0);
+        let ang = float_of(pos) * inv;
+        qwen35.put_f32(t, tab + 4 * jj, f32.bits32(f32.round(math.cos(ang))));
+        qwen35.put_f32(t, tab + 128 + 4 * jj, f32.bits32(f32.round(math.sin(ang))));
+        jj = jj + 1;
+    }
+    metal.cgpu_upload_at(ffi, m[eng + 87], 0, t[tab..tab + 128]);
+    metal.cgpu_upload_at(ffi, m[eng + 88], 0, t[tab + 128..tab + 256]);
+    let b_n = m[eng + 62];
+    let b_qkv = m[eng + 63];
+    let b_conv = m[eng + 64];
+    let b_qn = m[eng + 65];
+    let b_kn = m[eng + 66];
+    let b_z = m[eng + 67];
+    let b_a = m[eng + 68];
+    let b_b = m[eng + 69];
+    let b_g = m[eng + 70];
+    let b_bt = m[eng + 71];
+    let b_y = m[eng + 72];
+    let b_gn = m[eng + 73];
+    let b_qg = m[eng + 74];
+    let b_k = m[eng + 75];
+    let b_v = m[eng + 76];
+    let b_q2 = m[eng + 77];
+    let b_k2 = m[eng + 78];
+    let b_qr = m[eng + 79];
+    let b_kr = m[eng + 80];
+    let b_o = m[eng + 81];
+    let b_og = m[eng + 82];
+    let b_gate = m[eng + 83];
+    let b_up = m[eng + 84];
+    let b_act = m[eng + 85];
+    let b_cos = m[eng + 87];
+    let b_sin = m[eng + 88];
+    let b_mask = m[eng + 89];
+    let b_scr = m[eng + 90];
+    let b_stm = m[eng + 91];
+    let b_stz = m[eng + 92];
+    let nope = 0 - 1;
+    var l = 0;
+    while l < layers() {
+        let w = mem.get(m, m[eng + s_lw()], l);
+        qwen35.go(m, ffi, m[eng], cur, mem.get(m, w, 0), b_n, nope, nope, nope, nope, nope);
+        if is_attention(l) {
+            let kc = mem.get(m, m[eng + s_kc()], l);
+            let vc = mem.get(m, m[eng + s_vc()], l);
+            qwen35.go(m, ffi, m[eng + 14], b_n, mem.get(m, w, 1), b_qg, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 15], b_n, mem.get(m, w, 2), b_k, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 15], b_n, mem.get(m, w, 3), b_v, nope, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 16], b_qg, mem.get(m, w, 4), b_q2, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 17], b_k, mem.get(m, w, 5), b_k2, nope, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 18], b_q2, b_cos, b_sin, b_qr, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 19], b_k2, b_cos, b_sin, b_kr, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 20], b_kr, qwen35.at(kc, 1024 * pos), nope, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 20], b_v, qwen35.at(vc, 1024 * pos), nope, nope, nope, nope, nope, nope);
+            let vr = variant(m, eng, pos + 1);
+            qwen35.go(m, ffi, m[vr], b_qr, kc, b_mask, b_scr, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[vr + 1], b_scr, b_stm, b_stz, nope, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[vr + 2], b_scr, b_stm, b_stz, vc, b_o, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 21], b_o, b_qg, b_og, nope, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 4], b_og, mem.get(m, w, 6), cur, nxt, nope, nope, nope, nope);
+        } else {
+            let st = mem.get(m, m[eng + s_state()], l);
+            qwen35.go(m, ffi, m[eng + 1], b_n, mem.get(m, w, 1), b_qkv, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 2], b_n, mem.get(m, w, 2), b_z, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 3], b_n, mem.get(m, w, 3), b_a, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 3], b_n, mem.get(m, w, 4), b_b, nope, nope, nope, nope, nope);
+            var cs_now = mem.get(m, m[eng + s_cwa()], l);
+            var cs_next = mem.get(m, m[eng + s_cwb()], l);
+            if pos % 2 == 1 {
+                cs_now = mem.get(m, m[eng + s_cwb()], l);
+                cs_next = mem.get(m, m[eng + s_cwa()], l);
+            }
+            qwen35.go(m, ffi, m[eng + 9], b_qkv, cs_now, mem.get(m, w, 5), b_conv, cs_next, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 10], b_conv, b_qn, b_kn, nope, nope, nope, nope, nope);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 11], b_a, b_b, mem.get(m, w, 6), mem.get(m, w, 7), b_g, b_bt, nope, nope);
+            qwen35.go(m, ffi, m[eng + 12], st, b_qn, b_kn, qwen35.at(b_conv, 4 * 4096), b_g, b_bt, st, b_y);
+            qwen35.go(m, ffi, m[eng + 13], b_y, b_z, mem.get(m, w, 8), b_gn, nope, nope, nope, nope);
+            qwen35.go(m, ffi, m[eng + 4], b_gn, mem.get(m, w, 9), cur, nxt, nope, nope, nope, nope);
+        }
+        qwen35.go(m, ffi, m[eng], nxt, mem.get(m, w, 10), b_n, nope, nope, nope, nope, nope);
+        qwen35.go(m, ffi, m[eng + 7], b_n, mem.get(m, w, 11), b_gate, nope, nope, nope, nope, nope);
+        qwen35.ov(ffi);
+        qwen35.go(m, ffi, m[eng + 7], b_n, mem.get(m, w, 12), b_up, nope, nope, nope, nope, nope);
+        qwen35.go(m, ffi, m[eng + 8], b_gate, b_up, b_act, nope, nope, nope, nope, nope);
+        qwen35.go(m, ffi, m[eng + 5], b_act, mem.get(m, w, 13), nxt, cur, nope, nope, nope, nope);
+        if tr >= 0 {
+            metal.cgpu_sync(ffi);
+            if metal.cgpu_download(ffi, cur, t[tr + 4 * h * (l + 1)..tr + 4 * h * (l + 2)]) < 0 {
+                return qwen35.device_fail(m, t, ffi, "reading a layer's output back");
+            }
+        } else {
+            metal.cgpu_flush(ffi);
+        }
+        l = l + 1;
+    }
+    qwen35.go(m, ffi, m[eng], cur, m[eng + s_fnorm()], b_n, nope, nope, nope, nope, nope);
+    if lg >= 0 {
+        qwen35.go(m, ffi, m[eng + 6], b_n, m[eng + s_embed()], m[eng + 86], nope, nope, nope, nope, nope);
+    }
+    metal.cgpu_sync(ffi);
+    if tr >= 0 {
+        if metal.cgpu_download(ffi, b_n, t[tr + 4 * h * (layers() + 1)..tr + 4 * h * (layers() + 2)]) < 0 {
+            return qwen35.device_fail(m, t, ffi, "reading the final norm back");
+        }
+    }
+    if lg >= 0 {
+        if metal.cgpu_download(ffi, m[eng + 86], t[lg..lg + 4 * vocab()]) < 0 {
+            return qwen35.device_fail(m, t, ffi, "reading the logits back");
+        }
+    }
+    m[mem.text_slot()] = step_mark;
+    return 0;
+}

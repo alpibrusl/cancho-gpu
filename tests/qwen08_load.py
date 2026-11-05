@@ -155,7 +155,10 @@ def check_reject(tool, fx):
     # Refusals that need a failing device, a file changing under the reader or a patch.
     exempt = {"q08-device": "needs a device that fails (the mock does not)",
               "q08-verify": "fires only if the device differs from the file, which is what C2 exists to find",
-              "q08-read": "a read that fails or runs short after the header was checked against the file's size"}
+              "q08-read": "a read that fails or runs short after the header was checked against the file's size",
+              "q08-engine": "the engine's, not the loader's: held by tests/qwen08_engine.sh",
+              "q08-range": "the engine's: held by tests/qwen08_engine.sh",
+              "q08-tmax": "the engine's: held by tests/qwen08_engine.sh"}
     bad, seen, n = 0, set(), 0
     rd = os.path.join(fx, "reject")
     for name in sorted(os.listdir(rd)):
