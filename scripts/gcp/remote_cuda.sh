@@ -267,7 +267,7 @@ s_machine() {
   for _ in $(seq 1 90); do nvidia-smi >/dev/null 2>&1 && break; sleep 10; done
   nvidia-smi || { echo "no NVIDIA driver after 15 min"; return 1; }
   nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total,clocks.max.sm,power.limit --format=csv
-  { lscpu | head -20; nvcc --version 2>/dev/null || ls /usr/local | grep -i cuda; uname -r; } 2>&1
+  { lscpu | head -20; nvcc --version 2>/dev/null || ls -d /usr/local/*cuda* 2>/dev/null; uname -r; } 2>&1
   if command -v curl >/dev/null; then curl -s -H 'Metadata-Flavor: Google' \
       http://metadata.google.internal/computeMetadata/v1/instance/machine-type; echo; fi
   # A shipped CUDA arch other than 8.9 changes what the other steps mean.
@@ -299,7 +299,7 @@ gate_units() {
 is_known_open() { case " $KNOWN_OPEN " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 s_gate() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
-  export CANCHO="$(cancho_cmd)" ROOT="$SRC"
+  CANCHO="$(cancho_cmd)"; export CANCHO ROOT="$SRC"
   local fails=0 known=0 n=0 line unit head rc
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -381,7 +381,7 @@ s_sandbox_linux() {
 }
 s_job() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
-  export CANCHO="$(cancho_cmd)"
+  CANCHO="$(cancho_cmd)"; export CANCHO
   cat "$HOME/job.sh"
   bash -e -o pipefail "$HOME/job.sh"
 }
