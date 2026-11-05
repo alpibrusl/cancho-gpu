@@ -8,7 +8,7 @@
 # refusal fixtures, the kernels against float64 references (tests/kernels.py),
 # the cloud scripts' guard rails against a stub gcloud (tests/gcp.sh, docs/cloud.md), the device path against a mock driver and against an emulating one that runs the emitted CUDA on the CPU (docs/device.md 5, 5b), the sessions
 # (tests/session.py), the weight-space harness and its gradient arm (tests/weightspace.py, docs/weight-space.md), W1's weight diff and verdict rule (tests/w1.py) and the readers against their recorded oracles
-# (docs/runtime.md; external tools, docs/native.md N2f).
+# (docs/runtime.md; external tools, docs/native.md N2f) and the Qwen3.5-0.8B weight loader on a toy checkpoint (tests/qwen08_load.sh, docs/weight-space.md 14).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CANCHO=${CANCHO:-cancho}
@@ -35,6 +35,7 @@ python3 tests/oracles.py
 python3 tests/m8.py
 python3 tests/m8_loops.py
 tests/sampler.sh
+CANCHO="$CANCHO" tests/qwen08_load.sh
 tests/chat.sh
 python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"
 CANCHO="$CANCHO" scripts/build-session.sh
