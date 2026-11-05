@@ -607,7 +607,10 @@ static void mma_sync(fragment<accumulator, M, N, K, T> &d, const fragment<matrix
 extern char emu_smem_start __asm("section$start$__DATA$emu_smem");
 extern char emu_smem_end __asm("section$end$__DATA$emu_smem");
 #else
-extern char __start_emu_smem[], __stop_emu_smem[];
+// Weak: the linker defines these only when some kernel variable is in the
+// section; a kernel with no __shared__ would otherwise fail to dlopen
+// ("undefined symbol: __start_emu_smem") on ELF.
+extern char __start_emu_smem[] __attribute__((weak)), __stop_emu_smem[] __attribute__((weak));
 #endif
 static inline char *emu_smem_begin() {
 #ifdef __APPLE__
@@ -620,7 +623,7 @@ static inline size_t emu_smem_size() {
 #ifdef __APPLE__
     return (size_t)(&emu_smem_end - &emu_smem_start);
 #else
-    return (size_t)(__stop_emu_smem - __start_emu_smem);
+    return __start_emu_smem ? (size_t)(__stop_emu_smem - __start_emu_smem) : 0;
 #endif
 }
 
