@@ -386,12 +386,17 @@ for line in open(sys.argv[1]):
 PY
 )
 [ -z "$bad_files" ] && ok "shuffle_repro.txt names only existing .chx files" || bad "shuffle_repro.txt: missing files: $bad_files"
-# the audit probe runs and prints both parts (it is Python only)
-python3 "$G/audit_probe.py" > "$W/probe.txt" 2>&1; rc=$?
-[ "$rc" = 0 ] && ok "audit_probe exits 0" || bad "audit_probe exit $rc"
-has "$W/probe.txt" "=== 1. BARE" "audit_probe: bare part"
-has "$W/probe.txt" "=== 2. SANDBOXED" "audit_probe: sandboxed part"
-has "$W/probe.txt" "event socket.connect" "audit_probe: lists the socket.connect audit event"
+# the audit probe runs and prints both parts (it is Python only, but it
+# imports numpy, as the sandboxed programs it mirrors do)
+if python3 -c 'import numpy' 2>/dev/null; then
+  python3 "$G/audit_probe.py" > "$W/probe.txt" 2>&1; rc=$?
+  [ "$rc" = 0 ] && ok "audit_probe exits 0" || bad "audit_probe exit $rc"
+  has "$W/probe.txt" "=== 1. BARE" "audit_probe: bare part"
+  has "$W/probe.txt" "=== 2. SANDBOXED" "audit_probe: sandboxed part"
+  has "$W/probe.txt" "event socket.connect" "audit_probe: lists the socket.connect audit event"
+else
+  echo "skip audit_probe: numpy is not installed"
+fi
 
 # --- every step in the default STEPS, and every s_* function, is dispatched --
 # (run 4 shipped two steps that were defined and never called)
