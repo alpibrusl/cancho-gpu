@@ -2,11 +2,10 @@
 
 > **Status: written and checked against a stub `gcloud` (`tests/gcp.sh`, in the
 > gate), and run against Google on a real NVIDIA L4 (`g2-standard-8`,
-> europe-west1-b) in eight runs on 2026-11-04 and 2026-11-05: NVRTC compiles
+> europe-west1-b, and one run in us-central1-a) in runs on 2026-11-04 and 2026-11-05: NVRTC compiles
 > every golden kernel, the device cases agree with the interpreter, the two NVFP4
 > shuffle bugs were seen on the card and are fixed (below), and the GEMM was
-> timed.** One card; the `fp4_perf` step (the lookup's cost) is written and has
-> **not been run**. Results are in "What the L4 measured" below and `docs/device.md` §6.
+> timed, and the lookup's cost was measured.** One card. Results are in "What the L4 measured" below and `docs/device.md` §6.
 
 `scripts/gcp/cuda_test.sh` rents one NVIDIA GPU, runs the CUDA checks of
 `docs/device.md` §6 on it, copies the results to `results/gcp/<time>-<gpu>/`
@@ -292,8 +291,29 @@ reference, not the GPU), which is why that step is reported FAIL; the 7 added ca
 the former reproducers, now in `tests/cases.txt`. The 40 hangs were the full-mask
 `__shfl_sync` in divergent code; the fix is a table index (`docs/device.md` 5b). This is
 a check that the fixed form does not hang or misread on this card, not a proof (the
-CUDA guide calls the old form undefined). **Not measured: what the table index costs
-against the shuffle.** The `fp4_perf` step is written for that and has not been run.
+CUDA guide calls the old form undefined). What the table index costs against the shuffle is measured next.
+
+**What the table index costs (`fp4_perf`, run `20261105-115058-l4`, us-central1-a, main `99ad9e7`).**
+Old (`__shfl_sync`, made by a text edit of the emitted CUDA) against new (`FP4_V[nibble]`),
+GB/s of weights read; the ratio is old time over new time, so below 1 the lookup is slower.
+No variant hung, failed or disagreed with the other.
+
+| case | lookups | old | new | old/new |
+|---|---|---|---|---|
+| `matvec_fp4_rows` n=17408 k=5120, n=5120 k=17408 (the model's K; control) | 0 | 224, 219 | 224, 219 | 1.000: the same program |
+| `matvec_fp4_rows` n=17408 k=5152, n=5120 k=17440 | 1 | 67.4, 60.8 | 50.6, 48.3 | 0.75, 0.79 |
+| `matvec_fp4_res` n=5120 k=17440 | 1 | 59.8 | 47.8 | 0.80 |
+| `matvec_fp4_swiglu` n=17408 k=5152 | 2 | 64.5 | 50.0 | 0.78 |
+| `matvec_fp4_batch` m=4 n=17408 k=5152 | 1 | 54.9 | 46.0 | 0.84 |
+| `matvec_fp4_res_batch` m=4 n=5120 k=17440 | 1 | 51.6 | 43.2 | 0.84 |
+
+At the model's own K the fix costs nothing (those kernels read through `fp4_pair` and have no
+lookup). On the generic path, which a K that is an odd multiple of 32 takes, the table index
+is **16 to 25% slower** than the shuffle it replaces, the serialised divergent `__constant__`
+read; but the old form hung for K not a multiple of 32 and gave wrong values below a full
+warp, so there it had no correct baseline. That path runs at about 50 GB/s against about
+220 GB/s for `fp4_pair`, so the gap between the two paths is larger than the lookup's cost.
+One card, one run, a text-edit variant of the old form.
 
 **The GEMM against cuBLAS (`gemm_bench`, run `20261104-212332-l4`; fractions of the 63.0
 TFLOPS this run measured for cuBLAS, the best of cuBLAS and torch over the shapes).**
@@ -316,7 +336,7 @@ Beyond what the section above measured: any card but one L4 (the A100 and H100 p
 never run, and the lowering is Ada's); the compiler built from source at the pin (the runs
 used the release binary, `NOT-PINNED` in `summary.tsv`, as designed); the Spot preemption
 path against Google (it is tested against the stub only); every number in the cost table
-above, which is from memory; the `fp4_perf` step; and the 12 device cases the interpreter
+above, which is from memory; and the 12 device cases the interpreter
 cannot hold. What did turn out to work on the real thing, which this section once listed
 as unverified: `gcloud` accepted the flag set, the
 torch/cupy combination installed (`cu126` wheels, driver 580), and `cupy.RawModule`
