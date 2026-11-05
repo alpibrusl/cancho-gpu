@@ -166,7 +166,7 @@ def transformers_generator(model_dir, device):
     tok = T.AutoTokenizer.from_pretrained(model_dir, padding_side="left")
     try:
         model = T.AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.bfloat16)
-    except (ValueError, KeyError, OSError):
+    except (ValueError, KeyError, OSError, AttributeError):  # Qwen3_5Config (the multimodal wrapper) has no vocab_size: the text-only class cannot be built from it
         model = T.AutoModelForImageTextToText.from_pretrained(model_dir, dtype=torch.bfloat16)
     model = model.to(device).eval()
     eos = {tok.eos_token_id} | set(np.atleast_1d(getattr(model.generation_config, "eos_token_id", None) or []).tolist())
