@@ -325,3 +325,53 @@ tests/chx/matvec_fp4_batch.chx m=4 n=16 k=5152
 tests/chx/matvec_fp4_res_batch.chx m=4 n=16 k=17440
 tests/chx/matvec_fp4_rows.chx n=16 k=96 --run
 tests/chx/matvec_fp4_batch.chx m=3 n=64 k=160 --run
+
+# W1 in cancho, T3 (docs/weight-space.md section 14): the kernels at Qwen3.5-0.8B's shapes (hidden 1024, 24 layers: 18 gated-delta and 6 full-attention).
+# Gated-delta layer: 16 key heads and 16 value heads of 128 (delta_step1.chx, one value head per key head), a convolution over c = 6144 = 3 * 2048
+# channels, qk_norm rows 16 + 16 + 16 = 48, gates and gated_norm at h = 16. What they compute is held by tests/kernels.py (checks08), CPU interpreter and
+# the second target, whole outputs for delta_step1.
+tests/chx/delta_step1.chx nk=16
+tests/chx/delta_step1.chx nk=16 --run
+tests/chx/delta_step1.chx nk=2 --run
+tests/chx/conv_step.chx c=6144 --run
+tests/chx/qk_norm.chx nk=16 rows=48 --run
+tests/chx/gates.chx h=16 --run
+tests/chx/gated_norm.chx h=16 n=128 eps=1e-6 --run
+# Full-attention layer: 8 query heads of 256 with an output gate (q_proj is 8 x [query 256, gate 256]), 2 key/value heads, partial RoPE (32 pairs, 192 passed through)
+# on r = 8 query rows and r = 2 key rows, per-head q/k norms, and attention at g = 4. Metal's tile of scores [g, t] is 32 KiB: the ceiling at g = 4 is t = 2046
+# (2047 and 2048 are refused with error[budget], 32,784 and 32,800 B; the estimate in docs/weight-space.md 14.3 said 2,048), at g = 6 t = 1364.
+tests/chx/rope.chx r=8 h=32 p=192 --run
+tests/chx/rope.chx r=2 h=32 p=192 --run
+tests/chx/qnorm.chx r=8 n=256 eps=1e-6 --run
+tests/chx/qnorm.chx r=2 n=256 eps=1e-6 --run
+tests/chx/attn_gate_q.chx r=8 n=256 --run
+tests/chx/kv_row.chx nkv=2 tmax=2048 d=256
+tests/chx/attention.chx nkv=2 g=4 t=64 d=256 tmax=96 --run
+tests/chx/attention.chx nkv=2 g=4 t=1024 d=256 tmax=2048
+tests/chx/attention.chx nkv=2 g=4 t=2046 d=256 tmax=2048 --run
+tests/chx/attention.chx nkv=2 g=4 t=2047 d=256 tmax=2048
+tests/chx/attention.chx nkv=2 g=4 t=2048 d=256 tmax=2048
+tests/chx/attention_scores.chx nkv=2 g=4 t=256 ts=32 d=256 tmax=2048 --run
+tests/chx/attention_pv.chx nkv=2 g=4 t=256 dw=32 d=256 tmax=2048 --run
+# Norms and the MLP: input, post-attention and final norms over 1024 (the host passes 1 + w), SwiGLU over 3584.
+tests/chx/rmsnorm_rows.chx r=1 n=1024 eps=1e-6 --run
+tests/chx/swiglu.chx n=3584 --run
+# The matrix-vector products, f16 weights (the speed path) and f32 weights (the exact widening of bf16), at the layer shapes: in_proj_qkv 6144, in_proj_z and
+# o_proj-input 2048, q_proj 4096, k/v_proj 512, in_proj_a/b 16, gate/up 3584 by k = 1024; out_proj 1024 by 2048, o_proj 1024 by 2048, down_proj 1024 by 3584
+# (residual added); the tied head 248,320 by 1024 (the interpreter cannot hold it at k = 1024: tests/cuda-emu-known.txt; run at k = 32).
+tests/chx/matvec_rows_f16.chx n=248320 k=1024
+tests/chx/matvec_rows_f16.chx n=248320 k=32 --run
+tests/chx/matvec_rows_f16.chx n=6144 k=1024 --run
+tests/chx/matvec_rows_f16.chx n=4096 k=1024 --run
+tests/chx/matvec_rows_f16.chx n=3584 k=1024 --run
+tests/chx/matvec_rows_f16.chx n=2048 k=1024 --run
+tests/chx/matvec_rows_f16.chx n=512 k=1024 --run
+tests/chx/matvec_rows_f16.chx n=16 k=1024 --run
+tests/chx/matvec_res_f16.chx n=1024 k=2048 --run
+tests/chx/matvec_res_f16.chx n=1024 k=3584 --run
+tests/chx/matvec_rows.chx n=248320 k=1024
+tests/chx/matvec_rows.chx n=6144 k=1024 --run
+tests/chx/matvec_rows.chx n=3584 k=1024 --run
+tests/chx/matvec_rows.chx n=16 k=1024 --run
+tests/chx/matvec_res.chx n=1024 k=2048 --run
+tests/chx/matvec_res.chx n=1024 k=3584 --run
