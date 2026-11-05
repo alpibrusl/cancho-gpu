@@ -174,7 +174,7 @@ has "$W/keep.txt" "KEEP=1: cancho-gpu-l4-" "KEEP=1 prints how to delete it"
 # Signals: the remote command hangs (the stub sleeps); signal the script.
 for sig in TERM HUP; do
   new_case "sig$sig"
-  STUB_SSH_SLEEP=60 PATH=$W/bin:$PATH GCP_PROJECT=fake-project OUT_DIR=$W/sig.out \
+  STUB_SSH_SLEEP="60.$$" PATH=$W/bin:$PATH GCP_PROJECT=fake-project OUT_DIR=$W/sig.out \
     bash "$G/cuda_test.sh" > "$W/sig$sig.txt" 2>&1 &
   pid=$!
   for _ in $(seq 1 100); do [ -f "$S/ssh_running" ] && break; sleep 0.1; done
@@ -185,7 +185,7 @@ for sig in TERM HUP; do
   [ "$rc" = "$want" ] && ok "$sig: exits $want" || bad "$sig: exit $rc, wanted $want"
   has "$L" "instances delete cancho-gpu-l4-" "$sig: the VM is deleted"
   [ ! -f "$S/vm" ] && ok "$sig: no VM left" || bad "$sig: VM left behind"
-  pkill -f "sleep 60" 2>/dev/null || true
+  pkill -f "sleep 60\.$$" 2>/dev/null || true
 done
 
 # --- the compiler install (remote_cuda.sh sourced as a library) -------------
@@ -681,7 +681,7 @@ has "$L" "W1_N='8' W1_MAX_NEW='512'" "w1 SMOKE=1: n=8, --max-new 512 on the VM"
 for sig in TERM HUP; do
   new_case "w1sig$sig"
   printf '3 DONE\n' > "$W/w1sig.plan"
-  STUB_PLAN=$W/w1sig.plan STUB_SSH_SLEEP=60 N=8 MAX_NEW=512 CHUNK=8 PATH=$W/w1bin:$PATH GCP_PROJECT=fake-project W1_DIR=$W/w1sig$sig.dir \
+  STUB_PLAN=$W/w1sig.plan STUB_SSH_SLEEP="60.$$" N=8 MAX_NEW=512 CHUNK=8 PATH=$W/w1bin:$PATH GCP_PROJECT=fake-project W1_DIR=$W/w1sig$sig.dir \
     bash "$W1" > "$W/w1sig$sig.txt" 2>&1 &
   pid=$!
   for _ in $(seq 1 100); do [ -f "$S/ssh_running" ] && break; sleep 0.1; done
@@ -693,7 +693,7 @@ for sig in TERM HUP; do
   has "$L" "instances delete cancho-w1-" "w1 $sig: the VM is deleted"
   [ ! -f "$S/vm" ] && ok "w1 $sig: no VM left" || bad "w1 $sig: VM left behind"
   [ "$(lines "$W/w1sig$sig.dir/data/base_512.jsonl" 2>/dev/null)" = 3 ] && ok "w1 $sig: the results were copied home first" || bad "w1 $sig: results not copied home"
-  pkill -f "sleep 60" 2>/dev/null || true
+  pkill -f "sleep 60\.$$" 2>/dev/null || true
 done
 
 # the remote step, with a fake python and hf: 13.2's commands, the diff once, the chunks in order, the resume, the stop file
