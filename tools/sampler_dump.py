@@ -2,7 +2,11 @@
 """The oracle of `cancho-gpu sample`: a second implementation of the sampler's algorithm, in Python, printing the form of
 `src/sample.cho` (docs/runtime.md section 10).
 
-    sampler_dump.py <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>
+    sampler_dump.py <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed> [<penalty> <seen.txt>]
+
+With a penalty (docs/weight-space.md 13.3, 14.6 C9) line r of the text file is the ids generated before row r; each of them has
+the penalty subtracted from its logit, once, in float32, before temperature, top-k and top-p: the order in which `transformers`
+applies a processor passed to `generate` ahead of its temperature, top-k and top-p warpers (examples/weightspace/w1_behave.py).
 
 The sampler is an *algorithm*, not a function of mathematics: temperature, then top-k, then top-p, renormalised; a draw from
 a `xorshift64*` stream seeded through `splitmix64`; temperature 0 or top-k 1 is the argmax (the last of equal maxima); logits
@@ -94,11 +98,17 @@ def total_key(x):
 def main():
     path, vocab = sys.argv[1], int(sys.argv[2])
     s = Sampler(float(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]))
+    penalty = f32(float(sys.argv[7])) if len(sys.argv) > 7 else None
+    seen_lines = open(sys.argv[8]).read().split("\n") if len(sys.argv) > 8 else []
     raw = open(path, "rb").read()
     words = np.frombuffer(raw[: len(raw) // 4 * 4], dtype="<f4")
     with np.errstate(all="ignore"):
         for row in range(len(words) // vocab):
             logits = [f32(x) for x in words[row * vocab:(row + 1) * vocab]]
+            if penalty is not None and row < len(seen_lines):
+                for i in {int(w) for w in seen_lines[row].split()}:
+                    if i < vocab:
+                        logits[i] = f32(logits[i] - penalty)
             ids, probs = s.nucleus(logits)
             pick = s.pick(logits)
             parts = [("%d=nan" % i) if p != p else "%d=%08x" % (i, struct.unpack("<I", struct.pack("<f", p))[0]) for i, p in zip(ids, probs)]

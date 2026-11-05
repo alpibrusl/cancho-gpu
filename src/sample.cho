@@ -2,10 +2,15 @@ edition 5;
 module sample;
 
 // `sample` -- the `cancho-gpu sample <logits> <vocab> <temperature> <top_p>
-// <top_k> <seed>` command: for each row of `<vocab>` little-endian f32
+// <top_k> <seed> [<penalty> <seen.txt>]` command: for each row of `<vocab>` little-endian f32
 // logits in the file, the nucleus and the draw, in the form
 // `tools/sampler_dump.py` prints (`docs/runtime.md`
 // §10). The stream of draws runs across the rows, as it does in generation.
+// With `<penalty> <seen.txt>` (docs/weight-space.md 14.6 C9) line r of the
+// text file is the ids of the tokens generated before row r, separated by
+// spaces (a line may be empty; rows past the last line have none), and the
+// presence penalty is applied to row r's logits for those ids; unlike in
+// generation the picks are not added to it, so a row's seen set is exactly its line.
 //
 //     row 0 pick 17 nucleus 3: 17=3f000000 5=3e800000 9=3e800000
 //
@@ -73,6 +78,35 @@ fn natural[&t](t: &!t [byte], s: int) -> [] int {
     return v;
 }
 
+// The line of the `n` bytes at `t[at..]` that starts at offset `from`, as ids `note`d into `smp`;
+// returns the offset where the next line starts (`n` at the end).
+fn note_line[&m, &t](m: &!m [int], t: &!t [byte], smp: int, at: int, n: int, from: int) -> [] int {
+    var i = from;
+    var v = 0;
+    var have = false;
+    while i < n && t[at + i] != byte_of(10) {
+        let c = int_of(t[at + i]);
+        if c >= 48 && c <= 57 && v < 1000000000 {
+            v = v * 10 + c - 48;
+            have = true;
+        } else {
+            if have {
+                sampler.note(m, smp, v);
+            }
+            v = 0;
+            have = false;
+        }
+        i = i + 1;
+    }
+    if have {
+        sampler.note(m, smp, v);
+    }
+    if i < n {
+        i = i + 1;
+    }
+    return i;
+}
+
 pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
     let vocab = natural(t, text.from_bytes(m, t, arg(args, 3)));
     let (okt, temperature) = number(m, t, text.from_bytes(m, t, arg(args, 4)));
@@ -95,10 +129,34 @@ pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         return 1;
     }
     let s = sampler.new(m, temperature, top_p, top_k, seed);
+    var seen_at = 0;
+    var seen_n = 0;
+    var seen_pos = 0;
+    if arg_count(args) == 10 {
+        let (okq, penalty) = number(m, t, text.from_bytes(m, t, arg(args, 8)));
+        if !okq {
+            io.error_all(io, "usage: cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed> [<penalty> <seen.txt>]\n");
+            return 2;
+        }
+        let (stop, sgot, ssize) = fileio.prefix(m, t, fs, arg(args, 9), cap());
+        if stop < 0 || ssize > sgot {
+            io.error_all(io, "error[io]: cannot read ");
+            io.error_all(io, arg(args, 9));
+            io.error_all(io, "\n");
+            return 1;
+        }
+        seen_at = stop;
+        seen_n = sgot;
+        sampler.enable_penalty(m, s, penalty, vocab);
+    }
     let lines = mem.list(m);
     var row = 0;
     while row < got / (4 * vocab) {
         let base = top + row * 4 * vocab;
+        if arg_count(args) == 10 {
+            sampler.clear_seen(m, s);
+            seen_pos = note_line(m, t, s, seen_at, seen_n, seen_pos);
+        }
         let (ids, probs) = sampler.nucleus(m, t, s, base, vocab);
         let pick = sampler.draw(m, s, ids, probs);
         let parts = mem.list(m);
