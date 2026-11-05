@@ -1,0 +1,34 @@
+// The softmax statistics of a head's scores over any number of positions: the row maximum m and the normaliser
+// z = sum exp(s - m) of each of head i's g query heads, from attention_scores.chx's scratch, a chunk of cs positions at a
+// time. Two loops, each carrying one 1-D tile. The surface has no `max a b`, so the running maximum is spelt
+// m + relu(c - m) (= max(m, c); the difference is one rounding at most, and a softmax shift tolerates that: it cancels).
+// The maximum starts at the first chunk's, not at a sentinel: m + relu(c - m) with m = -3e38 would round to 0 (c is lost
+// in c + 3e38), and a row of scores all below -88 would then underflow to z = 0. Position 0 is always in the first chunk
+// and always in use, so that maximum is a real score. attention_pvl.chx takes m and z. docs/weight-space.md section 14.5.
+algo attention_stats(nkv, g, t, cs)
+  in  sc: f32[nkv * g, t]
+  out m:  f32[nkv * g]
+  out z:  f32[nkv * g]
+{
+  grid i over nkv
+  let f0 = load sc[i * g, 0 ; g, cs]
+  let m1 = rowmax f0
+  let mx = for c in 1 .. t / cs with m1 {
+    let sm = load sc[i * g, c * cs ; g, cs]
+    let cm = rowmax sm
+    yield m1 + relu (cm - &m1)
+  }
+  let z0 = zeros f32[g]
+  let zz = for c in 0 .. t / cs with z0 {
+    let sm = load sc[i * g, c * cs ; g, cs]
+    let sh = sm - &mx
+    let e  = exp sh
+    let cz = rowsum e
+    yield z0 + cz
+  }
+  store mx -> m[i * g]
+  store zz -> z[i * g]
+}
+
+schedule attention_stats for apple-m-series { threads 256 }
+schedule attention_stats for nvidia-ada     { threads 128 }
