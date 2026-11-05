@@ -1,0 +1,188 @@
+edition 9;
+
+module qsw.tpl;
+
+// The session text is written from templates that read like the Python writer's f-strings: `$key$` is replaced by the latest value set for `key`, and
+// `$key:var$` by the value of `key_<value of var>` (the per-group kernel names). The state carries the output and the variables, one `key=value`
+// line each, the latest taking precedence.
+
+import std.buffer;
+import std.bytes;
+import qsw.enc;
+
+pub struct St {
+    out: buffer.Buffer,
+    env: buffer.Buffer,
+}
+
+pub fn start[&h](heap: &!h Heap) -> [heap] St {
+    return St { out: buffer.empty(heap, 1048576), env: buffer.empty(heap, 4096) };
+}
+
+pub fn finish[&h](heap: &!h Heap, st: St) -> [heap] buffer.Buffer {
+    let St { out, env } = st;
+    buffer.drop(heap, env);
+    return out;
+}
+
+pub fn set_txt[&h, &k, &v](heap: &!h Heap, st: St, key: &k [byte], value: &v [byte]) -> [heap] St {
+    let St { out, env } = st;
+    var e = buffer.append(heap, env, key);
+    e = buffer.push(heap, e, byte_of(61));
+    e = buffer.append(heap, e, value);
+    e = buffer.push(heap, e, byte_of(10));
+    return St { out: out, env: e };
+}
+
+pub fn set_int[&h, &k](heap: &!h Heap, st: St, key: &k [byte], value: int) -> [heap] St {
+    let St { out, env } = st;
+    var e = buffer.append(heap, env, key);
+    e = buffer.push(heap, e, byte_of(61));
+    e = enc.put_int(heap, e, value);
+    e = buffer.push(heap, e, byte_of(10));
+    return St { out: out, env: e };
+}
+
+// `value` as Python prints a float (`repr`).
+pub fn set_rep[&h, &k](heap: &!h Heap, st: St, key: &k [byte], value: float) -> [heap] St {
+    let St { out, env } = st;
+    var e = buffer.append(heap, env, key);
+    e = buffer.push(heap, e, byte_of(61));
+    e = enc.put_repr(heap, e, value);
+    e = buffer.push(heap, e, byte_of(10));
+    return St { out: out, env: e };
+}
+
+// `value` as two digits at least (`{l:02d}`).
+pub fn set_int2[&h, &k](heap: &!h Heap, st: St, key: &k [byte], value: int) -> [heap] St {
+    let St { out, env } = st;
+    var e = buffer.append(heap, env, key);
+    e = buffer.push(heap, e, byte_of(61));
+    if value < 10 {
+        e = buffer.push(heap, e, byte_of(48));
+    }
+    e = enc.put_int(heap, e, value);
+    e = buffer.push(heap, e, byte_of(10));
+    return St { out: out, env: e };
+}
+
+// The latest value of the key `key` (and, when `suffix` is non-empty, of `key_suffix`) in `env`: its start and end, or (-1, -1).
+fn find[&e, &k, &s](env: &e [byte], key: &k [byte], suffix: &s [byte]) -> [] (int, int) {
+    var best_a = 0 - 1;
+    var best_b = 0 - 1;
+    var at = 0;
+    let total = len(env);
+    let klen = len(key);
+    let slen = len(suffix);
+    var want = klen;
+    if slen > 0 {
+        want = klen + 1 + slen;
+    }
+    while at < total {
+        var stop = at;
+        while stop < total && int_of(env[stop]) != 10 {
+            stop = stop + 1;
+        }
+        // the line env[at..stop] is `name=value`
+        if stop - at > want && int_of(env[at + want]) == 61 {
+            var same = bytes.equal(env[at..at + klen], key);
+            if same && slen > 0 {
+                same = int_of(env[at + klen]) == 95 && bytes.equal(env[at + klen + 1..at + want], suffix);
+            }
+            if same {
+                best_a = at + want + 1;
+                best_b = stop;
+            }
+        }
+        at = stop + 1;
+    }
+    return (best_a, best_b);
+}
+
+fn expand[&h, &e, &t](heap: &!h Heap, out: buffer.Buffer, env: &e [byte], tmpl: &t [byte]) -> [heap] buffer.Buffer {
+    var b = out;
+    var i = 0;
+    let total = len(tmpl);
+    while i < total {
+        let c = int_of(tmpl[i]);
+        if c == 36 {
+            var j = i + 1;
+            var colon = 0 - 1;
+            while j < total && int_of(tmpl[j]) != 36 {
+                if int_of(tmpl[j]) == 58 {
+                    colon = j;
+                }
+                j = j + 1;
+            }
+            // tmpl[i + 1..j] is the key, or `key:var`
+            var a = 0 - 1;
+            var z = 0 - 1;
+            if colon < 0 {
+                let (fa, fz) = find(env, tmpl[i + 1..j], "");
+                a = fa;
+                z = fz;
+            } else {
+                let (va, vz) = find(env, tmpl[colon + 1..j], "");
+                if va >= 0 {
+                    let (fa, fz) = find(env, tmpl[i + 1..colon], env[va..vz]);
+                    a = fa;
+                    z = fz;
+                }
+            }
+            if a < 0 {
+                b = buffer.append(heap, b, "<MISSING ");
+                b = buffer.append(heap, b, tmpl[i + 1..j]);
+                b = buffer.push(heap, b, byte_of(62));
+            } else {
+                b = buffer.append(heap, b, env[a..z]);
+            }
+            i = j + 1;
+        } else {
+            b = buffer.push(heap, b, tmpl[i]);
+            i = i + 1;
+        }
+    }
+    return b;
+}
+
+// One line of the session: the template expanded, then a newline.
+pub fn em[&h, &t](heap: &!h Heap, st: St, tmpl: &t [byte]) -> [heap] St {
+    let St { out, env } = st;
+    var b = out;
+    borrow env as &er in {
+        b = expand(heap, b, buffer.bytes(er), tmpl);
+    }
+    b = buffer.push(heap, b, byte_of(10));
+    return St { out: b, env: env };
+}
+
+// The template expanded with no newline (for a file's contents that end without one, or a prefix).
+pub fn raw[&h, &t](heap: &!h Heap, st: St, tmpl: &t [byte]) -> [heap] St {
+    let St { out, env } = st;
+    var b = out;
+    borrow env as &er in {
+        b = expand(heap, b, buffer.bytes(er), tmpl);
+    }
+    return St { out: b, env: env };
+}
+
+// The template expanded into a fresh buffer (a path or a name).
+pub fn text_of[&h, &t](heap: &!h Heap, st: St, tmpl: &t [byte]) -> [heap] (St, buffer.Buffer) {
+    let St { out, env } = st;
+    var b = buffer.empty(heap, 64);
+    borrow env as &er in {
+        b = expand(heap, b, buffer.bytes(er), tmpl);
+    }
+    return (St { out: out, env: env }, b);
+}
+
+// `key` set to the template expanded now.
+pub fn set_tpl[&h, &k, &t](heap: &!h Heap, st: St, key: &k [byte], tmpl: &t [byte]) -> [heap] St {
+    let (s1, b) = text_of(heap, st, tmpl);
+    var s = s1;
+    borrow b as &br in {
+        s = set_txt(heap, s, key, buffer.bytes(br));
+    }
+    buffer.drop(heap, b);
+    return s;
+}

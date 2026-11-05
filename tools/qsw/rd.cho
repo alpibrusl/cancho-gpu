@@ -1,0 +1,89 @@
+edition 9;
+
+module qsw.rd;
+
+// Whole-file reads and decimal integers (the tool's inputs are small text files and flat binary ones).
+
+import std.buffer;
+import std.bytes;
+
+// All of a file: its bytes and 0, or nothing and the errno (at least 1).
+pub fn read_file[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+    var out = buffer.empty(heap, 4096);
+    var trouble = 0;
+    match open_read(fs, path) {
+        Opened::Failed(reason) => {
+            trouble = reason;
+            if trouble == 0 {
+                trouble = 1;
+            }
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var chunk = buffer.empty(heap, 1048576);
+            borrow mut file as &!handle in {
+                var going = true;
+                while going {
+                    var got = 0;
+                    borrow mut chunk as &!c in {
+                        match file_read(handle, buffer.room(c)) {
+                            Read::Got(n) => {
+                                got = n;
+                                buffer.filled(c, n);
+                            }
+                            Read::End => {
+                                going = false;
+                            }
+                            Read::Failed(reason) => {
+                                going = false;
+                                trouble = reason;
+                                if trouble == 0 {
+                                    trouble = 1;
+                                }
+                            }
+                        }
+                    }
+                    if got > 0 {
+                        borrow chunk as &c in {
+                            out = buffer.append(heap, out, buffer.bytes(c));
+                        }
+                        borrow mut chunk as &!c in {
+                            buffer.clear(c);
+                        }
+                    }
+                }
+            }
+            buffer.drop(heap, chunk);
+            file_close(file);
+        }
+    }
+    return (out, trouble);
+}
+
+// The decimal integer in `text` (an optional leading '-'); 0 for anything else.
+pub fn parse_int[&t](text: &t [byte]) -> [] int {
+    var i = 0;
+    var neg = false;
+    if len(text) > 0 && int_of(text[0]) == 45 {
+        neg = true;
+        i = 1;
+    }
+    var v = 0;
+    while i < len(text) && bytes.is_digit(int_of(text[i])) {
+        v = v * 10 + (int_of(text[i]) - 48);
+        i = i + 1;
+    }
+    if neg {
+        return 0 - v;
+    }
+    return v;
+}
+
+// Line `n` (1-based) without its newline.
+pub fn line[&t](text: &t [byte], n: int) -> [] &t [byte] {
+    return bytes.field(text, 10, n);
+}
+
+pub fn line_count[&t](text: &t [byte]) -> [] int {
+    return bytes.count_byte(text, 10) + 1;
+}

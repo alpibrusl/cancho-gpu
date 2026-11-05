@@ -1,0 +1,287 @@
+edition 9;
+
+module qsw.enc;
+
+// Exact encoders for the session writer (docs/qsw.md): a binary64 value rounded once, to nearest even, to the f32 or f16 word numpy's `astype` gives,
+// little-endian bytes, and the text Python prints for a float (`repr`, `str`, `%g`). A session file is compared byte for byte with the Python
+// writer's, so none of these may be near enough: each is the same value or the check fails.
+
+import std.buffer;
+import std.fmt;
+
+// The IEEE word of `x` in a format with `mant` fraction bits, exponent bias `bias` and `width` bits, rounded to nearest, ties to even; past the largest
+// finite value it is infinity, as numpy's cast is.
+fn word_of(x: float, mant: int, bias: int, width: int) -> [] int {
+    let bits = bits_of(x);
+    var sign = 0;
+    if bits < 0 {
+        sign = 1 << width - 1;
+    }
+    let ebits = width - 1 - mant;
+    let emax = (1 << ebits) - 1;
+    let e = bits >> 52 & 0x7ff;
+    let frac = bits & 0xfffffffffffff;
+    if e == 0x7ff {
+        if frac == 0 {
+            return sign | emax << mant;
+        }
+        return emax << mant | 1 << mant - 1;
+    }
+    if e == 0 {
+        return sign;
+    }
+    // x = sig * 2^(E - 52), sig in [2^52, 2^53)
+    let sig = frac | 1 << 52;
+    let lead = e - 1023;
+    let emin = 1 - bias;
+    var extra = 0;
+    if lead < emin {
+        extra = emin - lead;
+    }
+    let drop = 52 - mant + extra;
+    if drop > 54 {
+        return sign;
+    }
+    var kept = sig >> drop;
+    let rest = sig - (kept << drop);
+    let half = 1 << drop - 1;
+    if rest > half || rest == half && kept & 1 == 1 {
+        kept = kept + 1;
+    }
+    if extra > 0 {
+        // subnormal: the word is the count of units; a carry into 2^mant is the smallest normal
+        return sign | kept;
+    }
+    let biased = lead + bias;
+    let word = (biased << mant) + (kept - (1 << mant));
+    if word >= emax << mant {
+        return sign | emax << mant;
+    }
+    return sign | word;
+}
+
+pub fn f32_word(x: float) -> [] int {
+    return word_of(x, 23, 127, 32);
+}
+
+pub fn f16_word(x: float) -> [] int {
+    return word_of(x, 10, 15, 16);
+}
+
+// `count` bytes of `word`, low byte first.
+pub fn put_le[&h](heap: &!h Heap, out: buffer.Buffer, word: int, count: int) -> [heap] buffer.Buffer {
+    var b = out;
+    var i = 0;
+    while i < count {
+        b = buffer.push(heap, b, byte_of(word >> 8 * i & 255));
+        i = i + 1;
+    }
+    return b;
+}
+
+pub fn put_f32[&h](heap: &!h Heap, out: buffer.Buffer, x: float) -> [heap] buffer.Buffer {
+    return put_le(heap, out, f32_word(x), 4);
+}
+
+pub fn put_f16[&h](heap: &!h Heap, out: buffer.Buffer, x: float) -> [heap] buffer.Buffer {
+    return put_le(heap, out, f16_word(x), 2);
+}
+
+// ---- text ----------------------------------------------------------------------------------------------------------------------------------
+
+pub fn put_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    if n < 0 {
+        return put_int_digits(heap, buffer.push(heap, out, byte_of(45)), 0 - n);
+    }
+    return put_int_digits(heap, out, n);
+}
+
+fn put_int_digits[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    if n >= 10 {
+        return buffer.push(heap, put_int_digits(heap, out, n / 10), byte_of(48 + n % 10));
+    }
+    return buffer.push(heap, out, byte_of(48 + n));
+}
+
+// Python's `repr(x)` of a finite float: the shortest digits that read back, positional from 1e-4 up to 1e16, else `d.ddde+XX` with at least two exponent digits.
+pub fn put_repr[&h](heap: &!h Heap, out: buffer.Buffer, x: float) -> [heap] buffer.Buffer {
+    if bits_of(x) & 0x7fffffffffffffff == 0 {
+        if bits_of(x) < 0 {
+            return buffer.append(heap, out, "-0.0");
+        }
+        return buffer.append(heap, out, "0.0");
+    }
+    // the shortest form `d[.ddd]e[-]k` from std.fmt
+    let raw = box_slice(heap, 32, byte_of(0));
+    var n = 0;
+    borrow mut raw as &!w in {
+        n = fmt.float_into(contents(w), x);
+    }
+    var b = out;
+    var digits = box_slice(heap, 24, byte_of(0));
+    var nd = 0;
+    var k = 0;
+    var negative = false;
+    var ksign = 1;
+    borrow raw as &r in {
+        let s = contents(r);
+        var i = 0;
+        if s[0] == byte_of(45) {
+            negative = true;
+            i = 1;
+        }
+        var in_exp = false;
+        var kk = 0;
+        borrow mut digits as &!dw in {
+            let dd = contents(dw);
+            while i < n {
+                let c = int_of(s[i]);
+                if c == 101 {
+                    in_exp = true;
+                } else if in_exp {
+                    if c == 45 {
+                        ksign = 0 - 1;
+                    } else {
+                        kk = kk * 10 + c - 48;
+                    }
+                } else if c != 46 {
+                    dd[nd] = s[i];
+                    nd = nd + 1;
+                }
+                i = i + 1;
+            }
+        }
+        k = ksign * kk;
+    }
+    unbox_slice(heap, raw);
+    if negative {
+        b = buffer.push(heap, b, byte_of(45));
+    }
+    borrow digits as &dr in {
+        let d = contents(dr);
+        if k < 0 - 4 || k >= 16 {
+            b = buffer.push(heap, b, d[0]);
+            if nd > 1 {
+                b = buffer.push(heap, b, byte_of(46));
+                var i = 1;
+                while i < nd {
+                    b = buffer.push(heap, b, d[i]);
+                    i = i + 1;
+                }
+            }
+            b = buffer.push(heap, b, byte_of(101));
+            var ek = k;
+            if k < 0 {
+                b = buffer.push(heap, b, byte_of(45));
+                ek = 0 - k;
+            } else {
+                b = buffer.push(heap, b, byte_of(43));
+            }
+            if ek < 10 {
+                b = buffer.push(heap, b, byte_of(48));
+            }
+            b = put_int(heap, b, ek);
+        } else if k < 0 {
+            b = buffer.append(heap, b, "0.");
+            var z = 0 - k - 1;
+            while z > 0 {
+                b = buffer.push(heap, b, byte_of(48));
+                z = z - 1;
+            }
+            var i = 0;
+            while i < nd {
+                b = buffer.push(heap, b, d[i]);
+                i = i + 1;
+            }
+        } else {
+            // k + 1 digits before the point
+            var i = 0;
+            while i <= k {
+                if i < nd {
+                    b = buffer.push(heap, b, d[i]);
+                } else {
+                    b = buffer.push(heap, b, byte_of(48));
+                }
+                i = i + 1;
+            }
+            b = buffer.push(heap, b, byte_of(46));
+            if nd > k + 1 {
+                var j = k + 1;
+                while j < nd {
+                    b = buffer.push(heap, b, d[j]);
+                    j = j + 1;
+                }
+            } else {
+                b = buffer.push(heap, b, byte_of(48));
+            }
+        }
+    }
+    unbox_slice(heap, digits);
+    return b;
+}
+
+// Python's `f"{x:g}"` for a whole number x >= 0 (a count of positions): six significant digits, then `e+XX`.
+pub fn put_g_whole[&h](heap: &!h Heap, out: buffer.Buffer, x: int) -> [heap] buffer.Buffer {
+    if x < 1000000 {
+        return put_int(heap, out, x);
+    }
+    // 1234567 -> 1.23457e+06: round the integer to six digits (half to even is not needed for the counts this writer meets; refuse by trapping nothing -- exact for x < 10^15)
+    var digits = 0;
+    var v = x;
+    while v >= 10 {
+        v = v / 10;
+        digits = digits + 1;
+    }
+    // x = d.ddd... * 10^digits
+    var scale = 1;
+    var i = 0;
+    while i < digits - 5 {
+        scale = scale * 10;
+        i = i + 1;
+    }
+    var six = x / scale;
+    let rem = x - six * scale;
+    let twice = 2 * rem;
+    if twice > scale || twice == scale && six & 1 == 1 {
+        six = six + 1;
+    }
+    var e10 = digits;
+    if six >= 1000000 {
+        six = six / 10;
+        e10 = e10 + 1;
+    }
+    // strip trailing zeros of the six digits
+    var width = 6;
+    while width > 1 && six % 10 == 0 {
+        six = six / 10;
+        width = width - 1;
+    }
+    var b = out;
+    // the first digit, then the rest after a point
+    var lead = six;
+    var j = 1;
+    while j < width {
+        lead = lead / 10;
+        j = j + 1;
+    }
+    b = buffer.push(heap, b, byte_of(48 + lead));
+    if width > 1 {
+        b = buffer.push(heap, b, byte_of(46));
+        var p = width - 2;
+        while p >= 0 {
+            var q = six;
+            var s = 0;
+            while s < p {
+                q = q / 10;
+                s = s + 1;
+            }
+            b = buffer.push(heap, b, byte_of(48 + q % 10));
+            p = p - 1;
+        }
+    }
+    b = buffer.append(heap, b, "e+");
+    if e10 < 10 {
+        b = buffer.push(heap, b, byte_of(48));
+    }
+    return put_int(heap, b, e10);
+}

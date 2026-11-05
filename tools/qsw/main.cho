@@ -1,0 +1,532 @@
+edition 9;
+
+// `qsw` -- the Qwen2 LoRA training session writer, in cancho (docs/qsw.md): what examples/qwen/qwen_train.py `write` produces, without Python.
+//
+//     qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE]
+//
+// FILE of --config: `key value` lines (tools/qsw/cfg.cho). --wdir: the converted weights (emb.f16, norm.f32, lNN.*). --out: an existing directory for the session.
+// --root: this repository (where the kernels are). --tokens: int32 little-endian, [steps, nb, t]. --adapters: binary64 little-endian, in qwen_ref.lora_names order.
+// --save: where the session saves the trained adapters. --weights: binary64 [nb t], the weight of each position in the loss (default: 1 but at the last position of a sequence).
+
+import qsw.cfg;
+import qsw.data;
+import qsw.enc;
+import qsw.kern;
+import qsw.rd;
+import qsw.session;
+import qsw.tpl;
+import std.buffer;
+import std.bytes;
+import std.io;
+import std.math;
+
+fn refuse[&h, &i](heap: &!h Heap, io: &!i Io, rule: &static [byte], message: &static [byte]) -> [heap, err_write] int {
+    var b = buffer.append(heap, buffer.empty(heap, 128), "qsw: ");
+    b = buffer.append(heap, b, rule);
+    b = buffer.append(heap, b, ": ");
+    b = buffer.append(heap, b, message);
+    b = buffer.push(heap, b, byte_of(10));
+    borrow b as &br in {
+        io.error_all(io, buffer.bytes(br));
+    }
+    buffer.drop(heap, b);
+    return 2;
+}
+
+// The index of the argument after `name`, or -1.
+fn flag[&g](args: &g Args, name: &static [byte]) -> [args] int {
+    var i = 1;
+    while i + 1 < arg_count(args) {
+        if bytes.equal(arg(args, i), name) {
+            return i + 1;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// The unscheduled library kernel `file` as the variable `key`; 0, or 1 when it is not found.
+fn plain[&h, &f, &r](heap: &!h Heap, fs: &f Fs(""), root: &r [byte], st: tpl.St, key: &static [byte], file: &static [byte]) -> [heap, fs_read(""), file_read] (tpl.St, int) {
+    let found = kern.find_kernel(heap, fs, root, file);
+    var s = st;
+    var bad = 0;
+    borrow found as &f0 in {
+        if buffer.size(f0) == 0 {
+            bad = 1;
+        }
+    }
+    borrow found as &fr in {
+        s = tpl.set_txt(heap, s, key, buffer.bytes(fr));
+    }
+    buffer.drop(heap, found);
+    return (s, bad);
+}
+
+// A scheduled copy of the library kernel `file` as the variable `key` (suffixed with `_<g>` when `tag` is not empty).
+fn tiled[&h, &f, &o, &r](heap: &!h Heap, fs: &f Fs(""), out: &o [byte], root: &r [byte], st: tpl.St, key: &static [byte], tag: &static [byte], file: &static [byte], nv: bool, bm: int, bn: int, bk: int) -> [heap, fs_read(""), fs_write(""), file_read] (tpl.St, int) {
+    let (path, trouble) = kern.kernel(heap, fs, out, root, file, nv, 128, "2 2", bm, bn, bk);
+    var s = st;
+    var full = buffer.append(heap, buffer.empty(heap, 32), key);
+    if len(tag) > 0 {
+        full = buffer.push(heap, full, byte_of(95));
+        full = buffer.append(heap, full, tag);
+    }
+    borrow full as &fr in {
+        borrow path as &pr in {
+            s = tpl.set_txt(heap, s, buffer.bytes(fr), buffer.bytes(pr));
+        }
+    }
+    buffer.drop(heap, full);
+    buffer.drop(heap, path);
+    return (s, trouble);
+}
+
+fn put_flag(ok: int, bad: int) -> [] int {
+    if bad != 0 {
+        return bad;
+    }
+    return ok;
+}
+
+// The variables of the templates.
+fn setup[&h, &f, &o, &w, &r, &z](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], wlm: bool, savepath: &z [byte], nsteps: int) -> [heap, fs_read(""), fs_write(""), file_read] (tpl.St, int) {
+    var s = tpl.start(heap);
+    var bad = 0;
+    let n = c.nb * c.t;
+    let dkv = c.hkv * c.dh;
+    let hf = c.dh / 2;
+    var bc = c.bc;
+    let cap = (c.v + 127) / 128 * 128;
+    if cap < bc {
+        bc = cap;
+    }
+    let vp = (c.v + bc - 1) / bc * bc;
+    var rbb = 1;
+    var cand = 8;
+    var done = false;
+    while cand >= 1 && !done {
+        if 2 * (c.d + 2 * dkv) * cand <= 32768 && c.t % cand == 0 {
+            rbb = cand;
+            done = true;
+        }
+        cand = cand / 2;
+    }
+    var aobm = 64;
+    if c.dh > 64 {
+        aobm = 32;
+    }
+    s = tpl.set_txt(heap, s, "o", out);
+    s = tpl.set_txt(heap, s, "wd", wdir);
+    s = tpl.set_txt(heap, s, "savepath", savepath);
+    if wlm {
+        s = tpl.set_tpl(heap, s, "wlm", "$o$/wlm.f16");
+    } else if c.tied != 0 {
+        s = tpl.set_tpl(heap, s, "wlm", "$wd$/emb.f16");
+    } else {
+        s = tpl.set_tpl(heap, s, "wlm", "$wd$/head.f16");
+    }
+    s = tpl.set_int(heap, s, "layers", c.layers);
+    s = tpl.set_int(heap, s, "d", c.d);
+    s = tpl.set_int(heap, s, "h", c.h);
+    s = tpl.set_int(heap, s, "hkv", c.hkv);
+    s = tpl.set_int(heap, s, "dh", c.dh);
+    s = tpl.set_int(heap, s, "ff", ff_of(c));
+    s = tpl.set_int(heap, s, "v", c.v);
+    s = tpl.set_int(heap, s, "t", c.t);
+    s = tpl.set_int(heap, s, "nb", c.nb);
+    s = tpl.set_int(heap, s, "r", c.r);
+    s = tpl.set_int(heap, s, "n", n);
+    s = tpl.set_int(heap, s, "nbh", c.nb * c.h);
+    s = tpl.set_int(heap, s, "wide", c.d + 2 * dkv);
+    s = tpl.set_int(heap, s, "vc0", c.d + dkv);
+    s = tpl.set_int(heap, s, "hf", hf);
+    s = tpl.set_int(heap, s, "vp", vp);
+    s = tpl.set_int(heap, s, "bc", bc);
+    s = tpl.set_int(heap, s, "nq", vp / bc);
+    s = tpl.set_int(heap, s, "steps", c.steps);
+    s = tpl.set_int(heap, s, "nsteps", nsteps);
+    s = tpl.set_int(heap, s, "ebm", 1);
+    s = tpl.set_int(heap, s, "abm", 2);
+    s = tpl.set_int(heap, s, "rbm", 8);
+    s = tpl.set_int(heap, s, "cbm", 8);
+    s = tpl.set_int(heap, s, "sbm", 1);
+    s = tpl.set_int(heap, s, "sbc", session.block(c.ff, 256));
+    s = tpl.set_int(heap, s, "rbb", rbb);
+    s = tpl.set_rep(heap, s, "eps", c.eps);
+    s = tpl.set_rep(heap, s, "isd", 1.0 / sqrt(float_of(c.dh)));
+    s = tpl.set_rep(heap, s, "alphar", c.alpha);
+    s = tpl.set_rep(heap, s, "lscale", c.loss_scale);
+    let scale = c.alpha / float_of(c.r);
+    s = tpl.set_rep(heap, s, "scale", scale);
+    let ncount = c.nb * (c.t - 1);
+    let gs = 1.0 / (float_of(ncount) * c.loss_scale);
+    s = tpl.set_rep(heap, s, "gsA", gs);
+    s = tpl.set_rep(heap, s, "gsB", gs * scale);
+    s = tpl.set_rep(heap, s, "lwd", c.lr * c.wd);
+    s = tpl.set_rep(heap, s, "epsa", c.eps_adam);
+    s = tpl.set_rep(heap, s, "b1", c.b1);
+    s = tpl.set_rep(heap, s, "b2", c.b2);
+    let (s0, g0) = ncount_text(heap, s, ncount);
+    s = s0;
+    // the kernels
+    var trouble = 0;
+    let (s1, t1) = plain(heap, fs, root, s, "kn_rms_h", "rms_h.chx");
+    let (s2, t2) = plain(heap, fs, root, s1, "kn_widen_h", "widen_h.chx");
+    let (s3, t3) = plain(heap, fs, root, s2, "kn_cast_h", "cast_h.chx");
+    let (s4, t4) = plain(heap, fs, root, s3, "kn_att_sm", "att_sm.chx");
+    let (s5, t5) = plain(heap, fs, root, s4, "kn_unheads", "unheads.chx");
+    let (s6, t6) = plain(heap, fs, root, s5, "kn_res_add", "res_add.chx");
+    let (s7, t7) = plain(heap, fs, root, s6, "kn_ce_stats", "ce_stats.chx");
+    let (s8, t8) = plain(heap, fs, root, s7, "kn_ce_comb", "ce_comb.chx");
+    let (s9, t9) = plain(heap, fs, root, s8, "kn_bwd_dw", "bwd_dw.chx");
+    let (s10, t10) = plain(heap, fs, root, s9, "kn_ce_grad", "ce_grad.chx");
+    let (s11, t11) = plain(heap, fs, root, s10, "kn_gemm_mma_nn", "gemm_mma_nn.chx");
+    let (s12, t12) = plain(heap, fs, root, s11, "kn_rms_bwd", "rms_bwd.chx");
+    let (s13, t13) = plain(heap, fs, root, s12, "kn_heads_h", "heads_h.chx");
+    let (s14, t14) = plain(heap, fs, root, s13, "kn_att_dsoft", "att_dsoft.chx");
+    let (s15, t15) = plain(heap, fs, root, s14, "kn_att_dkv", "att_dkv.chx");
+    let (s16, t16) = plain(heap, fs, root, s15, "kn_adamw_l", "adamw_l.chx");
+    let (s17, t17) = plain(heap, fs, root, s16, "kn_gemm_lora", "gemm_lora.chx");
+    let (s18, t18) = plain(heap, fs, root, s17, "kn_dx_lora", "dx_lora.chx");
+    let (s19, t19) = plain(heap, fs, root, s18, "kn_gemm_mma", "gemm_mma.chx");
+    let (s20, t20) = plain(heap, fs, root, s19, "kn_swiglu_h", "swiglu_h.chx");
+    let (s21, t21) = plain(heap, fs, root, s20, "kn_swiglu_bwd", "swiglu_bwd.chx");
+    s = s21;
+    trouble = put_flag(trouble, g0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14 + t15 + t16 + t17 + t18 + t19 + t20 + t21);
+    // the scheduled copies: the attention (twice used) and, per group, the four products with a 16 to 48 wide side
+    let (sa, ta) = tiled(heap, fs, out, root, s, "kn_att_s", "", "att_s.chx", false, 64, 64, 32);
+    let (sb, tb) = tiled(heap, fs, out, root, sa, "kn_att_o", "", "att_o.chx", false, aobm, 0 - 1, 32);
+    s = sb;
+    trouble = put_flag(trouble, ta + tb);
+    var g = 0;
+    while g < 4 {
+        var r2 = c.r * session_count(g);
+        var tag: &static [byte] = "qkv";
+        if g == 1 {
+            tag = "o";
+        } else if g == 2 {
+            tag = "gu";
+        } else if g == 3 {
+            tag = "dn";
+        }
+        let (m1, u1) = tiled(heap, fs, out, root, s, "mid", tag, "gemm_mma.chx", true, 16, r2, 32);
+        let (m2, u2) = tiled(heap, fs, out, root, m1, "dm", tag, "gemm_mma_nn.chx", true, 16, r2, 32);
+        let (m3, u3) = tiled(heap, fs, out, root, m2, "gb", tag, "gemm_mma_tn.chx", true, 16, r2, 32);
+        let (m4, u4) = tiled(heap, fs, out, root, m3, "ga", tag, "gemm_mma_tn.chx", true, r2, 16, 32);
+        s = m4;
+        trouble = put_flag(trouble, u1 + u2 + u3 + u4);
+        g = g + 1;
+    }
+    return (s, trouble);
+}
+
+fn ff_of(c: cfg.Cfg) -> [] int {
+    return c.ff;
+}
+
+fn session_count(g: int) -> [] int {
+    return data.group_count(g);
+}
+
+fn ncount_text[&h](heap: &!h Heap, st: tpl.St, ncount: int) -> [heap] (tpl.St, int) {
+    var tmp = enc.put_g_whole(heap, buffer.empty(heap, 16), ncount);
+    var s = st;
+    borrow tmp as &tr in {
+        s = tpl.set_txt(heap, s, "ncountg", buffer.bytes(tr));
+    }
+    buffer.drop(heap, tmp);
+    return (s, 0);
+}
+
+fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], ad: &a [byte], wt: &x [byte], savepath: &z [byte]) -> [heap, fs_read(""), fs_write(""), file_read] int {
+    let nsteps = len(tokens) / (4 * c.nb * c.t);
+    let n = c.nb * c.t;
+    var bc = c.bc;
+    let cap = (c.v + 127) / 128 * 128;
+    if cap < bc {
+        bc = cap;
+    }
+    let vp = (c.v + bc - 1) / bc * bc;
+    let exact = vp == c.v && len(head) == c.v * c.d * 2;
+    let (st, trouble) = setup(heap, fs, c, out, wdir, root, !exact, savepath, nsteps);
+    var status = 0;
+    if trouble >= 100 {
+        status = 3;
+    } else if trouble != 0 {
+        status = 1;
+    }
+    var wrote = 0;
+    if status == 0 {
+        wrote = wrote + data.save(heap, fs, out, "x0h", data.embeddings(heap, c, emb, tokens));
+        wrote = wrote + data.save(heap, fs, out, "tgt", data.targets(heap, c, tokens));
+        wrote = wrote + data.save(heap, fs, out, "cos", data.rotary(heap, c, false));
+        wrote = wrote + data.save(heap, fs, out, "sin", data.rotary(heap, c, true));
+        wrote = wrote + data.save(heap, fs, out, "mask", data.mask(heap, c));
+        wrote = wrote + data.save(heap, fs, out, "wcount", data.counts(heap, c));
+        wrote = wrote + data.save(heap, fs, out, "wscale", data.scaled(heap, c, wt));
+        wrote = wrote + data.save(heap, fs, out, "zeros_nd", zeros(heap, n * c.d));
+        if !exact {
+            wrote = wrote + data.save(heap, fs, out, "wlm.f16", data.padded_head(heap, c, head, vp));
+        }
+        wrote = wrote + data.save(heap, fs, out, "jrow", data.jrow(heap, vp));
+        wrote = wrote + data.save(heap, fs, out, "maskv", data.maskv(heap, c.v, vp));
+        wrote = wrote + data.save(heap, fs, out, "rope_q.chx", kern.rope_source(heap, "rope_q", 1, true));
+        wrote = wrote + data.save(heap, fs, out, "rope_k.chx", kern.rope_source(heap, "rope_k", c.h / c.hkv, true));
+        wrote = wrote + data.save(heap, fs, out, "bias_v.chx", kern.rope_source(heap, "bias_v", c.h / c.hkv, false));
+        wrote = wrote + data.save(heap, fs, out, "rope_bwd.chx", kern.rope_bwd_source(heap, c.h, c.hkv, c.d, c.dh));
+        wrote = wrote + data.save(heap, fs, out, "sched", data.schedule(heap, c));
+        wrote = wrote + adapter_files(heap, fs, c, out, ad);
+        let sess = session.build(heap, c, st, len(savepath) > 0);
+        let text = tpl.finish(heap, sess);
+        wrote = wrote + data.save(heap, fs, out, "session", text);
+        if wrote != 0 {
+            status = 3;
+        }
+    } else {
+        buffer.drop(heap, tpl.finish(heap, st));
+    }
+    return status;
+}
+
+fn zeros[&h](heap: &!h Heap, count: int) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * count + 8);
+    var i = 0;
+    while i < count {
+        b = enc.put_le(heap, b, 0, 4);
+        i = i + 1;
+    }
+    return b;
+}
+
+// The fused adapter matrices and their optimiser state, per layer and group.
+fn adapter_files[&h, &f, &o, &a](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], ad: &a [byte]) -> [heap, fs_write("")] int {
+    let scale = c.alpha / float_of(c.r);
+    var wrote = 0;
+    var l = 0;
+    while l < c.layers {
+        var g = 0;
+        while g < 4 {
+            var names = buffer.empty(heap, 16);
+            if l < 10 {
+                names = buffer.push(heap, names, byte_of(48));
+            }
+            names = enc.put_int(heap, names, l);
+            names = buffer.push(heap, names, byte_of(95));
+            if g == 0 {
+                names = buffer.append(heap, names, "qkv");
+            } else if g == 1 {
+                names = buffer.append(heap, names, "o");
+            } else if g == 2 {
+                names = buffer.append(heap, names, "gu");
+            } else {
+                names = buffer.append(heap, names, "dn");
+            }
+            borrow names as &nr in {
+                wrote = wrote + save_as(heap, fs, out, "A", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 0));
+                wrote = wrote + save_as(heap, fs, out, "B", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 0, scale));
+                wrote = wrote + save_as(heap, fs, out, "Ah", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 1));
+                wrote = wrote + save_as(heap, fs, out, "Bh", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 1, scale));
+                wrote = wrote + save_as(heap, fs, out, "zmA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 3));
+                wrote = wrote + save_as(heap, fs, out, "zvA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 3));
+                wrote = wrote + save_as(heap, fs, out, "zmB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 3, scale));
+                wrote = wrote + save_as(heap, fs, out, "zvB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 3, scale));
+                wrote = wrote + save_as(heap, fs, out, "mA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 2));
+                wrote = wrote + save_as(heap, fs, out, "mB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 2, scale));
+            }
+            buffer.drop(heap, names);
+            g = g + 1;
+        }
+        l = l + 1;
+    }
+    return wrote;
+}
+
+// Saves `b` as `dir/<prefix><suffix>`.
+fn save_as[&h, &f, &o, &s](heap: &!h Heap, fs: &f Fs(""), out: &o [byte], prefix: &static [byte], suffix: &s [byte], b: buffer.Buffer) -> [heap, fs_write("")] int {
+    var name = buffer.append(heap, buffer.empty(heap, 32), prefix);
+    name = buffer.append(heap, name, suffix);
+    var status = 0;
+    borrow name as &nr in {
+        status = data.save(heap, fs, out, buffer.bytes(nr), b);
+    }
+    buffer.drop(heap, name);
+    return status;
+}
+
+fn write_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs("")) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    let ic = flag(args, "--config");
+    let iw = flag(args, "--wdir");
+    let io_ = flag(args, "--out");
+    let ir = flag(args, "--root");
+    let it = flag(args, "--tokens");
+    let ia = flag(args, "--adapters");
+    if ic < 0 || iw < 0 || io_ < 0 || ir < 0 || it < 0 || ia < 0 {
+        return refuse(heap, io, "qsw.usage", "qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE]");
+    }
+    let (cfg_bytes, cfg_failed) = rd.read_file(heap, fs, arg(args, ic));
+    var status = 0;
+    if cfg_failed != 0 {
+        status = refuse(heap, io, "qsw.input", "the configuration cannot be read");
+    } else {
+        borrow cfg_bytes as &cb in {
+            let c = cfg.parse(buffer.bytes(cb));
+            status = with_inputs(heap, io, args, fs, c, iw, io_, ir, it, ia);
+        }
+    }
+    buffer.drop(heap, cfg_bytes);
+    return status;
+}
+
+fn with_inputs[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs(""), c: cfg.Cfg, iw: int, io_: int, ir: int, it: int, ia: int) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    if c.layers < 1 || c.d < 1 || c.h < 1 || c.hkv < 1 || c.dh < 1 || c.ff < 1 || c.v < 1 || c.t < 1 || c.nb < 1 {
+        return refuse(heap, io, "qsw.config", "the configuration needs layers d h hkv dh ff v t nb");
+    }
+    if c.r < 16 || c.steps < 1 || c.bc < 1 || c.tied < 0 {
+        return refuse(heap, io, "qsw.config", "r must be at least 16, steps and bc at least 1");
+    }
+    if c.dh % 32 != 0 || c.d % 64 != 0 || c.t % 64 != 0 || c.nb * c.t % 64 != 0 || (c.d + 2 * c.hkv * c.dh) % 64 != 0 || c.ff % 64 != 0 || c.h % c.hkv != 0 || c.dh != c.d / c.h || c.r % 16 != 0 {
+        return refuse(heap, io, "qsw.shape", "a dimension is not a multiple of the tile (dh 32, d 64, t 64, n 64, d + 2 dkv 64, ff 64, r 16) or dh is not d / h");
+    }
+    var status = 0;
+    var embp = kern.path_join(heap, arg(args, iw), "emb.f16");
+    var headp = kern.path_join(heap, arg(args, iw), "head.f16");
+    if c.tied != 0 {
+        buffer.drop(heap, headp);
+        headp = kern.path_join(heap, arg(args, iw), "emb.f16");
+    }
+    let quantp = kern.path_join(heap, arg(args, iw), "l00.wqkv.q");
+    var quantised = false;
+    borrow quantp as &qp in {
+        match open_read(fs, buffer.bytes(qp)) {
+            Opened::Failed(reason) => {
+                quantised = false;
+            }
+            Opened::Ok(opened) => {
+                file_close(opened);
+                quantised = true;
+            }
+        }
+    }
+    buffer.drop(heap, quantp);
+    if quantised {
+        status = refuse(heap, io, "qsw.quant", "a quantised base is not written by this tool yet (qwen_train.py write does)");
+    } else {
+        borrow embp as &ep in {
+            borrow headp as &hp in {
+                let (emb, ef) = rd.read_file(heap, fs, buffer.bytes(ep));
+                let (head, hf) = rd.read_file(heap, fs, buffer.bytes(hp));
+                let (tok, tf) = rd.read_file(heap, fs, arg(args, it));
+                let (ad, af) = rd.read_file(heap, fs, arg(args, ia));
+                var wt = buffer.empty(heap, 8);
+                var wf = 0;
+                let iwt = flag(args, "--weights");
+                if iwt >= 0 {
+                    buffer.drop(heap, wt);
+                    let (w2, f2) = rd.read_file(heap, fs, arg(args, iwt));
+                    wt = w2;
+                    wf = f2;
+                }
+                if ef != 0 || hf != 0 || tf != 0 || af != 0 || wf != 0 {
+                    status = refuse(heap, io, "qsw.input", "an input file cannot be read");
+                } else {
+                    borrow emb as &eb in {
+                        borrow head as &hb in {
+                            borrow tok as &tb in {
+                                borrow ad as &ab in {
+                                    borrow wt as &wb in {
+                                        status = checked(heap, io, args, fs, c, iw, io_, ir, buffer.bytes(eb), buffer.bytes(hb), buffer.bytes(tb), buffer.bytes(ab), buffer.bytes(wb));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                buffer.drop(heap, emb);
+                buffer.drop(heap, head);
+                buffer.drop(heap, tok);
+                buffer.drop(heap, ad);
+                buffer.drop(heap, wt);
+            }
+        }
+    }
+    buffer.drop(heap, embp);
+    buffer.drop(heap, headp);
+    return status;
+}
+
+fn checked[&h, &i, &g, &f, &e, &q, &t, &a, &x](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs(""), c: cfg.Cfg, iw: int, io_: int, ir: int, emb: &e [byte], head: &q [byte], tok: &t [byte], ad: &a [byte], wt: &x [byte]) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    let per = 4 * c.nb * c.t;
+    if len(tok) == 0 || len(tok) % per != 0 {
+        return refuse(heap, io, "qsw.input", "the tokens file is not a whole number of [nb, t] int32 batches");
+    }
+    if len(emb) < 2 * c.v * c.d || len(head) < 2 * c.v * c.d {
+        return refuse(heap, io, "qsw.input", "emb.f16 (or head.f16) is shorter than vocabulary x d");
+    }
+    if len(wt) != 0 && len(wt) != 8 * c.nb * c.t {
+        return refuse(heap, io, "qsw.input", "the weights file is not [nb, t] binary64");
+    }
+    var words = 0;
+    var l = 0;
+    while l < 1 {
+        var p = 0;
+        while p < 7 {
+            words = words + c.r * data.proj_in(c, p) + data.proj_out(c, p) * c.r;
+            p = p + 1;
+        }
+        l = l + 1;
+    }
+    if len(ad) != 8 * words * c.layers {
+        return refuse(heap, io, "qsw.input", "the adapters file does not hold the model's A and B matrices in binary64");
+    }
+    var i = 0;
+    while i < len(tok) / 4 {
+        let id = data.i32_at(tok, 4 * i);
+        if id < 0 || id >= c.v {
+            return refuse(heap, io, "qsw.input", "a token is outside the vocabulary");
+        }
+        i = i + 1;
+    }
+    var s = 0;
+    var savepath: &g [byte] = "";
+    let isv = flag(args, "--save");
+    if isv >= 0 {
+        savepath = arg(args, isv);
+    }
+    s = generate(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, ad, wt, savepath);
+    if s == 1 {
+        return refuse(heap, io, "qsw.kernel", "a kernel file is not under --root");
+    }
+    if s != 0 {
+        return refuse(heap, io, "qsw.write", "a file cannot be written (does --out exist?)");
+    }
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(signals);
+    release(tty);
+    release(exec);
+    release(clock);
+    var status = 0;
+    borrow args as &g in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow mut io as &!i in {
+                    if arg_count(g) >= 2 && bytes.equal(arg(g, 1), "write") {
+                        status = write_command(h, i, g, f);
+                    } else {
+                        status = refuse(h, i, "qsw.usage", "the command is `qsw write`");
+                    }
+                }
+            }
+        }
+    }
+    release(args);
+    release(fs);
+    release(heap);
+    release(io);
+    return status;
+}
