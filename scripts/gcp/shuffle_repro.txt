@@ -1,7 +1,8 @@
 # Real-hardware check of the two NVFP4 lookup-shuffle bugs the CUDA emulator found
 # (PR #103, docs/device.md section 5b, tests/cuda-emu-bugs.txt there). Copied here so
 # this step does not depend on that branch. Format: <file.chx> <consts>  [# note]
-# Each line runs through build/cancho-gpu-device on the GPU against the interpreter,
+# Status: both bugs are fixed in the CUDA emitter (the lookup is `FP4_V[nibble]`, branch fp4-lookup), so every line
+# below should now PASS here; a non-PASS is a regression or a new bug. Each line runs through build/cancho-gpu-device on the GPU against the interpreter,
 # 60 s, its own process. PASS on a GPU does not clear a bug the CUDA guide calls
 # undefined; MISMATCH / TIMEOUT / ERROR is the bug seen on hardware.
 #

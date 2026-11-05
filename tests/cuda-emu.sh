@@ -42,26 +42,6 @@ mutant '256-bit' tests/chx/ported/gemm_mma.chx "m=128 n=128 k=64" '(arena + 1843
 mutant 'device-mismatch' tests/chx/softmax.chx "r=4 n=64" 'expf(=>exp2f(' || mfail=1
 [ "$mfail" -eq 0 ] || exit 1
 echo "5 mutants of emitted kernels refused as they must be"
-# The real bugs the emulator found, at sizes tests/cases.txt does not have
-# (tests/cuda_emu_sweep.py): `<file> <consts>|<text the refusal must contain>|<diagnosis>`.
-# Each must still be refused as written; one that agrees now is a fixed bug,
-# and the line goes (and the size joins tests/cases.txt).
-nbugs=0
-bfail=0
-while IFS='|' read -r spec want _; do
-  case "$spec" in ''|'#'*) continue ;; esac
-  status=0
-  # shellcheck disable=SC2086
-  CANCHOGPU_LIBCUDA=$ROOT/build/emu/libcuda_emu.so CANCHOGPU_LIBNVRTC=$ROOT/build/emu/libnvrtc_emu.so \
-    CANCHOGPU_EMU_CACHE=$ROOT/build/emu/cache \
-    "$ROOT/build/cancho-gpu-device" run $(echo "$spec" | sed "s|^|$ROOT/|") >"$WORKM" 2>&1 || status=$?
-  if [ "$status" -ne 1 ] || ! grep -q "$want" "$WORKM"; then
-    echo "known bug \`$spec\` no longer fails with \`$want\` (exit $status): $(head -c 200 "$WORKM") -- fixed? remove it from tests/cuda-emu-bugs.txt"; bfail=1
-  fi
-  nbugs=$((nbugs + 1))
-done <"$ROOT/tests/cuda-emu-bugs.txt"
-[ "$bfail" -eq 0 ] || exit 1
-echo "$nbugs known bugs in the emitted CUDA still reproduce on the emulator"
 OUT=${CUDA_EMU_OUT:-$(mktemp -d)}
 mkdir -p "$OUT"
 if [ -z "${CUDA_EMU_OUT:-}" ]; then trap 'rm -rf "$OUT" "$WORKM"' EXIT; else trap 'rm -f "$WORKM"' EXIT; fi

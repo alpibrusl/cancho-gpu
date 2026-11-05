@@ -46,7 +46,6 @@ extern "C" __global__ void batch_fp4_3_40_96(
     const uint tid = threadIdx.x;
     const uint gid = blockIdx.x;
     __shared__ float scratch[120];
-    const float fp4_lane = FP4_V[tid & 15u];
     __syncthreads();
     {
         const uint sgid = tid / 32u, lane = tid % 32u;
@@ -65,35 +64,35 @@ extern "C" __global__ void batch_fp4_3_40_96(
                 xa[2][0] = float(float(p0_x[(uint)(0) * 96u + (uint)(0) * 1u + ((p + 192u))]));
                 {
                     const uint j = min(sgid * 5u + 0u, 39u);
-                    const float w0 = float((__shfl_sync(0xffffffffu, fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
+                    const float w0 = float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
                     s[0][0] += xa[0][0] * w0;
                     s[0][1] += xa[1][0] * w0;
                     s[0][2] += xa[2][0] * w0;
                 }
                 {
                     const uint j = min(sgid * 5u + 1u, 39u);
-                    const float w0 = float((__shfl_sync(0xffffffffu, fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
+                    const float w0 = float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
                     s[1][0] += xa[0][0] * w0;
                     s[1][1] += xa[1][0] * w0;
                     s[1][2] += xa[2][0] * w0;
                 }
                 {
                     const uint j = min(sgid * 5u + 2u, 39u);
-                    const float w0 = float((__shfl_sync(0xffffffffu, fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
+                    const float w0 = float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
                     s[2][0] += xa[0][0] * w0;
                     s[2][1] += xa[1][0] * w0;
                     s[2][2] += xa[2][0] * w0;
                 }
                 {
                     const uint j = min(sgid * 5u + 3u, 39u);
-                    const float w0 = float((__shfl_sync(0xffffffffu, fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
+                    const float w0 = float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
                     s[3][0] += xa[0][0] * w0;
                     s[3][1] += xa[1][0] * w0;
                     s[3][2] += xa[2][0] * w0;
                 }
                 {
                     const uint j = min(sgid * 5u + 4u, 39u);
-                    const float w0 = float((__shfl_sync(0xffffffffu, fp4_lane, ((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
+                    const float w0 = float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0) * 48u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 48u + ((j * 96u + p) % 96u) / 2u))])) >> (((j * 96u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 6u + (uint)(0) * 1u + ((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((((((j * 96u + p) / 96u) * 6u + ((j * 96u + p) % 96u) / 16u)) / 6u))]))));
                     s[4][0] += xa[0][0] * w0;
                     s[4][1] += xa[1][0] * w0;
                     s[4][2] += xa[2][0] * w0;

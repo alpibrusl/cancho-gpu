@@ -35,6 +35,17 @@ pub fn shuffle[&m, &t](m: &!m [int], t: &!t [byte], d: int, value: int, src: int
     return text.f2(m, t, "simd_shuffle($, $)", value, src);
 }
 
+// The NVFP4 value of a 4-bit code. CUDA indexes the `__constant__` table: a full-mask
+// `__shfl_sync` here sat in divergent code (a per-lane loop whose trip count differs
+// between lanes, or `if (e < count)`), which hangs on a real L4 and reads inactive
+// lanes (docs/device.md section 5b). Metal keeps the simdgroup shuffle of `fp4_lane`.
+pub fn fp4_lookup[&m, &t](m: &!m [int], t: &!t [byte], d: int, nibble: int) -> [] int {
+    if is_cuda(d) {
+        return text.f1(m, t, "FP4_V[$]", nibble);
+    }
+    return shuffle(m, t, d, text.lit(m, t, "fp4_lane"), nibble);
+}
+
 pub fn shuffle_down[&m, &t](m: &!m [int], t: &!t [byte], d: int, value: int, delta: int) -> [] int {
     if is_cuda(d) {
         return text.f2(m, t, "__shfl_down_sync(0xffffffffu, $, $)", value, delta);
