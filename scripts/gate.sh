@@ -35,6 +35,7 @@ python3 tests/oracles.py
 python3 tests/m8.py
 python3 tests/m8_loops.py
 tests/sampler.sh
+python3 tests/sampler_penalty.py "${CANCHO_GPU:-build/cancho-gpu}"
 tests/chat.sh
 python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"
 CANCHO="$CANCHO" scripts/build-session.sh
