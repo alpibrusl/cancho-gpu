@@ -1,0 +1,29 @@
+// The normalisation of a gated-delta layer's queries and keys as Hugging Face writes it (`Qwen3_5` `l2norm`): each head's vector
+// times rsqrt(sum of squares + 1e-6), the queries then scaled by dk^-1/2 (dk = 128, the literal), the keys not. c is the
+// convolution's output as rows of 128: the queries are the first nk rows, the keys the next nk.
+//
+// qk_norm.chx (the 27B's) adds its 1e-6 to the MEAN of the squares, which is 128 times the sum's 1e-6 once multiplied out:
+// the same up to a factor (1 + 1.28e-4 / sum of squares) on the norm, invisible for the 27B's heads and 2.8% on a 0.8B key of
+// length 0.05 (layer 0 of Qwen3.5-0.8B, docs/weight-space.md 14.9, found by check C3). Here the epsilon is the reference's.
+algo qk_l2norm(nk, rows)
+  in  c:  f32[rows, 128]
+  out qn: f32[nk, 128]
+  out kn: f32[nk, 128]
+{
+  let q  = load c[0, 0 ; nk, 128]
+  let qq = &q * &q
+  let qs = rowsum qq
+  let qe = qs + 0.000001
+  let qr = rsqrt qe
+  let qx = q * qr
+  store qx * 0.08838834764831845 -> qn
+  let k  = load c[nk, 0 ; nk, 128]
+  let kk = &k * &k
+  let ks = rowsum kk
+  let ke = ks + 0.000001
+  let kr = rsqrt ke
+  store k * kr -> kn
+}
+
+schedule qk_l2norm for apple-m-series { threads 128 }
+schedule qk_l2norm for nvidia-ada     { threads 128 }

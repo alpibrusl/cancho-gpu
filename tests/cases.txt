@@ -352,6 +352,10 @@ tests/chx/delta_step1.chx nk=16 --run
 tests/chx/delta_step1.chx nk=2 --run
 tests/chx/conv_step.chx c=6144 --run
 tests/chx/qk_norm.chx nk=16 rows=48 --run
+# qk_l2norm.chx (T6): the same with Hugging Face's epsilon (on the sum of squares, not the mean); the 0.8B's keys are short enough for the difference to be 2.8%.
+tests/chx/qk_l2norm.chx nk=16 rows=48
+tests/chx/qk_l2norm.chx nk=16 rows=48 --run
+tests/chx/qk_l2norm.chx nk=2 rows=6 --run
 tests/chx/gates.chx h=16 --run
 tests/chx/gated_norm.chx h=16 n=128 eps=1e-6 --run
 # Full-attention layer: 8 query heads of 256 with an output gate (q_proj is 8 x [query 256, gate 256]), 2 key/value heads, partial RoPE (32 pairs, 192 passed through)
