@@ -1,0 +1,150 @@
+edition 5;
+
+// `cancho-gpu-qwen08-load` -- put the Qwen3.5-0.8B checkpoint's text tower on
+// a Metal device and prove it is the file (check C2, `docs/weight-space.md`
+// section 14).
+//
+//     cancho-gpu-qwen08-load <model dir> f32|f16 [--patch <file>]
+//
+// The model dir is the Hugging Face checkpoint (`config.json`,
+// `model.safetensors` or the single shard of that name). Every tensor of the
+// text tower goes up (`src/qwen08_load.cho`, `device/qwen08_dev.cho`) and is
+// read back and compared with the file; one line a tensor:
+//
+//     <name> <dtype in file> <values> <device bytes> adler32=<n> changed=<n>
+//
+// then `total ...`. `changed` is how many values the f16 narrowing changed (0
+// on the f32 path, and for every F32 tensor). Exit 0, or 1 with every refusal
+// as `error[<rule>]: <message>`, or 2 for a usage mistake.
+//
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-qwen08-load.sh`) or, in
+// the gate, with `tests/mock/libmetalgpu_mock.c`, whose buffers are host memory.
+
+import std.io;
+import mem;
+import text;
+import err;
+import cli;
+import safetensors;
+import metal;
+import qwen08_load;
+import qwen08_dev;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 268435456;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-qwen08-load <model dir> f32|f16 [--patch <file>]\n");
+    return 2;
+}
+
+fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu")] int {
+    // `--patch <file>` exercises the seam for the edit patch (T11): no patch
+    // format exists, so the loader refuses it with `q08-patch`.
+    var patch = 0 - 1;
+    if arg_count(args) == 5 && text.is(t, text.from_bytes(m, t, arg(args, 3)), "--patch") {
+        patch = 0;
+    } else if arg_count(args) != 3 {
+        return usage(io);
+    }
+    let dir = text.from_bytes(m, t, arg(args, 1));
+    let ms = text.from_bytes(m, t, arg(args, 2));
+    var mode = qwen08_load.mode_f32();
+    if text.is(t, ms, "f16") {
+        mode = qwen08_load.mode_f16();
+    } else if !text.is(t, ms, "f32") {
+        return usage(io);
+    }
+    let cfg = qwen08_load.read_config(m, t, fs, text.f1(m, t, "$/config.json", dir));
+    if cfg < 0 {
+        return cli.report(m, t, io);
+    }
+    let w = qwen08_load.open_weights(m, t, fs, dir);
+    if w < 0 {
+        return cli.report(m, t, io);
+    }
+    let path = m[w + qwen08_load.w_path()];
+    let plan = qwen08_load.plan(m, t, m[w + qwen08_load.w_header()], m[w + qwen08_load.w_data()], cfg);
+    if plan < 0 {
+        return cli.report(m, t, io);
+    }
+    if metal.cgpu_open(ffi) < 0 {
+        qwen08_dev.device_open_fail(m, t, ffi);
+        return cli.report(m, t, io);
+    }
+    var total_elems = 0;
+    var total_bytes = 0;
+    var total_changed = 0;
+    var k = 0;
+    while k < mem.size(m, plan) {
+        let rec = mem.get(m, plan, k);
+        let (buf, changed) = qwen08_dev.upload(m, t, ffi, fs, path, rec, mode, patch);
+        if buf < 0 {
+            metal.cgpu_close(ffi);
+            return cli.report(m, t, io);
+        }
+        let (sum, differ) = qwen08_dev.verify(m, t, ffi, fs, path, rec, mode, buf);
+        if sum < 0 {
+            metal.cgpu_close(ffi);
+            return cli.report(m, t, io);
+        }
+        if differ != changed {
+            err.fail(m, t, "q08-verify", text.f2(m, t, "`$`: the device differs from the file in $ values but the narrowing counted another number", m[rec], text.num(m, t, differ)));
+            metal.cgpu_close(ffi);
+            return cli.report(m, t, io);
+        }
+        let elems = m[rec + qwen08_load.p_elems()];
+        let bytes = elems * qwen08_load.out_width(m, rec, mode);
+        let line = text.f6(m, t, "$ $ $ $ adler32=$ changed=$\n", m[rec], safetensors.dtype_name(m, t, m[rec + qwen08_load.p_dtype()]), text.num(m, t, elems), text.num(m, t, bytes), text.num(m, t, sum), text.num(m, t, changed));
+        io.write_all(io, text.bytes(t, line));
+        total_elems = total_elems + elems;
+        total_bytes = total_bytes + bytes;
+        total_changed = total_changed + changed;
+        k = k + 1;
+    }
+    metal.cgpu_close(ffi);
+    let tail = text.f5(m, t, "total tensors=$ values=$ device_bytes=$ changed=$ mode=$\n", text.num(m, t, mem.size(m, plan)), text.num(m, t, total_elems), text.num(m, t, total_bytes), text.num(m, t, total_changed), ms);
+    io.write_all(io, text.bytes(t, tail));
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(net);
+    release(clock);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                borrow mut io as &!i in {
+                    borrow fs as &f in {
+                        borrow args as &a in {
+                            borrow gpu as &g in {
+                                status = run(m, t, i, f, a, g);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    return status;
+}
