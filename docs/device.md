@@ -1,9 +1,12 @@
 # Driving a GPU from cancho
 
 > **Status: built (cancho#251 slice 8) and verified against a mock
-> driver, §7. CUDA: not yet run on a GPU — this repository's machines have
-> none — but the emitted CUDA is *executed* on the CPU by an emulating
-> driver (§5b, measured in §7), which found a real bug. Metal: **run on real hardware** (Mac Studio, Apple Silicon, slice 10,
+> driver, §7. CUDA: **run on a real NVIDIA L4** (Google Cloud, `docs/cloud.md`:
+> NVRTC compiles every golden kernel, 176 of 188 `device_cases` agree with the
+> interpreter, and the two NVFP4 shuffle bugs of §5b were seen there and are gone
+> after the fix) after being *executed* on the CPU by an emulating
+> driver (§5b, measured in §7), which found a real bug; this repository's own
+> machines have no NVIDIA GPU. Metal: **run on real hardware** (Mac Studio, Apple Silicon, slice 10,
 > issue #8) — first real Metal run proved reach and numerical agreement.
 
 cancho's `docs/gpu.md` §6 left one question open: *"can a cancho
@@ -247,17 +250,23 @@ swapped for `exp2f`; each is refused for its reason.
 
 ## 6. What remains unproven
 
-* **CUDA on real hardware:** That the emitted CUDA *compiles* under NVRTC
-  (lex-gpu checks this with `scripts/cuda_check.sh` on its own emitter's
-  output; ours is the same bytes, §9 of `design.md`; the emulator compiles it
-  with a C++ compiler, which accepts a superset, §5b), that a real driver accepts
-  these calls, that the tensor-core and `libdevice` numerics land within the
-  threshold, and that the two (fixed) bugs below are gone on a GPU: on an L4 they
-  hung 40 of 50 reproducer cases with `K` not a multiple of 32
-  (`scripts/gcp/shuffle_repro.txt`; `K` = 64, 96, 128 passed), re-run
-  `shuffle_repro` after the fix. Those need a machine with a GPU — `scripts/gcp/cuda_test.sh` provisions an L4
-  (`docs/cloud.md`) — and are the next measurement, not a claim this document
-  makes. What the emulator cannot see is listed at the end of §5b.
+* **CUDA on real hardware: checked on one L4, not beyond it.** Measured on a
+  real NVIDIA L4 (Ada, `g2-standard-8`, `scripts/gcp/cuda_test.sh`, `docs/cloud.md`):
+  the emitted CUDA *compiles* under NVRTC 12.9 for `compute_89` (253 of 253
+  golden kernels in the last run, 246 of 246 in the first; lex-gpu checks this
+  with `scripts/cuda_check.sh` on its own emitter's output, ours is the same
+  bytes, §9 of `design.md`); a real driver accepts these calls; and 176 of the
+  188 `tests/cases.txt` cases agree with the interpreter at the program's
+  threshold (0 mismatches; the other 12 are the interpreter's `tensors do not
+  fit` memory error on the largest shapes, which is the CPU reference failing,
+  not the GPU, and is unchanged between runs). The two bugs below, which on
+  the same L4 hung 40 of 50 reproducer cases with `K` not a multiple of 32
+  (7 PASS / 3 MISMATCH / 40 TIMEOUT, run `20261104-212332-l4`), are **gone after
+  the fix of PR \#104: 50 of 50 PASS** (run `20261105-083519-l4`, main `46670b5`;
+  the step took 20 s, from 2413 s). Still unproven: a PASS on a GPU does not
+  clear what the CUDA guide calls undefined; the numerics of kernels the
+  interpreter cannot hold (the 12); any card but an L4; and what the emulator
+  cannot see, listed at the end of §5b. One card on two days, not a sample.
 * **Metal timing:** Reach is proved; speed is not yet measured.
 
 ## 7. Measured
@@ -388,9 +397,20 @@ on the emulator. The record of what they were:
    4644 = 18 x 256 + 36) was off by 0.78 against a peak of 9.09 under the
    emulator.
 
-The fix is not yet measured on the GPU: `shuffle_repro` on an L4 is the check.
+**Checked on the L4 (2026-11-05, main `46670b5`, run `20261105-083519-l4`):**
+`shuffle_repro` is 50 PASS, 0 MISMATCH, 0 TIMEOUT (it was 7 / 3 / 40 before the
+fix), and `device_cases` is 176 PASS, 0 MISMATCH, 12 ERROR of 188 (the 12 the
+interpreter's memory, as before). A pass does not clear what the CUDA guide
+calls undefined for the old form; it shows the fixed form does not hang or
+misread on this card.
 A `__constant__` read with a divergent index serialises within a warp; the
-lookup's cost against the shuffle is also unmeasured.
+lookup's cost against the shuffle is measured by the `fp4_perf` step
+(`scripts/gcp/fp4_perf.py`, `docs/cloud.md`), **not yet run**. Note what it
+will find: the `matvec_fp4_rows`, `_res` and `_swiglu` kernels at the model's
+own `K` (5120, 17408) read the weights through `fp4_pair` and contain no table
+lookup at all (checked on the emitted CUDA), so the fix cannot change them; the
+lookup is in the generic path, which those families take when `K` is an odd
+multiple of 32 (5152, 17440), a `K` Qwen does not have.
 
 ### Metal (real hardware)
 

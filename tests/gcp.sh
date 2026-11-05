@@ -313,7 +313,7 @@ hasnt "$W/edit.txt" "syntax error" "no syntax error from the edited file"
 has "$L" "instances delete" "VM deleted after a mid-run edit"
 
 # --- the new steps -----------------------------------------------------------
-has "$W/dry.txt" "STEPS='machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro sandbox_linux'" "default STEPS include shuffle_repro and sandbox_linux"
+has "$W/dry.txt" "STEPS='machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro fp4_perf sandbox_linux'" "default STEPS include shuffle_repro, fp4_perf and sandbox_linux"
 # gate on the VM: tests/gcp.sh is skipped VISIBLY; a known-open unit does not fail; a real failure does.
 mkdir -p "$W/gt/home/cancho-gpu/build" "$W/gt/home/results" "$W/gt/home/cancho-bin"
 cp "$ROOT/cancho.toml" "$W/gt/home/cancho-gpu/"
@@ -430,6 +430,48 @@ PY
 has "$W/occ.txt" "ESTIMATE 2 ESTIMATE from regs/smem" "occupancy falls back to a labelled estimate (128 regs, 36,864 B: 2 blocks/SM)"
 has "$W/occ.txt" "cupy binding" "and keeps the error of the API that failed"
 has "$W/occ.txt" "INFO 2 ESTIMATE" "kernel_info carries the source"
+
+# --- fp4_perf: the old lowering is a text edit of the new, and it must be EXACTLY the old golden -
+# (stdlib only; the GPU part needs cupy and is not run here)
+python3 - "$G" "$ROOT" > "$W/fp4.txt" 2>&1 <<'PY'
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import fp4_perf as f
+root = sys.argv[2]
+g = "golden/batch_fp4_b=3_n=40_k=96/batch_fp4_3_40_96.cu"
+new = open(root + "/" + g).read()
+old, n = f.old_variant(new)
+print("LOOKUPS", n, "SHFL", old.count("__shfl_sync(0xffffffffu, fp4_lane, "), "LANEDEF", old.count(f.LANE_DEF), "LEFT", old.count("FP4_V[(") )
+# the declaration of the table is not a lookup
+print("TABLE", "__constant__ float FP4_V[16]" in old)
+pre = subprocess.run(["git", "-C", root, "show", "46670b5^:" + g], capture_output=True, text=True)
+print("EXACT" if pre.returncode == 0 and pre.stdout == old else ("NOGIT" if pre.returncode else "DIFFERENT"))
+same, z = f.old_variant("no lookup here\n")
+print("NOOP", z, same == "no lookup here\n")
+PY
+has "$W/fp4.txt" "^LOOKUPS 5 SHFL 5 LANEDEF 1 LEFT 0" "fp4_perf: old_variant puts back the shuffles and the fp4_lane line"
+has "$W/fp4.txt" "^TABLE True" "fp4_perf: the table's declaration is not rewritten"
+has "$W/fp4.txt" "^NOOP 0 True" "fp4_perf: a kernel without a lookup is unchanged"
+if grep -q "^NOGIT" "$W/fp4.txt"; then echo "skip fp4_perf exactness: commit 46670b5 is not in this checkout"
+else has "$W/fp4.txt" "^EXACT" "fp4_perf: the old variant is byte-for-byte the golden before PR #104"; fi
+cat > "$W/bin/fp4-stub" <<'STUB'
+#!/bin/sh
+# emit <file.chx> <dir> [consts]: copy the golden .cu of the same algo, as the compiler would write it
+b=$(basename "$2" .chx)
+d=$(ls -d "$ROOT"/golden/"$b"_[nm]=* | head -1)
+cp "$d"/*.cu "$3/"
+echo "x.cu: 256 threads, grid 4x1, 0 B of tiles"
+STUB
+chmod +x "$W/bin/fp4-stub"
+ROOT=$ROOT python3 "$G/fp4_perf.py" --dry-run --cancho-gpu "$W/bin/fp4-stub" > "$W/fp4dry.txt" 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "fp4_perf --dry-run exits 0 against a stub compiler" || bad "fp4_perf --dry-run exit $rc: $(tail -3 "$W/fp4dry.txt")"
+has "$W/fp4dry.txt" "matvec_fp4_swiglu n=17408 k=5152" "fp4_perf: the swiglu case is listed"
+hasnt "$W/fp4dry.txt" "ERROR" "fp4_perf: every case's parameters match its declarations"
+# the real run needs cupy: without it, it says so and fails rather than pretending
+if ! python3 -c 'import cupy' 2>/dev/null; then
+  python3 "$G/fp4_perf.py" --cancho-gpu "$W/bin/fp4-stub" > "$W/fp4nocupy.txt" 2>&1; rc=$?
+  { [ "$rc" = 1 ] && grep -q "needs numpy and cupy" "$W/fp4nocupy.txt"; } && ok "fp4_perf without cupy says so and exits 1" || bad "fp4_perf without cupy: exit $rc"
+fi
 
 # --- sweep ------------------------------------------------------------------
 new_case sweep0

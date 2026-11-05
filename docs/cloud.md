@@ -1,9 +1,12 @@
 # CUDA on a real GPU, in Google Cloud
 
 > **Status: written and checked against a stub `gcloud` (`tests/gcp.sh`, in the
-> gate); never run against Google, and nothing here has touched a GPU.** The
-> README's "CUDA has never run on hardware" stays true until the first run
-> below is made and its results are written into `docs/device.md` §7.
+> gate), and run against Google on a real NVIDIA L4 (`g2-standard-8`,
+> europe-west1-b) in eight runs on 2026-11-04 and 2026-11-05: NVRTC compiles
+> every golden kernel, the device cases agree with the interpreter, the two NVFP4
+> shuffle bugs were seen on the card and are fixed (below), and the GEMM was
+> timed.** One card; the `fp4_perf` step (the lookup's cost) is written and has
+> **not been run**. Results are in "What the L4 measured" below and `docs/device.md` §6.
 
 `scripts/gcp/cuda_test.sh` rents one NVIDIA GPU, runs the CUDA checks of
 `docs/device.md` §6 on it, copies the results to `results/gcp/<time>-<gpu>/`
@@ -34,7 +37,8 @@ and a step whose prerequisite failed says `SKIP`. `summary.tsv` has the verdicts
 | `nvrtc` | every `golden/*/*.cu` under the **real NVRTC**, `compute_89`, then `ptxas -v` | does the emitted CUDA compile, with per-case errors, registers and spills |
 | `device_cases` | `tests/cases.txt` through `cancho-gpu-device` on the GPU against the interpreter | do the numbers agree at the program's threshold (2e-2 of the output's peak), per case |
 | `gemm_bench` | our emitted `gemm_mma` vs cuBLAS (cupy) vs torch: 1024..8192 cubed incl. 3072 and 6144, and m=n=8192 with k=4096, 2048 and 4096^2 x 8192; clocks, power and throttle bits per shape at 100 ms; grid, smem, registers, spills, occupancy, waves | TFLOPS, as a fraction of **this card's measured** cuBLAS peak, and why it falls off |
-| `shuffle_repro` | the two NVFP4 lookup-shuffle bugs the CUDA emulator found (PR #103), on the GPU: `scripts/gcp/shuffle_repro.txt` through `cancho-gpu-device`, 60 s and one process per case, `nvidia-smi` between cases | are they seen on hardware (**FAIL = a bug was seen**) |
+| `shuffle_repro` | the two NVFP4 lookup-shuffle bugs the CUDA emulator found (PR #103), on the GPU: `scripts/gcp/shuffle_repro.txt` through `cancho-gpu-device`, 60 s and one process per case, `nvidia-smi` between cases | are they seen on hardware (**FAIL = a bug was seen**): 7 PASS / 3 MISMATCH / 40 TIMEOUT before PR #104, 50 PASS after |
+| `fp4_perf` | the NVFP4 matvec kernels at K = 5152 and 17440 (the model's K as a control), `FP4_V[nibble]` against the old full-mask `__shfl_sync` made by a text edit of the emitted CUDA (`scripts/gcp/fp4_perf.py`), each variant in its own process with a timeout | achieved GB/s and old/new time (**not yet run**) |
 | `sandbox_linux` | `tests/weightspace.py` verbose, then `audit_probe.py`: the network calls of its failing check, bare and sandboxed, with the audit events seen | why "a network call is refused" fails on Linux |
 | `job` | `$JOB`, alone, after `machine` and `toolchain` | anything else |
 | `baselines` | `BASELINES=1`: torch + peft LoRA, Qwen2.5-0.5B and 1.5B, 4x512 | the torch numbers on NVIDIA to put beside ours |
@@ -269,12 +273,51 @@ dispatched by the main sequence. `tests/gcp.sh` now fails if any name in the def
 line), and `sandbox_linux` is dispatched last, after `shuffle_repro`, so it runs even if
 that step wedged the GPU.
 
+## What the L4 measured (2026-11-04 and 2026-11-05)
+
+All on one NVIDIA L4 (Ada, `sm_89`, 58 SMs, `g2-standard-8`, europe-west1-b, driver 580,
+CUDA 12.9). One card on two days: a measurement, not a distribution. The runs are in
+`results/gcp/` of the `cancho-gpu-cloud` checkout (not in this repository).
+
+**The NVFP4 shuffle bugs, before and after the fix (PR #104).**
+
+| | run | `shuffle_repro` (50 cases) | `device_cases` | `nvrtc` |
+|---|---|---|---|---|
+| before | `20261104-212332-l4` | 7 PASS, 3 MISMATCH, 40 TIMEOUT; the step took 2413 s | 169 PASS, 0 MISMATCH, 12 ERROR of 181 | 246 of 246 compile |
+| after (main `46670b5`) | `20261105-083519-l4` | **50 PASS**, 0 MISMATCH, 0 TIMEOUT; the step took 20 s | 176 PASS, 0 MISMATCH, 12 ERROR of 188 | 253 of 253 compile |
+
+The 12 `device_cases` errors are the same before and after: the interpreter's
+`the run's tensors do not fit the interpreter's memory` on the largest shapes (the CPU
+reference, not the GPU), which is why that step is reported FAIL; the 7 added cases are
+the former reproducers, now in `tests/cases.txt`. The 40 hangs were the full-mask
+`__shfl_sync` in divergent code; the fix is a table index (`docs/device.md` 5b). This is
+a check that the fixed form does not hang or misread on this card, not a proof (the
+CUDA guide calls the old form undefined). **Not measured: what the table index costs
+against the shuffle.** The `fp4_perf` step is written for that and has not been run.
+
+**The GEMM against cuBLAS (`gemm_bench`, run `20261104-212332-l4`; fractions of the 63.0
+TFLOPS this run measured for cuBLAS, the best of cuBLAS and torch over the shapes).**
+`gemm_mma` as emitted reaches **79 to 81%** of it at 2048, 3072 and 4096 cubed (49.7 to
+51.0 TFLOPS), **54 to 57%** at 6144 and 8192 cubed (35.6 and 33.7), and 50% at
+m=n=8192, k=4096 (31.8). With the block-order experiment of `gemm_bench.py` (`ours+swz`,
+a text edit; the emitter is unchanged) it is **70 to 73%** at 6144 and 8192 cubed (45.8
+and 45.4; 69% at m=n=8192, k=4096) and slightly lower, 70 to 78%, at 3072 and 4096 cubed:
+as in run 4 above, a fixed grouped order helps the large shapes and costs a little at the
+mid ones. The card is **power-capped at about 72 W** and its clock falls under load: the SM
+clock while ours ran was 1395 MHz at 2048 cubed, 1035 MHz at 4096 and 750 MHz at 6144
+(cuBLAS ran at lower clocks too, throttle reason `0x4`, the software power cap), so
+a part of the gap is power per flop and not only memory traffic. Another run the same day
+(`20261104-205215-l4`, run 4 above) measured the same shape of curve with a 60.6 TFLOPS
+peak. The fractions are of this card's measured cuBLAS peak, not the datasheet's.
+
 ## What this does not establish
 
-Not run against Google; not run on a GPU. In particular unverified: that
-`gcloud` accepts the flag set (it is lex-gpu's, which ran), that the stock image has a driver for its kernel,
-that the pinned cancho builds on the VM and how long it takes, the pip
-torch/cupy combination (`TORCH_INDEX` is cu126; the driver is newer), that
-`cupy.RawModule` compiles the emitted kernel as the shim's NVRTC does, and every
-number above in the cost table. The first run is also the first test of
-`device_cases`'s expectation that the 181 cases are quick enough on 4 workers.
+Beyond what the section above measured: any card but one L4 (the A100 and H100 paths were
+never run, and the lowering is Ada's); the compiler built from source at the pin (the runs
+used the release binary, `NOT-PINNED` in `summary.tsv`, as designed); the Spot preemption
+path against Google (it is tested against the stub only); every number in the cost table
+above, which is from memory; the `fp4_perf` step; and the 12 device cases the interpreter
+cannot hold. What did turn out to work on the real thing, which this section once listed
+as unverified: `gcloud` accepted the flag set, the
+torch/cupy combination installed (`cu126` wheels, driver 580), and `cupy.RawModule`
+compiled the emitted kernel.
