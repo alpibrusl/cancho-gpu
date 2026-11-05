@@ -7,7 +7,7 @@
 # goldens (regression records of this compiler: scripts/record-golden.sh), the
 # refusal fixtures, the kernels against float64 references (tests/kernels.py),
 # the cloud scripts' guard rails against a stub gcloud (tests/gcp.sh, docs/cloud.md), the device path against a mock driver and against an emulating one that runs the emitted CUDA on the CPU (docs/device.md 5, 5b), the sessions
-# (tests/session.py), the weight-space harness and its gradient arm (tests/weightspace.py, docs/weight-space.md), W1's weight diff and verdict rule (tests/w1.py) and the readers against their recorded oracles
+# (tests/session.py), the weight-space harness and its gradient arm (tests/weightspace.py, docs/weight-space.md), W1's weight diff and verdict rule (tests/w1.py), the Hugging Face reference goldens for Qwen3.5-0.8B (tests/hf08.py, golden/hf08/) and the readers against their recorded oracles
 # (docs/runtime.md; external tools, docs/native.md N2f).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -44,6 +44,7 @@ python3 tests/cnn.py build/cancho-gpu-session
 python3 tests/probes.py build/cancho-gpu build/cancho-gpu-session
 python3 tests/weightspace.py build/cancho-gpu-session
 python3 tests/w1.py
+python3 tests/hf08.py
 python3 tests/resnet.py build/cancho-gpu-session
 if python3 -c 'import numpy' 2>/dev/null; then
   python3 examples/qwen/quant.py validate
