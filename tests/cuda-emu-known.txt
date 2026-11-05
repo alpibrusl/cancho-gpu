@@ -1,0 +1,16 @@
+# <case>|<kind>|<note>   (tests/cuda-emu.sh)
+#   noref: the case cannot be compared, because the interpreter cannot hold its tensors (error[interp]).
+#          tests/cuda_emu_big.py runs these on the emulator at full size without a reference.
+#   bug:   a real bug in the emitted CUDA the emulator found; it must keep failing until the emitter is fixed (docs/device.md 5b).
+gemm_fp4_res_m=512_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_batch_m=1_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_batch_m=2_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_batch_m=8_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_res_batch_m=4_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_res_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_rows_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_rows_n=248320_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_rows_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_swiglu_batch_m=4_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_swiglu_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_rows_n=151936_k=896|noref|the interpreter's memory cannot hold the tensors
