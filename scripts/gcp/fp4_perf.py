@@ -53,6 +53,10 @@ CASES = [
     ("matvec_fp4_swiglu.chx", "n=17408 k=5152", "odd x32 K: was lookup path"),
     ("matvec_fp4_batch.chx", "m=4 n=17408 k=5152", "odd x32 K: was lookup path"),
     ("matvec_fp4_res_batch.chx", "m=4 n=5120 k=17440", "odd x32 K: was lookup path"),
+    ("matvec_fp4_rows.chx", "n=17408 k=96", "small K: 16-wide step, idle lanes (absolute GB/s)"),
+    ("matvec_fp4_rows.chx", "n=17408 k=160", "small K: 16-wide step, idle lanes (absolute GB/s)"),
+    ("matvec_fp4_rows.chx", "n=17408 k=256", "small K: 16-wide step, idle lanes (absolute GB/s)"),
+    ("matvec_fp4_rows.chx", "n=17408 k=1056", "small K: 16-wide step, idle lanes (absolute GB/s)"),
 ]
 LANE_DEF = "    const float fp4_lane = FP4_V[tid & 15u];\n"
 # lines the emitter writes before the body; the lane definition goes after them
