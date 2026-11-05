@@ -517,6 +517,29 @@ def attention_pv(nkv, g, t, d, tmax):
     return out
 
 
+def attention_stats(nkv, g, t):
+    (sc,) = lcg([nkv * g * t])
+    m, z = [], []
+    for r in range(nkv * g):
+        row = sc[r * t:(r + 1) * t]
+        mx = max(row)
+        m.append(mx)
+        z.append(sum(math.exp(x - mx) for x in row))
+    return m, z
+
+
+def attention_pvl(nkv, g, t, d, tmax):
+    sc, m, z, v = lcg([nkv * g * t, nkv * g, nkv * g, nkv * tmax * d])
+    out = []
+    for i in range(nkv):
+        for r in range(g):
+            row = i * g + r
+            e = [math.exp(sc[row * t + pos] - m[row]) / z[row] for pos in range(t)]
+            for col in range(d):
+                out.append(sum(e[pos] * v[(i * tmax + pos) * d + col] for pos in range(t)))
+    return out
+
+
 def delta_step3(nk):
     s, q, k, v, g, bt = lcg([nk * 384 * 128, 3 * nk * 128, 3 * nk * 128, 30720, 3 * nk * 3 * 128, 3 * nk * 384])
     so = [[0.0] * len(s) for _ in range(3)]
@@ -668,6 +691,11 @@ def new_checks():
     ok &= check("delta_step3 y nk=2", got["y"], want_y)
     ok &= check("attention_scores nkv=2 g=6 t=64 ts=16", run("attention_scores", ["nkv=2", "g=6", "t=64", "ts=16", "d=256", "tmax=96"])["sc"], attention_scores(2, 6, 64, 256, 96))
     ok &= check("attention_pv nkv=2 g=6 t=64 dw=32", run("attention_pv", ["nkv=2", "g=6", "t=64", "dw=32", "d=256", "tmax=96"])["o"], attention_pv(2, 6, 64, 256, 96))
+    got = run("attention_stats", ["nkv=2", "g=4", "t=96", "cs=16"])
+    want_m, want_z = attention_stats(2, 4, 96)
+    ok &= check("attention_stats m nkv=2 g=4 t=96 cs=16", got["m"], want_m)
+    ok &= check("attention_stats z nkv=2 g=4 t=96 cs=16", got["z"], want_z)
+    ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
     got = run("activations", ["r=4", "n=8"])
     (xs,) = lcg([32])
     ok &= check("activations relu r=4 n=8", got["y"], [max(v, 0.0) for v in xs])
@@ -793,6 +821,12 @@ MUTANTS = [
     ("delta_step3.chx", "let e2_2 = d2_2 * b2_2", "let e2_2 = d2_2 + b2_2", "delta_step3 adds beta to the third token's error"),
     ("attention_scores.chx", "store sd + mk -> sc[i * g, sp * ts]", "store sd - mk -> sc[i * g, sp * ts]", "attention_scores subtracts the mask"),
     ("attention_pv.chx", "let p  = e / z", "let p  = e * z", "attention_pv multiplies by the sum"),
+    ("attention_stats.chx", "yield m1 + relu (cm - &m1)", "yield m1 + relu (&m1 - cm)", "attention_stats keeps the minimum, not the maximum"),
+    ("attention_stats.chx", "let sh = sm - &mx", "let sh = sm", "attention_stats leaves the maximum out of the normaliser"),
+    ("attention_stats.chx", "for c in 1 .. t / cs with m1", "for c in 1 .. t / cs - 1 with m1", "attention_stats leaves out the last chunk of the maximum"),
+    ("attention_pvl.chx", "let p  = e / zz", "let p  = e * zz", "attention_pvl multiplies by the sum"),
+    ("attention_pvl.chx", "let sh = sm - mm", "let sh = sm + mm", "attention_pvl shifts the scores the wrong way"),
+    ("attention_pvl.chx", "for c in 0 .. t / cs with a0", "for c in 1 .. t / cs with a0", "attention_pvl leaves out the first chunk"),
     ("activations.chx", "store relu &a -> y", "store step &a -> y", "relu is a step"),
     ("colbcast.chx", "let e = a * b", "let e = a + b", "colbcast adds the column where it multiplies"),
     ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),

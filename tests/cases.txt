@@ -326,6 +326,23 @@ tests/chx/matvec_fp4_res_batch.chx m=4 n=16 k=17440
 tests/chx/matvec_fp4_rows.chx n=16 k=96 --run
 tests/chx/matvec_fp4_batch.chx m=3 n=64 k=160 --run
 
+# T4 (docs/weight-space.md 14.5, 14.7): attention past the single-tile ceiling, as three kernels at Qwen3.5-0.8B's shape (2 key heads, g = 4,
+# d = 256). attention_scores is the existing kernel (any t); attention_stats takes the row maximum and the normaliser a chunk of cs positions
+# at a time, and attention_pvl the weighted sum of v, with no [g, t] tile. t = 2,048, 4,096, 8,704 (W1's longest cache) and 16,640 (the cap check).
+tests/chx/attention_scores.chx nkv=2 g=4 t=2048 ts=64 d=256 tmax=2048
+tests/chx/attention_scores.chx nkv=2 g=4 t=4096 ts=64 d=256 tmax=4096
+tests/chx/attention_scores.chx nkv=2 g=4 t=8704 ts=64 d=256 tmax=8704
+tests/chx/attention_scores.chx nkv=2 g=4 t=16640 ts=64 d=256 tmax=16640
+tests/chx/attention_stats.chx nkv=2 g=4 t=2048 cs=64
+tests/chx/attention_stats.chx nkv=2 g=4 t=4096 cs=64
+tests/chx/attention_stats.chx nkv=2 g=4 t=8704 cs=64
+tests/chx/attention_stats.chx nkv=2 g=4 t=16640 cs=64
+tests/chx/attention_pvl.chx nkv=2 g=4 t=2048 cs=64 dw=32 d=256 tmax=2048
+tests/chx/attention_pvl.chx nkv=2 g=4 t=4096 cs=64 dw=32 d=256 tmax=4096
+tests/chx/attention_pvl.chx nkv=2 g=4 t=8704 cs=64 dw=32 d=256 tmax=8704
+tests/chx/attention_pvl.chx nkv=2 g=4 t=16640 cs=64 dw=32 d=256 tmax=16640
+tests/chx/attention_stats.chx nkv=2 g=4 t=96 cs=16 --run
+tests/chx/attention_pvl.chx nkv=2 g=4 t=96 cs=16 dw=64 d=256 tmax=100 --run
 # W1 in cancho, T3 (docs/weight-space.md section 14): the kernels at Qwen3.5-0.8B's shapes (hidden 1024, 24 layers: 18 gated-delta and 6 full-attention).
 # Gated-delta layer: 16 key heads and 16 value heads of 128 (delta_step1.chx, one value head per key head), a convolution over c = 6144 = 3 * 2048
 # channels, qk_norm rows 16 + 16 + 16 = 48, gates and gated_norm at h = 16. What they compute is held by tests/kernels.py (checks08), CPU interpreter and

@@ -73,8 +73,9 @@ fn mix(seed: int) -> [] int {
 // The sampler record, in `m`
 // ---------------------------------------------------------------------
 
-// `[temperature bits, top_p bits, top_k, state]`; the floats are f32 bit
-// patterns.
+// `[temperature bits, top_p bits, top_k, state, penalty bits, seen list,
+// seen bitmap, saved logits, vocab]`; the floats are f32 bit patterns. The last five
+// are the presence penalty (below); they are 0 until `enable_penalty`.
 pub fn f_temperature() -> [] int {
     return 0;
 }
@@ -91,10 +92,30 @@ pub fn f_state() -> [] int {
     return 3;
 }
 
+pub fn f_penalty() -> [] int {
+    return 4;
+}
+
+pub fn f_seen() -> [] int {
+    return 5;
+}
+
+pub fn f_marks() -> [] int {
+    return 6;
+}
+
+pub fn f_saved() -> [] int {
+    return 7;
+}
+
+pub fn f_vocab() -> [] int {
+    return 8;
+}
+
 // `Sampler::new`: temperature 0 is greedy; `top_k` below 1 is 1. The seed is
 // below 2^63 (the oracle's `u64` has one more bit).
 pub fn new[&m](m: &!m [int], temperature: float, top_p: float, top_k: int, seed: int) -> [] int {
-    let s = mem.rec(m, 4);
+    let s = mem.rec(m, 9);
     m[s + f_temperature()] = f32.bits32(temperature);
     m[s + f_top_p()] = f32.bits32(top_p);
     var k = top_k;
@@ -237,7 +258,7 @@ pub fn is_greedy[&m](m: &!m [int], s: int) -> [] bool {
 // of `n` f32 logits at `t[base..]`, most likely first, as two lists (the
 // probabilities as f32 bit patterns): temperature, top-k, top-p, then
 // renormalised. Greedy is the one-token nucleus.
-pub fn nucleus[&m, &t](m: &!m [int], t: &!t [byte], s: int, base: int, n: int) -> [] (int, int) {
+fn nucleus_row[&m, &t](m: &!m [int], t: &!t [byte], s: int, base: int, n: int) -> [] (int, int) {
     let ids = mem.list(m);
     let probs = mem.list(m);
     let temperature = f32.from_bits32(m[s + f_temperature()]);
@@ -334,4 +355,108 @@ pub fn draw[&m](m: &!m [int], s: int, ids: int, probs: int) -> [] int {
     }
     // Rounding can leave the sum a hair under 1.
     return mem.last(m, ids);
+}
+
+// ---------------------------------------------------------------------
+// The presence penalty (`docs/weight-space.md` 13.3, 14.6 C9)
+// ---------------------------------------------------------------------
+//
+// The Hugging Face / vLLM definition, which `examples/weightspace/w1_behave.py`
+// uses: every token that has appeared at least once in the *generation* (not
+// the prompt) has `penalty` subtracted from its logit, once however often it
+// appeared. It is applied to the raw logits, before temperature, top-k and
+// top-p: in `transformers` a processor passed to `generate` is merged into the
+// list ahead of the temperature, top-k and top-p warpers, so the order is
+// penalty, temperature, top-k, top-p, which is the order `nucleus` already
+// has after the penalty. The subtraction is one f32 rounding, as torch's
+// `scores - penalty * seen` is.
+//
+// The caller says which tokens were generated (`note`, after each pick); the
+// sampler does not look at the prompt. The penalty is written into the row
+// for the length of one `nucleus` call, for the seen tokens only, and the
+// original bits are put back, so a step costs the seen set and not the
+// vocabulary on top of the pass over the row `nucleus` makes anyway.
+
+// Turn the penalty on for a vocabulary of `vocab` ids. A penalty of 0 turns
+// it off (`nucleus` then does not touch the row).
+pub fn enable_penalty[&m](m: &!m [int], s: int, penalty: float, vocab: int) -> [] int {
+    m[s + f_penalty()] = f32.bits32(penalty);
+    m[s + f_seen()] = mem.list(m);
+    m[s + f_saved()] = mem.list(m);
+    m[s + f_marks()] = mem.grab(m, vocab);
+    m[s + f_vocab()] = vocab;
+    return vocab;
+}
+
+// A token of the generation. Ids outside the vocabulary are ignored; a token
+// already noted counts once.
+pub fn note[&m](m: &!m [int], s: int, token: int) -> [] int {
+    if m[s + f_marks()] == 0 || token < 0 {
+        return 0;
+    }
+    let seen = m[s + f_seen()];
+    let marks = m[s + f_marks()];
+    if token >= m[s + f_vocab()] || m[marks + token] != 0 {
+        return 0;
+    }
+    m[marks + token] = 1;
+    mem.push(m, seen, token);
+    return 1;
+}
+
+// Forget the generation (a new conversation).
+pub fn clear_seen[&m](m: &!m [int], s: int) -> [] int {
+    if m[s + f_marks()] == 0 {
+        return 0;
+    }
+    let seen = m[s + f_seen()];
+    while mem.size(m, seen) > 0 {
+        m[m[s + f_marks()] + mem.last(m, seen)] = 0;
+        mem.pop(m, seen);
+    }
+    return 0;
+}
+
+fn put32[&t](t: &!t [byte], at: int, bits: int) -> [] int {
+    t[at] = byte_of(bits & 255);
+    t[at + 1] = byte_of(bits >> 8 & 255);
+    t[at + 2] = byte_of(bits >> 16 & 255);
+    t[at + 3] = byte_of(bits >> 24 & 255);
+    return 0;
+}
+
+pub fn nucleus[&m, &t](m: &!m [int], t: &!t [byte], s: int, base: int, n: int) -> [] (int, int) {
+    let seen = m[s + f_seen()];
+    let pen_bits = m[s + f_penalty()];
+    if seen == 0 || mem.size(m, seen) == 0 || f32.from_bits32(pen_bits) == 0.0 {
+        return nucleus_row(m, t, s, base, n);
+    }
+    let penalty = f32.from_bits32(pen_bits);
+    let saved = m[s + f_saved()];
+    var j = 0;
+    while j < mem.size(m, seen) {
+        let id = mem.get(m, seen, j);
+        if id < n {
+            let at = base + 4 * id;
+            let bits = logit_bits(t, base, id);
+            mem.push(m, saved, bits);
+            put32(t, at, f32.bits32(f32.sub(f32.from_bits32(bits), penalty)));
+        } else {
+            mem.push(m, saved, 0);
+        }
+        j = j + 1;
+    }
+    let out = nucleus_row(m, t, s, base, n);
+    j = 0;
+    while j < mem.size(m, seen) {
+        let id = mem.get(m, seen, j);
+        if id < n {
+            put32(t, base + 4 * id, mem.get(m, saved, j));
+        }
+        j = j + 1;
+    }
+    while mem.size(m, saved) > 0 {
+        mem.pop(m, saved);
+    }
+    return out;
 }

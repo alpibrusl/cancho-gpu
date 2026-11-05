@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the slice 9b kernels on a Metal GPU and compare every output with the
+# Run the slice 9b kernels (and, at 0.8B's shape, the long-attention kernels of docs/weight-space.md 14.5) on a Metal GPU and compare every output with the
 # interpreter's (docs/kernels.md section 5). Needs an Apple GPU, so it is not
 # in the gate.
 #
@@ -26,6 +26,11 @@ kv_append nkv=4 tmax=64 d=256 pos=17
 attention nkv=2 g=6 t=64 d=256 tmax=96
 attention nkv=3 g=2 t=16 d=256 tmax=20
 attention nkv=4 g=6 t=1364 d=256 tmax=2048
+attention_scores nkv=2 g=4 t=8704 ts=64 d=256 tmax=8704
+attention_stats nkv=2 g=4 t=2048 cs=64
+attention_stats nkv=2 g=4 t=8704 cs=64
+attention_pvl nkv=2 g=4 t=2048 cs=64 dw=32 d=256 tmax=2048
+attention_pvl nkv=2 g=4 t=8704 cs=64 dw=32 d=256 tmax=8704
 attn_gate r=24 n=256
 attn_gate r=3 n=7
 matvec_fp4_batch m=1 n=128 k=256
