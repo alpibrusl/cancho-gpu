@@ -428,10 +428,14 @@ past the end idle) is exact whenever `K % 16 == 0`: `dq_vec` now takes the 16-wi
 that case and the generic path is left for what the fast one cannot do. The emitted code for
 `K = 5152` has no `FP4_V[` lookup and the same body as `K = 5120`; the goldens that changed
 are the cases with K not a multiple of 512 and the CPU emulator and `tests/kernels.py` agree.
-**The speed is not measured on hardware**: it needs an L4 run of `fp4_perf` (whose cases at K
-5152 and 17440 now report `lookups` 0 and old == new). The partial round leaves lanes idle in
-the last round (at most 15/16 of a round, about 0.1% of the work at K = 5152); for small K
-(48 to 160) most lanes idle where they used to share the work, and nothing was timed there.
+**Measured on the L4** (`fp4_perf`, run `20261105-130225-l4`, europe-west1-b, this change): the
+rows kernels at K = 5152 and 17440 now run at **205 to 212 GB/s** (`matvec_fp4_rows`,
+`_res`, `_swiglu`), against 45 to 67 before and 219 to 224 at K = 5120 and 17408; they report
+`lookups` 0 and old == new. The batched kernels (`m = 4`) at those K run at 93 and 77 GB/s (they
+were 55 and 52 before), so a slower path remains there, not looked at. Small K, absolute GB/s
+for `matvec_fp4_rows` at n = 17408: **70 at K = 96, 111 at 160, 162 at 256, 201 at 1056**, so
+the idle lanes cost most at the smallest K; there is no number from before this change for
+those K, so whether it is slower than the generic path was is not shown. One card, one run.
 
 ### Metal (real hardware)
 
