@@ -148,8 +148,8 @@ trap.
   (lex-gpu checks this with `scripts/cuda_check.sh` on its own emitter's
   output; ours is the same bytes, §9 of `design.md`), and that a real
   driver accepts these calls and the results land within the threshold.
-  Those need a machine with a GPU — lex-gpu's `scripts/gcp/nvidia_test.sh`
-  provisions an L4 — and are the next measurement, not a claim this
+  Those need a machine with a GPU — `scripts/gcp/cuda_test.sh` provisions an L4
+  (`docs/cloud.md`; written, not yet run) — and are the next measurement, not a claim this
   document makes.
 * **Metal timing:** Reach is proved; speed is not yet measured.
 

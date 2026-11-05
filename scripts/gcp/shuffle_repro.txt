@@ -1,0 +1,71 @@
+# Real-hardware check of the two NVFP4 lookup-shuffle bugs the CUDA emulator found
+# (PR #103, docs/device.md section 5b, tests/cuda-emu-bugs.txt there). Copied here so
+# this step does not depend on that branch. Format: <file.chx> <consts>  [# note]
+# Each line runs through build/cancho-gpu-device on the GPU against the interpreter,
+# 60 s, its own process. PASS on a GPU does not clear a bug the CUDA guide calls
+# undefined; MISMATCH / TIMEOUT / ERROR is the bug seen on hardware.
+#
+# Bug 1: `__shfl_sync(0xffffffffu, fp4_lane, nibble)` inside a per-lane loop
+# `for (p0 = lane; p0 < K; p0 += 32)` with K = 16 mod 32: lanes 0..15 take one more trip
+# than 16..31, so the full mask names lanes that left the loop (undefined; emulator: deadlock).
+tests/chx/batch_fp4.chx b=3 n=40 k=48                  # bug 1, tiled batch lowering
+tests/chx/matvec_fp4.chx n=2 k=80                      # bug 1, per-lane loop in a block with barriers
+tests/chx/matvec_fp4_rows.chx n=32 k=5104              # bug 1 at a model-like K (159.5 x 32)
+tests/chx/matvec_fp4_res.chx n=32 k=48                 # bug 1
+tests/chx/matvec_fp4_swiglu.chx n=17408 k=80           # bug 1
+tests/chx/matvec_fp4_res_batch.chx m=2 n=5152 k=144    # bug 1
+# Bug 2: the same shuffle in the element-per-thread fallback (`if (e < count)`), count not a
+# multiple of 32: the last pass has a partly active warp; wrong values (emulator: 0.78 of a peak 9.09).
+tests/chx/batch_fp4.chx b=36 n=129 k=224               # bug 2, b*n = 4644 = 18 x 256 + 36
+#
+# The sweep. The emulator's own 22 findings (21 deadlocks, 1 wrong value, seed 3) were not
+# recorded as a list, only the families and k values (docs/device.md 5b: batch_fp4, matvec_fp4,
+# _rows, _res, _swiglu, _batch, _res_batch, _swiglu_batch at k = 16, 48, 80, 112, 144, 240, 272,
+# 4080, 5104, 5136, 17392, 17424). This is that grid, with small n so the CPU reference is quick;
+# the compiler refusing a size is REFUSED, not a finding. K = 16 mod 32:
+tests/chx/matvec_fp4.chx n=2 k=16
+tests/chx/matvec_fp4.chx n=2 k=48
+tests/chx/matvec_fp4.chx n=2 k=112
+tests/chx/matvec_fp4.chx n=2 k=144
+tests/chx/matvec_fp4.chx n=2 k=240
+tests/chx/matvec_fp4.chx n=2 k=272
+tests/chx/matvec_fp4.chx n=2 k=4080
+tests/chx/matvec_fp4_rows.chx n=32 k=16
+tests/chx/matvec_fp4_rows.chx n=32 k=48
+tests/chx/matvec_fp4_rows.chx n=32 k=80
+tests/chx/matvec_fp4_rows.chx n=32 k=144
+tests/chx/matvec_fp4_rows.chx n=32 k=272
+tests/chx/matvec_fp4_rows.chx n=32 k=5136
+tests/chx/matvec_fp4_res.chx n=32 k=16
+tests/chx/matvec_fp4_res.chx n=32 k=80
+tests/chx/matvec_fp4_res.chx n=32 k=144
+tests/chx/matvec_fp4_res.chx n=32 k=272
+tests/chx/matvec_fp4_swiglu.chx n=32 k=16
+tests/chx/matvec_fp4_swiglu.chx n=32 k=48
+tests/chx/matvec_fp4_swiglu.chx n=32 k=144
+tests/chx/matvec_fp4_swiglu.chx n=32 k=272
+tests/chx/matvec_fp4_batch.chx m=2 n=64 k=16
+tests/chx/matvec_fp4_batch.chx m=2 n=64 k=48
+tests/chx/matvec_fp4_batch.chx m=2 n=64 k=144
+tests/chx/matvec_fp4_res_batch.chx m=2 n=64 k=16
+tests/chx/matvec_fp4_res_batch.chx m=2 n=64 k=48
+tests/chx/matvec_fp4_res_batch.chx m=2 n=64 k=272
+tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=32 k=16
+tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=32 k=48
+tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=32 k=144
+tests/chx/batch_fp4.chx b=3 n=40 k=16
+tests/chx/batch_fp4.chx b=3 n=40 k=80
+tests/chx/batch_fp4.chx b=3 n=40 k=112
+tests/chx/batch_fp4.chx b=3 n=40 k=240
+# Controls, K a multiple of 32 (the goldens' case): these must PASS.
+tests/chx/matvec_fp4.chx n=2 k=64
+tests/chx/matvec_fp4_rows.chx n=32 k=64
+tests/chx/batch_fp4.chx b=3 n=40 k=64
+# Bug 2 variants: batch_fp4 with b*n not a multiple of 32 or 256, K a multiple of 32.
+tests/chx/batch_fp4.chx b=5 n=129 k=64
+tests/chx/batch_fp4.chx b=7 n=33 k=96
+tests/chx/batch_fp4.chx b=33 n=65 k=128
+tests/chx/batch_fp4.chx b=3 n=41 k=64
+tests/chx/batch_fp4.chx b=36 n=129 k=64
+# Control: count a multiple of 256.
+tests/chx/batch_fp4.chx b=4 n=64 k=64

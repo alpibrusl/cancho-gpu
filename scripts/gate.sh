@@ -6,7 +6,7 @@
 # Canonical formatting, the file budget, the build, the unit tests, the
 # goldens (regression records of this compiler: scripts/record-golden.sh), the
 # refusal fixtures, the kernels against float64 references (tests/kernels.py),
-# the device path against a mock driver (docs/device.md), the sessions
+# the device path against a mock driver (docs/device.md), the cloud scripts' cost guard rails against a stub gcloud (tests/gcp.sh, docs/cloud.md), the sessions
 # (tests/session.py), the weight-space harness and its gradient arm (tests/weightspace.py, docs/weight-space.md), W1's weight diff and verdict rule (tests/w1.py) and the readers against their recorded oracles
 # (docs/runtime.md; external tools, docs/native.md N2f).
 set -eu
@@ -22,6 +22,7 @@ tests/reject.sh
 tests/run.sh
 CANCHO="$CANCHO" tests/device.sh
 CANCHO="$CANCHO" tests/device-io.sh
+tests/gcp.sh
 tests/gguf.sh
 tests/safetensors.sh
 tests/tokenizer.sh
