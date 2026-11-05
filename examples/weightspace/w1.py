@@ -4,6 +4,8 @@
     python3 examples/weightspace/w1.py diff   BASE EDITED [--json report.json] [--w1-expect]
     python3 examples/weightspace/w1.py behave --base BASE --edited EDITED --data gsm8k_test.parquet --out DIR --gpu-free
                                               [--n 200] [--max-new 8192] [--batch 8] [--backend transformers|mlx] [--device mps]
+    python3 examples/weightspace/w1.py status  --dir DIR [--n 200] [--max-new 8192]
+    python3 examples/weightspace/w1.py verdict --dir DIR [--n 200] [--max-new 8192] [--json verdict.json]
 
 BASE and EDITED are local checkpoints: a .safetensors file or a directory holding them. `diff` runs on the CPU, reads
 nothing it does not compare and writes only the --json file. `--w1-expect` additionally holds the diff to what the authors
@@ -11,6 +13,10 @@ published (README of RikiyaT/Qwen3.5-0.8B-weight-space-programming and exp8_math
 tensors differ, 64 columns each, with the published entry counts and sha256. `behave` runs both models on the first --n
 GSM8K test problems, applies the section 13 rule and writes the records and the verdict into DIR; it needs the GPU, and
 refuses to start without --gpu-free (your statement that nothing else is using it) or when `diff --w1-expect` fails.
+
+`status` and `verdict` read DIR's base_<max-new>.jsonl and edited_<max-new>.jsonl (what `behave` wrote, or what scripts/gcp/w1_cloud.sh pulled
+from a VM), need numpy only and no GPU. `status` exits 0 when both cover problems 0..n-1, else 1; `verdict` applies the section 13.3 rule to
+them (exit 1 when they do not cover n problems) and says whether the rule asks for the cap check.
 
 Exit status: 0 done (and, with --w1-expect, matched), 1 the expectations or the rule's inputs failed, 2 the input is unusable."""
 import argparse
@@ -24,6 +30,7 @@ import w1_behave as B  # noqa: E402
 import w1_diff as D  # noqa: E402
 
 PREFIX = "model.language_model.layers."
+CAP_CHECK_N, CAP_CHECK_MAX_NEW = 60, 16384   # docs/weight-space.md 13.3
 # What the authors publish for the edit (all [read], from their README and manifest.json, 2026-11-04).
 EXPECT = {
     PREFIX + "15.mlp.down_proj.weight": {"changed_entries": 65260, "changed_columns": 64, "changed_rows": 1024, "shape": [1024, 3584],
@@ -99,6 +106,46 @@ def cmd_behave(a):
     return 0
 
 
+def cap_check_line(v, max_new):
+    """Whether 13.3(d) asks for the cap check; only the main run (not the cap check itself) has the question."""
+    if max_new == CAP_CHECK_MAX_NEW:
+        return "this is the cap check: read it next to the main run's verdict (13.3)"
+    if v["verdict"] in ("reproduces", "partial"):
+        return (f"cap check (13.3(d)): ASKED, the main run is '{v['verdict']}': the first {CAP_CHECK_N} problems again at "
+                f"--max-new {CAP_CHECK_MAX_NEW}, base and edited (N={CAP_CHECK_N} MAX_NEW={CAP_CHECK_MAX_NEW} scripts/gcp/w1_cloud.sh)")
+    return "cap check (13.3(d)): not asked, the main run is not reproduced"
+
+
+def covered(a):
+    """([(tag, finished ids below n)], whether every id below n is done for both) of DIR's logs."""
+    got = []
+    for tag in ("base", "edited"):
+        done = B.load_done(os.path.join(a.dir, f"{tag}_{a.max_new}.jsonl"), tag, a.max_new)
+        got.append((tag, done, sum(1 for i in range(a.n) if i in done)))
+    return got, all(c == a.n for _, _, c in got)
+
+
+def cmd_status(a):
+    got, full = covered(a)
+    print(" ".join(f"{tag} {c}/{a.n}" for tag, _, c in got) + (" complete" if full else " incomplete"))
+    return 0 if full else 1
+
+
+def cmd_verdict(a):
+    got, full = covered(a)
+    if not full:
+        print("no verdict: " + " ".join(f"{tag} {c}/{a.n}" for tag, _, c in got) + " problems finished", file=sys.stderr)
+        return 1
+    v = B.verdict([got[0][1][i] for i in range(a.n)], [got[1][1][i] for i in range(a.n)])
+    v["protocol"] = {"n": a.n, "max_new": a.max_new, **B.SAMPLING, "source": "jsonl in " + a.dir}
+    if a.json:
+        with open(a.json, "w", encoding="utf-8") as f:
+            json.dump(v, f, indent=1)
+    print(B.render_verdict(v, f"(cap {a.max_new})"))
+    print(cap_check_line(v, a.max_new))
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -120,12 +167,19 @@ def main(argv):
     b.add_argument("--seed", type=int, default=0)
     b.add_argument("--backend", choices=["transformers", "mlx"], default="transformers")
     b.add_argument("--device", default="mps")
+    for name in ("status", "verdict"):
+        c = sub.add_parser(name)
+        c.add_argument("--dir", required=True)
+        c.add_argument("--n", type=int, default=200)
+        c.add_argument("--max-new", type=int, default=8192)
+        if name == "verdict":
+            c.add_argument("--json")
     a = ap.parse_args(argv)
-    if a.cmd == "behave" and (a.n < 1 or a.max_new < 1 or a.batch < 1):
+    if a.cmd != "diff" and (a.n < 1 or a.max_new < 1 or getattr(a, "batch", 1) < 1):
         print("--n, --max-new and --batch must be positive", file=sys.stderr)
         return 2
     try:
-        return cmd_diff(a) if a.cmd == "diff" else cmd_behave(a)
+        return {"diff": cmd_diff, "behave": cmd_behave, "status": cmd_status, "verdict": cmd_verdict}[a.cmd](a)
     except (D.ReadError, B.BehaveError) as e:
         print("error: " + str(e), file=sys.stderr)
         return 2

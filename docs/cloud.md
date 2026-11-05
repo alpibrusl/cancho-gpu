@@ -19,6 +19,7 @@ GCP_PROJECT=<project> scripts/gcp/cuda_test.sh     # L4, EU zones first
 GCP_PROJECT=<project> BASELINES=1 scripts/gcp/cuda_test.sh   # + torch/peft LoRA baselines
 GCP_PROJECT=<project> JOB='scripts/build-device.sh && build/cancho-gpu-device run tests/chx/ported/gemm_mma.chx m=256 n=256 k=128' scripts/gcp/cuda_test.sh
 scripts/gcp/sweep.sh                               # anything left running? (DELETE=1 deletes)
+SMOKE=1 GCP_PROJECT=<project> scripts/gcp/w1_cloud.sh   # W1's behavioural run in restartable steps: see "W1 on a Spot L4"
 ```
 
 ## Steps
@@ -41,6 +42,7 @@ and a step whose prerequisite failed says `SKIP`. `summary.tsv` has the verdicts
 | `sandbox_linux` | `tests/weightspace.py` verbose, then `audit_probe.py`: the network calls of its failing check, bare and sandboxed, with the audit events seen | why "a network call is refused" fails on Linux |
 | `job` | `$JOB`, alone, after `machine` and `toolchain` | anything else |
 | `baselines` | `BASELINES=1`: torch + peft LoRA, Qwen2.5-0.5B and 1.5B, 4x512 | the torch numbers on NVIDIA to put beside ours |
+| `w1` | opt-in, driven by `w1_cloud.sh` with `STEPS='machine w1'` (no compiler): the checkpoints and the GSM8K parquet, `diff --w1-expect`, then `behave` in chunks | W1's behaviour (docs/weight-space.md 13), below |
 
 Notes on what each does and does not say:
 
@@ -183,8 +185,9 @@ to the pin) gives `PINNED`.
   remote command is waited for in the background so the trap is not deferred behind it.
 * **Region loop** with `instances bulk create --count 1`: one question per region,
   never more than one VM.
-* **Label `purpose=cancho-gpu-test`** on everything; `scripts/gcp/sweep.sh` lists
-  (exit 1) or, with `DELETE=1`, deletes leftovers, and never touches other VMs.
+* **Label `purpose=cancho-gpu-test`** on everything (`purpose=cancho-gpu-w1` on `w1_cloud.sh`'s
+  VMs); `scripts/gcp/sweep.sh` lists (exit 1) or, with `DELETE=1`, deletes leftovers of
+  either label, and never touches other VMs.
 * **Results come home even when the run fails**; the project is printed before
   anything is created.
 
@@ -208,8 +211,89 @@ cents an hour; the image, if built, a dollar or two a month.
 | default steps | 45-90 min (compiler build, the Linux gate, 180 cases with CPU references, the benchmark) | well under $1 |
 | `BASELINES=1` | + 20-40 min and ~10 GB of downloads | about $1 |
 | `MAX_RUN` hit | 1.5 h | about $0.5 |
+| W1 smoke (`SMOKE=1`) | setup 10-20 min (torch, 3.5 GB of weights), then minutes | well under $0.5 |
+| W1, the `TOTAL_MAX` cap (6 h of VM time, summed over VMs) | at most 6 h; the real time is unknown until the smoke run measures tokens per second (13.4 guessed 2 to 10 h of GPU) | about **$2-2.5** with the disk (6 h x ($0.3 + about $0.04 for the 150 GB `pd-ssd`)) |
+| the same 6 h on demand (`SPOT=0`) | | about $5.5 (6 h x ($0.85 + the disk)) |
+
+**These prices are the same from-memory figures** (Spot L4 about $0.3/h, on-demand about $0.85/h): none was looked up,
+so the W1 rows are a ceiling computed from them, not a quote. The ceiling is what `TOTAL_MAX` bounds; what the run
+costs is the VM time it uses.
 
 The cap is the guard: even a stuck run costs at most `MAX_RUN` of the VM.
+
+## W1 on a Spot L4, in small restartable steps
+
+`scripts/gcp/w1_cloud.sh` runs W1's behavioural check (`examples/weightspace/w1.py behave`,
+docs/weight-space.md 13.3 and 13.5) on Spot L4 VMs that may be taken back, so that being taken
+back costs minutes and not the run. The protocol is the document's and is not a knob of the
+experiment: GSM8K parquet problems 0 to 199, `--max-new 8192`, batch 8, one sample each, base and
+edited. The cap check (60 problems at 16,384) is **never started automatically**; the script
+prints whether the rule in 13.3(d) asks for it.
+
+```sh
+DRY_RUN=1 scripts/gcp/w1_cloud.sh                        # the plan and every gcloud command; no gcloud
+SMOKE=1 GCP_PROJECT=<project> scripts/gcp/w1_cloud.sh    # 13.3(b): n=8, --max-new 512, one VM; not a result
+GCP_PROJECT=<project> scripts/gcp/w1_cloud.sh            # 13.3(c): the main run, as many VMs as it takes
+N=60 MAX_NEW=16384 GCP_PROJECT=<project> scripts/gcp/w1_cloud.sh   # 13.3(d), only if the verdict asks (same directory)
+```
+
+**How a restart works.** The run is resumable by problem: `behave` appends each finished batch to
+`base_<cap>.jsonl` and `edited_<cap>.jsonl` and, on a rerun, skips the ids already there (a line cut
+off by a crash is skipped and redone; it used to swallow the next record, since fixed, and tested in
+`tests/w1.py`). The driver turns that into a loop:
+
+1. Create a VM exactly as `cuda_test.sh` does (Spot, `--max-run-duration`, termination `DELETE`,
+   the region fallback including the US, the trap that deletes by name), labelled
+   `purpose=cancho-gpu-w1`.
+2. **Seed** it with the `*.jsonl` already in `results/w1_cloud/data/`.
+3. On the VM, `remote_cuda.sh` runs `STEPS='machine w1'` (the same machine check and the same
+   venv setup as the other steps; no compiler is built). The `w1` step downloads the two checkpoints
+   at the revisions of 13.1 and the GSM8K parquet with 13.2's commands (one `--exclude` per
+   pattern), runs `diff --w1-expect` **once**, and then calls `behave --n CHUNK`, `--n 2*CHUNK`, ...
+   `--n 200`. Every call ends with base and edited complete for its problems, and skips the ones
+   already finished, so on a seeded VM the first chunks cost only the model load. `CHUNK` (24) is a
+   multiple of the batch, so the batches, and with them the per-batch seeds (`seed` plus the first
+   problem of the batch), are those of one uninterrupted run.
+4. **Every `SYNC` minutes (10)** the driver copies the VM's `~/results` home and merges the jsonl
+   into `data/`: a file replaces the local one only if it has more lines, so a copy cut short never
+   costs what is already home. A preemption therefore loses at most the work since the last copy
+   (and a batch in flight), well inside one chunk.
+5. When the VM ends (done, preempted, at its cap) and work remains, the driver copies once more
+   (if the VM still exists), deletes it, and creates the next. It stops with a message at
+   **DONE**; at **`TOTAL_MAX`** (6 h of VM time summed over the VMs, each billed from creation to
+   deletion; the last VM's cap is the time left, and none starts with under 5 minutes left); at
+   **`MAX_VMS`** (6); after **two VMs in a row without progress** (a setup that keeps failing, a
+   chunk that keeps crashing); on a failed `diff --w1-expect` (another VM would say the same; the
+   edited checkpoint is then not the published edit and nothing is generated); or after three rounds
+   with no capacity in any region. Each VM's own cap is `MAX_RUN` (2 h), enforced by GCE.
+6. At the end, the verdict is computed **locally** from the pulled jsonl (`w1.py verdict`, numpy
+   only) and printed with the line about the cap check. Rerunning the same command continues from
+   what is home (the limits count from zero again); a finished directory starts no VM and reprints
+   the verdict.
+
+`w1.py status --dir DIR` and `w1.py verdict --dir DIR` are the two pieces of `w1.py` this needs;
+both read only the jsonl. Output: `results/w1_cloud/` (`data/`, `vm-<stamp>-<k>/` with each VM's log,
+`remote.log`, and `pull/`, the last copy of the VM's `~/results`: `w1.log`, `w1_diff.txt`, `w1_status`, `summary.tsv`; and `verdict_200_8192.json`); the smoke run uses
+`results/w1_cloud_smoke/`.
+
+**Cost guard rails** are `cuda_test.sh`'s, per VM, and a total on top: Spot unless `SPOT=0`;
+`--max-run-duration` and `--instance-termination-action DELETE` on every VM, so none outlives its
+cap even if the driver is killed; the VM deleted on exit, error, SIGINT, SIGTERM and SIGHUP (the
+results are copied home first on a signal; a second signal skips that); `sweep.sh` finds them by
+label. The sum of the caps never exceeds `TOTAL_MAX`.
+
+**What `tests/gcp.sh` checks** against a stub `gcloud` with a stateful fake VM: the guard rails
+in the dry run, the loop restarting after a simulated preemption with the second VM seeded from the
+first one's pulled results, results pulled while a VM runs, `TOTAL_MAX` (the second VM gets the hour
+that is left, then it stops), `MAX_VMS`, the no-progress stop, the diff failure, the no-capacity
+stop, a shorter copy not replacing the results at home, a finished directory starting no VM, signals,
+no VM left in each case, and (with a fake python and `hf`) the remote step: 13.2's commands, `diff`
+once, the chunks in order, the resume, the stop file. **Not checked, and unknown until the smoke run:**
+that `gcloud` accepts these calls beyond what `cuda_test.sh` already showed; that
+`AutoModelForCausalLM` (or the `AutoModelForImageTextToText` fallback) loads the checkpoint with
+`transformers>=5.2` on CUDA; tokens per second on an L4 (without `flash-linear-attention` the
+linear-attention layers run in plain PyTorch, which is slow: add it with `W1_PIP` if the smoke run
+says so); and the real preemption path. The smoke run is where those get measured.
 
 ## The image: optional
 
