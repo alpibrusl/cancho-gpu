@@ -14,8 +14,8 @@
 # gcloud skip the first guard, and the second is up to MAX_RUN of a GPU you
 # are not using.
 #
-# Matches the labels purpose=cancho-gpu-test (GPU runs) and
-# purpose=cancho-gpu-image-build (build_image.sh's builder), so it never
+# Matches the labels purpose=cancho-gpu-test (GPU runs), purpose=cancho-gpu-w1
+# (w1_cloud.sh's VMs) and purpose=cancho-gpu-image-build (build_image.sh's builder), so it never
 # touches anything else in the project. Images are listed, never deleted:
 # they cost storage, not compute, and build_image.sh prunes its own.
 set -euo pipefail
@@ -39,7 +39,7 @@ gc() {
 }
 
 FOUND="$(gc compute instances list \
-  --filter="labels.purpose=cancho-gpu-test OR labels.purpose=cancho-gpu-image-build" \
+  --filter="labels.purpose=cancho-gpu-test OR labels.purpose=cancho-gpu-w1 OR labels.purpose=cancho-gpu-image-build" \
   --format="value(name,zone.basename(),status)")"
 if [ "$DRY_RUN" = 1 ]; then echo "$FOUND"; FOUND=""; fi
 
@@ -52,7 +52,7 @@ if [ -n "$IMAGES" ]; then
 fi
 
 if [ -z "$FOUND" ]; then
-  echo "$PROJECT: nothing running with purpose=cancho-gpu-test"
+  echo "$PROJECT: nothing running with purpose=cancho-gpu-test or cancho-gpu-w1"
   exit 0
 fi
 

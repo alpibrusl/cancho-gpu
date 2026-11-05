@@ -292,6 +292,8 @@ python3 examples/weightspace/w1.py behave --base ~/models/qwen35-08b-base --edit
 python3 examples/weightspace/w1.py behave --base ... --edited ... --data ... --out results/w1 --n 200 --max-new 8192 --gpu-free
 python3 examples/weightspace/w1.py behave --base ... --edited ... --data ... --out results/w1 --n 60 --max-new 16384 --gpu-free   # only if the rule says so
 ```
+**On a Spot L4 in Google Cloud, in restartable steps:** `scripts/gcp/w1_cloud.sh` (docs/cloud.md, "W1 on a Spot L4"; `SMOKE=1` is the smoke run (b)), with `w1.py status` and `w1.py verdict` reading the pulled jsonl.
+
 `tests/w1.py` (in the gate) holds the diff, the grading, the bootstrap and the rule to synthetic checkpoints and a fake generator: a planted rank-1 edit on 4 columns is found as that and a rank-2 plant is not called rank 1; 400 random corruptions of a valid file raise only `ReadError`; the 20-point and half-width boundaries are strict; a rerun after a crash resumes. **Not tested**: the two generation backends (`transformers_generator`, `mlx_generator`), which need the weights; their first test is the smoke run. The loading path (`AutoModelForCausalLM`, falling back to `AutoModelForImageTextToText` for the multimodal release) is a guess until then **[open]**.
 
 ### 13.6 What this would and would not show

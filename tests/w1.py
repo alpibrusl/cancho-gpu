@@ -14,7 +14,11 @@ synthetic checkpoints (no model, no download, no GPU).
   3. The published-edit expectations pass on a checkpoint built to match them and fail on each planted deviation.
   4. Grading (nested braces, commas, fractions, no answer, a cut-off \\boxed{), the bootstrap (reproducible, contains the mean), the
      rule (reproduces / partial / not reproduced, and the 20-point and half-width boundaries are strict), the run loop with a fake
-     generator (resume, a log line cut off by a crash), the problem file reader and the `--gpu-free` refusal."""
+     generator (resume, a log line cut off by a crash), the problem file reader and the `--gpu-free` refusal.
+  5. What scripts/gcp/w1_cloud.sh relies on: `behave` in growing chunks (--n 4, then 8, then 10) over a directory that holds a partial
+     run (a batch missing, a line cut off) finishes it with the same seeds as one uninterrupted run and re-generates nothing it has;
+     `status` and `verdict` read the jsonl alone, agree with the in-process rule, refuse an incomplete directory, and say whether
+     the cap check is asked."""
 import hashlib
 import json
 import os
@@ -332,6 +336,86 @@ r = run("behave", "--base", f"{tmp}/base.safetensors", "--edited", f"{tmp}/edite
 expect("4w behave without --gpu-free refuses (exit 2) and writes nothing", r.returncode == 2 and "--gpu-free" in r.stderr and not os.path.exists(f"{tmp}/out"), (r.returncode, r.stderr))
 r = run("behave", "--base", f"{tmp}/base.safetensors", "--edited", f"{tmp}/edited.safetensors", "--data", jl, "--out", f"{tmp}/out", "--gpu-free", "--n", "3")
 expect("4x behave on a checkpoint that is not the published edit refuses (exit 1) before loading anything", r.returncode == 1 and "published edit" in r.stderr and not os.path.exists(f"{tmp}/out"), (r.returncode, r.stderr))
+
+# ---- 5: chunks, a partial directory, status and verdict from the jsonl
+chunk_calls = []
+
+
+def chunk_gen_for(path):
+    def g(prompts, max_new, seed):
+        chunk_calls.append((os.path.basename(path), len(prompts), seed))
+        return fake_gen(prompts, max_new, seed)
+    return g
+
+
+saved_pick = w1.pick_generator
+w1.pick_generator = lambda a, model_dir: chunk_gen_for(model_dir)
+d1, d2 = f"{tmp}/mono", f"{tmp}/chunks"
+jl5 = f"{tmp}/gsm5.jsonl"
+open(jl5, "w").write("\n".join(json.dumps({"question": f"q{i}", "answer": f"#### {i}"}) for i in range(10)) + "\n")
+
+
+def behave_main(out, n, quiet=True):
+    args = ["behave", "--base", "base_ckpt", "--edited", "edited_ckpt", "--data", jl5, "--out", out, "--gpu-free", "--no-verify",
+            "--n", str(n), "--max-new", "100", "--batch", "2", "--seed", "5"]
+    if quiet:
+        so, sys.stdout = sys.stdout, open(os.devnull, "w")
+    try:
+        return w1.main(args)
+    finally:
+        if quiet:
+            sys.stdout.close()
+            sys.stdout = so
+
+
+behave_main(d1, 10)
+mono = [c for c in chunk_calls]
+chunk_calls.clear()
+for n_ in (4, 8):
+    behave_main(d2, n_)
+# a crash in the middle of the base run's next chunk: whole batches written, then a line cut off
+lines = open(f"{d2}/base_100.jsonl").read().splitlines()
+open(f"{d2}/base_100.jsonl", "w").write("\n".join(lines[:6]) + "\n" + lines[6][:15])
+chunk_calls.clear()
+behave_main(d2, 10)
+expect("5a a partial directory resumes: only the cut-off batch and the new problems are generated, with the uninterrupted run's seeds",
+       [c for c in chunk_calls if c[0] == "base_ckpt"] == [("base_ckpt", 2, 5 + 6), ("base_ckpt", 2, 5 + 8)] and [c for c in chunk_calls if c[0] == "edited_ckpt"] == [("edited_ckpt", 2, 5 + 8)], chunk_calls)
+expect("5b the records of the chunked run equal the uninterrupted run's",
+       all(sorted(json.loads(x)["id"] for x in open(f"{d2}/{t}_100.jsonl").read().splitlines() if x.endswith("}")) == list(range(10)) for t in ("base", "edited"))
+       and all(sorted(r["correct"] for r in B.load_done(f"{d1}/{t}_100.jsonl", t, 100).values()) == sorted(r["correct"] for r in B.load_done(f"{d2}/{t}_100.jsonl", t, 100).values()) for t in ("base", "edited")))
+expect("5c the seeds of the chunked run are the uninterrupted run's", sorted({c[2] for c in chunk_calls if c[0] == "edited_ckpt"}) == [13] and sorted(c[2] for c in mono if c[0] == "base_ckpt") == [5, 7, 9, 11, 13])
+w1.pick_generator = saved_pick
+st = lambda d, n_, mx="100": run("status", "--dir", d, "--n", str(n_), "--max-new", mx)  # noqa: E731
+r = st(d2, 10)
+expect("5d status: complete directory exits 0", r.returncode == 0 and "base 10/10 edited 10/10 complete" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r = st(d2, 11)
+expect("5e status: asking for more than was run exits 1 and says how much", r.returncode == 1 and "base 10/11 edited 10/11 incomplete" in r.stdout, (r.returncode, r.stdout))
+r = st(d2, 10, "200")
+expect("5f status: another cap is not the same run", r.returncode == 1 and "base 0/10" in r.stdout, r.stdout)
+r = st(f"{tmp}/nowhere", 3)
+expect("5g status: a missing directory is empty, not an error", r.returncode == 1 and "base 0/3" in r.stdout and "Traceback" not in r.stderr, (r.returncode, r.stderr))
+r = run("verdict", "--dir", d2, "--n", "10", "--max-new", "100", "--json", f"{tmp}/v.json")
+inproc = B.verdict([B.load_done(f"{d2}/base_100.jsonl", "base", 100)[i] for i in range(10)], [B.load_done(f"{d2}/edited_100.jsonl", "edited", 100)[i] for i in range(10)])
+vj = json.load(open(f"{tmp}/v.json")) if os.path.isfile(f"{tmp}/v.json") else {}
+expect("5h verdict from the jsonl alone equals the in-process rule and writes the json",
+       r.returncode == 0 and "W1 verdict (cap 100): " + inproc["verdict"] in r.stdout and vj.get("verdict") == inproc["verdict"] and vj.get("accuracy_gain") == inproc["accuracy_gain"], (r.returncode, r.stdout, r.stderr))
+expect("5i the same model twice is not reproduced, so the cap check is not asked", "not asked" in r.stdout, r.stdout)
+r = run("verdict", "--dir", d2, "--n", "11", "--max-new", "100")
+expect("5j verdict on an incomplete directory exits 1 and says so", r.returncode == 1 and "no verdict" in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr))
+v_re = {"verdict": "reproduces"}
+v_pa = {"verdict": "partial"}
+v_no = {"verdict": "not reproduced at this protocol"}
+expect("5k the cap check is asked after reproduces and partial, not after not reproduced, and is itself not asked",
+       "ASKED" in w1.cap_check_line(v_re, 8192) and "ASKED" in w1.cap_check_line(v_pa, 8192) and "not asked" in w1.cap_check_line(v_no, 8192)
+       and "ASKED" not in w1.cap_check_line(v_re, 16384), "")
+# a real verdict from planted logs: base 14% / 93% limit, edited 67% / 33%
+os.makedirs(f"{tmp}/plant")
+for tag, rr in (("base", base_r), ("edited", good_r)):
+    with open(f"{tmp}/plant/{tag}_8192.jsonl", "w") as f:
+        for i, x in enumerate(rr):
+            f.write(json.dumps({"model": tag, "id": i, "max_new": 8192, **x}) + "\n")
+r = run("verdict", "--dir", f"{tmp}/plant")
+expect("5l planted logs at the main protocol: reproduces, and the cap check is asked", r.returncode == 0 and "W1 verdict (cap 8192): reproduces" in r.stdout and "ASKED" in r.stdout, r.stdout)
 
 print("w1: ok" if not fails else f"w1: {fails} FAILED")
 sys.exit(1 if fails else 0)

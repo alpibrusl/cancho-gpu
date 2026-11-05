@@ -16,7 +16,10 @@
 #   project     none given and none configured is refused (exit 2); one taken
 #               from gcloud's default is printed and waits unless YES=1
 #   sweep       lists, exits 1 with strays, deletes only with DELETE=1
-#   scripts     parse (bash -n; shellcheck when installed)
+#   w1_cloud    (W1 in restartable steps, docs/cloud.md) the plan in a dry run; the loop restarts after a preemption, seeds
+#               the next VM with what was pulled, pulls while a VM runs, stops at TOTAL_MAX / MAX_VMS / no progress /
+#               a failed diff / no capacity, leaves no VM, computes the verdict locally; the remote w1 step's commands
+##   scripts     parse (bash -n; shellcheck when installed)
 #
 # The remote steps, the NVRTC check, the device cases and the benchmark need a
 # GPU and are NOT run here; what this cannot show is listed in docs/cloud.md.
@@ -488,6 +491,268 @@ hasnt "$L" "instances delete" "sweep without DELETE=1 deletes nothing"
 has "$L" "labels.purpose=cancho-gpu-test" "sweep filters on the label"
 PATH=$W/bin:$PATH GCP_PROJECT=fake-project DELETE=1 bash "$G/sweep.sh" > "$W/sweep2.txt" 2>&1; rc=$?
 has "$L" "instances delete cancho-gpu-l4-old --zone europe-west4-b" "DELETE=1 deletes it, in its zone"
+
+# --- w1_cloud.sh: W1 in small restartable steps (docs/cloud.md) ---------------
+# Its own stateful stub: the "VM" has a home with results/w1_out, the driver seeds it with scp, the remote command extends it as
+# the plan file says (line k = the k-th VM: <records per model after this VM> <DONE|PREEMPT|CAP|DROP|DIFF|STALL>), and an scp from
+# ~/results/* copies it back. Nothing leaves the machine.
+if python3 -c 'import numpy' 2>/dev/null; then
+mkdir -p "$W/w1bin"
+cat > "$W/w1bin/gcloud" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$STUB_LOG"
+S=$STUB_STATE; cur=$S/current
+for last; do :; done
+case "$*" in
+  *"config get-value project"*) echo "${STUB_CONFIG_PROJECT:-}"; exit 0 ;;
+  *"images list"*) echo "common-cu12-ubuntu-2204"; exit 0 ;;
+  *"describe-from-family"*) exit 1 ;;
+  *"instances bulk create"*)
+    if [ "${STUB_CAPACITY_FAIL:-0}" = 1 ]; then echo "ERROR: code: ZONE_RESOURCE_POOL_EXHAUSTED" >&2; exit 1; fi
+    n=$(cat "$S/vmcount" 2>/dev/null || echo 0); echo $((n + 1)) > "$S/vmcount"
+    rm -rf "$cur" "$S/preempted"; mkdir -p "$cur/w1_out"; touch "$S/vm"; exit 0 ;;
+  *"instances list"*"labels.purpose"*) exit 0 ;;
+  *"instances list"*) [ -f "$S/vm" ] && echo "europe-west4-b"; exit 0 ;;
+  *"instances delete"*) rm -f "$S/vm"; exit 0 ;;
+  *"operations list"*) [ -f "$S/preempted" ] && echo "operation-1"; exit 0 ;;
+  *"compute ssh"*"remote_cuda.sh"*)
+    touch "$S/ssh_running"
+    k=$(cat "$S/vmcount"); line=$(sed -n "${k}p" "$STUB_PLAN"); target=${line% *}; word=${line#* }
+    mx=$(echo "$*" | sed -n "s/.*W1_MAX_NEW='\([0-9]*\)'.*/\1/p")
+    if [ "$word" != STALL ]; then
+      for tag in base edited; do
+        f=$cur/w1_out/${tag}_$mx.jsonl; have=0; [ -f "$f" ] && have=$(wc -l < "$f" | tr -d ' ')
+        i=$have
+        while [ "$i" -lt "$target" ]; do
+          if [ $tag = edited ]; then c=true; h=false; else c=false; h=true; fi
+          echo "{\"model\": \"$tag\", \"id\": $i, \"max_new\": $mx, \"correct\": $c, \"hit_limit\": $h, \"n_tokens\": 5}" >> "$f"
+          i=$((i + 1))
+        done
+      done
+    fi
+    [ -n "${STUB_SSH_SLEEP:-}" ] && sleep "$STUB_SSH_SLEEP"
+    case "$word" in
+      DONE) echo DONE > "$cur/w1_status"; echo "remote: done"; exit 0 ;;
+      PREEMPT) rm -f "$S/vm"; touch "$S/preempted"; exit 255 ;;
+      CAP) rm -f "$S/vm"; exit 255 ;;
+      DROP) exit 255 ;;        # the ssh connection dies, the VM lives
+      DIFF) echo DIFF-FAILED > "$cur/w1_status"; exit 1 ;;
+      *) echo "FAILED chunk n=8" > "$cur/w1_status"; exit 1 ;;
+    esac ;;
+  *"compute ssh"*) exit 0 ;;
+  *"compute scp"*":~/results/* "*)
+    [ -f "$S/vm" ] || exit 1
+    mkdir -p "$last"; cp -R "$cur"/. "$last"/
+    if [ "${STUB_TRUNCATE:-0}" = 1 ]; then for f in "$last"/w1_out/*.jsonl; do head -1 "$f" > "$f.t" && mv "$f.t" "$f"; done; fi
+    touch "$S/pulled"; exit 0 ;;
+  *"compute scp"*":~/results/w1_out/"*)
+    for a in "$@"; do [ -f "$a" ] && cp "$a" "$cur/w1_out/"; done; touch "$S/seeded"; exit 0 ;;
+  *"compute scp"*) exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$W/w1bin/gcloud"
+W1=$G/w1_cloud.sh
+
+# the plan, read without a cloud
+PATH=$W/never:$PATH DRY_RUN=1 GCP_PROJECT=fake-project W1_DIR=$W/w1dry bash "$W1" > "$W/w1dry.txt" 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "w1 dry run exits 0" || bad "w1 dry run exits $rc: $(tail -3 "$W/w1dry.txt")"
+[ -e "$W/never.log" ] && bad "w1 dry run called gcloud: $(cat "$W/never.log")" || ok "w1 dry run called no gcloud"
+has "$W/w1dry.txt" "plan: W1 behaviour, problems 0..199 of GSM8K, --max-new 8192, batch 8" "w1 dry run: the fixed protocol (13.3)"
+has "$W/w1dry.txt" "chunks of 24 problems; results copied home every 10 min" "w1 dry run: CHUNK 24, SYNC 10"
+has "$W/w1dry.txt" "at most 6 VMs and 6h of VM time in all" "w1 dry run: MAX_VMS 6, TOTAL_MAX 6h"
+has "$W/w1dry.txt" "from memory, not looked up" "w1 dry run: the cost is said to be from memory"
+has "$W/w1dry.txt" "--provisioning-model=SPOT" "w1 dry run: Spot"
+has "$W/w1dry.txt" "--max-run-duration 2h --instance-termination-action DELETE" "w1 dry run: the per-VM cap (MAX_RUN 2h) and DELETE"
+has "$W/w1dry.txt" "--labels purpose=cancho-gpu-w1" "w1 dry run: the purpose label"
+has "$W/w1dry.txt" "--region europe-west4 " "w1 dry run: EU region first"
+has "$W/w1dry.txt" "--machine-type g2-standard-8" "w1 dry run: the L4 machine"
+has "$W/w1dry.txt" "instances delete cancho-w1-" "w1 dry run: prints the delete"
+has "$W/w1dry.txt" "STEPS='machine w1'.*W1_N='200' W1_MAX_NEW='8192' W1_BATCH='8' W1_CHUNK='24'" "w1 dry run: the remote steps and the protocol reach the VM"
+has "$W/w1dry.txt" "scp .*data/\*.jsonl .*:~/results/w1_out/" "w1 dry run: the VM is seeded with the pulled jsonl"
+has "$W/w1dry.txt" "scp .*--recurse cancho-w1-.*:~/results/\*" "w1 dry run: the results are copied back"
+PATH=$W/never:$PATH DRY_RUN=1 SMOKE=1 SPOT=0 MAX_RUN=45m GCP_PROJECT=fake-project W1_DIR=$W/w1dry bash "$W1" > "$W/w1dry2.txt" 2>&1
+has "$W/w1dry2.txt" "problems 0..7 of GSM8K, --max-new 512" "SMOKE=1: n=8 --max-new 512"
+has "$W/w1dry2.txt" "SMOKE=1: does it load" "SMOKE=1 says it is not a result"
+has "$W/w1dry2.txt" "W1_N='8' W1_MAX_NEW='512'.*W1_CHUNK='8'" "SMOKE=1 reaches the VM"
+hasnt "$W/w1dry2.txt" "provisioning-model" "w1 SPOT=0: on demand"
+has "$W/w1dry2.txt" "--max-run-duration 45m --instance-termination-action DELETE" "w1 SPOT=0 still caps and deletes (MAX_RUN=45m)"
+# the VM is made as cuda_test.sh makes it: the same zones, machine and flags
+zl() { sed -n 's/^ *l4)   MACHINE=g2-standard-8; DEFAULT_ZONES="\(.*\)" ;;$/\1/p;s/^DEFAULT_ZONES="\(.*\)"$/\1/p' "$1"; }
+[ -n "$(zl "$G/cuda_test.sh")" ] && [ "$(zl "$G/cuda_test.sh")" = "$(zl "$W1")" ] && ok "w1 uses cuda_test.sh's L4 zone list" || bad "w1 zone list differs from cuda_test.sh"
+for flag in "--maintenance-policy TERMINATE" "--boot-disk-size 150GB --boot-disk-type pd-ssd" "--metadata install-nvidia-driver=True" "--instance-termination-action DELETE"; do
+  has "$G/cuda_test.sh" "$flag" "cuda_test.sh has $flag" ; has "$W1" "$flag" "w1_cloud.sh has $flag"
+done
+# refused inputs create nothing
+for env in "CHUNK=10" "MAX_RUN=soon" "TOTAL_MAX=soon" "N=0" "SYNC=0"; do
+  new_case w1bad
+  env "$env" STUB_PLAN=$W/plan PATH="$W/w1bin:$PATH" GCP_PROJECT=fake-project W1_DIR=$W/w1bad bash "$W1" > "$W/w1bad.txt" 2>&1; rc=$?
+  { [ "$rc" = 2 ] && ! grep -q "bulk create" "$L"; } && ok "w1 $env: refused, exit 2, nothing created" || bad "w1 $env: exit $rc"
+done
+
+w1_run() { # name, plan lines (one per VM, "\n"-separated), env words...; sets rc, S, L
+  local name=$1 plan=$2; shift 2
+  new_case "$name"
+  printf '%b' "$plan" > "$W/$name.plan"
+  env W1_DIR="$W/$name.dir" "$@" STUB_PLAN="$W/$name.plan" PATH="$W/w1bin:$PATH" GCP_PROJECT=fake-project CAP_WAIT=0 \
+    bash "$W1" > "$W/$name.txt" 2>&1
+  rc=$?
+}
+nvm() { grep -c "instances bulk create" "$L"; }
+lines() { wc -l < "$1" | tr -d ' '; }
+
+# a preemption: the first VM is taken back after 3 problems, the second finishes; results are pulled while it runs and between VMs
+w1_run pre "3 PREEMPT\n8 DONE\n" N=8 MAX_NEW=512 CHUNK=8 SYNC_SECS=1 STUB_SSH_SLEEP=3
+[ "$rc" = 0 ] && ok "w1: preempted once, then done: exit 0" || bad "w1 restart: exit $rc: $(tail -5 "$W/pre.txt")"
+[ "$(nvm)" = 2 ] && ok "w1: the loop restarted after the preemption (2 VMs)" || bad "w1 restart: $(nvm) VMs"
+has "$W/pre.txt" "VM 1 ended: PREEMPTED" "w1: the preemption is recognised"
+has "$W/pre.txt" "synced: base 3/8 edited 3/8" "w1: results were pulled while the VM was running"
+[ -f "$S/seeded" ] && [ "$(lines "$W/pre.dir/data/base_512.jsonl")" = 8 ] && [ "$(lines "$W/pre.dir/data/edited_512.jsonl")" = 8 ] && ok "w1: the pulled results are home, and complete" || bad "w1 restart: data not complete"
+has "$L" "scp .*base_512.jsonl.*:~/results/w1_out/" "w1: the second VM was seeded with the first one's results"
+awk '/instances bulk create/{c++} /w1_out\/$/ && c==2 {s=1} END{exit !s}' "$L" && ok "w1: the seed went to the second VM, after its creation" || bad "w1: no seed after the second create"
+[ "$(grep -c 'instances delete' "$L")" = 1 ] && ok "w1: the VM Google took back is not deleted again (it is gone); the one that finished is" || bad "w1: deletes: $(grep -c 'instances delete' "$L")"
+has "$W/pre.txt" "W1 verdict (cap 512): reproduces" "w1: the verdict is computed locally from the pulled jsonl"
+has "$W/pre.txt" "cap check (13.3(d)): ASKED" "w1: and says the rule asks for the cap check"
+hasnt "$L" "W1_N='60'" "w1: the cap check is not started by itself"
+[ ! -f "$S/vm" ] && ok "w1: no VM left" || bad "w1: VM left behind"
+[ -f "$W/pre.dir/verdict_8_512.json" ] && ok "w1: the verdict json is written" || bad "w1: no verdict json"
+has "$L" "--labels purpose=cancho-gpu-w1" "w1: the stubbed create is labelled"
+has "$L" "--max-run-duration 2h --instance-termination-action DELETE" "w1: the stubbed create has the cap and DELETE"
+
+# TOTAL_MAX: VMs of 2 h each against a 3 h total: the second gets the hour that is left, then it stops
+w1_run tot "1 DROP\n2 DROP\n3 DROP\n4 DROP\n" N=8 MAX_NEW=512 CHUNK=8 TOTAL_MAX=3h MAX_RUN=2h W1_FAKE_VM_SECS=7200
+[ "$rc" = 3 ] && ok "w1 TOTAL_MAX: stops with work remaining, exit 3" || bad "w1 TOTAL_MAX: exit $rc"
+[ "$(nvm)" = 2 ] && ok "w1 TOTAL_MAX: two VMs, not more" || bad "w1 TOTAL_MAX: $(nvm) VMs"
+has "$L" "--max-run-duration 2h " "w1 TOTAL_MAX: the first VM's cap is MAX_RUN"
+has "$L" "--max-run-duration 60m " "w1 TOTAL_MAX: the second VM's cap is the time left"
+has "$W/tot.txt" "TOTAL_MAX: 240 of 180 minutes" "w1 TOTAL_MAX: says why it stopped"
+has "$W/tot.txt" "STOPPED before DONE: base 2/8 edited 2/8" "w1 TOTAL_MAX: says how far it got"
+has "$W/tot.txt" "run the same command again" "w1 TOTAL_MAX: says how to continue"
+hasnt "$W/tot.txt" "W1 verdict" "w1 TOTAL_MAX: no verdict from an incomplete run"
+[ ! -f "$S/vm" ] && ok "w1 TOTAL_MAX: no VM left" || bad "w1 TOTAL_MAX: VM left behind"
+w1_run tot2 "1 DROP\n2 DROP\n" N=8 MAX_NEW=512 CHUNK=8 TOTAL_MAX=100m MAX_RUN=2h W1_FAKE_VM_SECS=5800
+has "$L" "--max-run-duration 100m " "w1 TOTAL_MAX below MAX_RUN: the first VM's cap is the total"
+[ "$(nvm)" = 1 ] && ok "w1 TOTAL_MAX: under 5 minutes left starts no VM" || bad "w1 TOTAL_MAX: $(nvm) VMs"
+
+# MAX_VMS
+w1_run mv "1 DROP\n2 DROP\n3 DROP\n" N=8 MAX_NEW=512 CHUNK=8 MAX_VMS=2 W1_FAKE_VM_SECS=600
+[ "$rc" = 3 ] && [ "$(nvm)" = 2 ] && ok "w1 MAX_VMS=2: two VMs, exit 3" || bad "w1 MAX_VMS: exit $rc, $(nvm) VMs"
+has "$W/mv.txt" "MAX_VMS: 2 VMs were started" "w1 MAX_VMS: says why it stopped"
+[ ! -f "$S/vm" ] && ok "w1 MAX_VMS: no VM left" || bad "w1 MAX_VMS: VM left behind"
+
+# a VM that finishes its part but not the job is deleted before the next one is created
+w1_run seq "4 DONE\n8 DONE\n" N=8 MAX_NEW=512 CHUNK=8
+[ "$rc" = 0 ] && [ "$(nvm)" = 2 ] && ok "w1: a VM that ends with work remaining is followed by another (2 VMs, exit 0)" || bad "w1 seq: exit $rc, $(nvm) VMs"
+awk '/instances bulk create/{c++; if (c==2 && d<1) bad=1} /instances delete/{d++} END{exit bad}' "$L" && ok "w1: the first VM was deleted before the second was created" || bad "w1: second VM created before the first was deleted"
+[ "$(grep -c 'instances delete' "$L")" = 2 ] && ok "w1: every VM was deleted" || bad "w1: deletes: $(grep -c 'instances delete' "$L")"
+
+# a VM that does nothing, twice: stop, do not burn the budget
+w1_run stall "0 STALL\n0 STALL\n0 STALL\n" N=8 MAX_NEW=512 CHUNK=8 W1_FAKE_VM_SECS=600
+[ "$rc" = 1 ] && [ "$(nvm)" = 2 ] && ok "w1: two VMs without progress stop the loop (exit 1, 2 VMs)" || bad "w1 stall: exit $rc, $(nvm) VMs"
+has "$W/stall.txt" "two VMs in a row made no progress" "w1: and says so"
+# diff --w1-expect failing is not retried
+w1_run diff "0 DIFF\n8 DONE\n" N=8 MAX_NEW=512 CHUNK=8 W1_FAKE_VM_SECS=600
+[ "$rc" = 1 ] && [ "$(nvm)" = 1 ] && ok "w1: a failed diff --w1-expect stops after one VM (exit 1)" || bad "w1 diff: exit $rc, $(nvm) VMs"
+has "$W/diff.txt" "not the published edit" "w1: and says why"
+[ ! -f "$S/vm" ] && ok "w1 diff failure: no VM left" || bad "w1 diff failure: VM left behind"
+# no capacity anywhere: three rounds, then stop
+w1_run cap "" N=8 MAX_NEW=512 CHUNK=8 STUB_CAPACITY_FAIL=1
+[ "$rc" = 1 ] && [ "$(grep -c 'region europe-west4 ' "$L")" = 3 ] && ok "w1: no capacity three times running stops (exit 1)" || bad "w1 capacity: exit $rc"
+has "$W/cap.txt" "no region had capacity" "w1: and says so"
+# a truncated copy never replaces what is home
+mkdir -p "$W/trunc.dir/data"
+for t in base edited; do for i in 0 1 2 3 4; do echo "{\"model\": \"$t\", \"id\": $i, \"max_new\": 512, \"correct\": true, \"hit_limit\": false, \"n_tokens\": 5}"; done > "$W/trunc.dir/data/${t}_512.jsonl"; done
+w1_run trunc "5 CAP\n" N=8 MAX_NEW=512 CHUNK=8 MAX_VMS=1 STUB_TRUNCATE=1 W1_FAKE_VM_SECS=600
+[ "$(lines "$W/trunc.dir/data/base_512.jsonl")" = 5 ] && ok "w1: a shorter copy does not replace the jsonl that is home" || bad "w1: the jsonl at home was replaced by a shorter copy"
+# a rerun continues: the seed is what is home
+w1_run again "8 DONE\n" N=8 MAX_NEW=512 CHUNK=8
+[ "$rc" = 0 ] && ok "w1: a run over a partial directory continues and finishes" || bad "w1 continue: exit $rc"
+rm -rf "$W/again2.dir"; cp -R "$W/again.dir" "$W/again2.dir"
+w1_run done2 "" N=8 MAX_NEW=512 CHUNK=8 W1_DIR=$W/again2.dir
+[ "$rc" = 0 ] && [ "$(nvm)" = 0 ] && ok "w1: a finished directory starts no VM and prints the verdict" || bad "w1 finished: exit $rc, $(nvm) VMs"
+has "$W/done2.txt" "=== DONE" "w1: DONE"
+# SMOKE on one VM
+w1_run smoke "8 DONE\n" SMOKE=1 W1_DIR=$W/smoke.dir
+[ "$rc" = 0 ] && [ "$(nvm)" = 1 ] && ok "w1 SMOKE=1: n=8, one VM, done" || bad "w1 smoke: exit $rc, $(nvm) VMs"
+has "$W/smoke.txt" "SMOKE: that is a check that the weights load" "w1 SMOKE=1: not a result, and says so"
+has "$L" "W1_N='8' W1_MAX_NEW='512'" "w1 SMOKE=1: n=8, --max-new 512 on the VM"
+
+# a signal: the results are copied home and the VM is deleted
+for sig in TERM HUP; do
+  new_case "w1sig$sig"
+  printf '3 DONE\n' > "$W/w1sig.plan"
+  STUB_PLAN=$W/w1sig.plan STUB_SSH_SLEEP=60 N=8 MAX_NEW=512 CHUNK=8 PATH=$W/w1bin:$PATH GCP_PROJECT=fake-project W1_DIR=$W/w1sig$sig.dir \
+    bash "$W1" > "$W/w1sig$sig.txt" 2>&1 &
+  pid=$!
+  for _ in $(seq 1 100); do [ -f "$S/ssh_running" ] && break; sleep 0.1; done
+  if [ ! -f "$S/ssh_running" ]; then bad "w1 $sig: the run never reached the remote command"; kill "$pid" 2>/dev/null; continue; fi
+  kill -s "$sig" "$pid"
+  wait "$pid"; rc=$?
+  want=143; [ "$sig" = HUP ] && want=129
+  [ "$rc" = "$want" ] && ok "w1 $sig: exits $want" || bad "w1 $sig: exit $rc, wanted $want"
+  has "$L" "instances delete cancho-w1-" "w1 $sig: the VM is deleted"
+  [ ! -f "$S/vm" ] && ok "w1 $sig: no VM left" || bad "w1 $sig: VM left behind"
+  [ "$(lines "$W/w1sig$sig.dir/data/base_512.jsonl" 2>/dev/null)" = 3 ] && ok "w1 $sig: the results were copied home first" || bad "w1 $sig: results not copied home"
+  pkill -f "sleep 60" 2>/dev/null || true
+done
+
+# the remote step, with a fake python and hf: 13.2's commands, the diff once, the chunks in order, the resume, the stop file
+mkdir -p "$W/rs/venv/bin" "$W/rs/home/cancho-gpu" "$W/rs/home/results"
+cp "$ROOT/cancho.toml" "$W/rs/home/cancho-gpu/"
+cat > "$W/rs/venv/bin/python" <<'FAKE'
+#!/bin/sh
+# python <w1.py> status|diff|behave ... : records the call; complete up to the number in $RS_DONE
+echo "$*" >> "$RS_LOG"
+sub=$2; n=""
+while [ $# -gt 0 ]; do [ "$1" = --n ] && n=$2; shift; done
+case "$sub" in
+  diff) exit "${RS_DIFF_RC:-0}" ;;
+  status) [ "$(cat "$RS_DONE" 2>/dev/null || echo 0)" -ge "$n" ] && exit 0; exit 1 ;;
+  behave) echo "$n" > "$RS_DONE"; exit "${RS_BEHAVE_RC:-0}" ;;
+esac
+FAKE
+cat > "$W/rs/venv/bin/hf" <<'FAKE'
+#!/bin/sh
+echo "hf $*" >> "$RS_LOG"
+FAKE
+chmod +x "$W/rs/venv/bin/python" "$W/rs/venv/bin/hf"
+rs_case() { # name, env words...
+  local c=$1; shift
+  export RS_LOG=$W/rs.$c.log RS_DONE=$W/rs.$c.done; : > "$RS_LOG"
+  rm -f "$W/rs/home/w1_stop"
+  ( cd "$W/rs/home/cancho-gpu" && env HOME="$W/rs/home" REMOTE_CUDA_LIB=1 STEPS="machine w1" W1_N=50 W1_CHUNK=24 W1_BATCH=8 "$@" bash -c '
+      . '"$G"'/remote_cuda.sh; VENV='"$W"'/rs/venv; pyenv() { return 0; }
+      s_w1; echo "rc=$? status=$(cat $R/w1_status)"' ) > "$W/rs.$c.txt" 2>&1
+}
+rs_case fresh
+has "$W/rs.fresh.txt" "rc=0 status=DONE" "w1 step: runs to DONE"
+c=$(grep -c "^hf download" "$W/rs.fresh.log"); [ "$c" = 3 ] && ok "w1 step: three downloads (base, edited, GSM8K)" || bad "w1 step: $c downloads"
+has "$W/rs.fresh.log" "^hf download Qwen/Qwen3.5-0.8B --revision 2fc06364715b967f1860aea9cf38778875588b17 .*--exclude README.md --exclude LICENSE --exclude .gitattributes" "w1 step: the base, pinned, with one --exclude per pattern (13.2)"
+has "$W/rs.fresh.log" "^hf download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision d1671a178705bcab7644806d23c535517f35723b .*--exclude eval/\* --exclude README.md" "w1 step: the edited, pinned, with the repeated --exclude (13.2)"
+has "$W/rs.fresh.log" "^hf download openai/gsm8k main/test-00000-of-00001.parquet --repo-type dataset" "w1 step: the GSM8K parquet"
+[ "$(grep -c " diff .*--w1-expect" "$W/rs.fresh.log")" = 1 ] && ok "w1 step: diff --w1-expect once" || bad "w1 step: diff count"
+[ "$(grep ' behave ' "$W/rs.fresh.log" | sed 's/.*--n \([0-9]*\) .*/\1/' | tr '\n' ' ')" = "24 48 50 " ] && ok "w1 step: behave in chunks 24, 48, 50" || bad "w1 step: chunks $(grep ' behave ' "$W/rs.fresh.log" | tr '\n' '|')"
+has "$W/rs.fresh.log" "behave .*--max-new 8192 --batch 8 --seed 0 --device cuda --gpu-free --no-verify" "w1 step: the protocol, on cuda, verified once so not per chunk"
+{ export RS_LOG=$W/rs.resume3.log RS_DONE=$W/rs.resume3.done; : > "$RS_LOG"; echo 30 > "$RS_DONE"; }
+( cd "$W/rs/home/cancho-gpu" && env HOME="$W/rs/home" REMOTE_CUDA_LIB=1 STEPS="machine w1" W1_N=50 W1_CHUNK=24 W1_BATCH=8 bash -c '
+    . '"$G"'/remote_cuda.sh; VENV='"$W"'/rs/venv; pyenv() { return 0; }; s_w1; echo "rc=$? status=$(cat $R/w1_status)"' ) > "$W/rs.resume3.txt" 2>&1
+[ "$(grep ' behave ' "$W/rs.resume3.log" | sed 's/.*--n \([0-9]*\) .*/\1/' | tr '\n' ' ')" = "48 50 " ] && has "$W/rs.resume3.txt" "chunk n=24: already complete, skipped" "w1 step: a seeded directory skips the finished chunk and resumes at the next" || bad "w1 step: resume ran $(grep ' behave ' "$W/rs.resume3.log" | tr '\n' '|')"
+rs_case diff RS_DIFF_RC=1
+{ has "$W/rs.diff.txt" "rc=1 status=DIFF-FAILED" "w1 step: a failing diff --w1-expect ends it as DIFF-FAILED"; hasnt "$W/rs.diff.log" " behave " "w1 step: and nothing is generated"; }
+rs_case badchunk W1_CHUNK=10
+has "$W/rs.badchunk.txt" "status=SETUP-FAILED" "w1 step: a CHUNK that is not a multiple of BATCH is refused"
+rs_case behavefail RS_BEHAVE_RC=5
+has "$W/rs.behavefail.txt" "rc=1 status=FAILED chunk n=24" "w1 step: a failing chunk is reported with its n"
+touch "$W/rs/home/w1_stop"
+( cd "$W/rs/home/cancho-gpu" && env HOME="$W/rs/home" REMOTE_CUDA_LIB=1 STEPS="machine w1" W1_N=50 W1_CHUNK=24 W1_BATCH=8 RS_LOG="$W/rs.stop.log" RS_DONE="$W/rs.stop.done" bash -c '
+    . '"$G"'/remote_cuda.sh; VENV='"$W"'/rs/venv; pyenv() { return 0; }; s_w1; echo "rc=$? status=$(cat $R/w1_status)"' ) > "$W/rs.stop.txt" 2>&1
+has "$W/rs.stop.txt" "status=STOPPED n=24" "w1 step: the stop file ends it cleanly after a chunk"
+[ "$(grep -c ' behave ' "$W/rs.stop.log")" = 1 ] && ok "w1 step: and starts no further chunk" || bad "w1 step: chunks after the stop file"
+else
+  echo "skip w1_cloud.sh loop tests: numpy is not installed"
+fi
+sweepw1=$(grep -c "labels.purpose=cancho-gpu-w1" "$G/sweep.sh")
+[ "$sweepw1" -ge 1 ] && ok "sweep.sh finds w1_cloud.sh's VMs by label" || bad "sweep.sh does not know purpose=cancho-gpu-w1"
 
 echo "scripts/gcp: guard rails checked against a stub gcloud"
 exit $fail

@@ -126,9 +126,9 @@ def render_verdict(v, label=""):
         f"(rule: more than {L_RULE_POINTS:.0f}: {'holds' if v['limit_rule_holds'] else 'fails'})"])
 
 
-def run_behaviour(gen, problems, model_tag, max_new, seed, batch, log_path=None):
-    """Generate for every problem, `batch` at a time, appending each finished record to `log_path` (a jsonl; a rerun skips the
-    ids already in it). `gen(prompts, max_new, seed) -> [(text, n_tokens, hit_limit)]`. Returns the records in problem order."""
+def load_done(log_path, model_tag, max_new):
+    """{id: record} of the finished problems in a jsonl log for this model tag and cap; a line cut off by a crash is
+    skipped (that problem is run again), a missing file is empty."""
     done = {}
     if log_path and os.path.isfile(log_path):
         with open(log_path, encoding="utf-8") as f:
@@ -136,9 +136,21 @@ def run_behaviour(gen, problems, model_tag, max_new, seed, batch, log_path=None)
                 try:
                     r = json.loads(line)
                 except ValueError:
-                    continue   # a line cut off by a crash: that problem is run again
-                if r.get("model") == model_tag and r.get("max_new") == max_new and isinstance(r.get("id"), int):
+                    continue
+                if isinstance(r, dict) and r.get("model") == model_tag and r.get("max_new") == max_new and isinstance(r.get("id"), int):
                     done[r["id"]] = r
+    return done
+
+
+def run_behaviour(gen, problems, model_tag, max_new, seed, batch, log_path=None):
+    """Generate for every problem, `batch` at a time, appending each finished record to `log_path` (a jsonl; a rerun skips the
+    ids already in it). `gen(prompts, max_new, seed) -> [(text, n_tokens, hit_limit)]`. Returns the records in problem order."""
+    done = load_done(log_path, model_tag, max_new)
+    if log_path and os.path.isfile(log_path) and os.path.getsize(log_path):
+        with open(log_path, "rb+") as f:   # a line cut off by a crash has no newline: end it, or the next record is glued onto it and lost
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
     todo = [p for p in problems if p["id"] not in done]
     for s in range(0, len(todo), batch):
         chunk = todo[s:s + batch]

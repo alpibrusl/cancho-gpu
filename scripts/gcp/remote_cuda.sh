@@ -21,6 +21,8 @@
 #   sandbox_linux    why tests/weightspace.py's network-call check fails on Linux (audit_probe.py)
 #   job           6. $JOB, alone (JOB=1 from the driver; the command is ~/job.sh)
 #   baselines     7. torch + peft LoRA, Qwen2.5-0.5B/1.5B at 4x512 (opt-in)
+#   w1               W1's behavioural run (docs/weight-space.md 13), in chunks, resumable (opt-in; w1_cloud.sh drives it
+#                    with STEPS='machine w1': no compiler is needed). See s_w1 for its W1_* settings.
 #
 # Environment: CASE_TIMEOUT (300, s per case in step 4), JOBS (4), SIZES
 # (1024,2048,4096,8192), DTYPES ("float32 float16"), BASE_MODELS ("Qwen/Qwen2.5-0.5B
@@ -50,6 +52,7 @@ SIZES="${SIZES:-}"                 # empty: gemm_bench.py's own sizes and shapes
 DTYPES="${DTYPES:-float32 float16}"
 BASE_MODELS="${BASE_MODELS:-Qwen/Qwen2.5-0.5B Qwen/Qwen2.5-1.5B}"
 KNOWN_OPEN="${KNOWN_OPEN:-tests/sampler.sh}"
+W1_PIP="${W1_PIP:-transformers>=5.2.0 pyarrow huggingface_hub numpy}"
 TORCH_INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu126}"
 CANCHO_REPO="${CANCHO_REPO:-https://github.com/alpibrusl/cancho}"
 EMU_ENTRY="${EMU_ENTRY:-tests/cuda-emu.sh}"
@@ -70,7 +73,7 @@ SKIP=77
 want() { case " $STEPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- the toolchain: the same on a pre-built image and on a stock one --------
-need_python_ml() { want gemm_bench || want fp4_perf || want baselines || [ "${WITH_BASELINE_LIBS:-0}" = 1 ]; }
+need_python_ml() { want gemm_bench || want fp4_perf || want baselines || want w1 || [ "${WITH_BASELINE_LIBS:-0}" = 1 ]; }
 apt_tools() {
   # Only what the requested steps use. build-essential: `cc` for the shim and
   # the mock drivers. numpy/jinja2: the gate's references (CI installs jinja2
@@ -229,17 +232,24 @@ WRAP
   chmod +x "$w"; echo "$w"
 }
 pyenv() {
-  # torch and cupy for the benchmark; transformers and peft only for baselines.
+  # torch and cupy for the benchmark; transformers and peft only for baselines; the w1 step needs torch, transformers, pyarrow
+  # and huggingface_hub, and cupy only if a benchmark step runs too.
   [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV" || return 1
-  local pkgs=""
-  "$VENV/bin/python" -c 'import torch, cupy' 2>/dev/null || pkgs=1
+  local pkgs="" probe='import torch, cupy'
+  if want w1 && ! want gemm_bench && ! want fp4_perf && ! want baselines; then probe='import torch'; fi
+  "$VENV/bin/python" -c "$probe" 2>/dev/null || pkgs=1
   if [ -n "$pkgs" ]; then
-    "$VENV/bin/pip" install -q numpy cupy-cuda12x || return 1
+    "$VENV/bin/pip" install -q numpy || return 1
+    [ "$probe" = 'import torch' ] || "$VENV/bin/pip" install -q cupy-cuda12x || return 1
     "$VENV/bin/pip" install -q torch --index-url "$TORCH_INDEX" || return 1
   fi
   if want baselines || [ "${WITH_BASELINE_LIBS:-}" = 1 ]; then
     "$VENV/bin/python" -c 'import transformers, peft' 2>/dev/null \
       || "$VENV/bin/pip" install -q transformers peft accelerate || return 1
+  fi
+  if want w1 && ! "$VENV/bin/python" -c 'import transformers, pyarrow, huggingface_hub, numpy' 2>/dev/null; then
+    # shellcheck disable=SC2086
+    "$VENV/bin/pip" install -q $W1_PIP || return 1
   fi
   "$VENV/bin/pip" freeze > "$R/pip-freeze.txt"
 }
@@ -412,6 +422,62 @@ s_baselines() {
   return $rc
 }
 
+s_w1() {
+  # docs/weight-space.md 13.2, 13.3, 13.5 on this card, in chunks: `behave --n K` for K = CHUNK, 2*CHUNK, ... N. Each chunk
+  # leaves base and edited complete for problems 0..K-1 in ~/results/w1_out/*.jsonl, so a VM that dies between two chunks (or in
+  # one) loses at most that chunk, and the driver (w1_cloud.sh) pulls the files while this runs. Finished problems are skipped
+  # (run_behaviour), so a rerun over a seeded directory goes straight to the first unfinished batch. CHUNK is a multiple of BATCH:
+  # the per-batch seed is seed + the first problem of the batch, so aligned chunks give the seeds of one uninterrupted run.
+  # Settings: W1_N (200), W1_MAX_NEW (8192), W1_BATCH (8), W1_CHUNK (24), W1_SEED (0), W1_BASE_REV / W1_EDITED_REV (13.1's pins),
+  # W1_STOP_FILE (a file whose existence ends the loop after the running chunk). The outcome is one word in ~/results/w1_status.
+  local n="${W1_N:-200}" mx="${W1_MAX_NEW:-8192}" batch="${W1_BATCH:-8}" chunk="${W1_CHUNK:-24}" seed="${W1_SEED:-0}"
+  local m="$HOME/models" out="$R/w1_out" w1py="$SRC/examples/weightspace/w1.py" py="$VENV/bin/python" hf="${W1_HF:-$VENV/bin/hf}"
+  local base_rev="${W1_BASE_REV:-2fc06364715b967f1860aea9cf38778875588b17}" edited_rev="${W1_EDITED_REV:-d1671a178705bcab7644806d23c535517f35723b}"
+  local k rc
+  mkdir -p "$out"
+  if [ "$((chunk % batch))" != 0 ]; then
+    echo "W1_CHUNK=$chunk is not a multiple of W1_BATCH=$batch"; echo SETUP-FAILED > "$R/w1_status"; return 1
+  fi
+  if ! python3 -c 'import ensurepip' 2>/dev/null; then
+    sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv
+  fi
+  pyenv || { echo "python environment failed"; echo SETUP-FAILED > "$R/w1_status"; return 1; }
+  [ -x "$hf" ] || { echo "no hf command at $hf (huggingface_hub too old?)"; echo SETUP-FAILED > "$R/w1_status"; return 1; }
+  # 13.2's commands: each --exclude pattern needs its own flag (the first run passed them after one and got LICENSE and README).
+  { "$hf" download Qwen/Qwen3.5-0.8B --revision "$base_rev" --local-dir "$m/qwen35-08b-base" --exclude README.md --exclude LICENSE --exclude .gitattributes \
+    && "$hf" download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision "$edited_rev" --local-dir "$m/qwen35-08b-edited" --exclude "eval/*" --exclude README.md --exclude LICENSE --exclude .gitattributes \
+    && "$hf" download openai/gsm8k main/test-00000-of-00001.parquet --repo-type dataset --local-dir "$m/gsm8k"; } \
+    || { echo "download failed"; echo SETUP-FAILED > "$R/w1_status"; return 1; }
+  # (a) the edit is the published one, or nothing runs; once per VM, so the chunks pass --no-verify.
+  if "$py" "$w1py" diff "$m/qwen35-08b-base" "$m/qwen35-08b-edited" --w1-expect --json "$R/w1_diff.json" > "$R/w1_diff.txt" 2>&1; then
+    tail -3 "$R/w1_diff.txt"; echo "diff --w1-expect: all checks pass"
+  else
+    tail -20 "$R/w1_diff.txt"; echo "diff --w1-expect FAILED: the edited checkpoint is not the published edit; nothing is run"
+    echo DIFF-FAILED > "$R/w1_status"; return 1
+  fi
+  echo RUNNING > "$R/w1_status"
+  k=$chunk
+  while :; do
+    [ "$k" -le "$n" ] || k=$n
+    if "$py" "$w1py" status --dir "$out" --n "$k" --max-new "$mx"; then
+      echo "chunk n=$k: already complete, skipped"
+    else
+      echo "chunk n=$k: starting ($(date -u +%H:%M:%S))"
+      "$py" "$w1py" behave --base "$m/qwen35-08b-base" --edited "$m/qwen35-08b-edited" --data "$m/gsm8k/main/test-00000-of-00001.parquet" \
+        --out "$out" --n "$k" --max-new "$mx" --batch "$batch" --seed "$seed" --device cuda --gpu-free --no-verify
+      rc=$?
+      [ "$rc" = 0 ] || { echo "chunk n=$k: behave exited $rc"; echo "FAILED chunk n=$k" > "$R/w1_status"; return 1; }
+      echo "chunk n=$k: done ($(date -u +%H:%M:%S))"
+    fi
+    [ "$k" -lt "$n" ] || break
+    if [ -e "${W1_STOP_FILE:-$HOME/w1_stop}" ]; then
+      echo "stop file present: ending after chunk n=$k"; echo "STOPPED n=$k" > "$R/w1_status"; return 0
+    fi
+    k=$((k + chunk))
+  done
+  echo DONE > "$R/w1_status"
+}
+
 # ---- run --------------------------------------------------------------------
 [ "${REMOTE_CUDA_LIB:-0}" = 1 ] && return 0   # tests/gcp.sh sources the functions above
 
@@ -441,6 +507,7 @@ else
   want shuffle_repro && run_step shuffle_repro s_shuffle_repro
   want fp4_perf && run_step fp4_perf s_fp4_perf
   want baselines && run_step baselines s_baselines
+  want w1 && run_step w1 s_w1
   # Last, and independent of the GPU: it must run even if shuffle_repro wedged it.
   want sandbox_linux && run_step sandbox_linux s_sandbox_linux
 fi
