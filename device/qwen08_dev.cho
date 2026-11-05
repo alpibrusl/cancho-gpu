@@ -102,8 +102,8 @@ pub fn adler[&t](t: &!t [byte], at: int, n: int, state: int) -> [] int {
     return b * 65536 + a;
 }
 
-// Check C2 for one tensor: read buffer `buf` back and compare it with the file,
-// read again from `path` by a second route. An f32 buffer of a BF16 tensor must
+// Check C2 for one tensor: read buffer `buf` back and compare it with the file (with the patch
+// applied to the tensors it names), read again from `path` by a second route. An f32 buffer of a BF16 tensor must
 // be the file's two bytes under two zero bytes, an F32 tensor's the file's four,
 // every value; an f16 buffer is widened and compared with the bf16 original.
 // `(Adler-32 of the device bytes, values that differ from the file's)`, or
@@ -137,6 +137,8 @@ pub fn verify[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetal
             device_fail(m, t, ffi, "reading a weight back");
             return (0 - 1, 0);
         }
+        // The file's values as the loader had them: with the edit patch (T11) applied, if there is one.
+        qwen08_load.apply_patch(m, t, 0 - 1, rec, done, n, raw);
         var i = 0;
         if fw == 4 {
             while i < n {

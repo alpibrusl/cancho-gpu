@@ -25,11 +25,12 @@ module qwen08_load;
 // An F32 tensor goes up as F32 on both paths (the recurrence constants are not
 // narrowed).
 //
-// The patch seam (T11): `apply_patch` is called on every chunk of raw
-// file-dtype bytes before the conversion. It is where "base + patch" will
-// overwrite the (row, column, bf16 bits) entries that fall in the chunk. No
-// patch format exists yet, so a patch handle other than -1 is refused with
-// `q08-patch`.
+// The edit patch (T11, `src/qwen08_patch.cho` has the format): `open_patch` reads a patch, matches
+// it to the checkpoint's tensors, checks the base tensors and the patched result against the
+// hashes it carries, and links each patched tensor to its plan record; `apply_patch` is then
+// called on every chunk of raw file-dtype bytes before the conversion and overwrites the
+// entries of the patch that fall in the chunk. So "base + patch" is converted exactly as the
+// edited file would be.
 //
 // It has no input that traps: every dimension of the config is bounded before
 // it is used, the expected shapes are compared with the file's (never
@@ -42,6 +43,7 @@ import err;
 import fileio;
 import safetensors;
 import jstr;
+import qwen08_patch;
 
 pub fn mode_f32() -> [] int {
     return 0;
@@ -288,6 +290,11 @@ pub fn p_offset() -> [] int {
     return 3;
 }
 
+// The patch tensor (`qwen08_patch.t_*`) that overwrites this one, or 0 for none (`open_patch`).
+pub fn p_patch() -> [] int {
+    return 4;
+}
+
 pub fn is_f32_file[&m](m: &!m [int], rec: int) -> [] bool {
     return m[rec + 1] == f32t();
 }
@@ -316,7 +323,7 @@ fn want[&m, &t](m: &!m [int], t: &!t [byte], st: int, data: int, plan: int, name
     if !mem.same(m, m[r + 2], shape) {
         return err.fail(m, t, "q08-shape", text.f1(m, t, "`$` has a shape that is not the one `config.json` implies", name));
     }
-    mem.push(m, plan, mem.rec4(m, name, dtype, mem.product(m, shape), data + m[r + 3]));
+    mem.push(m, plan, mem.rec5(m, name, dtype, mem.product(m, shape), data + m[r + 3], 0));
     return 0;
 }
 
@@ -508,13 +515,108 @@ pub fn narrow_bf16_to_f16[&t](t: &!t [byte], from: int, to: int, n: int) -> [] i
     return changed;
 }
 
-// The T11 seam: `n` values of tensor `rec` from value `done`, as the file has
-// them (`t[raw..]`, BF16 or F32), before they are converted. A patch will
-// overwrite here the entries of its tensor whose flat index is in
-// `[done, done + n)`. No patch format exists, so only "no patch" (-1) is taken.
+fn find_plan[&m, &t](m: &!m [int], t: &!t [byte], plan: int, name: int) -> [] int {
+    var i = 0;
+    while i < mem.size(m, plan) {
+        let r = mem.get(m, plan, i);
+        if text.eq(t, m[r], name) {
+            return r;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Values of a tensor read, hashed and patched at a time while a patch is checked.
+fn patch_chunk() -> [] int {
+    return 524288;
+}
+
+// The patch file at `patch_path` (a text handle) for the checkpoint `st` (its parsed header) whose
+// weights are in the file `wpath`, with the plan `plan`. Each tensor it names must be a BF16 matrix
+// of the text tower with the patch's `[rows, cols]` (`q08-patch-unknown`, `q08-patch-shape`), the
+// base tensor must hash to what the patch says it patches (`q08-patch-base`) and the patched
+// tensor to what it says it makes (`q08-patch-result`; both CRC-32 and Adler-32 of every byte).
+// Then each patched tensor's plan record is linked to the patch (`p_patch`) and `apply_patch`
+// does the rest. The patch handle, or -1.
+pub fn open_patch[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), patch_path: int, wpath: int, st: int, plan: int) -> [fs_read(""), file_read] int {
+    let pr = qwen08_patch.parse(m, t, fs, patch_path);
+    if pr < 0 {
+        return 0 - 1;
+    }
+    let list = m[pr + qwen08_patch.f_list()];
+    let tab = m[pr + qwen08_patch.f_table()];
+    var k = 0;
+    while k < mem.size(m, list) {
+        let pt = mem.get(m, list, k);
+        let name = m[pt + qwen08_patch.t_name()];
+        let hr = lookup(m, t, st, name);
+        let rec = find_plan(m, t, plan, name);
+        if hr < 0 || rec < 0 || m[hr + 1] != bf16() {
+            return err.fail(m, t, "q08-patch-unknown", text.f1(m, t, "the patch names `$`, which is not a BF16 tensor of this checkpoint's text tower", name));
+        }
+        if !mem.same(m, m[hr + 2], mem.of2(m, m[pt + qwen08_patch.t_rows()], m[pt + qwen08_patch.t_cols()])) {
+            return err.fail(m, t, "q08-patch-shape", text.f1(m, t, "`$` has a shape that is not the [rows, cols] the patch was made for", name));
+        }
+        k = k + 1;
+    }
+    let mark = m[mem.text_slot()];
+    let width = 2 * patch_chunk();
+    if len(t) - mark < width {
+        return err.fail(m, t, "q08-patch-io", text.lit(m, t, "the text pool has no room to check the patch"));
+    }
+    let sc = mark;
+    m[mem.text_slot()] = mark + width;
+    k = 0;
+    while k < mem.size(m, list) {
+        let pt = mem.get(m, list, k);
+        let name = m[pt + qwen08_patch.t_name()];
+        let rec = find_plan(m, t, plan, name);
+        let elems = m[rec + p_elems()];
+        let hb = qwen08_patch.hash_new(m);
+        let hp = qwen08_patch.hash_new(m);
+        var done = 0;
+        while done < elems {
+            var n = elems - done;
+            if n > patch_chunk() {
+                n = patch_chunk();
+            }
+            let got = fileio.read_at(t, fs, text.bytes(t, wpath), m[rec + p_offset()] + 2 * done, sc, 2 * n);
+            if got != 2 * n {
+                return err.fail(m, t, "q08-read", text.f1(m, t, "short read of `$`", name));
+            }
+            qwen08_patch.hash_feed(m, t, tab, hb, sc, 2 * n);
+            qwen08_patch.apply(m, t, pt, done, n, sc);
+            qwen08_patch.hash_feed(m, t, tab, hp, sc, 2 * n);
+            done = done + n;
+        }
+        if qwen08_patch.hash_crc(m, hb) != m[pt + qwen08_patch.t_base_crc()] || qwen08_patch.hash_adler(m, hb) != m[pt + qwen08_patch.t_base_adler()] {
+            return err.fail(m, t, "q08-patch-base", text.f1(m, t, "`$` in this checkpoint is not the tensor the patch was made from (CRC-32 or Adler-32 differs)", name));
+        }
+        if qwen08_patch.hash_crc(m, hp) != m[pt + qwen08_patch.t_edit_crc()] || qwen08_patch.hash_adler(m, hp) != m[pt + qwen08_patch.t_edit_adler()] {
+            return err.fail(m, t, "q08-patch-result", text.f1(m, t, "`$` patched is not the tensor the patch says it makes (CRC-32 or Adler-32 differs)", name));
+        }
+        k = k + 1;
+    }
+    m[mem.text_slot()] = mark;
+    k = 0;
+    while k < mem.size(m, list) {
+        let pt = mem.get(m, list, k);
+        let rec = find_plan(m, t, plan, m[pt + qwen08_patch.t_name()]);
+        m[rec + p_patch()] = pt;
+        k = k + 1;
+    }
+    return pr;
+}
+
+// The patch seam: `n` values of tensor `rec` from value `done`, as the file has them (`t[raw..]`,
+// BF16 or F32), before they are converted. The entries of the patch for this tensor (linked by
+// `open_patch`; none for a tensor it does not name) that lie in `[done, done + n)` are overwritten.
+// `patch` is the handle `open_patch` answered or -1; the link in the plan record is what decides.
 pub fn apply_patch[&m, &t](m: &!m [int], t: &!t [byte], patch: int, rec: int, done: int, n: int, raw: int) -> [] int {
-    if patch >= 0 {
-        return err.fail(m, t, "q08-patch", text.f1(m, t, "a patch was given for `$` but no patch format exists yet", m[rec]));
+    let pt = m[rec + p_patch()];
+    if pt != 0 {
+        qwen08_patch.apply(m, t, pt, done, n, raw);
     }
     return 0;
 }
