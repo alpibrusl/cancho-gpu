@@ -769,7 +769,7 @@ fn dequant_fp4[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [
         let per_row = c / group;
         gen.set_fp4(m, g);
         let byte = gen.at_index(m, t, qe, text.f3(m, t, "(@I@ / $u) * $u + (@I@ % $u) / 2u", n(m, t, c), n(m, t, qc), n(m, t, c)));
-        let v = dialect.shuffle(m, t, d, text.lit(m, t, "fp4_lane"), text.f1(m, t, "((uint)(uchar)($) >> ((@I@ & 1u) * 4u)) & 0xFu", byte));
+        let v = dialect.fp4_lookup(m, t, d, text.f1(m, t, "((uint)(uchar)($) >> ((@I@ & 1u) * 4u)) & 0xFu", byte));
         let s_of_group = text.f1(m, t, "fp8_e4m3((uint)(uchar)($) & 0xFFu)", se);
         let row_of_group = gen.at_index(m, t, ge, text.f1(m, t, "(@I@) / $u", n(m, t, per_row)));
         let gidx = text.f4(m, t, "(@I@ / $u) * $u + (@I@ % $u) / $u", n(m, t, c), n(m, t, per_row), n(m, t, c), n(m, t, group));
@@ -797,7 +797,7 @@ fn dequant_fp4[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [
     let sv = gen.read(m, t, mem.get(m, ops, 1), at);
     let gv = gen.read(m, t, mem.get(m, ops, 2), text.f1(m, t, "e / $u", n(m, t, c)));
     let name = gen.declare_reg(m, t, g, x, reg(m, kinds.f32(), mem.of2(m, r, c)));
-    let sh = dialect.shuffle(m, t, d, text.lit(m, t, "fp4_lane"), text.f1(m, t, "((uint)(uchar)($) >> ((e & 1u) * 4u)) & 0xFu", byte));
+    let sh = dialect.fp4_lookup(m, t, d, text.f1(m, t, "((uint)(uchar)($) >> ((e & 1u) * 4u)) & 0xFu", byte));
     return gen.owned1(m, t, g, count, text.f4(m, t, "$[k] = $ * fp8_e4m3((uint)(uchar)($) & 0xFFu) * $;", name, sh, sv, gv));
 }
 

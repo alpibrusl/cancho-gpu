@@ -304,3 +304,13 @@ examples/cnn/add2g.chx r=128 c=64 bm=8 g=192
 examples/cnn/bn_apply_lin.chx rp=128 c=64 bm=8 g=192
 examples/cnn/bn_bwd_part_lin.chx rp=128 c=64 rb=8
 examples/cnn/bn_bwd_apply_lin.chx rp=128 c=64 bm=8 g=192 m=100
+
+# The NVFP4 lookup at sizes the goldens did not have (K = 16 mod 32, a count that is not a multiple of 32): they once deadlocked or
+# read inactive lanes through __shfl_sync, found by the CUDA emulator and by an L4; now a table lookup (docs/device.md 5b).
+tests/chx/batch_fp4.chx b=3 n=40 k=48
+tests/chx/matvec_fp4.chx n=2 k=80
+tests/chx/matvec_fp4_rows.chx n=32 k=5104
+tests/chx/matvec_fp4_res.chx n=32 k=48
+tests/chx/matvec_fp4_swiglu.chx n=17408 k=80
+tests/chx/matvec_fp4_res_batch.chx m=2 n=5152 k=144
+tests/chx/batch_fp4.chx b=36 n=129 k=224

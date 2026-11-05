@@ -201,8 +201,9 @@ times smaller than the program's own check), on any hard finding, and on
 `emu-race`. A case whose interpreter cannot hold its tensors
 (`error[interp]`) is listed in `tests/cuda-emu-known.txt` as `noref`, and
 `tests/cuda_emu_big.py` runs those at full size without a reference. The
-real bugs found are in `tests/cuda-emu-bugs.txt` and must keep failing until
-fixed. `tests/cuda_static.py` checks the goldens without a compiler: static
+real bugs found (§5b: both NVFP4 lookup bugs, now fixed) were kept in
+`tests/cuda-emu-bugs.txt` while open; their reproducers are cases of
+`tests/cases.txt` now and must agree. `tests/cuda_static.py` checks the goldens without a compiler: static
 shared at most 48 KB (the 99 KB Ada opt-in needs dynamic shared memory and
 `cuFuncSetAttribute`, which the shim does not do), the header's `tg mem`
 matches what is declared, threads at most 1024, nothing sm_90/sm_100 (clusters,
@@ -251,8 +252,10 @@ swapped for `exp2f`; each is refused for its reason.
   output; ours is the same bytes, §9 of `design.md`; the emulator compiles it
   with a C++ compiler, which accepts a superset, §5b), that a real driver accepts
   these calls, that the tensor-core and `libdevice` numerics land within the
-  threshold, and that the two bugs below behave on a GPU as the guide says they
-  may. Those need a machine with a GPU — `scripts/gcp/cuda_test.sh` provisions an L4
+  threshold, and that the two (fixed) bugs below are gone on a GPU: on an L4 they
+  hung 40 of 50 reproducer cases with `K` not a multiple of 32
+  (`scripts/gcp/shuffle_repro.txt`; `K` = 64, 96, 128 passed), re-run
+  `shuffle_repro` after the fix. Those need a machine with a GPU — `scripts/gcp/cuda_test.sh` provisions an L4
   (`docs/cloud.md`) — and are the next measurement, not a claim this document
   makes. What the emulator cannot see is listed at the end of §5b.
 * **Metal timing:** Reach is proved; speed is not yet measured.
@@ -356,33 +359,38 @@ only:
   clean, including the attention, convolution, normalisation, rope, softmax,
   fp16 matvec and wmma families.
 
-**Two real bugs in the emitted CUDA**, both the NVFP4 nibble lookup
-`__shfl_sync(0xffffffffu, fp4_lane, nibble)` (`src/lower.cho` `dequant_fp4`,
-through `dialect.shuffle`), a full-mask shuffle wherever a dequantised weight is
-read; `tests/cuda-emu-bugs.txt` holds a reproducer for each and the gate requires
-them to keep failing until the emitter is fixed:
+**Two real bugs in the emitted CUDA, both fixed.** Both were the NVFP4 nibble
+lookup `__shfl_sync(0xffffffffu, fp4_lane, nibble)` (`src/lower.cho`
+`dequant_fp4`, through `dialect.shuffle`), a full-mask shuffle wherever a
+dequantised weight is read. The CUDA emitter now indexes the `__constant__`
+16-entry table instead (`FP4_V[nibble]`, `dialect.fp4_lookup`); Metal keeps its
+simdgroup shuffle of `fp4_lane`, whose lanes all run it. The reproducers are
+cases of `tests/cases.txt` (the `tests/cuda-emu-bugs.txt` list is gone) and agree
+on the emulator. The record of what they were:
 
 1. **A per-lane loop whose trip count differs between lanes.**
    `for (p0 = lane; p0 < K; p0 += 32)` with `K = 16 (mod 32)` (legal: the scale
    group is 16) gives lanes 0..15 one more trip than lanes 16..31, so the shuffle is
    called with a mask naming lanes that have left the loop. Undefined in CUDA
    (`shfl.sync` waits for the lanes it names; on sm_70+ those lanes next reach a
-   *different* shuffle). The emulator: deadlock. Seen in `batch_fp4`,
+   *different* shuffle). The emulator: deadlock. **On a real NVIDIA L4 it hung:**
+   40 of 50 `shuffle_repro` cases timed out, `K` = 64, 96, 128 passed
+   (`results/gcp/20261104-212332-l4/shuffle_repro.log`). Seen in `batch_fp4`,
    `matvec_fp4`, `matvec_fp4_rows`, `matvec_fp4_res`, `matvec_fp4_swiglu`,
    `matvec_fp4_batch`, `matvec_fp4_res_batch`, `matvec_fp4_swiglu_batch`, at
-   `k` = 16, 48, 80, 112, 144, 240, 272, 4080, 5104, 5136, 17392, 17424,
-   with 6 reproducers (e.g. `batch_fp4 b=3 n=40 k=48`). Every golden has `K` a
-   multiple of 32 and Qwen's `K` are too, which is why nothing recorded or run
-   so far shows it.
+   `k` = 16, 48, 80, 112, 144, 240, 272, 4080, 5104, 5136, 17392, 17424.
+   Every golden had `K` a multiple of 32 and Qwen's `K` are too, which is why
+   nothing recorded or run showed it.
 2. **The element-per-thread fallback with a count that is not a multiple of 32.**
    `if (e < count) { ... __shfl_sync(0xffffffffu, ...) }`: in the last pass part of
    a warp is active; the lookup for nibble `v` reads lane `v`, which may be one of
-   the inactive lanes. Wrong values, not just undefined ones: `batch_fp4 b=36
-   n=129 k=224` (count 4644 = 18 x 256 + 36) is off by 0.78 against a peak of
-   9.09 under the emulator (`device-mismatch`; on a GPU an inactive lane's value
-   is unspecified). The fix for both is the same family: index the 16-entry
-   table `FP4_V` (it is already `__constant__`) instead of a shuffle, or keep
-   the shuffle to code every lane of the warp provably executes.
+   the inactive lanes. Wrong values: `batch_fp4 b=36 n=129 k=224` (count
+   4644 = 18 x 256 + 36) was off by 0.78 against a peak of 9.09 under the
+   emulator.
+
+The fix is not yet measured on the GPU: `shuffle_repro` on an L4 is the check.
+A `__constant__` read with a divergent index serialises within a warp; the
+lookup's cost against the shuffle is also unmeasured.
 
 ### Metal (real hardware)
 
