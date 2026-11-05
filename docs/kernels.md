@@ -118,6 +118,8 @@ dimension: the softmax of a head's scores and the product with `v`), 32 threadgr
 materialised, and for that reason `attention_pv` holds a head's `[g, t]` scores in one tile, **so its ceiling is the
 same 1364 positions**. A context past that still needs the merge, and §4's list of what the surface lacks still stands.
 
+A later route needs neither the merge nor a language change: `attention_stats.chx` and `attention_pvl.chx` take the statistics and the weighted sum a chunk of positions at a time, over the materialised scores, with `max(a, b)` spelt `a + relu(b - a)` (but start from the first chunk's maximum, not a sentinel), and run at 16,640 positions at g=4 (`docs/weight-space.md` 14.5). §4's list is still true of a one-pass split-KV merge.
+
 ## 5. Not measured
 
 * **A GPU, once, for correctness.** `scripts/metal-kernels.sh` (needs an Apple
