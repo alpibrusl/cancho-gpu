@@ -1,0 +1,87 @@
+edition 5;
+module chat_w1;
+
+// `chat_w1` -- the W1 prompt of Qwen3.5-0.8B (docs/weight-space.md section 14, ticket T2): the model's own
+// chat template (`chat_template.jinja` of its directory) for the one request W1 makes, a single user
+// message with thinking on and a generation prompt:
+//
+//     <|im_start|>user\n{question trimmed}<|im_end|>\n<|im_start|>assistant\n<think>\n
+//
+// It is not the 27B's template (`src/chat.cho`), which adds a reasoning-effort system message this model's
+// template does not have; it is chosen by an explicit template name (`cancho-gpu chat <request.json>
+// qwen35-08b-w1`). Anything but that request is refused by name rather than rendered wrongly: a system
+// message, a second message, another role, tools, `enable_thinking` false. `tests/chat_w1.py` holds it,
+// byte for byte, to Hugging Face's `apply_chat_template` on the 200 W1 prompts.
+
+import std.io;
+import std.json;
+import mem;
+import text;
+import err;
+import jstr;
+import cli;
+import fileio;
+import chat;
+
+// The prompt of the request body `t[hs..hs + n]`, or -1 with the refusal recorded.
+pub fn render[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        let code = json.error_code(nodes);
+        return err.fail(m, t, "chat-json", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
+    }
+    if !json.is_object(m[tape..tape + words], 0) {
+        return chat.bad(m, t, "the body must be a JSON object");
+    }
+    let tools = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tools");
+    if tools >= 0 && json.is_array(m[tape..tape + words], tools) && json.count(m[tape..tape + words], tools) > 0 {
+        return chat.bad(m, t, "tools are not supported");
+    }
+    let et = chat.flag(m, t, tape, hs, n, 0, "enable_thinking", 1);
+    if et < 0 {
+        return 0 - 1;
+    }
+    if et == 0 {
+        return chat.bad(m, t, "this template renders thinking on only");
+    }
+    let msgs = json.get(t[hs..hs + n], m[tape..tape + words], 0, "messages");
+    if msgs < 0 || !json.is_array(m[tape..tape + words], msgs) || json.count(m[tape..tape + words], msgs) != 1 {
+        return chat.bad(m, t, "messages must be an array of exactly one user message");
+    }
+    let msg = json.at(m[tape..tape + words], msgs, 0);
+    if !json.is_object(m[tape..tape + words], msg) {
+        return chat.bad(m, t, "a message must be an object");
+    }
+    let rn = json.get(t[hs..hs + n], m[tape..tape + words], msg, "role");
+    if rn < 0 || !json.is_string(m[tape..tape + words], rn) || !json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "user") {
+        return chat.bad(m, t, "the one message must have the role user");
+    }
+    let body = chat.content_of(m, t, tape, hs, n, json.get(t[hs..hs + n], m[tape..tape + words], msg, "content"));
+    if body < 0 {
+        return 0 - 1;
+    }
+    let parts = mem.list(m);
+    mem.push(m, parts, text.lit(m, t, "<|im_start|>user\n"));
+    mem.push(m, parts, body);
+    mem.push(m, parts, text.lit(m, t, "<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+    return text.joined(m, t, parts, "");
+}
+
+// `cancho-gpu chat <request.json> qwen35-08b-w1`: print the prompt, or refuse.
+pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let (top, got, size) = fileio.prefix(m, t, fs, arg(args, 2), 1048576);
+    if top < 0 || size > got {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, arg(args, 2));
+        io.error_all(io, " (a request is at most 1 MiB)\n");
+        return 1;
+    }
+    let p = render(m, t, top, got);
+    if p < 0 {
+        return cli.report(m, t, io);
+    }
+    io.write_all(io, text.bytes(t, p));
+    return 0;
+}

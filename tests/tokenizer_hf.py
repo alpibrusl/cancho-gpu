@@ -22,6 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # name: candidate tokenizer.json paths
 TOKENIZERS = {
     "qwen2.5-0.5b": sorted(glob.glob(HOME + "/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B/snapshots/*/tokenizer.json")),
+    "qwen3.5-0.8b": [os.path.expanduser("~/models/qwen35-08b-base/tokenizer.json")],  # docs/weight-space.md 14.3
     "qwen3.8-27b": [os.path.realpath(os.path.join(ROOT, "..", "models", "qwen3.8-27b", "tokenizer.json"))],
 }
 

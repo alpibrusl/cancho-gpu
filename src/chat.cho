@@ -63,7 +63,7 @@ pub fn f_usage() -> [] int {
 
 // The text of a string node of the tape over `t[hs..]`: `(start, length)`, in place when it has no
 // escape, decoded into the pool when it has.
-fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] (int, int) {
+pub fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] (int, int) {
     let from = hs + m[tape + 3 * i + 1];
     let to = hs + m[tape + 3 * i + 2];
     if json.string_plain(m[tape..tape + 3 * i + 3], i) {
@@ -90,13 +90,13 @@ fn trim[&t](t: &!t [byte], h: int) -> [] int {
     return text.handle(a, b - a);
 }
 
-fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: &static [byte]) -> [] int {
+pub fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: &static [byte]) -> [] int {
     return err.fail(m, t, "chat-request", text.lit(m, t, msg));
 }
 
 // The message text of a `content` node: a string, or an array of parts of type text. Trimmed. -1 with the
 // refusal recorded for anything else (images, audio, a missing text).
-fn content_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, node: int) -> [] int {
+pub fn content_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, node: int) -> [] int {
     let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
     if node < 0 || json.is_null(m[tape..tape + words], node) {
         return text.empty();
@@ -279,7 +279,7 @@ fn integer[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj:
     return err.fail(m, t, "chat-request", text.f1(m, t, "`$` must be an integer", text.lit(m, t, key)));
 }
 
-fn flag[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
+pub fn flag[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
     let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
     let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
     if v < 0 || json.is_null(m[tape..tape + words], v) {
