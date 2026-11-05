@@ -52,18 +52,34 @@ extern "C" __global__ void matvec_fp4_res_batch_2_5152_144_8(
         const uint sgid = tid / 32u, lane = tid % 32u;
         float s[1][2];
         s[0][0] = 0.0f; s[0][1] = 0.0f;
-        for (uint p0 = lane * 1u; p0 < 144u; p0 += 32u) {
-            for (uint u = 0; u < 1u; u += 1u) {
-                const uint p = p0 + u;
-                float xa[2][1];
-                xa[0][0] = float(float(p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((p + 0u))]));
-                xa[1][0] = float(float(p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((p + 144u))]));
-                {
-                    const uint j = min(sgid * 1u + 0u, 7u);
-                    const float w0 = float((FP4_V[((uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 72u + (uint)(0) * 1u + ((((j * 144u + p) / 144u) * 72u + ((j * 144u + p) % 144u) / 2u))])) >> (((j * 144u + p) & 1u) * 4u)) & 0xFu] * fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 8 * gid) * 9u + (uint)(0) * 1u + ((((j * 144u + p) / 144u) * 9u + ((j * 144u + p) % 144u) / 16u))])) & 0xFFu) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 144u + p) / 144u) * 9u + ((j * 144u + p) % 144u) / 16u)) / 9u))]))));
-                    s[0][0] += xa[0][0] * w0;
-                    s[0][1] += xa[1][0] * w0;
-                }
+        for (uint p0 = lane * 16u; p0 < 144u; p0 += 512u) {
+            float sgr[1], mgr[1];
+            { const uint j = min(sgid * 1u + 0u, 7u); const uint grp = j * 9u + p0 / 16u; sgr[0] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 8 * gid) * 9u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((j))])) * 16384.0f; mgr[0] = 0.0f; }
+            uint2 wq[1];
+            { const uint j = min(sgid * 1u + 0u, 7u); wq[0] = *reinterpret_cast<const uint2*>(&p1_wq[(uint)(0 + 8 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u))]); }
+            {
+                const float4 x0 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 0u))]);
+                const float4 x1 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 0u))]);
+                { const float2 w = fp4_pair((wq[0].x >> 0u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.x * w0 + x0.y * w1; s[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].x >> 8u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.z * w0 + x0.w * w1; s[0][1] += x1.z * w0 + x1.w * w1; }
+            }
+            {
+                const float4 x0 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 4u))]);
+                const float4 x1 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 4u))]);
+                { const float2 w = fp4_pair((wq[0].x >> 16u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.x * w0 + x0.y * w1; s[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].x >> 24u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.z * w0 + x0.w * w1; s[0][1] += x1.z * w0 + x1.w * w1; }
+            }
+            {
+                const float4 x0 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 8u))]);
+                const float4 x1 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 8u))]);
+                { const float2 w = fp4_pair((wq[0].y >> 0u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.x * w0 + x0.y * w1; s[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].y >> 8u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.z * w0 + x0.w * w1; s[0][1] += x1.z * w0 + x1.w * w1; }
+            }
+            {
+                const float4 x0 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 12u))]);
+                const float4 x1 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 12u))]);
+                { const float2 w = fp4_pair((wq[0].y >> 16u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.x * w0 + x0.y * w1; s[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].y >> 24u) & 0xFFu); const float w0 = w.x * sgr[0], w1 = w.y * sgr[0]; s[0][0] += x0.z * w0 + x0.w * w1; s[0][1] += x1.z * w0 + x1.w * w1; }
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s[0][0] += __shfl_down_sync(0xffffffffu, s[0][0], d);

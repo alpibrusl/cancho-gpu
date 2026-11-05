@@ -412,6 +412,31 @@ path, which those families take when `K` is an odd multiple of 32 (5152, 17440),
 not have; there the table index is 16 to 25% slower than the old shuffle (about 43 to 51 GB/s
 against 52 to 67), and the old form hung or misread for such `K`, so it was no baseline.
 
+**Why the generic path was about 4x slower, and the change (not yet measured).** At `K = 5152`
+the emitted rows kernel differed from `K = 5120` in one decision, `split_k_vec`
+(`src/matmul.cho`): a 32-lane group steps `lanes * vec` elements per round and the old code
+wanted `K % (lanes * vec) == 0`, i.e. `K % 512` for the 16-wide step. 5120 and 17408 are
+multiples of 512; 5152 and 17440 are not (nor of 256, 128 or 64), so `vec` fell to 1. Then the
+dequantisation was the lazy expression, `for (p = lane; p < K; p += 32)` doing, per element,
+a one-byte load of `wq`, a nibble shift, a `FP4_V[]` read, an `fp8_e4m3` decode and a `wg` read
+(with `/` and `%` by 5152, 322 and 16 in the address), a 4-byte `x` load, and no pair or vector
+load: 1 byte of weight per memory instruction against 8 bytes (`uint2`) plus `float4` `x` loads
+and `fp4_pair` for 16 values on the fast path. The L4 figures (about 220 GB/s against 45 to 67)
+are that difference, the lookup (16 to 25% of the slow path) being part of it. The loop was
+already `p0 < K` and a step is a whole number of groups, so a last, partial round (the lanes
+past the end idle) is exact whenever `K % 16 == 0`: `dq_vec` now takes the 16-wide step for
+that case and the generic path is left for what the fast one cannot do. The emitted code for
+`K = 5152` has no `FP4_V[` lookup and the same body as `K = 5120`; the goldens that changed
+are the cases with K not a multiple of 512 and the CPU emulator and `tests/kernels.py` agree.
+**Measured on the L4** (`fp4_perf`, run `20261105-130225-l4`, europe-west1-b, this change): the
+rows kernels at K = 5152 and 17440 now run at **205 to 212 GB/s** (`matvec_fp4_rows`,
+`_res`, `_swiglu`), against 45 to 67 before and 219 to 224 at K = 5120 and 17408; they report
+`lookups` 0 and old == new. The batched kernels (`m = 4`) at those K run at 93 and 77 GB/s (they
+were 55 and 52 before), so a slower path remains there, not looked at. Small K, absolute GB/s
+for `matvec_fp4_rows` at n = 17408: **70 at K = 96, 111 at 160, 162 at 256, 201 at 1056**, so
+the idle lanes cost most at the smallest K; there is no number from before this change for
+those K, so whether it is slower than the generic path was is not shown. One card, one run.
+
 ### Metal (real hardware)
 
 First real Metal run on Mac Studio (Apple Silicon GPU):

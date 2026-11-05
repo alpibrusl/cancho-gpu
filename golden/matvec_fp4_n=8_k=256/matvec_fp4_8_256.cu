@@ -53,11 +53,23 @@ extern "C" __global__ void matvec_fp4_8_256(
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
             const float rs = float(float(p3_wg[(uint)(0) * 1u + ((j))]));
-            for (uint p0 = lane * 8u; p0 < 256u; p0 += 256u) {
+            for (uint p0 = lane * 16u; p0 < 256u; p0 += 512u) {
                 const uint grp = j * 16u + p0 / 16u;
                 const float sg = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 16u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * rs;
+                const uint2 wq = *reinterpret_cast<const uint2*>(&p1_wq[(uint)(0) * 128u + (uint)(0) * 1u + ((j * 128u + p0 / 2u))]);
+                const float4 x0 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((i * 256u + p0 + 0u))]);
+                const float4 x1 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((i * 256u + p0 + 4u))]);
+                const float4 x2 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((i * 256u + p0 + 8u))]);
+                const float4 x3 = *reinterpret_cast<const float4*>(&p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((i * 256u + p0 + 12u))]);
                 float run = 0.0f;
-                for (uint u = 0; u < 8u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0) * 128u + (uint)(0) * 1u + ((j * 128u + p0 / 2u + u / 2u))])); const float2 w = fp4_pair(bq); run += float(float(p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((i * 256u + p))])) * w.x + float(float(p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((i * 256u + p + 1u))])) * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 0u) & 0xFFu); run += x0.x * w.x + x0.y * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 8u) & 0xFFu); run += x0.z * w.x + x0.w * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 16u) & 0xFFu); run += x1.x * w.x + x1.y * w.y; }
+                { const float2 w = fp4_pair((wq.x >> 24u) & 0xFFu); run += x1.z * w.x + x1.w * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 0u) & 0xFFu); run += x2.x * w.x + x2.y * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 8u) & 0xFFu); run += x2.z * w.x + x2.w * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 16u) & 0xFFu); run += x3.x * w.x + x3.y * w.y; }
+                { const float2 w = fp4_pair((wq.y >> 24u) & 0xFFu); run += x3.z * w.x + x3.w * w.y; }
                 s += run * (sg * 16384.0f);
             }
         }

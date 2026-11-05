@@ -62,7 +62,7 @@ kernel void batch_fp4_2_200_256(
         s[22][0] = 0.0f; s[22][1] = 0.0f;
         s[23][0] = 0.0f; s[23][1] = 0.0f;
         s[24][0] = 0.0f; s[24][1] = 0.0f;
-        for (uint p0 = lane * 8u; p0 < 256u; p0 += 256u) {
+        for (uint p0 = lane * 16u; p0 < 256u; p0 += 512u) {
             float sgr[25], mgr[25];
             { const uint j = min(sgid * 25u + 0u, 199u); const uint grp = j * 16u + p0 / 16u; sgr[0] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 16u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[0] = 0.0f; }
             { const uint j = min(sgid * 25u + 1u, 199u); const uint grp = j * 16u + p0 / 16u; sgr[1] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 16u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[1] = 0.0f; }
@@ -89,7 +89,7 @@ kernel void batch_fp4_2_200_256(
             { const uint j = min(sgid * 25u + 22u, 199u); const uint grp = j * 16u + p0 / 16u; sgr[22] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 16u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[22] = 0.0f; }
             { const uint j = min(sgid * 25u + 23u, 199u); const uint grp = j * 16u + p0 / 16u; sgr[23] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 16u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[23] = 0.0f; }
             { const uint j = min(sgid * 25u + 24u, 199u); const uint grp = j * 16u + p0 / 16u; sgr[24] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0) * 16u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0) * 1u + ((j))])) * 16384.0f; mgr[24] = 0.0f; }
-            for (uint u = 0; u < 8u; u += 2u) {
+            for (uint u = 0; u < 16u; u += 2u) {
                 const uint p = p0 + u;
                 float xa[2][2];
                 xa[0][0] = float(float(p0_x[(uint)(0) * 256u + (uint)(0) * 1u + ((p + 0u))]));

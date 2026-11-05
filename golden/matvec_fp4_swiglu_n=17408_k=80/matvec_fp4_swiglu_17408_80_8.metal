@@ -36,14 +36,20 @@ kernel void matvec_fp4_swiglu_17408_80_8(
 {
     const uint gid = tgpos.x;
     threadgroup float scratch[8];
-    const float fp4_lane = FP4_V[tid & 15u];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     {
         const uint o = tid / 32u, lane = tid % 32u;
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p = lane; p < 80u; p += 32u) s += float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p))])) * float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p1_gq[(uint)(0 + 8 * gid) * 40u + (uint)(0) * 1u + ((((j * 80u + p) / 80u) * 40u + ((j * 80u + p) % 80u) / 2u))])) >> (((j * 80u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p2_gs[(uint)(0 + 8 * gid) * 5u + (uint)(0) * 1u + ((((j * 80u + p) / 80u) * 5u + ((j * 80u + p) % 80u) / 16u))])) & 0xFFu) * float(float(p3_gg[(uint)(0 + 8 * gid) * 1u + ((((((j * 80u + p) / 80u) * 5u + ((j * 80u + p) % 80u) / 16u)) / 5u))]))));
+            const float rs = float(float(p3_gg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 80u; p0 += 512u) {
+                const uint grp = j * 5u + p0 / 16u;
+                const float sg = fp8_e4m3((uint)(uchar)(char(p2_gs[(uint)(0 + 8 * gid) * 5u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_gq[(uint)(0 + 8 * gid) * 40u + (uint)(0) * 1u + ((j * 40u + p0 / 2u + u / 2u))])); const float2 w = fp4_pair(bq); run += float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p))])) * w.x + float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p + 1u))])) * w.y; }
+                s += run * (sg * 16384.0f);
+            }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
         if (o < 8u && lane == 0) scratch[0 + o] = s;
@@ -62,7 +68,14 @@ kernel void matvec_fp4_swiglu_17408_80_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p = lane; p < 80u; p += 32u) s += float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p))])) * float((simd_shuffle(fp4_lane, ((uint)(uchar)(char(p4_uq[(uint)(0 + 8 * gid) * 40u + (uint)(0) * 1u + ((((j * 80u + p) / 80u) * 40u + ((j * 80u + p) % 80u) / 2u))])) >> (((j * 80u + p) & 1u) * 4u)) & 0xFu) * fp8_e4m3((uint)(uchar)(char(p5_us[(uint)(0 + 8 * gid) * 5u + (uint)(0) * 1u + ((((j * 80u + p) / 80u) * 5u + ((j * 80u + p) % 80u) / 16u))])) & 0xFFu) * float(float(p6_ug[(uint)(0 + 8 * gid) * 1u + ((((((j * 80u + p) / 80u) * 5u + ((j * 80u + p) % 80u) / 16u)) / 5u))]))));
+            const float rs = float(float(p6_ug[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 80u; p0 += 512u) {
+                const uint grp = j * 5u + p0 / 16u;
+                const float sg = fp8_e4m3((uint)(uchar)(char(p5_us[(uint)(0 + 8 * gid) * 5u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p4_uq[(uint)(0 + 8 * gid) * 40u + (uint)(0) * 1u + ((j * 40u + p0 / 2u + u / 2u))])); const float2 w = fp4_pair(bq); run += float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p))])) * w.x + float(float(p0_x[(uint)(0) * 80u + (uint)(0) * 1u + ((i * 80u + p + 1u))])) * w.y; }
+                s += run * (sg * 16384.0f);
+            }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
         if (o < 8u && lane == 0) scratch[0 + o] = s;
