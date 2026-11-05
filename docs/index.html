@@ -572,7 +572,7 @@ $ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
   <p class="sub">Assembled from the limits paragraphs of the sections cited. None of them is hidden by the table above.</p>
   <div class="cols">
     <div><h3>Hardware and method</h3><ul>
-      <li><b>CUDA has never run on hardware</b>: a mock driver only, no Hopper, no AMD. All training numbers are Metal on one Apple M4 Max.</li>
+      <li><b>CUDA has run on one NVIDIA L4 only</b> (it compiles and 176 of 188 cases agree with the interpreter), otherwise a mock driver; no Hopper, no AMD. All training numbers are Metal on one Apple M4 Max.</li>
       <li><b>One run, one seed</b> for every comparison with torch; a 0.01-nat difference between GPT runtimes is inside what another seed would move (resident.md 19.1).</li>
       <li>The Qwen held-out set is 7 files and 16,384 tokens; the 1.5B run is 150 steps; full fine-tuning is 40 and 300 steps at one untuned learning rate. Some step times were measured with another process on the machine, and the sections say which.</li>
     </ul></div>

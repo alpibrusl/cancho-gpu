@@ -17,6 +17,7 @@
 #   device_cases  4. tests/cases.txt through the GPU against the interpreter
 #   gemm_bench    5. our emitted GEMM vs cuBLAS vs torch, TFLOPS, with clocks/power/occupancy per shape
 #   shuffle_repro    the emulator's two NVFP4 shuffle bugs on the real GPU (shuffle_repro.txt)
+#   fp4_perf         the NVFP4 matvec kernels, FP4_V[nibble] vs the old __shfl_sync lowering: GB/s and ratio (fp4_perf.py)
 #   sandbox_linux    why tests/weightspace.py's network-call check fails on Linux (audit_probe.py)
 #   job           6. $JOB, alone (JOB=1 from the driver; the command is ~/job.sh)
 #   baselines     7. torch + peft LoRA, Qwen2.5-0.5B/1.5B at 4x512 (opt-in)
@@ -42,7 +43,7 @@
 set -uo pipefail
 
 MODE="${1:-run}"
-STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro sandbox_linux}"
+STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro fp4_perf sandbox_linux}"
 CASE_TIMEOUT="${CASE_TIMEOUT:-300}"
 JOBS="${JOBS:-4}"
 SIZES="${SIZES:-}"                 # empty: gemm_bench.py's own sizes and shapes
@@ -69,7 +70,7 @@ SKIP=77
 want() { case " $STEPS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- the toolchain: the same on a pre-built image and on a stock one --------
-need_python_ml() { want gemm_bench || want baselines || [ "${WITH_BASELINE_LIBS:-0}" = 1 ]; }
+need_python_ml() { want gemm_bench || want fp4_perf || want baselines || [ "${WITH_BASELINE_LIBS:-0}" = 1 ]; }
 apt_tools() {
   # Only what the requested steps use. build-essential: `cc` for the shim and
   # the mock drivers. numpy/jinja2: the gate's references (CI installs jinja2
@@ -368,6 +369,12 @@ s_shuffle_repro() {
   nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
   python3 scripts/gcp/shuffle_repro.py --bin build/cancho-gpu-device --timeout "${REPRO_TIMEOUT:-60}" --json "$R/shuffle_repro.json"
 }
+s_fp4_perf() {
+  # FAIL: a variant timed out, errored, or the old and new outputs disagreed.
+  [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
+  pyenv || return 1
+  "$VENV/bin/python" scripts/gcp/fp4_perf.py --cancho-gpu build/cancho-gpu --timeout "${REPRO_TIMEOUT:-60}" --json "$R/fp4_perf.json"
+}
 s_sandbox_linux() {
   [ -x build/cancho-gpu ] || { echo "no build/cancho-gpu: the toolchain step failed"; return $SKIP; }
   [ -x build/cancho-gpu-session ] || CANCHO="$(cancho_cmd)" scripts/build-session.sh || return 1
@@ -426,12 +433,13 @@ if [ -n "${JOB:-}" ]; then
   run_step job s_job
 else
   want machine && run_step machine s_machine
-  { want toolchain || want gate || want device_cases || want gemm_bench || want shuffle_repro || want sandbox_linux || want baselines; } && run_step toolchain s_toolchain
+  { want toolchain || want gate || want device_cases || want gemm_bench || want shuffle_repro || want fp4_perf || want sandbox_linux || want baselines; } && run_step toolchain s_toolchain
   want gate && { run_step gate s_gate; run_step emulator emulator_hook; }
   want nvrtc && run_step nvrtc s_nvrtc
   want device_cases && run_step device_cases s_device_cases
   want gemm_bench && run_step gemm_bench s_gemm_bench
   want shuffle_repro && run_step shuffle_repro s_shuffle_repro
+  want fp4_perf && run_step fp4_perf s_fp4_perf
   want baselines && run_step baselines s_baselines
   # Last, and independent of the GPU: it must run even if shuffle_repro wedged it.
   want sandbox_linux && run_step sandbox_linux s_sandbox_linux

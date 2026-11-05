@@ -35,7 +35,7 @@
 #                source tree, compiler built; CANCHO is exported):
 #                  JOB='scripts/build-device.sh && build/cancho-gpu-device run tests/chx/ported/gemm_mma.chx m=256 n=256 k=128'
 #   STEPS        which steps to run, default "machine toolchain gate nvrtc
-#                device_cases gemm_bench shuffle_repro sandbox_linux". Add "baselines" (or BASELINES=1).
+#                device_cases gemm_bench shuffle_repro fp4_perf sandbox_linux". Add "baselines" (or BASELINES=1).
 #   BASELINES=1  also the torch/peft LoRA baselines, Qwen2.5-0.5B and 1.5B at
 #                4x512 (public Hugging Face downloads; no user data).
 #   CANCHO_REPO  where the compiler at the cancho.toml pin comes from: a git
@@ -80,7 +80,7 @@ DRY_RUN="${DRY_RUN:-0}"
 YES="${YES:-0}"
 CONFIRM_SECS="${CONFIRM_SECS:-10}"
 BASELINES="${BASELINES:-0}"
-STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro sandbox_linux}"
+STEPS="${STEPS:-machine toolchain gate nvrtc device_cases gemm_bench shuffle_repro fp4_perf sandbox_linux}"
 [ "$BASELINES" = 1 ] && STEPS="$STEPS baselines"
 IMAGE_FAMILY="${IMAGE_FAMILY:-cancho-gpu-l4}"
 CANCHO_REPO="${CANCHO_REPO:-https://github.com/alpibrusl/cancho}"
