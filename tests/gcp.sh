@@ -514,6 +514,10 @@ case "$*" in
   *"instances list"*"labels.purpose"*) exit 0 ;;
   *"instances list"*) [ -f "$S/vm" ] && echo "europe-west4-b"; exit 0 ;;
   *"instances delete"*) rm -f "$S/vm"; exit 0 ;;
+  *"instances describe"*)
+    if [ -f "$S/vm" ]; then echo "${STUB_DESCRIBE_STATUS:-RUNNING}"; exit 0; fi
+    if [ "${STUB_DESCRIBE_OTHER_ERR:-0}" = 1 ]; then echo "ERROR: Request timed out, network unreachable" >&2; exit 1; fi
+    echo "ERROR: (gcloud.compute.instances.describe) Could not fetch resource: - The resource 'projects/p/zones/z/instances/x' was not found" >&2; exit 1 ;;
   *"operations list"*) [ -f "$S/preempted" ] && echo "operation-1"; exit 0 ;;
   *"compute ssh"*"remote_cuda.sh"*)
     touch "$S/ssh_running"
@@ -536,6 +540,7 @@ case "$*" in
       PREEMPT) rm -f "$S/vm"; touch "$S/preempted"; exit 255 ;;
       CAP) rm -f "$S/vm"; exit 255 ;;
       DROP) exit 255 ;;        # the ssh connection dies, the VM lives
+      GONE) rm -f "$S/vm"; sleep "${STUB_GONE_SLEEP:-121}"; exit 255 ;;   # the VM vanishes and the connection hangs
       DIFF) echo DIFF-FAILED > "$cur/w1_status"; exit 1 ;;
       *) echo "FAILED chunk n=8" > "$cur/w1_status"; exit 1 ;;
     esac ;;
@@ -671,6 +676,43 @@ rm -rf "$W/again2.dir"; cp -R "$W/again.dir" "$W/again2.dir"
 w1_run done2 "" N=8 MAX_NEW=512 CHUNK=8 W1_DIR=$W/again2.dir
 [ "$rc" = 0 ] && [ "$(nvm)" = 0 ] && ok "w1: a finished directory starts no VM and prints the verdict" || bad "w1 finished: exit $rc, $(nvm) VMs"
 has "$W/done2.txt" "=== DONE" "w1: DONE"
+# a VM that vanishes while the remote command hangs: ended as VM-GONE, the stuck command killed, the next VM carries on
+w1_run gone "3 GONE\n8 DONE\n" N=8 MAX_NEW=512 CHUNK=8 SYNC_SECS=1 STUB_SSH_SLEEP=3 STUB_GONE_SLEEP="121.$$" GONE_GRACE=2
+[ "$rc" = 0 ] && [ "$(nvm)" = 2 ] && ok "w1 VM-GONE: the loop moves on to the next VM (2 VMs, exit 0)" || bad "w1 gone: exit $rc, $(nvm) VMs: $(tail -5 "$W/gone.txt")"
+has "$W/gone.txt" "VM 1 ended: VM-GONE" "w1 VM-GONE: a distinct status"
+[ "$(grep -c 'could not copy from' "$W/gone.txt")" -le 2 ] && ok "w1 VM-GONE: the copy-back is not retried forever" || bad "w1 VM-GONE: $(grep -c 'could not copy from' "$W/gone.txt") failed copies"
+[ -z "$(pgrep -f "sleep 121\.$$")" ] && ok "w1 VM-GONE: the hung remote command was killed" || { bad "w1 VM-GONE: the hung command still runs"; pkill -f "sleep 121\.$$"; }
+has "$W/gone.txt" "synced: base 3/8 edited 3/8" "w1 VM-GONE: what was pulled before the VM vanished is kept"
+# a describe that fails for another reason is a blip, not a vanished VM
+w1_run blip "3 DONE\n" N=8 MAX_NEW=512 CHUNK=8 SYNC_SECS=1 STUB_SSH_SLEEP=3 STUB_DESCRIBE_OTHER_ERR=1
+hasnt "$W/blip.txt" "VM-GONE" "w1 VM-GONE: a describe that fails for another reason does not end the VM"
+# a healthy copy never asks GCE whether the VM exists
+w1_run alive "3 DONE\n" N=8 MAX_NEW=512 CHUNK=8 SYNC_SECS=1 STUB_SSH_SLEEP=3
+hasnt "$L" "instances describe" "w1: a VM that copies fine is not described"
+
+# EDITED_DIR: a variant checkpoint is the one edited arm; the base arm is the main run's; the published edit's data is never touched
+mkdir -p "$W/vckpt/x1e-1" "$W/vbase"
+echo '{}' > "$W/vckpt/x1e-1/config.json"; echo x > "$W/vckpt/x1e-1/model.safetensors"
+for i in 0 1 2 3 4 5 6 7; do echo "{\"model\": \"base\", \"id\": $i, \"max_new\": 512, \"correct\": false, \"hit_limit\": true, \"n_tokens\": 5}"; done > "$W/vbase/base_512.jsonl"
+PATH=$W/never:$PATH DRY_RUN=1 GCP_PROJECT=fake-project EDITED_DIR=$W/vckpt/x1e-1 BASE_JSONL=$W/vbase/base_512.jsonl N=8 MAX_NEW=512 CHUNK=8 W1_DIR=$W/vdry bash "$W1" > "$W/vdry.txt" 2>&1; rc=$?
+[ "$rc" = 0 ] && ok "w1 EDITED_DIR dry run exits 0" || bad "w1 EDITED_DIR dry run exits $rc: $(tail -3 "$W/vdry.txt")"
+has "$W/vdry.txt" "ONE edited arm: variant $W/vckpt/x1e-1 (--no-verify), base arm seeded from $W/vbase/base_512.jsonl" "w1 EDITED_DIR: the plan says one edited arm and where the base comes from"
+has "$W/vdry.txt" "scp .*--recurse $W/vckpt/x1e-1 cancho-w1-.*:~/models/variant-x1e-1" "w1 EDITED_DIR: the variant is uploaded to the VM"
+has "$W/vdry.txt" "W1_EDITED_SUB='variant-x1e-1'" "w1 EDITED_DIR: the remote step is told"
+PATH=$W/never:$PATH DRY_RUN=1 GCP_PROJECT=fake-project EDITED_DIR=$W/vckpt/x1e-1 TAG=mytag BASE_JSONL=$W/vbase/base_512.jsonl N=8 MAX_NEW=512 CHUNK=8 bash "$W1" > "$W/vdry2.txt" 2>&1
+has "$W/vdry2.txt" "in $ROOT/results/w1_cloud_mytag/data" "w1 EDITED_DIR: the default results directory is results/w1_cloud_<TAG>"
+for env in "BASE_JSONL=$W/nonexistent.jsonl" "EDITED_DIR=$W/nonexistent" "W1_DIR=$ROOT/results/w1_cloud" "TAG=a/b"; do
+  new_case w1vbad
+  env EDITED_DIR=$W/vckpt/x1e-1 BASE_JSONL=$W/vbase/base_512.jsonl N=8 MAX_NEW=512 CHUNK=8 STUB_PLAN=$W/plan PATH="$W/w1bin:$PATH" GCP_PROJECT=fake-project W1_DIR=$W/w1vbad "$env" bash "$W1" > "$W/w1vbad.txt" 2>&1; rc=$?
+  { [ "$rc" = 2 ] && ! grep -q "bulk create" "$L"; } && ok "w1 variant $env: refused, exit 2, nothing created" || bad "w1 variant $env: exit $rc"
+done
+w1_run var "8 DONE\n" EDITED_DIR=$W/vckpt/x1e-1 BASE_JSONL=$W/vbase/base_512.jsonl N=8 MAX_NEW=512 CHUNK=8
+[ "$rc" = 0 ] && ok "w1 EDITED_DIR: a variant run finishes, exit 0" || bad "w1 variant: exit $rc: $(tail -5 "$W/var.txt")"
+has "$L" "scp .*--recurse $W/vckpt/x1e-1 cancho-w1-.*:~/models/variant-x1e-1" "w1 EDITED_DIR: the checkpoint went up"
+has "$L" "W1_EDITED_SUB='variant-x1e-1'" "w1 EDITED_DIR: and the remote step knows"
+[ "$(lines "$W/var.dir/data/base_512.jsonl")" = 8 ] && cmp -s "$W/var.dir/data/base_512.jsonl" "$W/vbase/base_512.jsonl" && ok "w1 EDITED_DIR: the base arm is the seeded one, unchanged" || bad "w1 EDITED_DIR: base arm differs"
+[ "$(lines "$W/var.dir/data/edited_512.jsonl")" = 8 ] && ok "w1 EDITED_DIR: the edited arm is complete" || bad "w1 EDITED_DIR: edited arm"
+has "$W/var.txt" "W1 verdict (cap 512)" "w1 EDITED_DIR: the verdict is computed"
 # SMOKE on one VM
 w1_run smoke "8 DONE\n" SMOKE=1 W1_DIR=$W/smoke.dir
 [ "$rc" = 0 ] && [ "$(nvm)" = 1 ] && ok "w1 SMOKE=1: n=8, one VM, done" || bad "w1 smoke: exit $rc, $(nvm) VMs"
@@ -748,6 +790,15 @@ touch "$W/rs/home/w1_stop"
     . '"$G"'/remote_cuda.sh; VENV='"$W"'/rs/venv; pyenv() { return 0; }; s_w1; echo "rc=$? status=$(cat $R/w1_status)"' ) > "$W/rs.stop.txt" 2>&1
 has "$W/rs.stop.txt" "status=STOPPED n=24" "w1 step: the stop file ends it cleanly after a chunk"
 [ "$(grep -c ' behave ' "$W/rs.stop.log")" = 1 ] && ok "w1 step: and starts no further chunk" || bad "w1 step: chunks after the stop file"
+# the remote step: a variant is not downloaded, not diffed, and is what behave loads
+rs_case variant W1_EDITED_SUB=variant-x
+has "$W/rs.variant.txt" "variant checkpoint .*variant-x is missing or incomplete" "w1 step: a variant that did not arrive is a SETUP-FAILED"
+mkdir -p "$W/rs/home/models/variant-x"; echo '{}' > "$W/rs/home/models/variant-x/config.json"; echo x > "$W/rs/home/models/variant-x/m.safetensors"
+rs_case variant2 W1_EDITED_SUB=variant-x
+has "$W/rs.variant2.txt" "rc=0 status=DONE" "w1 step: a variant runs to DONE"
+[ "$(grep -c "^hf download" "$W/rs.variant2.log")" = 2 ] && ok "w1 step: variant: two downloads (base, GSM8K), not the published edit" || bad "w1 step: variant downloads"
+hasnt "$W/rs.variant2.log" " diff " "w1 step: variant: no diff --w1-expect"
+has "$W/rs.variant2.log" "--edited .*/models/variant-x " "w1 step: variant: behave loads the variant"
 else
   echo "skip w1_cloud.sh loop tests: numpy is not installed"
 fi

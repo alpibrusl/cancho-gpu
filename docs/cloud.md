@@ -271,6 +271,10 @@ off by a crash is skipped and redone; it used to swallow the next record, since 
    what is home (the limits count from zero again); a finished directory starts no VM and reprints
    the verdict.
 
+**A vanished VM.** A Spot VM that is taken back while the remote command hangs on a dead connection used to be copied from forever (`sync: could not copy ... resource not found`, 25 minutes). Now a failed copy asks `gcloud compute instances describe`: if it says the VM is not found or not `RUNNING`, the remote command gets `GONE_GRACE` (5 s) to end by itself (a preemption usually closes it: then it is `PREEMPTED` as before), else it is killed and the VM ends with the status **`VM-GONE`**, and the loop goes on to the next VM. A `describe` that fails for any other reason (a network blip) changes nothing. Tested in `tests/gcp.sh` with a stub whose VM vanishes and whose connection hangs.
+
+**A variant checkpoint instead of the published edit** (`docs/weight-space-w4.md` 13): `EDITED_DIR=build/ckpt/x1e-1 BASE_JSONL=<base_8192.jsonl of the main run> GCP_PROJECT=<project> scripts/gcp/w1_cloud.sh`. The directory is uploaded to every VM (`scp --recurse`, 1.6 GB, to `~/models/variant-<TAG>`); the published-edit download and `diff --w1-expect` are skipped (the variant is not the published edit; `behave` runs with `--no-verify` as always); the base arm is seeded from `BASE_JSONL` (refused, `w1c-base-seed`, if it has fewer than `N` lines), so only the edited arm is generated; the results go to `results/w1_cloud_<TAG>/` (`TAG` defaults to the directory's name), and a refusal (`w1c-dir`) keeps the run from writing to `results/w1_cloud`. Refusals carry the tags `w1c-edited-dir`, `w1c-tag`, `w1c-base-seed`, `w1c-dir`.
+
 `w1.py status --dir DIR` and `w1.py verdict --dir DIR` are the two pieces of `w1.py` this needs;
 both read only the jsonl. Output: `results/w1_cloud/` (`data/`, `vm-<stamp>-<k>/` with each VM's log,
 `remote.log`, and `pull/`, the last copy of the VM's `~/results`: `w1.log`, `w1_diff.txt`, `w1_status`, `summary.tsv`; and `verdict_200_8192.json`); the smoke run uses
