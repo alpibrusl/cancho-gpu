@@ -6,6 +6,9 @@ module tokenize;
 // form `tools/tokenizer_dump.py` prints with Hugging Face `tokenizers`
 // (`docs/runtime.md` §9; the two differ on real tokenizers, issue #51).
 //
+// `cancho-gpu detokenize <tokenizer> <ids>` is the other way: the ids file holds one record on each line, ids in decimal separated by spaces (an empty line is an empty record), and each
+// record prints as one line `dec "..."`, the text of `bpe.decode` quoted as above. An id outside the vocabulary is refused (`tok-id`).
+//
 // `<tokenizer>` is a `tokenizer.json` or a GGUF (told by its first four
 // bytes). The corpus is records separated by a line holding only `%%`
 // (the bytes `\n%%\n`); the first record starts at the start of the file,
@@ -57,13 +60,14 @@ fn record_text[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int)
     return text.f2(m, t, "$dec $\n", line, gguf_dump.quoted(m, t, ds, dn));
 }
 
-pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+// The tokenizer named by argument 2: its handle, or -1 with the error reported on standard error.
+fn open_tokenizer[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [err_write, fs_read(""), file_read, args] int {
     let (top, got, size) = fileio.prefix(m, t, fs, arg(args, 2), cap());
     if top < 0 {
         io.error_all(io, "error[io]: cannot read ");
         io.error_all(io, arg(args, 2));
         io.error_all(io, "\n");
-        return 1;
+        return 0 - 1;
     }
     var tk = 0 - 1;
     // A GGUF is gigabytes and its tokenizer is in the first megabytes; a
@@ -73,19 +77,29 @@ pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         io.error_all(io, "error[io]: ");
         io.error_all(io, arg(args, 2));
         io.error_all(io, " is over 96 MiB\n");
-        return 1;
+        return 0 - 1;
     }
     if is_gguf {
         let g = gguf.parse(m, t, top, top + got);
         if g < 0 {
-            return cli.report(m, t, io);
+            cli.report(m, t, io);
+            return 0 - 1;
         }
         tk = bpe.from_gguf(m, t, g);
     } else {
         tk = bpe.from_json(m, t, top, got);
     }
     if tk < 0 {
-        return cli.report(m, t, io);
+        cli.report(m, t, io);
+        return 0 - 1;
+    }
+    return tk;
+}
+
+pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let tk = open_tokenizer(m, t, io, fs, args);
+    if tk < 0 {
+        return 1;
     }
     let (cstart, cgot, csize) = fileio.prefix(m, t, fs, arg(args, 3), cap());
     if cstart < 0 || csize > cgot {
@@ -114,6 +128,69 @@ pub fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         }
         mem.push(m, lines, line);
         from = next;
+    }
+    io.write_all(io, text.bytes(t, text.joined(m, t, lines, "")));
+    return 0;
+}
+
+// The `dec` line of one record: its ids (decimal, separated by spaces, in t[from..to]) decoded; -1 for an id outside the vocabulary.
+fn detok_record[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) -> [] int {
+    let ids = mem.list(m);
+    var p = from;
+    while p < to {
+        while p < to && t[p] == byte_of(32) {
+            p = p + 1;
+        }
+        var q = p;
+        var v = 0;
+        while q < to && t[q] != byte_of(32) {
+            let c = int_of(t[q]);
+            if c < 48 || c > 57 {
+                return 0 - 1;
+            }
+            v = v * 10 + (c - 48);
+            q = q + 1;
+        }
+        if q > p {
+            if v >= m[tk + bpe.f_ids()] {
+                return 0 - 1;
+            }
+            mem.push(m, ids, v);
+        }
+        p = q;
+    }
+    let (ds, dn) = bpe.decode(m, t, tk, ids);
+    return text.f1(m, t, "dec $\n", gguf_dump.quoted(m, t, ds, dn));
+}
+
+// `cancho-gpu detokenize <tokenizer> <ids>`.
+pub fn detokenize[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let tk = open_tokenizer(m, t, io, fs, args);
+    if tk < 0 {
+        return 1;
+    }
+    let (cstart, cgot, csize) = fileio.prefix(m, t, fs, arg(args, 3), cap());
+    if cstart < 0 || csize > cgot {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, arg(args, 3));
+        io.error_all(io, " (or it is over 96 MiB)\n");
+        return 1;
+    }
+    let lines = mem.list(m);
+    var from = cstart;
+    let end = cstart + cgot;
+    while from < end {
+        var to = from;
+        while to < end && t[to] != byte_of(10) {
+            to = to + 1;
+        }
+        let line = detok_record(m, t, tk, from, to);
+        if line < 0 {
+            io.error_all(io, "error[tok-id]: an id is not a number or is outside the vocabulary\n");
+            return 1;
+        }
+        mem.push(m, lines, line);
+        from = to + 1;
     }
     io.write_all(io, text.bytes(t, text.joined(m, t, lines, "")));
     return 0;
