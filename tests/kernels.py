@@ -695,6 +695,8 @@ def new_checks():
     ok &= check("qk_norm_rows qn m=3 nk=2", got["qn"], want_q)
     ok &= check("qk_norm_rows kn m=3 nk=2", got["kn"], want_k)
     ok &= check("matvec_rows_f16_m m=3 n=64 k=96", run("matvec_rows_f16_m", ["m=3", "n=64", "k=96"])["y"], matvec16_m(3, 64, 96))
+    ok &= check("matvec_rows_f16_frag m=3 n=64 k=96", run("matvec_rows_f16_frag", ["m=3", "n=64", "k=96"])["y"], matvec16_m(3, 64, 96))
+    ok &= check("matvec_rows_f16_frag m=32 n=32 k=256", run("matvec_rows_f16_frag", ["m=32", "n=32", "k=256"])["y"], matvec16_m(32, 32, 256))
     got = run("delta_step3", ["nk=2"])
     want_so, want_y = delta_step3(2)
     for t in range(3):

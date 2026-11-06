@@ -38,5 +38,10 @@ matvec_fp4_batch m=3 n=128 k=256
 matvec_fp4_batch m=8 n=128 k=1024
 matvec_fp4_res_batch m=4 n=128 k=512
 matvec_fp4_swiglu_batch m=4 n=128 k=512
+matvec_rows_f16_frag m=1 n=256 k=64
+matvec_rows_f16_frag m=5 n=256 k=512
+matvec_rows_f16_frag m=13 n=256 k=1024
+matvec_rows_f16_frag m=32 n=1536 k=1536
+matvec_rows_f16_frag m=32 n=256 k=8960
 CASES
 exit $fail
