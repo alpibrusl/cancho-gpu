@@ -83,12 +83,10 @@ pub fn position_table[&h, &p](heap: &!h Heap, c: cfg.Cfg, pos0: &p [byte], kind:
                     } else {
                         b = enc.put_f32(heap, b, 0.0);
                     }
+                } else if q == pos {
+                    b = enc.put_f32(heap, b, 0.0);
                 } else {
-                    if q == pos {
-                        b = enc.put_f32(heap, b, 0.0);
-                    } else {
-                        b = enc.put_f32(heap, b, 1.0);
-                    }
+                    b = enc.put_f32(heap, b, 1.0);
                 }
                 q = q + 1;
             }
