@@ -233,6 +233,14 @@ def main():
                 json.dump(res, open(os.path.join(a.out, "train.json"), "w"))
             if a.steps_limit and t_step >= a.steps_limit:
                 break
+    if not res["evals"] or res["evals"][-1]["step"] != t_step:
+        # the planned step count is an estimate from the token total; the loop ends when the stream does, so the last
+        # steps were never saved or evaluated (run 3 trained 236 steps of a planned 332 and kept only step 200)
+        e = evaluate(model, dev, z, long_eval)
+        e["step"] = t_step
+        res["evals"].append(e)
+        model.save_pretrained(os.path.join(a.out, "step%d" % t_step))
+        print("  final eval", e, flush=True)
     res["seconds"] = time.time() - t0
     res["driver_memory_gb"] = torch.mps.driver_allocated_memory() / 1e9 if dev == "mps" else None
     json.dump(res, open(os.path.join(a.out, "train.json"), "w"))
