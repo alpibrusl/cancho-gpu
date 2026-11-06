@@ -1,0 +1,81 @@
+edition 9;
+
+module qsw.cfg;
+
+// The configuration of a session: `key value` lines. Integers are decimal; a float is given as the decimal integer of its binary64 bits, so that no decimal reading
+// (and no rounding of one) stands between the Python writer's float and this one's. The defaults are qwen_train.write's.
+
+import std.bytes;
+import qsw.rd;
+
+pub struct Cfg {
+    layers: int,
+    d: int,
+    h: int,
+    hkv: int,
+    dh: int,
+    ff: int,
+    v: int,
+    t: int,
+    nb: int,
+    tied: int,
+    r: int,
+    steps: int,
+    bc: int,
+    reuse: int,
+    eps: float,
+    theta: float,
+    alpha: float,
+    lr: float,
+    wd: float,
+    loss_scale: float,
+    b1: float,
+    b2: float,
+    eps_adam: float,
+}
+
+// The value of `key` in `text` (the text after "key "), start and end; the last line that has the key wins; (-1, -1) when the key is not there.
+fn value_of[&t, &k](text: &t [byte], key: &k [byte]) -> [] (int, int) {
+    var at = 0;
+    var best_a = 0 - 1;
+    var best_b = 0 - 1;
+    let total = len(text);
+    while at < total {
+        var stop = at;
+        while stop < total && int_of(text[stop]) != 10 {
+            stop = stop + 1;
+        }
+        let line = text[at..stop];
+        if bytes.starts_with(line, key) && len(line) > len(key) && int_of(line[len(key)]) == 32 {
+            best_a = at + len(key) + 1;
+            best_b = stop;
+        }
+        at = stop + 1;
+    }
+    return (best_a, best_b);
+}
+
+fn int_key[&t, &k](text: &t [byte], key: &k [byte], fallback: int) -> [] int {
+    let (a, z) = value_of(text, key);
+    if a < 0 {
+        return fallback;
+    }
+    return rd.parse_int(text[a..z]);
+}
+
+fn float_key[&t, &k](text: &t [byte], key: &k [byte], fallback: float) -> [] float {
+    let (a, z) = value_of(text, key);
+    if a < 0 {
+        return fallback;
+    }
+    return float_of_bits(rd.parse_int(text[a..z]));
+}
+
+pub fn has[&t, &k](text: &t [byte], key: &k [byte]) -> [] bool {
+    let (a, z) = value_of(text, key);
+    return a >= 0;
+}
+
+pub fn parse[&t](text: &t [byte]) -> [] Cfg {
+    return Cfg { layers: int_key(text, "layers", 0 - 1), d: int_key(text, "d", 0 - 1), h: int_key(text, "h", 0 - 1), hkv: int_key(text, "hkv", 0 - 1), dh: int_key(text, "dh", 0 - 1), ff: int_key(text, "ff", 0 - 1), v: int_key(text, "v", 0 - 1), t: int_key(text, "t", 0 - 1), nb: int_key(text, "nb", 0 - 1), tied: int_key(text, "tied", 1), r: int_key(text, "r", 16), steps: int_key(text, "steps", 1), bc: int_key(text, "bc", 2304), reuse: int_key(text, "reuse", 1), eps: float_key(text, "eps", 0.000001), theta: float_key(text, "theta", 1000000.0), alpha: float_key(text, "alpha", 32.0), lr: float_key(text, "lr", 0.0001), wd: float_key(text, "wd", 0.0), loss_scale: float_key(text, "loss_scale", 16.0), b1: float_key(text, "b1", 0.9), b2: float_key(text, "b2", 0.999), eps_adam: float_key(text, "eps_adam", 0.00000001) };
+}

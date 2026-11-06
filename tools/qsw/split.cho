@@ -1,0 +1,117 @@
+edition 9;
+
+module qsw.split;
+
+// `qsw split`: the gradients a session saved on `checkpoint` (`--grads`: f32, the fused matrices A then B of each group, layer by layer) as the per-projection
+// gradients of the adapters in `qsw write --adapters` order (binary64: layer, then q k v o gate up down, A then B), what qwen_train.split_grads gives:
+// dA = raw / (ncount loss_scale) and dB = raw s / (ncount loss_scale), s = alpha / r, ncount = nb (t - 1), in that order of operations so the words are Python's.
+// A fused A is the projections' A one under another; a fused B is [N, n r], block-diagonal, the projection k's B in the columns k r to (k + 1) r of its rows.
+
+import qsw.cfg;
+import qsw.data;
+import qsw.enc;
+import std.buffer;
+
+// The f32 word at byte `at` of `raw` as a float, exactly (zeros, subnormals and normal numbers; infinities and NaNs keep their class).
+fn f32_at[&b](raw: &b [byte], at: int) -> [] float {
+    let w = data.le_at(raw, at, 4);
+    let sign = w >> 31 & 1;
+    let e = w >> 23 & 255;
+    let m = w & 8388607;
+    var x = 0.0;
+    if e == 0 {
+        x = float_of(m) * float_of_bits(874 << 52);
+    } else if e == 255 {
+        x = float_of_bits(2047 << 52 | m << 29);
+        if m == 0 {
+            x = float_of_bits(2047 << 52);
+        }
+    } else {
+        x = float_of_bits(e + 896 << 52 | m << 29);
+    }
+    return float_of_bits(bits_of(x) | sign << 63);
+}
+
+// The words of one layer of the fused file.
+fn layer_words(c: cfg.Cfg) -> [] int {
+    var n = 0;
+    var g = 0;
+    while g < 4 {
+        let k = data.group_count(g);
+        let first = data.group_first(g);
+        var rows = 0;
+        var j = 0;
+        while j < k {
+            rows = rows + data.proj_out(c, first + j);
+            j = j + 1;
+        }
+        n = n + k * c.r * data.proj_in(c, first) + rows * k * c.r;
+        g = g + 1;
+    }
+    return n;
+}
+
+// The per-projection gradients as binary64 words; (bytes, 0), or (nothing, 1) when `raw` is not the model's fused gradients.
+pub fn run[&h, &g](heap: &!h Heap, c: cfg.Cfg, raw: &g [byte]) -> [heap] (buffer.Buffer, int) {
+    let per = layer_words(c);
+    if len(raw) != 4 * per * c.layers {
+        return (buffer.empty(heap, 8), 1);
+    }
+    let den = float_of(c.nb * (c.t - 1)) * c.loss_scale;
+    let s = c.alpha / float_of(c.r);
+    var out = buffer.empty(heap, 8 * per * c.layers + 8);
+    var l = 0;
+    while l < c.layers {
+        var p = 0;
+        while p < 7 {
+            // the group of p, p's index in it, and where the group starts in the layer's words
+            var g0 = 0;
+            while g0 < 3 && data.group_first(g0 + 1) <= p {
+                g0 = g0 + 1;
+            }
+            let k = p - data.group_first(g0);
+            let n = data.group_count(g0);
+            var gbase = 0;
+            var q = 0;
+            while q < g0 {
+                let nq = data.group_count(q);
+                let fq = data.group_first(q);
+                var rows = 0;
+                var j = 0;
+                while j < nq {
+                    rows = rows + data.proj_out(c, fq + j);
+                    j = j + 1;
+                }
+                gbase = gbase + nq * c.r * data.proj_in(c, fq) + rows * nq * c.r;
+                q = q + 1;
+            }
+            let inp = data.proj_in(c, p);
+            let outw = data.proj_out(c, p);
+            var rows_before = 0;
+            var j2 = 0;
+            while j2 < k {
+                rows_before = rows_before + data.proj_out(c, data.group_first(g0) + j2);
+                j2 = j2 + 1;
+            }
+            let a_start = l * per + gbase + k * c.r * inp;
+            let b_start = l * per + gbase + n * c.r * inp;
+            var i = 0;
+            while i < c.r * inp {
+                out = enc.put_le(heap, out, bits_of(f32_at(raw, 4 * (a_start + i)) / den), 8);
+                i = i + 1;
+            }
+            var row = 0;
+            while row < outw {
+                var col = 0;
+                while col < c.r {
+                    out = enc.put_le(heap, out, bits_of(f32_at(raw, 4 * (b_start + (rows_before + row) * n * c.r + k * c.r + col)) * s / den), 8);
+                    col = col + 1;
+                }
+                row = row + 1;
+            }
+            p = p + 1;
+        }
+        l = l + 1;
+    }
+    return (out, 0);
+}

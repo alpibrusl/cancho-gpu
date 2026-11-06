@@ -1,0 +1,61 @@
+edition 9;
+
+// Test probe for qsw.enc (tests/qsw.py): reads a file of decimal int64 bit patterns of doubles, one per line, and prints `f32word f16word repr` for each;
+// with a second argument the lines are whole numbers and it prints `%g` of each.
+
+import std.buffer;
+import std.bytes;
+import qsw.enc;
+import qsw.rd;
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(signals);
+    release(tty);
+    release(exec);
+    release(clock);
+    borrow args as &g in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow mut io as &!i in {
+                    let (data, failed) = rd.read_file(h, f, arg(g, 1));
+                    var out = buffer.empty(h, 1024);
+                    var grouped = arg_count(g) > 2;
+                    borrow data as &d in {
+                        let text = buffer.bytes(d);
+                        let n = rd.line_count(text);
+                        var k = 1;
+                        while k <= n {
+                            let ln = rd.line(text, k);
+                            if len(ln) > 0 && grouped {
+                                out = enc.put_g_whole(h, out, rd.parse_int(ln));
+                                out = buffer.push(h, out, byte_of(10));
+                            } else if len(ln) > 0 {
+                                let x = float_of_bits(rd.parse_int(ln));
+                                out = enc.put_int(h, out, enc.f32_word(x));
+                                out = buffer.push(h, out, byte_of(32));
+                                out = enc.put_int(h, out, enc.f16_word(x));
+                                out = buffer.push(h, out, byte_of(32));
+                                out = enc.put_repr(h, out, x);
+                                out = buffer.push(h, out, byte_of(10));
+                            }
+                            k = k + 1;
+                        }
+                    }
+                    buffer.drop(h, data);
+                    borrow out as &o in {
+                        buffer.write(i, o);
+                    }
+                    buffer.drop(h, out);
+                }
+            }
+        }
+    }
+    release(args);
+    release(fs);
+    release(heap);
+    release(io);
+    return 0;
+}

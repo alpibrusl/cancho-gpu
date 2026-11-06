@@ -1,0 +1,508 @@
+edition 9;
+
+module qsw.session;
+
+// The session file of a Qwen2 LoRA training run (qwen_train.write): the programs of the forward pass with the adapters, the backward pass, AdamW on the adapters, the aliases that let
+// the layers share a buffer, the request and what it answers and saves. Each emitted line is a template that reads like the Python writer's f-string (tpl.cho).
+// The variables a line may use are set by `setup` (the model) and, per layer and group, by the functions below.
+
+import std.buffer;
+import qsw.cfg;
+import qsw.enc;
+import qsw.tpl;
+
+// The largest divisor of n that is at most cap (qwen_session.block).
+pub fn block(n: int, cap: int) -> [] int {
+    var b = cap;
+    if n < b {
+        b = n;
+    }
+    while b > 1 && n % b != 0 {
+        b = b - 1;
+    }
+    return b;
+}
+
+// The projection group g: qkv o gu dn.
+fn gname(g: int) -> [] &static [byte] {
+    if g == 0 {
+        return "qkv";
+    }
+    if g == 1 {
+        return "o";
+    }
+    if g == 2 {
+        return "gu";
+    }
+    return "dn";
+}
+
+// The matrix a group multiplies by: wqkv wo wgu wd; its out and in widths.
+fn gmat(g: int) -> [] &static [byte] {
+    if g == 0 {
+        return "wqkv";
+    }
+    if g == 1 {
+        return "wo";
+    }
+    if g == 2 {
+        return "wgu";
+    }
+    return "wd";
+}
+
+// The program that produces a group's output in the forward pass: qkv_L wo_L gu_L dn_L.
+fn gprog(g: int) -> [] &static [byte] {
+    if g == 0 {
+        return "qkv";
+    }
+    if g == 1 {
+        return "wo";
+    }
+    if g == 2 {
+        return "gu";
+    }
+    return "dn";
+}
+
+fn gcount(g: int) -> [] int {
+    if g == 0 {
+        return 3;
+    }
+    if g == 2 {
+        return 2;
+    }
+    return 1;
+}
+
+fn gout(c: cfg.Cfg, g: int) -> [] int {
+    if g == 0 {
+        return c.d + 2 * c.hkv * c.dh;
+    }
+    if g == 1 {
+        return c.d;
+    }
+    if g == 2 {
+        return 2 * c.ff;
+    }
+    return c.d;
+}
+
+fn gin(c: cfg.Cfg, g: int) -> [] int {
+    if g == 3 {
+        return c.ff;
+    }
+    return c.d;
+}
+
+// Selects the group in the variables: g, r2, nout, nin, mat, gp.
+fn select_group[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, g: int) -> [heap] tpl.St {
+    var s = st;
+    s = tpl.set_txt(heap, s, "g", gname(g));
+    s = tpl.set_int(heap, s, "r2", gcount(g) * c.r);
+    s = tpl.set_int(heap, s, "nout", gout(c, g));
+    s = tpl.set_int(heap, s, "nin", gin(c, g));
+    s = tpl.set_txt(heap, s, "mat", gmat(g));
+    s = tpl.set_txt(heap, s, "gp", gprog(g));
+    return s;
+}
+
+// The low-rank product of a group's input with A (qwen_train.write's `lora_mid`): `asrc` is the template of the input, `cols` its width.
+fn lora_mid[&h, &a](heap: &!h Heap, st: tpl.St, asrc: &a [byte], cols: int) -> [heap] tpl.St {
+    var s = tpl.set_tpl(heap, st, "asrc", asrc);
+    s = tpl.set_int(heap, s, "cols", cols);
+    s = tpl.em(heap, s, "program m$g$_$l$ $mid:g$ m=$n$ n=$r2$ k=$cols$");
+    s = tpl.em(heap, s, "link $asrc$ -> m$g$_$l$.a");
+    s = tpl.em(heap, s, "resident m$g$_$l$.w $o$/Ah$l2$_$g$ f16");
+    s = tpl.em(heap, s, "program c$g$_$l$ $kn_cast_h$ r=$n$ c=$r2$ bm=8");
+    s = tpl.em(heap, s, "link m$g$_$l$.y -> c$g$_$l$.x");
+    return s;
+}
+
+// The base product plus the adapter's (`lora_gemm`): the program is named $gp$_$l$.
+fn lora_gemm[&h, &a](heap: &!h Heap, st: tpl.St, asrc: &a [byte]) -> [heap] tpl.St {
+    var s = tpl.set_tpl(heap, st, "asrc", asrc);
+    s = tpl.em(heap, s, "program $gp$_$l$ $kn_gemm_lora$ m=$n$ n=$nout$ k=$nin$ r2=$r2$");
+    s = tpl.em(heap, s, "link $asrc$ -> $gp$_$l$.a");
+    s = tpl.em(heap, s, "resident $gp$_$l$.w $wd$/l$l2$.$mat$.f16 f16");
+    s = tpl.em(heap, s, "link c$g$_$l$.y -> $gp$_$l$.mid");
+    s = tpl.em(heap, s, "resident $gp$_$l$.bs $o$/Bh$l2$_$g$ f16");
+    return s;
+}
+
+// The backward of a group (`adapter_back`): dmid, dx = dy W + dmid A, dB and dA. `dy` and `x` are templates of 'program.output' names; the gradient of A and of B are the
+// outputs gA<g>_<l>.y and gB<g>_<l>.y; the dx program is dx<g>_<l>.
+fn adapter_back[&h, &a, &b](heap: &!h Heap, st: tpl.St, dy: &a [byte], x: &b [byte]) -> [heap] tpl.St {
+    var s = tpl.set_tpl(heap, st, "dy16", dy);
+    s = tpl.set_tpl(heap, s, "x16", x);
+    s = tpl.em(heap, s, "program dm$g$_$l$ $dm:g$ m=$n$ n=$r2$ k=$nout$");
+    s = tpl.em(heap, s, "link $dy16$ -> dm$g$_$l$.a");
+    s = tpl.em(heap, s, "resident dm$g$_$l$.w $o$/Bh$l2$_$g$ f16");
+    s = tpl.em(heap, s, "program dc$g$_$l$ $kn_cast_h$ r=$n$ c=$r2$ bm=8");
+    s = tpl.em(heap, s, "link dm$g$_$l$.y -> dc$g$_$l$.x");
+    s = tpl.em(heap, s, "program dx$g$_$l$ $kn_dx_lora$ m=$n$ n=$nin$ k=$nout$ r2=$r2$");
+    s = tpl.em(heap, s, "link $dy16$ -> dx$g$_$l$.dy");
+    s = tpl.em(heap, s, "link dc$g$_$l$.y -> dx$g$_$l$.dmid");
+    s = tpl.em(heap, s, "resident dx$g$_$l$.w $wd$/l$l2$.$mat$.f16 f16");
+    s = tpl.em(heap, s, "resident dx$g$_$l$.a $o$/Ah$l2$_$g$ f16");
+    s = tpl.em(heap, s, "program gB$g$_$l$ $gb:g$ m=$nout$ n=$r2$ k=$n$");
+    s = tpl.em(heap, s, "link $dy16$ -> gB$g$_$l$.a");
+    s = tpl.em(heap, s, "link c$g$_$l$.y -> gB$g$_$l$.w");
+    s = tpl.em(heap, s, "program gA$g$_$l$ $ga:g$ m=$r2$ n=$nin$ k=$n$");
+    s = tpl.em(heap, s, "link dc$g$_$l$.y -> gA$g$_$l$.a");
+    s = tpl.em(heap, s, "link $x16$ -> gA$g$_$l$.w");
+    return s;
+}
+
+// One layer of the forward pass. The variables xin (the layer's input) and l, l2 are set.
+fn forward_layer[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
+    var s = st;
+    s = tpl.em(heap, s, "program rm1_$l$ $kn_rms_h$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
+    s = tpl.em(heap, s, "link $xin$ -> rm1_$l$.x");
+    s = tpl.em(heap, s, "resident rm1_$l$.gain $wd$/l$l2$.ln1.f32 f32");
+    s = select_group(heap, c, s, 0);
+    s = lora_mid(heap, s, "rm1_$l$.y", c.d);
+    s = lora_gemm(heap, s, "rm1_$l$.y");
+    s = tpl.em(heap, s, "program rq_$l$ $o$/rope_q.chx nb=$nb$ nh=$h$ t=$t$ w=$wide$ c0=0 bm=$rbm$ hf=$hf$");
+    s = tpl.em(heap, s, "link qkv_$l$.y -> rq_$l$.qkv");
+    s = tpl.em(heap, s, "resident rq_$l$.bias $wd$/l$l2$.bqkv.f32 f32");
+    s = tpl.em(heap, s, "resident rq_$l$.cs $o$/cos f32");
+    s = tpl.em(heap, s, "resident rq_$l$.sn $o$/sin f32");
+    s = tpl.em(heap, s, "program rk_$l$ $o$/rope_k.chx nb=$nb$ nh=$hkv$ t=$t$ w=$wide$ c0=$d$ bm=$rbm$ hf=$hf$");
+    s = tpl.em(heap, s, "link qkv_$l$.y -> rk_$l$.qkv");
+    s = tpl.em(heap, s, "resident rk_$l$.bias $wd$/l$l2$.bqkv.f32 f32");
+    s = tpl.em(heap, s, "resident rk_$l$.cs $o$/cos f32");
+    s = tpl.em(heap, s, "resident rk_$l$.sn $o$/sin f32");
+    s = tpl.em(heap, s, "program rv_$l$ $o$/bias_v.chx nb=$nb$ nh=$hkv$ t=$t$ w=$wide$ c0=$vc0$ bm=$rbm$ hf=$hf$");
+    s = tpl.em(heap, s, "link qkv_$l$.y -> rv_$l$.qkv");
+    s = tpl.em(heap, s, "resident rv_$l$.bias $wd$/l$l2$.bqkv.f32 f32");
+    s = tpl.em(heap, s, "program sc_$l$ $kn_att_s$ nbh=$nbh$ t=$t$ dh=$dh$");
+    s = tpl.em(heap, s, "link rq_$l$.y -> sc_$l$.q");
+    s = tpl.em(heap, s, "link rk_$l$.y -> sc_$l$.k");
+    s = tpl.em(heap, s, "program sm_$l$ $kn_att_sm$ nbh=$nbh$ t=$t$ bm=$abm$ scale=$isd$");
+    s = tpl.em(heap, s, "link sc_$l$.s -> sm_$l$.s");
+    s = tpl.em(heap, s, "resident sm_$l$.mask $o$/mask f32");
+    s = tpl.em(heap, s, "program ao_$l$ $kn_att_o$ nbh=$nbh$ t=$t$ dh=$dh$");
+    s = tpl.em(heap, s, "link sm_$l$.p -> ao_$l$.pr");
+    s = tpl.em(heap, s, "link rv_$l$.y -> ao_$l$.v");
+    s = tpl.em(heap, s, "program uh_$l$ $kn_unheads$ nb=$nb$ nh=$h$ t=$t$ dh=$dh$ bm=$rbm$");
+    s = tpl.em(heap, s, "link ao_$l$.o -> uh_$l$.o");
+    s = select_group(heap, c, s, 1);
+    s = lora_mid(heap, s, "uh_$l$.y", c.d);
+    s = lora_gemm(heap, s, "uh_$l$.y");
+    s = tpl.em(heap, s, "program r1_$l$ $kn_res_add$ r=$n$ c=$d$ bm=$ebm$");
+    s = tpl.em(heap, s, "link wo_$l$.y -> r1_$l$.z");
+    s = tpl.em(heap, s, "link $xin$ -> r1_$l$.res");
+    s = tpl.em(heap, s, "program rm2_$l$ $kn_rms_h$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
+    s = tpl.em(heap, s, "link r1_$l$.y -> rm2_$l$.x");
+    s = tpl.em(heap, s, "resident rm2_$l$.gain $wd$/l$l2$.ln2.f32 f32");
+    s = select_group(heap, c, s, 2);
+    s = lora_mid(heap, s, "rm2_$l$.y", c.d);
+    s = lora_gemm(heap, s, "rm2_$l$.y");
+    s = tpl.em(heap, s, "program sw_$l$ $kn_swiglu_h$ r=$n$ f=$ff$ bm=$sbm$ bc=$sbc$");
+    s = tpl.em(heap, s, "link gu_$l$.y -> sw_$l$.gu");
+    s = select_group(heap, c, s, 3);
+    s = lora_mid(heap, s, "sw_$l$.y", c.ff);
+    s = lora_gemm(heap, s, "sw_$l$.y");
+    s = tpl.em(heap, s, "program r2_$l$ $kn_res_add$ r=$n$ c=$d$ bm=$ebm$");
+    s = tpl.em(heap, s, "link dn_$l$.y -> r2_$l$.z");
+    s = tpl.em(heap, s, "link r1_$l$.y -> r2_$l$.res");
+    return s;
+}
+
+// One layer of the backward pass: the variables gdx (the gradient stream), xlow (the layer's input stream) and l, l2 are set; answers with gdx for the next layer set by the caller.
+fn backward_layer[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
+    var s = st;
+    s = tpl.em(heap, s, "program gc_$l$ $kn_cast_h$ r=$n$ c=$d$ bm=$ebm$");
+    s = tpl.em(heap, s, "link $gdx$ -> gc_$l$.x");
+    s = select_group(heap, c, s, 3);
+    s = adapter_back(heap, s, "gc_$l$.y", "sw_$l$.y");
+    s = tpl.em(heap, s, "program sb_$l$ $kn_swiglu_bwd$ r=$n$ f=$ff$ bm=$sbm$ bc=$sbc$");
+    s = tpl.em(heap, s, "link dxdn_$l$.y -> sb_$l$.da");
+    s = tpl.em(heap, s, "link gu_$l$.y -> sb_$l$.gu");
+    s = select_group(heap, c, s, 2);
+    s = adapter_back(heap, s, "sb_$l$.dgu", "rm2_$l$.y");
+    s = tpl.em(heap, s, "program rm2b_$l$ $kn_rms_bwd$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
+    s = tpl.em(heap, s, "link dxgu_$l$.y -> rm2b_$l$.dy");
+    s = tpl.em(heap, s, "link r1_$l$.y -> rm2b_$l$.x");
+    s = tpl.em(heap, s, "resident rm2b_$l$.gain $wd$/l$l2$.ln2.f32 f32");
+    s = tpl.em(heap, s, "link $gdx$ -> rm2b_$l$.dres");
+    s = tpl.em(heap, s, "program gac_$l$ $kn_cast_h$ r=$n$ c=$d$ bm=$ebm$");
+    s = tpl.em(heap, s, "link rm2b_$l$.dx -> gac_$l$.x");
+    s = select_group(heap, c, s, 1);
+    s = adapter_back(heap, s, "gac_$l$.y", "uh_$l$.y");
+    s = tpl.em(heap, s, "program hdo_$l$ $kn_heads_h$ nb=$nb$ nh=$h$ t=$t$ dh=$dh$ bm=$rbm$");
+    s = tpl.em(heap, s, "link dxo_$l$.y -> hdo_$l$.y");
+    s = tpl.em(heap, s, "program dpp_$l$ $kn_att_s$ nbh=$nbh$ t=$t$ dh=$dh$");
+    s = tpl.em(heap, s, "link hdo_$l$.o -> dpp_$l$.q");
+    s = tpl.em(heap, s, "link rv_$l$.y -> dpp_$l$.k");
+    s = tpl.em(heap, s, "program dsf_$l$ $kn_att_dsoft$ nbh=$nbh$ t=$t$ bm=$abm$ scale=$isd$");
+    s = tpl.em(heap, s, "link dpp_$l$.s -> dsf_$l$.dp");
+    s = tpl.em(heap, s, "link sm_$l$.p -> dsf_$l$.p");
+    s = tpl.em(heap, s, "program dqh_$l$ $kn_att_o$ nbh=$nbh$ t=$t$ dh=$dh$");
+    s = tpl.em(heap, s, "link dsf_$l$.ds -> dqh_$l$.pr");
+    s = tpl.em(heap, s, "link rk_$l$.y -> dqh_$l$.v");
+    s = tpl.em(heap, s, "program dkk_$l$ $kn_att_dkv$ nb=$nb$ nh=$h$ hkv=$hkv$ t=$t$ dh=$dh$");
+    s = tpl.em(heap, s, "link dsf_$l$.ds -> dkk_$l$.ds");
+    s = tpl.em(heap, s, "link rq_$l$.y -> dkk_$l$.q");
+    s = tpl.em(heap, s, "program dvv_$l$ $kn_att_dkv$ nb=$nb$ nh=$h$ hkv=$hkv$ t=$t$ dh=$dh$");
+    s = tpl.em(heap, s, "link sm_$l$.p -> dvv_$l$.ds");
+    s = tpl.em(heap, s, "link hdo_$l$.o -> dvv_$l$.q");
+    s = tpl.em(heap, s, "program rb_$l$ $o$/rope_bwd.chx nb=$nb$ t=$t$ bm=$rbb$ hf=$hf$");
+    s = tpl.em(heap, s, "link dqh_$l$.o -> rb_$l$.dq");
+    s = tpl.em(heap, s, "link dkk_$l$.dk -> rb_$l$.dk");
+    s = tpl.em(heap, s, "link dvv_$l$.dk -> rb_$l$.dv");
+    s = tpl.em(heap, s, "resident rb_$l$.cs $o$/cos f32");
+    s = tpl.em(heap, s, "resident rb_$l$.sn $o$/sin f32");
+    s = select_group(heap, c, s, 0);
+    s = adapter_back(heap, s, "rb_$l$.y", "rm1_$l$.y");
+    s = tpl.em(heap, s, "program rm1b_$l$ $kn_rms_bwd$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
+    s = tpl.em(heap, s, "link dxqkv_$l$.y -> rm1b_$l$.dy");
+    s = tpl.em(heap, s, "link $xlow$ -> rm1b_$l$.x");
+    s = tpl.em(heap, s, "resident rm1b_$l$.gain $wd$/l$l2$.ln1.f32 f32");
+    s = tpl.em(heap, s, "link rm2b_$l$.dx -> rm1b_$l$.dres");
+    return s;
+}
+
+// The optimiser programs of one layer (AdamW on the fused adapter matrices).
+fn optimiser_layer[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
+    var s = st;
+    var g = 0;
+    while g < 4 {
+        s = select_group(heap, c, s, g);
+        s = tpl.set_tpl(heap, s, "k", "$l2$_$g$");
+        let nelA = gcount(g) * c.r * gin(c, g);
+        let nelB = gout(c, g) * gcount(g) * c.r;
+        var ab = 0;
+        while ab < 2 {
+            var nel = nelA;
+            if ab == 1 {
+                nel = nelB;
+                s = tpl.set_txt(heap, s, "ab", "B");
+                s = tpl.set_tpl(heap, s, "gs", "$gsB$");
+                s = tpl.set_tpl(heap, s, "osc", "$scale$");
+            } else {
+                s = tpl.set_txt(heap, s, "ab", "A");
+                s = tpl.set_tpl(heap, s, "gs", "$gsA$");
+                s = tpl.set_txt(heap, s, "osc", "1.0");
+            }
+            s = tpl.set_int(heap, s, "nel", nel);
+            s = tpl.set_int(heap, s, "bn", block(nel, 128));
+            s = tpl.em(heap, s, "program a$ab$$k$ $kn_adamw_l$ n=$nel$ bn=$bn$ gs=$gs$ b1=$b1$ b2=$b2$ eps=$epsa$ lwd=$lwd$ osc=$osc$");
+            s = tpl.em(heap, s, "resident a$ab$$k$.w $o$/$ab$$k$ f32");
+            s = tpl.em(heap, s, "resident a$ab$$k$.m $o$/zm$ab$$k$ f32");
+            s = tpl.em(heap, s, "resident a$ab$$k$.v $o$/zv$ab$$k$ f32");
+            s = tpl.em(heap, s, "resident a$ab$$k$.mk $o$/m$ab$$k$ f32");
+            s = tpl.em(heap, s, "table a$ab$$k$.s $o$/sched $steps$ f32");
+            if ab == 0 {
+                s = tpl.em(heap, s, "link gA$g$_$l$.y -> aA$k$.grad");
+            } else {
+                s = tpl.em(heap, s, "link gB$g$_$l$.y -> aB$k$.grad");
+            }
+            s = tpl.em(heap, s, "carry a$ab$$k$.wo -> a$ab$$k$.w");
+            s = tpl.em(heap, s, "carry a$ab$$k$.mo -> a$ab$$k$.m");
+            s = tpl.em(heap, s, "carry a$ab$$k$.vo -> a$ab$$k$.v");
+            if ab == 0 {
+                s = tpl.em(heap, s, "carry a$ab$$k$.wh -> m$g$_$l$.w");
+                s = tpl.em(heap, s, "carry a$ab$$k$.wh -> dx$g$_$l$.a");
+            } else {
+                s = tpl.em(heap, s, "carry a$ab$$k$.wh -> $gp$_$l$.bs");
+                s = tpl.em(heap, s, "carry a$ab$$k$.wh -> dm$g$_$l$.w");
+            }
+            ab = ab + 1;
+        }
+        g = g + 1;
+    }
+    return s;
+}
+
+// The aliases that let the layers share a buffer (qwen_train.write's `reuse`).
+fn put_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
+    var s = st;
+    let ll = c.layers;
+    var k = 0;
+    while k < 5 {
+        var l = 1;
+        while l < ll {
+            s = tpl.set_int(heap, s, "p", l - 1);
+            s = tpl.set_int(heap, s, "q", l);
+            if k == 0 {
+                s = tpl.em(heap, s, "alias qkv_$p$.y qkv_$q$.y");
+            } else if k == 1 {
+                s = tpl.em(heap, s, "alias sc_$p$.s sc_$q$.s");
+            } else if k == 2 {
+                s = tpl.em(heap, s, "alias ao_$p$.o ao_$q$.o");
+            } else if k == 3 {
+                s = tpl.em(heap, s, "alias wo_$p$.y wo_$q$.y");
+            } else {
+                s = tpl.em(heap, s, "alias dn_$p$.y dn_$q$.y");
+            }
+            l = l + 1;
+        }
+        k = k + 1;
+    }
+    k = 0;
+    while k < 16 {
+        var l = ll - 2;
+        while l >= 0 {
+            s = tpl.set_int(heap, s, "p", l + 1);
+            s = tpl.set_int(heap, s, "q", l);
+            if k == 0 {
+                s = tpl.em(heap, s, "alias gc_$p$.y gc_$q$.y");
+            } else if k == 1 {
+                s = tpl.em(heap, s, "alias dxdn_$p$.y dxdn_$q$.y");
+            } else if k == 2 {
+                s = tpl.em(heap, s, "alias sb_$p$.dgu sb_$q$.dgu");
+            } else if k == 3 {
+                s = tpl.em(heap, s, "alias dxgu_$p$.y dxgu_$q$.y");
+            } else if k == 4 {
+                s = tpl.em(heap, s, "alias rm2b_$p$.dx rm2b_$q$.dx");
+            } else if k == 5 {
+                s = tpl.em(heap, s, "alias gac_$p$.y gac_$q$.y");
+            } else if k == 6 {
+                s = tpl.em(heap, s, "alias dxo_$p$.y dxo_$q$.y");
+            } else if k == 7 {
+                s = tpl.em(heap, s, "alias hdo_$p$.o hdo_$q$.o");
+            } else if k == 8 {
+                s = tpl.em(heap, s, "alias dpp_$p$.s dpp_$q$.s");
+            } else if k == 9 {
+                s = tpl.em(heap, s, "alias dsf_$p$.ds dsf_$q$.ds");
+            } else if k == 10 {
+                s = tpl.em(heap, s, "alias dqh_$p$.o dqh_$q$.o");
+            } else if k == 11 {
+                s = tpl.em(heap, s, "alias dkk_$p$.dk dkk_$q$.dk");
+            } else if k == 12 {
+                s = tpl.em(heap, s, "alias dvv_$p$.dk dvv_$q$.dk");
+            } else if k == 13 {
+                s = tpl.em(heap, s, "alias rb_$p$.y rb_$q$.y");
+            } else if k == 14 {
+                s = tpl.em(heap, s, "alias dxqkv_$p$.y dxqkv_$q$.y");
+            } else {
+                s = tpl.em(heap, s, "alias rm1b_$p$.dx rm1b_$q$.dx");
+            }
+            l = l - 1;
+        }
+        k = k + 1;
+    }
+    return s;
+}
+
+// The whole session text. The variables (see main.cho `setup`) are in the state.
+pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: bool, gradpath: &p [byte], wtab: bool) -> [heap] tpl.St {
+    var s = st;
+    s = tpl.set_txt(heap, s, "gradpath", gradpath);
+    let ll = c.layers;
+    s = tpl.em(heap, s, "# Qwen2 LoRA training: $layers$ layers, d $d$, $h$ query heads over $hkv$, ff $ff$, vocabulary $v$, $nb$ sequences of $t$, rank $r$, alpha $alphar$, $nsteps$ batch(es), loss scale $lscale$");
+    s = tpl.em(heap, s, "program wd $kn_widen_h$ r=$n$ c=$d$ bm=$ebm$");
+    s = tpl.em(heap, s, "table wd.x $o$/x0h $nsteps$ f16");
+    var l = 0;
+    while l < ll {
+        s = tpl.set_int(heap, s, "l", l);
+        s = tpl.set_int2(heap, s, "l2", l);
+        if l == 0 {
+            s = tpl.set_txt(heap, s, "xin", "wd.y");
+        } else {
+            s = tpl.set_tpl(heap, s, "xin", "r2_$lm$.y");
+        }
+        s = forward_layer(heap, c, s);
+        l = l + 1;
+        s = tpl.set_int(heap, s, "lm", l - 1);
+    }
+    s = tpl.set_int(heap, s, "lm", ll - 1);
+    s = tpl.em(heap, s, "program rmf $kn_rms_h$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
+    s = tpl.em(heap, s, "link r2_$lm$.y -> rmf.x");
+    s = tpl.em(heap, s, "resident rmf.gain $wd$/norm.f32 f32");
+    s = tpl.em(heap, s, "program lm $kn_gemm_mma$ m=$n$ n=$vp$ k=$d$");
+    s = tpl.em(heap, s, "link rmf.y -> lm.a");
+    s = tpl.em(heap, s, "resident lm.w $wlm$ f16");
+    s = tpl.em(heap, s, "program cs $kn_ce_stats$ r=$n$ c=$vp$ bc=$bc$ nq=$nq$");
+    s = tpl.em(heap, s, "link lm.y -> cs.lg");
+    s = tpl.em(heap, s, "table cs.tgt $o$/tgt $nsteps$ f32");
+    s = tpl.em(heap, s, "resident cs.jrow $o$/jrow f32");
+    s = tpl.em(heap, s, "resident cs.maskv $o$/maskv f32");
+    s = tpl.em(heap, s, "program cc $kn_ce_comb$ r=$n$ nq=$nq$ bm=$cbm$");
+    s = tpl.em(heap, s, "link cs.cm -> cc.cm");
+    s = tpl.em(heap, s, "link cs.cs -> cc.cs");
+    s = tpl.em(heap, s, "link cs.ct -> cc.ct");
+    s = tpl.em(heap, s, "link cs.ci -> cc.ci");
+    s = tpl.em(heap, s, "program ls $kn_bwd_dw$ r=$n$ n=1 k=1");
+    s = tpl.em(heap, s, "link cc.loss -> ls.dyt");
+    s = tpl.em(heap, s, "resident ls.xt $o$/wcount f32");
+    s = tpl.em(heap, s, "program cg $kn_ce_grad$ r=$n$ c=$vp$ bc=$bc$ nq=$nq$");
+    s = tpl.em(heap, s, "link lm.y -> cg.lg");
+    s = tpl.em(heap, s, "table cg.tgt $o$/tgt $nsteps$ f32");
+    s = tpl.em(heap, s, "resident cg.jrow $o$/jrow f32");
+    s = tpl.em(heap, s, "resident cg.maskv $o$/maskv f32");
+    s = tpl.em(heap, s, "link cc.lse -> cg.lse");
+    if wtab {
+        s = tpl.em(heap, s, "table cg.wt $o$/wscale $nsteps$ f32");
+    } else {
+        s = tpl.em(heap, s, "resident cg.wt $o$/wscale f32");
+    }
+    s = tpl.em(heap, s, "program hd $kn_gemm_mma_nn$ m=$n$ n=$d$ k=$vp$");
+    s = tpl.em(heap, s, "link cg.dl -> hd.a");
+    s = tpl.em(heap, s, "resident hd.w $wlm$ f16");
+    s = tpl.em(heap, s, "program rmfb $kn_rms_bwd$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
+    s = tpl.em(heap, s, "link hd.y -> rmfb.dy");
+    s = tpl.em(heap, s, "link r2_$lm$.y -> rmfb.x");
+    s = tpl.em(heap, s, "resident rmfb.gain $wd$/norm.f32 f32");
+    s = tpl.em(heap, s, "resident rmfb.dres $o$/zeros_nd f32");
+    s = tpl.set_txt(heap, s, "gdx", "rmfb.dx");
+    l = ll - 1;
+    while l >= 0 {
+        s = tpl.set_int(heap, s, "l", l);
+        s = tpl.set_int2(heap, s, "l2", l);
+        if l == 0 {
+            s = tpl.set_txt(heap, s, "xlow", "wd.y");
+        } else {
+            s = tpl.set_int(heap, s, "lm", l - 1);
+            s = tpl.set_tpl(heap, s, "xlow", "r2_$lm$.y");
+        }
+        s = backward_layer(heap, c, s);
+        s = tpl.set_tpl(heap, s, "gdx", "rm1b_$l$.dx");
+        l = l - 1;
+    }
+    if train {
+        l = 0;
+        while l < ll {
+            s = tpl.set_int(heap, s, "l", l);
+            s = tpl.set_int2(heap, s, "l2", l);
+            s = optimiser_layer(heap, c, s);
+            l = l + 1;
+        }
+    }
+    if c.reuse != 0 {
+        s = put_aliases(heap, c, s);
+    }
+    s = tpl.em(heap, s, "steps");
+    s = tpl.em(heap, s, "answer ls.dw scale 1/$ncountg$");
+    if len(gradpath) > 0 {
+        l = 0;
+        while l < ll {
+            s = tpl.set_int(heap, s, "l", l);
+            var g = 0;
+            while g < 4 {
+                s = tpl.set_txt(heap, s, "g", gname(g));
+                s = tpl.em(heap, s, "save gA$g$_$l$.y $gradpath$ f32");
+                s = tpl.em(heap, s, "save gB$g$_$l$.y $gradpath$ f32");
+                g = g + 1;
+            }
+            l = l + 1;
+        }
+    }
+    if save {
+        l = 0;
+        while l < ll {
+            s = tpl.set_int2(heap, s, "l2", l);
+            var g = 0;
+            while g < 4 {
+                s = tpl.set_txt(heap, s, "g", gname(g));
+                s = tpl.em(heap, s, "save aA$l2$_$g$.wo $savepath$ f32");
+                s = tpl.em(heap, s, "save aB$l2$_$g$.wo $savepath$ f32");
+                g = g + 1;
+            }
+            l = l + 1;
+        }
+    }
+    return s;
+}

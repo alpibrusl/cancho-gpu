@@ -1,0 +1,383 @@
+edition 9;
+
+module qsw.data;
+
+// The data files of a session (qwen_train.write's `put` calls): the embeddings of each step's batch, the targets, the rotary tables, the mask, the weights of the positions, the output layer
+// padded to a multiple of the vocabulary block, and the adapters in their fused form with their optimiser state. All floats are rounded once from binary64, as numpy's `astype` does.
+
+import std.buffer;
+import std.math;
+import qsw.cfg;
+import qsw.enc;
+import qsw.kern;
+import qsw.rd;
+
+// The little-endian integer of `count` bytes at `at` (unsigned; the top byte of a 64-bit word lands in the sign).
+pub fn le_at[&b](data: &b [byte], at: int, count: int) -> [] int {
+    var v = 0;
+    var i = count - 1;
+    while i >= 0 {
+        v = v << 8 | int_of(data[at + i]);
+        i = i - 1;
+    }
+    return v;
+}
+
+// A signed 32-bit integer.
+pub fn i32_at[&b](data: &b [byte], at: int) -> [] int {
+    let v = le_at(data, at, 4);
+    if v >= 2147483648 {
+        return v - 4294967296;
+    }
+    return v;
+}
+
+pub fn f64_at[&b](data: &b [byte], at: int) -> [] float {
+    return float_of_bits(le_at(data, at, 8));
+}
+
+// Writes `b` to `dir/name` and drops it: 0, or 1 when the file cannot be written.
+pub fn save[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], name: &n [byte], b: buffer.Buffer) -> [heap, fs_write("")] int {
+    let path = kern.path_join(heap, dir, name);
+    var status = 0;
+    borrow path as &pr in {
+        borrow b as &br in {
+            if fs_write(fs, buffer.bytes(pr), buffer.bytes(br)) < 0 {
+                status = 1;
+            }
+        }
+    }
+    buffer.drop(heap, path);
+    buffer.drop(heap, b);
+    return status;
+}
+
+fn zeros_f32[&h](heap: &!h Heap, count: int) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * count + 8);
+    var i = 0;
+    while i < count {
+        b = enc.put_le(heap, b, 0, 4);
+        i = i + 1;
+    }
+    return b;
+}
+
+fn full_f32[&h](heap: &!h Heap, count: int, x: float) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * count + 8);
+    let w = enc.f32_word(x);
+    var i = 0;
+    while i < count {
+        b = enc.put_le(heap, b, w, 4);
+        i = i + 1;
+    }
+    return b;
+}
+
+// x0h: the f16 embedding rows of every token of every step (the lookup is host work).
+pub fn embeddings[&h, &e, &t](heap: &!h Heap, c: cfg.Cfg, emb: &e [byte], tokens: &t [byte]) -> [heap] buffer.Buffer {
+    let count = c.steps * c.nb * c.t;
+    let row = 2 * c.d;
+    var b = buffer.empty(heap, count * row + 8);
+    var i = 0;
+    while i < count {
+        let tok = i32_at(tokens, 4 * i);
+        b = buffer.append(heap, b, emb[tok * row..tok * row + row]);
+        i = i + 1;
+    }
+    return b;
+}
+
+// tgt: for each step, the next token of each position's sequence plus one (the last position's target is itself), as f32.
+pub fn targets[&h, &t](heap: &!h Heap, c: cfg.Cfg, tokens: &t [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * c.steps * c.nb * c.t + 8);
+    var s = 0;
+    while s < c.steps {
+        var q = 0;
+        while q < c.nb {
+            let base = (s * c.nb + q) * c.t;
+            var j = 0;
+            while j < c.t {
+                var at = j + 1;
+                if j == c.t - 1 {
+                    at = j;
+                }
+                b = enc.put_f32(heap, b, float_of(i32_at(tokens, 4 * (base + at)) + 1));
+                j = j + 1;
+            }
+            q = q + 1;
+        }
+        s = s + 1;
+    }
+    return b;
+}
+
+// cos or sin of the rotary angles [t, hf]: angle(i, j) = i * theta ^ (-j / hf).
+pub fn rotary[&h](heap: &!h Heap, c: cfg.Cfg, sine: bool) -> [heap] buffer.Buffer {
+    let hf = c.dh / 2;
+    var b = buffer.empty(heap, 4 * c.t * hf + 8);
+    var i = 0;
+    while i < c.t {
+        var j = 0;
+        while j < hf {
+            let inv = math.pow(c.theta, float_of(0 - j) / float_of(hf));
+            let ang = float_of(i) * inv;
+            if sine {
+                b = enc.put_f32(heap, b, math.sin(ang));
+            } else {
+                b = enc.put_f32(heap, b, math.cos(ang));
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return b;
+}
+
+// The causal mask [t, t]: -1e9 above the diagonal.
+pub fn mask[&h](heap: &!h Heap, c: cfg.Cfg) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * c.t * c.t + 8);
+    let neg = enc.f32_word(0.0 - 1000000000.0);
+    var i = 0;
+    while i < c.t {
+        var j = 0;
+        while j < c.t {
+            if j > i {
+                b = enc.put_le(heap, b, neg, 4);
+            } else {
+                b = enc.put_le(heap, b, 0, 4);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return b;
+}
+
+// wcount: 1 at every position but the last of a sequence, which has no next token.
+pub fn counts[&h](heap: &!h Heap, c: cfg.Cfg) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * c.nb * c.t + 8);
+    var i = 0;
+    while i < c.nb * c.t {
+        if i % c.t == c.t - 1 {
+            b = enc.put_f32(heap, b, 0.0);
+        } else {
+            b = enc.put_f32(heap, b, 1.0);
+        }
+        i = i + 1;
+    }
+    return b;
+}
+
+// wscale: the weight of each position times the loss scale. `wt` is the caller's weights ([nb t] f64, or one such block for each step) or empty for the default (wcount).
+pub fn scaled[&h, &w](heap: &!h Heap, c: cfg.Cfg, wt: &w [byte]) -> [heap] buffer.Buffer {
+    var count = c.nb * c.t;
+    if len(wt) > 0 {
+        count = len(wt) / 8;
+    }
+    var b = buffer.empty(heap, 4 * count + 8);
+    var i = 0;
+    while i < count {
+        var x = 1.0;
+        if len(wt) > 0 {
+            x = f64_at(wt, 8 * i);
+        } else if i % c.t == c.t - 1 {
+            x = 0.0;
+        }
+        b = enc.put_f32(heap, b, x * c.loss_scale);
+        i = i + 1;
+    }
+    return b;
+}
+
+pub fn count_of[&w](c: cfg.Cfg, wt: &w [byte]) -> [] int {
+    return c.nb * (c.t - 1);
+}
+
+// jrow: 1 .. vp as f32.
+pub fn jrow[&h](heap: &!h Heap, vp: int) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * vp + 8);
+    var j = 1;
+    while j <= vp {
+        b = enc.put_f32(heap, b, float_of(j));
+        j = j + 1;
+    }
+    return b;
+}
+
+// maskv: 0 for a real vocabulary entry, -1e9 for padding.
+pub fn maskv[&h](heap: &!h Heap, v: int, vp: int) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * vp + 8);
+    let neg = enc.f32_word(0.0 - 1000000000.0);
+    var j = 0;
+    while j < vp {
+        if j < v {
+            b = enc.put_le(heap, b, 0, 4);
+        } else {
+            b = enc.put_le(heap, b, neg, 4);
+        }
+        j = j + 1;
+    }
+    return b;
+}
+
+// wlm.f16: the output layer's first v rows and zero rows up to vp.
+pub fn padded_head[&h, &e](heap: &!h Heap, c: cfg.Cfg, head: &e [byte], vp: int) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 2 * vp * c.d + 8), head[0..2 * c.v * c.d]);
+    var i = 0;
+    while i < 2 * (vp - c.v) * c.d {
+        b = buffer.push(heap, b, byte_of(0));
+        i = i + 1;
+    }
+    return b;
+}
+
+// lr schedule: per step [lr_t / (1 - b1^t), 1 / sqrt(1 - b2^t)] with t counted from first + 1.
+pub fn schedule[&h](heap: &!h Heap, c: cfg.Cfg) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 8 * c.steps + 8);
+    var t = 1;
+    while t <= c.steps {
+        let ft = float_of(t);
+        b = enc.put_f32(heap, b, c.lr / (1.0 - math.pow(c.b1, ft)));
+        b = enc.put_f32(heap, b, 1.0 / sqrt(1.0 - math.pow(c.b2, ft)));
+        t = t + 1;
+    }
+    return b;
+}
+
+// ---- the adapters -------------------------------------------------------------------------------------------------------------------------
+
+// The projections of a group: how many (1 to 3), and the out width of each; the in width is shared.
+pub fn group_count(g: int) -> [] int {
+    if g == 0 {
+        return 3;
+    }
+    if g == 2 {
+        return 2;
+    }
+    return 1;
+}
+
+// The first projection (in qwen_ref.PROJ order q k v o gate up down) of group g (qkv o gu dn).
+pub fn group_first(g: int) -> [] int {
+    if g == 0 {
+        return 0;
+    }
+    if g == 1 {
+        return 3;
+    }
+    if g == 2 {
+        return 4;
+    }
+    return 6;
+}
+
+pub fn proj_in(c: cfg.Cfg, p: int) -> [] int {
+    if p == 6 {
+        return c.ff;
+    }
+    return c.d;
+}
+
+pub fn proj_out(c: cfg.Cfg, p: int) -> [] int {
+    if p == 0 || p == 3 || p == 6 {
+        return c.d;
+    }
+    if p == 1 || p == 2 {
+        return c.hkv * c.dh;
+    }
+    return c.ff;
+}
+
+// The word offset in the adapters file of the A (ab = 0) or B (ab = 1) matrix of projection p of layer l.
+pub fn adapter_offset(c: cfg.Cfg, l: int, p: int, ab: int) -> [] int {
+    var per_layer = 0;
+    var q = 0;
+    while q < 7 {
+        per_layer = per_layer + c.r * proj_in(c, q) + proj_out(c, q) * c.r;
+        q = q + 1;
+    }
+    var at = l * per_layer;
+    q = 0;
+    while q < p {
+        at = at + c.r * proj_in(c, q) + proj_out(c, q) * c.r;
+        q = q + 1;
+    }
+    if ab == 1 {
+        at = at + c.r * proj_in(c, p);
+    }
+    return at;
+}
+
+// The fused A of group g of layer l: the projections' A one under another, as f32 (kind 0) or f16 (kind 1); mask kind 2 is ones.
+pub fn fused_a[&h, &a](heap: &!h Heap, c: cfg.Cfg, ad: &a [byte], l: int, g: int, kind: int) -> [heap] buffer.Buffer {
+    var b = buffer.empty(heap, 4 * c.r * 3 * c.ff + 8);
+    var k = 0;
+    while k < group_count(g) {
+        let p = group_first(g) + k;
+        let at = adapter_offset(c, l, p, 0);
+        var i = 0;
+        while i < c.r * proj_in(c, p) {
+            if kind == 0 {
+                b = enc.put_f32(heap, b, f64_at(ad, 8 * (at + i)));
+            } else if kind == 1 {
+                b = enc.put_f16(heap, b, f64_at(ad, 8 * (at + i)));
+            } else if kind == 2 {
+                b = enc.put_f32(heap, b, 1.0);
+            } else {
+                b = enc.put_le(heap, b, 0, 4);
+            }
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+    return b;
+}
+
+// The fused B of group g of layer l [N, r2], block-diagonal: kind 0 f32 values, 1 f16 of scale * value, 2 the mask (f32 ones in the blocks), 3 f32 zeros.
+pub fn fused_b[&h, &a](heap: &!h Heap, c: cfg.Cfg, ad: &a [byte], l: int, g: int, kind: int, scale: float) -> [heap] buffer.Buffer {
+    let n = group_count(g);
+    var total = 0;
+    var k = 0;
+    while k < n {
+        total = total + proj_out(c, group_first(g) + k);
+        k = k + 1;
+    }
+    var b = buffer.empty(heap, 4 * total * n * c.r + 8);
+    k = 0;
+    while k < n {
+        let p = group_first(g) + k;
+        let at = adapter_offset(c, l, p, 1);
+        var row = 0;
+        while row < proj_out(c, p) {
+            var col = 0;
+            while col < n * c.r {
+                let inside = col >= k * c.r && col < (k + 1) * c.r;
+                if kind == 0 {
+                    if inside {
+                        b = enc.put_f32(heap, b, f64_at(ad, 8 * (at + row * c.r + col - k * c.r)));
+                    } else {
+                        b = enc.put_le(heap, b, 0, 4);
+                    }
+                } else if kind == 1 {
+                    if inside {
+                        b = enc.put_f16(heap, b, scale * f64_at(ad, 8 * (at + row * c.r + col - k * c.r)));
+                    } else {
+                        b = enc.put_le(heap, b, 0, 2);
+                    }
+                } else if kind == 2 {
+                    if inside {
+                        b = enc.put_f32(heap, b, 1.0);
+                    } else {
+                        b = enc.put_le(heap, b, 0, 4);
+                    }
+                } else {
+                    b = enc.put_le(heap, b, 0, 4);
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+        k = k + 1;
+    }
+    return b;
+}

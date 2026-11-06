@@ -14,7 +14,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CANCHO=${CANCHO:-cancho}
 cd "$ROOT"
-"$CANCHO" fmt --check src tests device
+"$CANCHO" fmt --check src tests device tools
 tests/files.sh
 "$CANCHO" build
 "$CANCHO" test
@@ -64,5 +64,7 @@ fi
 python3 tests/gdn.py
 python3 tests/qwen.py build/cancho-gpu-session
 python3 tests/qwen_quant.py build/cancho-gpu-session
+CANCHO="$CANCHO" scripts/build-qsw.sh
+python3 tests/qsw.py build/qsw
 CANCHO="$CANCHO" tests/authority.sh
 echo "gate: ok"

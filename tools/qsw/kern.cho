@@ -1,0 +1,361 @@
+edition 9;
+
+module qsw.kern;
+
+// The kernel files of a session: the two generated families (qwen_session.rope_source, qwen_train.rope_bwd_source) and the copies of a library kernel with another tile
+// (qwen_train.write's `kernel(name, **sched)`), and where a kernel is found.
+
+import std.buffer;
+import std.bytes;
+import qsw.enc;
+import qsw.rd;
+import qsw.tpl;
+
+// `dir/name`, as os.path.join joins them.
+pub fn path_join[&h, &d, &n](heap: &!h Heap, dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 96), dir);
+    if len(dir) > 0 && int_of(dir[len(dir) - 1]) != 47 {
+        b = buffer.push(heap, b, byte_of(47));
+    }
+    return buffer.append(heap, b, name);
+}
+
+fn exists[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] bool {
+    match open_read(fs, path) {
+        Opened::Failed(reason) => {
+            return false;
+        }
+        Opened::Ok(opened) => {
+            file_close(opened);
+            return true;
+        }
+    }
+}
+
+// The path of a library kernel: the first that exists of `root/examples/qwen/name`, `root/examples/train/name`, `root/tests/chx/ported/name` and `root/tests/chx/name`
+// (the order qwen_train.write looks in; its own directory is first, but nothing is written there under these names). Empty when none exists.
+pub fn find_kernel[&h, &f, &r, &n](heap: &!h Heap, fs: &f Fs(""), root: &r [byte], name: &n [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var k = 0;
+    while k < 4 {
+        var sub: &r [byte] = "examples/qwen";
+        if k == 1 {
+            sub = "examples/train";
+        } else if k == 2 {
+            sub = "tests/chx/ported";
+        } else if k == 3 {
+            sub = "tests/chx";
+        }
+        let dir = path_join(heap, root, sub);
+        var found = false;
+        var path = buffer.empty(heap, 8);
+        borrow dir as &dr in {
+            buffer.drop(heap, path);
+            path = path_join(heap, buffer.bytes(dr), name);
+        }
+        buffer.drop(heap, dir);
+        borrow path as &pr in {
+            found = exists(fs, buffer.bytes(pr));
+        }
+        if found {
+            return path;
+        }
+        buffer.drop(heap, path);
+        k = k + 1;
+    }
+    return buffer.empty(heap, 8);
+}
+
+// The text of a library kernel with the apple-m-series schedule replaced by `threads t warps W bm .. [bn ..] bk ..` and, when `nv`, the nvidia-ada one by one warp over the same block
+// (qwen_train.write's `kernel`): lines split at "\n" and joined with it, so everything else is the file's. `bn` and `threads` are -1 when absent.
+pub fn rewrite[&h, &s, &w](heap: &!h Heap, text: &s [byte], nv: bool, threads: int, warps: &w [byte], bm: int, bn: int, bk: int) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, len(text) + 64);
+    var at = 0;
+    let total = len(text);
+    while at <= total {
+        var stop = at;
+        while stop < total && int_of(text[stop]) != 10 {
+            stop = stop + 1;
+        }
+        let line = text[at..stop];
+        if bytes.starts_with(line, "schedule ") && bytes.find(line, "apple-m-series") >= 0 {
+            let brace = bytes.find(line, "{");
+            if brace >= 0 {
+                out = buffer.append(heap, out, line[0..brace]);
+            } else {
+                out = buffer.append(heap, out, line);
+            }
+            out = buffer.append(heap, out, "{ threads ");
+            out = enc.put_int(heap, out, threads);
+            out = buffer.append(heap, out, " warps ");
+            out = buffer.append(heap, out, warps);
+            out = buffer.append(heap, out, " bm ");
+            out = enc.put_int(heap, out, bm);
+            if bn >= 0 {
+                out = buffer.append(heap, out, " bn ");
+                out = enc.put_int(heap, out, bn);
+            }
+            out = buffer.append(heap, out, " bk ");
+            out = enc.put_int(heap, out, bk);
+            out = buffer.append(heap, out, " }");
+        } else if nv && bytes.starts_with(line, "schedule ") && bytes.find(line, "nvidia-ada") >= 0 {
+            let brace = bytes.find(line, "{");
+            if brace >= 0 {
+                out = buffer.append(heap, out, line[0..brace]);
+            } else {
+                out = buffer.append(heap, out, line);
+            }
+            out = buffer.append(heap, out, "{ threads 32 warps 1 1 bm ");
+            out = enc.put_int(heap, out, bm);
+            if bn >= 0 {
+                out = buffer.append(heap, out, " bn ");
+                out = enc.put_int(heap, out, bn);
+            }
+            out = buffer.append(heap, out, " bk ");
+            out = enc.put_int(heap, out, bk);
+            out = buffer.append(heap, out, " }");
+        } else {
+            out = buffer.append(heap, out, line);
+        }
+        if stop < total {
+            out = buffer.push(heap, out, byte_of(10));
+        }
+        at = stop + 1;
+    }
+    return out;
+}
+
+// The file name of a scheduled copy: `gemm_mma.chx` with threads 128, warps "2 2", bm 16, bn 96, bk 32 is `gemm_mma_128_22_16_96_32.chx`.
+pub fn scheduled_name[&h, &n, &w](heap: &!h Heap, name: &n [byte], threads: int, warps: &w [byte], bm: int, bn: int, bk: int) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 64), name[0..len(name) - 4]);
+    b = buffer.push(heap, b, byte_of(95));
+    b = enc.put_int(heap, b, threads);
+    b = buffer.push(heap, b, byte_of(95));
+    var i = 0;
+    while i < len(warps) {
+        if int_of(warps[i]) != 32 {
+            b = buffer.push(heap, b, warps[i]);
+        }
+        i = i + 1;
+    }
+    b = buffer.push(heap, b, byte_of(95));
+    b = enc.put_int(heap, b, bm);
+    if bn >= 0 {
+        b = buffer.push(heap, b, byte_of(95));
+        b = enc.put_int(heap, b, bn);
+    }
+    b = buffer.push(heap, b, byte_of(95));
+    b = enc.put_int(heap, b, bk);
+    return buffer.append(heap, b, ".chx");
+}
+
+// A kernel with the tile given: the copy is written into `out` and its path answered, with 0 in the second place; 1 when the kernel is not under the root and 100 when the copy cannot be written. With `threads` < 0 the
+// kernel is the library's own file, its path answered as it is found.
+pub fn kernel[&h, &f, &o, &r, &n, &w](heap: &!h Heap, fs: &f Fs(""), out: &o [byte], root: &r [byte], name: &n [byte], nv: bool, threads: int, warps: &w [byte], bm: int, bn: int, bk: int) -> [heap, fs_read(""), fs_write(""), file_read] (buffer.Buffer, int) {
+    let src = find_kernel(heap, fs, root, name);
+    var none = false;
+    borrow src as &s0 in {
+        none = buffer.size(s0) == 0;
+    }
+    if none {
+        return (src, 1);
+    }
+    if threads < 0 {
+        return (src, 0);
+    }
+    var trouble = 0;
+    var path = buffer.empty(heap, 8);
+    borrow src as &sr in {
+        let (text, failed) = rd.read_file(heap, fs, buffer.bytes(sr));
+        trouble = failed;
+        if failed == 0 {
+            borrow text as &tr in {
+                let body = rewrite(heap, buffer.bytes(tr), nv, threads, warps, bm, bn, bk);
+                let fname = scheduled_name(heap, name, threads, warps, bm, bn, bk);
+                buffer.drop(heap, path);
+                borrow fname as &fr in {
+                    path = path_join(heap, out, buffer.bytes(fr));
+                }
+                borrow path as &pr in {
+                    borrow body as &br in {
+                        if fs_write(fs, buffer.bytes(pr), buffer.bytes(br)) < 0 {
+                            trouble = 100;
+                        }
+                    }
+                }
+                buffer.drop(heap, fname);
+                buffer.drop(heap, body);
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    buffer.drop(heap, src);
+    return (path, trouble);
+}
+
+// ---- the generated kernels -------------------------------------------------------------------------------------------------------------------
+
+// qwen_session.rope_source(name, group, rotate): `group` heads of the heads-major output; `rotate` for the query and key heads, not for the values.
+pub fn rope_source[&h, &n](heap: &!h Heap, name: &n [byte], group: int, rotate: bool) -> [heap] buffer.Buffer {
+    var st = tpl.start(heap);
+    st = tpl.set_txt(heap, st, "name", name);
+    st = tpl.set_int(heap, st, "group", group);
+    if rotate {
+        st = tpl.set_txt(heap, st, "what", "Rotary embedding");
+    } else {
+        st = tpl.set_txt(heap, st, "what", "Bias");
+    }
+    if group > 1 {
+        st = tpl.set_txt(heap, st, "heads", "heads");
+    } else {
+        st = tpl.set_txt(heap, st, "heads", "head");
+    }
+    st = tpl.em(heap, st, "// $what$ of the columns c0 .. c0 + nh 2 hf of the fused q/k/v product, written f16 to $group$ $heads$ of the heads-major");
+    st = tpl.em(heap, st, "// output [nb nh $group$ t, 2 hf] for every source head (generated by qwen_session.rope_source; docs/resident.md section 20).");
+    st = tpl.em(heap, st, "algo $name$(nb, nh, t, w, c0, bm, hf)");
+    st = tpl.em(heap, st, "  in  qkv:  f32[nb * t, w]");
+    st = tpl.em(heap, st, "  in  bias: f32[1, w]");
+    if rotate {
+        st = tpl.em(heap, st, "  in  cs:   f32[t, hf]");
+        st = tpl.em(heap, st, "  in  sn:   f32[t, hf]");
+    }
+    st = tpl.em(heap, st, "  out y:    f16[nb * nh * $group$ * t, 2 * hf]");
+    st = tpl.em(heap, st, "{");
+    st = tpl.em(heap, st, "  grid b over nb, h over nh, i over t / bm");
+    if rotate {
+        st = tpl.em(heap, st, "  let x1 = load qkv[b * t + i * bm, c0 + h * hf * 2 ; bm, hf]");
+        st = tpl.em(heap, st, "  let x2 = load qkv[b * t + i * bm, c0 + h * hf * 2 + hf ; bm, hf]");
+        st = tpl.em(heap, st, "  let b1 = load bias[0, c0 + h * hf * 2 ; 1, hf]");
+        st = tpl.em(heap, st, "  let b2 = load bias[0, c0 + h * hf * 2 + hf ; 1, hf]");
+        st = tpl.em(heap, st, "  let a1 = x1 + b1");
+        st = tpl.em(heap, st, "  let a2 = x2 + b2");
+        st = tpl.em(heap, st, "  let cc = load cs[i * bm, 0 ; bm, hf]");
+        st = tpl.em(heap, st, "  let ss = load sn[i * bm, 0 ; bm, hf]");
+        st = tpl.em(heap, st, "  let p1 = &a1 * &cc");
+        st = tpl.em(heap, st, "  let p2 = &a2 * &ss");
+        st = tpl.em(heap, st, "  let lo = p1 - p2");
+        st = tpl.em(heap, st, "  let p3 = a2 * cc");
+        st = tpl.em(heap, st, "  let p4 = a1 * ss");
+        st = tpl.em(heap, st, "  let hi = p3 + p4");
+    } else {
+        st = tpl.em(heap, st, "  let x1 = load qkv[b * t + i * bm, c0 + h * hf * 2 ; bm, hf * 2]");
+        st = tpl.em(heap, st, "  let b1 = load bias[0, c0 + h * hf * 2 ; 1, hf * 2]");
+        st = tpl.em(heap, st, "  let a1 = x1 + b1");
+    }
+    var g = 0;
+    while g < group {
+        st = tpl.set_int(heap, st, "g", g);
+        if g < group - 1 {
+            st = tpl.set_txt(heap, st, "amp", "&");
+        } else {
+            st = tpl.set_txt(heap, st, "amp", "");
+        }
+        if rotate {
+            st = tpl.em(heap, st, "  let lh$g$ = stage f16 $amp$lo");
+            st = tpl.em(heap, st, "  let hh$g$ = stage f16 $amp$hi");
+            st = tpl.em(heap, st, "  store lh$g$ -> y[((b * nh + h) * $group$ + $g$) * t + i * bm, 0]");
+            st = tpl.em(heap, st, "  store hh$g$ -> y[((b * nh + h) * $group$ + $g$) * t + i * bm, hf]");
+        } else {
+            st = tpl.em(heap, st, "  let vh$g$ = stage f16 $amp$a1");
+            st = tpl.em(heap, st, "  store vh$g$ -> y[((b * nh + h) * $group$ + $g$) * t + i * bm, 0]");
+        }
+        g = g + 1;
+    }
+    st = tpl.em(heap, st, "}");
+    st = tpl.em(heap, st, "");
+    st = tpl.em(heap, st, "schedule $name$ for apple-m-series { threads 128 }");
+    st = tpl.em(heap, st, "schedule $name$ for nvidia-ada     { threads 128 }");
+    return tpl.finish(heap, st);
+}
+
+// The rotation of one head's gradient (qwen_train.rope_bwd_source's `rot`): the variables src, row, col, dst and tag are set.
+fn rot[&h](heap: &!h Heap, st: tpl.St) -> [heap] tpl.St {
+    var s = st;
+    s = tpl.em(heap, s, "  let a$tag$ = load $src$[$row$, $col$ ; bm, hf]");
+    s = tpl.em(heap, s, "  let e$tag$ = load $src$[$row$, $col$ + hf ; bm, hf]");
+    s = tpl.em(heap, s, "  let c$tag$ = load cs[i * bm, 0 ; bm, hf]");
+    s = tpl.em(heap, s, "  let s$tag$ = load sn[i * bm, 0 ; bm, hf]");
+    s = tpl.em(heap, s, "  let p$tag$ = &a$tag$ * &c$tag$");
+    s = tpl.em(heap, s, "  let q$tag$ = &e$tag$ * &s$tag$");
+    s = tpl.em(heap, s, "  let lo$tag$ = p$tag$ + q$tag$");
+    s = tpl.em(heap, s, "  let u$tag$ = e$tag$ * c$tag$");
+    s = tpl.em(heap, s, "  let w$tag$ = a$tag$ * s$tag$");
+    s = tpl.em(heap, s, "  let hi$tag$ = u$tag$ - w$tag$");
+    s = tpl.em(heap, s, "  let lh$tag$ = stage f16 lo$tag$");
+    s = tpl.em(heap, s, "  let hh$tag$ = stage f16 hi$tag$");
+    s = tpl.em(heap, s, "  store lh$tag$ -> y[b * t + i * bm, $dst$]");
+    s = tpl.em(heap, s, "  store hh$tag$ -> y[b * t + i * bm, $dst$ + hf]");
+    return s;
+}
+
+// qwen_train.rope_bwd_source(c, bm): the backward of the rotary embedding of all heads in one kernel.
+pub fn rope_bwd_source[&h](heap: &!h Heap, nh: int, hkv: int, d: int, dh: int) -> [heap] buffer.Buffer {
+    let hf = dh / 2;
+    var st = tpl.start(heap);
+    st = tpl.set_int(heap, st, "nh", nh);
+    st = tpl.set_int(heap, st, "hkv", hkv);
+    st = tpl.set_int(heap, st, "kv2", hkv * 2);
+    st = tpl.set_int(heap, st, "wide", d + 2 * hkv * dh);
+    st = tpl.em(heap, st, "// The backward of the rotary embedding of all $nh$ query heads and $hkv$ key heads, and the cast of the $hkv$ value-head gradients, into the f16 fused gradient of the q/k/v projection");
+    st = tpl.em(heap, st, "// (generated by qwen_train.rope_bwd_source; docs/resident.md section 21).");
+    st = tpl.em(heap, st, "algo rope_bwd(nb, t, bm, hf)");
+    st = tpl.em(heap, st, "  in  dq: f32[nb * $nh$ * t, 2 * hf]");
+    st = tpl.em(heap, st, "  in  dk: f32[nb * t, $kv2$ * hf]");
+    st = tpl.em(heap, st, "  in  dv: f32[nb * t, $kv2$ * hf]");
+    st = tpl.em(heap, st, "  in  cs: f32[t, hf]");
+    st = tpl.em(heap, st, "  in  sn: f32[t, hf]");
+    st = tpl.em(heap, st, "  out y:  f16[nb * t, $wide$]");
+    st = tpl.em(heap, st, "{");
+    st = tpl.em(heap, st, "  grid b over nb, i over t / bm");
+    var q = 0;
+    while q < nh {
+        st = tpl.set_txt(heap, st, "src", "dq");
+        st = tpl.set_int(heap, st, "hh", q);
+        let (s1, row) = tpl.text_of(heap, st, "(b * $nh$ + $hh$) * t + i * bm");
+        st = s1;
+        borrow row as &rr in {
+            st = tpl.set_txt(heap, st, "row", buffer.bytes(rr));
+        }
+        buffer.drop(heap, row);
+        st = tpl.set_txt(heap, st, "col", "0");
+        st = tpl.set_int(heap, st, "dst", q * 2 * hf);
+        let (s2, tag) = tpl.text_of(heap, st, "q$hh$");
+        st = s2;
+        borrow tag as &tr in {
+            st = tpl.set_txt(heap, st, "tag", buffer.bytes(tr));
+        }
+        buffer.drop(heap, tag);
+        st = rot(heap, st);
+        q = q + 1;
+    }
+    var g = 0;
+    while g < hkv {
+        st = tpl.set_txt(heap, st, "src", "dk");
+        st = tpl.set_int(heap, st, "hh", g);
+        st = tpl.set_txt(heap, st, "row", "b * t + i * bm");
+        st = tpl.set_int(heap, st, "col", g * 2 * hf);
+        st = tpl.set_int(heap, st, "dst", d + g * 2 * hf);
+        let (s3, tag) = tpl.text_of(heap, st, "k$hh$");
+        st = s3;
+        borrow tag as &tr in {
+            st = tpl.set_txt(heap, st, "tag", buffer.bytes(tr));
+        }
+        buffer.drop(heap, tag);
+        st = rot(heap, st);
+        g = g + 1;
+    }
+    g = 0;
+    while g < hkv {
+        st = tpl.set_int(heap, st, "g", g);
+        st = tpl.set_int(heap, st, "vc", g * 2 * hf);
+        st = tpl.set_int(heap, st, "vd", d + hkv * 2 * hf + g * 2 * hf);
+        st = tpl.em(heap, st, "  let v$g$ = load dv[b * t + i * bm, $vc$ ; bm, hf * 2]");
+        st = tpl.em(heap, st, "  let vh$g$ = stage f16 v$g$");
+        st = tpl.em(heap, st, "  store vh$g$ -> y[b * t + i * bm, $vd$]");
+        g = g + 1;
+    }
+    st = tpl.em(heap, st, "}");
+    st = tpl.em(heap, st, "");
+    st = tpl.em(heap, st, "schedule rope_bwd for apple-m-series { threads 128 }");
+    st = tpl.em(heap, st, "schedule rope_bwd for nvidia-ada     { threads 128 }");
+    return tpl.finish(heap, st);
+}
