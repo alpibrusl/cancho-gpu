@@ -415,3 +415,4 @@ tests/chx/attention_pv_b.chx nb=2 nkv=2 g=6 t=64 dw=16 d=128 tmax=80
 tests/chx/dec_post.chx r=4
 tests/chx/kv_write_b.chx nb=2 nkv=2 tmax=64 ts=16 d=128
 tests/chx/ids_mix.chx r=8
+tests/chx/kv_import.chx nsrc=2 nkv=2 g=6 t=64 ts=4 d=128

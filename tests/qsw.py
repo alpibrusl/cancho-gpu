@@ -272,6 +272,37 @@ def split_case(name, c, r=16, loss_scale=None, alpha=None):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def kv_export_case(tool):
+    """`qsw write --no-train --kv-export DIR` (docs/decode.md): the prefill session of the training forward pass that saves every layer's keys and values for a batched decode. Written for a small
+    model here (what it computes is held by tests/prefill_hf.py, which needs a Metal GPU): the session has the forward pass and no backward pass or head, one kv_import program for the keys and one for
+    the values of each layer, a save of each, and `--kv-export` without `--no-train` is refused."""
+    d = tempfile.mkdtemp(prefix="qsw_kv_")
+    try:
+        c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
+        wdir, out, kv = os.path.join(d, "w"), os.path.join(d, "out"), os.path.join(d, "kv")
+        S.write_files(wdir, c, R.init_params(c, seed=3))
+        os.makedirs(out); os.makedirs(kv); os.makedirs(os.path.join(d, "in"))
+        AB = R.init_lora(c, r=16, b_std=0.02)
+        with open(os.path.join(d, "in", "ad"), "wb") as f:
+            for nm in R.lora_names(c):
+                f.write(np.asarray(AB[nm], dtype="<f8").reshape(-1).tobytes())
+        np.random.default_rng(1).integers(0, c.v, size=(1, c.nb, c.t)).astype("<i4").tofile(os.path.join(d, "in", "tok"))
+        open(os.path.join(d, "in", "cfg"), "w").write(config_text(c, 16, 1, {}))
+        cmd = [tool, "write", "--config", os.path.join(d, "in", "cfg"), "--wdir", wdir, "--out", out, "--root", ROOT, "--tokens", os.path.join(d, "in", "tok"), "--adapters", os.path.join(d, "in", "ad")]
+        r1 = subprocess.run(cmd + ["--kv-export", kv], capture_output=True, text=True)
+        say(r1.returncode == 2 and "qsw.usage" in r1.stderr, f"refusal qsw.usage: --kv-export without --no-train (exit {r1.returncode})")
+        r2 = subprocess.run(cmd + ["--no-train", "--kv-export", kv], capture_output=True, text=True)
+        say(r2.returncode == 0, f"the prefill session is written{'' if r2.returncode == 0 else ': ' + r2.stderr.strip()[:200]}")
+        text = open(os.path.join(out, "session")).read() if os.path.exists(os.path.join(out, "session")) else ""
+        lines = text.split("\n")
+        say(sum(1 for x in lines if x.startswith("program kk_")) == 2 and sum(1 for x in lines if x.startswith("program kw_")) == 2, "one kv_import program for the keys and one for the values of each layer")
+        say(sum(1 for x in lines if x.startswith("save ")) == 4 and f"save kk_1.y {kv}/kcache01 f32" in text, "a save of each, to kcacheNN and vcacheNN in the export directory")
+        say(not any(x.startswith("program ce") or x.startswith("program lm ") or x.startswith("program gB") or "aA00" in x for x in lines), "no head, loss, backward pass or optimiser in a prefill session")
+        say(os.path.exists(os.path.join(out, "probe")) and os.path.getsize(os.path.join(out, "probe")) == 4, "the one-element probe the session answers")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def decode_cases(tool):
     """`qsw decode` (docs/decode.md): its refusals by rule, and that a small valid configuration writes the session and the tables. (What the session computes is held by tests/decode_dev.py and
     tests/decode_hf.py, which need a Metal GPU.)"""
@@ -338,6 +369,7 @@ def main():
         return 1 if bad else 0
     refusals(sys.argv[1])
     decode_cases(sys.argv[1])
+    kv_export_case(sys.argv[1])
     c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
     case("tiny, 2 steps", c, steps=2, keep=keep)
     case("tiny, 1 step, no sharing of layers' buffers", c, steps=1, reuse=False)

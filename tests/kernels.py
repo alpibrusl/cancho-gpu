@@ -544,6 +544,17 @@ def attention_stats(nkv, g, t):
     return m, z
 
 
+def kv_import(nsrc, nkv, g, t, d):
+    (src,) = lcg([nsrc * nkv * g * t * d])
+    out = []
+    for p in range(nsrc):
+        for c in range(8):
+            for h in range(nkv):
+                for pos in range(t):
+                    out += [f16(src[((p * nkv + h) * g * t + pos) * d + col]) for col in range(d)]
+    return out
+
+
 def dec_post(r):
     y, bias, cs, sn = lcg([r * 16 * 128, 16 * 128, r * 64, r * 64])
     q, kn, vn = [], [], []
@@ -771,6 +782,7 @@ def new_checks():
     want_m, want_z = attention_stats(2, 4, 96)
     ok &= check("attention_stats m nkv=2 g=4 t=96 cs=16", got["m"], want_m)
     ok &= check("attention_stats z nkv=2 g=4 t=96 cs=16", got["z"], want_z)
+    ok &= check("kv_import nsrc=2 nkv=2 g=3 t=32 ts=16", run("kv_import", ["nsrc=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128"])["y"], kv_import(2, 2, 3, 32, 128))
     got = run("dec_post", ["r=3"])
     want_q, want_k, want_v = dec_post(3)
     ok &= check("dec_post q r=3", got["q"], want_q)

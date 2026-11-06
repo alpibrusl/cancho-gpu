@@ -317,9 +317,40 @@ fn optimiser_layer[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St 
 }
 
 // The aliases that let the layers share a buffer (qwen_train.write's `reuse`).
-fn put_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
+// The aliases of the forward pass alone (a prefill).
+fn put_forward_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
     var s = st;
     let ll = c.layers;
+    var k = 0;
+    while k < 5 {
+        var l = 1;
+        while l < ll {
+            s = tpl.set_int(heap, s, "p", l - 1);
+            s = tpl.set_int(heap, s, "q", l);
+            if k == 0 {
+                s = tpl.em(heap, s, "alias qkv_$p$.y qkv_$q$.y");
+            } else if k == 1 {
+                s = tpl.em(heap, s, "alias sc_$p$.s sc_$q$.s");
+            } else if k == 2 {
+                s = tpl.em(heap, s, "alias ao_$p$.o ao_$q$.o");
+            } else if k == 3 {
+                s = tpl.em(heap, s, "alias wo_$p$.y wo_$q$.y");
+            } else {
+                s = tpl.em(heap, s, "alias dn_$p$.y dn_$q$.y");
+            }
+            l = l + 1;
+        }
+        k = k + 1;
+    }
+    return s;
+}
+
+fn put_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, fwd_only: bool) -> [heap] tpl.St {
+    var s = st;
+    let ll = c.layers;
+    if fwd_only {
+        return put_forward_aliases(heap, c, s);
+    }
     var k = 0;
     while k < 5 {
         var l = 1;
@@ -387,10 +418,43 @@ fn put_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
     return s;
 }
 
+// What a prefill does after the forward pass (docs/decode.md): instead of the head, the loss and the backward pass, every layer's keys and values go through kv_import into the cache layout of a
+// batched decode (eight copies of each prompt's, at the positions they were computed for) and are saved to $kvdir$/kcacheNN and vcacheNN; the answer is a one-element probe.
+fn prefill_tail[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
+    var s = st;
+    s = tpl.set_int(heap, s, "grp", c.h / c.hkv);
+    var l = 0;
+    while l < c.layers {
+        s = tpl.set_int(heap, s, "l", l);
+        s = tpl.em(heap, s, "program kk_$l$ $kn_kv_import$ nsrc=$nb$ nkv=$hkv$ g=$grp$ t=$t$ ts=4 d=$dh$");
+        s = tpl.em(heap, s, "link rk_$l$.y -> kk_$l$.src");
+        s = tpl.em(heap, s, "program kw_$l$ $kn_kv_import$ nsrc=$nb$ nkv=$hkv$ g=$grp$ t=$t$ ts=4 d=$dh$");
+        s = tpl.em(heap, s, "link rv_$l$.y -> kw_$l$.src");
+        l = l + 1;
+    }
+    if c.reuse != 0 {
+        s = put_forward_aliases(heap, c, s);
+    }
+    s = tpl.em(heap, s, "program probe $kn_sgmax$ r=1 nq=1");
+    s = tpl.em(heap, s, "resident probe.cm $o$/probe f32");
+    s = tpl.em(heap, s, "steps");
+    s = tpl.em(heap, s, "answer probe.gmb");
+    l = 0;
+    while l < c.layers {
+        s = tpl.set_int2(heap, s, "l2", l);
+        s = tpl.set_int(heap, s, "l", l);
+        s = tpl.em(heap, s, "save kk_$l$.y $kvdir$/kcache$l2$ f32");
+        s = tpl.em(heap, s, "save kw_$l$.y $kvdir$/vcache$l2$ f32");
+        l = l + 1;
+    }
+    return s;
+}
+
 // The whole session text. The variables (see main.cho `setup`) are in the state.
-pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: bool, gradpath: &p [byte], wtab: bool) -> [heap] tpl.St {
+pub fn build[&h, &p, &k](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: bool, gradpath: &p [byte], wtab: bool, kvdir: &k [byte]) -> [heap] tpl.St {
     var s = st;
     s = tpl.set_txt(heap, s, "gradpath", gradpath);
+    s = tpl.set_txt(heap, s, "kvdir", kvdir);
     let ll = c.layers;
     s = tpl.em(heap, s, "# Qwen2 LoRA training: $layers$ layers, d $d$, $h$ query heads over $hkv$, ff $ff$, vocabulary $v$, $nb$ sequences of $t$, rank $r$, alpha $alphar$, $nsteps$ batch(es), loss scale $lscale$");
     s = tpl.em(heap, s, "program wd $kn_widen_h$ r=$n$ c=$d$ bm=$ebm$");
@@ -409,6 +473,9 @@ pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: 
         s = tpl.set_int(heap, s, "lm", l - 1);
     }
     s = tpl.set_int(heap, s, "lm", ll - 1);
+    if len(kvdir) > 0 {
+        return prefill_tail(heap, c, s);
+    }
     s = tpl.em(heap, s, "program rmf $kn_rms_h$ r=$n$ c=$d$ bm=$ebm$ eps=$eps$");
     s = tpl.em(heap, s, "link r2_$lm$.y -> rmf.x");
     s = tpl.em(heap, s, "resident rmf.gain $wd$/norm.f32 f32");
@@ -472,7 +539,7 @@ pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: 
         }
     }
     if c.reuse != 0 {
-        s = put_aliases(heap, c, s);
+        s = put_aliases(heap, c, s, false);
     }
     s = tpl.em(heap, s, "steps");
     s = tpl.em(heap, s, "answer ls.dw scale 1/$ncountg$");

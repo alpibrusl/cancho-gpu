@@ -2,7 +2,7 @@ edition 9;
 
 // `qsw` -- the Qwen2 LoRA training session writer, in cancho (docs/qsw.md): what examples/qwen/qwen_train.py `write` produces, without Python.
 //
-//     qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE] [--grads FILE] [--no-train]
+//     qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE] [--grads FILE] [--no-train] [--kv-export DIR]
 //
 // FILE of --config: `key value` lines (tools/qsw/cfg.cho). --wdir: the converted weights (emb.f16, norm.f32, lNN.*). --out: an existing directory for the session.
 // --root: this repository (where the kernels are). --tokens: int32 little-endian, [steps, nb, t]. --adapters: binary64 little-endian, in qwen_ref.lora_names order.
@@ -205,7 +205,10 @@ fn setup[&h, &f, &o, &w, &r, &z](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out:
     let (s19, t19) = plain(heap, fs, root, s18, "kn_gemm_mma", "gemm_mma.chx");
     let (s20, t20) = plain(heap, fs, root, s19, "kn_swiglu_h", "swiglu_h.chx");
     let (s21, t21) = plain(heap, fs, root, s20, "kn_swiglu_bwd", "swiglu_bwd.chx");
-    s = s21;
+    let (s22, t22) = plain(heap, fs, root, s21, "kn_kv_import", "kv_import.chx");
+    let (s23, t23) = plain(heap, fs, root, s22, "kn_sgmax", "samp_gmax.chx");
+    s = s23;
+    trouble = put_flag(trouble, t22 + t23);
     trouble = put_flag(trouble, g0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14 + t15 + t16 + t17 + t18 + t19 + t20 + t21);
     // the scheduled copies: the attention (twice used) and, per group, the four products with a 16 to 48 wide side
     let (sa, ta) = tiled(heap, fs, out, root, s, "kn_att_s", "", "att_s.chx", false, 64, 64, 32);
@@ -252,7 +255,7 @@ fn ncount_text[&h](heap: &!h Heap, st: tpl.St, ncount: int) -> [heap] (tpl.St, i
     return (s, 0);
 }
 
-fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z, &y](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], ad: &a [byte], wt: &x [byte], savepath: &z [byte], train: bool, gradpath: &y [byte]) -> [heap, fs_read(""), fs_write(""), file_read] int {
+fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z, &y, &k](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], ad: &a [byte], wt: &x [byte], savepath: &z [byte], train: bool, gradpath: &y [byte], kvdir: &k [byte]) -> [heap, fs_read(""), fs_write(""), file_read] int {
     let nsteps = len(tokens) / (4 * c.nb * c.t);
     let n = c.nb * c.t;
     var bc = c.bc;
@@ -292,7 +295,10 @@ fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z, &y](heap: &!h Heap, fs: 
             wrote = wrote + data.save(heap, fs, out, "sched", data.schedule(heap, c));
         }
         wrote = wrote + adapter_files(heap, fs, c, out, ad, train);
-        let sess = session.build(heap, c, st, len(savepath) > 0, train, gradpath, len(wt) > 8 * n);
+        if len(kvdir) > 0 {
+            wrote = wrote + data.save(heap, fs, out, "probe", zeros(heap, 1));
+        }
+        let sess = session.build(heap, c, st, len(savepath) > 0, train, gradpath, len(wt) > 8 * n, kvdir);
         let text = tpl.finish(heap, sess);
         wrote = wrote + data.save(heap, fs, out, "session", text);
         if wrote != 0 {
@@ -520,7 +526,15 @@ fn checked[&h, &i, &g, &f, &e, &q, &t, &a, &x](heap: &!h Heap, io: &!i Io, args:
     if !train && len(savepath) > 0 {
         return refuse(heap, io, "qsw.usage", "--save needs training: with --no-train there are no trained adapters to save");
     }
-    s = generate(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, ad, wt, savepath, train, gradpath);
+    var kvdir: &g [byte] = "";
+    let ikv = flag(args, "--kv-export");
+    if ikv >= 0 {
+        kvdir = arg(args, ikv);
+        if train || len(savepath) > 0 {
+            return refuse(heap, io, "qsw.usage", "--kv-export is a forward pass alone: it needs --no-train and no --save");
+        }
+    }
+    s = generate(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, ad, wt, savepath, train, gradpath, kvdir);
     if s == 1 {
         return refuse(heap, io, "qsw.kernel", "a kernel file is not under --root");
     }
@@ -570,7 +584,7 @@ fn split_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: 
     return status;
 }
 
-// qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--logits]: the session of a batched decode (tools/qsw/decode.cho).
+// qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--logits]: the session of a batched decode (tools/qsw/decode.cho).
 fn decode_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs("")) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
     let ic = flag(args, "--config");
     let iw = flag(args, "--wdir");
@@ -579,7 +593,7 @@ fn decode_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs:
     let it = flag(args, "--tokens");
     let il = flag(args, "--lens");
     if ic < 0 || iw < 0 || io_ < 0 || ir < 0 || it < 0 || il < 0 {
-        return refuse(heap, io, "qsw.usage", "qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--logits]");
+        return refuse(heap, io, "qsw.usage", "qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--logits]");
     }
     let (cfg_bytes, cfg_failed) = rd.read_file(heap, fs, arg(args, ic));
     if cfg_failed != 0 {
@@ -703,7 +717,12 @@ fn decode_checked[&h, &i, &g, &f, &e, &q, &t, &l, &u, &p](heap: &!h Heap, io: &!
     if present(args, "--logits") {
         logits = true;
     }
-    let s = decode.run(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, lens, uni, pos0, logits);
+    var kvdir: &g [byte] = "";
+    let ikd = flag(args, "--kv-dir");
+    if ikd >= 0 {
+        kvdir = arg(args, ikd);
+    }
+    let s = decode.run(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, lens, uni, pos0, logits, kvdir);
     if s == 1 {
         return refuse(heap, io, "qsw.kernel", "a kernel file is not under --root");
     }
