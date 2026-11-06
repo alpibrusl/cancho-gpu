@@ -13,7 +13,7 @@ edition 5;
 //
 //     <name> <dtype in file> <values> <device bytes> adler32=<n> changed=<n>
 //
-// then `total ...`. `changed` is how many values the f16 narrowing changed (0
+// then `total ...` (`patched` is how many tensors the patch replaced columns of). `changed` is how many values the f16 narrowing changed (0
 // on the f32 path, and for every F32 tensor). Exit 0, or 1 with every refusal
 // as `error[<rule>]: <message>`, or 2 for a usage mistake.
 //
@@ -28,6 +28,7 @@ import cli;
 import safetensors;
 import metal;
 import qwen08_load;
+import qwen08_patch;
 import qwen08_dev;
 
 fn words() -> [] int {
@@ -44,11 +45,11 @@ fn usage[&i](io: &!i Io) -> [err_write] int {
 }
 
 fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu")] int {
-    // `--patch <file>` exercises the seam for the edit patch (T11): no patch
-    // format exists, so the loader refuses it with `q08-patch`.
-    var patch = 0 - 1;
+    // `--patch <file>`: the edit patch (T11, `src/qwen08_patch.cho`) is applied to the raw bytes of
+    // the tensors it names before they are converted.
+    var patch_file = 0 - 1;
     if arg_count(args) == 5 && text.is(t, text.from_bytes(m, t, arg(args, 3)), "--patch") {
-        patch = 0;
+        patch_file = text.from_bytes(m, t, arg(args, 4));
     } else if arg_count(args) != 3 {
         return usage(io);
     }
@@ -72,6 +73,15 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     let plan = qwen08_load.plan(m, t, m[w + qwen08_load.w_header()], m[w + qwen08_load.w_data()], cfg);
     if plan < 0 {
         return cli.report(m, t, io);
+    }
+    var patch = 0 - 1;
+    var patched = 0;
+    if patch_file >= 0 {
+        patch = qwen08_load.open_patch(m, t, fs, patch_file, path, m[w + qwen08_load.w_header()], plan);
+        if patch < 0 {
+            return cli.report(m, t, io);
+        }
+        patched = mem.size(m, m[patch + qwen08_patch.f_list()]);
     }
     if metal.cgpu_open(ffi) < 0 {
         qwen08_dev.device_open_fail(m, t, ffi);
@@ -108,7 +118,7 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
         k = k + 1;
     }
     metal.cgpu_close(ffi);
-    let tail = text.f5(m, t, "total tensors=$ values=$ device_bytes=$ changed=$ mode=$\n", text.num(m, t, mem.size(m, plan)), text.num(m, t, total_elems), text.num(m, t, total_bytes), text.num(m, t, total_changed), ms);
+    let tail = text.f6(m, t, "total tensors=$ values=$ device_bytes=$ changed=$ mode=$ patched=$\n", text.num(m, t, mem.size(m, plan)), text.num(m, t, total_elems), text.num(m, t, total_bytes), text.num(m, t, total_changed), ms, text.num(m, t, patched));
     io.write_all(io, text.bytes(t, tail));
     return 0;
 }

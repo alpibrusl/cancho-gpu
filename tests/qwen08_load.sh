@@ -9,7 +9,8 @@
 #     vision and mtp tensors are not loaded; the embedding holds all 65,536 bf16
 #     bit patterns;
 #   * each refusal fixture is refused with its rule tag, every `q08-` rule in
-#     the sources has one (or a stated reason it cannot), the patch seam refuses;
+#     the sources has one (or a stated reason it cannot), the edit patch (T11, `src/qwen08_patch.cho`): base + patch equals the edited toy tensor by
+#     tensor, a malformed or mismatched patch is refused with its rule tag, hostile patches never trap;
 #   * hostile headers and configs never trap.
 #
 # The real checkpoint is `scripts/qwen08-load-check.sh` (check C2), not the gate.
@@ -22,8 +23,17 @@ BIN=$ROOT/build/cancho-gpu-qwen08-load-mock
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 python3 "$ROOT/tests/qwen08/fixtures.py" "$WORK"
+if python3 -c 'import numpy' 2>/dev/null; then
+  python3 "$ROOT/tests/qwen08/patch_fixtures.py" "$WORK"
+else
+  echo "skip the patch fixtures: numpy is not installed"
+fi
 fail=0
 python3 "$ROOT/tests/qwen08_load.py" ok "$BIN" "$WORK" || fail=1
 python3 "$ROOT/tests/qwen08_load.py" reject "$BIN" "$WORK" || fail=1
 python3 "$ROOT/tests/qwen08_load.py" fuzz "$BIN" "$WORK" 300 || fail=1
+if python3 -c 'import numpy' 2>/dev/null; then
+  python3 "$ROOT/tests/qwen08_load.py" patch "$BIN" "$WORK" || fail=1
+  python3 "$ROOT/tests/qwen08_load.py" patch-fuzz "$BIN" "$WORK" 150 || fail=1
+fi
 exit $fail
