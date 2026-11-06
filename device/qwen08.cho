@@ -219,6 +219,12 @@ fn dims_ok[&m](m: &!m [int], cfg: int) -> [] bool {
 
 // Load the model: kernels, weights, the buffers of one conversation. The engine record, or -1 with the error recorded.
 pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), dir: int, kdir: int, mode: int, tmax: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    return load_patched(m, t, ffi, fs, dir, kdir, mode, tmax, 0 - 1);
+}
+
+// `load` with the edit patch at `patch_file` (a text handle; -1 for none) applied to the raw bytes of the
+// tensors it names before they are converted (`qwen08_load.open_patch`, T11).
+pub fn load_patched[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), dir: int, kdir: int, mode: int, tmax: int, patch_file: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     if tmax < 64 || tmax > max_tmax() || tmax % 64 != 0 {
         return err.fail(m, t, "q08-tmax", text.lit(m, t, "tmax must be a multiple of 64 from 64 to 16,640"));
     }
@@ -236,6 +242,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     let path = m[wf + qwen08_load.w_path()];
     let plan = qwen08_load.plan(m, t, m[wf + qwen08_load.w_header()], m[wf + qwen08_load.w_data()], cfg);
     if plan < 0 {
+        return 0 - 1;
+    }
+    if patch_file >= 0 && qwen08_load.open_patch(m, t, fs, patch_file, path, m[wf + qwen08_load.w_header()], plan) < 0 {
         return 0 - 1;
     }
     if metal.cgpu_open(ffi) < 0 {

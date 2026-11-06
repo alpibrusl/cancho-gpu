@@ -45,9 +45,9 @@ P = "model.language_model."
 H, I, V = 8, 16, 8192
 
 
-def layout(cfg=CONFIG):
+def layout(cfg=CONFIG, vocab=V):
     """[(name, dtype, shape)] for the text tower, then two tensors that are not loaded."""
-    out = [(P + "embed_tokens.weight", "BF16", [V, H])]
+    out = [(P + "embed_tokens.weight", "BF16", [vocab, H])]
     for l in range(4):
         q = P + f"layers.{l}."
         out += [(q + "input_layernorm.weight", "BF16", [H]), (q + "post_attention_layernorm.weight", "BF16", [H]),
@@ -83,7 +83,7 @@ def payload(name, dtype, shape):
     for d in shape:
         n *= d
     if name == P + "embed_tokens.weight":
-        return b"".join(struct.pack("<H", i) for i in range(n))
+        return b"".join(struct.pack("<H", i & 65535) for i in range(n))
     if dtype == "BF16":
         # Mostly small magnitudes, so that the subnormal range is crossed.
         return b"".join(struct.pack("<H", (rnd() & 0x8000) | ((rnd() % 160) << 7) | (rnd() & 127)) for _ in range(n))
@@ -102,18 +102,55 @@ def safetensors(specs, data=None):
     return struct.pack("<Q", len(h)) + h + blob
 
 
-def write(d, cfg, specs, raw_config=None):
+def write(d, cfg, specs, raw_config=None, data=None):
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "config.json"), "w") as f:
         f.write(raw_config if raw_config is not None else json.dumps(cfg, indent=2))
     if specs is not None:
         with open(os.path.join(d, "model.safetensors"), "wb") as f:
-            f.write(safetensors(specs))
+            f.write(safetensors(specs, data))
+
+
+def payloads(specs):
+    return {name: payload(name, dtype, shape) for name, dtype, shape in specs}
+
+
+def bf16_matrix_edit(raw, rows, cols, columns, keep_rows=()):
+    """`raw` (the bytes of a BF16 [rows, cols] matrix) with every row of the given columns replaced by
+    other bf16 bits, except the rows in `keep_rows`, which keep their value (an entry the edit
+    leaves alone inside a replaced column)."""
+    b = bytearray(raw)
+    for c in columns:
+        for r in range(rows):
+            if r in keep_rows:
+                continue
+            at = 2 * (r * cols + c)
+            v = (struct.unpack_from("<H", b, at)[0] ^ (1 + rnd() % 65534)) & 0xFFFF
+            struct.pack_into("<H", b, at, v)
+    return bytes(b)
 
 
 def main(root):
     base = layout()
-    write(os.path.join(root, "ok"), CONFIG, base)
+    pl = payloads(base)
+    write(os.path.join(root, "ok"), CONFIG, base, data=pl)
+    # The edited toy (T11): two down_proj matrices of the 0.8B layout's kind ([hidden, inter] = [8, 16]) with
+    # columns replaced, one of them leaving a row of its replaced columns as it was; the rest is the same bytes.
+    ed = dict(pl)
+    d1, d3 = P + "layers.1.mlp.down_proj.weight", P + "layers.3.mlp.down_proj.weight"
+    ed[d1] = bf16_matrix_edit(pl[d1], H, I, [0, 5, 6, 15], keep_rows=(2,))
+    ed[d3] = bf16_matrix_edit(pl[d3], H, I, [7])
+    write(os.path.join(root, "edited"), CONFIG, base, data=ed)
+    # A checkpoint whose embedding spans several of the patch checker's chunks (1,048,576 values), edited in two columns.
+    big_cfg = copy.deepcopy(CONFIG)
+    big_cfg["text_config"]["vocab_size"] = 131072
+    big = layout(vocab=131072)
+    bpl = payloads(big)
+    bed = dict(bpl)
+    emb = P + "embed_tokens.weight"
+    bed[emb] = bf16_matrix_edit(bpl[emb], 131072, H, [1, 6])
+    write(os.path.join(root, "big"), big_cfg, big, data=bpl)
+    write(os.path.join(root, "big-edited"), big_cfg, big, data=bed)
     r = os.path.join(root, "reject")
 
     def cfg_with(f):

@@ -5,7 +5,8 @@ section 14, ticket T5), against `cancho-gpu-qwen08-load`.
     qwen08_load.py ok     <tool> <fixtures dir>       # toy checkpoint: every tensor, f32 and f16
     qwen08_load.py reject <tool> <fixtures dir>       # each refusal, with its rule tag
     qwen08_load.py fuzz   <tool> <fixtures dir> [n]   # hostile headers and configs never trap
-    qwen08_load.py model  <tool> <model dir> f32|f16  # the real checkpoint (numpy; skips when absent)
+    qwen08_load.py model  <tool> <model dir> f32|f16 [<patch> <edited dir>]  # the real checkpoint (numpy; skips when absent);
+                                                    # with a patch: <model dir> + patch against the file in <edited dir>
 
 The tool prints, for every tensor it put on the device and read back, `name dtype
 values bytes adler32=<n> changed=<n>`. This script knows none of the loader's code:
@@ -26,6 +27,12 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "examples", "weightspace"))
+try:
+    import w1_patch  # noqa: E402  (numpy; the patch modes need it, the others do not)
+except ImportError:
+    w1_patch = None
+
 PREFIX = "model.language_model."
 
 
@@ -59,8 +66,8 @@ def text_tensors(d):
     return out
 
 
-def run_tool(tool, d, mode):
-    r = subprocess.run([tool, d, mode], capture_output=True, text=True)
+def run_tool(tool, d, mode, patch=None):
+    r = subprocess.run([tool, d, mode] + (["--patch", patch] if patch else []), capture_output=True, text=True)
     return r.returncode, r.stdout, r.stderr
 
 
@@ -107,14 +114,15 @@ def parse_lines(out):
     return rows, total
 
 
-def check_ok(tool, fx):
-    d = os.path.join(fx, "ok")
+def check_ok(tool, fx, run="ok", oracle="ok", patch=None):
+    """The tool on directory `run` (with `patch`) against the oracle computed from the file of directory `oracle`."""
+    d = os.path.join(fx, oracle)
     want = text_tensors(d)
     h, data = header_of(weights_file(d))
     blob = open(weights_file(d), "rb").read()
     bad = 0
     for mode in ("f32", "f16"):
-        rc, out, err = run_tool(tool, d, mode)
+        rc, out, err = run_tool(tool, os.path.join(fx, run), mode, patch)
         if rc != 0:
             print(f"ok/{mode}: exit {rc}: {err[:200]}")
             return 1
@@ -134,7 +142,7 @@ def check_ok(tool, fx):
         if total is None or int(total["changed"]) != changed_all or int(total["tensors"]) != len(want):
             print(f"ok/{mode}: total line {total} against {len(want)} tensors, {changed_all} changed")
             bad += 1
-        print(f"ok/{mode}: {len(want)} tensors equal the oracle (adler32 of the device bytes), {changed_all} values changed")
+        print(f"{run}{' + patch' if patch else ''}/{mode}: {len(want)} tensors equal the oracle of {oracle} (adler32 of the device bytes), {changed_all} values changed")
     # What is not loaded is not loaded.
     if any(not n.startswith(PREFIX) for n in rows):
         print("ok: a tensor outside the text tower was loaded")
@@ -173,22 +181,61 @@ def check_reject(tool, fx):
         if r.returncode != 1 or not r.stderr.startswith(f"error[{rule}]") or r.stdout:
             print(f"{name}: exit {r.returncode}, expected error[{rule}], got {r.stderr[:120]!r} (stdout {len(r.stdout)} bytes)")
             bad += 1
-    # The patch seam refuses a patch it has no format for.
-    r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch", "x"], capture_output=True, text=True)
-    if r.returncode != 1 or not r.stderr.startswith("error[q08-patch]") or r.stdout:
-        print(f"--patch: exit {r.returncode}: {r.stderr[:120]!r}")
+    # The patch's refusals (T11): each fixture of patch_fixtures.py, and a decoder written apart (w1_patch.py) that must
+    # give the same rule for the file-level ones.
+    structural = {"q08-patch-truncated", "q08-patch-magic", "q08-patch-version", "q08-patch-checksum", "q08-patch-format",
+                  "q08-patch-range", "q08-patch-duplicate", "q08-patch-order", "q08-patch-twice"}
+    prd = os.path.join(fx, "patch", "reject")
+    for name in sorted(os.listdir(prd) if os.path.isdir(prd) else []):  # absent when numpy was not installed
+        rule = name[:-len(".patch")]
+        for r in sorted(rules, key=len, reverse=True):
+            if rule == r or rule.startswith(r + "-"):
+                rule = r
+                break
+        n += 1
+        seen.add(rule)
+        path = os.path.join(prd, name)
+        r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch", path], capture_output=True, text=True)
+        if r.returncode != 1 or not r.stderr.startswith(f"error[{rule}]") or r.stdout:
+            print(f"{name}: exit {r.returncode}, expected error[{rule}], got {r.stderr[:120]!r} (stdout {len(r.stdout)} bytes)")
+            bad += 1
+        try:
+            w1_patch.decode(open(path, "rb").read())
+            got = None
+        except w1_patch.PatchError as e:
+            got = e.rule
+        if (got or "") != (rule if rule in structural else ""):
+            print(f"{name}: the Python decoder says {got}, the fixture is for {rule}")
+            bad += 1
+    for what, argv in (("a missing file", ["/no/such/file.patch"]), ("a directory", [fx])):
+        n += 1
+        seen.add("q08-patch-io")
+        r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch"] + argv, capture_output=True, text=True)
+        if r.returncode != 1 or not r.stderr.startswith("error[q08-patch-io]") or r.stdout:
+            print(f"--patch {what}: exit {r.returncode}: {r.stderr[:120]!r}")
+            bad += 1
+    # A patch is for one base: the same patch on the base it was not made from (the edited toy) is refused.
+    if os.path.isdir(os.path.join(fx, "patch")):  # absent when numpy was not installed
+        r = subprocess.run([tool, os.path.join(fx, "edited"), "f32", "--patch", os.path.join(fx, "patch", "ok.patch")], capture_output=True, text=True)
+        if r.returncode != 1 or not r.stderr.startswith("error[q08-patch-base]") or r.stdout:
+            print(f"patch on the edited checkpoint: exit {r.returncode}: {r.stderr[:120]!r}")
+            bad += 1
+    # --patch without its file is a usage mistake.
+    r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch"], capture_output=True, text=True)
+    if r.returncode != 2:
+        print(f"--patch without a file: exit {r.returncode}, expected 2")
         bad += 1
-    seen.add("q08-patch")
     # Usage mistakes are exit 2.
     for argv in ([], ["x"], ["x", "f64"]):
         r = subprocess.run([tool] + argv, capture_output=True, text=True)
         if r.returncode != 2:
             print(f"usage {argv}: exit {r.returncode}, expected 2")
             bad += 1
-    for r in sorted(rules - seen - set(exempt)):
+    skipped = {r for r in rules if r.startswith("q08-patch")} if not os.path.isdir(prd) else set()  # the patch fixtures need numpy
+    for r in sorted(rules - seen - set(exempt) - skipped):
         print(f"rule `{r}` has no fixture in tests/qwen08/fixtures.py")
         bad += 1
-    print(f"{n} refusal fixtures, the patch seam and the usage errors checked; {len(exempt)} rules need a fault the tests cannot make: {', '.join(sorted(exempt))}")
+    print(f"{n} refusal fixtures (the patch's among them) and the usage errors checked; {len(exempt)} rules need a fault the tests cannot make: {', '.join(sorted(exempt))}")
     return 1 if bad else 0
 
 
@@ -235,15 +282,97 @@ def check_fuzz(tool, fx, count):
     return 1 if bad else 0
 
 
-def check_model(tool, d, mode):
+def check_patch(tool, fx):
+    """C10 on the toy checkpoints: base + patch is the edited checkpoint, tensor by tensor, f32 and f16, and the
+    patch changed what it should (and only that)."""
+    bad = 0
+    for run, oracle, patch in (("ok", "edited", "ok.patch"), ("big", "big-edited", "big.patch")):
+        bad += check_ok(tool, fx, run, oracle, os.path.join(fx, "patch", patch))
+        for mode in ("f32", "f16"):
+            _, plain, _ = run_tool(tool, os.path.join(fx, run), mode)
+            rc, patched, err = run_tool(tool, os.path.join(fx, run), mode, os.path.join(fx, "patch", patch))
+            if rc != 0:
+                print(f"{run}/{mode}: the tool refused the valid patch: {err[:200]}")
+                bad += 1
+                continue
+            a, ta = parse_lines(plain)
+            b, tb = parse_lines(patched)
+            moved = sorted(k for k in a if a[k] != b.get(k))
+            want = [k for k in a if k.endswith("mlp.down_proj.weight") and ("layers.1." in k or "layers.3." in k)] if run == "ok" else [PREFIX + "embed_tokens.weight"]
+            if moved != sorted(want):
+                print(f"{run}/{mode}: the patch moved {moved}, it should have moved {sorted(want)}")
+                bad += 1
+            if tb.get("patched") != str(len(want)) or ta.get("patched") != "0":
+                print(f"{run}/{mode}: total lines say patched={tb.get('patched')} / {ta.get('patched')}")
+                bad += 1
+    print("patch: only the tensors it names move" if not bad else "patch: FAILED")
+    return 1 if bad else 0
+
+
+def check_patch_fuzz(tool, fx, count):
+    """Hostile patches never trap: every prefix of the toy patch, byte mutations with the CRC-32 left wrong and
+    with it recomputed (so the layout, index and hash checks run), and the loader agrees with the Python decoder."""
+    good = open(os.path.join(fx, "patch", "ok.patch"), "rb").read()
+    rnd = random.Random(20261105)
+    cases = [good[:n] for n in range(0, len(good), 3)] + [good[:n] + good[n + 1:] for n in range(16, len(good) - 4, 11)]
+    picks = [0, 1, 2, 255, 128, 127, 4]
+    for _ in range(count):
+        b = bytearray(good)
+        for _ in range(1 + rnd.randrange(3)):
+            b[rnd.randrange(len(b))] = picks[rnd.randrange(len(picks))] if rnd.random() < 0.6 else rnd.randrange(256)
+        cases.append(bytes(b))
+        body = bytearray(b[:-4])
+        cases.append(bytes(body) + struct.pack("<I", zlib.crc32(bytes(body))))
+        # a field set to a hostile count, the CRC-32 valid
+        for at in range(16, len(body) - 3, 4):
+            if rnd.random() < 0.08:
+                c = bytearray(good[:-4])
+                struct.pack_into("<I", c, at, [0, 1, 0xFFFFFFFF, 0x7FFFFFFF, 1 << 24, (1 << 24) + 1, 65536][rnd.randrange(7)])
+                cases.append(bytes(c) + struct.pack("<I", zlib.crc32(bytes(c))))
+    bad, ok, refused = 0, 0, 0
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "x.patch")
+        for i, blob in enumerate(cases):
+            open(path, "wb").write(blob)
+            try:
+                r = subprocess.run([tool, os.path.join(fx, "ok"), "f32" if i % 2 else "f16", "--patch", path], capture_output=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                print(f"case {i}: timed out")
+                bad += 1
+                continue
+            e = r.stderr.decode(errors="replace")
+            try:
+                w1_patch.decode(blob)
+                py = None
+            except w1_patch.PatchError as x:
+                py = x.rule
+            if r.returncode == 0:
+                ok += 1
+                if py:
+                    print(f"case {i}: loaded, but the Python decoder refuses it ({py})")
+                    bad += 1
+                continue
+            refused += 1
+            if r.returncode != 1 or not e.startswith("error[q08-patch-"):
+                print(f"case {i}: exit {r.returncode}: {e[:120]!r}")
+                bad += 1
+            elif py and not e.startswith(f"error[{py}]"):
+                print(f"case {i}: the loader says {e[:60]!r}, the Python decoder {py}")
+                bad += 1
+    print(f"{len(cases)} hostile patches ({ok} still valid, {refused} refused), {bad} bad")
+    return 1 if bad else 0
+
+
+def check_model(tool, d, mode, patch=None, oracle=None):
     if not os.path.isdir(d) or not any(f.startswith("model.safetensors") for f in os.listdir(d)):
         print(f"skip: no checkpoint at {d}")
         return 0
     import numpy as np
-    want = text_tensors(d)
-    path = weights_file(d)
+    od = oracle or d
+    want = text_tensors(od)
+    path = weights_file(od)
     mm = np.memmap(path, dtype=np.uint8, mode="r")
-    rc, out, err = run_tool(tool, d, mode)
+    rc, out, err = run_tool(tool, d, mode, patch)
     if rc != 0:
         print(f"{d} {mode}: exit {rc}: {err[:300]}")
         return 1
@@ -288,7 +417,10 @@ def check_model(tool, d, mode):
     if total is None or int(total["changed"]) != changed_all:
         print(f"total line {total} against {changed_all} changed")
         bad += 1
-    msg = f"{os.path.basename(d.rstrip('/'))} {mode}: {exact_all} tensors, device bytes equal the oracle's (adler32), {changed_all} values differ from the bf16 originals"
+    if patch and (total is None or int(total.get("patched", -1)) < 1):
+        print(f"total line {total}: no tensor was patched")
+        bad += 1
+    msg = f"{os.path.basename(d.rstrip('/'))}{' + ' + os.path.basename(patch) + ' against ' + os.path.basename(od.rstrip('/')) if patch else ''} {mode}: {exact_all} tensors, device bytes equal the oracle's (adler32), {changed_all} values differ from the bf16 originals"
     if mode == "f16":
         msg += f"; of {bf16_total} bf16 weights {sub_nonzero} are nonzero below 2^-14, {flush} narrow to zero"
     print(msg)
@@ -304,7 +436,11 @@ def main():
     if mode == "fuzz":
         return check_fuzz(tool, sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else 400)
     if mode == "model":
-        return check_model(tool, sys.argv[3], sys.argv[4])
+        return check_model(tool, sys.argv[3], sys.argv[4], *(sys.argv[5:7] if len(sys.argv) > 6 else ()))
+    if mode == "patch":
+        return check_patch(tool, sys.argv[3])
+    if mode == "patch-fuzz":
+        return check_patch_fuzz(tool, sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else 200)
     raise SystemExit(__doc__)
 
 
