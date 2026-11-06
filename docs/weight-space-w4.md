@@ -384,3 +384,23 @@ The cutoffs 1e-3 and 1e-4 of the proposal's sketch are **below the smallest sing
 * **Reading.** At this projection cutoff (KL 0.002, the gate-passing variant with about half the published amplitude on math responses, 11.3) the projected edit keeps essentially none of the behavioural effect. This is one run of one sample per problem on one seed; the rule's intervals say the +1.0 is within noise, they do not say the effect is exactly zero. The strict-adjacent variants (`x5e-2`, with less amplitude still) were not run and no inference about them is made here. Not run: the cap check (13.3(d) is not asked when the main run is not reproduced), the other variants.
 
 **Cost, measured.** 3 Spot VMs (europe-west4, then europe-west1): 2,899 s (preempted by Google after 32 edited problems), 7,244 s (ran to its 2 h cap), 3,624 s (finished): **229 minutes of VM time**, i.e. about **$1.3** by the script's own estimate ($0.34/h with the disk, from memory, not looked up: the billed amount was not read from the billing export). That is about twice the $0.7 expected: one edited arm took the whole 3.8 h, since this checkpoint loops on 87.5% of problems exactly as the base does (3.12 million generated tokens; the published edit's arm is shorter because it stops early on 40% of problems), plus the preemption and three model loads and 1.6 GB uploads. The transformers fallback paths for the gated-delta layers (no `flash-linear-attention`) were in use, as in the published run. No VM remained afterwards (`gcloud compute instances list`: empty).
+
+### 13.2 `e19` (layer 19 only) on the W1 protocol (measured 2026-11-06)
+
+**Run.** As 13.1 (`EDITED_DIR=build/ckpt/e19 TAG=e19 TOTAL_MAX=360 scripts/gcp/w1_cloud.sh`; the base arm is the main run's `base_8192.jsonl`, `--no-verify`). `e19` is the published edit restricted to layer 19: 64,928 weights changed, bf16 cosine 1.000000 with the intended edit (13), whole-corpus KL 0.008 against the published edit's 0.0205 (11.3). Data: `examples/weightspace/results/w4_e19/` (`edited_8192.jsonl`, `verdict_200_8192.json`).
+
+**Verdict by the rule of `weight-space.md` 13.3, as written: `partial`** (the accuracy clause holds, the token-limit clause fails).
+
+| | accuracy [95% CI] | token-limit rate [95% CI] | mean tokens |
+|---|---|---|---|
+| base | 11.5% [7.0, 16.0] | 89.5% [85.0, 93.5] | 7,829 |
+| published edit (layers 15 and 19) | 37.5% | 59.5% | 6,620 |
+| `x1e-1` (13.1) | 12.5% [8.0, 17.0] | 87.5% [83.0, 92.0] | 7,777 |
+| **`e19`** | **27.5% [21.5, 34.0]** | **71.0% [64.5, 77.0]** | 7,183 |
+
+* Accuracy gain **+16.0 points** against more than 4.5: holds. Token-limit drop **+18.5 points** against more than 20: fails by 1.5 points. Published edit: +26.0 and +30.0, so `e19` has about 62% of the accuracy gain and 62% of the drop.
+* **Per problem (200 problems, same base arm):** `correct` agrees with the published edit on 156 (published vs base: 142; `e19` vs base: 150); `hit_limit` on 147 (published vs base: 132; `e19` vs base: 145). Of the 55 problems the published edit turns from wrong to right, `e19` gets 30; of the 64 base loops the published edit escapes, `e19` escapes 32. (Noisy per problem, as in 13.1; the totals are the claim.)
+* **Reading.** One layer carries most of the effect at less than half the collateral KL, but not all of it: the two layers contribute, and the interval of the token-limit drop (about 18.5 points, an interval of the order of 7 points either side) does not exclude the rule's 20. This is one sample per problem on one seed. The cap check (13.3(d)) is asked by the rule for a `partial`; it was not run (a partial cap check on the published edit exists but ended at 32 and 24 problems, and is not a verdict).
+* **Not run:** `x5e-2`, `x2e-1`, `e15`, and the alpha grid.
+
+**Cost, measured.** 2 Spot VMs (europe-west1): 7,257 s (ran to its 2 h cap) and 5,284 s (finished): **209 minutes of VM time**, about **$1.2** by the script's estimate ($0.34/h with the disk, from memory, not looked up; the billing export was not read). That is above the $0.7 first quoted for one edited arm; the same caveat as 13.1 applies (this arm loops on 71% of problems, so it is long). No VM remained afterwards.
