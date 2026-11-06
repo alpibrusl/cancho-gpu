@@ -23,11 +23,17 @@ BIN=$ROOT/build/cancho-gpu-qwen08-load-mock
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 python3 "$ROOT/tests/qwen08/fixtures.py" "$WORK"
-python3 "$ROOT/tests/qwen08/patch_fixtures.py" "$WORK"
+if python3 -c 'import numpy' 2>/dev/null; then
+  python3 "$ROOT/tests/qwen08/patch_fixtures.py" "$WORK"
+else
+  echo "skip the patch fixtures: numpy is not installed"
+fi
 fail=0
 python3 "$ROOT/tests/qwen08_load.py" ok "$BIN" "$WORK" || fail=1
 python3 "$ROOT/tests/qwen08_load.py" reject "$BIN" "$WORK" || fail=1
 python3 "$ROOT/tests/qwen08_load.py" fuzz "$BIN" "$WORK" 300 || fail=1
-python3 "$ROOT/tests/qwen08_load.py" patch "$BIN" "$WORK" || fail=1
-python3 "$ROOT/tests/qwen08_load.py" patch-fuzz "$BIN" "$WORK" 150 || fail=1
+if python3 -c 'import numpy' 2>/dev/null; then
+  python3 "$ROOT/tests/qwen08_load.py" patch "$BIN" "$WORK" || fail=1
+  python3 "$ROOT/tests/qwen08_load.py" patch-fuzz "$BIN" "$WORK" 150 || fail=1
+fi
 exit $fail

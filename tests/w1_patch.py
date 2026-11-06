@@ -14,6 +14,12 @@ import sys
 import tempfile
 import zlib
 
+try:
+    import numpy  # noqa: F401
+except ImportError:
+    print("skip: numpy is not installed")
+    sys.exit(0)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "examples", "weightspace"))
