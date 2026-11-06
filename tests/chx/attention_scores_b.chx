@@ -1,0 +1,24 @@
+// The scores of a decode step for `nb` sequences at once (a batched sampler, cancho-rl design section 36): sequence r's key/value head h has its own cache of
+// `tmax` positions, so the caches are [nb * nkv * tmax, d], and its own mask over the positions (the mask makes `t` a capacity: sequences of different
+// lengths share one compiled kernel). The scores of the g query heads of (r, h) against positions sp * ts .. (sp + 1) * ts,
+//
+//     sc = q k^T / sqrt(128) + mask        (d MUST be 128: the scale 0.08838834764831845 is a literal, as attention.chx's 1/16 is for 256)
+//
+// are written to an [nb * nkv * g, t] scratch for attention_pv_b.chx. Qwen2.5-1.5B: nkv 2, g 6, d 128.
+algo attention_scores_b(nb, nkv, g, t, ts, d, tmax)
+  in  q:    f32[nb * nkv * g, d]
+  in  k:    f32[nb * nkv * tmax, d]
+  in  mask: f32[nb, t]
+  out sc:   f32[nb * nkv * g, t]
+{
+  grid r over nb, h over nkv, sp over t / ts
+  let qt = load q[r * (nkv * g) + h * g, 0 ; g, d]
+  let kt = load k[r * (nkv * tmax) + h * tmax + sp * ts, 0 ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.08838834764831845
+  let mk = load mask[r, sp * ts ; 1, ts]
+  store sd + mk -> sc[r * (nkv * g) + h * g, sp * ts]
+}
+
+schedule attention_scores_b for apple-m-series { threads 512 }
+schedule attention_scores_b for nvidia-ada     { threads 128 }
