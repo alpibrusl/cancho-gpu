@@ -1,0 +1,24 @@
+// Write one position into each sequence's cache without a launch constant for the position (kv_write.chx for a batch): sequence r's key/value head h has rows
+// [(r * nkv + h) * tmax .. +tmax) of the cache c; they are kept where `keep` is 1 and replaced by the new row where `sel` is 1. sel and keep are columns [nb * tmax, 1]
+// (a one-hot of the sequence's position and its complement; tables read a block a step). y is carried back to c: each element is read and written by the thread that owns it.
+algo kv_write_b(nb, nkv, tmax, ts, d)
+  in  c:    f32[nb * nkv * tmax, d]
+  in  nw:   f32[nb * nkv, d]
+  in  sel:  f32[nb * tmax, 1]
+  in  keep: f32[nb * tmax, 1]
+  out y:    f32[nb * nkv * tmax, d]
+{
+  grid r over nb, h over nkv, sp over tmax / ts
+  let ct = load c[r * (nkv * tmax) + h * tmax + sp * ts, 0 ; ts, d]
+  let nt = load nw[r * nkv + h, 0 ; 1, d]
+  let kt = load keep[r * tmax + sp * ts, 0 ; ts, 1]
+  let st = load sel[r * tmax + sp * ts, 0 ; ts, 1]
+  let a  = ct * kt
+  let z  = zeros f32[ts, d]
+  let nb2 = z + nt
+  let b  = nb2 * st
+  store a + b -> y[r * (nkv * tmax) + h * tmax + sp * ts, 0]
+}
+
+schedule kv_write_b for apple-m-series { threads 256 }
+schedule kv_write_b for nvidia-ada     { threads 256 }

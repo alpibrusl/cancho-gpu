@@ -1,0 +1,51 @@
+// What follows the fused q/k/v product in a decode step, for r sequences of one token each (Qwen2.5-1.5B: 12 query heads and 2 key/value heads of 128, so 16 slots of 128):
+// the product's output y [r, 2048] is read as [r * 16, 128] (slots 0 .. 11 the query heads, 12 .. 13 the key heads, 14 .. 15 the value heads), the biases are added and the
+// rotary embedding (rotate_half: the halves of a head are (x1, x2), out = (x1 c - x2 s, x2 c + x1 s)) is applied to q and k with the cos and sin of the row's own position
+// (cs, sn: [r, 64], tables read a block a step). Writes q [r * 12, 128] (the layout attention_scores_b reads), the new key row kn and value row vn [r * 2, 128].
+algo dec_post(r)
+  in  y:    f32[r * 16, 128]
+  in  bias: f32[16, 128]
+  in  cs:   f32[r, 64]
+  in  sn:   f32[r, 64]
+  out q:    f32[r * 12, 128]
+  out kn:   f32[r * 2, 128]
+  out vn:   f32[r * 2, 128]
+{
+  grid i over r
+  let c  = load cs[i, 0 ; 1, 64]
+  let s  = load sn[i, 0 ; 1, 64]
+  let q1 = load y[i * 16, 0 ; 12, 64]
+  let q2 = load y[i * 16, 64 ; 12, 64]
+  let b1 = load bias[0, 0 ; 12, 64]
+  let b2 = load bias[0, 64 ; 12, 64]
+  let a1 = q1 + b1
+  let a2 = q2 + b2
+  let t1 = &a1 * &c
+  let t2 = &a2 * &s
+  let lo = t1 - t2
+  let t3 = a2 * &c
+  let t4 = a1 * &s
+  let hi = t3 + t4
+  store lo -> q[i * 12, 0]
+  store hi -> q[i * 12, 64]
+  let k1 = load y[i * 16 + 12, 0 ; 2, 64]
+  let k2 = load y[i * 16 + 12, 64 ; 2, 64]
+  let d1 = load bias[12, 0 ; 2, 64]
+  let d2 = load bias[12, 64 ; 2, 64]
+  let e1 = k1 + d1
+  let e2 = k2 + d2
+  let u1 = &e1 * &c
+  let u2 = &e2 * &s
+  let klo = u1 - u2
+  let u3 = e2 * c
+  let u4 = e1 * s
+  let khi = u3 + u4
+  store klo -> kn[i * 2, 0]
+  store khi -> kn[i * 2, 64]
+  let v0 = load y[i * 16 + 14, 0 ; 2, 128]
+  let bv = load bias[14, 0 ; 2, 128]
+  store v0 + bv -> vn[i * 2, 0]
+}
+
+schedule dec_post for apple-m-series { threads 128 }
+schedule dec_post for nvidia-ada     { threads 128 }

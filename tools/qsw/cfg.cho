@@ -32,6 +32,7 @@ pub struct Cfg {
     b1: float,
     b2: float,
     eps_adam: float,
+    invt: float,
 }
 
 // The value of `key` in `text` (the text after "key "), start and end; the last line that has the key wins; (-1, -1) when the key is not there.
@@ -77,5 +78,5 @@ pub fn has[&t, &k](text: &t [byte], key: &k [byte]) -> [] bool {
 }
 
 pub fn parse[&t](text: &t [byte]) -> [] Cfg {
-    return Cfg { layers: int_key(text, "layers", 0 - 1), d: int_key(text, "d", 0 - 1), h: int_key(text, "h", 0 - 1), hkv: int_key(text, "hkv", 0 - 1), dh: int_key(text, "dh", 0 - 1), ff: int_key(text, "ff", 0 - 1), v: int_key(text, "v", 0 - 1), t: int_key(text, "t", 0 - 1), nb: int_key(text, "nb", 0 - 1), tied: int_key(text, "tied", 1), r: int_key(text, "r", 16), steps: int_key(text, "steps", 1), bc: int_key(text, "bc", 2304), reuse: int_key(text, "reuse", 1), eps: float_key(text, "eps", 0.000001), theta: float_key(text, "theta", 1000000.0), alpha: float_key(text, "alpha", 32.0), lr: float_key(text, "lr", 0.0001), wd: float_key(text, "wd", 0.0), loss_scale: float_key(text, "loss_scale", 16.0), b1: float_key(text, "b1", 0.9), b2: float_key(text, "b2", 0.999), eps_adam: float_key(text, "eps_adam", 0.00000001) };
+    return Cfg { layers: int_key(text, "layers", 0 - 1), d: int_key(text, "d", 0 - 1), h: int_key(text, "h", 0 - 1), hkv: int_key(text, "hkv", 0 - 1), dh: int_key(text, "dh", 0 - 1), ff: int_key(text, "ff", 0 - 1), v: int_key(text, "v", 0 - 1), t: int_key(text, "t", 0 - 1), nb: int_key(text, "nb", 0 - 1), tied: int_key(text, "tied", 1), r: int_key(text, "r", 16), steps: int_key(text, "steps", 1), bc: int_key(text, "bc", 2304), reuse: int_key(text, "reuse", 1), eps: float_key(text, "eps", 0.000001), theta: float_key(text, "theta", 1000000.0), alpha: float_key(text, "alpha", 32.0), lr: float_key(text, "lr", 0.0001), wd: float_key(text, "wd", 0.0), loss_scale: float_key(text, "loss_scale", 16.0), b1: float_key(text, "b1", 0.9), b2: float_key(text, "b2", 0.999), eps_adam: float_key(text, "eps_adam", 0.00000001), invt: float_key(text, "invt", 1.25) };
 }

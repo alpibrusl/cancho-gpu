@@ -1,0 +1,22 @@
+// The ids of the next step: the prompt's own token while the step is still reading the prompt (tf, with m = 1), else the token the sampler drew (s):
+// y = m tf + (1 - m) s, all columns [r, 1]; tf and m are tables read a block a step. y is carried to the one-hot.
+algo ids_mix(r)
+  in  s:  f32[r, 1]
+  in  tf: f32[r, 1]
+  in  m:  f32[r, 1]
+  out y:  f32[r, 1]
+{
+  grid i over 1
+  let st = load s
+  let tt = load tf
+  let mm = load m
+  let a  = &mm * tt
+  let o  = zeros f32[r, 1]
+  let om = o + 1.0
+  let nm = om - mm
+  let b  = nm * st
+  store a + b -> y[0, 0]
+}
+
+schedule ids_mix for apple-m-series { threads 128 }
+schedule ids_mix for nvidia-ada     { threads 128 }
