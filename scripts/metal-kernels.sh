@@ -56,5 +56,9 @@ samp_pick r=2 nq=8
 samp_local r=2 nq=8 G=4 invt=1.25
 samp_tok r=2 nq=8
 tok_acc r=4 s=16
+attention_scores_b nb=2 nkv=2 g=6 t=64 ts=16 d=128 tmax=80
+attention_pv_b nb=2 nkv=2 g=6 t=64 dw=16 d=128 tmax=80
+attention_scores_b nb=4 nkv=2 g=6 t=1152 ts=64 d=128 tmax=1152
+attention_pv_b nb=4 nkv=2 g=6 t=1152 dw=16 d=128 tmax=1152
 CASES
 exit $fail

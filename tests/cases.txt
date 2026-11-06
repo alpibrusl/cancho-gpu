@@ -410,3 +410,5 @@ tests/chx/samp_pick.chx r=2 nq=8
 tests/chx/samp_local.chx r=2 nq=8 G=4 invt=1.25
 tests/chx/samp_tok.chx r=2 nq=8
 tests/chx/tok_acc.chx r=4 s=16
+tests/chx/attention_scores_b.chx nb=2 nkv=2 g=6 t=64 ts=16 d=128 tmax=80
+tests/chx/attention_pv_b.chx nb=2 nkv=2 g=6 t=64 dw=16 d=128 tmax=80
