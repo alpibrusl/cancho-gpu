@@ -55,5 +55,6 @@ samp_cum r=2 nq=48 bn=24
 samp_pick r=2 nq=8
 samp_local r=2 nq=8 G=4 invt=1.25
 samp_tok r=2 nq=8
+tok_acc r=4 s=16
 CASES
 exit $fail

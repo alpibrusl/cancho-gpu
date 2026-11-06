@@ -44,3 +44,17 @@ Every chunk computes its within-chunk count and only the chosen chunk's is used:
 * `nq` must be a multiple of `G` and of `bn` (`G` 24 and `bn` 24 at the real size); the logits' padding columns must be masked by the caller's `mk`.
 * The uniform of a row at a boundary of the f32 cumulative sums may pick the neighbouring token: a probability of about 1e-7 per draw, which the distribution test would not see.
 * The uniforms, one per row and step, are a table or a request line: producing them (a seeded generator on the host, in cancho) and keeping them out of the policy's gradient are the caller's.
+
+## 6. A decode loop that never leaves the device (`tests/carry_dev.py`, `tests/chx/tok_acc.chx`)
+
+The ids a step samples are the next step's input, and a request of N steps must answer all N of them at the end, with the host sending only "N". Built from three things the session already has (`docs/resident.md` section 12), plus one small kernel:
+
+* `carry tk.tok -> oh.ids`: the sampled ids are the next repetition's ids; `onehot_h` and a product with the model's table (a bigram table in this test, so the whole run has an exact numpy counterpart) give the next logits, which the seven samplers turn into ids;
+* `table pk.u` (the uniforms, a block of 32 a repetition): the random numbers come in as data, with no host trip;
+* `tok_acc`: writes the step's ids into slot j of a carried `[rows, S]` buffer with the `sel`/`keep` trick of `kv_write` (both are tables, a one-hot and its complement read a block a repetition), `carry ac.y -> ac.acc`: element-wise in place, so safe as the carry contract asks. The answer of the request is that buffer.
+
+**Held to** (`python3 tests/carry_dev.py build/cancho-gpu-session`, in the gate, 9.5 s; and `.../cancho-gpu-metal-session`): 32 rows x 64 steps over a vocabulary of 1,536 (100 padding columns at +100), **all 2,048 ids equal to the float64 inverse CDF run step by step with the same uniforms** from two requests (48 steps, then 16: a second request continues the tables and the carried state), no padding column drawn, and a fresh session gives the same ids. Two mutants, each killed: the ids not carried (`CARRY_MUTANT=nocarry`) and the slot selector shifted by one (`shift`).
+
+**Measured** (`python3 tests/carry_dev.py --time build/cancho-gpu-metal-session`): **0.17 ms a step** for the 14 programs of this toy step (V = 1,536), about 12 microseconds a program, which is the launch overhead the full step will pay per program: a Qwen2.5-1.5B step has about 450 programs, so about 5 ms of it **[estimate]**.
+
+**A bug found on the way, not fixed here:** a session whose `program` line names a kernel file by a path containing `..` (for instance `/repo/tests/../examples/qwen/onehot_h.chx`) makes `cancho-gpu-session` die with SIGILL and no message, where the normalised path runs. A refusal with a rule tag is what `CLAUDE.md` asks for ("no input may reach a panic").

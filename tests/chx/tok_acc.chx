@@ -1,0 +1,24 @@
+// The ids of a request's steps, collected on the device: acc[i, s] is the id sampled for row i at step s. Each repetition writes its ids into slot s of the carried buffer with the
+// `sel`/`keep` trick of kv_write.chx (sel the one-hot of the step, keep its complement; both are tables read a block a repetition), so a request of N steps answers N ids a row at the end
+// and the host needs nothing in between. y may be carried back to acc.
+algo tok_acc(r, s)
+  in  acc:  f32[r, s]
+  in  ids:  f32[r, 1]
+  in  sel:  f32[1, s]
+  in  keep: f32[1, s]
+  out y:    f32[r, s]
+{
+  grid i over r
+  let a  = load acc[i, 0 ; 1, s]
+  let k  = load keep
+  let n  = load ids[i, 0 ; 1, 1]
+  let z  = zeros f32[1, s]
+  let nb = z + n
+  let sl = load sel
+  let b  = nb * sl
+  let ak = a * k
+  store ak + b -> y[i, 0]
+}
+
+schedule tok_acc for apple-m-series { threads 128 }
+schedule tok_acc for nvidia-ada     { threads 128 }

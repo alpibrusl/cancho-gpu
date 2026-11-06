@@ -409,3 +409,4 @@ tests/chx/samp_cum.chx r=2 nq=48 bn=24
 tests/chx/samp_pick.chx r=2 nq=8
 tests/chx/samp_local.chx r=2 nq=8 G=4 invt=1.25
 tests/chx/samp_tok.chx r=2 nq=8
+tests/chx/tok_acc.chx r=4 s=16
