@@ -1,0 +1,29 @@
+// The keys or values the training forward computed for `nsrc` prompts (heads-major f16, [nsrc * nkv * g * t, d]: every key/value head written once for each of the g query heads of its group;
+// the first copy is read) as the caches of a batched decode (docs/decode.md): f32 [nsrc * 8 * nkv * t, d], sequence p * 8 + c's head h at rows ((p * 8 + c) * nkv + h) * t + position, so the eight
+// samples of a prompt each have their own copy of its keys and values. One threadgroup takes ts positions of a (prompt, head); the eight f32 copies are eight tiles of the threadgroup memory budget, so ts is 4 on Metal.
+algo kv_import(nsrc, nkv, g, t, ts, d)
+  in  src: f16[nsrc * nkv * g * t, d]
+  out y:   f32[nsrc * 8 * nkv * t, d]
+{
+  grid p over nsrc, h over nkv, sp over t / ts
+  let a  = load src[(p * nkv + h) * (g * t) + sp * ts, 0 ; ts, d]
+  let f0 = stage f32 &a
+  store f0 -> y[p * (8 * nkv * t) + 0 * (nkv * t) + h * t + sp * ts, 0]
+  let f1 = stage f32 &a
+  store f1 -> y[p * (8 * nkv * t) + 1 * (nkv * t) + h * t + sp * ts, 0]
+  let f2 = stage f32 &a
+  store f2 -> y[p * (8 * nkv * t) + 2 * (nkv * t) + h * t + sp * ts, 0]
+  let f3 = stage f32 &a
+  store f3 -> y[p * (8 * nkv * t) + 3 * (nkv * t) + h * t + sp * ts, 0]
+  let f4 = stage f32 &a
+  store f4 -> y[p * (8 * nkv * t) + 4 * (nkv * t) + h * t + sp * ts, 0]
+  let f5 = stage f32 &a
+  store f5 -> y[p * (8 * nkv * t) + 5 * (nkv * t) + h * t + sp * ts, 0]
+  let f6 = stage f32 &a
+  store f6 -> y[p * (8 * nkv * t) + 6 * (nkv * t) + h * t + sp * ts, 0]
+  let f7 = stage f32 a
+  store f7 -> y[p * (8 * nkv * t) + 7 * (nkv * t) + h * t + sp * ts, 0]
+}
+
+schedule kv_import for apple-m-series { threads 256 }
+schedule kv_import for nvidia-ada     { threads 256 }

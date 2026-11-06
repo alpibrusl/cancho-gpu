@@ -2,10 +2,10 @@
 
 > **Status: built and held to the float64 forward pass and to transformers.** A session of up to 32 sequences, one token each a step, that samples on the device and returns the ids of N steps from
 > one request. On the real model it generates the **same 48 tokens as transformers' greedy generation** for two chat prompts, and a 28-layer step of 32 sequences with 1,152-position caches takes **35.6 ms**.
-> Written for the sampler of cancho-rl (`docs/design.md` sections 34 to 39); prompts are fed by decode steps (no prefill kernel yet).
+> Written for the sampler of cancho-rl (`docs/design.md` sections 34 to 40). A prompt can be fed one token a step, or prefilled (section "Prefill" below).
 
 ```
-qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--logits]
+qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--logits]
 ```
 
 | input | what |
@@ -15,6 +15,7 @@ qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FI
 | `--tokens`, `--lens` | int32 `[nb, steps]` and `[nb]`: the prompt tokens (only the first `lens[r]` of a row are read) |
 | `--uniforms` | binary64 `[steps, nb]`, the random number of each sequence and step (0.5 without it) |
 | `--pos0` | int32 `[nb]`, the position of each sequence's first step (0 without it) |
+| `--kv-dir` | start from the caches a prefill saved there (`kcacheNN`, `vcacheNN`) instead of empty ones |
 | `--logits` | the session answers the logits of the last step and then the ids drawn, instead of the ids of every step |
 
 It writes the data files and `session` into `--out`. A request is a count N: the session runs N steps (a second request continues) and answers `[nb, steps]` ids, 1-based, slot j holding step j's draw.
@@ -42,6 +43,14 @@ It writes the data files and `session` into `--out`. A request is a count N: the
 
 The session text and tables take 2 to 3 s to write (`qsw decode`) and the session loads and compiles in about 1 s. At 400 steps, 32 sequences take about 14 s. The costs are not broken down: the products (14.8 ms) and the attention (6.8 ms) measured alone, `docs/kernels.md` sections 7 and 8, are the larger parts, and every step rewrites the whole f32 cache (`kv_write_b`) twice a layer.
 
+## Prefill (`qsw write --no-train --kv-export DIR`, `tests/prefill_hf.py`)
+
+A prompt of 700 tokens costs 700 decode steps (about 25 s). The prefill does it in one pass: `qsw write --no-train --kv-export DIR` writes a **forward-only session of the training forward pass** (the same programs, with the adapters if the adapters file has any; `--no-train` and no `--save` are required) over the distinct prompts (`nb` of them, `t` the length of the caches, padded), **without the head, the loss, the backward pass or the optimiser**; instead, for every layer, `kv_import` turns the keys and the values (heads-major f16, written once for each query head of the group) into the layout of the decode caches, f32, **eight copies of each prompt's** (the 8 samples of R1's group), and the session saves them to `DIR/kcacheNN` and `DIR/vcacheNN` on a `checkpoint`. The decode then starts each sequence at the last token of its prompt: `--tokens` row r holds that token, `--lens` is 1, `--pos0` the prompt's length minus one, `--kv-dir DIR`; the number of sequences is eight times the prompts.
+
+* **Held to transformers on the real model** (`python3 tests/prefill_hf.py build/qsw build/cancho-gpu-metal-session WEIGHTS`): two chat prompts (42 and 48 tokens), prefilled, then decoded as 16 sequences (8 of each): **all 16 generate the 24 greedy tokens of `generate(do_sample=False)`**. `tests/qsw.py` (in the gate) holds the shape of the prefill session (one `kv_import` program for the keys and one for the values of each layer, their saves, no head or backward pass) and the refusal of `--kv-export` without `--no-train`; `kv_import` is held to a float64 reference, to a Metal GPU (exact) and by goldens.
+* **Measured** (4 prompts of 1,152 positions, the real 28 layers): the session writes in 0.8 s, a prefill request takes **1.18 s**, writing the 56 cache files (2.1 GB) on the `checkpoint` 1.4 s; the peak memory of the prefill is 24.8 GB (the forward pass of 4 x 1,152 tokens), so it does not run beside a decode session at the same time. About 4 s of prefill for an iteration, against about 25 s for the same prompts fed through decode steps.
+* `kv_import` takes `ts` = 4 positions a threadgroup on Metal: its eight f32 copies are eight tiles of the threadgroup memory budget.
+
 ## Two traps met on the way
 
 * **Qwen's `generation_config.json` has `repetition_penalty` 1.05, which transformers applies in greedy generation**: compared with it on, the decode diverged from `generate(do_sample=False)` at the first repeated word, with the logits identical; `repetition_penalty=1.0` makes the comparison an arg max.
@@ -50,7 +59,8 @@ The session text and tables take 2 to 3 s to write (`qsw decode`) and the sessio
 ## Limits
 
 * Qwen2.5-1.5B's shapes only (`dec_post` is written for 12 query heads, 2 key/value heads of 128): other shapes are refused (`qsw.shape`).
-* **No prefill**: a prompt is read one token a step (positions from 0), so a prompt of 700 tokens costs 700 steps. A prefill that writes the caches, with `--pos0` for the sequences that start after it, is the next piece.
+* A decode without `--kv-dir` reads a prompt one token a step (positions from 0): fine for tests, slow for real prompts (use the prefill).
+* **The decode does not apply LoRA adapters yet** (the prefill does, through the training forward): a decode of an adapted model needs the low-rank products in each layer, or the adapters merged into the weights.
 * The caches are f32 and every step rewrites them whole; f16 caches would roughly halve the attention and the rewrite.
 * Temperature sampling only (docs/sampler.md); a sequence that draws its end token goes on; the host truncates.
 * A request of more than `steps` repetitions wraps the tables.

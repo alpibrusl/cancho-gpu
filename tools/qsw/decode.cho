@@ -236,13 +236,13 @@ fn layer[&h](heap: &!h Heap, st: tpl.St) -> [heap] tpl.St {
     s = tpl.em(heap, s, "table post_$l$.cs $o$/cos $nsteps$ f32");
     s = tpl.em(heap, s, "table post_$l$.sn $o$/sin $nsteps$ f32");
     s = tpl.em(heap, s, "program kwk_$l$ $kn_kvw$ nb=$nb$ nkv=$hkv$ tmax=$t$ ts=64 d=$dh$");
-    s = tpl.em(heap, s, "resident kwk_$l$.c $o$/zcache f32");
+    s = tpl.em(heap, s, "resident kwk_$l$.c $kc$ f32");
     s = tpl.em(heap, s, "link post_$l$.kn -> kwk_$l$.nw");
     s = tpl.em(heap, s, "table kwk_$l$.sel $o$/sel $nsteps$ f32");
     s = tpl.em(heap, s, "table kwk_$l$.keep $o$/keep $nsteps$ f32");
     s = tpl.em(heap, s, "carry kwk_$l$.y -> kwk_$l$.c");
     s = tpl.em(heap, s, "program kwv_$l$ $kn_kvw$ nb=$nb$ nkv=$hkv$ tmax=$t$ ts=64 d=$dh$");
-    s = tpl.em(heap, s, "resident kwv_$l$.c $o$/zcache f32");
+    s = tpl.em(heap, s, "resident kwv_$l$.c $vc$ f32");
     s = tpl.em(heap, s, "link post_$l$.vn -> kwv_$l$.nw");
     s = tpl.em(heap, s, "table kwv_$l$.sel $o$/sel $nsteps$ f32");
     s = tpl.em(heap, s, "table kwv_$l$.keep $o$/keep $nsteps$ f32");
@@ -280,7 +280,7 @@ fn layer[&h](heap: &!h Heap, st: tpl.St) -> [heap] tpl.St {
 }
 
 // `logits`: the session answers the logits of the last step ([nb, vp]) and then the ids the sampler drew from them ([nb], 1-based); else the ids of every step ([nb, steps]).
-pub fn build[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, logits: bool) -> [heap] tpl.St {
+pub fn build[&h, &k](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, logits: bool, kvdir: &k [byte]) -> [heap] tpl.St {
     var s = st;
     s = tpl.em(heap, s, "# Qwen2 decode: $layers$ layers, d $d$, $nb$ sequences, caches of $t$ positions, $nsteps$ steps, vocabulary $v$ padded to $vp$");
     s = tpl.em(heap, s, "program oh $kn_onehot$ r=$nb$ c=$vp$ bc=128");
@@ -294,6 +294,13 @@ pub fn build[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, logits: bool) -> [heap]
     while l < c.layers {
         s = tpl.set_int(heap, s, "l", l);
         s = tpl.set_int2(heap, s, "l2", l);
+        if len(kvdir) > 0 {
+            s = tpl.set_tpl(heap, s, "kc", "$kv$/kcache$l2$");
+            s = tpl.set_tpl(heap, s, "vc", "$kv$/vcache$l2$");
+        } else {
+            s = tpl.set_tpl(heap, s, "kc", "$o$/zcache");
+            s = tpl.set_tpl(heap, s, "vc", "$o$/zcache");
+        }
         s = layer(heap, s);
         s = tpl.set_tpl(heap, s, "xin", "rb_$l$.y");
         l = l + 1;
@@ -382,12 +389,13 @@ fn sbc_of(ff: int) -> [] int {
 }
 
 // Writes the data files and the session into `out`: 0, 1 when a kernel is not under `root`, 3 when a file cannot be written.
-pub fn run[&h, &f, &o, &w, &r, &e, &q, &t, &l, &u, &p](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], lens: &l [byte], uni: &u [byte], pos0: &p [byte], logits: bool) -> [heap, fs_read(""), fs_write(""), file_read] int {
+pub fn run[&h, &f, &o, &w, &r, &e, &q, &t, &l, &u, &p, &k](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], lens: &l [byte], uni: &u [byte], pos0: &p [byte], logits: bool, kvdir: &k [byte]) -> [heap, fs_read(""), fs_write(""), file_read] int {
     let vp = vocab_padded(c);
     let nq = vp / 64;
     var s = tpl.start(heap);
     s = tpl.set_txt(heap, s, "o", out);
     s = tpl.set_txt(heap, s, "wd", wdir);
+    s = tpl.set_txt(heap, s, "kv", kvdir);
     s = tpl.set_int(heap, s, "layers", c.layers);
     s = tpl.set_int(heap, s, "d", c.d);
     s = tpl.set_int(heap, s, "hkv", c.hkv);
@@ -441,7 +449,9 @@ pub fn run[&h, &f, &o, &w, &r, &e, &q, &t, &l, &u, &p](heap: &!h Heap, fs: &f Fs
     wrote = wrote + data.save(heap, fs, out, "mtab", prompt_table(heap, c, tokens, lens, 1));
     wrote = wrote + data.save(heap, fs, out, "ids0", first_ids(heap, c, tokens));
     wrote = wrote + data.save(heap, fs, out, "utab", uniform_table(heap, c, uni));
-    wrote = wrote + data.save(heap, fs, out, "zcache", filled(heap, c.nb * c.hkv * c.t * c.dh, 0.0));
+    if len(kvdir) == 0 {
+        wrote = wrote + data.save(heap, fs, out, "zcache", filled(heap, c.nb * c.hkv * c.t * c.dh, 0.0));
+    }
     wrote = wrote + data.save(heap, fs, out, "acc0", filled(heap, c.nb * c.steps, 0.0));
     wrote = wrote + data.save(heap, fs, out, "accsel", series_eye(heap, c.steps, false));
     wrote = wrote + data.save(heap, fs, out, "acckeep", series_eye(heap, c.steps, true));
@@ -453,7 +463,7 @@ pub fn run[&h, &f, &o, &w, &r, &e, &q, &t, &l, &u, &p](heap: &!h Heap, fs: &f Fs
     wrote = wrote + data.save(heap, fs, out, "jrow", series(heap, vp, 2, 0));
     wrote = wrote + data.save(heap, fs, out, "embt", embedding_t(heap, c, emb, vp));
     wrote = wrote + data.save(heap, fs, out, "wlm.f16", data.padded_head(heap, c, head, vp));
-    let sess = build(heap, c, s, logits);
+    let sess = build(heap, c, s, logits, kvdir);
     let text = tpl.finish(heap, sess);
     wrote = wrote + data.save(heap, fs, out, "session", text);
     if wrote != 0 {
