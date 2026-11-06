@@ -388,8 +388,9 @@ fn put_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
 }
 
 // The whole session text. The variables (see main.cho `setup`) are in the state.
-pub fn build[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool) -> [heap] tpl.St {
+pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: bool, gradpath: &p [byte]) -> [heap] tpl.St {
     var s = st;
+    s = tpl.set_txt(heap, s, "gradpath", gradpath);
     let ll = c.layers;
     s = tpl.em(heap, s, "# Qwen2 LoRA training: $layers$ layers, d $d$, $h$ query heads over $hkv$, ff $ff$, vocabulary $v$, $nb$ sequences of $t$, rank $r$, alpha $alphar$, $nsteps$ batch(es), loss scale $lscale$");
     s = tpl.em(heap, s, "program wd $kn_widen_h$ r=$n$ c=$d$ bm=$ebm$");
@@ -457,18 +458,34 @@ pub fn build[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool) -> [heap] t
         s = tpl.set_tpl(heap, s, "gdx", "rm1b_$l$.dx");
         l = l - 1;
     }
-    l = 0;
-    while l < ll {
-        s = tpl.set_int(heap, s, "l", l);
-        s = tpl.set_int2(heap, s, "l2", l);
-        s = optimiser_layer(heap, c, s);
-        l = l + 1;
+    if train {
+        l = 0;
+        while l < ll {
+            s = tpl.set_int(heap, s, "l", l);
+            s = tpl.set_int2(heap, s, "l2", l);
+            s = optimiser_layer(heap, c, s);
+            l = l + 1;
+        }
     }
     if c.reuse != 0 {
         s = put_aliases(heap, c, s);
     }
     s = tpl.em(heap, s, "steps");
     s = tpl.em(heap, s, "answer ls.dw scale 1/$ncountg$");
+    if len(gradpath) > 0 {
+        l = 0;
+        while l < ll {
+            s = tpl.set_int(heap, s, "l", l);
+            var g = 0;
+            while g < 4 {
+                s = tpl.set_txt(heap, s, "g", gname(g));
+                s = tpl.em(heap, s, "save gA$g$_$l$.y $gradpath$ f32");
+                s = tpl.em(heap, s, "save gB$g$_$l$.y $gradpath$ f32");
+                g = g + 1;
+            }
+            l = l + 1;
+        }
+    }
     if save {
         l = 0;
         while l < ll {

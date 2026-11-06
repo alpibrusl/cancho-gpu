@@ -2,7 +2,7 @@ edition 9;
 
 // `qsw` -- the Qwen2 LoRA training session writer, in cancho (docs/qsw.md): what examples/qwen/qwen_train.py `write` produces, without Python.
 //
-//     qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE]
+//     qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE] [--grads FILE] [--no-train]
 //
 // FILE of --config: `key value` lines (tools/qsw/cfg.cho). --wdir: the converted weights (emb.f16, norm.f32, lNN.*). --out: an existing directory for the session.
 // --root: this repository (where the kernels are). --tokens: int32 little-endian, [steps, nb, t]. --adapters: binary64 little-endian, in qwen_ref.lora_names order.
@@ -43,6 +43,18 @@ fn flag[&g](args: &g Args, name: &static [byte]) -> [args] int {
         i = i + 1;
     }
     return 0 - 1;
+}
+
+// Whether the bare flag `name` is among the arguments.
+fn present[&g](args: &g Args, name: &static [byte]) -> [args] bool {
+    var i = 1;
+    while i < arg_count(args) {
+        if bytes.equal(arg(args, i), name) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
 }
 
 // The unscheduled library kernel `file` as the variable `key`; 0, or 1 when it is not found.
@@ -238,7 +250,7 @@ fn ncount_text[&h](heap: &!h Heap, st: tpl.St, ncount: int) -> [heap] (tpl.St, i
     return (s, 0);
 }
 
-fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], ad: &a [byte], wt: &x [byte], savepath: &z [byte]) -> [heap, fs_read(""), fs_write(""), file_read] int {
+fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z, &y](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], wdir: &w [byte], root: &r [byte], emb: &e [byte], head: &q [byte], tokens: &t [byte], ad: &a [byte], wt: &x [byte], savepath: &z [byte], train: bool, gradpath: &y [byte]) -> [heap, fs_read(""), fs_write(""), file_read] int {
     let nsteps = len(tokens) / (4 * c.nb * c.t);
     let n = c.nb * c.t;
     var bc = c.bc;
@@ -274,9 +286,11 @@ fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z](heap: &!h Heap, fs: &f F
         wrote = wrote + data.save(heap, fs, out, "rope_k.chx", kern.rope_source(heap, "rope_k", c.h / c.hkv, true));
         wrote = wrote + data.save(heap, fs, out, "bias_v.chx", kern.rope_source(heap, "bias_v", c.h / c.hkv, false));
         wrote = wrote + data.save(heap, fs, out, "rope_bwd.chx", kern.rope_bwd_source(heap, c.h, c.hkv, c.d, c.dh));
-        wrote = wrote + data.save(heap, fs, out, "sched", data.schedule(heap, c));
-        wrote = wrote + adapter_files(heap, fs, c, out, ad);
-        let sess = session.build(heap, c, st, len(savepath) > 0);
+        if train {
+            wrote = wrote + data.save(heap, fs, out, "sched", data.schedule(heap, c));
+        }
+        wrote = wrote + adapter_files(heap, fs, c, out, ad, train);
+        let sess = session.build(heap, c, st, len(savepath) > 0, train, gradpath);
         let text = tpl.finish(heap, sess);
         wrote = wrote + data.save(heap, fs, out, "session", text);
         if wrote != 0 {
@@ -299,7 +313,7 @@ fn zeros[&h](heap: &!h Heap, count: int) -> [heap] buffer.Buffer {
 }
 
 // The fused adapter matrices and their optimiser state, per layer and group.
-fn adapter_files[&h, &f, &o, &a](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], ad: &a [byte]) -> [heap, fs_write("")] int {
+fn adapter_files[&h, &f, &o, &a](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out: &o [byte], ad: &a [byte], train: bool) -> [heap, fs_write("")] int {
     let scale = c.alpha / float_of(c.r);
     var wrote = 0;
     var l = 0;
@@ -326,12 +340,14 @@ fn adapter_files[&h, &f, &o, &a](heap: &!h Heap, fs: &f Fs(""), c: cfg.Cfg, out:
                 wrote = wrote + save_as(heap, fs, out, "B", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 0, scale));
                 wrote = wrote + save_as(heap, fs, out, "Ah", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 1));
                 wrote = wrote + save_as(heap, fs, out, "Bh", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 1, scale));
-                wrote = wrote + save_as(heap, fs, out, "zmA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 3));
-                wrote = wrote + save_as(heap, fs, out, "zvA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 3));
-                wrote = wrote + save_as(heap, fs, out, "zmB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 3, scale));
-                wrote = wrote + save_as(heap, fs, out, "zvB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 3, scale));
-                wrote = wrote + save_as(heap, fs, out, "mA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 2));
-                wrote = wrote + save_as(heap, fs, out, "mB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 2, scale));
+                if train {
+                    wrote = wrote + save_as(heap, fs, out, "zmA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 3));
+                    wrote = wrote + save_as(heap, fs, out, "zvA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 3));
+                    wrote = wrote + save_as(heap, fs, out, "zmB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 3, scale));
+                    wrote = wrote + save_as(heap, fs, out, "zvB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 3, scale));
+                    wrote = wrote + save_as(heap, fs, out, "mA", buffer.bytes(nr), data.fused_a(heap, c, ad, l, g, 2));
+                    wrote = wrote + save_as(heap, fs, out, "mB", buffer.bytes(nr), data.fused_b(heap, c, ad, l, g, 2, scale));
+                }
             }
             buffer.drop(heap, names);
             g = g + 1;
@@ -361,7 +377,7 @@ fn write_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: 
     let it = flag(args, "--tokens");
     let ia = flag(args, "--adapters");
     if ic < 0 || iw < 0 || io_ < 0 || ir < 0 || it < 0 || ia < 0 {
-        return refuse(heap, io, "qsw.usage", "qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE]");
+        return refuse(heap, io, "qsw.usage", "qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE] [--grads FILE] [--no-train]");
     }
     let (cfg_bytes, cfg_failed) = rd.read_file(heap, fs, arg(args, ic));
     var status = 0;
@@ -492,7 +508,16 @@ fn checked[&h, &i, &g, &f, &e, &q, &t, &a, &x](heap: &!h Heap, io: &!i Io, args:
     if isv >= 0 {
         savepath = arg(args, isv);
     }
-    s = generate(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, ad, wt, savepath);
+    var gradpath: &g [byte] = "";
+    let igr = flag(args, "--grads");
+    if igr >= 0 {
+        gradpath = arg(args, igr);
+    }
+    let train = !present(args, "--no-train");
+    if !train && len(savepath) > 0 {
+        return refuse(heap, io, "qsw.usage", "--save needs training: with --no-train there are no trained adapters to save");
+    }
+    s = generate(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, ad, wt, savepath, train, gradpath);
     if s == 1 {
         return refuse(heap, io, "qsw.kernel", "a kernel file is not under --root");
     }

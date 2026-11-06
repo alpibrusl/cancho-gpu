@@ -15,7 +15,7 @@ data files, four generated kernels and one `session` text (about 600 lines for t
 not cover.
 
 ```
-qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE]
+qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE] [--grads FILE] [--no-train]
 ```
 
 | input | what it is |
@@ -28,6 +28,8 @@ qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters
 | `--adapters` | binary64 little-endian, in `qwen_ref.lora_names` order (layer, then q k v o gate up down, A then B). |
 | `--save` | where the session saves the trained adapters on a `checkpoint` (f32, fused, as `write`'s `save`). |
 | `--weights` | binary64 `[nb t]`: the weight of each position in the loss (§3). Without it, 1 at every position but the last of a sequence, which is `write`'s. |
+| `--grads` | where the session saves the raw gradient of every fused adapter matrix on a `checkpoint` (f32, A then B of each group, layer by layer; `qwen_train.read_fused` and `split_grads` read it). With `--no-train` this is the policy-gradient check of cancho-rl's design §30. |
+| `--no-train` | no optimiser: the adapters stay as given, and `sched` and the moment files are not written (`write`'s `train=False`). Refused with `--save`. |
 
 Refusals print `qsw: <rule>: <message>` on standard error and exit 2; the rules are `qsw.usage`, `qsw.config`, `qsw.shape`,
 `qsw.input`, `qsw.kernel`, `qsw.quant` and `qsw.write`, each with a case in `tests/qsw.py`. No input reaches a trap.
@@ -39,15 +41,16 @@ Refusals print `qsw: <rule>: <message>` on standard error and exit 2; the rules 
 * **The encoders alone** (`tools/qsw/enc.cho`): the f32 word, the f16 word and Python's `repr` of 80,015 binary64 values,
   random bit patterns, exact ties in f16 and f32, subnormals and overflow, against numpy's `astype` and Python. `%g` of
   whole numbers (the count in `answer ls.dw scale 1/…`), including the carry (999,999,500,000 is `1e+12`).
-* **Nine sessions**, each written from the same inputs to the same directory (the session names its files by path), every
-  file compared; seven against the Python writer: two layers with 1 and 2 steps, with and without the layers' shared buffers; other
+* **Fourteen sessions**, each written from the same inputs to the same directory (the session names its files by path), every
+  file compared with the Python writer's: two layers with 1 and 2 steps, with and without the layers' shared buffers; other
   optimiser settings (alpha, lr, weight decay, loss scale, betas, Adam's epsilon); three layers with 8 heads over 2 and an
   exact vocabulary block; a head of 128 with an untied output layer; a 1.5B-shaped layer (d 1,536, ff 8,960); a sequence of
-  512 (rotary angles up to 511 rad). **All files equal**: 70 to 149 files each. The other two are the weights of §3.
+  512 (rotary angles up to 511 rad). **All files equal**: 61 to 149 files each. Also: the weights of §3 (the Python writer has no weight input, so there `wscale` is checked against its rule and every other file against Python's), and the gradient sessions: gradients saved while training; `--no-train` with gradients saved (also with per-position weights and with three layers); `--no-train` with nothing saved.
+* **Through the Metal runner** (cancho-rl `scripts/r2_grad.py` with `QSW=build/qsw`, outside the gate): the same weighted gradient on a real 4 × 1,152 batch as with the Python writer, to the digit (whole-gradient cosine 0.999952 against peft float32).
 * **The 1.5B** (`python3 tests/qsw.py build/qsw --full`, not in the gate): Qwen2.5-1.5B's shapes (28 layers, d 1,536, 12
   heads over 2, ff 8,960, vocabulary 151,936, a batch of 8 × 512): **1,150 files, every one equal**. The tool took **2.0 s
   and a peak of 1.85 GB** (the padded output layer is 466 MB, written once, and the table is read once).
-* **The refusals**: 14 cases, each broken one way at a time.
+* **The refusals**: 15 cases, each broken one way at a time.
 * **Mutants, all killed**: the order of two optimiser carries swapped (8 failures); f16 ties rounded up (1 failure, in the
   encoder check: it survived the sessions, whose random doubles are never ties, which is why the encoder check exists);
   the weights file ignored (2 failures).
@@ -82,7 +85,7 @@ Three things a caller must know, none of them a kernel matter:
 ## 4. Not covered (slice 1)
 
 * **A 4-bit base** (`quant.py pack` files): refused with `qsw.quant`. `write`'s `dq_*` programs and its scratch aliases.
-* **`train=False`**, the `lean` variant, the `tune` and `kmut` overrides, `probes`, `grads`.
+* The `lean` variant, the `tune` and `kmut` overrides, `probes`. (`train=False` and `grads` are covered since the gradient output was added.)
 * **Continuation from a checkpoint**: `state`, `first_step`, `save_state` (the moments are zero and the schedule starts at
   step 1).
 * **The converter** (`convert.py`: safetensors to the weight files) and **the adapters' initialiser**: the writer takes

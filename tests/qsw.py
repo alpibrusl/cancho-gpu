@@ -48,7 +48,7 @@ def config_text(c, r, steps, extra):
     return "\n".join([f"{k} {v}" for k, v in kv.items()] + [f"{k} {bits(v)}" for k, v in fl.items()]) + "\n"
 
 
-def case(name, c, steps=2, r=16, wt=None, save=True, seed=3, keep=None, sparse=False, **kw):
+def case(name, c, steps=2, r=16, wt=None, save=True, seed=3, keep=None, sparse=False, train=True, grads=False, **kw):
     """One comparison. `kw` are qwen_train.write's keywords (alpha, lr, wd, loss_scale, betas, eps_adam, tune, reuse) given to both writers. `wt` is a per-position weight ([nb * t]) for the
     tool; the Python writer has no such input, so with `wt` every file but `wscale` is compared with Python's and `wscale` with the rule (f32 of weight x loss scale)."""
     d = tempfile.mkdtemp(prefix="qsw_")
@@ -84,12 +84,16 @@ def case(name, c, steps=2, r=16, wt=None, save=True, seed=3, keep=None, sparse=F
         if "reuse" in kw:
             extra["reuse"] = int(kw["reuse"])
         open(cfg_path, "w").write(config_text(c, r, steps, extra))
-        T.write(out_dir, c, wdir, toks, AB, r=r, steps=steps, save=os.path.join(d, "ad.bin") if save else None, **kw)
+        T.write(out_dir, c, wdir, toks, AB, r=r, steps=steps, save=os.path.join(d, "ad.bin") if save else None, train=train, grads=os.path.join(d, "grads.bin") if grads else None, **kw)
         os.rename(out_dir, py_dir)
         os.makedirs(out_dir)
         cmd = [sys.argv[1], "write", "--config", cfg_path, "--wdir", wdir, "--out", out_dir, "--root", ROOT, "--tokens", tok_path, "--adapters", ad_path]
         if save:
             cmd += ["--save", os.path.join(d, "ad.bin")]
+        if not train:
+            cmd += ["--no-train"]
+        if grads:
+            cmd += ["--grads", os.path.join(d, "grads.bin")]
         if wt is not None:
             wt_path = os.path.join(d, "in", "wt.f64")
             np.asarray(wt, dtype="<f8").tofile(wt_path)
@@ -176,13 +180,13 @@ def refusals(tool):
         out = os.path.join(d, "out")
         os.makedirs(out)
 
-        def run(rule, mutate=None, drop=None, name=None):
+        def run(rule, mutate=None, drop=None, name=None, extra=()):
             args = {"--config": os.path.join(d, "in", "cfg"), "--wdir": wdir, "--out": out, "--root": ROOT, "--tokens": os.path.join(d, "in", "tok"), "--adapters": os.path.join(d, "in", "ad")}
             if mutate:
                 args.update(mutate)
             if drop:
                 args.pop(drop)
-            cmd = [tool, "write"] + [x for kv in args.items() for x in kv]
+            cmd = [tool, "write"] + [x for kv in args.items() for x in kv] + list(extra)
             done = subprocess.run(cmd, capture_output=True, text=True)
             say(done.returncode == 2 and f"qsw: {rule}:" in done.stderr, f"refusal {rule}: {name or ''} (exit {done.returncode}, {done.stderr.strip()[:90]!r})")
 
@@ -209,6 +213,7 @@ def refusals(tool):
         run("qsw.quant", name="a quantised base")
         os.remove(os.path.join(wdir, "l00.wqkv.q"))
         run("qsw.input", {"--weights": os.path.join(d, "none")}, name="a weights file that is not there")
+        run("qsw.usage", {"--save": os.path.join(d, "ad.bin")}, name="--save with --no-train", extra=["--no-train"])
         done = subprocess.run([tool], capture_output=True, text=True)
         say(done.returncode == 2 and "qsw.usage" in done.stderr, "refusal qsw.usage: no command")
     finally:
@@ -245,6 +250,11 @@ def main():
     wc[c.t - 1::c.t] = 0.0
     case("explicit weights equal to the default ones reproduce the files", c, steps=2, wt=wc)
     case("per-position weights (advantage x mask)", c, steps=2, wt=np.where(np.arange(n) % c.t < 20, 0.0, np.random.default_rng(5).normal(size=n)))
+    case("gradients saved while training", c, steps=2, grads=True)
+    case("no training, gradients saved (the policy-gradient check)", c, steps=1, save=False, train=False, grads=True)
+    case("no training, nothing saved", c, steps=1, save=False, train=False)
+    case("no training, gradients saved, per-position weights", c, steps=1, save=False, train=False, grads=True, wt=np.where(np.arange(n) % c.t < 20, 0.0, np.random.default_rng(6).normal(size=n)))
+    case("no training, gradients saved, 3 layers", R.Config(layers=3, d=256, h=8, hkv=2, dh=32, ff=192, v=384, t=64, nb=2), steps=1, save=False, train=False, grads=True)
     print("bad" if bad else "all ok")
     return 1 if bad else 0
 
