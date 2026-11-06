@@ -110,7 +110,13 @@ def case(name, c, steps=2, r=16, wt=None, save=True, seed=3, keep=None, sparse=F
         py_files = sorted(os.listdir(py_dir))
         ch_files = sorted(os.listdir(out_dir))
         say(py_files == ch_files, f"{name}: the same {len(py_files)} files" + ("" if py_files == ch_files else f" (only python: {sorted(set(py_files) - set(ch_files))[:6]}, only cancho: {sorted(set(ch_files) - set(py_files))[:6]})"))
+        tabled = wt is not None and np.size(wt) > c.nb * c.t
         skip = {"wscale"} if wt is not None else set()
+        if tabled:
+            # one block of weights for each step: `wscale` is a table read a block a step; the session differs from the Python writer's in that one line
+            skip.add("session")
+            want_s = open(os.path.join(py_dir, "session")).read().replace(f"resident cg.wt {out_dir}/wscale f32", f"table cg.wt {out_dir}/wscale {steps} f32")
+            say(want_s == open(os.path.join(out_dir, "session")).read(), f"{name}: the session is the Python writer's with `table cg.wt .../wscale {steps} f32` for the resident line")
         differ = [f for f in py_files if f in ch_files and f not in skip and not filecmp.cmp(os.path.join(py_dir, f), os.path.join(out_dir, f), shallow=False)]
         say(not differ, f"{name}: every file is byte for byte the Python writer's" + ("" if not differ else f" (differ: {differ[:8]})"))
         if wt is not None:
@@ -214,6 +220,8 @@ def refusals(tool):
         os.remove(os.path.join(wdir, "l00.wqkv.q"))
         run("qsw.input", {"--weights": os.path.join(d, "none")}, name="a weights file that is not there")
         run("qsw.usage", {"--save": os.path.join(d, "ad.bin")}, name="--save with --no-train", extra=["--no-train"])
+        np.zeros(3, dtype="<f8").tofile(os.path.join(d, "in", "wt_bad"))
+        run("qsw.input", {"--weights": os.path.join(d, "in", "wt_bad")}, name="weights that are neither one block nor one for each batch")
         done = subprocess.run([tool], capture_output=True, text=True)
         say(done.returncode == 2 and "qsw.usage" in done.stderr, "refusal qsw.usage: no command")
     finally:
@@ -254,6 +262,7 @@ def main():
     case("no training, gradients saved (the policy-gradient check)", c, steps=1, save=False, train=False, grads=True)
     case("no training, nothing saved", c, steps=1, save=False, train=False)
     case("no training, gradients saved, per-position weights", c, steps=1, save=False, train=False, grads=True, wt=np.where(np.arange(n) % c.t < 20, 0.0, np.random.default_rng(6).normal(size=n)))
+    case("per-step weights (a table of two blocks)", c, steps=2, save=False, train=False, grads=True, wt=np.random.default_rng(8).normal(size=2 * n))
     case("no training, gradients saved, 3 layers", R.Config(layers=3, d=256, h=8, hkv=2, dh=32, ff=192, v=384, t=64, nb=2), steps=1, save=False, train=False, grads=True)
     print("bad" if bad else "all ok")
     return 1 if bad else 0

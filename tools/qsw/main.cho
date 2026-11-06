@@ -6,7 +6,7 @@ edition 9;
 //
 // FILE of --config: `key value` lines (tools/qsw/cfg.cho). --wdir: the converted weights (emb.f16, norm.f32, lNN.*). --out: an existing directory for the session.
 // --root: this repository (where the kernels are). --tokens: int32 little-endian, [steps, nb, t]. --adapters: binary64 little-endian, in qwen_ref.lora_names order.
-// --save: where the session saves the trained adapters. --weights: binary64 [nb t], the weight of each position in the loss (default: 1 but at the last position of a sequence).
+// --save: where the session saves the trained adapters. --weights: binary64 [nb t], the weight of each position in the loss (default: 1 but at the last position of a sequence); one block for each batch of the tokens file makes `wscale` a table read a block a step.
 
 import qsw.cfg;
 import qsw.data;
@@ -290,7 +290,7 @@ fn generate[&h, &f, &o, &w, &r, &e, &q, &t, &a, &x, &z, &y](heap: &!h Heap, fs: 
             wrote = wrote + data.save(heap, fs, out, "sched", data.schedule(heap, c));
         }
         wrote = wrote + adapter_files(heap, fs, c, out, ad, train);
-        let sess = session.build(heap, c, st, len(savepath) > 0, train, gradpath);
+        let sess = session.build(heap, c, st, len(savepath) > 0, train, gradpath, len(wt) > 8 * n);
         let text = tpl.finish(heap, sess);
         wrote = wrote + data.save(heap, fs, out, "session", text);
         if wrote != 0 {
@@ -478,8 +478,9 @@ fn checked[&h, &i, &g, &f, &e, &q, &t, &a, &x](heap: &!h Heap, io: &!i Io, args:
     if len(emb) < 2 * c.v * c.d || len(head) < 2 * c.v * c.d {
         return refuse(heap, io, "qsw.input", "emb.f16 (or head.f16) is shorter than vocabulary x d");
     }
-    if len(wt) != 0 && len(wt) != 8 * c.nb * c.t {
-        return refuse(heap, io, "qsw.input", "the weights file is not [nb, t] binary64");
+    let steps = len(tok) / per;
+    if len(wt) != 0 && len(wt) != 8 * c.nb * c.t && len(wt) != 8 * c.nb * c.t * steps {
+        return refuse(heap, io, "qsw.input", "the weights file is not [nb, t] binary64, nor one such block for each of the batches of the tokens file");
     }
     var words = 0;
     var l = 0;

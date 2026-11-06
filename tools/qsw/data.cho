@@ -168,11 +168,15 @@ pub fn counts[&h](heap: &!h Heap, c: cfg.Cfg) -> [heap] buffer.Buffer {
     return b;
 }
 
-// wscale: the weight of each position times the loss scale. `wt` is the caller's weights ([nb t] f64) or empty for the default (wcount).
+// wscale: the weight of each position times the loss scale. `wt` is the caller's weights ([nb t] f64, or one such block for each step) or empty for the default (wcount).
 pub fn scaled[&h, &w](heap: &!h Heap, c: cfg.Cfg, wt: &w [byte]) -> [heap] buffer.Buffer {
-    var b = buffer.empty(heap, 4 * c.nb * c.t + 8);
+    var count = c.nb * c.t;
+    if len(wt) > 0 {
+        count = len(wt) / 8;
+    }
+    var b = buffer.empty(heap, 4 * count + 8);
     var i = 0;
-    while i < c.nb * c.t {
+    while i < count {
         var x = 1.0;
         if len(wt) > 0 {
             x = f64_at(wt, 8 * i);

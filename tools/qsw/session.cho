@@ -388,7 +388,7 @@ fn put_aliases[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St) -> [heap] tpl.St {
 }
 
 // The whole session text. The variables (see main.cho `setup`) are in the state.
-pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: bool, gradpath: &p [byte]) -> [heap] tpl.St {
+pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: bool, gradpath: &p [byte], wtab: bool) -> [heap] tpl.St {
     var s = st;
     s = tpl.set_txt(heap, s, "gradpath", gradpath);
     let ll = c.layers;
@@ -434,7 +434,11 @@ pub fn build[&h, &p](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, save: bool, train: 
     s = tpl.em(heap, s, "resident cg.jrow $o$/jrow f32");
     s = tpl.em(heap, s, "resident cg.maskv $o$/maskv f32");
     s = tpl.em(heap, s, "link cc.lse -> cg.lse");
-    s = tpl.em(heap, s, "resident cg.wt $o$/wscale f32");
+    if wtab {
+        s = tpl.em(heap, s, "table cg.wt $o$/wscale $nsteps$ f32");
+    } else {
+        s = tpl.em(heap, s, "resident cg.wt $o$/wscale f32");
+    }
     s = tpl.em(heap, s, "program hd $kn_gemm_mma_nn$ m=$n$ n=$d$ k=$vp$");
     s = tpl.em(heap, s, "link cg.dl -> hd.a");
     s = tpl.em(heap, s, "resident hd.w $wlm$ f16");
