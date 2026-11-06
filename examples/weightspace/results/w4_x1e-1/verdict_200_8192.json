@@ -1,0 +1,38 @@
+{
+ "n": 200,
+ "base_accuracy": [
+  0.115,
+  0.07,
+  0.16
+ ],
+ "edited_accuracy": [
+  0.125,
+  0.08,
+  0.17
+ ],
+ "base_limit_rate": [
+  0.895,
+  0.85,
+  0.935
+ ],
+ "edited_limit_rate": [
+  0.875,
+  0.83,
+  0.92
+ ],
+ "accuracy_gain": 0.009999999999999995,
+ "base_half_width": 0.045,
+ "accuracy_rule_holds": false,
+ "limit_drop_points": 2.0,
+ "limit_rule_holds": false,
+ "verdict": "not reproduced at this protocol",
+ "protocol": {
+  "n": 200,
+  "max_new": 8192,
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "presence_penalty": 1.5,
+  "source": "jsonl in /Users/alfonso/Workspace/alpibrusl/cancho-gpu-w4run/results/w1_cloud_x1e-1/data"
+ }
+}
