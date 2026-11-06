@@ -9,7 +9,11 @@ Per binary: (1) the token of every row of many requests (a fresh uniform per row
 against the softmax of the logits at temperature 1 / invt (a chi-squared on the columns that carry mass, and the padding columns never drawn); (3) the draws of two rows with
 equal logits and different uniforms are different tokens, and the same uniform gives the same token (determinism)."""
 import os, subprocess, sys, tempfile
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    print("skip: numpy is not installed")
+    sys.exit(0)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHX = os.path.join(os.path.dirname(HERE), "tests", "chx")

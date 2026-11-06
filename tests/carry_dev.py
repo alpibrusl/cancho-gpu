@@ -10,7 +10,11 @@ one by `carry`, the uniforms and the slot selectors being `table`s read a block 
 Held to: (1) the ids of 64 steps for 32 rows, from two requests (48 steps, then 16: a second request continues the tables and the carried state), equal the float64 inverse CDF run step by
 step with the same uniforms; (2) the padding columns, whose logits are +100, are never drawn; (3) a fresh session gives the same ids (determinism)."""
 import os, subprocess, sys, tempfile, time
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    print("skip: numpy is not installed")
+    sys.exit(0)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHX = os.path.join(HERE, "chx")
