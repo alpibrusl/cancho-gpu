@@ -43,5 +43,10 @@ matvec_rows_f16_frag m=5 n=256 k=512
 matvec_rows_f16_frag m=13 n=256 k=1024
 matvec_rows_f16_frag m=32 n=1536 k=1536
 matvec_rows_f16_frag m=32 n=256 k=8960
+matvec_rows_f16h m=1 n=256 k=64
+matvec_rows_f16h m=5 n=256 k=512
+matvec_rows_f16h m=13 n=256 k=1024
+matvec_rows_f16h m=32 n=1536 k=1536
+matvec_rows_f16h m=32 n=256 k=8960
 CASES
 exit $fail

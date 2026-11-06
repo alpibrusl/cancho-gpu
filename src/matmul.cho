@@ -155,11 +155,11 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
         if fr != 0 - 2 {
             return fr;
         }
-        let f16r = frag_rows_f16(m, t, g, x, acc, mm, nn, kd, ops, tb);
+        let f16r = frag_rows_f16(m, t, g, x, acc, mm, nn, kd, ops, ta, tb);
         if f16r != 0 - 2 {
             return f16r;
         }
-        let f16k = frag_rows_f16_ks(m, t, g, x, acc, mm, nn, kd, ops, tb);
+        let f16k = frag_rows_f16_ks(m, t, g, x, acc, mm, nn, kd, ops, ta, tb);
         if f16k != 0 - 2 {
             return f16k;
         }
@@ -405,7 +405,7 @@ fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: 
 // loads the eight consecutive values of a 32-wide block with one 16-byte load. The reduction does not care in what order p is taken, so the columns of the
 // fragment stand for p = (c / 2) 8 + 2 s + c % 2 in step s of the block, for the weights and the activations alike. Only when the schedule sets `frag`;
 // answers -2 when the shapes or the types do not fit, and the generic path lowers it.
-fn frag_rows_f16[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, ops: int, tb: int) -> [] int {
+fn frag_rows_f16[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, ops: int, ta: int, tb: int) -> [] int {
     let frag = gen.frag(m, g);
     let threads = gen.threads(m, g);
     if !dialect.fragments(gen.dia(m, g)) || mm > 32 || kd % 32 != 0 || ir.dtype(m, tb) != kinds.f16() {
@@ -505,7 +505,7 @@ fn frag_rows_f16[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, 
 // (`bn` = 8 `frag`): a narrow product (the o and down projections have 1,536 rows) cut in blocks that wide would launch a dozen threadgroups, each walking a long
 // reduction alone. Here every simdgroup of the threadgroup takes a contiguous slice of the reduction for all the rows of the block, and the partial sums are added
 // through the scratch at the end. Answers -2 when the shapes do not fit.
-fn frag_rows_f16_ks[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, ops: int, tb: int) -> [] int {
+fn frag_rows_f16_ks[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, ops: int, ta: int, tb: int) -> [] int {
     let frag = gen.frag(m, g);
     let threads = gen.threads(m, g);
     let ns = threads / 32;
@@ -525,6 +525,10 @@ fn frag_rows_f16_ks[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: in
         return 0 - 2;
     }
     let groups = (mm + 7) / 8;
+    var ft = "float";
+    if ir.dtype(m, ta) == kinds.f16() {
+        ft = "half";
+    }
     let outs = mm * nn;
     let resv = gen.staged(m, g);
     gen.need_scratch(m, g, resv + ns * outs);
@@ -556,22 +560,22 @@ fn frag_rows_f16_ks[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: in
     gen.line_lit(m, t, g, "for (uint s = 0; s < 4u; ++s) {");
     gen.depth_in(m, g);
     gen.line_lit(m, t, g, "const uint p = blk * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;");
-    gen.line_lit(m, t, g, "simdgroup_float8x8 B[Q];");
+    gen.line(m, t, g, text.f1(m, t, "simdgroup_matrix<$, 8, 8> B[Q];", text.lit(m, t, ft)));
     gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
     gen.depth_in(m, g);
-    gen.line_lit(m, t, g, "float b0 = 0.0f, b1 = 0.0f;");
+    gen.line(m, t, g, text.f3(m, t, "$ b0 = $(0.0f), b1 = $(0.0f);", text.lit(m, t, ft), text.lit(m, t, ft), text.lit(m, t, ft)));
     gen.line_lit(m, t, g, "const uint i0 = q * 8u + fn;");
     let av = gen.read(m, t, oa, text.lit(m, t, "i * KD + p"));
-    gen.line(m, t, g, text.f1(m, t, "if (i0 < MM) { const uint i = i0; b0 = $; }", av));
-    gen.line(m, t, g, text.f1(m, t, "if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = $; }", av));
+    gen.line(m, t, g, text.f2(m, t, "if (i0 < MM) { const uint i = i0; b0 = $($); }", text.lit(m, t, ft), av));
+    gen.line(m, t, g, text.f2(m, t, "if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = $($); }", text.lit(m, t, ft), av));
     gen.line_lit(m, t, g, "B[q].thread_elements()[0] = b0; B[q].thread_elements()[1] = b1;");
     gen.depth_out(m, g);
     gen.line_lit(m, t, g, "}");
     gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
     gen.depth_in(m, g);
     gen.line_lit(m, t, g, "const half2 hh = as_type<half2>(wv[u][s]);");
-    gen.line_lit(m, t, g, "simdgroup_float8x8 A;");
-    gen.line_lit(m, t, g, "A.thread_elements()[0] = float(hh.x); A.thread_elements()[1] = float(hh.y);");
+    gen.line(m, t, g, text.f1(m, t, "simdgroup_matrix<$, 8, 8> A;", text.lit(m, t, ft)));
+    gen.line(m, t, g, text.f2(m, t, "A.thread_elements()[0] = $(hh.x); A.thread_elements()[1] = $(hh.y);", text.lit(m, t, ft), text.lit(m, t, ft)));
     gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) simdgroup_multiply_accumulate(C[u][q], A, B[q], C[u][q]);");
     gen.depth_out(m, g);
     gen.line_lit(m, t, g, "}");

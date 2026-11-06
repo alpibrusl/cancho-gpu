@@ -36,17 +36,17 @@ kernel void matvec_rows_f16_frag_32_1536_1536_16(
             }
             for (uint s = 0; s < 4u; ++s) {
                 const uint p = blk * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;
-                simdgroup_float8x8 B[Q];
+                simdgroup_matrix<float, 8, 8> B[Q];
                 for (uint q = 0; q < Q; ++q) {
-                    float b0 = 0.0f, b1 = 0.0f;
+                    float b0 = float(0.0f), b1 = float(0.0f);
                     const uint i0 = q * 8u + fn;
-                    if (i0 < MM) { const uint i = i0; b0 = float(float(p0_x[(uint)(0) * 1536u + (uint)(0) * 1u + ((i * KD + p))])); }
-                    if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = float(float(p0_x[(uint)(0) * 1536u + (uint)(0) * 1u + ((i * KD + p))])); }
+                    if (i0 < MM) { const uint i = i0; b0 = float(float(float(p0_x[(uint)(0) * 1536u + (uint)(0) * 1u + ((i * KD + p))]))); }
+                    if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = float(float(float(p0_x[(uint)(0) * 1536u + (uint)(0) * 1u + ((i * KD + p))]))); }
                     B[q].thread_elements()[0] = b0; B[q].thread_elements()[1] = b1;
                 }
                 for (uint u = 0; u < F; ++u) {
                     const half2 hh = as_type<half2>(wv[u][s]);
-                    simdgroup_float8x8 A;
+                    simdgroup_matrix<float, 8, 8> A;
                     A.thread_elements()[0] = float(hh.x); A.thread_elements()[1] = float(hh.y);
                     for (uint q = 0; q < Q; ++q) simdgroup_multiply_accumulate(C[u][q], A, B[q], C[u][q]);
                 }

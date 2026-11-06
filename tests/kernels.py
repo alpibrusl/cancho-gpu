@@ -508,6 +508,11 @@ def matvec16_m(m, n, k):
     return [sum(x[t * k + j] * f16(w[i * k + j]) for j in range(k)) for t in range(m) for i in range(n)]
 
 
+def matvec16h(m, n, k):
+    x, w = lcg([m * k, n * k])
+    return [sum(f16(x[t * k + j]) * f16(w[i * k + j]) for j in range(k)) for t in range(m) for i in range(n)]
+
+
 def attention_scores(nkv, g, t, d, tmax):
     q, k, mask = lcg([nkv * g * d, nkv * tmax * d, t])
     return [sum(q[(i * g + r) * d + c] * k[(i * tmax + pos) * d + c] for c in range(d)) * 0.0625 + mask[pos]
@@ -697,6 +702,8 @@ def new_checks():
     ok &= check("matvec_rows_f16_m m=3 n=64 k=96", run("matvec_rows_f16_m", ["m=3", "n=64", "k=96"])["y"], matvec16_m(3, 64, 96))
     ok &= check("matvec_rows_f16_frag m=3 n=64 k=96", run("matvec_rows_f16_frag", ["m=3", "n=64", "k=96"])["y"], matvec16_m(3, 64, 96))
     ok &= check("matvec_rows_f16_frag m=32 n=32 k=256", run("matvec_rows_f16_frag", ["m=32", "n=32", "k=256"])["y"], matvec16_m(32, 32, 256))
+    ok &= check("matvec_rows_f16h m=3 n=64 k=96", run("matvec_rows_f16h", ["m=3", "n=64", "k=96"])["y"], matvec16h(3, 64, 96))
+    ok &= check("matvec_rows_f16h m=32 n=32 k=256", run("matvec_rows_f16h", ["m=32", "n=32", "k=256"])["y"], matvec16h(32, 32, 256))
     got = run("delta_step3", ["nk=2"])
     want_so, want_y = delta_step3(2)
     for t in range(3):
