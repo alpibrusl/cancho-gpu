@@ -28,7 +28,10 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "examples", "weightspace"))
-import w1_patch  # noqa: E402
+try:
+    import w1_patch  # noqa: E402  (numpy; the patch modes need it, the others do not)
+except ImportError:
+    w1_patch = None
 
 PREFIX = "model.language_model."
 
@@ -183,7 +186,7 @@ def check_reject(tool, fx):
     structural = {"q08-patch-truncated", "q08-patch-magic", "q08-patch-version", "q08-patch-checksum", "q08-patch-format",
                   "q08-patch-range", "q08-patch-duplicate", "q08-patch-order", "q08-patch-twice"}
     prd = os.path.join(fx, "patch", "reject")
-    for name in sorted(os.listdir(prd)):
+    for name in sorted(os.listdir(prd) if os.path.isdir(prd) else []):  # absent when numpy was not installed
         rule = name[:-len(".patch")]
         for r in sorted(rules, key=len, reverse=True):
             if rule == r or rule.startswith(r + "-"):
@@ -212,10 +215,11 @@ def check_reject(tool, fx):
             print(f"--patch {what}: exit {r.returncode}: {r.stderr[:120]!r}")
             bad += 1
     # A patch is for one base: the same patch on the base it was not made from (the edited toy) is refused.
-    r = subprocess.run([tool, os.path.join(fx, "edited"), "f32", "--patch", os.path.join(fx, "patch", "ok.patch")], capture_output=True, text=True)
-    if r.returncode != 1 or not r.stderr.startswith("error[q08-patch-base]") or r.stdout:
-        print(f"patch on the edited checkpoint: exit {r.returncode}: {r.stderr[:120]!r}")
-        bad += 1
+    if os.path.isdir(os.path.join(fx, "patch")):  # absent when numpy was not installed
+        r = subprocess.run([tool, os.path.join(fx, "edited"), "f32", "--patch", os.path.join(fx, "patch", "ok.patch")], capture_output=True, text=True)
+        if r.returncode != 1 or not r.stderr.startswith("error[q08-patch-base]") or r.stdout:
+            print(f"patch on the edited checkpoint: exit {r.returncode}: {r.stderr[:120]!r}")
+            bad += 1
     # --patch without its file is a usage mistake.
     r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch"], capture_output=True, text=True)
     if r.returncode != 2:
@@ -227,7 +231,8 @@ def check_reject(tool, fx):
         if r.returncode != 2:
             print(f"usage {argv}: exit {r.returncode}, expected 2")
             bad += 1
-    for r in sorted(rules - seen - set(exempt)):
+    skipped = {r for r in rules if r.startswith("q08-patch")} if not os.path.isdir(prd) else set()  # the patch fixtures need numpy
+    for r in sorted(rules - seen - set(exempt) - skipped):
         print(f"rule `{r}` has no fixture in tests/qwen08/fixtures.py")
         bad += 1
     print(f"{n} refusal fixtures (the patch's among them) and the usage errors checked; {len(exempt)} rules need a fault the tests cannot make: {', '.join(sorted(exempt))}")
