@@ -61,7 +61,7 @@ fn record_text[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int)
 }
 
 // The tokenizer named by argument 2: its handle, or -1 with the error reported on standard error.
-fn open_tokenizer[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+fn open_tokenizer[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [err_write, fs_read(""), file_read, args] int {
     let (top, got, size) = fileio.prefix(m, t, fs, arg(args, 2), cap());
     if top < 0 {
         io.error_all(io, "error[io]: cannot read ");
