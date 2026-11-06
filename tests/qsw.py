@@ -234,6 +234,44 @@ def full():
     case("Qwen2.5-1.5B shapes, 1 step", c, steps=1, sparse=True)
 
 
+def split_case(name, c, r=16, loss_scale=None, alpha=None):
+    """`qsw split` against qwen_train.split_grads: random f32 fused gradients (with zeros, a negative zero, subnormals and large values), the per-projection binary64 words equal."""
+    d = tempfile.mkdtemp(prefix="qsw_split_")
+    try:
+        G = T.group_dims(c, r)
+        words = sum(gd["r2"] * gd["inp"] + gd["N"] * gd["r2"] for gd in G.values()) * c.layers
+        rng = np.random.default_rng(11)
+        raw = (rng.normal(size=words) * 10.0 ** rng.integers(-3, 3, size=words)).astype("<f4")
+        raw[::97] = 0.0
+        raw[1::193] = np.float32(-0.0)
+        raw[2::211] = np.float32(1.2e-42)
+        raw[3::223] = np.float32(-3.4e-39)
+        raw[4::229] = np.float32(3.0e38)
+        gp = os.path.join(d, "g.f32"); raw.tofile(gp)
+        floats = {}
+        if loss_scale is not None:
+            floats["loss_scale"] = loss_scale
+        if alpha is not None:
+            floats["alpha"] = alpha
+        open(os.path.join(d, "cfg"), "w").write(config_text(c, r, 1, dict(floats=floats)))
+        out = os.path.join(d, "o.f64")
+        done = subprocess.run([sys.argv[1], "split", "--config", os.path.join(d, "cfg"), "--grads", gp, "--out", out], capture_output=True, text=True)
+        if done.returncode != 0:
+            say(False, f"{name}: the tool failed ({done.returncode}): {done.stderr.strip()[:300]}")
+            return
+        ls = 16.0 if loss_scale is None else loss_scale
+        al = 32.0 if alpha is None else alpha
+        want = T.split_grads(c, r, T.read_fused(c, r, gp), float(c.nb * (c.t - 1)), ls, alpha=al)
+        want_bytes = b"".join(np.asarray(want[nm], dtype="<f8").reshape(-1).tobytes() for nm in R.lora_names(c))
+        got = open(out, "rb").read()
+        say(got == want_bytes, f"{name}: {len(got) // 8} words, byte for byte split_grads' ({'equal' if got == want_bytes else sum(1 for i in range(0, min(len(got), len(want_bytes)), 8) if got[i:i + 8] != want_bytes[i:i + 8])} {'' if got == want_bytes else 'differ'})")
+        bad = os.path.join(d, "short"); open(bad, "wb").write(raw.tobytes()[:-4])
+        r2 = subprocess.run([sys.argv[1], "split", "--config", os.path.join(d, "cfg"), "--grads", bad, "--out", out], capture_output=True, text=True)
+        say(r2.returncode == 2 and "qsw.input" in r2.stderr, f"{name}: refusal qsw.input for a gradients file of the wrong size")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -263,6 +301,9 @@ def main():
     case("no training, nothing saved", c, steps=1, save=False, train=False)
     case("no training, gradients saved, per-position weights", c, steps=1, save=False, train=False, grads=True, wt=np.where(np.arange(n) % c.t < 20, 0.0, np.random.default_rng(6).normal(size=n)))
     case("per-step weights (a table of two blocks)", c, steps=2, save=False, train=False, grads=True, wt=np.random.default_rng(8).normal(size=2 * n))
+    split_case("split: tiny", c)
+    split_case("split: 3 layers, 8 heads over 2, loss scale 64 and alpha 16", R.Config(layers=3, d=256, h=8, hkv=2, dh=32, ff=192, v=384, t=64, nb=2), loss_scale=64.0, alpha=16.0)
+    split_case("split: head of 128", R.Config(layers=2, d=256, h=2, hkv=1, dh=128, ff=256, v=300, t=64, nb=2, tied=False))
     case("no training, gradients saved, 3 layers", R.Config(layers=3, d=256, h=8, hkv=2, dh=32, ff=192, v=384, t=64, nb=2), steps=1, save=False, train=False, grads=True)
     print("bad" if bad else "all ok")
     return 1 if bad else 0

@@ -16,7 +16,10 @@ not cover.
 
 ```
 qsw write --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --adapters FILE [--save FILE] [--weights FILE] [--grads FILE] [--no-train]
+qsw split --config FILE --grads FILE --out FILE
 ```
+
+`qsw split` turns the fused f32 gradients a session saved with `--grads` into the per-projection **binary64** gradients in `--adapters` order (`dA = raw / (nb (t - 1) loss_scale)`, `dB = raw s / (nb (t - 1) loss_scale)`, `s = alpha / r`: `qwen_train.split_grads`), the input of a host optimiser step (cancho-rl `rl adamw`, design section 33). Held to Python's `split_grads` byte for byte on random gradients with zeros, a negative zero, subnormals and 3e38, in three shapes; a gradients file of the wrong size is `qsw.input`.
 
 | input | what it is |
 |---|---|

@@ -14,6 +14,7 @@ import qsw.enc;
 import qsw.kern;
 import qsw.rd;
 import qsw.session;
+import qsw.split;
 import qsw.tpl;
 import std.buffer;
 import std.bytes;
@@ -528,6 +529,46 @@ fn checked[&h, &i, &g, &f, &e, &q, &t, &a, &x](heap: &!h Heap, io: &!i Io, args:
     return 0;
 }
 
+// qsw split --config FILE --grads FILE --out FILE: the fused gradients a session saved as the per-projection binary64 gradients (tools/qsw/split.cho).
+fn split_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs("")) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    let ic = flag(args, "--config");
+    let ig = flag(args, "--grads");
+    let io_ = flag(args, "--out");
+    if ic < 0 || ig < 0 || io_ < 0 {
+        return refuse(heap, io, "qsw.usage", "qsw split --config FILE --grads FILE --out FILE");
+    }
+    let (cfg_bytes, cfg_failed) = rd.read_file(heap, fs, arg(args, ic));
+    let (raw, raw_failed) = rd.read_file(heap, fs, arg(args, ig));
+    var status = 0;
+    if cfg_failed != 0 || raw_failed != 0 {
+        status = refuse(heap, io, "qsw.input", "the configuration or the gradients file cannot be read");
+    } else {
+        borrow cfg_bytes as &cb in {
+            let c = cfg.parse(buffer.bytes(cb));
+            if c.layers < 1 || c.d < 1 || c.h < 1 || c.hkv < 1 || c.dh < 1 || c.ff < 1 || c.t < 1 || c.nb < 1 || c.r < 16 || c.r % 16 != 0 {
+                status = refuse(heap, io, "qsw.config", "the configuration needs layers d h hkv dh ff t nb and a rank that is a multiple of 16");
+            } else {
+                borrow raw as &rb in {
+                    let (words, bad) = split.run(heap, c, buffer.bytes(rb));
+                    if bad != 0 {
+                        status = refuse(heap, io, "qsw.input", "the gradients file does not hold the model's fused A and B matrices in f32");
+                    } else {
+                        borrow words as &wb in {
+                            if fs_write(fs, arg(args, io_), buffer.bytes(wb)) < 0 {
+                                status = refuse(heap, io, "qsw.write", "the output file cannot be written");
+                            }
+                        }
+                    }
+                    buffer.drop(heap, words);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, cfg_bytes);
+    buffer.drop(heap, raw);
+    return status;
+}
+
 fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
     release(ffi);
@@ -543,8 +584,10 @@ fn main(world: World) -> [] int {
                 borrow mut io as &!i in {
                     if arg_count(g) >= 2 && bytes.equal(arg(g, 1), "write") {
                         status = write_command(h, i, g, f);
+                    } else if arg_count(g) >= 2 && bytes.equal(arg(g, 1), "split") {
+                        status = split_command(h, i, g, f);
                     } else {
-                        status = refuse(h, i, "qsw.usage", "the command is `qsw write`");
+                        status = refuse(h, i, "qsw.usage", "the commands are `qsw write` and `qsw split`");
                     }
                 }
             }
