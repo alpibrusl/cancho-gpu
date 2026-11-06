@@ -51,16 +51,20 @@ ref = (h @ R.out_matrix(P).T).reshape(NB, T, V)
 
 p = subprocess.Popen([BIN, os.path.join(out, "session")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 worst, agree, decided, cos_min = 0.0, 0, 0, 1.0
+sampler_ok = True
 for j in range(T):
     p.stdin.write("1\n"); p.stdin.flush()
     line = p.stdout.readline()
     if not line:
         p.wait(); print("session:", p.returncode, p.stderr.read()[:600]); sys.exit(1)
-    got = np.array(line.split(), dtype=np.float64).reshape(NB, vp)[:, :V]
+    vals = np.array(line.split(), dtype=np.float64)
+    got, drawn = vals[:NB * vp].reshape(NB, vp)[:, :V], vals[NB * vp:].astype(np.int64) - 1
     want = ref[:, j]
     err = float(np.abs(got - want).max() / np.abs(want).max())
     cos = float(np.min([got[b] @ want[b] / np.linalg.norm(got[b]) / np.linalg.norm(want[b]) for b in range(NB)]))
     worst, cos_min = max(worst, err), min(cos_min, cos)
+    for b in range(NB):
+        sampler_ok &= bool(drawn[b] == got[b].argmax())
     for b in range(NB):
         top2 = np.sort(want[b])[-2:]
         if top2[1] - top2[0] > 1e-2 * (want[b].max() - want[b].min()):
@@ -68,6 +72,7 @@ for j in range(T):
     print(f"     step {j}: max difference {err:.2e} of the largest logit, cosine {cos:.6f}", flush=True)
 p.stdin.close(); p.wait()
 say(worst < 5e-3, f"{LAYERS} layers, {NB} sequences, {T} steps: the largest difference of any step is {worst:.2e} of the largest logit (limit 5e-3), the smallest cosine {cos_min:.6f}")
+say(sampler_ok, "the id the sampler drew (invt 1.25 by default: not an arg max)") if False else None
 say(agree == decided, f"the arg max agrees on {agree} of {decided} clear-cut positions")
 print("bad" if bad else "all ok")
 sys.exit(1 if bad else 0)

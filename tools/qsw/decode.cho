@@ -281,7 +281,7 @@ fn layer[&h](heap: &!h Heap, st: tpl.St) -> [heap] tpl.St {
     return s;
 }
 
-// `logits`: the session answers the logits of the last step ([nb, vp]); else the ids of every step ([nb, steps]).
+// `logits`: the session answers the logits of the last step ([nb, vp]) and then the ids the sampler drew from them ([nb], 1-based); else the ids of every step ([nb, steps]).
 pub fn build[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, logits: bool) -> [heap] tpl.St {
     var s = st;
     s = tpl.em(heap, s, "# Qwen2 decode: $layers$ layers, d $d$, $nb$ sequences, caches of $t$ positions, $nsteps$ steps, vocabulary $v$ padded to $vp$");
@@ -347,6 +347,7 @@ pub fn build[&h](heap: &!h Heap, c: cfg.Cfg, st: tpl.St, logits: bool) -> [heap]
     s = tpl.em(heap, s, "steps");
     if logits {
         s = tpl.em(heap, s, "answer head.y");
+        s = tpl.em(heap, s, "answer stk.tok");
     } else {
         s = tpl.em(heap, s, "answer ac.y");
     }

@@ -272,6 +272,60 @@ def split_case(name, c, r=16, loss_scale=None, alpha=None):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def decode_cases(tool):
+    """`qsw decode` (docs/decode.md): its refusals by rule, and that a small valid configuration writes the session and the tables. (What the session computes is held by tests/decode_dev.py and
+    tests/decode_hf.py, which need a Metal GPU.)"""
+    d = tempfile.mkdtemp(prefix="qsw_dec_")
+    try:
+        wdir, out = os.path.join(d, "w"), os.path.join(d, "out")
+        os.makedirs(wdir); os.makedirs(out); os.makedirs(os.path.join(d, "in"))
+        with open(os.path.join(wdir, "emb.f16"), "wb") as f:
+            f.truncate(2 * 64 * 1536)
+        steps, nb = 4, 2
+        np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype="<i4").tofile(os.path.join(d, "in", "tok"))
+        np.array([3, 4], dtype="<i4").tofile(os.path.join(d, "in", "lens"))
+        base = dict(layers=1, d=1536, h=12, hkv=2, dh=128, ff=8960, v=64, t=64, nb=nb, tied=1, steps=steps)
+        def cfg(**kw):
+            b = dict(base); b.update(kw)
+            p = os.path.join(d, "in", "cfg_" + "_".join(f"{k}{v}" for k, v in kw.items()))
+            open(p, "w").write("".join(f"{k} {v}\n" for k, v in b.items()))
+            return p
+        def run(rule, config, name, tok="tok", lens="lens", extra=()):
+            cmd = [tool, "decode", "--config", config, "--wdir", wdir, "--out", out, "--root", ROOT, "--tokens", os.path.join(d, "in", tok), "--lens", os.path.join(d, "in", lens)] + list(extra)
+            done = subprocess.run(cmd, capture_output=True, text=True)
+            if rule is None:
+                return done
+            say(done.returncode == 2 and f"qsw: {rule}:" in done.stderr, f"refusal {rule}: decode, {name} (exit {done.returncode}, {done.stderr.strip()[:80]!r})")
+        say(subprocess.run([tool, "decode", "--config", cfg()], capture_output=True, text=True).returncode == 2, "refusal qsw.usage: decode with flags missing")
+        run("qsw.shape", cfg(h=8), "heads that are not Qwen2.5-1.5B's")
+        run("qsw.shape", cfg(t=60), "a cache that is not a multiple of 64")
+        run("qsw.shape", cfg(nb=33), "more than 32 sequences")
+        np.array([1, 2, 3, 99], dtype="<i4").tofile(os.path.join(d, "in", "tok_bad"))
+        np.array([[1, 2, 3, 4], [5, 6, 7, 99]], dtype="<i4").tofile(os.path.join(d, "in", "tok_bad"))
+        run("qsw.input", cfg(), "a token outside the vocabulary", tok="tok_bad")
+        np.array([3, 9], dtype="<i4").tofile(os.path.join(d, "in", "lens_bad"))
+        run("qsw.input", cfg(), "a prompt longer than the steps", lens="lens_bad")
+        np.array([3], dtype="<i4").tofile(os.path.join(d, "in", "lens_short"))
+        run("qsw.input", cfg(), "a lengths file of the wrong size", lens="lens_short")
+        np.array([0, 100], dtype="<i4").tofile(os.path.join(d, "in", "pos_bad"))
+        run("qsw.input", cfg(), "positions that run past the cache", extra=["--pos0", os.path.join(d, "in", "pos_bad")])
+        done = run(None, cfg(), "valid")
+        files = set(os.listdir(out))
+        want = {"session", "cos", "sin", "mask", "sel", "keep", "tftab", "mtab", "ids0", "utab", "zcache", "acc0", "accsel", "acckeep", "mk", "tri", "tri64", "iota", "base", "jrow", "embt", "wlm.f16"}
+        say(done.returncode == 0 and want <= files, f"a valid small configuration writes the session and its {len(want) - 1} data files{'' if done.returncode == 0 else ': ' + done.stderr.strip()[:200]}")
+        text = open(os.path.join(out, "session")).read() if "session" in files else ""
+        say(all(x in text for x in ("program kwk_0", "carry kwk_0.y -> kwk_0.c", "carry mix.y -> oh.ids", "carry ac.y -> ac.acc", "answer ac.y")), "the session carries the caches, the ids and the id buffer, and answers the ids")
+        sizes = {"mask": 4 * steps * nb * 64, "sel": 4 * steps * nb * 64, "tftab": 4 * steps * nb, "cos": 4 * steps * nb * 64, "embt": 2 * 1536 * 1536}
+        say(all(os.path.getsize(os.path.join(out, k)) == v for k, v in sizes.items()), "the tables have the sizes of steps x sequences x positions (and the transposed embedding d x padded vocabulary)")
+        tf = np.fromfile(os.path.join(out, "tftab"), dtype="<f4").reshape(steps, nb)
+        mt = np.fromfile(os.path.join(out, "mtab"), dtype="<f4").reshape(steps, nb)
+        say(np.array_equal(tf, np.array([[2, 6], [3, 7], [0, 8], [0, 0]]) + (np.array([[2, 6], [3, 7], [0, 8], [0, 0]]) > 0)) and np.array_equal(mt, [[1, 1], [1, 1], [0, 1], [0, 0]]), "the prompt tables: block j holds the token (plus one) and the flag that step j + 1 reads while inside its prompt")
+        sel = np.fromfile(os.path.join(out, "sel"), dtype="<f4").reshape(steps, nb, 64)
+        say(all(sel[j, r].argmax() == j and sel[j, r].sum() == 1 for j in range(steps) for r in range(nb)), "the cache selector of step j is the one-hot of position j")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -283,6 +337,7 @@ def main():
         print("bad" if bad else "all ok")
         return 1 if bad else 0
     refusals(sys.argv[1])
+    decode_cases(sys.argv[1])
     c = R.Config(layers=2, d=128, h=4, hkv=2, dh=32, ff=256, v=320, t=64, nb=2)
     case("tiny, 2 steps", c, steps=2, keep=keep)
     case("tiny, 1 step, no sharing of layers' buffers", c, steps=1, reuse=False)
