@@ -48,5 +48,9 @@ matvec_rows_f16h m=5 n=256 k=512
 matvec_rows_f16h m=13 n=256 k=1024
 matvec_rows_f16h m=32 n=1536 k=1536
 matvec_rows_f16h m=32 n=256 k=8960
+attention_scores_b nb=2 nkv=2 g=6 t=64 ts=16 d=128 tmax=80
+attention_pv_b nb=2 nkv=2 g=6 t=64 dw=16 d=128 tmax=80
+attention_scores_b nb=4 nkv=2 g=6 t=1152 ts=64 d=128 tmax=1152
+attention_pv_b nb=4 nkv=2 g=6 t=1152 dw=16 d=128 tmax=1152
 CASES
 exit $fail
