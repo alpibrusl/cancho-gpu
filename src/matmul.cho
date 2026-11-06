@@ -155,6 +155,14 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
         if fr != 0 - 2 {
             return fr;
         }
+        let f16r = frag_rows_f16(m, t, g, x, acc, mm, nn, kd, ops, ta, tb);
+        if f16r != 0 - 2 {
+            return f16r;
+        }
+        let f16k = frag_rows_f16_ks(m, t, g, x, acc, mm, nn, kd, ops, ta, tb);
+        if f16k != 0 - 2 {
+            return f16k;
+        }
     }
     if nt && weight && mm > 1 && mm <= 16 && nn < threads {
         return batched_rows(m, t, g, x, acc, mm, nn, kd, b, ops);
@@ -378,6 +386,222 @@ fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: 
     }
     gen.line(m, t, g, text.f3(m, t, "if (fn < $u) scratch[$ + fn * $u + j] = C[t].thread_elements()[0] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
     gen.line(m, t, g, text.f3(m, t, "if (fn + 1u < $u) scratch[$ + (fn + 1u) * $u + j] = C[t].thread_elements()[1] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    let name = gen.declare_reg(m, t, g, x, ir.tile(m, acc, mem.of2(m, mm, nn), kinds.reg()));
+    let cv = dialect.convert(m, t, gen.dia(m, g), acc, text.f1(m, t, "scratch[$ + e]", n(m, t, resv)));
+    return gen.owned1(m, t, g, outs, text.f2(m, t, "$[k] = $;", name, cv));
+}
+
+// `out[i, j] = sum_p a[i, p] * b[j, p]` for up to 32 rows `i` of the activations and plain f16 weights, on the matrix unit but from registers: the f16
+// counterpart of `frag_rows` (docs/kernels.md section 6), for a batched decode step, where the weights are read once whatever the number of rows is.
+// A simdgroup owns `frag` tiles of eight weight rows; the activations are the other operand, eight tokens a fragment, `ceil(m / 8)` fragments that share
+// each weight fragment. A lane of an 8x8 fragment holds two neighbouring columns of one row; for the weights that is two consecutive f16 of a row, and a lane
+// loads the eight consecutive values of a 32-wide block with one 16-byte load. The reduction does not care in what order p is taken, so the columns of the
+// fragment stand for p = (c / 2) 8 + 2 s + c % 2 in step s of the block, for the weights and the activations alike. Only when the schedule sets `frag`;
+// answers -2 when the shapes or the types do not fit, and the generic path lowers it.
+fn frag_rows_f16[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, ops: int, ta: int, tb: int) -> [] int {
+    let frag = gen.frag(m, g);
+    let threads = gen.threads(m, g);
+    if !dialect.fragments(gen.dia(m, g)) || mm > 32 || kd % 32 != 0 || ir.dtype(m, tb) != kinds.f16() {
+        return 0 - 2;
+    }
+    if nn % (8 * frag) != 0 || nn / (8 * frag) > threads / 32 || nn == 8 * frag {
+        return 0 - 2;
+    }
+    let oa = mem.get(m, ops, 0);
+    let ob = mem.get(m, ops, 1);
+    if m[oa] != gen.a_lazy() || m[ob] != gen.a_lazy() {
+        return 0 - 2;
+    }
+    let wl = gen.lvalue(t, m[ob + 1]);
+    if wl < 0 {
+        return 0 - 2;
+    }
+    let groups = (mm + 7) / 8;
+    let outs = mm * nn;
+    let resv = gen.staged(m, g);
+    gen.need_scratch(m, g, resv + outs);
+    if gen.staged(m, g) == 0 {
+        gen.barrier(m, t, g);
+    }
+    gen.line_lit(m, t, g, "{");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f3(m, t, "constexpr uint KD = $u, MM = $u, NN = $u;", n(m, t, kd), n(m, t, mm), n(m, t, nn)));
+    gen.line(m, t, g, text.f3(m, t, "constexpr uint F = $u, Q = $u, NS = $u;", n(m, t, frag), n(m, t, groups), n(m, t, nn / (8 * frag))));
+    gen.line_lit(m, t, g, "const uint sgid = tid / 32u, lane = tid % 32u;");
+    gen.line_lit(m, t, g, "if (sgid < NS) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint qid = lane / 4u;");
+    gen.line_lit(m, t, g, "const uint fm = (qid & 4u) + ((lane / 2u) % 4u);");
+    gen.line_lit(m, t, g, "const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;");
+    gen.line_lit(m, t, g, "const uint g4 = fn / 2u;");
+    gen.line_lit(m, t, g, "simdgroup_float8x8 C[F][Q];");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) for (uint q = 0; q < Q; ++q) C[u][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);");
+    gen.line_lit(m, t, g, "for (uint blk = 0; blk < KD / 32u; ++blk) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "uint4 wv[F];");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = sgid * (8u * F) + u * 8u + fm;");
+    let wat = gen.at_index_lit(m, t, wl, "j * KD + blk * 32u + g4 * 8u");
+    gen.line(m, t, g, text.f1(m, t, "wv[u] = $;", dialect.vector_load(m, t, gen.dia(m, g), text.lit(m, t, "uint4"), wat)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint s = 0; s < 4u; ++s) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint p = blk * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;");
+    gen.line_lit(m, t, g, "simdgroup_float8x8 B[Q];");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "float b0 = 0.0f, b1 = 0.0f;");
+    gen.line_lit(m, t, g, "const uint i0 = q * 8u + fn;");
+    let av = gen.read(m, t, oa, text.lit(m, t, "i * KD + p"));
+    gen.line(m, t, g, text.f1(m, t, "if (i0 < MM) { const uint i = i0; b0 = $; }", av));
+    gen.line(m, t, g, text.f1(m, t, "if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = $; }", av));
+    gen.line_lit(m, t, g, "B[q].thread_elements()[0] = b0; B[q].thread_elements()[1] = b1;");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const half2 hh = as_type<half2>(wv[u][s]);");
+    gen.line_lit(m, t, g, "simdgroup_float8x8 A;");
+    gen.line_lit(m, t, g, "A.thread_elements()[0] = float(hh.x); A.thread_elements()[1] = float(hh.y);");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) simdgroup_multiply_accumulate(C[u][q], A, B[q], C[u][q]);");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = sgid * (8u * F) + u * 8u + fm;");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint i0 = q * 8u + fn;");
+    gen.line(m, t, g, text.f1(m, t, "if (i0 < MM) scratch[$ + i0 * NN + j] = C[u][q].thread_elements()[0];", n(m, t, resv)));
+    gen.line(m, t, g, text.f1(m, t, "if (i0 + 1u < MM) scratch[$ + (i0 + 1u) * NN + j] = C[u][q].thread_elements()[1];", n(m, t, resv)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    let name = gen.declare_reg(m, t, g, x, ir.tile(m, acc, mem.of2(m, mm, nn), kinds.reg()));
+    let cv = dialect.convert(m, t, gen.dia(m, g), acc, text.f1(m, t, "scratch[$ + e]", n(m, t, resv)));
+    return gen.owned1(m, t, g, outs, text.f2(m, t, "$[k] = $;", name, cv));
+}
+
+// `frag_rows_f16` with the reduction split across the simdgroups of the threadgroup, for the schedule whose block of weight rows is exactly one simdgroup's
+// (`bn` = 8 `frag`): a narrow product (the o and down projections have 1,536 rows) cut in blocks that wide would launch a dozen threadgroups, each walking a long
+// reduction alone. Here every simdgroup of the threadgroup takes a contiguous slice of the reduction for all the rows of the block, and the partial sums are added
+// through the scratch at the end. Answers -2 when the shapes do not fit.
+fn frag_rows_f16_ks[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, ops: int, ta: int, tb: int) -> [] int {
+    let frag = gen.frag(m, g);
+    let threads = gen.threads(m, g);
+    let ns = threads / 32;
+    if !dialect.fragments(gen.dia(m, g)) || mm > 32 || kd % 32 != 0 || ir.dtype(m, tb) != kinds.f16() || ns < 2 {
+        return 0 - 2;
+    }
+    if nn != 8 * frag || kd / 32 % ns != 0 {
+        return 0 - 2;
+    }
+    let oa = mem.get(m, ops, 0);
+    let ob = mem.get(m, ops, 1);
+    if m[oa] != gen.a_lazy() || m[ob] != gen.a_lazy() {
+        return 0 - 2;
+    }
+    let wl = gen.lvalue(t, m[ob + 1]);
+    if wl < 0 {
+        return 0 - 2;
+    }
+    let groups = (mm + 7) / 8;
+    var ft = "float";
+    if ir.dtype(m, ta) == kinds.f16() {
+        ft = "half";
+    }
+    let outs = mm * nn;
+    let resv = gen.staged(m, g);
+    gen.need_scratch(m, g, resv + ns * outs);
+    if gen.staged(m, g) == 0 {
+        gen.barrier(m, t, g);
+    }
+    gen.line_lit(m, t, g, "{");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f3(m, t, "constexpr uint KD = $u, MM = $u, NN = $u;", n(m, t, kd), n(m, t, mm), n(m, t, nn)));
+    gen.line(m, t, g, text.f3(m, t, "constexpr uint F = $u, Q = $u, NS = $u;", n(m, t, frag), n(m, t, groups), n(m, t, ns)));
+    gen.line(m, t, g, text.f1(m, t, "constexpr uint OUTS = $u;", n(m, t, outs)));
+    gen.line_lit(m, t, g, "const uint sgid = tid / 32u, lane = tid % 32u;");
+    gen.line_lit(m, t, g, "const uint qid = lane / 4u;");
+    gen.line_lit(m, t, g, "const uint fm = (qid & 4u) + ((lane / 2u) % 4u);");
+    gen.line_lit(m, t, g, "const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;");
+    gen.line_lit(m, t, g, "const uint g4 = fn / 2u;");
+    gen.line_lit(m, t, g, "simdgroup_float8x8 C[F][Q];");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) for (uint q = 0; q < Q; ++q) C[u][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);");
+    gen.line_lit(m, t, g, "for (uint blk = sgid * (KD / 32u / NS); blk < (sgid + 1u) * (KD / 32u / NS); ++blk) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "uint4 wv[F];");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = u * 8u + fm;");
+    let wat = gen.at_index_lit(m, t, wl, "j * KD + blk * 32u + g4 * 8u");
+    gen.line(m, t, g, text.f1(m, t, "wv[u] = $;", dialect.vector_load(m, t, gen.dia(m, g), text.lit(m, t, "uint4"), wat)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint s = 0; s < 4u; ++s) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint p = blk * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;");
+    gen.line(m, t, g, text.f1(m, t, "simdgroup_matrix<$, 8, 8> B[Q];", text.lit(m, t, ft)));
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f3(m, t, "$ b0 = $(0.0f), b1 = $(0.0f);", text.lit(m, t, ft), text.lit(m, t, ft), text.lit(m, t, ft)));
+    gen.line_lit(m, t, g, "const uint i0 = q * 8u + fn;");
+    let av = gen.read(m, t, oa, text.lit(m, t, "i * KD + p"));
+    gen.line(m, t, g, text.f2(m, t, "if (i0 < MM) { const uint i = i0; b0 = $($); }", text.lit(m, t, ft), av));
+    gen.line(m, t, g, text.f2(m, t, "if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = $($); }", text.lit(m, t, ft), av));
+    gen.line_lit(m, t, g, "B[q].thread_elements()[0] = b0; B[q].thread_elements()[1] = b1;");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const half2 hh = as_type<half2>(wv[u][s]);");
+    gen.line(m, t, g, text.f1(m, t, "simdgroup_matrix<$, 8, 8> A;", text.lit(m, t, ft)));
+    gen.line(m, t, g, text.f2(m, t, "A.thread_elements()[0] = $(hh.x); A.thread_elements()[1] = $(hh.y);", text.lit(m, t, ft), text.lit(m, t, ft)));
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) simdgroup_multiply_accumulate(C[u][q], A, B[q], C[u][q]);");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < F; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = u * 8u + fm;");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint i0 = q * 8u + fn;");
+    gen.line(m, t, g, text.f1(m, t, "if (i0 < MM) scratch[$ + sgid * OUTS + i0 * NN + j] = C[u][q].thread_elements()[0];", n(m, t, resv)));
+    gen.line(m, t, g, text.f1(m, t, "if (i0 + 1u < MM) scratch[$ + sgid * OUTS + (i0 + 1u) * NN + j] = C[u][q].thread_elements()[1];", n(m, t, resv)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    gen.line_lit(m, t, g, "{");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f1(m, t, "for (uint e0 = tid; e0 < OUTS; e0 += $u) {", n(m, t, threads)));
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f1(m, t, "float sum = 0.0f; for (uint r = 0; r < NS; ++r) sum += scratch[$ + r * OUTS + e0];", n(m, t, resv)));
+    gen.line(m, t, g, text.f1(m, t, "scratch[$ + e0] = sum;", n(m, t, resv)));
     gen.depth_out(m, g);
     gen.line_lit(m, t, g, "}");
     gen.depth_out(m, g);

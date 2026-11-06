@@ -256,6 +256,12 @@ tests/chx/matvec_fp4_swiglu_batch.chx m=4 n=17408 k=5120
 tests/chx/matvec_fp4_swiglu_batch.chx m=2 n=64 k=128 --run
 tests/chx/matvec_rows_f16_m.chx m=3 n=48 k=5120
 tests/chx/matvec_rows_f16_m.chx m=3 n=64 k=96 --run
+tests/chx/matvec_rows_f16_frag.chx m=3 n=64 k=96 --run
+tests/chx/matvec_rows_f16_frag.chx m=32 n=1536 k=1536
+tests/chx/matvec_rows_f16_frag.chx m=32 n=1536 k=8960
+tests/chx/matvec_rows_f16h.chx m=3 n=64 k=96 --run
+tests/chx/matvec_rows_f16h.chx m=32 n=1536 k=1536
+tests/chx/matvec_rows_f16h.chx m=32 n=1536 k=8960
 tests/chx/gates_rows.chx m=3 h=48
 tests/chx/gates_rows.chx m=3 h=5 --run
 tests/chx/qk_norm_rows.chx m=3 nk=16 rows=80

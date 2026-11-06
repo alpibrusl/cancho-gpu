@@ -1,0 +1,16 @@
+// matvec_rows_f16_frag with f16 activations (what a decode step's norm kernel produces): the operands of the matrix unit are f16 on both sides, as in the
+// training products, and the accumulation is f32. Same lowering (src/matmul.cho, frag_rows_f16_ks), with half fragments.
+algo matvec_rows_f16h(m, n, k)
+  in  x: f16[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let wt = load w[i * bn, 0 ; bn, k]
+  store matmul_nt xt wt -> y[0, i * bn]
+}
+
+schedule matvec_rows_f16h for apple-m-series { threads 256 bn 16 frag 2 }
+schedule matvec_rows_f16h for nvidia-ada     { threads 128 bn 4 }

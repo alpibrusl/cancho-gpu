@@ -1,0 +1,18 @@
+// y = x w^T for m rows of x (up to 32: the sequences of a batched decode step) with f16 weights, the weights read once whatever m is
+// (matvec_rows_f16_m has the same arithmetic). The Apple schedule sets `frag`, which selects the register-fragment lowering of src/matmul.cho
+// (`frag_rows_f16`, docs/kernels.md section 6): the matrix unit fed from registers, a simdgroup owning `frag` tiles of eight weight rows and
+// every eight rows of x sharing each weight fragment. Other shapes and targets lower through the generic path.
+algo matvec_rows_f16_frag(m, n, k)
+  in  x: f32[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let wt = load w[i * bn, 0 ; bn, k]
+  store matmul_nt xt wt -> y[0, i * bn]
+}
+
+schedule matvec_rows_f16_frag for apple-m-series { threads 256 bn 16 frag 2 }
+schedule matvec_rows_f16_frag for nvidia-ada     { threads 128 bn 4 }
