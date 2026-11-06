@@ -48,5 +48,12 @@ matvec_rows_f16h m=5 n=256 k=512
 matvec_rows_f16h m=13 n=256 k=1024
 matvec_rows_f16h m=32 n=1536 k=1536
 matvec_rows_f16h m=32 n=256 k=8960
+samp_max r=2 nq=8 G=4
+samp_gmax r=2 nq=8
+samp_sum r=2 nq=8 G=4 invt=1.25
+samp_cum r=2 nq=48 bn=24
+samp_pick r=2 nq=8
+samp_local r=2 nq=8 G=4 invt=1.25
+samp_tok r=2 nq=8
 CASES
 exit $fail

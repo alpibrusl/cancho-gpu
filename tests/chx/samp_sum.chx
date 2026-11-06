@@ -1,0 +1,21 @@
+// The unnormalised probability mass of each chunk: sum of exp((logit - row maximum) * invt), invt = 1 / temperature.
+algo samp_sum(r, nq, G, invt)
+  in  l:   f32[r * nq, 64]
+  in  mk:  f32[nq, 64]
+  in  gmb: f32[r * nq, 1]
+  out cs:  f32[r * nq]
+{
+  grid i over r, qb over nq / G
+  let a0 = load l[i * nq + qb * G, 0 ; G, 64]
+  let m0 = load mk[qb * G, 0 ; G, 64]
+  let a  = a0 + m0
+  let g0 = load gmb[i * nq + qb * G, 0 ; G, 1]
+  let d  = a - g0
+  let s  = d * invt
+  let e  = exp s
+  let z  = rowsum e
+  store z -> cs[i * nq + qb * G]
+}
+
+schedule samp_sum for apple-m-series { threads 256 }
+schedule samp_sum for nvidia-ada     { threads 128 }

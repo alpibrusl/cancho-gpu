@@ -1,0 +1,31 @@
+// Inside every chunk, how many columns lie before the sample: the within-chunk cumulative mass (a product with the 64 x 64 lower-triangular matrix of ones) compared with the chunk's target tl
+// (samp_pick); only the chosen chunk's count is used (samp_tok).
+algo samp_local(r, nq, G, invt)
+  in  l:   f32[r * nq, 64]
+  in  mk:  f32[nq, 64]
+  in  gmb: f32[r * nq, 1]
+  in  tl:  f32[r * nq, 1]
+  in  tri: f32[64, 64]
+  out cnt: f32[r * nq]
+{
+  grid i over r, qb over nq / G
+  let a0 = load l[i * nq + qb * G, 0 ; G, 64]
+  let m0 = load mk[qb * G, 0 ; G, 64]
+  let a  = a0 + m0
+  let g0 = load gmb[i * nq + qb * G, 0 ; G, 1]
+  let d  = a - g0
+  let s  = d * invt
+  let e  = exp s
+  let tt = load tri
+  let cl = matmul_nt e tt
+  let t0 = load tl[i * nq + qb * G, 0 ; G, 1]
+  let dd = cl - t0
+  let zn = zeros f32[G, 64]
+  let ng = zn - dd
+  let st = step ng
+  let cn = rowsum st
+  store cn -> cnt[i * nq + qb * G]
+}
+
+schedule samp_local for apple-m-series { threads 256 }
+schedule samp_local for nvidia-ada     { threads 128 }

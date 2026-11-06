@@ -1,0 +1,18 @@
+// The first of the kernels that sample a token on the device (docs: kernels.md section 9): temperature sampling by inverse CDF over a vocabulary of nq * 64 columns, in
+// chunks of 64. Here, the maximum of each chunk of the (masked) logits: l is [r * nq, 64] (the row-major [r, nq * 64] logits seen as chunks), mk the padding mask [nq, 64]
+// (0 for a real column, -1e9 for the columns that round the vocabulary up). G chunks a threadgroup.
+algo samp_max(r, nq, G)
+  in  l:  f32[r * nq, 64]
+  in  mk: f32[nq, 64]
+  out cm: f32[r * nq]
+{
+  grid i over r, qb over nq / G
+  let a0 = load l[i * nq + qb * G, 0 ; G, 64]
+  let m0 = load mk[qb * G, 0 ; G, 64]
+  let a  = a0 + m0
+  let m  = rowmax a
+  store m -> cm[i * nq + qb * G]
+}
+
+schedule samp_max for apple-m-series { threads 256 }
+schedule samp_max for nvidia-ada     { threads 128 }

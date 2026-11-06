@@ -1,0 +1,15 @@
+// The maximum of each row of logits from the chunk maxima (samp_max), written once for every chunk of the row, [r, nq]: the shift the next kernels subtract.
+algo samp_gmax(r, nq)
+  in  cm:  f32[r, nq]
+  out gmb: f32[r, nq]
+{
+  grid i over r
+  let c0 = load cm[i, 0 ; 1, nq]
+  let mx = rowmax &c0
+  let z  = c0 * 0.0
+  let o  = z + mx
+  store o -> gmb[i, 0]
+}
+
+schedule samp_gmax for apple-m-series { threads 256 }
+schedule samp_gmax for nvidia-ada     { threads 128 }
