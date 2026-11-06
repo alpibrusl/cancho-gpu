@@ -8,7 +8,7 @@
 # refusal fixtures, the kernels against float64 references (tests/kernels.py),
 # the cloud scripts' guard rails against a stub gcloud (tests/gcp.sh, docs/cloud.md), the device path against a mock driver and against an emulating one that runs the emitted CUDA on the CPU (docs/device.md 5, 5b), the sessions
 # (tests/session.py), the weight-space harness and its gradient arm (tests/weightspace.py, docs/weight-space.md), W1's weight diff and verdict rule (tests/w1.py), the Hugging Face reference goldens for Qwen3.5-0.8B (tests/hf08.py, golden/hf08/) and the readers against their recorded oracles
-# (docs/runtime.md; external tools, docs/native.md N2f) the Qwen3.5-0.8B weight loader on a toy checkpoint (tests/qwen08_load.sh) and its engine's build and refusals against the mock driver (tests/qwen08_engine.sh, docs/weight-space.md 14), the W1 generator's front door (tests/w1_driver.sh) and the cancho behaviour backend against a fake engine (tests/w1_cancho.py, T9), and W4's pure parts: KL/perplexity, the null-space projection, the repetition measures, the corpus rules and the gates, on toy data (tests/w4.py, docs/weight-space-w4.md; skipped without numpy) and its checkpoint writer on a toy checkpoint (tests/w4_ckpt.py, docs/weight-space-w4.md 13; skipped without numpy).
+# (docs/runtime.md; external tools, docs/native.md N2f) the Qwen3.5-0.8B weight loader on a toy checkpoint (tests/qwen08_load.sh) and its engine's build and refusals against the mock driver (tests/qwen08_engine.sh, docs/weight-space.md 14), the W1 generator's front door (tests/w1_driver.sh) and the cancho behaviour backend against a fake engine (tests/w1_cancho.py, T9), and W4's pure parts: KL/perplexity, the null-space projection, the repetition measures, the corpus rules and the gates, on toy data (tests/w4.py, docs/weight-space-w4.md; skipped without numpy) and its checkpoint writer on a toy checkpoint (tests/w4_ckpt.py, docs/weight-space-w4.md 13; skipped without numpy) and the edit search on planted cases (tests/w4_search.py, docs/weight-space-w4-search.md; skipped without numpy).
 # The edit patch (tests/w1_patch.py, docs/weight-space.md 14.13) is held beside them.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -57,6 +57,7 @@ python3 tests/w1_patch.py
 python3 tests/w1_cancho.py
 python3 tests/w4.py
 python3 tests/w4_ckpt.py
+python3 tests/w4_search.py
 python3 tests/hf08.py
 python3 tests/resnet.py build/cancho-gpu-session
 if python3 -c 'import numpy' 2>/dev/null; then
