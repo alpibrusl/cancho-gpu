@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""examples/weightspace/w1_patch.py (T11, docs/weight-space.md 14.12): the patch writer and its independent reader, on the toy
+"""examples/weightspace/w1_patch.py (T11, docs/weight-space.md 14.13): the patch writer and its independent reader, on the toy
 checkpoints of tests/qwen08/fixtures.py. No model, no GPU, numpy only. The loader's side (tests/qwen08_load.sh) is held against this
 reader on the same bytes.
 

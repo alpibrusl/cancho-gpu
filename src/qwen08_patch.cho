@@ -1,7 +1,7 @@
 edition 5;
 module qwen08_patch;
 
-// `qwen08_patch` -- the edit patch of `docs/weight-space.md` section 14.12
+// `qwen08_patch` -- the edit patch of `docs/weight-space.md` section 14.13
 // (ticket T11, check C10): a small file that turns the base Qwen3.5-0.8B
 // checkpoint into the edited one, byte for byte, applied by the loader on the
 // raw bf16 bytes before they are converted.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""docs/weight-space.md section 14.12 (T11): the W1 edit as a patch, written from the two published
+"""docs/weight-space.md section 14.13 (T11): the W1 edit as a patch, written from the two published
 checkpoints and checked without the loader that applies it.
 
     w1_patch.py make    BASE EDITED -o PATCH [--json report.json]

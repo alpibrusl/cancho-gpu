@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch fixtures for `tests/qwen08_load.sh` (T11, docs/weight-space.md 14.12; nothing is committed).
+"""Patch fixtures for `tests/qwen08_load.sh` (T11, docs/weight-space.md 14.13; nothing is committed).
 
     python3 tests/qwen08/patch_fixtures.py <dir written by fixtures.py>
 

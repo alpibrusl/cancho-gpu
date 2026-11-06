@@ -1,0 +1,378 @@
+edition 5;
+
+// `cancho-gpu-w1` -- the W1 behaviour run's generator (docs/weight-space.md section 14, T9): the Qwen3.5-0.8B engine
+// (`device/qwen08.cho`) kept loaded, and the real sampler (`src/sampler.cho`: temperature, top-k, top-p, and the presence
+// penalty over the generated tokens) drawing one conversation at a time. `examples/weightspace/w1_cancho.py` drives it as
+// a subprocess for `w1.py behave --backend cancho`.
+//
+//     cancho-gpu-w1 <model dir> <kernel dir> f32|f16 <tmax> --temperature T --top-p P --top-k K --presence X
+//
+// All four sampling flags are required: the protocol's numbers come from `examples/weightspace/w1_behave.py`, not from here.
+// Standard input is one job a line,
+//
+//     <problem id> <seed> <max_new> <request.json body on one line>
+//
+// the body being the chat request `src/chat_w1.cho` renders (one user message, thinking on) and the model directory's
+// `tokenizer.json` encodes. The seed (0 to 10^18) seeds that job's sampler stream (`sampler.new`: splitmix64 into
+// xorshift64*); it is the only state a job carries, the conversation and the penalty's seen set starting empty. A job
+// prints, once it is finished,
+//
+//     tokens <id> <the generated ids, comma separated; the stop id, when one was drawn, is the last>
+//     gen <id> prompt=<n> new=<count> hit_limit=<0|1> eos=<stop id or -1> gen_ms=<ms> text=<the decoded text as hex bytes>
+//
+// where `count` includes the stop id, `text` leaves it out, and `hit_limit` is 1 when the `max_new`-th token was not a stop
+// id (248044 or 248046; a stop is emitted, not fed). The first line printed, when the engine is loaded, is `ready`.
+// The generated tokens are drawn on the host: after every engine token the 1 MB row of logits is read back and
+// `sampler.nucleus` and `sampler.draw` pick the next. A prompt and new tokens that do not fit `tmax` are `q08-range`, a
+// non-finite probability is `q08-nonfinite`. Exit 0 at the end of the input, 1 with `error[<rule>]: ...` on standard error,
+// 2 for a usage mistake.
+//
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-w1.sh`).
+
+import std.io;
+import mem;
+import text;
+import err;
+import cli;
+import f32;
+import metal;
+import qwen35;
+import qwen08_load;
+import qwen08;
+import bpe;
+import chat_w1;
+import fileio;
+import sampler;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 268435456;
+}
+
+fn line_cap() -> [] int {
+    return 1048576;
+}
+
+fn usage[&i](io: &!i Io) -> [err_write] int {
+    io.error_all(io, "usage: cancho-gpu-w1 <model dir> <kernel dir> f32|f16 <tmax> --temperature T --top-p P --top-k K --presence X   (jobs on standard input: <id> <seed> <max_new> <request json>)\n");
+    return 2;
+}
+
+fn hex_digit(d: int) -> [] int {
+    if d < 10 {
+        return 48 + d;
+    }
+    return 87 + d;
+}
+
+// The bytes of the pool text `s` as two hex digits each.
+fn hex_text[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] int {
+    let start = text.begin(m);
+    var i = 0;
+    while i < text.size(s) {
+        let b = text.at(t, s, i);
+        text.put_byte(m, t, byte_of(hex_digit(b >> 4 & 15)));
+        text.put_byte(m, t, byte_of(hex_digit(b & 15)));
+        i = i + 1;
+    }
+    return text.finish(m, start);
+}
+
+// A decimal number of 0 to 18 digits, or -1.
+fn parse_nat[&t](t: &!t [byte], s: int) -> [] int {
+    let n = text.size(s);
+    if n == 0 || n > 18 {
+        return 0 - 1;
+    }
+    var v = 0;
+    var d = 0;
+    while d < n {
+        let ch = text.at(t, s, d);
+        if ch < 48 || ch > 57 {
+            return 0 - 1;
+        }
+        v = v * 10 + ch - 48;
+        d = d + 1;
+    }
+    return v;
+}
+
+fn joined_ids[&m, &t](m: &!m [int], t: &!t [byte], ids: int) -> [] int {
+    let parts = mem.list(m);
+    var r = 0;
+    while r < mem.size(m, ids) {
+        mem.push(m, parts, text.num(m, t, mem.get(m, ids, r)));
+        r = r + 1;
+    }
+    return text.joined(m, t, parts, ",");
+}
+
+fn is_stop(id: int) -> [] bool {
+    return id == 248044 || id == 248046;
+}
+
+// A probability list whose entries are all finite f32s (a NaN or infinite logit would show as one that is not).
+fn finite_probs[&m](m: &!m [int], probs: int) -> [] bool {
+    var j = 0;
+    while j < mem.size(m, probs) {
+        if mem.get(m, probs, j) >> 23 & 255 == 255 {
+            return false;
+        }
+        j = j + 1;
+    }
+    return true;
+}
+
+// One job on the loaded engine: a fresh conversation, the prompt, then sampled tokens until a stop id or `max_new`.
+// `req` is the request body's handle. Prints the two result lines; -1 with a refusal.
+fn job[&m, &t, &i, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &g Ffi("libmetalgpu"), clock: &c Clock, eng: int, tk: int, tmax: int, lg: int, id: int, seed: int, max_new: int, req: int, temperature: float, top_p: float, top_k: int, presence: float) -> [io_write, err_write, ffi("libmetalgpu"), clock] int {
+    let p = chat_w1.render(m, t, text.start(req), text.size(req));
+    if p < 0 {
+        return 0 - 1;
+    }
+    let ids = bpe.encode(m, t, tk, text.start(p), text.start(p) + text.size(p));
+    if ids < 0 {
+        return 0 - 1;
+    }
+    let n = mem.size(m, ids);
+    if n == 0 || n + max_new > tmax {
+        return err.fail(m, t, "q08-range", text.lit(m, t, "the prompt (1 or more tokens) and the new tokens must fit tmax"));
+    }
+    if qwen08.reset(m, t, ffi, eng) < 0 {
+        return 0 - 1;
+    }
+    let smp = sampler.new(m, temperature, top_p, top_k, seed);
+    sampler.enable_penalty(m, smp, presence, qwen08.vocab());
+    let t0 = clock_ms(clock);
+    var pos = 0;
+    while pos < n {
+        var rd = 0 - 1;
+        if pos == n - 1 {
+            rd = lg;
+        }
+        if qwen08.feed_one(m, t, ffi, eng, mem.get(m, ids, pos), pos, rd, 0 - 1) < 0 {
+            return 0 - 1;
+        }
+        pos = pos + 1;
+    }
+    let out = mem.list(m);
+    let kept = mem.list(m);
+    var j = 0;
+    var stop = false;
+    var hit = 0;
+    var eos = 0 - 1;
+    while !stop {
+        let (cand, probs) = sampler.nucleus(m, t, smp, lg, qwen08.vocab());
+        if !finite_probs(m, probs) {
+            return err.fail(m, t, "q08-nonfinite", text.f1(m, t, "a logit of the row after $ tokens is not finite", text.num(m, t, n + j)));
+        }
+        let pick = sampler.draw(m, smp, cand, probs);
+        sampler.note(m, smp, pick);
+        mem.push(m, out, pick);
+        if is_stop(pick) {
+            eos = pick;
+            stop = true;
+        } else {
+            mem.push(m, kept, pick);
+            if j + 1 == max_new {
+                hit = 1;
+                stop = true;
+            } else {
+                if qwen08.feed_one(m, t, ffi, eng, pick, n + j, lg, 0 - 1) < 0 {
+                    return 0 - 1;
+                }
+                j = j + 1;
+            }
+        }
+    }
+    let gen_ms = clock_ms(clock) - t0;
+    let (ds, dn) = bpe.decode(m, t, tk, kept);
+    io.write_all(io, text.bytes(t, text.f2(m, t, "tokens $ $\n", text.num(m, t, id), joined_ids(m, t, out))));
+    io.write_all(io, text.bytes(t, text.fmt(m, t, "gen $ prompt=$ new=$ hit_limit=$ eos=$ gen_ms=$ text=$\n", mem.of7(m, text.num(m, t, id), text.num(m, t, n), text.num(m, t, mem.size(m, out)), text.num(m, t, hit), text.num(m, t, eos), text.num(m, t, gen_ms), hex_text(m, t, text.handle(ds, dn))))));
+    // The driver is a pipe's other end: the reply must not wait in the buffer for the next job.
+    let _flushed = flush_out(io);
+    return 0;
+}
+
+// A usage-checked sampling number from a flag's text, or `ok = false`.
+fn number[&m, &t](m: &!m [int], t: &!t [byte], s: int) -> [] (bool, float) {
+    let (ok, v) = f32.parse(m, t, s);
+    return (ok, f32.round(v));
+}
+
+fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &c Clock) -> [io_read, io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock] int {
+    if arg_count(args) != 13 {
+        return usage(io);
+    }
+    let dir = text.from_bytes(m, t, arg(args, 1));
+    let kdir = text.from_bytes(m, t, arg(args, 2));
+    let ms = text.from_bytes(m, t, arg(args, 3));
+    var mode = qwen08_load.mode_f32();
+    if text.is(t, ms, "f16") {
+        mode = qwen08_load.mode_f16();
+    } else if !text.is(t, ms, "f32") {
+        return usage(io);
+    }
+    let tmax = parse_nat(t, text.from_bytes(m, t, arg(args, 4)));
+    if tmax < 0 {
+        return usage(io);
+    }
+    var temperature = 0.0;
+    var top_p = 0.0;
+    var top_k = 0 - 1;
+    var presence = 0.0;
+    var seen = 0;
+    var ai = 5;
+    while ai + 1 < arg_count(args) {
+        let flag = text.from_bytes(m, t, arg(args, ai));
+        let vtext = text.from_bytes(m, t, arg(args, ai + 1));
+        if text.is(t, flag, "--temperature") {
+            let (ok, v) = number(m, t, vtext);
+            if !ok || v < 0.0 {
+                return usage(io);
+            }
+            temperature = v;
+            seen = seen | 1;
+        } else if text.is(t, flag, "--top-p") {
+            let (ok, v) = number(m, t, vtext);
+            if !ok || v <= 0.0 || v > 1.0 {
+                return usage(io);
+            }
+            top_p = v;
+            seen = seen | 2;
+        } else if text.is(t, flag, "--top-k") {
+            top_k = parse_nat(t, vtext);
+            if top_k < 1 {
+                return usage(io);
+            }
+            seen = seen | 4;
+        } else if text.is(t, flag, "--presence") {
+            let (ok, v) = number(m, t, vtext);
+            if !ok {
+                return usage(io);
+            }
+            presence = v;
+            seen = seen | 8;
+        } else {
+            return usage(io);
+        }
+        ai = ai + 2;
+    }
+    if seen != 15 {
+        return usage(io);
+    }
+    let (ts, tgot, tsize) = fileio.prefix(m, t, fs, text.bytes(t, text.cat(m, t, dir, text.lit(m, t, "/tokenizer.json"))), 100663296);
+    if ts < 0 || tsize > tgot {
+        io.error_all(io, "error[q08-io]: cannot read tokenizer.json in the model directory\n");
+        return 1;
+    }
+    let tk = bpe.from_json(m, t, ts, tgot);
+    if tk < 0 {
+        return cli.report(m, t, io);
+    }
+    let eng = qwen08.load(m, t, ffi, fs, dir, kdir, mode, tmax);
+    if eng < 0 {
+        return cli.report(m, t, io);
+    }
+    let lg = qwen35.reserve(m, 4 * qwen08.vocab());
+    let mark_m = m[mem.top_slot()];
+    let tmark = m[mem.text_slot()];
+    io.write_all(io, "ready\n");
+    let _ready = flush_out(io);
+    var more = true;
+    var status = 0;
+    while more {
+        var n = 0;
+        var c = getchar(io);
+        while c >= 0 && c != 10 && n < line_cap() {
+            t[tmark + n] = byte_of(c);
+            n = n + 1;
+            c = getchar(io);
+        }
+        if c >= 0 && c != 10 {
+            err.fail(m, t, "q08-io", text.lit(m, t, "a job line is over 1 MiB"));
+            status = cli.report(m, t, io);
+            more = false;
+        } else if c < 0 && n == 0 {
+            more = false;
+        } else {
+            m[mem.text_slot()] = tmark + n;
+            let line = text.handle(tmark, n);
+            let a = text.index_of(t, line, 32, 0);
+            var b = 0 - 1;
+            var d = 0 - 1;
+            if a >= 0 {
+                b = text.index_of(t, line, 32, a + 1);
+            }
+            if b >= 0 {
+                d = text.index_of(t, line, 32, b + 1);
+            }
+            var jid = 0 - 1;
+            var seed = 0 - 1;
+            var max_new = 0 - 1;
+            if d >= 0 {
+                jid = parse_nat(t, text.sub(line, 0, a));
+                seed = parse_nat(t, text.sub(line, a + 1, b));
+                max_new = parse_nat(t, text.sub(line, b + 1, d));
+            }
+            if jid < 0 || seed < 0 || max_new < 1 {
+                io.error_all(io, "error: a job line is `<id> <seed> <max_new> <request json>`\n");
+                status = 2;
+                more = false;
+            } else if job(m, t, io, ffi, clock, eng, tk, tmax, lg, jid, seed, max_new, text.sub(line, d + 1, text.size(line)), temperature, top_p, top_k, presence) < 0 {
+                status = cli.report(m, t, io);
+                more = false;
+            } else {
+                // Everything the job allocated goes back; the engine, the tokenizer and the logits row are below the marks.
+                mem.release_to(m, mark_m);
+                m[mem.text_slot()] = tmark;
+                if c < 0 {
+                    more = false;
+                }
+            }
+        }
+    }
+    metal.cgpu_close(ffi);
+    return status;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(net);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                borrow mut io as &!i in {
+                    borrow fs as &f in {
+                        borrow args as &a in {
+                            borrow gpu as &g in {
+                                borrow clock as &c in {
+                                    status = run(m, t, i, f, a, g, c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    release(clock);
+    return status;
+}

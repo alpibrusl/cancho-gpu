@@ -1,5 +1,5 @@
 #!/bin/sh
-# Check C10 (docs/weight-space.md section 14.6 and 14.12) on the real Qwen3.5-0.8B checkpoints: the edit as a patch.
+# Check C10 (docs/weight-space.md section 14.6 and 14.13) on the real Qwen3.5-0.8B checkpoints: the edit as a patch.
 #
 #   1. examples/weightspace/w1_patch.py makes the patch from ~/models/qwen35-08b-base and ~/models/qwen35-08b-edited, reads it back
 #      and applies it with its own reader: base + patch equals edited in all 488 tensors (sha256 of the raw bytes).
