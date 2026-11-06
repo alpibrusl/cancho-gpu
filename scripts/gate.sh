@@ -32,6 +32,7 @@ tests/gguf.sh
 tests/safetensors.sh
 tests/tokenizer.sh
 python3 tests/tokenizer_hf.py "${CANCHO_GPU:-build/cancho-gpu}"
+python3 tests/detokenize_hf.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/chat_w1.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/oracles.py
 python3 tests/m8.py
