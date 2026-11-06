@@ -39,6 +39,8 @@ expect 2 "usage:" "$WORK/ok" "$ROOT/tests/chx" f32 64 1 --max-new
 expect 2 "usage:" "$WORK/ok" "$ROOT/tests/chx" f32 64 1 --max-new x
 expect 2 "usage:" "$WORK/ok" "$ROOT/tests/chx" f32 64 1 --force 1,x
 expect 2 "usage:" "$WORK/ok" "$ROOT/tests/chx" f32 64 1 --batch "$WORK/b"
+expect 2 "usage:" "$WORK/ok" "$ROOT/tests/chx" f32 64 1 --patch
+expect 1 "q08-engine" "$WORK/ok" "$ROOT/tests/chx" f32 64 1 --patch "$WORK/no-such.patch"
 expect 1 "q08-range" "$WORK/ok" "$ROOT/tests/chx" f32 64 1,2,3 --max-new 62
 expect 1 "q08-range" "$WORK/ok" "$ROOT/tests/chx" f32 64 1,2,3 --force 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62
 expect 1 "q08-io" "$WORK/ok" "$ROOT/tests/chx" f32 64 @"$WORK/req.json"

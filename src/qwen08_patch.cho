@@ -1,0 +1,369 @@
+edition 5;
+module qwen08_patch;
+
+// `qwen08_patch` -- the edit patch of `docs/weight-space.md` section 14.13
+// (ticket T11, check C10): a small file that turns the base Qwen3.5-0.8B
+// checkpoint into the edited one, byte for byte, applied by the loader on the
+// raw bf16 bytes before they are converted.
+//
+// The format (version 1; all integers little-endian; `examples/weightspace/w1_patch.py`
+// writes it and has an independent reader):
+//
+//     "CHOPATCH"                        8 bytes
+//     version                           u32, 1
+//     tensors                           u32, 1 to 64
+//     then, for each tensor:
+//         name length                   u32, 1 to 255
+//         name                          bytes, zero-padded to a multiple of 4
+//         rows, cols                    u32 each, 1 to 2^24: the tensor is a BF16 [rows, cols]
+//         ncols                         u32, 1 to cols: how many columns are replaced
+//         base crc32, base adler32      u32 each: of the whole tensor's bytes in the base file
+//         edited crc32, edited adler32  u32 each: of the whole tensor's bytes once patched
+//         column index                  u32 x ncols, strictly increasing, each below cols
+//         new values                    u16 x (ncols * rows): bf16 bits, column by column
+//                                       (the first column's rows 0 to rows-1, then the next),
+//                                       zero-padded to a multiple of 4
+//     crc32 of every byte above         u32
+//
+// A column patch because the published edit is: 64 columns of two tensors, every row. The values
+// are the edited tensor's, not deltas, so applying a patch twice is the same as once and the result
+// does not depend on how the base was rounded. An entry the edit left unchanged inside a replaced
+// column is written with its own value.
+//
+// This module parses and checks the patch alone (`parse`) and applies it to one chunk (`apply`);
+// `qwen08_load.open_patch` matches it to a checkpoint's tensors and checks the base and the result
+// against the hashes. No input traps: the file is read whole under a cap, every length is checked
+// against what is left before it is used, and no product of two unchecked numbers is formed (rows,
+// cols and ncols are bounded by 2^24 first, so a product is under 2^49).
+
+import mem;
+import text;
+import err;
+import fileio;
+
+pub fn max_file() -> [] int {
+    return 16777216;
+}
+
+pub fn max_tensors() -> [] int {
+    return 64;
+}
+
+pub fn max_dim() -> [] int {
+    return 16777216;
+}
+
+// The patch record `parse` answers.
+pub fn f_list() -> [] int {
+    return 0;
+}
+
+// The 256-word CRC-32 table, shared by every hash this module makes.
+pub fn f_table() -> [] int {
+    return 1;
+}
+
+// One tensor of the patch (11 words).
+pub fn t_name() -> [] int {
+    return 0;
+}
+
+pub fn t_rows() -> [] int {
+    return 1;
+}
+
+pub fn t_cols() -> [] int {
+    return 2;
+}
+
+pub fn t_ncols() -> [] int {
+    return 3;
+}
+
+pub fn t_base_crc() -> [] int {
+    return 4;
+}
+
+pub fn t_base_adler() -> [] int {
+    return 5;
+}
+
+pub fn t_edit_crc() -> [] int {
+    return 6;
+}
+
+pub fn t_edit_adler() -> [] int {
+    return 7;
+}
+
+// Where the column indices and the new values lie in the text pool.
+pub fn t_idx() -> [] int {
+    return 8;
+}
+
+pub fn t_val() -> [] int {
+    return 9;
+}
+
+pub fn t_words() -> [] int {
+    return 10;
+}
+
+fn u32[&t](t: &!t [byte], p: int) -> [] int {
+    return int_of(t[p]) | int_of(t[p + 1]) << 8 | int_of(t[p + 2]) << 16 | int_of(t[p + 3]) << 24;
+}
+
+// ---------------------------------------------------------------------
+// CRC-32 (zlib's) and Adler-32 (zlib's), fed a range at a time
+// ---------------------------------------------------------------------
+
+fn make_table[&m](m: &!m [int]) -> [] int {
+    let tab = mem.grab(m, 256);
+    var i = 0;
+    while i < 256 {
+        var c = i;
+        var k = 0;
+        while k < 8 {
+            if c & 1 == 1 {
+                c = 3988292384 ^ c >> 1;
+            } else {
+                c = c >> 1;
+            }
+            k = k + 1;
+        }
+        m[tab + i] = c;
+        i = i + 1;
+    }
+    return tab;
+}
+
+// A hash state: the CRC register, and Adler's two sums.
+pub fn hash_new[&m](m: &!m [int]) -> [] int {
+    let h = mem.rec(m, 3);
+    m[h] = 4294967295;
+    m[h + 1] = 1;
+    m[h + 2] = 0;
+    return h;
+}
+
+pub fn hash_feed[&m, &t](m: &!m [int], t: &!t [byte], tab: int, h: int, at: int, n: int) -> [] int {
+    var c = m[h];
+    var a = m[h + 1];
+    var b = m[h + 2];
+    var i = 0;
+    while i < n {
+        let x = int_of(t[at + i]);
+        c = m[tab + ((c ^ x) & 255)] ^ c >> 8;
+        a = a + x;
+        if a >= 65521 {
+            a = a - 65521;
+        }
+        b = b + a;
+        if b >= 65521 {
+            b = b - 65521;
+        }
+        i = i + 1;
+    }
+    m[h] = c;
+    m[h + 1] = a;
+    m[h + 2] = b;
+    return 0;
+}
+
+pub fn hash_crc[&m](m: &!m [int], h: int) -> [] int {
+    return m[h] ^ 4294967295;
+}
+
+pub fn hash_adler[&m](m: &!m [int], h: int) -> [] int {
+    return m[h + 2] * 65536 + m[h + 1];
+}
+
+// ---------------------------------------------------------------------
+// Reading and checking a patch file
+// ---------------------------------------------------------------------
+
+fn magic_ok[&t](t: &!t [byte], s: int) -> [] bool {
+    return int_of(t[s]) == 67 && int_of(t[s + 1]) == 72 && int_of(t[s + 2]) == 79 && int_of(t[s + 3]) == 80 && int_of(t[s + 4]) == 65 && int_of(t[s + 5]) == 84 && int_of(t[s + 6]) == 67 && int_of(t[s + 7]) == 72;
+}
+
+fn zero_from[&t](t: &!t [byte], from: int, to: int) -> [] bool {
+    var i = from;
+    while i < to {
+        if int_of(t[i]) != 0 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn truncated[&m, &t](m: &!m [int], t: &!t [byte], k: int) -> [] int {
+    return err.fail(m, t, "q08-patch-truncated", text.n1(m, t, "the patch ends inside its tensor $", k));
+}
+
+// The patch file at `path` (a text handle), read whole into the text pool and checked as a file:
+// magic, version, the CRC-32, the layout of every tensor and its column indices. `-1` with the
+// refusal recorded, or the record (`f_list`: the list of tensor records, `t_*` above).
+pub fn parse[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int) -> [fs_read(""), file_read] int {
+    let (s, got, size) = fileio.prefix(m, t, fs, text.bytes(t, path), max_file());
+    if s == 0 - 2 {
+        return err.fail(m, t, "q08-patch-io", text.f1(m, t, "$ does not fit the text pool", path));
+    }
+    if s < 0 {
+        return err.fail(m, t, "q08-patch-io", text.f1(m, t, "cannot read the patch $", path));
+    }
+    if size > got {
+        return err.fail(m, t, "q08-patch-io", text.f1(m, t, "$ is over 16 MiB", path));
+    }
+    if got < 20 {
+        return err.fail(m, t, "q08-patch-truncated", text.f1(m, t, "$ is too short for a patch", path));
+    }
+    if !magic_ok(t, s) {
+        return err.fail(m, t, "q08-patch-magic", text.f1(m, t, "$ does not start with CHOPATCH", path));
+    }
+    if u32(t, s + 8) != 1 {
+        return err.fail(m, t, "q08-patch-version", text.n1(m, t, "patch version $ is not one this loader reads (1)", u32(t, s + 8)));
+    }
+    let tab = make_table(m);
+    let hs = hash_new(m);
+    hash_feed(m, t, tab, hs, s, got - 4);
+    if hash_crc(m, hs) != u32(t, s + got - 4) {
+        return err.fail(m, t, "q08-patch-checksum", text.f1(m, t, "the CRC-32 of $ does not match its trailer", path));
+    }
+    let nt = u32(t, s + 12);
+    if nt < 1 || nt > max_tensors() {
+        return err.fail(m, t, "q08-patch-format", text.n1(m, t, "a patch holds 1 to 64 tensors, this one says $", nt));
+    }
+    let pr = mem.rec(m, 2);
+    let list = mem.list(m);
+    m[pr] = list;
+    m[pr + 1] = tab;
+    let e = s + got - 4;
+    var p = s + 16;
+    var k = 0;
+    while k < nt {
+        if p + 4 > e {
+            return truncated(m, t, k);
+        }
+        let nl = u32(t, p);
+        if nl < 1 || nl > 255 {
+            return err.fail(m, t, "q08-patch-format", text.n1(m, t, "tensor $ has a name that is not 1 to 255 bytes", k));
+        }
+        let padded = (nl + 3) / 4 * 4;
+        if p + 4 + padded + 28 > e {
+            return truncated(m, t, k);
+        }
+        if !zero_from(t, p + 4 + nl, p + 4 + padded) {
+            return err.fail(m, t, "q08-patch-format", text.n1(m, t, "the padding after the name of tensor $ is not zero", k));
+        }
+        let q = p + 4 + padded;
+        let rows = u32(t, q);
+        let cols = u32(t, q + 4);
+        let nc = u32(t, q + 8);
+        if rows < 1 || rows > max_dim() || cols < 1 || cols > max_dim() || nc < 1 {
+            return err.fail(m, t, "q08-patch-format", text.n1(m, t, "tensor $ has a shape or a column count outside 1 to 2^24", k));
+        }
+        if nc > cols {
+            return err.fail(m, t, "q08-patch-range", text.n1(m, t, "tensor $ replaces more columns than it has", k));
+        }
+        let idx = q + 28;
+        if idx + 4 * nc > e {
+            return truncated(m, t, k);
+        }
+        let vals = idx + 4 * nc;
+        let vbytes = 2 * nc * rows;
+        let vpad = (vbytes + 3) / 4 * 4;
+        if vals + vpad > e {
+            return truncated(m, t, k);
+        }
+        if !zero_from(t, vals + vbytes, vals + vpad) {
+            return err.fail(m, t, "q08-patch-format", text.n1(m, t, "the padding after the values of tensor $ is not zero", k));
+        }
+        var prev = 0 - 1;
+        var j = 0;
+        while j < nc {
+            let c = u32(t, idx + 4 * j);
+            if c >= cols {
+                return err.fail(m, t, "q08-patch-range", text.n2(m, t, "tensor $ names column $, which is past its last", k, c));
+            }
+            if c == prev {
+                return err.fail(m, t, "q08-patch-duplicate", text.n2(m, t, "tensor $ names column $ twice", k, c));
+            }
+            if c < prev {
+                return err.fail(m, t, "q08-patch-order", text.n2(m, t, "tensor $: column $ is out of order (indices must increase)", k, c));
+            }
+            prev = c;
+            j = j + 1;
+        }
+        let name = text.handle(p + 4, nl);
+        var i = 0;
+        while i < mem.size(m, list) {
+            if text.eq(t, m[mem.get(m, list, i) + t_name()], name) {
+                return err.fail(m, t, "q08-patch-twice", text.f1(m, t, "the patch has `$` twice", name));
+            }
+            i = i + 1;
+        }
+        let r = mem.rec(m, t_words());
+        m[r + t_name()] = name;
+        m[r + t_rows()] = rows;
+        m[r + t_cols()] = cols;
+        m[r + t_ncols()] = nc;
+        m[r + t_base_crc()] = u32(t, q + 12);
+        m[r + t_base_adler()] = u32(t, q + 16);
+        m[r + t_edit_crc()] = u32(t, q + 20);
+        m[r + t_edit_adler()] = u32(t, q + 24);
+        m[r + t_idx()] = idx;
+        m[r + t_val()] = vals;
+        mem.push(m, list, r);
+        p = vals + vpad;
+        k = k + 1;
+    }
+    if p != e {
+        return err.fail(m, t, "q08-patch-format", text.lit(m, t, "the patch has bytes after its last tensor"));
+    }
+    return pr;
+}
+
+// ---------------------------------------------------------------------
+// Applying
+// ---------------------------------------------------------------------
+
+// Overwrite, in the `n` bf16 values of the tensor from value `done` that are at `t[raw..]`, the entries
+// of patch tensor `pt` whose flat index (`row * cols + col`) lies in `[done, done + n)`. The caller
+// has checked that the tensor has `rows * cols` values (`qwen08_load.open_patch`), so every write is
+// inside the `2 n` bytes.
+pub fn apply[&m, &t](m: &!m [int], t: &!t [byte], pt: int, done: int, n: int, raw: int) -> [] int {
+    if n <= 0 {
+        return 0;
+    }
+    let rows = m[pt + t_rows()];
+    let cols = m[pt + t_cols()];
+    let nc = m[pt + t_ncols()];
+    let idx = m[pt + t_idx()];
+    let vals = m[pt + t_val()];
+    let last = done + n - 1;
+    var k = 0;
+    while k < nc {
+        let c = u32(t, idx + 4 * k);
+        if last >= c {
+            var lo = 0;
+            if done > c {
+                lo = (done - c + cols - 1) / cols;
+            }
+            var hi = (last - c) / cols;
+            if hi > rows - 1 {
+                hi = rows - 1;
+            }
+            var r = lo;
+            while r <= hi {
+                let dst = raw + 2 * (r * cols + c - done);
+                let src = vals + 2 * (k * rows + r);
+                t[dst] = t[src];
+                t[dst + 1] = t[src + 1];
+                r = r + 1;
+            }
+        }
+        k = k + 1;
+    }
+    return 0;
+}
