@@ -346,6 +346,17 @@ def decode_cases(tool):
         say(done.returncode == 0 and want <= files, f"a valid small configuration writes the session and its {len(want) - 1} data files{'' if done.returncode == 0 else ': ' + done.stderr.strip()[:200]}")
         text = open(os.path.join(out, "session")).read() if "session" in files else ""
         say(all(x in text for x in ("program kwk_0", "carry kwk_0.y -> kwk_0.c", "carry mix.y -> oh.ids", "carry ac.y -> ac.acc", "answer ac.y")), "the session carries the caches, the ids and the id buffer, and answers the ids")
+        # the adapters: the session without them has no adapter programs; with them each of the four projections of a layer is a base product, the two small products, a cast and an add,
+        # reading the Ah and Bh files of its group in the adapters' directory, and the consumers still read the projection's own name
+        say(not any(x in text for x in ("qkvb_0", "Ah00_", "Bh00_")), "without --adapters the session has no adapter programs")
+        done = run(None, cfg(), "adapters", extra=["--adapters", "/ad"])
+        lt = open(os.path.join(out, "session")).read()
+        shape = []
+        for pn, gn in (("qkv", "qkv"), ("op", "o"), ("gu", "gu"), ("dp", "dn")):
+            shape.append(all(x in lt for x in (f"program {pn}b_0 ", f"program {pn}m_0 ", f"program {pn}c_0 ", f"program {pn}l_0 ", f"program {pn}_0 ", f"resident {pn}m_0.w /ad/Ah00_{gn} f16", f"resident {pn}l_0.w /ad/Bh00_{gn} f16", f"link {pn}b_0.y -> {pn}_0.z", f"link {pn}l_0.y -> {pn}_0.res")))
+        say(done.returncode == 0 and all(shape), f"with --adapters each of the four projections is a base product, the adapter's two small products and an add{'' if done.returncode == 0 else ': ' + done.stderr.strip()[:200]}")
+        say("link qkv_0.y -> post_0.y" in lt and "link ra_0.y -> rb_0.res" in lt, "the consumers of a projection still read it by its own name")
+        run("qsw.usage", cfg(), "an adapters flag without a value", extra=["--adapters"])
         sizes = {"mask": 4 * steps * nb * 64, "sel": 4 * steps * nb * 64, "tftab": 4 * steps * nb, "cos": 4 * steps * nb * 64, "embt": 2 * 1536 * 1536}
         say(all(os.path.getsize(os.path.join(out, k)) == v for k, v in sizes.items()), "the tables have the sizes of steps x sequences x positions (and the transposed embedding d x padded vocabulary)")
         tf = np.fromfile(os.path.join(out, "tftab"), dtype="<f4").reshape(steps, nb)

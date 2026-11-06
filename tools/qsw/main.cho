@@ -584,7 +584,7 @@ fn split_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: 
     return status;
 }
 
-// qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--logits]: the session of a batched decode (tools/qsw/decode.cho).
+// qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--adapters DIR] [--logits]: the session of a batched decode (tools/qsw/decode.cho).
 fn decode_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs("")) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
     let ic = flag(args, "--config");
     let iw = flag(args, "--wdir");
@@ -593,7 +593,7 @@ fn decode_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs:
     let it = flag(args, "--tokens");
     let il = flag(args, "--lens");
     if ic < 0 || iw < 0 || io_ < 0 || ir < 0 || it < 0 || il < 0 {
-        return refuse(heap, io, "qsw.usage", "qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--logits]");
+        return refuse(heap, io, "qsw.usage", "qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--kv-dir DIR] [--adapters DIR] [--logits]");
     }
     let (cfg_bytes, cfg_failed) = rd.read_file(heap, fs, arg(args, ic));
     if cfg_failed != 0 {
@@ -722,7 +722,14 @@ fn decode_checked[&h, &i, &g, &f, &e, &q, &t, &l, &u, &p](heap: &!h Heap, io: &!
     if ikd >= 0 {
         kvdir = arg(args, ikd);
     }
-    let s = decode.run(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, lens, uni, pos0, logits, kvdir);
+    var adir: &g [byte] = "";
+    let iad = flag(args, "--adapters");
+    if iad >= 0 {
+        adir = arg(args, iad);
+    } else if present(args, "--adapters") {
+        return refuse(heap, io, "qsw.usage", "--adapters needs the directory of the adapter files (the --out of `qsw write`)");
+    }
+    let s = decode.run(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, lens, uni, pos0, logits, kvdir, adir);
     if s == 1 {
         return refuse(heap, io, "qsw.kernel", "a kernel file is not under --root");
     }
