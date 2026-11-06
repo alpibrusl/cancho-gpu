@@ -208,10 +208,17 @@ def _sha(b):
     return hashlib.sha256(b).hexdigest()
 
 
-def write_checkpoint(base_dir, out_dir, variant, pub, moments=None, patch=True, tensor_name=NAME_FMT.format):
-    """Write the variant's checkpoint to `out_dir` (which must not exist or be empty) and return the manifest. Pure file work."""
-    parse_variant(variant)
-    edits = intended_edits(variant, pub, moments)
+def write_checkpoint(base_dir, out_dir, variant, pub, moments=None, patch=True, tensor_name=NAME_FMT.format, edits=None):
+    """Write the variant's checkpoint to `out_dir` (which must not exist or be empty) and return the manifest. Pure file work.
+    `edits` ({layer: dW float64}, docs/weight-space-w4-search.md 5) replaces the named variant's intended edits; `variant` is then a label."""
+    if edits is None:
+        parse_variant(variant)
+        edits = intended_edits(variant, pub, moments)
+    else:
+        _check_pub(pub, tuple(edits))
+        for l, dw in edits.items():
+            if not np.isfinite(dw).all() or not np.any(dw):
+                raise CkptError("w4c-input", f"layer {l}: the edit is empty or not finite")
     lay = _layout(base_dir)
     out_dir = os.path.abspath(out_dir)
     if os.path.exists(out_dir) and (not os.path.isdir(out_dir) or os.listdir(out_dir)):
