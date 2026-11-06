@@ -1,5 +1,7 @@
 # M11: can a model write the weights of a network we then run in cancho? (design, written before any run)
 
+> **W4 (2026-11-06): weight-space editing as a pipeline with gates (the published edit's collateral, its null-space projection, and the later experiments) is in [`weight-space-w4.md`](weight-space-w4.md).**
+
 > **Status: a design; W2a (the harness) and W2b's arms Z, R and G(N) are built and measured, section 11 (2026-11-04). No writer arm (W, T) and no W0/W1 has been run.** W1's plan, with the download list for approval, and its script are section 13 (2026-11-04); nothing of it has been run on a model. **Section 14 (2026-11-05) is the design for W1 on cancho-gpu's own inference stack (audit, checks, tickets); nothing of it is built.** Marks as in `roadmap-models.md`: **[measured]**, **[read]** (from a document or source, not run), **[estimate]**, **[choice]**, **[open]**. The decision rules in sections 5 to 7 are fixed now and are not edited after a result is seen; facts that turn out different are corrected in place, with the date.
 > Order against the other open work (maintainer, 2026-11-04): M8's training and the MLX 27B step (`roadmap-models.md` 9.8, unknown 2) come first and own the GPU. **Everything in W0 and W2 below runs on the CPU path of the session, so it does not compete for the GPU**; W1 does, and waits.
 
