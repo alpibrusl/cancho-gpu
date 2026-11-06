@@ -1,0 +1,21 @@
+// The second half of a batched decode step's attention (attention_scores_b.chx): for sequence r and key/value head h, the softmax of the g x t scores
+// (every threadgroup of the head redoes it) and the product with the columns dc * dw .. (dc + 1) * dw of that sequence's v cache.
+algo attention_pv_b(nb, nkv, g, t, dw, d, tmax)
+  in  sc: f32[nb * nkv * g, t]
+  in  v:  f32[nb * nkv * tmax, d]
+  out o:  f32[nb * nkv * g, d]
+{
+  grid r over nb, h over nkv, dc over d / dw
+  let sm = load sc[r * (nkv * g) + h * g, 0 ; g, t]
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / z
+  let vt = load v[r * (nkv * tmax) + h * tmax, dc * dw ; t, dw]
+  let rr = matmul p vt
+  store rr -> o[r * (nkv * g) + h * g, dc * dw]
+}
+
+schedule attention_pv_b for apple-m-series { threads 1024 }
+schedule attention_pv_b for nvidia-ada     { threads 128 }

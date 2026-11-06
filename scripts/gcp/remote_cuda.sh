@@ -429,11 +429,14 @@ s_w1() {
   # (run_behaviour), so a rerun over a seeded directory goes straight to the first unfinished batch. CHUNK is a multiple of BATCH:
   # the per-batch seed is seed + the first problem of the batch, so aligned chunks give the seeds of one uninterrupted run.
   # Settings: W1_N (200), W1_MAX_NEW (8192), W1_BATCH (8), W1_CHUNK (24), W1_SEED (0), W1_BASE_REV / W1_EDITED_REV (13.1's pins),
-  # W1_STOP_FILE (a file whose existence ends the loop after the running chunk). The outcome is one word in ~/results/w1_status.
+  # W1_STOP_FILE (a file whose existence ends the loop after the running chunk). W1_EDITED_SUB (a directory name under ~/models, uploaded by
+  # w1_cloud.sh's EDITED_DIR): a variant checkpoint (docs/weight-space-w4.md 13) is the edited arm, not the published edit: it is neither
+  # downloaded nor held to `diff --w1-expect` (it is not the published edit), and `behave` runs with --no-verify as always. The outcome is one word in ~/results/w1_status.
   local n="${W1_N:-200}" mx="${W1_MAX_NEW:-8192}" batch="${W1_BATCH:-8}" chunk="${W1_CHUNK:-24}" seed="${W1_SEED:-0}"
   local m="$HOME/models" out="$R/w1_out" w1py="$SRC/examples/weightspace/w1.py" py="$VENV/bin/python" hf="${W1_HF:-$VENV/bin/hf}"
   local base_rev="${W1_BASE_REV:-2fc06364715b967f1860aea9cf38778875588b17}" edited_rev="${W1_EDITED_REV:-d1671a178705bcab7644806d23c535517f35723b}"
-  local k rc
+  local k rc edited="$m/qwen35-08b-edited"
+  [ -n "${W1_EDITED_SUB:-}" ] && edited="$m/$W1_EDITED_SUB"
   mkdir -p "$out"
   if [ "$((chunk % batch))" != 0 ]; then
     echo "W1_CHUNK=$chunk is not a multiple of W1_BATCH=$batch"; echo SETUP-FAILED > "$R/w1_status"; return 1
@@ -445,11 +448,14 @@ s_w1() {
   [ -x "$hf" ] || { echo "no hf command at $hf (huggingface_hub too old?)"; echo SETUP-FAILED > "$R/w1_status"; return 1; }
   # 13.2's commands: each --exclude pattern needs its own flag (the first run passed them after one and got LICENSE and README).
   { "$hf" download Qwen/Qwen3.5-0.8B --revision "$base_rev" --local-dir "$m/qwen35-08b-base" --exclude README.md --exclude LICENSE --exclude .gitattributes \
-    && "$hf" download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision "$edited_rev" --local-dir "$m/qwen35-08b-edited" --exclude "eval/*" --exclude README.md --exclude LICENSE --exclude .gitattributes \
+    && { [ -n "${W1_EDITED_SUB:-}" ] || "$hf" download RikiyaT/Qwen3.5-0.8B-weight-space-programming --revision "$edited_rev" --local-dir "$m/qwen35-08b-edited" --exclude "eval/*" --exclude README.md --exclude LICENSE --exclude .gitattributes; } \
     && "$hf" download openai/gsm8k main/test-00000-of-00001.parquet --repo-type dataset --local-dir "$m/gsm8k"; } \
     || { echo "download failed"; echo SETUP-FAILED > "$R/w1_status"; return 1; }
   # (a) the edit is the published one, or nothing runs; once per VM, so the chunks pass --no-verify.
-  if "$py" "$w1py" diff "$m/qwen35-08b-base" "$m/qwen35-08b-edited" --w1-expect --json "$R/w1_diff.json" > "$R/w1_diff.txt" 2>&1; then
+  if [ -n "${W1_EDITED_SUB:-}" ]; then
+    if [ -f "$edited/config.json" ] && ls "$edited"/*.safetensors >/dev/null 2>&1; then echo "variant checkpoint $edited (no diff --w1-expect: it is not the published edit)"
+    else echo "variant checkpoint $edited is missing or incomplete (upload failed?)"; echo SETUP-FAILED > "$R/w1_status"; return 1; fi
+  elif "$py" "$w1py" diff "$m/qwen35-08b-base" "$m/qwen35-08b-edited" --w1-expect --json "$R/w1_diff.json" > "$R/w1_diff.txt" 2>&1; then
     tail -3 "$R/w1_diff.txt"; echo "diff --w1-expect: all checks pass"
   else
     tail -20 "$R/w1_diff.txt"; echo "diff --w1-expect FAILED: the edited checkpoint is not the published edit; nothing is run"
@@ -463,7 +469,7 @@ s_w1() {
       echo "chunk n=$k: already complete, skipped"
     else
       echo "chunk n=$k: starting ($(date -u +%H:%M:%S))"
-      "$py" "$w1py" behave --base "$m/qwen35-08b-base" --edited "$m/qwen35-08b-edited" --data "$m/gsm8k/main/test-00000-of-00001.parquet" \
+      "$py" "$w1py" behave --base "$m/qwen35-08b-base" --edited "$edited" --data "$m/gsm8k/main/test-00000-of-00001.parquet" \
         --out "$out" --n "$k" --max-new "$mx" --batch "$batch" --seed "$seed" --device cuda --gpu-free --no-verify
       rc=$?
       [ "$rc" = 0 ] || { echo "chunk n=$k: behave exited $rc"; echo "FAILED chunk n=$k" > "$R/w1_status"; return 1; }

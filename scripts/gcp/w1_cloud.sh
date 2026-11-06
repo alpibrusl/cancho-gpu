@@ -41,9 +41,19 @@
 #   W1_DIR        where results go (default $ROOT/results/w1_cloud): data/ is the behave directory (base_<cap>.jsonl and
 #                 edited_<cap>.jsonl, what the next VM is seeded with), vm-<stamp>-<k>/ each VM's logs and copies.
 #   W1_PIP        pip requirements for the VM (default "transformers>=5.2.0 pyarrow huggingface_hub numpy").
+#   EDITED_DIR    a VARIANT checkpoint directory (docs/weight-space-w4.md 13, e.g. build/ckpt/x1e-1) in place of the published edit: it is
+#                 uploaded to every VM (scp), the published-edit download and `diff --w1-expect` are skipped, `behave` gets --no-verify, and
+#                 only the edited arm is generated: the base arm is SEEDED from BASE_JSONL (default $ROOT/results/w1_cloud/data/base_<MAX_NEW>.jsonl,
+#                 the main run's, at least N lines or the run is refused, w1c-base-seed). The results go to W1_DIR, default
+#                 $ROOT/results/w1_cloud_<TAG> (TAG defaults to the directory's name), never to results/w1_cloud, which a refusal (w1c-dir) protects.
+#   TAG           the name of a variant run's results directory (EDITED_DIR only).
+#   BASE_JSONL    the base arm to seed a variant run with (EDITED_DIR only).
 #   W1_FAKE_VM_SECS  tests only (tests/gcp.sh): account this many seconds for every VM instead of the clock.
 #
 # What runs on the VM is the committed HEAD (`git archive`); uncommitted changes are not shipped.
+# A VM that no longer exists (Spot preemption, GCE's cap) while the remote command hangs is detected when a copy-back fails and
+# `describe` says it is gone or not RUNNING: the remote command is killed and the VM ends with the status VM-GONE (a describe that
+# fails for any other reason is taken as a network blip and changes nothing); the loop then goes on to the next VM.
 # Exit status: 0 done; 3 stopped with work remaining (limits, no progress; rerun to continue); 1 a failure; 2 usage.
 set -uo pipefail
 # The whole body is one function, called on the LAST line (see cuda_test.sh: bash reads a script incrementally).
@@ -58,17 +68,31 @@ TOTAL_MAX="${TOTAL_MAX:-6h}"
 SYNC="${SYNC:-10}"
 BATCH="${BATCH:-8}"
 SEED="${SEED:-0}"
+GONE_GRACE="${GONE_GRACE:-5}"          # seconds a vanished VM's remote command gets to end by itself before it is killed
 CAP_WAIT="${CAP_WAIT:-60}"            # seconds between two rounds that found no capacity
 MIN_VM_SECS=300
 IMAGE_FAMILY="${IMAGE_FAMILY:-cancho-gpu-l4}"
 W1_PIP="${W1_PIP:-transformers>=5.2.0 pyarrow huggingface_hub numpy}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+EDITED_DIR="${EDITED_DIR:-}"
+if [ -n "$EDITED_DIR" ]; then
+  [ -d "$EDITED_DIR" ] || { echo "w1c-edited-dir: EDITED_DIR=$EDITED_DIR is not a directory" >&2; exit 2; }
+  EDITED_DIR="$(cd "$EDITED_DIR" && pwd)"
+  TAG="${TAG:-$(basename "$EDITED_DIR")}"
+  case "$TAG" in ''|*[!A-Za-z0-9._-]*) echo "w1c-tag: TAG=$TAG: use letters, digits, . _ -" >&2; exit 2 ;; esac
+  EDITED_SUB="variant-$TAG"
+fi
 if [ "$SMOKE" = 1 ]; then
   N="${N:-8}"; MAX_NEW="${MAX_NEW:-512}"; CHUNK="${CHUNK:-8}"; MAX_VMS="${MAX_VMS:-1}"; MAX_RUN="${MAX_RUN:-1h}"
-  W1_DIR="${W1_DIR:-$ROOT/results/w1_cloud_smoke}"
+  W1_DIR="${W1_DIR:-$ROOT/results/w1_cloud_smoke${TAG:+_$TAG}}"
 else
   N="${N:-200}"; MAX_NEW="${MAX_NEW:-8192}"; CHUNK="${CHUNK:-24}"; MAX_VMS="${MAX_VMS:-6}"; MAX_RUN="${MAX_RUN:-2h}"
-  W1_DIR="${W1_DIR:-$ROOT/results/w1_cloud}"
+  W1_DIR="${W1_DIR:-$ROOT/results/w1_cloud${TAG:+_$TAG}}"
+fi
+if [ -n "$EDITED_DIR" ]; then
+  [ -f "$EDITED_DIR/config.json" ] && ls "$EDITED_DIR"/*.safetensors >/dev/null 2>&1 || { echo "w1c-edited-dir: $EDITED_DIR has no config.json and *.safetensors" >&2; exit 2; }
+  case "$W1_DIR" in "$ROOT/results/w1_cloud"|"$ROOT/results/w1_cloud/") echo "w1c-dir: a variant run never writes to results/w1_cloud (the published edit's data)" >&2; exit 2 ;; esac
+  BASE_JSONL="${BASE_JSONL:-$ROOT/results/w1_cloud/data/base_${MAX_NEW}.jsonl}"
 fi
 SYNC_SECS="${SYNC_SECS:-$((SYNC * 60))}"
 
@@ -114,8 +138,21 @@ W1PY="$ROOT/examples/weightspace/w1.py"
 DATA="$W1_DIR/data"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 mkdir -p "$DATA"
+if [ -n "$EDITED_DIR" ]; then
+  # the base arm is the main run's: copied in once (never over a longer one already here), and counted before any VM exists
+  bl=0; [ -f "$BASE_JSONL" ] && bl="$(wc -l < "$BASE_JSONL" | tr -d ' ')"
+  if [ "$DRY_RUN" != 1 ] && [ "$bl" -lt "$N" ]; then
+    echo "w1c-base-seed: $BASE_JSONL has $bl lines, the base arm needs $N (set BASE_JSONL)" >&2; exit 2
+  fi
+  have_b=0; [ -f "$DATA/base_${MAX_NEW}.jsonl" ] && have_b="$(wc -l < "$DATA/base_${MAX_NEW}.jsonl" | tr -d ' ')"
+  if [ "$DRY_RUN" != 1 ] && [ "$have_b" -lt "$bl" ]; then cp "$BASE_JSONL" "$DATA/base_${MAX_NEW}.jsonl"; fi
+fi
 
-echo "plan: W1 behaviour, problems 0..$((N - 1)) of GSM8K, --max-new $MAX_NEW, batch $BATCH, seed $SEED, base and edited"
+if [ -n "$EDITED_DIR" ]; then
+  echo "plan: W1 behaviour, problems 0..$((N - 1)) of GSM8K, --max-new $MAX_NEW, batch $BATCH, seed $SEED, ONE edited arm: variant $EDITED_DIR (--no-verify), base arm seeded from $BASE_JSONL"
+else
+  echo "plan: W1 behaviour, problems 0..$((N - 1)) of GSM8K, --max-new $MAX_NEW, batch $BATCH, seed $SEED, base and edited"
+fi
 echo "      chunks of $CHUNK problems; results copied home every $((SYNC_SECS / 60)) min ($SYNC_SECS s); in $DATA"
 echo "      each VM: Spot=$SPOT $MACHINE, at most $MAX_RUN; at most $MAX_VMS VMs and $TOTAL_MAX of VM time in all"
 echo "      cost: Spot L4 is about \$0.3/h (from memory, not looked up) and the 150 GB pd-ssd a few cents an hour more: a full"
@@ -162,6 +199,24 @@ merge_pull() {
     if [ "$new" -gt "$old" ]; then cp "$f" "$DATA/$b.part" && mv "$DATA/$b.part" "$DATA/$b"; fi
   done
 }
+# 0 when $NAME is still there; 1 when GCE says it is gone or not RUNNING. Any other failure of `describe` counts as "there".
+vm_alive() {
+  local out st
+  [ "$DRY_RUN" = 1 ] && return 0
+  out="$(gc compute instances describe "$NAME" --zone "$ZONE" --format='value(status)' 2>&1)"; st=$?
+  if [ "$st" = 0 ]; then
+    [ "$(printf '%s' "$out" | tr -d '[:space:]')" = RUNNING ] && return 0
+    return 1
+  fi
+  if printf '%s' "$out" | grep -qiE "not found|notFound|does not exist"; then return 1; fi
+  return 0
+}
+GONE=0; WATCHING=0
+killtree() { # a process and everything under it, the leaves first
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do killtree "$c"; done
+  kill "$1" 2>/dev/null || true
+}
 pull() {
   [ -n "$ZONE" ] || return 0
   mkdir -p "$PULL"
@@ -170,6 +225,7 @@ pull() {
     echo "synced: $(status_line)"
   else
     echo "sync: could not copy from $NAME (see $VMDIR/pull.err)" >&2
+    if [ "$WATCHING" = 1 ] && ! vm_alive; then GONE=1; echo "sync: $NAME no longer exists or is not RUNNING: VM-GONE" >&2; fi
   fi
 }
 delete_vm() {
@@ -265,7 +321,7 @@ create_vm() {
 # One VM, start to end. $1 its cap. Sets VM_SECS and VM_STATUS (the VM's own word: DONE, DIFF-FAILED, ...).
 run_vm() {
   local cap=$1 t0 rpid last i remote_cmd files=()
-  VM_SECS=0; VM_STATUS=""
+  VM_SECS=0; VM_STATUS=""; GONE=0; WATCHING=0
   if ! create_vm "$cap"; then NAME=""; return 1; fi
   t0=$SECONDS
   echo "$NAME up in $ZONE (cap $cap)"
@@ -278,7 +334,11 @@ run_vm() {
     done
   fi
   gc compute scp --zone "$ZONE" "$SHIP" "$NAME:~/src.tar.gz"
-  gc compute ssh "$NAME" --zone "$ZONE" --command 'mkdir -p ~/results/w1_out'
+  gc compute ssh "$NAME" --zone "$ZONE" --command 'mkdir -p ~/results/w1_out ~/models'
+  if [ -n "$EDITED_DIR" ]; then
+    # the variant checkpoint (about 1.6 GB) goes up to ~/models/$EDITED_SUB; s_w1 uses it in place of the published edit
+    gc compute scp --zone "$ZONE" --recurse "$EDITED_DIR" "$NAME:~/models/$EDITED_SUB" || echo "upload of $EDITED_DIR failed" >&2
+  fi
   # seed: what is already home
   for f in "$DATA"/*.jsonl; do [ -f "$f" ] && files+=("$f"); done
   if [ "${#files[@]}" -gt 0 ]; then
@@ -286,7 +346,7 @@ run_vm() {
   elif [ "$DRY_RUN" = 1 ]; then
     gc compute scp --zone "$ZONE" "$DATA/*.jsonl" "$NAME:~/results/w1_out/"
   fi
-  remote_cmd="mkdir -p cancho-gpu && tar -xzf src.tar.gz -C cancho-gpu && STEPS='machine w1' GPU='l4' W1_N='$N' W1_MAX_NEW='$MAX_NEW' W1_BATCH='$BATCH' W1_CHUNK='$CHUNK' W1_SEED='$SEED' W1_PIP='$W1_PIP' bash cancho-gpu/scripts/gcp/remote_cuda.sh"
+  remote_cmd="mkdir -p cancho-gpu && tar -xzf src.tar.gz -C cancho-gpu && STEPS='machine w1' GPU='l4' W1_N='$N' W1_MAX_NEW='$MAX_NEW' W1_BATCH='$BATCH' W1_CHUNK='$CHUNK' W1_SEED='$SEED' W1_PIP='$W1_PIP'${EDITED_DIR:+ W1_EDITED_SUB='$EDITED_SUB'} bash cancho-gpu/scripts/gcp/remote_cuda.sh"
   if [ "$DRY_RUN" = 1 ]; then
     gc compute ssh "$NAME" --zone "$ZONE" --command "$remote_cmd"
     echo "DRY_RUN: while that runs, every $((SYNC_SECS / 60)) min: gcloud compute scp --recurse $NAME:~/results/* $PULL/ (jsonl merged into $DATA)"
@@ -297,16 +357,27 @@ run_vm() {
       2>&1 | tee "$VMDIR/remote.log" &
     rpid=$!
     last=$SECONDS
+    WATCHING=1
     while kill -0 "$rpid" 2>/dev/null; do
       sleep 1
       if [ $((SECONDS - last)) -ge "$SYNC_SECS" ]; then pull; last=$SECONDS; fi
+      if [ "$GONE" = 1 ]; then
+        # the VM is gone; if its connection is only about to close (a preemption) let it, else the remote command hangs on a dead
+        # connection: end it (the leaves first)
+        for i in $(seq 1 "$GONE_GRACE"); do kill -0 "$rpid" 2>/dev/null || break; sleep 1; done
+        kill -0 "$rpid" 2>/dev/null || { GONE=0; break; }
+        for c in $(pgrep -P $$ 2>/dev/null); do killtree "$c"; done
+        break
+      fi
     done
+    WATCHING=0
     wait "$rpid" 2>/dev/null
     echo "remote command ended (exit $(cat "$VMDIR/remote.status" 2>/dev/null || echo unknown))"
-    pull
+    [ "$GONE" = 1 ] || pull
     VM_STATUS=""
     [ -f "$PULL/w1_status" ] && VM_STATUS="$(tr -d '\n' < "$PULL/w1_status")"
-    if [ -z "$VM_STATUS" ] || [ "$VM_STATUS" = RUNNING ]; then
+    if [ "$GONE" = 1 ]; then VM_STATUS=VM-GONE
+    elif [ -z "$VM_STATUS" ] || [ "$VM_STATUS" = RUNNING ]; then
       if [ -n "$(gc compute operations list --filter="operationType=compute.instances.preempted AND targetLink~/$NAME\$" \
           --format='value(name)' 2>/dev/null)" ]; then VM_STATUS=PREEMPTED; else VM_STATUS="ENDED-EARLY(cap or error)"; fi
     fi
