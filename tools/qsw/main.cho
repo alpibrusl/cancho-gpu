@@ -10,6 +10,7 @@ edition 9;
 
 import qsw.cfg;
 import qsw.data;
+import qsw.decode;
 import qsw.enc;
 import qsw.kern;
 import qsw.rd;
@@ -569,6 +570,149 @@ fn split_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: 
     return status;
 }
 
+// qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--logits]: the session of a batched decode (tools/qsw/decode.cho).
+fn decode_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs("")) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    let ic = flag(args, "--config");
+    let iw = flag(args, "--wdir");
+    let io_ = flag(args, "--out");
+    let ir = flag(args, "--root");
+    let it = flag(args, "--tokens");
+    let il = flag(args, "--lens");
+    if ic < 0 || iw < 0 || io_ < 0 || ir < 0 || it < 0 || il < 0 {
+        return refuse(heap, io, "qsw.usage", "qsw decode --config FILE --wdir DIR --out DIR --root DIR --tokens FILE --lens FILE [--uniforms FILE] [--pos0 FILE] [--logits]");
+    }
+    let (cfg_bytes, cfg_failed) = rd.read_file(heap, fs, arg(args, ic));
+    if cfg_failed != 0 {
+        buffer.drop(heap, cfg_bytes);
+        return refuse(heap, io, "qsw.input", "the configuration cannot be read");
+    }
+    var status = 0;
+    borrow cfg_bytes as &cb in {
+        let c = cfg.parse(buffer.bytes(cb));
+        if c.layers < 1 || c.d < 1 || c.h < 1 || c.hkv < 1 || c.dh < 1 || c.ff < 1 || c.v < 1 || c.t < 1 || c.nb < 1 || c.steps < 1 {
+            status = refuse(heap, io, "qsw.config", "the configuration needs layers d h hkv dh ff v t nb steps");
+        } else if c.h != 12 || c.hkv != 2 || c.dh != 128 || c.d != 1536 || c.ff % 256 != 0 || c.t % 64 != 0 || c.nb > 32 {
+            status = refuse(heap, io, "qsw.shape", "decode is for Qwen2.5-1.5B's heads (h 12, hkv 2, dh 128, d 1536), ff a multiple of 256, t a multiple of 64 and at most 32 sequences");
+        } else {
+            status = decode_inputs(heap, io, args, fs, c, iw, io_, ir, it, il);
+        }
+    }
+    buffer.drop(heap, cfg_bytes);
+    return status;
+}
+
+fn decode_inputs[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs(""), c: cfg.Cfg, iw: int, io_: int, ir: int, it: int, il: int) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    var status = 0;
+    var embp = kern.path_join(heap, arg(args, iw), "emb.f16");
+    var headp = kern.path_join(heap, arg(args, iw), "head.f16");
+    if c.tied != 0 {
+        buffer.drop(heap, headp);
+        headp = kern.path_join(heap, arg(args, iw), "emb.f16");
+    }
+    borrow embp as &ep in {
+        borrow headp as &hp in {
+            let (emb, ef) = rd.read_file(heap, fs, buffer.bytes(ep));
+            let (head, hf) = rd.read_file(heap, fs, buffer.bytes(hp));
+            let (tok, tf) = rd.read_file(heap, fs, arg(args, it));
+            let (lens, lf) = rd.read_file(heap, fs, arg(args, il));
+            var uni = buffer.empty(heap, 8);
+            var uf = 0;
+            let iu = flag(args, "--uniforms");
+            if iu >= 0 {
+                buffer.drop(heap, uni);
+                let (u2, f2) = rd.read_file(heap, fs, arg(args, iu));
+                uni = u2;
+                uf = f2;
+            }
+            var pos0 = buffer.empty(heap, 8);
+            var pf = 0;
+            let ip = flag(args, "--pos0");
+            if ip >= 0 {
+                buffer.drop(heap, pos0);
+                let (p2, f3) = rd.read_file(heap, fs, arg(args, ip));
+                pos0 = p2;
+                pf = f3;
+            }
+            if ef != 0 || hf != 0 || tf != 0 || lf != 0 || uf != 0 || pf != 0 {
+                status = refuse(heap, io, "qsw.input", "an input file cannot be read");
+            } else {
+                borrow emb as &eb in {
+                    borrow head as &hb in {
+                        borrow tok as &tb in {
+                            borrow lens as &lb in {
+                                borrow uni as &ub in {
+                                    borrow pos0 as &pb in {
+                                        status = decode_checked(heap, io, args, fs, c, iw, io_, ir, buffer.bytes(eb), buffer.bytes(hb), buffer.bytes(tb), buffer.bytes(lb), buffer.bytes(ub), buffer.bytes(pb), iu >= 0, ip >= 0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            buffer.drop(heap, emb);
+            buffer.drop(heap, head);
+            buffer.drop(heap, tok);
+            buffer.drop(heap, lens);
+            buffer.drop(heap, uni);
+            buffer.drop(heap, pos0);
+        }
+    }
+    buffer.drop(heap, embp);
+    buffer.drop(heap, headp);
+    return status;
+}
+
+fn decode_checked[&h, &i, &g, &f, &e, &q, &t, &l, &u, &p](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f Fs(""), c: cfg.Cfg, iw: int, io_: int, ir: int, emb: &e [byte], head: &q [byte], tok: &t [byte], lens: &l [byte], uni: &u [byte], pos0: &p [byte], has_u: bool, has_p: bool) -> [heap, io_write, err_write, args, fs_read(""), fs_write(""), file_read] int {
+    if len(emb) < 2 * c.v * c.d || len(head) < 2 * c.v * c.d {
+        return refuse(heap, io, "qsw.input", "emb.f16 (or head.f16) is shorter than vocabulary x d");
+    }
+    if len(tok) != 4 * c.nb * c.steps || len(lens) != 4 * c.nb {
+        return refuse(heap, io, "qsw.input", "the tokens file is not int32 [nb, steps] or the lengths file not int32 [nb]");
+    }
+    if has_u && len(uni) != 8 * c.steps * c.nb {
+        return refuse(heap, io, "qsw.input", "the uniforms file is not binary64 [steps, nb]");
+    }
+    if has_p && len(pos0) != 4 * c.nb {
+        return refuse(heap, io, "qsw.input", "the positions file is not int32 [nb]");
+    }
+    var r = 0;
+    while r < c.nb {
+        let n = data.i32_at(lens, 4 * r);
+        if n < 1 || n > c.steps {
+            return refuse(heap, io, "qsw.input", "a prompt length is outside 1 .. steps");
+        }
+        var p0 = 0;
+        if has_p {
+            p0 = data.i32_at(pos0, 4 * r);
+        }
+        if p0 < 0 || p0 + c.steps > c.t {
+            return refuse(heap, io, "qsw.input", "a sequence would run past the cache (position + steps > t)");
+        }
+        var j = 0;
+        while j < n {
+            let id = data.i32_at(tok, 4 * (r * c.steps + j));
+            if id < 0 || id >= c.v {
+                return refuse(heap, io, "qsw.input", "a token is outside the vocabulary");
+            }
+            j = j + 1;
+        }
+        r = r + 1;
+    }
+    var logits = false;
+    if present(args, "--logits") {
+        logits = true;
+    }
+    let s = decode.run(heap, fs, c, arg(args, io_), arg(args, iw), arg(args, ir), emb, head, tok, lens, uni, pos0, logits);
+    if s == 1 {
+        return refuse(heap, io, "qsw.kernel", "a kernel file is not under --root");
+    }
+    if s != 0 {
+        return refuse(heap, io, "qsw.write", "a file cannot be written (does --out exist?)");
+    }
+    return 0;
+}
+
 fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
     release(ffi);
@@ -586,8 +730,10 @@ fn main(world: World) -> [] int {
                         status = write_command(h, i, g, f);
                     } else if arg_count(g) >= 2 && bytes.equal(arg(g, 1), "split") {
                         status = split_command(h, i, g, f);
+                    } else if arg_count(g) >= 2 && bytes.equal(arg(g, 1), "decode") {
+                        status = decode_command(h, i, g, f);
                     } else {
-                        status = refuse(h, i, "qsw.usage", "the commands are `qsw write` and `qsw split`");
+                        status = refuse(h, i, "qsw.usage", "the commands are `qsw write`, `qsw split` and `qsw decode`");
                     }
                 }
             }
