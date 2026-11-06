@@ -406,7 +406,7 @@ W1's behaviour is "the model leaves or does not leave its repetition loop within
 ### 14.4 The calibration rule (the proxy is declared uninformative unless it holds)
 The metric `X` is **E** first. It is informative iff **all** of:
 * (a) `G(edited) > G(e19) > G(x1e-1)` on the point estimates (the published ordering +26, +16, +1);
-* (b) `-0.1 * G(edited) <= G(x1e-1) <= 0.5 * G(e19)` (x1e-1 is near the base, as +1 is near 0; the base is 0 by construction because it is the reference of the gains: the base is also run, and the paired check `E(base) = 0.0` is not a test, it is reported);
+* (b) `-0.1 * G(edited) <= G(x1e-1) <= 0.5 * G(e19)` (x1e-1 is near the base, as +1 is near 0; the base is 0 by construction, being the reference of the gains; its own `E` is reported, and so is a second base run on the seeds `1000 * problem_id + 4 .. 7`, whose gain against the first is the noise floor and is not a clause);
 * (c) the lower end of the 95% interval of `G(edited)` is above 0.
 If **E fails**, `N` is tried by the same three clauses (a registered fallback; two metrics are tried, uncorrected, and which one decided is stated). If neither holds, **the proxy is declared uninformative**, nothing is recommended from it, and the order of 11.6 item 5 stands. **No clause is changed after the numbers are seen.** Also reported, not a clause: where `a6` falls against `edited` (they are the same edit to cosine 0.999997 on the weights, so a large difference would mean the proxy is noisy), and whether `G` rises with `alpha`.
 
