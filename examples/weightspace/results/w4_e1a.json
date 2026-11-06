@@ -1,0 +1,104 @@
+{
+ "layers": {
+  "15": {
+   "sigma": 1.7488828458330967,
+   "support": 64,
+   "slope_c": -6.000321105305697,
+   "pearson_rho": -0.9999999751830022,
+   "rank_by_abs_uW": {
+    "median": 70.0,
+    "in_top64": 31,
+    "in_top96": 37
+   },
+   "rank_by_abs_uW_normalised": {
+    "median": 60.0,
+    "in_top64": 33,
+    "in_top96": 42
+   },
+   "rank_by_colnorm": {
+    "median": 2567.0,
+    "in_top64": 0,
+    "in_top96": 0
+   },
+   "spearman_index_vs": {
+    "abs_uW": -0.07110498777892683,
+    "abs_uW_normalised": -0.1212770370339014,
+    "colnorm": 0.30075924454558034,
+    "membership": -0.15692027232401418
+   },
+   "median_column": 364.0,
+   "columns_below_500": 37,
+   "h1": false,
+   "h2": false,
+   "sha_base": "ef60d2c687bab19464dca9c8bfd7777e46ad226df0c9e25643b0bab04b5a1cca",
+   "sha_edited": "82e2d733ea64feaeb4af93a1e065641d3df98b494a8b7576ef2f52e90fe2ee53",
+   "exploratory_with_activation_scale": {
+    "rms": {
+     "in_top64": 15,
+     "in_top128": 18,
+     "median_rank": 429.5
+    },
+    "abs_uW_times_rms": {
+     "in_top64": 36,
+     "in_top128": 49,
+     "median_rank": 49.5
+    },
+    "abs_uW_times_rms2": {
+     "in_top64": 26,
+     "in_top128": 40,
+     "median_rank": 103.5
+    }
+   }
+  },
+  "19": {
+   "sigma": 1.3987571638936867,
+   "support": 64,
+   "slope_c": -6.000173248683296,
+   "pearson_rho": -0.9999999762401808,
+   "rank_by_abs_uW": {
+    "median": 129.5,
+    "in_top64": 18,
+    "in_top96": 25
+   },
+   "rank_by_abs_uW_normalised": {
+    "median": 132.0,
+    "in_top64": 20,
+    "in_top96": 25
+   },
+   "rank_by_colnorm": {
+    "median": 2387.5,
+    "in_top64": 2,
+    "in_top96": 5
+   },
+   "spearman_index_vs": {
+    "abs_uW": -0.048548301567773976,
+    "abs_uW_normalised": -0.12080166119513365,
+    "colnorm": 0.5456688204172457,
+    "membership": -0.12535212804870377
+   },
+   "median_column": 353.5,
+   "columns_below_500": 34,
+   "h1": false,
+   "h2": false,
+   "sha_base": "638eedeb701b94aa861f4438e615c07ec6c60ee703db1bfee2de577bb6498c3e",
+   "sha_edited": "8ef3c61bc36af113ad58e89dbb0a4a14dcba5a45cb750c15ab515c82ddd12eb2",
+   "exploratory_with_activation_scale": {
+    "rms": {
+     "in_top64": 15,
+     "in_top128": 16,
+     "median_rank": 450.0
+    },
+    "abs_uW_times_rms": {
+     "in_top64": 21,
+     "in_top128": 31,
+     "median_rank": 151.5
+    },
+    "abs_uW_times_rms2": {
+     "in_top64": 20,
+     "in_top128": 26,
+     "median_rank": 177.5
+    }
+   }
+  }
+ }
+}

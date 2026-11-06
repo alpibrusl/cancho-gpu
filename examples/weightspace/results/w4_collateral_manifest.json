@@ -1,0 +1,2701 @@
+{
+ "salt": "w4-20261106",
+ "seed": 20261106,
+ "counts": {
+  "en_md": {
+   "candidates": 521,
+   "read": 25,
+   "fit": 24000,
+   "eval": 24000,
+   "quota": 24000
+  },
+  "code_py": {
+   "candidates": 445,
+   "read": 13,
+   "fit": 14000,
+   "eval": 14000,
+   "quota": 14000
+  },
+  "code_rs": {
+   "candidates": 913,
+   "read": 20,
+   "fit": 14000,
+   "eval": 14000,
+   "quota": 14000
+  },
+  "code_cho": {
+   "candidates": 562,
+   "read": 10,
+   "fit": 10000,
+   "eval": 10000,
+   "quota": 10000
+  },
+  "code_c": {
+   "candidates": 402,
+   "read": 15,
+   "fit": 8000,
+   "eval": 8000,
+   "quota": 8000
+  },
+  "code_web": {
+   "candidates": 587,
+   "read": 19,
+   "fit": 6000,
+   "eval": 6000,
+   "quota": 6000
+  },
+  "data": {
+   "candidates": 241,
+   "read": 32,
+   "fit": 6000,
+   "eval": 6000,
+   "quota": 6000
+  },
+  "es": {
+   "candidates": 308,
+   "read": 22,
+   "fit": 15977,
+   "eval": 16000,
+   "quota": 16000
+  },
+  "it": {
+   "candidates": 3,
+   "read": 2,
+   "fit": 10000,
+   "eval": 10000,
+   "quota": 10000
+  },
+  "comfy_en": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_zh": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_zh-TW": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_ja": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_ko": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_ru": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_fr": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 4977,
+   "quota": 5000
+  },
+  "comfy_es": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_pt-BR": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_tr": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_ar": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "comfy_fa": {
+   "candidates": 845,
+   "fit": 5000,
+   "eval": 5000,
+   "quota": 5000
+  },
+  "math_chat": {
+   "fit": 0,
+   "eval": 11868,
+   "quota": 12000,
+   "problems": 65
+  }
+ },
+ "totals": {
+  "fit": 167977,
+  "eval": 179845
+ },
+ "files": [
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-code/docs/agent-prompt.md",
+   "sha256": "867707e3aa132a27bd283eb3e8e7f352a42bc7a4309377f0e532c7e97a385cd2",
+   "tokens": 949
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/sdks/java/README.md",
+   "sha256": "66a01e182b285e7b3c9829db85a2f939f603b0b3d3b08b9429371aac554c24a5",
+   "tokens": 367
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/docs/spec/exit-codes.md",
+   "sha256": "384c3203905c20f6a05f6f573e0bffb63d396699446a899ca0d98a25c65c05d1",
+   "tokens": 356
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho/docs/signals.md",
+   "sha256": "b94e8a61992b6836a767f49d768a93f5fd49198386638740214c2f21d62fc8ea",
+   "tokens": 3453
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/docs/multi-file.md",
+   "sha256": "eb96dc8bdc7c522754d58e729b919703870994238064616079fb2da62950bee3",
+   "tokens": 2552
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-spec/AGENTS.md",
+   "sha256": "b057300649093f643d8c26f20310ef0b470f88103728e63f0ff75d5d7a2e442a",
+   "tokens": 1259
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/CLAUDE.md",
+   "sha256": "eb366d080994f750a50584e89be7c0001ccc9aeace3c4ade034cda2540f93d08",
+   "tokens": 927
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/colibri/docs/api.md",
+   "sha256": "a0739de5d049372a13807ae6d49bf12053b81badd270cbb750aae6c74e848e96",
+   "tokens": 3502
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/docs/rules.md",
+   "sha256": "be64a89da92d061bd21bbd75f99478053dfdb15ddc095523a0134572416c89ad",
+   "tokens": 792
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/.cli/README.md",
+   "sha256": "2d771eb7974ebe513b481d10e9e98b770bfaeb14c09c0fbe7e0868be0a23eea6",
+   "tokens": 889
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho/docs/websocket-spike.md",
+   "sha256": "95cc4e1a49194d2079a39c765e3376a876603bb6f11e7753635bdf45147ba8f1",
+   "tokens": 3426
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho/docs/testing.md",
+   "sha256": "b8b9362d3afd90f892d3ffd1931fa7362920a8b5a51e657d18779bd7f385f266",
+   "tokens": 2156
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/docs/design/lex-os-isolation.md",
+   "sha256": "a72c57270ce6d14b792f1c6b3d913916977813d19043c30f12f1380ed84faaad",
+   "tokens": 1758
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/docs/STATUS.md",
+   "sha256": "5f25ea847596d7c323bbb8fa484c390b626c4f1100dd6c9d5e7500e76102822a",
+   "tokens": 573
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/docs/build.md",
+   "sha256": "9c0ee3899f6ffd0c8d71a570e8028ab4c3aee13f486f280f4f9c8b783ccb2f81",
+   "tokens": 2952
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho/docs/json.md",
+   "sha256": "371cde8e9a9a6680eefb4aeb8a03feb8d71361e4a73cb764c12463c3d31d7a44",
+   "tokens": 4096
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/docs/ROADMAP.md",
+   "sha256": "c4ed416ad59e19b987d88a3962ab90406d35ff408488674865e5004d90d4a51c",
+   "tokens": 2518
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-forge/docs/reviewer.md",
+   "sha256": "2e5e77095ae7669456b538bd9e73a584d4f26b82fcff7f352d70070eb6254b0b",
+   "tokens": 3281
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/docs/design/trace-replay.md",
+   "sha256": "ae56e325c1794cda78d3ce441764dcf189d52c9f9247813ef7d5d160fdc926cd",
+   "tokens": 898
+  },
+  {
+   "domain": "en_md",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho/docs/compile-time.md",
+   "sha256": "13f5d51f0eb06f6ed90754b4ec323d6e1227072d8149171548f0821b3be5abbe",
+   "tokens": 803
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho/docs/standard-library.md",
+   "sha256": "ea0861a9119a100f752152896493f58071b70455306108d35c803a03330740bd",
+   "tokens": 4062
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/integrations/claude-plugin/README.md",
+   "sha256": "80df78fda8d30f438f9daa9b5d9ca59656c2b3f1f7fbe51fd9e233fab7b308b0",
+   "tokens": 892
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-trail/AGENTS.md",
+   "sha256": "5402224878df09501a3673d0a1bad4b16969e69aa2d5db4054d5cbd78e144d20",
+   "tokens": 1570
+  },
+  {
+   "domain": "en_md",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-forge/docs/isolation.md",
+   "sha256": "eee6052ebebd9e31ee80ccdd2adabf35d9f76e6ad3c22c9cf03c03f1bec88e3a",
+   "tokens": 3969
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/examples/qwen35/mlx_chunked.py",
+   "sha256": "f1da26e7b25f7ac4470a2e8ce082e99e2813efc5fbfee81e9c62c5cfdc48a1cc",
+   "tokens": 2048
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/examples/qwen/convert.py",
+   "sha256": "e333843950094cad183385f5f2a2a7890aac8eb79cc0300ecb2f3b8b7e0bc8e9",
+   "tokens": 2286
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/sdks/python/src/acli/app.py",
+   "sha256": "c6f7e7eb7b9ec60cf349a8026b927653caffcfcf7f523b7545f44e38d690de1e",
+   "tokens": 1581
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/eval/audit_csv.py",
+   "sha256": "c86d9245afd5a3e935bdd5f22b679a6c181a797fdfa31d036c032c1aa0d6b95a",
+   "tokens": 1930
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/c/tests/test_mirror_plan.py",
+   "sha256": "bc756d8b18af31b74e737295113f3f2dbc37e088dc170be1646bb5c836f79cdd",
+   "tokens": 2433
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/tests/reference/splice_ref.py",
+   "sha256": "dc18f607f4009be24ab64aee004629d97baa90d0e7d3ead6613a1d1560a4dc70",
+   "tokens": 2392
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agentcmp/agentcmp/registry.py",
+   "sha256": "e23a920ec99478fcdbf4cd09e9b095bfce45af9415b00c084c78bd5999984b94",
+   "tokens": 592
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/scripts/check_train.py",
+   "sha256": "062d4cc80124a39cb904dce829ceec74e34a0492e13b2a3b37c29b1b9869bc01",
+   "tokens": 1917
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/paths/python-fastapi/tests/test_app.py",
+   "sha256": "b22d31aecba04ecbbca7fe66aae93cdb8780de2a3fad08f6a3b1b951f8777621",
+   "tokens": 541
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/tests/qwen.py#0",
+   "sha256": "d15bfb86453a968c36efd20a0dd9d916440a6c95dc4a747c9c6f54f4393c6e4c",
+   "tokens": 4096
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/tests/qwen.py#1",
+   "sha256": "d15bfb86453a968c36efd20a0dd9d916440a6c95dc4a747c9c6f54f4393c6e4c",
+   "tokens": 3315
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/eval/plan_vs_reference.py",
+   "sha256": "2f7cb61a6a17b4dcb43485a10abebc70e32d2e14e70970779e58539d789a8924",
+   "tokens": 1200
+  },
+  {
+   "domain": "code_py",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/examples/weightspace/trainer.py",
+   "sha256": "9f2ab20f24055d7105ad874aaf78eac5b781a06efcb16048fe7c0c3d5d118bf5",
+   "tokens": 2261
+  },
+  {
+   "domain": "code_py",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/examples/cnn/resnet_ref.py",
+   "sha256": "fa3ccd1f3690b4720d17e7b201b5ad567d9bcb33d2b7dc5e3b8fa80ab38b5741",
+   "tokens": 1408
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-vcs/src/gate.rs",
+   "sha256": "07ef7e09085f9a988f41689ae8fa9784c4fb5a066552e6539d3e3cee4ea4a878",
+   "tokens": 2182
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-bytecode/examples/profile_deep_tree.rs",
+   "sha256": "c9debe54e5afe47a1b9cf8469b38aeb21663c1b70f14ec06bafcb665c61b5d23",
+   "tokens": 978
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-cli/tests/users_json.rs",
+   "sha256": "d1ea6f5c34d16dd7d195839cc5f12828fd31a7a70030675fb157e48c3f759ad4",
+   "tokens": 1524
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-ast/src/dead_branch.rs",
+   "sha256": "101e0344fbc4279b3a5cef39e2e085e4252390a3a4ce2c438aebb24f69467ee3",
+   "tokens": 1360
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-cli/tests/init_scaffold.rs",
+   "sha256": "6a25ab52f04ee1444faeee0fd21f8aa97142a55518675a7fe3d702b24ef0a47a",
+   "tokens": 1701
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-runtime/tests/std_datetime.rs",
+   "sha256": "6b7fc7249e2b76c9e8add0b77dc7a02f172ed655fb2fa001fdd67a3965bf89d4",
+   "tokens": 3330
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho/crates/cancho/tests/conformance/thread_state.rs",
+   "sha256": "23ee3ae79c879d787f9c0d1e5cfb3b668adce6a067af0660e00dfab0083dedc4",
+   "tokens": 2035
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-cli/src/pkg_search.rs",
+   "sha256": "336169f2337a591093cdf62320a4032a13d3549cfa8971f8a5c2c23419fb7501",
+   "tokens": 4096
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-cli/tests/policy_session_budget.rs",
+   "sha256": "c97e600f79d7a7274816923e581ed1e26a7d1a307dec2cfeca1248f3c7e08cda",
+   "tokens": 891
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-runtime/tests/std_regex.rs",
+   "sha256": "250648fac25d4f19434f4ce337aa43b1427f75110351d0673d960d47cb642249",
+   "tokens": 1679
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/fuzz/fuzz_targets/parser.rs",
+   "sha256": "b22bed54d82ba780b547790d92f09b0f8a1839374f88f2891254ffbbb0fbe865",
+   "tokens": 126
+  },
+  {
+   "domain": "code_rs",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-cli/tests/export_git_incremental_837.rs",
+   "sha256": "157041f7ed1389645746ade8540de7cd38b5314a60fbfee06ff1b152202802f5",
+   "tokens": 142
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-cli/src/repair.rs",
+   "sha256": "98a9dd63e17bc80a2ccfaaba2143eada1ae9391cbfc313ab7fe0d8e89947f995",
+   "tokens": 3740
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-search/tests/http_integration.rs",
+   "sha256": "3cb8de3138981e80d747dbc91c4c2989a2376fe57b51fe507602c9eea47f16ad",
+   "tokens": 1643
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-store/tests/dep_resolver_gate_930.rs",
+   "sha256": "1bd45d8989992a2de6790ecdb4f0fdf6ded91b245a0b703edee560ce5f456931",
+   "tokens": 802
+  },
+  {
+   "domain": "code_rs",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-runtime/tests/std_crypto_extras.rs",
+   "sha256": "adefa15e0b3fb2d03e7be9d4f31759f4189360d15738ea64dbcb1a4083ee5f7e",
+   "tokens": 1771
+  },
+  {
+   "domain": "code_cho",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/eval/multi/reference/parser.cho",
+   "sha256": "4d3509e4739baaa670dff3656b86d83d9c201e12caaada892bbba089a4361477",
+   "tokens": 1381
+  },
+  {
+   "domain": "code_cho",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/tests/chx/conv_step3.chx",
+   "sha256": "1653c32a0f569f4c1ce9bf09317c562d84275255f66fa3cc646067d75e72a043",
+   "tokens": 1648
+  },
+  {
+   "domain": "code_cho",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/eval/services/users/reference/project.cho",
+   "sha256": "a2712b6a02cdbd52c12c55a74692170267741ad8aa8791a61ba0930ca4687ee6",
+   "tokens": 3344
+  },
+  {
+   "domain": "code_cho",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-forge/tests/stub_script_test.cho",
+   "sha256": "adc78e2e2bbad06e36698903aa3c8875d49d44d110ee18253beeb870b9c4099b",
+   "tokens": 4096
+  },
+  {
+   "domain": "code_cho",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-forge/src/main.cho",
+   "sha256": "7c6ac59d4111c401946edc4b58b6e0ff2f9e6378d0e7f27e8798a04e6d28efab",
+   "tokens": 4009
+  },
+  {
+   "domain": "code_cho",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-code/eval/semver/reference.cho",
+   "sha256": "3765f298d9e85fc5e4ae91bf74a9b6b9ce8958f50a4955d94b0fb718c27fd891",
+   "tokens": 2846
+  },
+  {
+   "domain": "code_cho",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-code/tests/fixtures/splice/main_stub.cho",
+   "sha256": "866c7d6eaffd2ecbc5be2ec93f7ea063afd3357d0842078c764d1e664cfaa819",
+   "tokens": 131
+  },
+  {
+   "domain": "code_cho",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-forge/spike/s11_forge.cho",
+   "sha256": "2dd6691ef932ce02431f1820a806ae9df44551fa9765c95cb1c2e1832b0f478a",
+   "tokens": 1256
+  },
+  {
+   "domain": "code_cho",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/examples/qwen/ce_comb.chx",
+   "sha256": "6ec33ca0a8b17ba766fc21b58108c46822910706c824140e583d8092696ed9be",
+   "tokens": 241
+  },
+  {
+   "domain": "code_cho",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-forge/workers/check_guard.cho",
+   "sha256": "a65b0089c4601fa6435a067f2e518d2ad82020d84f6736d68c9b42dc253b5b22",
+   "tokens": 1048
+  },
+  {
+   "domain": "code_c",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/c/tests/test_olmoe_serve_framing.c",
+   "sha256": "cef9a04bf3b9687d4c39881777555ece2bdf3884ddaee9758517a8cf3ebde477",
+   "tokens": 1822
+  },
+  {
+   "domain": "code_c",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/colibri/c/kv_persist.h",
+   "sha256": "b8e798c02505be924ee2b72b89189a6496c3eada521e96a54cd2604528b6b9f7",
+   "tokens": 2295
+  },
+  {
+   "domain": "code_c",
+   "split": "eval",
+   "unit": "~/Workspace/ds4/ds4_tool_text.h",
+   "sha256": "a9c09f4a4d1cf2a3260d9c539de222cd949b5cd7710c7bf17ec9be5bc58bd159",
+   "tokens": 546
+  },
+  {
+   "domain": "code_c",
+   "split": "eval",
+   "unit": "~/Workspace/ds4/cuda/mmq/test/proto_m2_qkv.cu",
+   "sha256": "211e655f472ed60b7b35a859646a8f14b90318cf80fb9eea07fbddd1e3d9338c",
+   "tokens": 2534
+  },
+  {
+   "domain": "code_c",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/c/expert_store.h",
+   "sha256": "e2958ab832cce953448bc458dc6a76df6abb93abf0bfe3ea80fbb99640031f8f",
+   "tokens": 887
+  },
+  {
+   "domain": "code_c",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/c/tests/test_st_mirror.c",
+   "sha256": "b6275dc0c7230f33f3c668f2946a21a0101b3eaaa019ebb11ffd5eb774d949ee",
+   "tokens": 1789
+  },
+  {
+   "domain": "code_c",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/colibri/c/sample.h",
+   "sha256": "8596eddaf0634c4df048f7e6149f515bbdd7fd9a2912710c55a1a839de421289",
+   "tokens": 3178
+  },
+  {
+   "domain": "code_c",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/colibri/c/tests/fuzz_grammar.c",
+   "sha256": "9bc56c549956906d548371897182063f40e067d4f9d4d12f32430ff95b2ec5e3",
+   "tokens": 1151
+  },
+  {
+   "domain": "code_c",
+   "split": "fit",
+   "unit": "~/Workspace/ds4/speed-bench/metal_prefill_variant_bench.c",
+   "sha256": "f32a5af9c24dca112345ad482e2012bbf148fa4b8db6f6fe8ff071c23cf23535",
+   "tokens": 1376
+  },
+  {
+   "domain": "code_c",
+   "split": "eval",
+   "unit": "~/Workspace/ds4/tests/test_tp_tcp.c",
+   "sha256": "24d9f7f8c692a196dda5dcc994c6a87e8278aaeb247dc2ef4e305159dc608e24",
+   "tokens": 422
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-agent/.cli/examples/attest.sh",
+   "sha256": "12d6fc3ef4371c4bcc9c1c0ca2a8a6a15e622e434403447f75b484d5b9f33574",
+   "tokens": 91
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/sdks/typescript/src/cli-folder.ts",
+   "sha256": "8abdd36b2e9acb8ea8b6f7e86779fada50a3b75116a1ddef6a40671dd28b77b4",
+   "tokens": 701
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/paths/rn-expo-web/index.ts",
+   "sha256": "5c157f4d44972d9c84415e1e4bda595b3abcd8cf733f8a9cd20935bec3eccc42",
+   "tokens": 69
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-llm/examples/spec_gated_agent.sh",
+   "sha256": "a27c252143d063c0ed672f360e7d9d9c8fdae843eb7a87ff6d57a701d0b30bbf",
+   "tokens": 1468
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/demo/run_operate_loop.sh",
+   "sha256": "b492e207c663b6762cd9d1ed8e27cf212d09798a1770f0062413a473d5031e64",
+   "tokens": 1156
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/scripts/qwen08-check.sh",
+   "sha256": "f04bbe6f7ed4fc51557f8e252061c5efbe1dfe8168f564556dd56daba590cec3",
+   "tokens": 550
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/bin/jt3-run-on-kvm-host.sh",
+   "sha256": "02b61671f3efb8f4a5fab68ef9c6fdf214bc00a3a24ffd7679dfe813ee050a8c",
+   "tokens": 1016
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/demo/attention-governance-roundtrip.sh",
+   "sha256": "74686cc23fd7cc57baeba58fc4fb0d9c10df2ce1464393968c11e4d80cf7b82a",
+   "tokens": 1462
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/examples/manifesto_effects/demo.sh",
+   "sha256": "e7404aba333f5381631b41226cdc2b40c36512a921e79a6f174aa4813ad34fef",
+   "tokens": 898
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/sdks/typescript/src/output.ts",
+   "sha256": "d9ed79f5b7bb783feb19b358223db2c329aebee32f1341ba99fc175a628f944a",
+   "tokens": 1276
+  },
+  {
+   "domain": "code_web",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/demo/ab1-abuse-controls-roundtrip.sh",
+   "sha256": "e3b0c65d8d2e9c3b8ab886ac4d381ea86ffc5c51c9187e637b925dc4adeae178",
+   "tokens": 689
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/scripts/mutation-audit.sh",
+   "sha256": "3479fd1ec98c62fbdca40a9cbbbdfcefc7ce338054d14196172a3e0ebba05940",
+   "tokens": 1235
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/.cli/examples/issue.sh",
+   "sha256": "0c114f94cd207c35411bb1fcc8698992a371213086f5c6be2cefc6714592b25a",
+   "tokens": 419
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/bin/sql-scalar.sh",
+   "sha256": "ce68203c4f335b77c5f8c3967ba10cd599cbcf128cb9c14f645c871544c023eb",
+   "tokens": 192
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/cancho-gpu-w4/scripts/build-metal-session.sh",
+   "sha256": "0a001a00e79809847216ce2c7f170e7d535716058c7216286c6db915a0e25596",
+   "tokens": 355
+  },
+  {
+   "domain": "code_web",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-code/examples/semantic_search/build_and_query.sh",
+   "sha256": "bd7a2e27cd78449aa3fec8010691f1d94f9c1445b67fdbbe20fe93b9ec9abc44",
+   "tokens": 423
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/colibri/web/components.json",
+   "sha256": "d73e21b113a9f05b73aff2bd0bd1684c83cdfa7a393dd099ad2af4348daf452f",
+   "tokens": 136
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/.github/workflows/check.yml",
+   "sha256": "5949e02f9471177b0031d35e556dc01b1c7253572779dd4152e0ce58e2ef6860",
+   "tokens": 776
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/desktop/src-tauri/Cargo.toml",
+   "sha256": "e3fa9cb6eee7d7f96f318ea8501da3a43718f095f01a9a019b3ed8a3429122a1",
+   "tokens": 142
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-code/package/typescript/typedoc.json",
+   "sha256": "698534177390bb163164bb259a008464a406faf6eb9e103bcccb78b7ad33fd12",
+   "tokens": 471
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/conformance/Cargo.toml",
+   "sha256": "d1853250b19ffdd6551801a86dd49dc7b586e59fd99276070d93d6ed8727c28d",
+   "tokens": 133
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-mcp/.github/workflows/ci.yml",
+   "sha256": "7442e1929e88dfdbdb5efa5c76c458785aa201f2f415df3713a932945d1f9e14",
+   "tokens": 179
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-trace/Cargo.toml",
+   "sha256": "f1526f039757f17bb9e208bc704c3075e95537506eb55eaf1bb61f3bab97e517",
+   "tokens": 265
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-bytecode/Cargo.toml",
+   "sha256": "6a11b5188057abf257b8e17c878225883b8730f9bc44e59c4203a2688bd5c5be",
+   "tokens": 307
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/.github/workflows/tag.yml",
+   "sha256": "a6e0787275ac236a26b52cf140fb2c5738623e30d6fe2f13c07a9349f73a70d5",
+   "tokens": 552
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/pyproject.toml",
+   "sha256": "8837f8a650db6a4e6bcf45b9cd15d91dcdd89e8244620ede9b69c5af0791aa3c",
+   "tokens": 378
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/.github/workflows/isolation-kvm.yml",
+   "sha256": "ac76ceae7798b0cd9f2294d720bb18b10bc385cb245d5e39c403aaf3788b278d",
+   "tokens": 3624
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/colibri/c/glm_tiny/config.json",
+   "sha256": "2d3137d0cf6a1820d4677ceff790fbeba6b4bb2fcdea0552fe31c20c06c1c821",
+   "tokens": 559
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/acli/.pre-commit-config.yaml",
+   "sha256": "6cf3ca608ae697ef892d13be3826a1a66d1e20b801c4cc79d8a579542aa31a80",
+   "tokens": 567
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/colibri/c/tools/dsv4_vllm_reference.json",
+   "sha256": "512445d5c092959d05f0944912085c0dc5058d54ce053960ff779d1aca19cbd8",
+   "tokens": 319
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-vcs/Cargo.toml",
+   "sha256": "1a0e9bcf94cd17776c6d1ce239dd5e84808f0798485bfd7095f42741a801cbe2",
+   "tokens": 213
+  },
+  {
+   "domain": "data",
+   "split": "fit",
+   "unit": "~/Workspace/alpibrusl/agents/lex-agent/tests/interop/snapshots/task_completed.json",
+   "sha256": "984ec5ab7721bd79152f41523fd655b6fbdb96df463fd6d0031c42daa338000a",
+   "tokens": 196
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-search/Cargo.toml",
+   "sha256": "3afe27dd43f56d836b62bf928d167594352c9452c61bee074fe468cec3476b4b",
+   "tokens": 234
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/lex-lang/crates/lex-api/Cargo.toml",
+   "sha256": "f26595e2c3346150c2a1be188b18da46f46d13290ae88dff8787c60809d6939d",
+   "tokens": 479
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-rlp/.github/workflows/lex.yml",
+   "sha256": "feb97a909cd468b18b44d98501343e8237a8a20f17086900d3e30286e96b841f",
+   "tokens": 294
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/paths/lex-web-api/lex.toml",
+   "sha256": "bdb1791d986b540099b96814243fc72a961a3b0a1871e20656f08a6c3bd9f8d7",
+   "tokens": 129
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/acli/.github/workflows/docs.yml",
+   "sha256": "055b768e6fdce09f2634eb48e7715ff4440e3d3e7f28c4a35af31cba498d12d7",
+   "tokens": 283
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/.github/workflows/publish.yml",
+   "sha256": "120ef3e44ee8ae4fa0522f9f9dd7207da39b0e843f1ace94365974b6cc809548",
+   "tokens": 1085
+  },
+  {
+   "domain": "data",
+   "split": "eval",
+   "unit": "~/Workspace/alpibrusl/agents/lex-loom/examples/pdfx2.company.toml",
+   "sha256": "2a2017e3d4e5550578b2ebc3a47c296620be1742c2aa194de942c3bd3e1b2557",
+   "tokens": 679
+  },
+  {
+   "domain": "es",
+   "split": "eval",
+   "unit": "65fb28e31fdec8e2",
+   "sha256": "ce3b97fbc56483f12726e56558dc29c1cb655580ce331b3e3270b22d09a91b91",
+   "tokens": 3719
+  },
+  {
+   "domain": "es",
+   "split": "fit",
+   "unit": "f2fe3827ee2de77f",
+   "sha256": "3dea80c5f2a04d0b6fdf0aa537bc9ca5eed56a545d1a62130c3a5840a7e2a00d",
+   "tokens": 1915
+  },
+  {
+   "domain": "es",
+   "split": "fit",
+   "unit": "e718924dfca208f0",
+   "sha256": "5a6362d63e16b3bacb545fcabf8f5c40f21591b23604ff321469c4693324af68",
+   "tokens": 3982
+  },
+  {
+   "domain": "es",
+   "split": "eval",
+   "unit": "794ca43870cfcc9b",
+   "sha256": "8cd2a3af3b8dd3aa66a58b6df0031fcfda7b5ed573e4ae2f87d1448765486a9f",
+   "tokens": 2248
+  },
+  {
+   "domain": "es",
+   "split": "eval",
+   "unit": "69f4b4a3a30709ce",
+   "sha256": "8f409c75cd955203f2a2c878ef4b9a67d1a422d7c7d38048f7d291c36f53cae5",
+   "tokens": 2048
+  },
+  {
+   "domain": "es",
+   "split": "fit",
+   "unit": "ab4007cb8415188d",
+   "sha256": "dfb182048d3dec8cd713b88f64a664257bbb82c30e656d20e83d399605f796d0",
+   "tokens": 2967
+  },
+  {
+   "domain": "es",
+   "split": "eval",
+   "unit": "bf05e3e83b5b4723",
+   "sha256": "b34581482114b96c04c53a65a2b4970ed53ff0bf0ac9155b97d940a2077240a6",
+   "tokens": 3545
+  },
+  {
+   "domain": "es",
+   "split": "fit",
+   "unit": "34d96dc5d685f86b",
+   "sha256": "e56cbf72f6a9dbee2108f1d16679f657c1af2a906602bd5df149675cda6566e9",
+   "tokens": 1910
+  },
+  {
+   "domain": "es",
+   "split": "fit",
+   "unit": "0d459c56d5726aaa",
+   "sha256": "ad9cf54d35d5e0532854458b930b176666936df4b6ae324b27e2523f11db53de",
+   "tokens": 3155
+  },
+  {
+   "domain": "es",
+   "split": "eval",
+   "unit": "2d93e94c1308fc52",
+   "sha256": "f964d8f524d5822577ff7061953110f7dd4239fab48ed9975df034f44358971a",
+   "tokens": 2034
+  },
+  {
+   "domain": "es",
+   "split": "eval",
+   "unit": "fa2590cf80a73487",
+   "sha256": "a04fbc9ac2c505ad8b3ed878679cf05780a6c73accc17bffbbf8febadc21e9c6",
+   "tokens": 2406
+  },
+  {
+   "domain": "es",
+   "split": "fit",
+   "unit": "a643011f2d1ddd48",
+   "sha256": "a04fbc9ac2c505ad8b3ed878679cf05780a6c73accc17bffbbf8febadc21e9c6",
+   "tokens": 2048
+  },
+  {
+   "domain": "it",
+   "split": "fit",
+   "unit": "749d0c5093b4ec7a",
+   "sha256": "8eff8beb928fba7e9be60d242205073f2d2ea4b250a2520ee772f5181429cc6a",
+   "tokens": 4096
+  },
+  {
+   "domain": "it",
+   "split": "fit",
+   "unit": "6d73203a8dd7929f",
+   "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+   "tokens": 4096
+  },
+  {
+   "domain": "it",
+   "split": "eval",
+   "unit": "2512b73c759dcb26",
+   "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+   "tokens": 4096
+  },
+  {
+   "domain": "it",
+   "split": "fit",
+   "unit": "792d7192f35b42ab",
+   "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+   "tokens": 1808
+  },
+  {
+   "domain": "it",
+   "split": "eval",
+   "unit": "5b9100a3150518d6",
+   "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+   "tokens": 4096
+  },
+  {
+   "domain": "it",
+   "split": "eval",
+   "unit": "4bbb5594da5849e3",
+   "sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f",
+   "tokens": 1808
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/en",
+   "sha256": "1939eeb1d647eee8cbb8e882c2dec7e8f13d0db58813e15f534337afe8ccc1c2",
+   "tokens": 419
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/en",
+   "sha256": "2b29818d1a41cef09bf1b0d56853c08f4a6ee6d9283a0082ccbc2fa3c71e4e58",
+   "tokens": 440
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/en",
+   "sha256": "027663ac00436b42cf8c0e44ac593a116144fbd55f8f30c079b1aa2abdd15cfd",
+   "tokens": 416
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/en",
+   "sha256": "8ca0f385a10768381180049549bbd42e02f3cf216a2deb6372f2421f8793d3c0",
+   "tokens": 474
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/en",
+   "sha256": "8ab6f6e0fda2dc887e09fb764a2a6002f1abb01453234f894c79d0dbd4aab8df",
+   "tokens": 334
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/en",
+   "sha256": "3cd96610d2abab710c0253638b89c6b0417ee46e6b48e51543ee7b491e87751d",
+   "tokens": 503
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/en",
+   "sha256": "c3eff3f193df0f923ecfa3a542ebfa3044158fab54bf3dd22188a171d0c91ae9",
+   "tokens": 498
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/en",
+   "sha256": "47bac431d5c9115931ae244112a14ac2e710e918933daae868b36398129e82b5",
+   "tokens": 502
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/en",
+   "sha256": "903ba1a5200a0ba6819379e9a75e8db97bbface2952ddc62cddc39c6af649244",
+   "tokens": 385
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/en",
+   "sha256": "9873e220a27b24786553f4d108a6f12395f8c91442208c595ed83869be48159e",
+   "tokens": 329
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/en",
+   "sha256": "b4556cfba37921e1f9c34aa677283b4e4fec13cb426e9020f3bff06b917a5d53",
+   "tokens": 686
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/en",
+   "sha256": "c8a1d40323292b02caedcda033cc715b803cc774fd42bc6477bc481e1e96413f",
+   "tokens": 404
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/SplitAudioChannels/en",
+   "sha256": "8153756284afc6158a12b3c2d3db195f19dbfa23590d5f392d1ae43ac9a455e9",
+   "tokens": 307
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/en",
+   "sha256": "1d59a9dbfa6e6f2c92c52b72ba63507d09639bb91eea56f73853c5656627f3bc",
+   "tokens": 970
+  },
+  {
+   "domain": "comfy_en",
+   "split": "eval",
+   "unit": "comfy/LTXVLatentUpsampler/en",
+   "sha256": "0ac63149dcc36c65d86909fce993e3d8233374e46217c39bdcbb5396281b12c6",
+   "tokens": 225
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/en",
+   "sha256": "a0bbd429f3530ceb6d41a2214b5063f0b5575a3add83014ac254d9d9f4dca89b",
+   "tokens": 365
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/en",
+   "sha256": "87a694686685cc2f268f68c85876bedf604430a6d2b24e50b05ffa06e838e462",
+   "tokens": 383
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/en",
+   "sha256": "5adb4a0f01672c81bbcc7f8d7d48f2701ba88c2c7ed5eaccdfc80ff224974b04",
+   "tokens": 361
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/en",
+   "sha256": "45935513e5e1a771520fa7d8f2b08264c090b6c629cc55d7557d1821017dcd28",
+   "tokens": 338
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/en",
+   "sha256": "ace7e8b5e9372e3046aff6e387ce48c46f62a891a23caabe452299f304422b1c",
+   "tokens": 557
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/en",
+   "sha256": "a8b76dfe63ee23b7b5e2378657d209073bb952750ce01a9f6d330263f31be6ff",
+   "tokens": 539
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/TextToLowercase/en",
+   "sha256": "fb9b329d738653d307b36cdee3c4faa6e9fd9faf925618e9e76158083538747d",
+   "tokens": 281
+  },
+  {
+   "domain": "comfy_en",
+   "split": "fit",
+   "unit": "comfy/SplatToMesh/en",
+   "sha256": "45ca7a9613f3a88d68d9418acc28a7f48ff89a92619c894ddf60208d4e8e6ca9",
+   "tokens": 284
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/zh",
+   "sha256": "340efb26f971d05ffe7d1fd717a72e02c6945d003b2f0343b43dc4b4ae3ca3a7",
+   "tokens": 433
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/zh",
+   "sha256": "05c16e810e4cda8c6f5ae1d5cba032155d98df9d740b203476f8a78b8e778e2a",
+   "tokens": 436
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/zh",
+   "sha256": "f2a1b532dc00c4c41744af4dba5d31e156b37bcd8686c4e2633d8367aaa33165",
+   "tokens": 429
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/zh",
+   "sha256": "893d860ed275d93d63579adc389b9b8aa81293bf83907ebb76ed247ad3ac8f31",
+   "tokens": 488
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/zh",
+   "sha256": "3469ecdb7e87b3e219e82c7e9db7a3416a891c58c97418888815e825358e90a6",
+   "tokens": 342
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/zh",
+   "sha256": "ebf6699eb2348d1f2696bac9aa283da18de548359876d3a814aefebd91ae09ef",
+   "tokens": 528
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/zh",
+   "sha256": "5ac6b663f008ee35a676a6e244fdc1931701f19da149aa5f1e004ca48c411ffd",
+   "tokens": 502
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/zh",
+   "sha256": "f203e7ad6e06051cde5cb535fc337f2d527ad623a72a9207b9773b155a4ef022",
+   "tokens": 504
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/zh",
+   "sha256": "0d2e9a14d3c2359af61ebf7be368e84980cc083a1c8cbf5b0938fd230e2c3ff3",
+   "tokens": 448
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/zh",
+   "sha256": "e1f2a74423977865b3db3efdd1442e33a4241e4e3ff670e27cb8b80182ef8b80",
+   "tokens": 353
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/zh",
+   "sha256": "e7d0e3d0da1a9bb284a64a021c3cb36102dd2ed7f5fbfa667b5557ec1280a938",
+   "tokens": 681
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/zh",
+   "sha256": "6dd96204cce6910399128e7a7daf1774a312c520a653868aa1d89130dd560dba",
+   "tokens": 415
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/SplitAudioChannels/zh",
+   "sha256": "b1b6a33ae60be8a1d84c5e8d07ecbf38dd578a6f22ccf0db8796cf738a4552c5",
+   "tokens": 319
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/zh",
+   "sha256": "446332f58ad48bec595205da53d57a285236a6d7e23582b3d27f54daee934d82",
+   "tokens": 1050
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "eval",
+   "unit": "comfy/LTXVLatentUpsampler/zh",
+   "sha256": "219e2b52aedbe0f7c0aec730ab90828d9ab8d07e0b0ca63a23c07a7f1a896f53",
+   "tokens": 83
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/zh",
+   "sha256": "925700397bb46f2ace04e8f24440d4edafe58f0f7f06d4f29552ab6032aa934d",
+   "tokens": 355
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/zh",
+   "sha256": "8f09351cda97a7fff0fecd32e55ca7b839acaf245c84b7014dfc72c567a3c119",
+   "tokens": 350
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/zh",
+   "sha256": "8e6e9dce00232f4dfa73f51c348b15fc02bda76172631ced4d4642e1e9e619dd",
+   "tokens": 380
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/zh",
+   "sha256": "b08bea265e58d865268c18aeb13e41b3ed0f29a158472093c768a874f2d3d354",
+   "tokens": 344
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/zh",
+   "sha256": "feed51ac30a264c2b1b62d9b73675e130881adfd3e7227aea73560b4ec85e4cf",
+   "tokens": 538
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/zh",
+   "sha256": "315ff6375830caf8184ad0186aab634db252687c5f4b687ec267f1c1d4e016b3",
+   "tokens": 527
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/TextToLowercase/zh",
+   "sha256": "01af444d9414a0a8329189c1c0d43442476cfc3566217aca527cac38a9d05fd8",
+   "tokens": 273
+  },
+  {
+   "domain": "comfy_zh",
+   "split": "fit",
+   "unit": "comfy/SplatToMesh/zh",
+   "sha256": "7356276be48c3c08a19729b2d29d146e78d7f0a430d35e1e2b4aa2436f976fb8",
+   "tokens": 222
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/zh-TW",
+   "sha256": "5aac6e4392ac182923ffbd0bc845897635d2e1e448dfee074af9636488505033",
+   "tokens": 448
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/zh-TW",
+   "sha256": "7e2b2250849b9b35b5c6d2dbce47164e39258d7bb64aad08205a4c0f36134105",
+   "tokens": 470
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/zh-TW",
+   "sha256": "31dbfac48cb792bf6860b046f9dc0df9d5a85a31d8e1e686021f305a748e8ba4",
+   "tokens": 477
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/zh-TW",
+   "sha256": "e9346f1cac157dc752a6ed287dca8ae9f367539adaffe89e292a90e610247a63",
+   "tokens": 526
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/zh-TW",
+   "sha256": "577326fa5f206c37e06ece8996ed9305e48dfd898d0e517d46a9699e79070ee5",
+   "tokens": 367
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/zh-TW",
+   "sha256": "2ad883856d302797865ebdcc3ae0672bc6a6dceac16a062c942a3fd1e5a30d65",
+   "tokens": 563
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/zh-TW",
+   "sha256": "c231d703f1d55aadc82b8cdf04c835c5745d7be147600326ccc7492f62a836f7",
+   "tokens": 523
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/zh-TW",
+   "sha256": "30513356673e0fbecd70181bf47887fa98adf2d8c28a8d1932be127984b962fa",
+   "tokens": 534
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/zh-TW",
+   "sha256": "deb42f30a32118fe27cb5be0512db5da81af48924e7889b5104ebad432db04c9",
+   "tokens": 342
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/zh-TW",
+   "sha256": "45bd3cd1313332d5b02d0943ed341e5dd54d68d12dd2e91b2ddfea4390c6f97c",
+   "tokens": 386
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/zh-TW",
+   "sha256": "d56526a3c33439bbee8c8a1999f482c6cb3974588a7413e2513da4e0fe4c0420",
+   "tokens": 714
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/zh-TW",
+   "sha256": "8b92e7a750c7083d9da42863fbedad27bdfb7e19daa57a4eacab7d44a5f76447",
+   "tokens": 448
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "eval",
+   "unit": "comfy/SplitAudioChannels/zh-TW",
+   "sha256": "53a2b93f9790570c261779ab652e77bdd9320617b2274a74714993b306ff9e62",
+   "tokens": 213
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/zh-TW",
+   "sha256": "9b0a0aac72c9d28e276f2bd9d12b09bc6df5acf072bb1939b0768f7b344e6ae1",
+   "tokens": 1114
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/zh-TW",
+   "sha256": "c3af24a9f807ce789879527015bb09f5f0b2c50dbb2a6166ac490bed4f6de90a",
+   "tokens": 399
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/zh-TW",
+   "sha256": "d8768ffe6c07bb4e3a6d9444707acc8994d936e3c513387ceefe1ef6eca50aee",
+   "tokens": 377
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/zh-TW",
+   "sha256": "c07f18bd775ec4447a6644a81ed34c3bae0851af69696f5bcf0c11faa8df2840",
+   "tokens": 404
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/zh-TW",
+   "sha256": "c6b22121ca966fe5c391da7f8f4a2935df837577ede3bbbe0a64a68191275339",
+   "tokens": 358
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/zh-TW",
+   "sha256": "1d6fbe7034255e69cb632e2702390fbd84bead7e79fdacde79181cd1d52e91c7",
+   "tokens": 558
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/zh-TW",
+   "sha256": "fcf1282bb3d507fc9f92283ed248b5400d899f7c965c16353e5d065bb96c0193",
+   "tokens": 558
+  },
+  {
+   "domain": "comfy_zh-TW",
+   "split": "fit",
+   "unit": "comfy/TextToLowercase/zh-TW",
+   "sha256": "b43950cb85103931c908e2c3e4ffc1edcf9e32059de528af0f4d6be75860de32",
+   "tokens": 221
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/ja",
+   "sha256": "8a4fc62f68955571bb813128d4fe184a8510eeb8600d1d5c1ff40f11e1ea8b29",
+   "tokens": 468
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/ja",
+   "sha256": "133ad38ce9252328e784a18d5c17b8a5a6e056ce28fd4268bbdf628213da3861",
+   "tokens": 497
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/ja",
+   "sha256": "cd1ae700ee92cc54e208992cbd362560fa765fbe5c80502d173ddb8b5d8033a0",
+   "tokens": 520
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/ja",
+   "sha256": "ceadd977c854b538848f64eb830851d8b18bd8849a7fe24694522622a59a7966",
+   "tokens": 521
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/ja",
+   "sha256": "8efc902a37bf4481a1b6253b72042039bf929b90cfbc9331fe3387e5350024dc",
+   "tokens": 432
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/ja",
+   "sha256": "79323268adfc906404e5341fdc2c5cc81ff6fe280bba00cf9cd44d24f36b80f4",
+   "tokens": 603
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/ja",
+   "sha256": "e546d1347a34332b0bfa6e04eb64d2f7d4915986482e278994190ac3912f7f5b",
+   "tokens": 570
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/ja",
+   "sha256": "998c427c0db9ace2d6d963ff5c153f7e8b42a860847e3f9a9fc28d2268dea990",
+   "tokens": 638
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/ja",
+   "sha256": "be504848a3bdba66ce39b6bbb36e3e524ccc502bdc2959fdd7de33e0b499a781",
+   "tokens": 428
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/ja",
+   "sha256": "a99d39dca6038d2ecef8036469719c3fd119db979d1f3316e15eefa33757214c",
+   "tokens": 410
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/ja",
+   "sha256": "36fed3acff66afd20c1faa738d47424b14a41abe7860b626d74a2d63f7575cdc",
+   "tokens": 748
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/ja",
+   "sha256": "6949964759eee374dc27cf6d93048f32b45ecfb06ef458d739eba7cc4af03f2c",
+   "tokens": 236
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/ja",
+   "sha256": "f27bf539e64659475726f22c05f0e17916633717b609bf0d55dd3c8d9ad5488b",
+   "tokens": 1164
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/ja",
+   "sha256": "9fbeef42cc70417541bfe4614f999b53b682d832cf4aad3a315b52bd17ccbec3",
+   "tokens": 410
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/ja",
+   "sha256": "6170270a45d6fe3248c27cf39997e7798c36262c1bd62680d70ba72f66a7d332",
+   "tokens": 432
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/ja",
+   "sha256": "62f91caf6a56e479508b2e21f2594bc2eb67f3f92aed01c1a16d85e4eb91ccd2",
+   "tokens": 417
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/ja",
+   "sha256": "761714352b76041ac14d4229be75a2942b94a198edd57ecf2de64da53167a43d",
+   "tokens": 405
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/ja",
+   "sha256": "4d34f0265df45746e9b81ad773d2e6583f48e8e6970aea432150967da7bf0fdb",
+   "tokens": 608
+  },
+  {
+   "domain": "comfy_ja",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/ja",
+   "sha256": "1cccae846a3324089f88f210e2ff55229db7815bb527a75645794b34ae825135",
+   "tokens": 493
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/ko",
+   "sha256": "71dba17317eb9a7f0fd01ea6d32c210929cf6c31fd407c8d537bbbe94a8ccbd0",
+   "tokens": 445
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/ko",
+   "sha256": "c3c0ec612c0ae91adfaefc128d4d4177914bec67d86474cb9f0499b92dacb9bc",
+   "tokens": 465
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/ko",
+   "sha256": "0f90bb0ca2de44721c1ec27009836c47fd2e6dd596165e7692e8f4b4c350d23c",
+   "tokens": 476
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/ko",
+   "sha256": "79ae1d96546ba1795873f5c35737385e330ad4dd923d1178021c36cbacf1de45",
+   "tokens": 512
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/ko",
+   "sha256": "e104f83f56880c0e3aa409c6fd9fb320e936d8a563729e6046877e4d2aca0122",
+   "tokens": 363
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/ko",
+   "sha256": "3bcdfa0bd38d29c35e732d14bdab0a9f8cc42efbea49bfbccf0fdcace3cddd82",
+   "tokens": 563
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/ko",
+   "sha256": "bde2566facf9356ee8e4fd21f4520ad48f1b12885952d2b0f9e8d4ee677a788d",
+   "tokens": 523
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/ko",
+   "sha256": "939f424624fd08945dadf3aae4a52d3225269d11c7a511bebcb06de028e74012",
+   "tokens": 539
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/ko",
+   "sha256": "58084d23df53e411637aea07936dd22ece09d3a12471a08ba1a7ec5fad03f7ef",
+   "tokens": 463
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/ko",
+   "sha256": "438ff5d2637fb5bb01b214f8811cc7cf47c8a1b7989292b926dcdcea79230a7f",
+   "tokens": 365
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/ko",
+   "sha256": "e04d16008c0be2e7e1dc264a7626181ad2beb98b85654917b56d77f981657291",
+   "tokens": 739
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/ko",
+   "sha256": "52fd6c90ca3289072f53e346395ff34422f5db9a6e9194558f4bd15c91397e43",
+   "tokens": 430
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "eval",
+   "unit": "comfy/SplitAudioChannels/ko",
+   "sha256": "ac5ce276eb3a7f2c0114d7ec4d9929f8b4f8319790b7ae96633f2c7f8b01a561",
+   "tokens": 125
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/ko",
+   "sha256": "d799c6e28396e2b3d2e3f4504a0fe23bf2a734df4be9e79ca31e07649355911e",
+   "tokens": 1250
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/ko",
+   "sha256": "c53f1c1146790c089524b784bc23edc37b75b79dc862efad3add77e710d71c12",
+   "tokens": 393
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/ko",
+   "sha256": "be134496e13f76166e81ad9a44cef06efa203c56544efa8c0ccad19dd495fa5d",
+   "tokens": 427
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/ko",
+   "sha256": "eeee4cac68d633fcd3c11dc6e5418caee4d73a90bf7eff0c231f2553db23d11b",
+   "tokens": 394
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/ko",
+   "sha256": "ebc789e652285fa6b8647129cd29d743a7247edc2bff05760de14209b117c703",
+   "tokens": 386
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/ko",
+   "sha256": "a9a8f6638b5809edc29540f000978fb23f01c8412cb0785fc52ceb64eef9756f",
+   "tokens": 572
+  },
+  {
+   "domain": "comfy_ko",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/ko",
+   "sha256": "6c095d70d08d46c24ce5c7e94590f966bc4d5cacad199dbd5bd65e19e731a00c",
+   "tokens": 570
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/ru",
+   "sha256": "9b34642f4937d72ac9ac27af731c0e283d79fe0780d36e4bedf3fd5d6c80de98",
+   "tokens": 484
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/ru",
+   "sha256": "6022c79c6cc85472bda5a1091740ba4526003d9659b38fd546b1207b1fbf4206",
+   "tokens": 545
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/ru",
+   "sha256": "d8aaf9f40110661c11e2c7b0a0e9209237c9adcf4526ceeba4ccc6a12f37e51e",
+   "tokens": 531
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/ru",
+   "sha256": "b960652ef263e7427ce69f9f807b94547bee589a399b5b59dc65c36d34973d39",
+   "tokens": 527
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/ru",
+   "sha256": "5b6ea1c1196526c0e5472f1b00ac54a47287e22aa442a2c7e34120c4f1dc07cd",
+   "tokens": 386
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/ru",
+   "sha256": "1b861d5ace46499f976ef3c2cf72f2bd4137f3d78c53dd6465e358200c2c773d",
+   "tokens": 672
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/ru",
+   "sha256": "92c30f195a7a655d97c63d2a558341b46e52c2000280db15394367a6c18fccc3",
+   "tokens": 598
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/ru",
+   "sha256": "e740f35d41e36366c16bcadc2b5e2d67f4c5b8f591f388eade16501f39fe6a8d",
+   "tokens": 600
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/ru",
+   "sha256": "8338cccba164fa3f7c9b7d5707d61c8ca9c245639c39750f39a31676402c0d1d",
+   "tokens": 478
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/ru",
+   "sha256": "ccda696da0536389d117f68f9bb3cb5c3ce374dc08ff6666794789d83c2151d6",
+   "tokens": 418
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/ru",
+   "sha256": "b381aa72d9c17b39a008fbe743e00091e16cda3c5f4fea07a9a34fade79cdbf1",
+   "tokens": 852
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/ru",
+   "sha256": "3e58af2baed5d59f2e627bc37fc2028c02b8723f2c72212d6aabe0e008198dd0",
+   "tokens": 65
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/ru",
+   "sha256": "1d3d0521fd0c2073e0d9fce91d40ebe222d6c876a8889d5c391f7892b0441be5",
+   "tokens": 1198
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/ru",
+   "sha256": "016bf28958cf3e247c8106d517b22d5bcc2149f114a3281ed9d3619b68ff85f0",
+   "tokens": 436
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/ru",
+   "sha256": "638901134010cd214f288699991e99f0ff1a9ae8dd0b2f4e2f332754eff5125b",
+   "tokens": 433
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/ru",
+   "sha256": "1792c01f5f1fc2d20e95aecbc6a1469ed8b07d611cc661ee0a8dd072c7254774",
+   "tokens": 435
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/ru",
+   "sha256": "85858f89931c3b0c32e7b9fd137970bfb5bcc1b25a41b9bcd7f3c24adafd1f48",
+   "tokens": 449
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/ru",
+   "sha256": "3f9daca2206efa0bb7829e836a9633f45cf6a102f0686fb4ccec958ff76e7df1",
+   "tokens": 613
+  },
+  {
+   "domain": "comfy_ru",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/ru",
+   "sha256": "bb7d05287daceaa40e7333606194360054aa6cf2373e57aa263fe0339ed4bf7e",
+   "tokens": 280
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/fr",
+   "sha256": "cf8918e747c81cb615f5e6e846c926c0d572b34bf42540aaa5136baaa2364458",
+   "tokens": 502
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/fr",
+   "sha256": "0a22fe6a1e08de44e71c2f51b9bcff43a4e3dbabc70364bfd98b0dfa04797cd7",
+   "tokens": 603
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/fr",
+   "sha256": "0b4564c30def007f822fbcadfbeacbdc8fb4a320d741d33f3143ba026531c83f",
+   "tokens": 530
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/fr",
+   "sha256": "1132d171b50402b76e075c0a129378ac2c827fc683f5dafda9fb1c33bd5e5b9c",
+   "tokens": 569
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/fr",
+   "sha256": "0376a061e21d357a6e8a8fdd99f4784cf759a9011df0499c36558853da75c9bd",
+   "tokens": 398
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/fr",
+   "sha256": "ac638de79634765676f8ef91cd3a154654a647a58096bf72daf9fd3dfd512277",
+   "tokens": 633
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/fr",
+   "sha256": "3e4b46bfc537a89d5bc0c303d32a90389d9d211aa56abb51702f7f80807cdf39",
+   "tokens": 602
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/fr",
+   "sha256": "d2b4650b056dc9d8e68d3965b61ea1bccad5555eca99426ed606cf249b658b42",
+   "tokens": 632
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/fr",
+   "sha256": "a59587cb2edda3d348cba23c128d27953ee1edb31a7c2443ee3cb6a1c4368a1d",
+   "tokens": 479
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/fr",
+   "sha256": "7d7688af017b721b1d4a79022ccb0dd6d5c5276a053545d31d4d6b5ecf6d5cff",
+   "tokens": 382
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/fr",
+   "sha256": "2cf9a2265326f195db39824138881be938d966e1d2c75466dd4b5eff0db9f752",
+   "tokens": 782
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/fr",
+   "sha256": "601afda177384609e3818452c1e06ad5ba3996766b80df72f202f7e66137debc",
+   "tokens": 1202
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/fr",
+   "sha256": "3b3509bc9b83a3e9b8787f7acbdbef1b23f73afd503823a78aeb095abc60d5ef",
+   "tokens": 430
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/fr",
+   "sha256": "87aeb11e704f2e9c0f89b906925a84289468335804367283fb52583d1eabaf32",
+   "tokens": 445
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/fr",
+   "sha256": "41f6f2d6aed4970a0778a0c10f21fecd66d61bfc5616987924a6b18fa98b72f2",
+   "tokens": 443
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/fr",
+   "sha256": "9905bdd023cfd083ee357d0577674817f2c249595f717b04a3376f571fceef64",
+   "tokens": 395
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/fr",
+   "sha256": "100c6bf3914353fcf3a3577b0afe2f5ed43a2582a0a6717066b3eb76062fa276",
+   "tokens": 635
+  },
+  {
+   "domain": "comfy_fr",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/fr",
+   "sha256": "c534777bf3a7a855fa229c745295e584a256da60cdc9a7878e7f7116a88a270e",
+   "tokens": 315
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/es",
+   "sha256": "32f3bf23cb0b6e88c740b0111911e1f58756d1df407b4c7f572b46a14cc4d204",
+   "tokens": 470
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/es",
+   "sha256": "aa482e2a399460d562d24df01b54240dfbed23cf5e320a1e74212102046b1502",
+   "tokens": 502
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/es",
+   "sha256": "4db5e7ac070411ec589cdb86f88e6c32fa367f0940357a7005c18b867b291929",
+   "tokens": 503
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/es",
+   "sha256": "0610d54aefa9e31b0b781f5506918420106bdea134ffcb775739469a16859eb9",
+   "tokens": 520
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/es",
+   "sha256": "cdca2d57cbc3f13d238232cb95f3719aa67ce7bd5b982b74fe1a75a33c53a0be",
+   "tokens": 395
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/es",
+   "sha256": "dab89de0ef5598b242c5450165fcc1642bdd5b31aec7d9b0fd33650466ff0c61",
+   "tokens": 591
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/es",
+   "sha256": "74deee24160f7a4f1fb464e9095e17bbc8a075de316cd61aaadbc3c5757d26b5",
+   "tokens": 549
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/es",
+   "sha256": "1ab6677012d6ef1615c40c6810275a608b98197f0cc9b52a0237e654cb453d5c",
+   "tokens": 586
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/es",
+   "sha256": "2631e4e0b5e5a17a93af0c415c16d8a45126984fe2e8bba5de41eb089a693ab8",
+   "tokens": 434
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/es",
+   "sha256": "21c8366436b048f9ab11fe60a9aee446e6b61f498c692684cbbb2e5893ae209d",
+   "tokens": 366
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/es",
+   "sha256": "c8b966142574aa1fd74dbb0461965f3ac9e1be43a86bd1cf5c4b1f4efc0efb3b",
+   "tokens": 752
+  },
+  {
+   "domain": "comfy_es",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/es",
+   "sha256": "deeaae910fdd76353eb17a44e5a43e6f766a806f096948023ee11cdb2f7f739b",
+   "tokens": 393
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/es",
+   "sha256": "31ef2c074af31f040dc445b0c3bf53dca5d3a89a11f3d44fe3ed764cf3133630",
+   "tokens": 1121
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/es",
+   "sha256": "c4834790c6356b4f011784ff46f02140bb399dc179b2210ef76899c343804688",
+   "tokens": 399
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/es",
+   "sha256": "407fae8de35eb2fc4af80fdfb3057d486da58aeaebef96fb5dadc0d51857fac7",
+   "tokens": 424
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/es",
+   "sha256": "b5705fcef5325010dc5916c0f3a2c74e2c4e85bb4e4888895c335d3c3191aaa3",
+   "tokens": 431
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/es",
+   "sha256": "02356ad7f1798c5c4b3dd6a2b42d1b85e5d30a0357efd02713af158c5b360468",
+   "tokens": 392
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/es",
+   "sha256": "40caf432668b917e54ce86948e8990057443ec58bd7f0fdb425a74fec20c54f4",
+   "tokens": 584
+  },
+  {
+   "domain": "comfy_es",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/es",
+   "sha256": "216c173cf0ab7514b1f12fed33ae5c8aff70d35de51232192c27e7bb799433da",
+   "tokens": 588
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/pt-BR",
+   "sha256": "594303b8131ea27822775d3d2655e4fca4003b202678f3b5df46924fc3ac022a",
+   "tokens": 475
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/pt-BR",
+   "sha256": "35d6322244176286b558d695cf734760887d1bf8d537c4f74678684d0bfa93b8",
+   "tokens": 508
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/pt-BR",
+   "sha256": "c5182d2e67a2217facc714531bfd24cd1d542f334e5276f958f6e1747ebacd3c",
+   "tokens": 499
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/pt-BR",
+   "sha256": "9649bf2774619299e36613f035c96e8900d5084dcd834d372c250e0122466abc",
+   "tokens": 602
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/pt-BR",
+   "sha256": "1e1b230f9e8051bff2af071d1cb878716e41beb74967912db5947cc151884e7e",
+   "tokens": 395
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/pt-BR",
+   "sha256": "a5e43b8afa9281b69d015d79de96a80d0fb4c5773e8d1380c8c2d0788acfc449",
+   "tokens": 606
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/pt-BR",
+   "sha256": "583ec6cbb9eb6bd211f111123c23c8634a4c73733eceb80ee600b6648d54284a",
+   "tokens": 553
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/pt-BR",
+   "sha256": "2261b44a60d60444cbc482fa3c27f44c4f75c3f62e043e01a5cc48ccc7a3c78e",
+   "tokens": 574
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/pt-BR",
+   "sha256": "d1fda47001ed04bbb6edf6d1d72dbd82e2b2274a5ed5c7865e8b89020b1a987b",
+   "tokens": 440
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/pt-BR",
+   "sha256": "92320fc9190ce6510127a470608b02e6af5a5f91b8165ca1038e58c8ca67e1c5",
+   "tokens": 385
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/pt-BR",
+   "sha256": "28f7fa9f7fb33b43361e8e5ad8486e996357d1ea9799051f8e6daa9da7d8dc1a",
+   "tokens": 759
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "eval",
+   "unit": "comfy/RecraftColorRGB/pt-BR",
+   "sha256": "3a6f460e8b615b3d75119886d6431d1498c46b83f1eeca079f70cb5163527276",
+   "tokens": 285
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/pt-BR",
+   "sha256": "68e4b5aa52c309d3245af1b71e2808ea648ba568116ad9ac255653b32ee0f325",
+   "tokens": 1143
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/pt-BR",
+   "sha256": "290e64b24abaac128bef306e05b186cb6beaac0314c86f42b8b1a9f3b0328c1d",
+   "tokens": 414
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/pt-BR",
+   "sha256": "cd0905a038256b75b12e4e669c093cdb273b3fb578a00f25b8e657b162dd5db6",
+   "tokens": 423
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/pt-BR",
+   "sha256": "bcf5d577bbbeaecc884c9575c53c4af4ae8246549138d3d8a37c73083ba735f2",
+   "tokens": 500
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/pt-BR",
+   "sha256": "26ae9ac74d4ac04553ab965b1936ae5633c2d0e21b3b8fefbc6cc3e27398bde3",
+   "tokens": 381
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/pt-BR",
+   "sha256": "ad8ae06ce0bebe8d8f0e296ad020dab5c990d05b5a1e14ac6032639b7fd0cbd4",
+   "tokens": 677
+  },
+  {
+   "domain": "comfy_pt-BR",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/pt-BR",
+   "sha256": "dc6e6996b80302ab84a8f15ce1d54ec00c97468ac51e7c5f97a02c087dc1cc65",
+   "tokens": 381
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/tr",
+   "sha256": "a7d8568c308bc8411460c04cc3b598ce9048e223215b8387a56a66b7cb9db820",
+   "tokens": 526
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/tr",
+   "sha256": "ce50d20b37fce30ded33d692f17ebad42226240105880d3b534198fc5f2ba8af",
+   "tokens": 604
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/tr",
+   "sha256": "0f86f33013b63a417ec8453bf6f2f0c7f25d030083e0266b351ddc0faa2dcef5",
+   "tokens": 610
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/tr",
+   "sha256": "2cb39f07a0465411ffd53120d4f59d6a4042a0cade0ac28ec4ba8a2a274971d3",
+   "tokens": 578
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/tr",
+   "sha256": "7031e22026ec52935a27c7a3085aa2ff1b1d2038245da9f2566ef164d29aac86",
+   "tokens": 470
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/tr",
+   "sha256": "106c82fb910113c76614039df5c4a324b81ae400bc721991c6bfecc59037dfe3",
+   "tokens": 716
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/tr",
+   "sha256": "4690ff9907852e9d017533f16a1767223dfc642af86eb0a542b2d79bb20fdbf3",
+   "tokens": 637
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/tr",
+   "sha256": "de0e2cafdf846f81c4d1483b51cf3ff87bd9f0fad19cac3438cc7e1a66674d21",
+   "tokens": 998
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/tr",
+   "sha256": "5638cda103dbe756eca26cba91ba8d34802f7cd4d44f558b730cdaec4ff051c1",
+   "tokens": 496
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/tr",
+   "sha256": "8ad19013214357824a981af5e0b33e85a89617d6e877cbfafa3decb9ac17be97",
+   "tokens": 454
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/tr",
+   "sha256": "c3b2b0abf3561b7ce2a4b712c5c58000ff2c0e498bd462e5f7f54d4273a30d46",
+   "tokens": 153
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/tr",
+   "sha256": "ef73cd785fb88ea081e59b3919f0dd8835853ccb466c28dc3cf5583c3b2a6ede",
+   "tokens": 1274
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/tr",
+   "sha256": "ea48572e7e3b6d8f71fac9a08c1eefb1af52813781b9df833bfa06fc69feeec1",
+   "tokens": 467
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/tr",
+   "sha256": "fbbe2eff20b2216207498aa6b9d4cc0aac7308b6dee6bc206c19bcd2dcd94836",
+   "tokens": 492
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/tr",
+   "sha256": "3915e1e0fb9a40f7832e08039b428cbec63322c9908080b6030c6bf49a1ed5c4",
+   "tokens": 489
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/tr",
+   "sha256": "735e8609468873959747e7c26d27419146ff751d8e8d03982b26a63b6a93f010",
+   "tokens": 468
+  },
+  {
+   "domain": "comfy_tr",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/tr",
+   "sha256": "ca945e0dfbb450ebbb9dfd0ea0caff8033c5fdd2b3323ec01a893d7522e32b98",
+   "tokens": 568
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/ar",
+   "sha256": "4b0a0d4384587c7f62293a0ee10600e89275ef7f070409b8ac5f34c100ac36a0",
+   "tokens": 487
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/ar",
+   "sha256": "01a6d5a52b43c31de963ffbd98889c814eea7506af3c43350e149251e2910992",
+   "tokens": 538
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/ar",
+   "sha256": "d13c6affd49d08ec8401498dca34d832cbd02a89e5159d427878f52eec708333",
+   "tokens": 524
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/ar",
+   "sha256": "6ecb8b3d7086490729f092d2bb42b7c5ccbda10f7cc4b8ff356e37b35fcbf17e",
+   "tokens": 551
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/ar",
+   "sha256": "3663c1b35c879b0e352b861d8243a8554393b1d2bb740c60cd2c57deedcb480e",
+   "tokens": 416
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/ar",
+   "sha256": "8cc8ccdf7dd9c8c7ba2c8c136dbf9ec6f86f36f770002ff393dc44b521910195",
+   "tokens": 625
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/ar",
+   "sha256": "5b39ec3230d789b024bf72f7bd719f4a37b1e7104bb325969768d2baaeb17e99",
+   "tokens": 562
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/ar",
+   "sha256": "0c3fa9156794721d0550ad105b94ea7dcb7d14d66eed3dba1b874417e3bb51e8",
+   "tokens": 658
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/ar",
+   "sha256": "882aa7fd7ab5fc946a7eb5f940d9f5542486358a644158a1609eb845d55cfc15",
+   "tokens": 510
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/ar",
+   "sha256": "07c5b1ab7a1e0c5d738df8b3f3731d4599c6c26333813d32b6e0b03a58f7d109",
+   "tokens": 428
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/ar",
+   "sha256": "ca1e66e20052c0667fa5cb20473ec38bd7b4634fc6a41b41214fafff9e4a56d1",
+   "tokens": 813
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/ar",
+   "sha256": "9e079b5ce1f5003dbc5ffb10088bc12c47832c2e9df69c2e3ca22b9debfaa7c6",
+   "tokens": 1154
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/ar",
+   "sha256": "1ac0debc1033f4eece493b7aac23dc61b233689aa3dec57dc2f49316452f047e",
+   "tokens": 432
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/ar",
+   "sha256": "675836378c14cb0c2b792ba33b7df0f773e1e7357a8b8610e3a71cc2798b970c",
+   "tokens": 468
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/ar",
+   "sha256": "f6aff081ca9e22fc7e3c4baa286806bf37e979d3366c53e92be79dfdabaa590c",
+   "tokens": 503
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/ar",
+   "sha256": "a97223a667bc64ea6142857e2ab15f487d9c320a2ef45ea0dfbbe21a08545b68",
+   "tokens": 400
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/ar",
+   "sha256": "abd1f14ea572d5d0ff5d3ff5c19931b99f2d5ecc1ad033bd4b894c63df56bb03",
+   "tokens": 629
+  },
+  {
+   "domain": "comfy_ar",
+   "split": "fit",
+   "unit": "comfy/FluxProDepthNode/ar",
+   "sha256": "cb6945991770b2852adc355570c5d5a17416677dc0459bf41b24a1856b22ef50",
+   "tokens": 302
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/BriaVideoGreenScreen/fa",
+   "sha256": "efac94bbd4dbfd49770e72fc3697ae057cdf1ad56dade6009a7871f55ac462d5",
+   "tokens": 548
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoaderSimple/fa",
+   "sha256": "620f79a2b33c018b5e356f05667caaea3166c4fe61a61686dadcccf2baebe81e",
+   "tokens": 585
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/CheckpointLoader/fa",
+   "sha256": "4c40ebf8d7a16c102dde5f129a3b91655001aae3d6d8b9b69af731fe2cb6927f",
+   "tokens": 606
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/SelectCLIPDevice/fa",
+   "sha256": "88600c52a465e983e0137ea278a1446e56b6554e6a898f326cbc083f37ff3ce1",
+   "tokens": 576
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/CaseConverter/fa",
+   "sha256": "6c1d04986b496e123185950c9c90039b9c8261f1b4e89cbcb6c1703b6a976852",
+   "tokens": 431
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/PairConditioningSetPropertiesAndCombine/fa",
+   "sha256": "6ba7ffed428ab9eb8fed59f167409cd96c9743b9def5ec411f8fb315f68bd9b9",
+   "tokens": 559
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/HappyHorseImageToVideoApi/fa",
+   "sha256": "5fbd9b512446884a53c2631b05b719da78d454856d17e40297737fb2816c0f55",
+   "tokens": 639
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/GeminiImageNode/fa",
+   "sha256": "cd79414f92bb2a8a37aa56b8ef43e2df28e9105e14caa9858351d8eac218cb1f",
+   "tokens": 691
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/TripoRefineNode/fa",
+   "sha256": "8db212c56833a77c70f76b125bc741c33bbf9275b357ef89ba5c824c06849df7",
+   "tokens": 527
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/CombineHooks/fa",
+   "sha256": "1f147fa79b5dda3460040cbf27af63d617dfa0314fabd7f083f5bdca9d6fa915",
+   "tokens": 443
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "eval",
+   "unit": "comfy/TripoRetargetNode/fa",
+   "sha256": "3e4f687a1c960993331c17344c31fce0c2c4d21ad967c6679077a47ec264c7f1",
+   "tokens": 502
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/KlingVideoNode/fa",
+   "sha256": "c4688a42309b9f26e340ef3e1cf533ed4f3affb45fd3ed90516d3af745805d46",
+   "tokens": 1365
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/VAEDecodeAudio/fa",
+   "sha256": "273ad253c337ae46d16bd3d24206347b331de45ddfb473aeb620f083040782fb",
+   "tokens": 502
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/HypernetworkLoader/fa",
+   "sha256": "5d00cbd77c817064cb82e525e7c3858a0b2c61eb2737c6b72af5f0c747ad8e63",
+   "tokens": 539
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/MaskPreview/fa",
+   "sha256": "4c4c26f7b77494cd2122ba3cc1a1841f7054fe05a6a5ec56de1611426b5fd74c",
+   "tokens": 497
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/Hunyuan3Dv2Conditioning/fa",
+   "sha256": "19f4d64a65da3afb1149edfa673c56e8773a3c6ef0169175d2ff033d331779e4",
+   "tokens": 470
+  },
+  {
+   "domain": "comfy_fa",
+   "split": "fit",
+   "unit": "comfy/HappyHorseTextToVideoApi/fa",
+   "sha256": "c725836adf5d4a46d299777626347c1e684c1acfa28f00d7b9ff4e5ede9fc33b",
+   "tokens": 520
+  }
+ ]
+}
