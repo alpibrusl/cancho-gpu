@@ -1,0 +1,20 @@
+// The sampled token of each row, 1-based (the id convention of ce_stats and onehot_h): the chosen chunk's index * 64 + its count of columns before the sample, + 1. base is 0, 64, 128, ...
+algo samp_tok(r, nq)
+  in  sel:  f32[r, nq]
+  in  cnt:  f32[r, nq]
+  in  base: f32[1, nq]
+  out tok:  f32[r]
+{
+  grid i over r
+  let st = load sel[i, 0 ; 1, nq]
+  let ct = load cnt[i, 0 ; 1, nq]
+  let bt = load base
+  let v  = ct + bt
+  let w  = st * v
+  let z  = rowsum w
+  let o  = z + 1.0
+  store o -> tok[i]
+}
+
+schedule samp_tok for apple-m-series { threads 256 }
+schedule samp_tok for nvidia-ada     { threads 128 }

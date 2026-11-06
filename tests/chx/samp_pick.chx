@@ -1,0 +1,45 @@
+// Which chunk holds the sample. t = u * (total mass), u the uniform of the row (0 <= u < 1, data: the surface has no random numbers); the chunk is the first whose cumulative mass reaches t,
+// that is the number of chunks whose cumulative mass is below t. Writes the one-hot of that chunk (sel) and, for every chunk, the target left inside it, tl = t - (mass of the chunks before it)
+// (only the chosen chunk's is used). iota is 0 .. nq - 1.
+algo samp_pick(r, nq)
+  in  cum:  f32[r, nq]
+  in  cs:   f32[r, nq]
+  in  iota: f32[1, nq]
+  in  u:    f32[r, 1]
+  out sel:  f32[r, nq]
+  out tl:   f32[r, nq]
+{
+  grid i over r
+  let cumt = load cum[i, 0 ; 1, nq]
+  let cst  = load cs[i, 0 ; 1, nq]
+  let io   = load iota
+  let ut   = load u[i, 0 ; 1, 1]
+  let tot  = rowmax &cumt
+  let zb   = zeros f32[1, nq]
+  let ub   = zb + ut
+  let zc   = zeros f32[1, nq]
+  let tb   = zc + tot
+  let tt   = tb * ub
+  let q    = &cumt - &tt
+  let zn   = zeros f32[1, nq]
+  let ng   = zn - q
+  let ab   = step ng
+  let cstar = rowsum ab
+  let z    = io - cstar
+  let w1   = &z - 0.5
+  let w2   = z + 0.5
+  let zm   = zeros f32[1, nq]
+  let n1   = zm - w1
+  let zo   = zeros f32[1, nq]
+  let n2   = zo - w2
+  let s1   = step n1
+  let s2   = step n2
+  let sl   = s1 - s2
+  store sl -> sel[i, 0]
+  let d1   = cst - cumt
+  let tlv  = d1 + tt
+  store tlv -> tl[i, 0]
+}
+
+schedule samp_pick for apple-m-series { threads 256 }
+schedule samp_pick for nvidia-ada     { threads 128 }

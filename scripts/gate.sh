@@ -45,6 +45,8 @@ tests/chat.sh
 python3 tests/kernels.py "${CANCHO_GPU:-build/cancho-gpu}"
 CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
+python3 tests/samp_dev.py build/cancho-gpu-session
+python3 tests/carry_dev.py build/cancho-gpu-session
 python3 tests/train.py build/cancho-gpu-session
 python3 tests/cnn.py build/cancho-gpu-session
 python3 tests/probes.py build/cancho-gpu build/cancho-gpu-session

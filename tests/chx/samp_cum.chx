@@ -1,0 +1,16 @@
+// The cumulative mass over the chunks of every row, cum[i, j] = sum over q <= j of cs[i, q], as a product with the lower-triangular matrix of ones (tri[j, q] = 1 where q <= j): the
+// surface has no scan. bn columns of the result a threadgroup, the triangular matrix read once for all the rows.
+algo samp_cum(r, nq, bn)
+  in  cs:  f32[r, nq]
+  in  tri: f32[nq, nq]
+  out cum: f32[r, nq]
+  tile bn
+{
+  grid j over nq / bn
+  let ct = load cs
+  let tt = load tri[j * bn, 0 ; bn, nq]
+  store matmul_nt ct tt -> cum[0, j * bn]
+}
+
+schedule samp_cum for apple-m-series { threads 256 bn 24 }
+schedule samp_cum for nvidia-ada     { threads 128 bn 8 }
