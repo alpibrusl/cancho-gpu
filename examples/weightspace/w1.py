@@ -3,7 +3,8 @@
 
     python3 examples/weightspace/w1.py diff   BASE EDITED [--json report.json] [--w1-expect]
     python3 examples/weightspace/w1.py behave --base BASE --edited EDITED --data gsm8k_test.parquet --out DIR --gpu-free
-                                              [--n 200] [--max-new 8192] [--batch 8] [--backend transformers|mlx] [--device mps]
+                                              [--n 200] [--max-new 8192] [--batch 8] [--backend transformers|mlx|cancho] [--device mps]
+                                              [--cancho-bin build/cancho-gpu-w1] [--kernels tests/chx] [--mode f16|f32] [--tmax N]
     python3 examples/weightspace/w1.py status  --dir DIR [--n 200] [--max-new 8192]
     python3 examples/weightspace/w1.py verdict --dir DIR [--n 200] [--max-new 8192] [--json verdict.json]
 
@@ -11,7 +12,8 @@ BASE and EDITED are local checkpoints: a .safetensors file or a directory holdin
 nothing it does not compare and writes only the --json file. `--w1-expect` additionally holds the diff to what the authors
 published (README of RikiyaT/Qwen3.5-0.8B-weight-space-programming and exp8_math/runs/p50c/edit/manifest.json): exactly two
 tensors differ, 64 columns each, with the published entry counts and sha256. `behave` runs both models on the first --n
-GSM8K test problems, applies the section 13 rule and writes the records and the verdict into DIR; it needs the GPU, and
+GSM8K test problems, applies the section 13 rule and writes the records and the verdict into DIR; it needs the GPU (`--backend cancho`: cancho-gpu's own
+Metal engine, build/cancho-gpu-w1, one conversation at a time; w1_cancho.py says what its seeds mean), and
 refuses to start without --gpu-free (your statement that nothing else is using it) or when `diff --w1-expect` fails.
 
 `status` and `verdict` read DIR's base_<max-new>.jsonl and edited_<max-new>.jsonl (what `behave` wrote, or what scripts/gcp/w1_cloud.sh pulled
@@ -27,6 +29,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import w1_behave as B  # noqa: E402
+import w1_cancho as C  # noqa: E402
 import w1_diff as D  # noqa: E402
 
 PREFIX = "model.language_model.layers."
@@ -75,6 +78,9 @@ def cmd_diff(a):
 
 
 def pick_generator(a, model_dir):
+    if a.backend == "cancho":
+        tmax = a.tmax or C.default_tmax(a.max_new)
+        return C.cancho_generator(C.command_for(a.cancho_bin, model_dir, a.kernels, a.mode, tmax))
     if a.backend == "mlx":
         return B.mlx_generator(model_dir)
     return B.transformers_generator(model_dir, a.device)
@@ -93,13 +99,21 @@ def cmd_behave(a):
                   "); run `diff --w1-expect`, or pass --no-verify", file=sys.stderr)
             return 1
     os.makedirs(a.out, exist_ok=True)
+    if a.backend == "cancho":
+        a.batch = 1   # one conversation at a time: problem i is generated with seed --seed + i (w1_cancho.py)
     recs = {}
     for tag, path in (("base", a.base), ("edited", a.edited)):
         gen = pick_generator(a, path)
-        recs[tag] = B.run_behaviour(gen, problems, tag, a.max_new, a.seed, a.batch, os.path.join(a.out, f"{tag}_{a.max_new}.jsonl"))
+        try:
+            recs[tag] = B.run_behaviour(gen, problems, tag, a.max_new, a.seed, a.batch, os.path.join(a.out, f"{tag}_{a.max_new}.jsonl"))
+        finally:
+            if hasattr(gen, "close"):
+                gen.close()
         del gen
     v = B.verdict(recs["base"], recs["edited"])
     v["protocol"] = {"n": a.n, "max_new": a.max_new, "seed": a.seed, "batch": a.batch, "backend": a.backend, **B.SAMPLING}
+    if a.backend == "cancho":
+        v["protocol"].update({"mode": a.mode, "seed_model": "per problem: sampler.new(--seed + id), splitmix64 into xorshift64*"})
     with open(os.path.join(a.out, f"verdict_{a.max_new}.json"), "w", encoding="utf-8") as f:
         json.dump(v, f, indent=1)
     print(B.render_verdict(v, f"(cap {a.max_new})"))
@@ -165,8 +179,12 @@ def main(argv):
     b.add_argument("--max-new", type=int, default=8192)
     b.add_argument("--batch", type=int, default=8)
     b.add_argument("--seed", type=int, default=0)
-    b.add_argument("--backend", choices=["transformers", "mlx"], default="transformers")
+    b.add_argument("--backend", choices=["transformers", "mlx", "cancho"], default="transformers")
     b.add_argument("--device", default="mps")
+    b.add_argument("--cancho-bin", default=os.path.join(HERE, "..", "..", "build", "cancho-gpu-w1"))
+    b.add_argument("--kernels", default=os.path.join(HERE, "..", "..", "tests", "chx"))
+    b.add_argument("--mode", choices=["f16", "f32"], default="f16")
+    b.add_argument("--tmax", type=int, default=0)
     for name in ("status", "verdict"):
         c = sub.add_parser(name)
         c.add_argument("--dir", required=True)
