@@ -1,6 +1,6 @@
 # W4: weight-space editing as a pipeline with gates (design written before any measurement, 2026-11-06)
 
-> **Status.** Sections 1 to 10 are the design and the pre-registered rules; they were written on 2026-11-06 **before** any of the new measurements (the corpus was surveyed and one load-and-forward feasibility run was timed, which measures nothing registered here). Section 11 is where results go, in place, with the machine and the date; section 12 lists every deviation from this plan. A rule in sections 4 to 8 is not edited after a result is seen; a fact that turns out different is corrected where it was stated, with the date. Marks as in `weight-space.md`: **[read]** (from a document or source, not run), **[measured]**, **[estimate]**, **[choice]**, **[open]**.
+> **Status.** Sections 1 to 10 are the design and the pre-registered rules; they were written on 2026-11-06 **before** any of the new measurements (the corpus was surveyed and one load-and-forward feasibility run was timed, which measures nothing registered here; the design commit precedes the code and the runs in the branch history). **Section 11 holds the results of E1a, E2-lite and E2b, measured the same day on this Mac (offline, MPS float32); section 12 lists every deviation from this plan.** Headline: the published edit costs 0.0205 nats a token and +1.3% perplexity (it fails the registered KL gate by its interval's upper bound, 0.0219 against 0.02); the proposal's null-space recipe at cutoffs 1e-3 and 1e-4 projects the edit to exactly zero on this model, and between 2e-2 and 2e-1 it is a dial that removes the collateral faster than the edit; the published edit is `dW[:, j] = -6 (u . W_j) u` on 64 loud columns. The behavioural half of every one of these is the L4's and has not been run. A rule in sections 4 to 8 is not edited after a result is seen; a fact that turns out different is corrected where it was stated, with the date. Marks as in `weight-space.md`: **[read]** (from a document or source, not run), **[measured]**, **[estimate]**, **[choice]**, **[open]**.
 > It extends `weight-space.md` (W0 to W3, sections 1 to 14 there) and takes its input from the user's proposal, "Systematic Weight-Space Editing & Circuit Insertion: Test Proposal" (E1 to E5, sections 3 to 7 there; quoted here as *the proposal*), which in turn builds on the blog post of `weight-space.md` section 1. Nothing here needs the GPU; the first two experiments run on the Mac's CPU/MPS.
 
 ## 1. What the proposal asks, what is kept, and where it is changed
@@ -187,8 +187,152 @@ Local data has no poetry; the contrast is **literary Spanish prose (`es`) agains
 
 ## 11. Results (filled in place after the runs; nothing below this line was known when sections 1 to 10 were written)
 
-*(none yet)*
+### 11.0 What was run, and on what
+Apple M4 Max, 64 GB, macOS 26.2 (Darwin 25.2.0), Python 3.14.5, torch 2.12.0 (MPS, float32), `transformers` 5.2.0, numpy 2.4.6; branch `w4-design` of this PR (the numbers were produced by the `examples/weightspace/w4_collateral.py` of the commit that carries this section; the code changed between the first run and these results only as listed in 12.1 and 12.2; `tests/w4.py` is in the gate and holds the pure parts). **The Mac was shared**: load average 5 to 7 all through (orphaned `cancho-test` runners of other sessions at 100% CPU each; not touched), so **no time in this section is a benchmark**. The MPS float32 forward was checked against the CPU float32 one before the runs: relative difference 2.1e-6 on a 2,048-token window (the feasibility run of section 9), far below every effect reported below. The checkpoints are held to `w1.EXPECT`'s sha256 by `published()` before anything runs (both tensors, base and edited).
 
-## 12. Deviations from this plan and defects found
+Commands (the working directory `build/w4` is not committed; the JSON files are):
+```
+python3 examples/weightspace/w4_collateral.py e1a     --work build/w4 --out examples/weightspace/results/w4_e1a.json      # after fit: also the exploratory scores
+python3 examples/weightspace/w4_collateral.py corpus  --work build/w4        # 6 s
+python3 examples/weightspace/w4_collateral.py fit     --work build/w4        # 1 min: K0 second moments, both layers
+python3 examples/weightspace/w4_collateral.py project --work build/w4        # 7 s: eigenproblems, cutoffs, controls
+python3 examples/weightspace/w4_collateral.py eval    --work build/w4        # 15 variants x 276 windows, 90 s each
+python3 examples/weightspace/w4_collateral.py repeat  --work build/w4        # 4 variants x 50 prompts x 256 greedy tokens
+python3 examples/weightspace/w4_collateral.py report  --work build/w4 --out examples/weightspace/results/w4_collateral.json
+```
+Results: `results/w4_collateral.json` (everything below, with the per-domain tables), `results/w4_e1a.json`, `results/w4_collateral_manifest.json`.
 
-*(none yet)*
+**The corpus (3.1) as built.** Fit split 167,977 tokens (193 windows; `N/d` = 46.9), eval split 179,845 tokens in 276 windows (179,569 scored positions). Every quota was met, to within 25 tokens (`es` fit 15,977, `comfy_fr` eval 4,977), except `math_chat` (65 problems, 11,868 of 12,000 tokens). Units (files, or 16,384-token blocks) in fit / eval: `en_md` 12/12, `code_py` 7/7, `code_rs` 8/8, `code_cho` 5/5, `code_c` 4/6, `code_web` 8/8, `data` 9/14, `es` 6/6, `it` 3/3, the 12 ComfyUI languages 8 to 11 nodes each. **That is a thin corpus: a domain is 3 to 24 documents.** `it` is one novel and two READMEs; `es` is six Spanish documents of the same family. The "multi-language" requirement is met in breadth (12 languages in the parallel ComfyUI text, two more in `es` and `it`), not in depth; section 3.3 is still the list that would deepen it.
+
+### 11.1 E1a: the published edit, from the weights alone [measured 2026-11-06]
+`diff` of the two checkpoints, SVD of `dW` per layer; `u` the left singular vector, `sigma` its value (layer 15: 1.7489, layer 19: 1.3988; `u` and `sigma v` as in 6.4):
+
+| | layer 15 | layer 19 |
+|---|---|---|
+| slope `c` of `sigma v_j` on `u . W_j` over the 64 columns | **-6.000** | **-6.000** |
+| Pearson `rho` | -1.000 | -1.000 |
+| the ratio `sigma v_j / (u . W_j)`, every column | -6.000 to -6.007 (bf16 rounding of the result) | -6.002 to -6.006 |
+| published columns in the top 64 / 96 / 128 by `\|u . W_j\|` (chance 1.1 / 1.7 / 2.3) | 31 / 37 / 43 | 18 / 25 / 32 |
+| median rank of the published columns by `\|u . W_j\|` (of 3,584) | 70 | 129.5 |
+| the same by signed `u . W_j` (the larger sign) | top 64: 21 | top 64: 22 |
+| Spearman(index, `\|u . W_j\|`) / Spearman(index, membership) | -0.07 / -0.16 | -0.05 / -0.13 |
+| sign of `u . W_j` on the support (+ / -) | 30 / 34 | 24 / 40 |
+
+* **H1 (pre-registered: slope in [-1.2, -0.8] and `\|rho\|` >= 0.9) is false as registered, and the form it described is exact.** The published edit is `dW[:, j] = -6 (u . W_j) u` on the 64 columns: it does not remove the component of `u` from the column, it **replaces it by minus five times itself** (`p -> p - 6p`). The "one direction subtracted from 64 output columns" of the post is, as measured, this. `alpha = 6.00` to three decimals in both layers, the same number: a constant of the authors' procedure (and the first thing the E1 value rule of 6.3 must reproduce; the registered grid of 7.2 assumed 1 and is corrected, 7.2).
+* **H2 (pre-registered: at least 48 of 64 in the top 96 by `\|u . W_j\|`) is false**: 37 and 25. The rule R1 recovers half of layer 15's support (31 of 64 in the top 64, against 1.1 by chance) and under a third of layer 19's (18 of 64): the support was chosen with something that is not in the weights.
+* **Exploratory, after the fit stage, not registered (the score is one of three tried, so read it as a pointer, not a test):** the 64 columns' neurons are **loud**: the median root mean square of their activation on the fit text is 1.83 (layer 15) and 1.75 (layer 19) times the median neuron's, the 88th and 87th percentile (11.3, P5). Ranking by `\|u . W_j\|` times the neuron's rms puts 36 of 64 (layer 15) and 21 of 64 (layer 19) of the published columns in the top 64 (and 49 and 31 in the top 128), against 31 and 18 for `\|u . W_j\|` alone; rms alone puts 15 and 15 there. So the activation scale is part of the selection and does not complete it: the contrast between looping and non-looping text (R3 to R5) is what is left to find. **The index skew of section 1 (item 1) is not explained by anything computed here.**
+
+### 11.2 E2-lite: the collateral of the published edit [measured 2026-11-06]
+Every variant against the base, 276 windows, 179,569 scored positions. Mean KL with the 95% bootstrap interval over sequences (2,000 resamples, seed 20261106); token and sequence distributions; perplexity of the base on this corpus **9.428**; the paired difference of the NLL as a percentage of perplexity, with the upper bound of its interval; top-1 agreement; the gate of 4.3 (the repetition clauses are in 11.5 and decide `edited`'s verdict together with these).
+
+| variant | mean KL [95% CI] | token KL p50 / p90 / p99 / max | sequence-mean KL p50 / p99 / max | ppl | delta ppl [upper] | top-1 | gate (without repetition) | strict |
+|---|---|---|---|---|---|---|---|---|
+| **edited** (both layers) | **0.02053** [0.01932, 0.02188] | 0.0074 / 0.048 / 0.201 / 3.52 | 0.0182 / 0.0390 / 0.0452 | 9.553 | **+1.33%** [+1.50%] | 0.9499 | **fails `kl_mean`** (upper bound 0.0219 vs 0.02); the other four pass | no |
+| e15 (layer 15 only) | 0.01799 [0.01657, 0.01958] | 0.0041 / 0.043 / 0.217 / 3.78 | 0.0135 / 0.0382 / 0.0450 | 9.489 | +0.65% [+0.84%] | 0.9589 | pass | no |
+| e19 (layer 19 only) | 0.00804 [0.00770, 0.00839] | 0.0026 / 0.021 / 0.074 / 0.72 | 0.0076 / 0.0174 / 0.0240 | 9.536 | +1.15% [+1.25%] | 0.9690 | pass | no |
+| rand0, rand1 (same norm, random direction and support) | 0.00149 [0.00137, 0.00162], 0.00163 [0.00150, 0.00177] | 0.0004 / 0.003 / 0.015 / 1.6 | 0.0013 / 0.0077 / 0.0114 | 9.442, 9.438 | +0.15%, +0.11% | 0.986, 0.985 | pass | yes |
+| q8 (int8 per row, all layer linears) | 0.00165 [0.00157, 0.00173] | 0.0009 / 0.004 / 0.012 / 0.23 | 0.0014 / 0.0089 / 0.0095 | 9.429 | +0.01% [+0.06%] | 0.9788 | pass | yes |
+| q4 (int4 g32 RTN) | 0.16714 [0.16022, 0.17418] | 0.093 / 0.366 / 1.263 / 9.07 | 0.154 / 0.682 / 0.768 | 11.076 | +17.5% [+18.5%] | 0.8197 | fails all five | no |
+
+* **The published edit's mean KL, 0.0205 nats a token, is at the registered gate (0.02) and fails it by its upper bound (0.0219).** It passes the perplexity, the per-domain and the tail clauses (+1.5% upper bound against 2%; worst domain `code_cho` at KL 0.0309 against 0.05 and +2.8% against 5%; token p99 0.20 against 0.5). Said plainly: **on the registered gate the published edit fails by a hair on one clause and passes the rest; the verdict moves with the 0.02 I chose**, which is why the anchors are printed.
+* **The anchors read the threshold.** 0.02 lies between `q8` (0.0017) and `q4` (0.167): the geometric mean of the two is 0.0166. `q4`'s mean KL is 8.4 times the gate, inside the "10 times" outside which section 4.3 said the gate would be called mis-scaled; **it is not called that, and it should be read as: int4 round-to-nearest of this 0.8B model is a damage the gate rejects by a factor of 8**, so "the community accepts 4-bit" (the reason given in 4.3) holds for calibrated 4-bit of larger models, not for naive int4 of this one. The published edit costs **12 times `q8`'s KL and 13 times a random edit of the same norm and support size**, and about 1/8 of `q4`'s: more than rounding every weight to 8 bits, much less than to 4.
+* **Where it sits.** Layer 15's edit alone has 88% of the KL (0.0180); layer 19's alone 39% (0.0080); both together 100%: sub-additive. Perplexity moves the other way (layer 15 alone +0.65%, layer 19 alone +1.15%, both +1.33%): **layer 19 hurts the next-token log-likelihood more per unit of KL**, layer 15 changes the distribution more without moving the likelihood of the actual token.
+* **The collateral is diffuse and uniform across languages, not concentrated in a few tokens or domains.** The top 1% of positions carry 16.7% of the total KL and the top 10% carry 54.8% (a uniform spread would give 1% and 10%; a heavy tail would give 50% in the top 1%). Per domain, mean KL: `code_cho` 0.031, `en_md` 0.025, `comfy_tr` 0.025, `code_py` 0.024, `code_web` 0.022 ... `it` 0.016, `es` 0.013 (all 12 ComfyUI languages between 0.016 and 0.025); perplexity change +0.3% (`comfy_ja`) to +2.8% (`code_cho`) over the text domains (`math_chat_prompt` is the exception below). **No language is singled out**: the edit is not a "English math" change. By target token: alphanumeric tokens carry 71% of the KL (mean 0.024), punctuation 20% (0.016), newlines and spaces 5% (0.012), digits 4.5% (0.013); mean KL rises with the base's own entropy (Spearman 0.36; the lowest-entropy decile 0.009, the other nine 0.015 to 0.026). By position: 0.017 at positions 1 to 15, 0.016 at 16 to 127, 0.022 from 128 on. The largest single-token effects are rare: `<` (200 occurrences, mean 0.24), identifier-internal splits (`litellm` -> `m`) and `---`: the top 20 contexts of the repository text (`results/w4_collateral.json`, `concentration.edited.top_contexts_repo_text`) are code and table markup at KL 0.9 to 3.5. **The edit is not localised to a token class that a gate could exclude.**
+* **A negative on the math prompts**: the perplexity of the `math_chat_prompt` tokens (the user's instruction text of the thinking chat template) goes **down** by 3.0% under the edit, and `math_chat_resp` goes up by 1.2% (KL 0.025 and 0.009). The prompt text is the one place the edit improves the likelihood; one domain of 5,334 positions, not a result.
+
+### 11.3 E2b: the null-space projection of the published edit [measured 2026-11-06]
+**The registered recipe is vacuous for this model.** `K0 K0^T` on 167,977 positions has these spectra (eigenvalues of the second-moment matrix `C`, `lambda = s^2 / N`):
+
+| | layer 15 | layer 19 |
+|---|---|---|
+| largest / smallest eigenvalue | 6.32e5 / 43.3 | 3.97e6 / 47.5 |
+| smallest singular value over the largest, `sqrt(lambda_min / lambda_max)` | **0.0083** | **0.0035** |
+| directions retained at cutoff 1e-2 / 1e-3 / 1e-4 (of 3,584) | 3,534 / **3,584 / 3,584** | 2,016 / **3,584 / 3,584** |
+
+The cutoffs 1e-3 and 1e-4 of the proposal's sketch are **below the smallest singular value**: every direction is retained, the null space is empty, `P_c = 0`, and **the projected edit is exactly zero**. `p1e-3` and `p1e-4` are the base model: KL exactly 0, perplexity equal, top-1 agreement 1.0000 (the check that the variant path and the swap are clean). It is not a matter of the corpus size: the smallest eigenvalue of `C / N` is 43 where sampling noise at `N/d` = 47 would move it by a factor 0.73 (Marchenko-Pastur, **[estimate]**); a larger corpus cannot create a null space. The only registered cutoff that removes less than everything is 1e-2.
+
+| cutoff | layer 15: retained, `S_F` | layer 19: retained, `S_F` | random 64-column supports, `S_F` (layer 15 / 19: mean, 5th-95th percentile) | bf16 holds it (cosine, relative error), 15 / 19 |
+|---|---|---|---|---|
+| 1e-2 (registered) | 3,534, 0.038 | 2,016, 0.353 | 0.109 (0.061-0.182) / 0.654 (0.551-0.742) | 0.978, 0.21 / 0.999, 0.05 |
+| 1e-3, 1e-4 (registered) | 3,584, 0 | 3,584, 0 | 0 | |
+| 2e-2 (x) | 2,413, 0.451 | 843, 0.511 | 0.576 / 0.871 | 0.9995, 0.03 / 0.9993, 0.04 |
+| 5e-2 (x) | 758, 0.795 | 163, 0.671 | 0.884 / 0.977 | 0.9998, 0.02 / 0.9996, 0.03 |
+| 1e-1 (x) | 237, 0.884 | 31, 0.786 | 0.965 / 0.996 | 1.0000, 0.02 / 0.9997, 0.02 |
+| 2e-1 (x) | 39, 0.932 | 5, 0.910 | 0.995 / 0.999 | 1.0000, 0.02 / 0.9998, 0.02 |
+| 5e-1 (x) | 3, 0.983 | 1, 1.000 | 1.000 / 1.000 | 1.0000, 0.01 / 1.0000, 0.00 |
+
+`(x)`: **not registered**; added after the first result because 1e-3 and 1e-4 returned zero (12). `S_F = ||dW P_c||_F / ||dW||_F`. The published edit's `S_F` is **lower than that of every one of 200 random supports with the same values** (below all 200 random supports, percentile at most 0.01, in 11 of the 12 informative cases; the exception is layer 19 at 5e-1, where one direction is retained): its `v` sits in higher-variance directions than a random 64-column vector's, so the projection removes it faster than it would a generic edit: 1e-2 leaves 3.8% of the norm in layer 15 against 10.9% for a random support.
+
+**Collateral and effect, with the cutoff as a dial.** `S_E` is the amplitude of the edit's contribution on tokens (5.3); the numbers are the general (fit-domain) eval positions pooled, and `math_chat_resp`; selectivity is their ratio.
+
+| cutoff | KL of the variant (both layers) | delta ppl | `S_E` general 15 / 19 | `S_E` math response 15 / 19 | selectivity 15 / 19 | gate |
+|---|---|---|---|---|---|---|
+| edited (no projection) | 0.02053 | +1.33% | 1 / 1 | 1 / 1 | 1 / 1 | fails `kl_mean` |
+| 5e-1 (x) | 0.01698 | +2.20% | 0.575 / 1.001 | 0.622 / 0.985 | 1.08 / 0.98 | **fails `ppl_all`** (upper bound +2.38%) |
+| 2e-1 (x) | 0.00520 | +0.51% | 0.280 / 0.605 | 0.601 / 0.824 | 2.15 / 1.36 | pass |
+| 1e-1 (x) | 0.00198 | +0.19% | 0.181 / 0.305 | 0.492 / 0.424 | 2.73 / 1.39 | pass |
+| 5e-2 (x) | 0.00067 | +0.03% | 0.116 / 0.135 | 0.302 / 0.237 | 2.60 / 1.76 | pass (and strict) |
+| 2e-2 (x) | 0.00011 | -0.01% | 0.041 / 0.054 | 0.155 / 0.148 | 3.77 / 2.73 | pass |
+| 1e-2 (registered) | 0.00001 | -0.01% | 0.0021 / 0.024 | 0.011 / 0.076 | 5.13 / 3.18 | pass |
+| 1e-3, 1e-4 (registered) | 0 | 0 | 0 / 0 | 0 / 0 | undefined | pass (the base) |
+
+* **KL falls much faster than the norm does.** At 5e-2 the projected edit keeps 80% (layer 15) and 67% (layer 19) of the Frobenius norm and **3.3% of the KL** (0.00067 against 0.0205), and its general-text amplitude is 12% and 13% of the published edit's (squared: 1.3% and 1.8%): the part of the edit that survives is the part that acts on directions the corpus rarely excites. **That is what the proposal's mechanism promises and the measurement supports it.** At 1e-1 the KL is 10% of the published edit's and the perplexity is +0.19% [upper +0.24%]. The `x5e-2` and `x1e-1` edits are the first candidates for the L4 (7.2).
+* **Selectivity is above 1 and falls as the cutoff rises**: the math response keeps 2.2 to 5.1 times the general-text amplitude at every cutoff up to 2e-1 on layer 15 (1.4 to 3.2 on layer 19); at 5e-1 the ratio is 1. The amplitude of the edit on `math_chat_resp` positions at 5e-2 is 30% and 24% of the published edit's.
+* **What the table does not say** is whether the edit's *behavioural* effect (fewer loops) survives. The registered prediction P4 that selectivity stays below 2 (the edit cannot be kept where it is wanted and removed elsewhere) **is not supported** at the cutoffs that are informative at all (2.2 to 5.1 on layer 15, 1.4 to 3.2 on layer 19): measured in amplitude on text, the projection is selective. Whether the loops are in the span the projection keeps is the L4's question (E2d), because `math_chat_resp` is the gold solution of GSM8K, a short and fluent text, not the long loop-prone thinking generation the edit acts on (3.1).
+* **bf16 (the correction of section 1, item 3):** a bf16 checkpoint of the projected edit holds it. At 1e-2 on layer 15, where only 3.8% of the norm is left, the cosine of what bf16 keeps with the intended `dW_c` is 0.978 (relative error 21%); at every other informative cutoff it is at least 0.999 (relative error 2% to 5%). The projected edit is dense over all 3,584 columns, but its energy stays on the original 64, whose entries are large against bf16's step. f32 is still the safe path; bf16 is not ruled out.
+
+### 11.4 The pre-registered predictions, scored (5.3, 6.4, 4.3)
+| id | prediction | result |
+|---|---|---|
+| P1 | if the edited neurons fire on general text (C_fire), `S_F(1e-3) <= 0.5` in both layers | **C_fire holds** (median firing rate of the 64 edited neurons 0.881 and 0.902 against 0.864 and 0.887 for the others; **the threshold, 0.1 of the median rms, is so low that 86% of all neurons "fire" on any token: C_fire does not discriminate and I say so**). **`S_F(1e-3) = 0`, both layers: the prediction holds, vacuously**: the null space is empty. The substance (the neurons are ordinary, so the projection removes the edit) is wrong in a different way: the neurons are *loud* (P5), and the projection is a dial rather than all-or-nothing |
+| P2 | `S_E(1e-3)` on general eval tokens <= 0.5, both layers | 0, both: **holds, vacuously** |
+| P3 | `r(1e-4) >= 3,400` and `S_F(1e-4) <= 0.2` | 3,584 and 0 in both layers: **holds** (and `r(1e-3)` is the same: the recipe is vacuous from 1e-3 down) |
+| P4 | selectivity at 1e-3 below 2 | **undefined at 1e-3 (0/0)**; at 1e-2, the only registered cutoff that retains less than all, **5.1 and 3.2: not supported** (the projection is selective in amplitude) |
+| P5 | the median `rms_j` percentile of the 64 edited neurons in [0.25, 0.75] in both layers | **0.88 and 0.87 on the fit text (0.88 and 0.87 on the eval text): falsified.** The edited neurons are among the loudest of the 3,584 (1.8 and 1.7 times the median rms) |
+| H1 | slope in [-1.2, -0.8], `\|rho\|` >= 0.9 | **false as registered** (slope -6.000, rho -1.000): the form is exact, the constant is 6 |
+| H2 | at least 48 of 64 in the top 96 by `\|u . W_j\|` | **false** (37 and 25) |
+| 4.3 expectation | the published edit's mean KL in [0.002, 0.05]; "may or may not pass" | **0.0205, in the range; fails the 0.02 gate by its upper bound (0.0219) and passes four of the five KL/perplexity clauses**; random edits 0.0015 to 0.0016 (7.3% and 7.9% of it, "well below": yes); `q4` over `q8` by a factor 101 (the expectation was 10 to 100: at the edge) |
+
+### 11.5 Repetition (4.4) [measured 2026-11-06]
+50 prompts (30 general: 48-token prefixes of eval documents; 20 math: the W1 GSM8K prompts 0 to 19 in the thinking-on chat template), greedy, 256 new tokens, none stopped early. `p1e-3` and `p1e-4` are the base (11.3) and were not generated; `p1e-2` and `x1e-1` were chosen instead of them.
+
+| variant | general: `rep4` base -> variant (paired delta) | general: tail loops base / variant (new, lost) | general: continuation identical to the base's | math: `rep4` base -> variant | math: tail loops | math: identical |
+|---|---|---|---|---|---|---|
+| edited | 0.753 -> 0.707 (**-0.047**) | 21 / 20 (1, 2) | 1 of 30 | 0.192 -> 0.204 (+0.012) | 0 / 0 | 0 of 20 |
+| p1e-2 | 0.753 -> 0.768 (+0.014) | 21 / 22 (1, 0) | 28 of 30 | 0.192 -> 0.199 (+0.007) | 0 / 0 | 16 of 20 |
+| x1e-1 | 0.753 -> 0.776 (+0.023) | 21 / 20 (1, 2) | 11 of 30 | 0.192 -> 0.209 (+0.017) | 0 / 0 | 4 of 20 |
+
+* **The two repetition clauses of the gate pass for all three** (paired delta at most +0.03: -0.047, +0.014, +0.023; new loops at most 3: 1 each). With them the verdicts are: **`edited` fails the gate on one clause (`kl_mean`, upper bound 0.0219 against 0.02), `p1e-2` passes, `x1e-1` passes.** (`x1e-1` does not meet the strict reading: KL upper bound 0.0021 against 0.002.)
+* **The probe cannot see what the edit is for, and on general text it is saturated.** The base itself ends 21 of the 30 general continuations (70%) in a tail loop under greedy decoding (median period 15 tokens; raw-text continuation by a chat model with no penalty), so a new loop is hard to add; and on the 20 thinking prompts the base has no tail loop in its first 256 tokens (the loop the edit removes comes after thousands: 4.4 said so), so it cannot show a benefit either. What it does show is that **the published edit changes the greedy trajectory of every prompt but one** (identical continuations 1 of 30 and 0 of 20), where `p1e-2` leaves 28 of 30 and 16 of 20 untouched and `x1e-1` 11 and 4: the continuations are an independent confirmation of how much of the edit each variant keeps, in the order of the amplitudes of 11.3.
+
+### 11.6 What this says, and what to run next
+1. **E2-lite.** The published edit costs 0.0205 nats a token and +1.3% perplexity on 180k tokens of local text in 12 languages, code, data and math: 12 times int8 rounding of the whole model, 8 times less than naive int4, 13 times a random edit of the same size. It fails the registered gate by a hair on the KL mean and passes the rest; the damage is diffuse (no language, token class or domain carries it). Decision D2's first clause ("the published edit fails the gate") is therefore **true only at the threshold I chose, by a margin smaller than the choice**; D2 is not decided (it needs the W1 verdict and the behavioural grid).
+2. **E2b.** The proposal's null-space recipe, as written, returns **zero** on this model (cutoffs 1e-3 and 1e-4 are below its smallest singular value): the method is not a gate at those cutoffs, it is a switch. At cutoffs of 2e-2 to 2e-1 it is a **dial**: KL 0.5% to 25% of the published edit's, with the edit's amplitude on math responses 1.4 to 3.8 times its amplitude on general text (up to 2e-1). Decision D5: not decided (needs behaviour).
+3. **What the weights say about E1** (11.1): the published edit is `dW[:, j] = -6 (u . W_j) u` on 64 columns that are partly (not wholly) the ones most aligned with `u`, and loud neurons. The value rule is `alpha = 6`; the selection is not recovered by any weight-only or weight-and-scale score tried (36 of 64 at best, layer 15; 21 at best, layer 19).
+4. **To run next on the Mac, no GPU, as soon as the W1 cloud run has written the base's generations:** E2c (7.1): the proxy of the loop gain on the base's own looping generations, for the variants that already exist in `build/w4` (`edited`, `e15`, `e19`, `x5e-2`, `x1e-1`, `x2e-1`, `p1e-2`, the randoms): minutes, and it ranks them before any L4 hour is spent.
+5. **To run next on the L4, in this order** (each is a `w1.py behave` run of the W1 main protocol, 200 problems at cap 8,192, on a checkpoint written with the variant's two tensors in float32 or bfloat16, 11.3; the checkpoint writer is a small ticket, not in this PR; the cost per run is the W1 cloud run's own wall time, to be read from `results/w1_cloud` when it finishes): **(i) `x1e-1`** (KL 0.002, passes the gate, strict-adjacent; 49% and 42% of the published edit's amplitude on math responses): the single run that tells whether a gate-passing, 10%-of-the-collateral version of the edit keeps the gain; **(ii) `x5e-2`** (KL 0.0007, passes the strict reading; 30% and 24%); **(iii) `e19` alone** (KL 0.008, passes the gate with no projection: 2 of the 4 L4 runs buy the single-layer question); then `e15` alone, and `alpha` in {1, 3, 6, 9} on the better of them (7.2). Against the published edit's own verdict (W1, running) each read by the rule of 13.3.
+6. **Not run, and the reason:** E1 proper (needs the W1 cloud generations), E3, E4, E5 (7.3 to 7.5; none needs a GPU).
+
+## 12. Deviations from this plan, defects found, and what remains (2026-11-06)
+
+### 12.1 Deviations from sections 3 to 6 (every one)
+1. **Cutoffs 2e-2, 5e-2, 1e-1, 2e-1, 5e-1 (variants `x*`) were added after the first projection result** (1e-3 and 1e-4 returned zero). They are not registered; their numbers are exploration and the gate verdicts on them are descriptive.
+2. **At most 2 windows per document, not 4** (3.1, corrected in place before any model run, after the first corpus build gave 18 files for `en_md`). Corpus roots changed after that build: directories named `.claude`, `.lex`, `lexsys`, `.cargo` are skipped (they held repository worktrees and a content-addressed store that would have put near-copies in both splits), and the `it` domain was restricted to its three Italian files (the first list included English files of the same directory). The corpus of 11.0 is the second build.
+3. **Repetition variants:** the registered `p1e-3` is the base (nothing to generate); `p1e-2` and `x1e-1` were generated instead. The concentration analysis of the report is for `edited` and `x5e-2`, not `p1e-3` (whose KL is zero, so the analysis is empty).
+4. **The bf16 measure (5.3):** the registered ratio `||bf16(W + dW_c) - W|| / ||dW_c||` is in the JSON (`bf16_survival`) and is uninformative (1.00 to 1.004 whenever the projected edit is small); the cosine and relative error, added after, are what 11.3 and the correction of section 1 use.
+5. **C_fire's threshold** (0.1 of the median rms) turned out to select 86% of all neurons, so C_fire holds for any set and P1's premise is not tested by it (11.4). The percentile of the rms (P5) is the informative neuron statistic; it was registered but not as the premise.
+6. **6.4's exploratory scores** (11.1) are post hoc: three scores were tried after seeing H2 fail.
+7. **The manifest** (`results/w4_collateral_manifest.json`) hashes the paths of the `es` and `it` units (3.1 says so since 2026-11-06); the corpus text itself is not stored anywhere in the repository.
+8. **Word-level:** 3.1 said the general repetition prompts came from "nine" ComfyUI languages; it is twelve (corrected in place before the run).
+
+### 12.2 Defects found while running (fixed, none changed a result)
+* The first `fit` and `eval` runs crashed on `.double()` of an MPS tensor (the Mac's GPU has no float64): the float32 products are moved to the host first. No number was produced by the crashed runs.
+* `tests/w4.py` 3f and 6c were wrong in the first version of the test (a left-projection mutant that was trivially zero, an expected `rep4` for a loop that was too high); the planted cases were corrected, not the code under test.
+* The gate must not be started under `nohup`: `tests/gcp.sh`'s signal tests (`HUP: exit 0, wanted 129`) fail when the shell inherited an ignored SIGHUP. Run in the foreground or as a plain background job.
+
+### 12.3 What this section did not do
+* No generation past 256 tokens, no text past 2,048, no sampling, so nothing here bears on the long thinking generations where the edit acts.
+* The collateral is of a **float32** forward on MPS of the bf16 weights widened; bf16 arithmetic on a GPU differs by more than the 2e-6 checked here but by far less than any difference in the tables.
+* One corpus, one fit/eval split, one seed: the bootstrap intervals are over sequences of that split. A different split would move the means by amounts the intervals do not capture (the domains have 3 to 24 documents).
+* The `q8` and `q4` anchors are naive round-to-nearest of one model; calibrated 4-bit (GPTQ, AWQ) would sit between them.
+* No claim about the behaviour of any variant: the L4's.

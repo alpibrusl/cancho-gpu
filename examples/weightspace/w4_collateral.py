@@ -50,6 +50,7 @@ MAX_WINDOW, MIN_WINDOW, MAX_PER_DOC, UNIT_TOKENS = 2048, 32, 2, 16384
 EXCL = {".git", "node_modules", "target", "__pycache__", "venv", ".venv", "site-packages", "build", "dist", "results", "golden", "vendor", "third_party", ".claude", ".lex", "lexsys", ".cargo"}
 EOS = (248044, 248046)
 GEN_LEN, N_GENERAL, N_MATH = 256, 30, 20
+REP_VARIANTS = ["edited", "p1e-2", "x1e-1"]   # p1e-3 and p1e-4 are the base itself (the projection removes the whole edit, 11.3): not generated
 ALL_CUTS = tuple(L.CUTOFFS) + (2e-2, 5e-2, 1e-1, 2e-1, 5e-1)   # the registered three, then the post-hoc extension of 12.1
 
 # (domain, quota tokens per split, extensions, roots, kind)
@@ -126,6 +127,16 @@ def cmd_e1a(a):
         p = pub[layer]
         r = L.e1a(p["w"], p["dw"])
         r["sha_base"], r["sha_edited"] = p["sha_base"], p["sha_edited"]
+        proj_path = os.path.join(a.work, "proj.npz")
+        if os.path.exists(proj_path):   # exploratory, after the fit stage: which weight-and-activation scores recover the published support (post hoc, not registered: 12)
+            rms = np.load(proj_path)[f"rms{layer}"]
+            cols = np.array(p["cols"])
+            au = np.abs(L.rank1(p["dw"])[1] @ p["w"])
+            ex = {}
+            for name, sc in (("rms", rms), ("abs_uW_times_rms", au * rms), ("abs_uW_times_rms2", au * rms ** 2)):
+                rk = L.rank_of(cols, sc)
+                ex[name] = {"in_top64": int((rk <= 64).sum()), "in_top128": int((rk <= 128).sum()), "median_rank": float(np.median(rk))}
+            r["exploratory_with_activation_scale"] = ex
         res["layers"][str(layer)] = r
         log(f"layer {layer}: slope {r['slope_c']:.3f} rho {r['pearson_rho']:.3f}  top64/top96 by |u.W_j|: {r['rank_by_abs_uW']['in_top64']}/{r['rank_by_abs_uW']['in_top96']}"
             f"  median rank {r['rank_by_abs_uW']['median']}  spearman(index, |u.W|) {r['spearman_index_vs']['abs_uW']:.3f} (membership {r['spearman_index_vs']['membership']:.3f})  H1 {r['h1']} H2 {r['h2']}")
@@ -707,7 +718,8 @@ def cmd_repeat(a):
     base, work = load_model(a.device), load_model(a.device)
     sw = Swapper(base, work, a.device)
     res = {"prompts": [{"group": p["group"], "name": p["name"], "n_prompt": len(p["ids"])} for p in prompts], "variants": {}}
-    for vn in ("base", "edited", "p1e-3"):
+    names = ["base"] + [v for v in (a.variants.split(",") if a.variants else REP_VARIANTS) if v != "base"]
+    for vn in names:
         t0 = time.time()
         sw.set([] if vn == "base" else variant_weights(vn, pub, proj, base))
         rows = []
@@ -816,8 +828,9 @@ def cmd_report(a):
         out["repetition"] = {vn: rep_summary(rep, vn) for vn in rep["variants"] if vn != "base"}
         out["repetition_raw"] = {"prompts": rep["prompts"], "variants": {vn: [{k: r[k] for k in ("n", "stopped", "rep4", "loop")} for r in rows_] for vn, rows_ in rep["variants"].items()}}
     dom_names = nstat["domains"]
-    out["concentration"] = {vn: concentration(a.work, vn, tok, ws, dom_names) for vn in ("edited", "p1e-3") if vn in summ}
+    out["concentration"] = {vn: concentration(a.work, vn, tok, ws, dom_names) for vn in ("edited", "x5e-2") if vn in summ}
     save_json(a.out, out)
+    save_json(os.path.join(os.path.dirname(os.path.abspath(a.out)), "w4_collateral_manifest.json"), manifest)
     log("wrote", a.out)
     return out
 
