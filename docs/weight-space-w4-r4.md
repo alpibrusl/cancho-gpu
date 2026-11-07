@@ -156,3 +156,39 @@ The selected configuration is run **once** on the **30 held-out (test) loops** (
 
 ### 9.6 Code and tests
 `examples/weightspace/w4_scale.py` (the configs, the edits, the selection and the verdict as pure numpy functions; CLI commands `grid`, `behave`, `kl`, `select`, `final`; it reuses `w4_grad.py`'s MPS runner and KL code), `tests/w4_scale.py` (hand-made tables for the selection and tie rules, the verdict, the edit formulas and the (1.0, 64) identity with `edit_p`; skips without numpy), wired into `scripts/gate.sh`.
+
+### 9.7 Results (measured 2026-11-07; 9.1 to 9.6 above were not edited after the run)
+Run: `w4_scale.py grid` (the 18 edits; check: (1.0, 64) equals `edit_p` exactly, entry for entry), `kl` (the 18 plus the published edit and `e19`; the (1.0, 64) row reproduces section 7's r4p KL 0.1547 and the published edit's 0.02053), `behave --split train` on the 12 eligible configurations (30 loops, 4 samples, the E2c code), `select`, then the one held-out scoring. Data: `examples/weightspace/results/w4_r4b/` (`grid.json`, `kl.json`, `select.json`, `final.json`, `e2c_train/`, `e2c_test/`).
+
+**The selection curve (train loops E, collateral KL; mean [upper end of the 95% interval])**
+
+| f | k=16: KL | k=32: KL | k=64: KL | train E (k=16 / 32 / 64) |
+|---|---|---|---|---|
+| 0.1 | 0.0013 [0.0014] | 0.0012 [0.0013] | 0.0013 [0.0013] | 0 / 0 / 0 |
+| 0.2 | 0.0054 [0.0056] | 0.0051 [0.0053] | 0.0052 [0.0055] | 0 / 0 / 0 |
+| 0.3 | 0.0123 [0.0128] | 0.0117 [0.0123] | 0.0120 [0.0127] | 0 / 0 / 0 |
+| 0.5 | 0.0353 [0.0370] | 0.0343 [0.0361] | 0.0354 [0.0374] | 0 / 0 / **0.008** |
+| 0.7 | 0.0713 [0.0750] | 0.0707 [0.0747] | 0.0728 [0.0771] | not eligible; 0.175 (k=64, exploratory) |
+| 1.0 | 0.1500 [0.1578] | 0.1492 [0.1578] | 0.1547 [0.1639] | not eligible; 0.900 (k=64, exploratory) |
+
+* **Eligible (KL upper end <= 0.05):** the 12 configurations with `f <= 0.5`. **The effect is a cliff, not a slope**: train `E` is 0 for every eligible configuration except one loop of 30 at (0.5, 64) (`E` 0.008, loop 14 exiting in one sample of four). The two ineligible, exploratory `k=64` rows (run after the selection, cannot change it): `E` 0.175 at `f` = 0.7 (KL upper end 0.077) and 0.900 at `f` = 1.0 (0.164). `E` becomes appreciable only where the KL is already above the target (between `f` 0.5 and 0.7 the KL doubles and `E` is still 0.18); there is no point on the grid with `E` >= 0.5 and KL <= 0.05. The column budget changes almost nothing: at `f` = 1.0, 16 columns cost the same KL as 64 (0.150 against 0.155), so the loop-breaking and the cost both ride on the largest-gradient columns, whatever the rest do.
+* **Selected on the train loops:** (f, k) = **(0.5, 64)** (largest train `E`, 0.008, KL 0.0354 [0.0337, 0.0374], dPPL 4.4%).
+
+**The one held-out scoring (30 test loops, E2c)**
+
+| model | held-out `E` | mean KL [95%] | dPPL |
+|---|---|---|---|
+| selected (0.5, 64) | **0.042** | 0.0354 [0.0335, 0.0374] | 4.4% |
+| random-`u` control, same columns and norm | 0.000 | | |
+| published edit (reference) | 0.983 | 0.0205 [0.0193, 0.0219] | 1.3% |
+| `e19` (published, layer 19 only; reference) | 0.333 | 0.0080 [0.0077, 0.0084] | 1.1% |
+| r4p (1.0, 64), section 7 (reference) | 0.892 | 0.1547 [0.1460, 0.1639] | 18.1% |
+
+* **Verdict: NOT FOUND.** Clause by clause: held-out `E` >= 0.5 **fails** (0.042); KL upper end <= 0.05 holds (0.0374); control `E` < 0.1 holds (0.000, but it is vacuous when the candidate itself does nothing). No checkpoint was written and no screening evidence produced (nothing to carry). W1 was not run.
+* The published edit exits 98% of held-out samples at KL 0.0205, and even `e19` alone (one layer, half the budget in the published form) reaches 0.333 at KL 0.0080. The gradient-built form at a collateral of 0.035 reaches 0.042: **at equal or lower KL than the published edit's neighbours, the gradient direction and columns buy about nothing**; they only break loops once the cost is 5 to 8 times the published edit's.
+* **What this ends:** with this model, the gradient direction (GU1 of Lp from 30 train loops), its C1 columns, the rank-1 form P, and scale or column budget as the only knobs, there is no configuration that breaks held-out loops under a 0.05 collateral. The "find an edit for a new model" line, in the form this document tested, is **closed on this model** (section 4.3's DEAD, now with the scale/budget escape tried and failed). It does not say that no edit exists (the published one does it at 0.0205), only that this gradient recipe does not find it. This also upgrades section 7.3's "alive in the weak sense": the weak sense was that the gradient finds *an* edit that breaks loops; it does, but only at a cost the budget excludes.
+
+### 9.8 Deviations and limits
+* None to the registered rule: all 12 eligible configurations were run on the train loops and the selection followed 9.3. The 6 ineligible ones were not run for the selection; two of them (`f` = 0.7 and 1.0, k = 64) were run afterwards for the curve (labelled exploratory above); the other four were not run for `E`.
+* The KL corpus is shared by selection and the final report (stated in 9.3), so the held-out half is the loops only. The E2c `E` is a proxy (necessary condition) and the selection used 30 loops with 4 samples each: the cliff is large (0.008 against 0.9), well outside that noise.
+* Wall-clock on the shared Mac was 2 to 5 times slower than in section 7 at times because other jobs ran; this affects no number.
