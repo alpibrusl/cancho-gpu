@@ -167,8 +167,8 @@ def grad_job(model, layers, pairs, ids, first, kinds=("p", "o")):
                 g, a, w = tap.g[key].float(), tap.a[key].float(), mod.weight.grad.float()
                 gw = g.T @ a
                 check = float((gw - w).norm() / max(float(w.norm()), 1e-30))
-                res[key] = {"g": w.cpu().numpy(), "m": g.sum(0).double().cpu().numpy(), "q": (g.T @ g).double().cpu().numpy(),
-                            "r": (a ** 2).sum(0).double().cpu().numpy(), "n": int(g.shape[0]), "check": check, "loss": float(ls[kind].detach())}
+                res[key] = {"g": w.cpu().numpy(), "m": g.sum(0).cpu().double().numpy(), "q": (g.T @ g).cpu().double().numpy(),
+                            "r": (a ** 2).sum(0).cpu().double().numpy(), "n": int(g.shape[0]), "check": check, "loss": float(ls[kind].detach())}
             out[kind] = res
         return out
     finally:

@@ -83,5 +83,48 @@ The two checkpoints of 3.5 are scored on the **30 test loops**, exactly as E2c (
 * Float32 on MPS from the bf16 checkpoint; a gradient of a saturated loss at 0.0002 nats is tiny and the float32 backward through the torch fallback of the gated-delta layers has not been checked against float64 (the direction is what is used, and the unit tests check the capture against finite differences on a toy).
 * The specificity control's texts are the base's first 1,024 generated tokens: not guaranteed loop-free.
 
+## 7. Results (measured 2026-11-07; nothing above this line, except the amendments of section 8, was edited after the run)
+
+Run: `w4_grad.py capture` (60 loops x [loop gradient with Lp and Lo, ordinary-LM gradient, 3 target-permutation gradients]; 300 files, 1,952 s on the Mac GPU, float32; the hook-side `g^T a` equals autograd's `weight.grad` exactly on every job), `analyse` (CPU), `build`, `behave` (E2c on the 30 test loops), `kl` (the 276 eval windows). Data: `examples/weightspace/results/w4_r4/` (`analysis.json`, `records_*.jsonl`, `kl.json`, `score.json`, `loops_meta.json` with the split). The KL code reproduces the published edit's mean KL of `weight-space-w4.md` 12: 0.02053 [0.01932, 0.02188] **[measured]**.
+
+### 7.1 Rule (a): **NOT RECOVERED**
+`|cos|` with `u_pub` (minimum over the train and test halves; layer 15 / layer 19) and overlap with the published 64 (minimum over halves):
+
+| direction (loss) | cos | overlap C1 (the gradient's column norm) | C2 | C3 | C4 |
+|---|---|---|---|---|---|
+| GU1 (Lp), primary | 0.220 / 0.190 | 21 / 11 | 20 / 11 | 9 / 3 | 17 / 10 |
+| GU2 (Lp) | 0.208 / 0.182 | 21 / 11 | 22 / 11 | 8 / 4 | 17 / 9 |
+| GU3 (Lp) | **0.252 / 0.214** | 21 / 11 | 21 / 11 | 9 / 4 | 16 / 9 |
+| GU1 / GU2 (Lo) | 0.093 / 0.109, 0.089 / 0.103 | 26 / 16 | 25 / 15 | 13 / 4 | 18 / 12 |
+| GU3 (Lo) | 0.006 / 0.017 | 26 / 16 | 13 / 16 | 1 / 1 | 5 / 9 |
+
+* **No cosine reaches 0.7 (best 0.252 / 0.214); no overlap reaches 32 (best 26 / 16); 48 of 64 is not approached.** Neither PARTIAL clause holds: (A) needs 0.7, (B) needs 0.5 and 32. The registered rule gives NOT RECOVERED. The best pair by the registered ranking is (GU3, Lp, C2).
+* **Nulls.** Random unit vectors: median 0.023 / 0.024, maximum 0.089 / 0.085 of 200; random column sets: maximum 4 of 200 (chance 1.3). Target-permutation draws (Lp): GU1 `|cos|` 0.04 to 0.08 (layer 15), 0.09 to 0.12 (layer 19); their C1 overlap 20 to 21 / 11 to 12. The specificity control (ordinary-LM gradient): GU1 0.01 to 0.02 / 0.12 to 0.14, GU3 0.07 to 0.08 / 0.01. So the Lp directions are above the nulls (0.19 to 0.25 against at most 0.19, GU3 equal to the Lo null's level in layer 15 and 19), **a real but small alignment: the same estimator on other targets gives 0.04 to 0.14**.
+* **Column ranking by the permuted-target gradient reaches the same 20 to 21 / 11 to 12 overlap as the real one.** The 21 / 11 of C1 is therefore not loop-specific: it is what the column norms of the gradient of any continuation score on these contexts give (about the oracle value of the rule with the true `u`: R1 31 / 18, Rrms 42 / 24 in this data).
+* **Stability.** Train against test: `|cos|` of the directions 0.97 to 1.00 and 58 to 63 of 64 shared C1 columns: the gradient estimates are reproducible; they are not the published `u`.
+* **What the gradient holds along `u_pub`.** The share of the summed Lp gradient's Frobenius norm along `u_pub` is 0.20 to 0.22 (layer 15), 0.17 to 0.19 (layer 19), against chance 0.031 (7 times chance); along its own GU1: 0.89. For Lo: 0.09 / 0.11.
+
+### 7.2 Rule (b): the primary pair built into an edit, on the 30 held-out loops (E2c) and the collateral corpus
+Both candidates: `u` = GU1 (Lp) of the train gradient, the 64 columns of C1, scale = the published edit's Frobenius norm per layer. Columns overlap the published ones 21 / 11; `|cos|` of `u` with `u_pub` 0.242 / 0.212 (random control 0.031 / 0.020); the candidates' Frobenius cosines with the published `dW`: P 0.021 / 0.062, G 0.039 / 0.085 (controls about 0).
+
+| model | `E` (exit share) | `G_E` [95% CI] | mean KL (nats) [95% CI] | dPPL | FOUND | SPECIFIC |
+|---|---|---|---|---|---|---|
+| base | 0.000 | | | | | |
+| published edit (reused for 20 loops, run for 10) | 0.983 | +0.983 [+0.958, +1.000] | 0.0205 [0.0193, 0.0219] | 1.33% | | |
+| **r4p** (form P) | **0.892** | +0.892 [+0.775, +0.983] | **0.1547** [0.1460, 0.1639] | 18.1% | **no** | no (by the KL) |
+| **r4g** (form G) | 1.000 | +1.000 | **1.0325** [0.979, 1.090] | 165% | **no** | no |
+| ctrlp (random `u`, form P) | 0.000 | +0.000 | 0.0098 [0.0093, 0.0103] | 0.9% | | |
+| ctrlg (random `u`, form G) | 1.000 | +1.000 | 0.0668 [0.0642, 0.0695] | 6.8% | | |
+
+* **FOUND fails for both on the KL clause (0.05):** `r4p` leaves the loop in 89% of samples on held-out loops, with a KL 7.5 times the published edit's and a perplexity change of 18%; `r4g` leaves in all, at a KL of 1.03 (the model is broken: mean NLL of the loop's continuation 3.1).
+* **Form P is direction-specific**: with a random `u` on the same columns and norm, `E` is 0.000 (and KL 0.0098); with the gradient's `u` (cos 0.24 with the published one) it is 0.892. The gradient direction and columns carry the loop-breaking, and they carry it at a large cost. **Form G is not direction-specific**: the random-`u` control also gives `E` = 1.000 (KL 0.067): a rank-1 step along `u (u^T G)` on the gradient's own 64 columns breaks the loops whatever `u`, because `G_j` is already the loop's gradient on those columns.
+* No scale was tried other than the registered one, so nothing says a smaller `r4p` would pass the KL clause; a post-hoc scale search on these test loops would not be held-out and was not done **[open]**.
+
+### 7.3 Reading, and the product question
+1. **The published recipe is not rediscovered by the gradient**: direction cosine about 0.2 (3 to 10 times the nulls, far from 0.7), 21 of 64 and 11 of 64 columns (chance 1.3), identical to what the permuted-target gradient gives for the columns. R4's rank-1 form with a column norm rule does not find `u_pub` or its columns. That makes the second spectral/contrastive failure (`weight-space-w4-search.md`) a gradient failure too.
+2. **But the gradient does find *an* edit that breaks the base's established loops, held-out**: `r4p` leaves 89% of samples (the published edit 98%), and this is direction-specific (random `u` 0%). The edit is not the authors' and not a free one: at the published norm its collateral is 7.5 times higher (KL 0.155) and fails the registered 0.05.
+3. **Product "find an edit for a new model", on this evidence: alive in the weak sense, not in the strong one.** A handful of the model's own loops (30 train) and 30 s of gradient per loop give an edit with a loop-exit effect on unseen loops; they do not give one that meets a collateral budget at the published edit's norm, and they do not rediscover the recipe. What would decide it is a scale (or a column budget) chosen on train loops against a KL target, then scored once on held-out loops, and the same on a second model family; neither was run. The W1 (accuracy) effect of `r4p` is not measured; E2c is a necessary-condition proxy.
+
 ## 8. Deviations and limits
 * **Amended before any measurement (commit after 7c5ff43):** (i) the permutation null: sign flips of per-loop gradients were registered first and replaced by target permutation (3.4), after the unit test 3b showed that sign flips of rank-1 gradients return the same direction, so a real shared signal could never beat them; (ii) the specificity control was moved from diagnostic into the null (4.1); (iii) the control's counted tokens are said to be generated tokens 256 to 1,023 (after the prompt), not positions of the whole sequence. No gradient had been computed on the 60 loops at the time of these edits.
+* **Run deviations.** The first capture attempt failed on an MPS float64 conversion before saving anything and was rerun from the start. The KL run named the published variant `pub`; `kl.json` key was renamed to `edited` by hand before scoring. The S3 exploratory (3.6) was not run. The permutation draws' mean log-probability is -0.4 to -1.1 (loops of other problems are similar text), so the "permuted-target" null is a mismatched but plausible continuation. `analysis.json` carries per-half rows for all 24 pairs.
