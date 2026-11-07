@@ -129,6 +129,17 @@ def checks(kdir=None, mut=()):
     lr = S.warmup_cosine(1e-2, 2, 5, 1e-3)
     args = dict(steps=5, accum=N, lr=lr, wd={"d": 0.1}, max_norm=1.0, eps=1e-4)
     out("5 accumulated windows", compare("5 windows of 4 micro-steps, clip 1.0, decay, schedule", device(params, grads, os.path.join(d, "win"), **args, **kw), reference(params, grads, **args)))
+    # 3c. the f16 copy the matrix unit reads is of the weights the next micro-step uses: in the middle of a window (repetition 4 of windows of 3) the weights are those after step 1 and so is the copy
+    params, grads = problem(5, 6)
+    session = O.write(os.path.join(d, "half"), params, grads, steps=2, accum=3, lr=S.constant(1e-2), wd={"d": 0.1}, eps=1e-3, half=True, **kw)
+    r = subprocess.run([BIN, session], input="4\n", capture_output=True, text=True, timeout=600)
+    nums = np.array([float(v) for v in r.stdout.split()])
+    sizes = [int(np.prod(w.shape)) for _, w, _ in params]
+    tail = nums[1 + 3 * sum(sizes):]
+    wcat = np.concatenate([nums[1 + 3 * sum(sizes[:i]) + 0: 1 + 3 * sum(sizes[:i]) + sizes[i]] for i in range(len(sizes))])
+    ok_h = tail.size == sum(sizes) and bool(np.array_equal(tail, wcat.astype(np.float16).astype(np.float64)))
+    print(f"{'ok  ' if ok_h else 'FAIL'} the f16 copy in the middle of a window is the f16 rounding of the weights the next micro-step reads")
+    out("f16 copy mid-window", ok_h)
     shutil.rmtree(d, ignore_errors=True)
     return res
 
@@ -193,6 +204,7 @@ MUTANTS = [
     ("an update on every micro-step", None, None, None, ("apply_always",)),
     ("the decay of the wrong group", None, None, None, ("wd_swap",)),
     ("the decay at the first step's rate", None, None, None, ("dec_peak",)),
+    ("the f16 copy of the update that was not applied", "adamw_gh.chx", "stage f16 wb", "stage f16 wn", ()),
     ("the decay not applied", "adamw_g.chx", "let wn = &w0 * db - q2 * rb", "let wn = &w0 + db * 0.0 - q2 * rb", ()),
 ]
 

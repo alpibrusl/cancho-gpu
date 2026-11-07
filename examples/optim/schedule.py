@@ -24,12 +24,12 @@ def constant(peak):
     return lambda t: peak
 
 
-def rows(steps, accum, lr, wd, b1=0.9, b2=0.999):
+def rows(steps, accum, lr, wd, b1=0.9, b2=0.999, first=0):
     """The Adam table of one parameter group: a row [rate, isq, dec, apply, 1 - apply] for each of `steps * accum` repetitions (binary64 values).
-    Repetition j belongs to optimiser step j // accum + 1 and applies the update when it is the last of its window."""
+    Repetition j belongs to optimiser step first + j // accum + 1 (`first` steps were taken before: a session continued from a checkpoint) and applies the update when it is the last of its window."""
     out = []
     for j in range(steps * accum):
-        t = j // accum + 1
+        t = first + j // accum + 1
         a = 1.0 if j % accum == accum - 1 else 0.0
         out.append([lr(t) / (1.0 - b1 ** t), 1.0 / math.sqrt(1.0 - b2 ** t), 1.0 - lr(t) * wd, a, 1.0 - a])
     return out

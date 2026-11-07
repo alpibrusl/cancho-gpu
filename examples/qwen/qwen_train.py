@@ -25,6 +25,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(ROOT, "examples", "optim"))
 import qwen_ref as R  # noqa: E402
 import qwen_session as S  # noqa: E402
 
@@ -122,7 +123,7 @@ schedule rope_bwd for nvidia-ada     { threads 128 }
 
 
 def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr_fn=None, wd=0.0, betas=(0.9, 0.999), eps_adam=1e-8, loss_scale=16.0, train=True,
-          grads=None, save=None, probes=(), tune=None, reuse=True, state=None, first_step=0, save_state=None, lean=False):
+          grads=None, save=None, probes=(), tune=None, reuse=True, state=None, first_step=0, save_state=None, lean=False, opt=None):
     """Writes the session over the batches `tokens` ([S, nb, t], taken round and round, one per step) and the adapters `AB` ({'l00.q.A': [r, in], ...}); answers the path of the session file.
     A request is a count of steps; the answer is the mean loss of the last step's batch (positions with a next token). With train=False no optimiser runs (the adapters stay as they are) and with
     `grads` (a path) the raw gradient of every fused adapter matrix is saved there on the request `checkpoint` (see `read_grads`). With train=True and `save` (a path) the f32 fused adapter matrices are
@@ -132,7 +133,10 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
     beside the adapters (`<path>.m`, `<path>.v`, as `read_fused` reads them) and the next session starts from them with `state` ({(l, group, 'A'|'B'): (m, v)}) and `first_step` (the steps already
     taken, which the bias correction and the learning-rate schedule count from; docs/resident.md section 22).
     With `lean` the memory-lean variant of docs/resident.md section 23.4: the fused gate/up product is kept as f16 (`swiglu_h2` writes the copy) and the SwiGLU output the down projection
-    reads is not kept but recomputed from it in the backward, so that a layer's f32 gate/up product and f16 SwiGLU output are no longer saved for every layer."""
+    reads is not kept but recomputed from it in the backward, so that a layer's f32 gate/up product and f16 SwiGLU output are no longer saved for every layer.
+    With `opt` (a dict: accum, max_norm, wd) the optimiser of examples/optim (docs/optimizer.md section 4) in place of `adamw_l`: the decay follows the schedule (`1 - lr_t wd`, torch's AdamW), the global-norm clip is
+    optional (`max_norm`, None for none) and `accum` micro-batches make a step; `tokens` then holds the micro-batches (taken round and round) and a request counts micro-steps, `steps` being the number of
+    micro-steps the session's tables cover (steps = optimiser steps * accum)."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
     w = lambda name: os.path.abspath(os.path.join(wdir, name))
@@ -473,7 +477,22 @@ def write(directory, c, wdir, tokens, AB, r=16, alpha=32.0, steps=1, lr=1e-4, lr
         link(ga_, f"rm1b_{s}.dres")
         gdx = f"rm1b_{s}.dx"
     # ---- the optimiser
-    if train:
+    if train and opt:
+        import lora_opt
+        gs = 1.0 / (ncount * loss_scale)
+        names_, link_of, f16u = [], {}, {}
+        for l in range(ll):
+            for g in G:
+                k = f"{l:02d}_{g}"
+                for ab in ("A", "B"):
+                    nm = f"a{ab}{k}"
+                    names_.append((nm, (G[g]["r2"] * G[g]["inp"]) if ab == "A" else (G[g]["N"] * G[g]["r2"]), f"{ab}{k}"))
+                    link_of[nm] = gradout[(l, g)][0 if ab == "A" else 1]
+                    f16u[nm] = list(ahf[k] if ab == "A" else bhf[k])
+        o = dict(opt)
+        assert steps % o.get("accum", 1) == 0, "steps counts micro-steps: a multiple of accum"
+        lora_opt.wire(L, p, names_, gs, scale, b1, b2, eps_adam, steps // o.get("accum", 1), lr_fn, first_step, o, link_of, f16u)
+    elif train:
         gs = 1.0 / (ncount * loss_scale)
         for l in range(ll):
             for g in G:

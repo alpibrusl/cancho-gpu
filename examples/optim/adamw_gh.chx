@@ -2,6 +2,7 @@
 // [rate, isq, dec, apply, 1 - apply] = [lr_t / (1 - b1^t), 1 / sqrt(1 - b2^t), 1 - lr_t wd, 1 if this repetition ends a window, 0 then], computed on the host in binary64; `cs` is clip_scale's coefficient (1 for no clip).
 //     g = grad gs cs     m = m + (g - m)(1 - b1)     v = v b2 + ((1 - b2) g) g     w = w dec - rate m / (sqrt(v) isq + eps)
 // `ob1` and `ob2` are 1 - beta1 and 1 - beta2 computed on the host in binary64 (1 - 0.999 in f32 is off by 5e-5 relative, torch's is not).
+// The f16 copy is of the blended value (the weight the next micro-step reads), not of the update that was not applied.
 // With apply = 0 the outputs are the inputs (old (1 - apply) + new apply, exact for 0 and 1): the micro-steps of a window leave the optimiser alone.
 algo adamw_gh(n, bn, gs, b1, ob1, b2, ob2, eps)
   in  w:    f32[1, n]
@@ -48,8 +49,9 @@ algo adamw_gh(n, bn, gs, b1, ob1, b2, ob2, eps)
   let db = matmul dc on
   let w0 = load w[0, i * bn ; 1, bn]
   let wn = &w0 * db - q2 * rb
-  store w0 * na + &wn * ab -> wo[0, i * bn]
-  let wq = stage f16 wn
+  let wb = w0 * na + wn * ab
+  store &wb * 1.0 -> wo[0, i * bn]
+  let wq = stage f16 wb
   store wq -> wh[0, i * bn]
 }
 
