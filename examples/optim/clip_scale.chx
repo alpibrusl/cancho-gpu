@@ -1,0 +1,23 @@
+// torch.nn.utils.clip_grad_norm_'s coefficient: cs = min(1, max_norm / (norm + 1e-6)), with norm = sqrt(ss), ss the squared global norm (gradsq's chain). The surface has no sqrt and no min:
+// sqrt(ss) = ss rsqrt(ss + 1e-30) (0 when ss = 0 up to 1e-15, far below the 1e-6), and min(1, c) = 1 + (c - 1) step(1 - c) (not c - step(c - 1)(c - 1), which loses the 1 when c is 1e30).
+algo clip_scale(maxn)
+  in  ss: f32[1, 1]
+  out cs: f32[1, 1]
+{
+  let s0  = load ss[0, 0 ; 1, 1]
+  let sg  = s0 + 1.0e-30
+  let rr  = rsqrt &sg
+  let nrm = sg * rr
+  let den = nrm + 1.0e-6
+  let o   = zeros f32[1, 1]
+  let one = o + 1.0
+  let rd  = &one / den
+  let cf  = rd * maxn
+  let ex  = &cf - 1.0
+  let lo  = &one - cf
+  let lw  = step lo
+  store one + ex * lw -> cs[0, 0]
+}
+
+schedule clip_scale for apple-m-series { threads 32 }
+schedule clip_scale for nvidia-ada     { threads 32 }

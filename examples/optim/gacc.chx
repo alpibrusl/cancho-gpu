@@ -1,0 +1,20 @@
+// Gradient accumulation (docs/optimizer.md section 2): acc' = acc keep + grad sc. `keep` is one number of a session table: 0 on the first micro-step of a window (the window starts from
+// nothing), 1 after; `sc` is 1/N, so the sum of N micro-batch means is the mean of the big batch. Element-wise.
+algo gacc(n, bn, sc)
+  in  acc:  f32[1, n]
+  in  grad: f32[1, n]
+  in  k:    f32[1, 1]
+  out o:    f32[1, n]
+{
+  grid i over n / bn
+  let a0 = load acc[0, i * bn ; 1, bn]
+  let g0 = load grad[0, i * bn ; 1, bn]
+  let z  = zeros f32[1, bn]
+  let on = z + 1.0
+  let kk = load k[0, 0 ; 1, 1]
+  let kb = matmul kk on
+  store a0 * kb + g0 * sc -> o[0, i * bn]
+}
+
+schedule gacc for apple-m-series { threads 128 }
+schedule gacc for nvidia-ada     { threads 128 }

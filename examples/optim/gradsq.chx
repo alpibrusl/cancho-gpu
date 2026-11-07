@@ -1,0 +1,23 @@
+// One link of the chain that makes the squared global norm of the gradients (docs/optimizer.md section 2): o = acc + gs^2 sum(grad^2). `gs` is the optimiser's gradient scale (the norm is of the
+// true gradient). One threadgroup walks the tensor in tiles of bn, then the bn partial sums are added by the product with a column of ones.
+algo gradsq(n, bn, gs)
+  in  acc:  f32[1, 1]
+  in  grad: f32[1, n]
+  out o:    f32[1, 1]
+{
+  let part = zeros f32[1, bn]
+  let part = for p in 0 .. n / bn with part {
+    let g0 = load grad[0, p * bn ; 1, bn]
+    let g  = g0 * gs
+    let h = &g * 1.0
+    yield part + h * g
+  }
+  let c  = zeros f32[bn, 1]
+  let on = c + 1.0
+  let tot = matmul part on
+  let a0 = load acc[0, 0 ; 1, 1]
+  store a0 + tot -> o[0, 0]
+}
+
+schedule gradsq for apple-m-series { threads 128 }
+schedule gradsq for nvidia-ada     { threads 128 }
