@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "examples", "train"))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(ROOT, "examples", "optim"))
 import gpt_ref as R  # noqa: E402
 
 B1, B2, EPS = 0.9, 0.95, 1e-8
@@ -36,10 +37,11 @@ def schedule(steps, lr_fn):
     return [(lr_fn(t) / (1.0 - B1 ** t), 1.0 / math.sqrt(1.0 - B2 ** t)) for t in range(1, steps + 1)]
 
 
-def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, serve=False, save=None):
+def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, serve=False, save=None, opt=None):
     """Writes the session. `tokens` and `targets`: int arrays [steps_data, N] (a batch for each step of the table, taken round and round). `c`: a gpt_ref.Config.
     Answers the path of the session file. With `serve`, a forward-only session for generation (docs/resident.md section 16): a request is the `n` token ids of a window and
     an `n`-long one-hot selector of the position to read, the answer is that position's `vp` logits; `tokens` and `targets` are not used.
+    With `opt` (a dict: accum, max_norm, wd), the optimiser of examples/optim (docs/optimizer.md section 4): `steps` optimiser steps of `accum` micro-steps each, `tokens` holding steps * accum batches.
     With `save` (a path), the f32 master weights are `save` directives to that one file, in the order of `names(c)`, written on the request `checkpoint` (docs/resident.md section 19):
     read them back with `read_checkpoint`."""
     os.makedirs(directory, exist_ok=True)
@@ -293,25 +295,29 @@ def write(directory, c, tokens, targets, steps, lr=1e-3, wd=0.1, seed=1, grads=F
                           f"bqkv{l}": [f"qb_{s}.bias"], f"bo{l}": [f"r1_{s}.bias"], f"b1{l}": [f"gb_{s}.bias"], f"b2{l}": [f"r2_{s}.bias"]})
     sizes = {name: int(np.asarray(P[name]).size) for name in mats + vecs}
     common = dict(gs=repr(1.0 / (n * LOSS_SCALE)), b1=B1, b2=B2, eps=EPS)
-    for name in mats:
-        prog("a_" + name, kernel("adamw_h.chx"), n=sizes[name], bn=block(sizes[name], 128), lwd=repr(lr * wd), **common)
-    for name in vecs:
-        prog("a_" + name, kernel("adam.chx", ) if False else os.path.join(ROOT, "examples", "train", "adam.chx"), n=sizes[name], bn=block(sizes[name], 128), **common)
-    for name in mats + vecs:
-        res(f"a_{name}.w", p(name))
-        res(f"a_{name}.m", p("z" + name))
-        res(f"a_{name}.v", p("z" + name))
-        tab(f"a_{name}.s", p("sched"), steps)
-        link(grad_of[name], f"a_{name}.grad")
-        carry(f"a_{name}.wo", f"a_{name}.w")
-        carry(f"a_{name}.mo", f"a_{name}.m")
-        carry(f"a_{name}.vo", f"a_{name}.v")
-    for name in mats:
-        for u in f16_users[name]:
-            carry(f"a_{name}.wh", f"{u}.w")
-    for name in vecs:
-        for u in f32_users[name]:
-            carry(f"a_{name}.wo", u)
+    if opt:
+        import gpt_opt
+        gpt_opt.wire(L, p, mats, vecs, sizes, grad_of, f16_users, f32_users, 1.0 / (n * LOSS_SCALE), B1, B2, EPS, steps, lr_fn, opt)
+    else:
+        for name in mats:
+            prog("a_" + name, kernel("adamw_h.chx"), n=sizes[name], bn=block(sizes[name], 128), lwd=repr(lr * wd), **common)
+        for name in vecs:
+            prog("a_" + name, kernel("adam.chx", ) if False else os.path.join(ROOT, "examples", "train", "adam.chx"), n=sizes[name], bn=block(sizes[name], 128), **common)
+        for name in mats + vecs:
+            res(f"a_{name}.w", p(name))
+            res(f"a_{name}.m", p("z" + name))
+            res(f"a_{name}.v", p("z" + name))
+            tab(f"a_{name}.s", p("sched"), steps)
+            link(grad_of[name], f"a_{name}.grad")
+            carry(f"a_{name}.wo", f"a_{name}.w")
+            carry(f"a_{name}.mo", f"a_{name}.m")
+            carry(f"a_{name}.vo", f"a_{name}.v")
+        for name in mats:
+            for u in f16_users[name]:
+                carry(f"a_{name}.wh", f"{u}.w")
+        for name in vecs:
+            for u in f32_users[name]:
+                carry(f"a_{name}.wo", u)
     L.append("steps")
     L.append(f"answer ls.dw scale 1/{n}")
     if grads:
