@@ -1,0 +1,12 @@
+{
+ "jobs": 8,
+ "new": 64,
+ "identical_lines_patch_vs_variant": 8,
+ "base_differs_from_variant": 8,
+ "patch_vs_pytorch_equal_jobs": 8,
+ "first_mismatch": null,
+ "ref_device": "mps",
+ "tokens_compared": 512,
+ "passes": true,
+ "min_gap_over_run": 0.006496429443359375
+}

@@ -1,0 +1,57 @@
+{
+ "patch": "variant.chopatch",
+ "mode": "f16",
+ "tmax": 8704,
+ "max_new": 8192,
+ "problems": [
+  {
+   "id": 0,
+   "prompt_tokens": 91,
+   "new": 8192,
+   "hit_limit": true,
+   "engine_ms": 87767,
+   "ms_per_token": 10.7137451171875,
+   "tokens_per_s": 93.3380427723404
+  },
+  {
+   "id": 1,
+   "prompt_tokens": 52,
+   "new": 7204,
+   "hit_limit": false,
+   "engine_ms": 66454,
+   "ms_per_token": 9.22459744586341,
+   "tokens_per_s": 108.40581454840942
+  },
+  {
+   "id": 2,
+   "prompt_tokens": 83,
+   "new": 8192,
+   "hit_limit": true,
+   "engine_ms": 89037,
+   "ms_per_token": 10.8687744140625,
+   "tokens_per_s": 92.00669384637847
+  },
+  {
+   "id": 3,
+   "prompt_tokens": 61,
+   "new": 8192,
+   "hit_limit": true,
+   "engine_ms": 93144,
+   "ms_per_token": 11.3701171875,
+   "tokens_per_s": 87.9498411062441
+  }
+ ],
+ "tokens_per_s_all": 94.47030635965304,
+ "ms_per_token_capped": 10.984212239583334,
+ "n_capped": 3,
+ "projection_base_like": {
+  "mean_tokens": 7829,
+  "hours_200": 4.777522090205441,
+  "verdict": "feasible"
+ },
+ "projection_published_edit": {
+  "mean_tokens": 6620,
+  "hours_200": 4.039749168113426,
+  "verdict": "feasible"
+ }
+}

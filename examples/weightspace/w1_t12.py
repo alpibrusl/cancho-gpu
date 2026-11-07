@@ -130,33 +130,30 @@ def agree(a):
     ids_patch = [[c for c, _ in j_patch[k]["steps"]] for k in range(len(lines))]
     prompts = [j_patch[k]["ids"] for k in range(len(lines))]
     import torch
-    import transformers as T
-    try:
-        model = T.AutoModelForCausalLM.from_pretrained(a.variant_dir, dtype=torch.float32)
-    except (ValueError, KeyError, OSError, AttributeError):
-        model = T.AutoModelForImageTextToText.from_pretrained(a.variant_dir, dtype=torch.float32)
-    model.eval()
+    import hf08_ref as H
+    dev = a.ref_device
+    model = H.build_model(a.variant_dir, "f32").to(dev).eval()   # the text tower, transformers' code as shipped, float32
     ref, gaps = [], []
     with torch.no_grad():
         for pr in prompts:
-            ids = torch.tensor([pr])
+            ids = torch.tensor([pr], device=dev)
             o = model(input_ids=ids, use_cache=True)
             seq, gp = [], []
             for _ in range(a.new):
-                lg = o.logits[0, -1].float()
+                lg = o.logits[0, -1].float().cpu()
                 top = torch.topk(lg, 2)
                 t = int(top.indices[0])
                 seq.append(t)
                 gp.append(float(top.values[0] - top.values[1]))
                 if t in (248044, 248046):
                     break
-                o = model(input_ids=torch.tensor([[t]]), past_key_values=o.past_key_values, use_cache=True)
+                o = model(input_ids=torch.tensor([[t]], device=dev), past_key_values=o.past_key_values, use_cache=True)
             ref.append(seq)
             gaps.append(gp)
     mm = first_mismatch(ids_patch, ref)
     res = {"jobs": len(lines), "new": a.new, "identical_lines_patch_vs_variant": same, "base_differs_from_variant": differ,
            "patch_vs_pytorch_equal_jobs": sum(1 for x, y in zip(ids_patch, ref) if x == y), "first_mismatch": mm,
-           "tokens_compared": sum(min(len(x), len(y)) for x, y in zip(ids_patch, ref))}
+           "ref_device": dev, "tokens_compared": sum(min(len(x), len(y)) for x, y in zip(ids_patch, ref))}
     if mm is not None and mm[0] < len(gaps) and mm[1] < len(gaps[mm[0]]):
         res["gap_at_first_mismatch"] = gaps[mm[0]][mm[1]]
     res["passes"] = same == len(lines) and mm is None
@@ -180,6 +177,7 @@ def main(argv=None):
             s.add_argument("--variant-dir", required=True)
             s.add_argument("--n", type=int, default=8)
             s.add_argument("--new", type=int, default=64)
+            s.add_argument("--ref-device", default="cpu")
             s.add_argument("--runner", default=os.path.join(ROOT, "build", "cancho-gpu-run08"))
             s.add_argument("--work", default=os.path.join(ROOT, "build", "t12"))
     a = ap.parse_args(argv)
