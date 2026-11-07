@@ -197,6 +197,17 @@ fn zero_from[&t](t: &!t [byte], from: int, to: int) -> [] bool {
     return true;
 }
 
+// The size and the CRC-32 trailer of the patch file at `path` (a text handle), without reading the whole
+// file: the identity that an evidence record binds (`docs/weight-space-w4.md` 15.6). `(size, trailer)`, or
+// `(-1, 0)` with the refusal recorded. The trailer is checked against the bytes by `parse`, not here.
+pub fn identity[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int) -> [fs_read(""), file_read] (int, int) {
+    let (s, got, size) = fileio.prefix(m, t, fs, text.bytes(t, path), 0);
+    if s < 0 || size < 20 || size > max_file() || len(t) - s < 4 || fileio.read_at(t, fs, text.bytes(t, path), size - 4, s, 4) != 4 {
+        return (err.fail(m, t, "q08-patch-io", text.f1(m, t, "cannot read $ as a patch of 20 bytes to 16 MiB", path)), 0);
+    }
+    return (size, u32(t, s));
+}
+
 fn truncated[&m, &t](m: &!m [int], t: &!t [byte], k: int) -> [] int {
     return err.fail(m, t, "q08-patch-truncated", text.n1(m, t, "the patch ends inside its tensor $", k));
 }

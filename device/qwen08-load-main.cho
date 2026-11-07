@@ -4,7 +4,7 @@ edition 5;
 // a Metal device and prove it is the file (check C2, `docs/weight-space.md`
 // section 14).
 //
-//     cancho-gpu-qwen08-load <model dir> f32|f16 [--patch <file>]
+//     cancho-gpu-qwen08-load <model dir> f32|f16 [--patch <file> [--require-evidence]]
 //
 // The model dir is the Hugging Face checkpoint (`config.json`,
 // `model.safetensors` or the single shard of that name). Every tensor of the
@@ -40,7 +40,7 @@ fn bytes_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-qwen08-load <model dir> f32|f16 [--patch <file>]\n");
+    io.error_all(io, "usage: cancho-gpu-qwen08-load <model dir> f32|f16 [--patch <file> [--require-evidence]]\n");
     return 2;
 }
 
@@ -48,9 +48,15 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     // `--patch <file>`: the edit patch (T11, `src/qwen08_patch.cho`) is applied to the raw bytes of
     // the tensors it names before they are converted.
     var patch_file = 0 - 1;
-    if arg_count(args) == 5 && text.is(t, text.from_bytes(m, t, arg(args, 3)), "--patch") {
+    var need = false;
+    var ac = arg_count(args);
+    if ac == 6 && text.is(t, text.from_bytes(m, t, arg(args, 5)), "--require-evidence") {
+        need = true;
+        ac = 5;
+    }
+    if ac == 5 && text.is(t, text.from_bytes(m, t, arg(args, 3)), "--patch") {
         patch_file = text.from_bytes(m, t, arg(args, 4));
-    } else if arg_count(args) != 3 {
+    } else if ac != 3 || need {
         return usage(io);
     }
     let dir = text.from_bytes(m, t, arg(args, 1));
@@ -77,6 +83,9 @@ fn run[&m, &t, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     var patch = 0 - 1;
     var patched = 0;
     if patch_file >= 0 {
+        if need && qwen08_load.check_evidence(m, t, fs, patch_file) < 0 {
+            return cli.report(m, t, io);
+        }
         patch = qwen08_load.open_patch(m, t, fs, patch_file, path, m[w + qwen08_load.w_header()], plan);
         if patch < 0 {
             return cli.report(m, t, io);

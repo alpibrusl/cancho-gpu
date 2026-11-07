@@ -43,6 +43,10 @@ expect 2 "usage:" "$WORK/empty" "$ROOT/tests/chx" f32 64 $S --patch a b
 # shellcheck disable=SC2086
 expect 1 "q08-io" "$WORK/empty" "$ROOT/tests/chx" f32 64 $S --patch "$WORK/none.patch"
 # shellcheck disable=SC2086
+expect 2 "usage:" "$WORK/empty" "$ROOT/tests/chx" f32 64 $S --require-evidence yes
+# shellcheck disable=SC2086
+expect 2 "usage:" "$WORK/empty" "$ROOT/tests/chx" f32 64 $S --patch a --require-evidence maybe
+# shellcheck disable=SC2086
 expect 1 "q08-io" "$WORK/empty" "$ROOT/tests/chx" f32 64 $S
 # shellcheck disable=SC2086
 expect 1 "q08-io" "$WORK/no-such-dir" "$ROOT/tests/chx" f32 64 $S

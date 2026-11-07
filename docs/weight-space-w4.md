@@ -449,3 +449,96 @@ Data: `examples/weightspace/results/w4_e2c/` (`records_<model>.jsonl`, `loops_me
 * `x5e-2` and `x2e-1` were not run (planned "if time allows"; two concurrent jobs on the GPU stalled and the time went to the serial rerun). The `p1e-*` and random variants of 11.6 item 4 were not run either; so the check "the projected edits' proxy gains fall monotonically with the cutoff" (7.1) is **not tested**, only `x1e-1` is on the scale.
 
 **Defects and deviations (all of them).** (1) A first smoke took 210 s for 256 steps instead of 33 s: the MPS allocator thrashed on the growing key/value cache; `torch.mps.empty_cache()` every 32 steps fixed it (in `measure_loop`, no result depends on it). (2) Two model runs in parallel on the GPU stalled in uninterruptible sleep for 8 minutes; they were killed and rerun serially. Records are written per finished loop and the run resumes, so no half-loop is in the data; the partially filled `a3` and `base2` files continued where they stopped, with the same seeds. (3) `e15`'s first partial table (0.691 on 17 loops) is superseded by the full 40 (0.637). (4) The sampler is numpy float64 on logits from float32 MPS, top-p keeps a token while the mass before it is below 0.95; it is W1's order but not the transformers implementation bit for bit, and is the same for every model.
+
+## 15. Edit screening and the patch evidence record (design fixed 2026-11-07, before the code)
+
+> Written and committed before `w4_screen.py` or the loader check existed. Nothing here is a new measurement; every number the tool will print is computed by the rules of sections 4.3 and 14 (`w4_lib.gate`, `w4_e2c`). Marks: **[choice]**, **[estimate]**. Section 15.9 is filled after the code, with what is real and what is design only.
+
+### 15.1 What this adds, and what it does not claim
+Two small products of the W4 work. (1) **Screening**: one command that takes a base checkpoint and an edited one (or a CHOPATCH) and writes ONE evidence file saying what the registered collateral gates of 4.3 gave. (2) **The evidence record**: a sidecar `<patch>.evidence.json` and a verifier that refuses a patch with no evidence, with evidence for another file, or with a failed gate; and a design for the same refusal in the cancho loader.
+What it does **not** claim: that a passing patch is *good* (the gates bound collateral damage on a corpus; they say nothing of whether the edit does what it is for, and E2c is a proxy calibrated only on one model, 14.7); and that the evidence is *authentic*. The record is a plain JSON file with hashes, **not signed**: it catches an edit that was never screened, a patch changed after screening and an honest mistake; it does not stop someone who writes the JSON by hand. The loader's check is further reduced to CRC-32 (15.6). A signature is a ticket, not part of this design.
+
+### 15.2 The command
+```
+python3 examples/weightspace/w4_screen.py run    --base DIR (--edited DIR | --patch FILE | both) --corpus WORKDIR --out EVIDENCE.json
+                                                  [--label NAME] [--device cpu|mps] [--max-len 512] [--windows N]
+                                                  [--loops loops.json [--e2c-dir DIR]] [--e2c-records DIR]
+python3 examples/weightspace/w4_screen.py verify PATCH [--evidence FILE] [--base DIR]
+```
+* **Inputs.** `DIR`s are safetensors checkpoint directories. With `--patch` only, the edited checkpoint is *materialized* (base copied, the patch's columns written, base + patch checked against the patch's own hashes) into a temporary directory that is removed afterwards. With both, base + patch must equal the edited tensors byte for byte (`w1_patch.check`), else `w4s-patch-mismatch`. `WORKDIR` is `w4_collateral.py corpus`'s output: `corpus.json` (the `eval` split is scored) and `manifest.json` (hashed).
+* **Gates** (pure, `w4_lib.gate` with `GATE`): the upper 95% bound of the mean KL, the worst domain's mean KL, the token p99, the perplexity delta's upper bound overall and per domain, and finiteness. The repetition clauses (4.4) need generations and are **not** evaluated here; they are listed under `not_evaluated` and the verdict says so. **[choice]** `--max-len` defaults to 512 tokens (a full-vocabulary logits tensor of a 248,320-token vocabulary is 0.5 GB at 512 positions); 11's numbers are on windows of up to 2,048, so a screen at 512 is the same rule on shorter windows, and the evidence records the length.
+* **E2c** (`--loops` runs `w4_e2c.run` for the base and the edited model; `--e2c-records` reads records already made): the exit share `E` of each, the paired gain `G_E` with its bootstrap interval. It is **reported, never gated**: 14.4's calibration holds for the published 40 Qwen3.5-0.8B loops only (14.7).
+* **Heavy parts** (`collect`, the E2c run) load models through `transformers` in float32 and are callable; they are not exercised by the tests (no model, no download). The tests drive the pure parts with toy logits and toy safetensors.
+* **Exit status**: 0 done / verified, 1 a gate failed (screen) or the evidence records a failed gate (verify), 2 an input or evidence is unusable. Every refusal prints a tag.
+
+### 15.3 The evidence file, `cancho-patch-evidence/1`
+UTF-8 JSON object, written with sorted keys and a trailing newline. All hashes are lowercase hex SHA-256 except the patch's `crc32` (an unsigned integer, the patch's own trailer).
+
+| key | content |
+|---|---|
+| `schema` | the string `cancho-patch-evidence/1` |
+| `verdict` | `"pass"` iff every **evaluated** gate passed; else `"fail"` |
+| `date` | UTC, `YYYY-MM-DDTHH:MM:SSZ` |
+| `tool` | `{"name": "w4_screen.py", "version": "1", "rules": "docs/weight-space-w4.md 4.3, 14, 15"}` |
+| `model` | `{"label": str, "vocab": int}` (label is the caller's; vocab is the logits width) |
+| `base`, `edited` | `{"sha256": tree hash, "files": {name: sha256}}` over `config.json`, the safetensors index and every `*.safetensors` file; the tree hash is the SHA-256 of the lines `name<space>sha256` sorted by name. `edited` of a patch-only run is the materialized tree |
+| `patch` | `null`, or `{"file": basename, "bytes": n, "sha256": hex, "crc32": n}` of the CHOPATCH |
+| `corpus` | `{"corpus_sha256", "manifest_sha256" (or null), "windows", "positions", "max_len", "domains": [...]}` |
+| `gates` | `{name: {"ok": bool, "value": number or bool, "threshold": number or null, "detail": str}}` for `kl_mean`, `kl_domain`, `kl_p99`, `ppl_all`, `ppl_domain`, `finite` |
+| `not_evaluated` | `["rep4", "new_loops"]` (4.4) |
+| `summary` | per scope (`all`, each domain): positions, mean KL with its interval, token KL distribution, perplexity delta with its interval |
+| `e2c` | `null`, or `{"loops", "E_base", "E_edited", "G_E": [gain, lo, hi], "gate": null, "note": ...}` |
+
+### 15.4 The verifier, `verify PATCH`
+Reads `PATCH` and the sidecar `PATCH.evidence.json` (or `--evidence FILE`), in this order, refusing at the first failure:
+
+| tag | refuses when |
+|---|---|
+| `w4s-patch-io` | the patch cannot be read |
+| `w4s-evidence-missing` | the evidence file does not exist |
+| `w4s-evidence-format` | not JSON, not an object, wrong `schema`, or a required key missing / of the wrong type, a hash not 64 hex digits |
+| `w4s-evidence-patch` | `patch` is null, or its `bytes`, `sha256` or `crc32` differ from the file's own (`crc32` is the patch's trailer, the CRC-32 of every byte before it: the CRC-32 of the whole file is a constant) |
+| `w4s-patch` | the patch is too short, or its trailer does not match its bytes (`q08-patch-checksum`) |
+| `w4s-evidence-thresholds` | a registered gate (`w4_lib.GATE`) is absent, or its recorded threshold is **looser** than the registered one (evidence cannot pass by lowering the bar) |
+| `w4s-evidence-verdict` | a gate's `ok` disagrees with its recorded `value` and `threshold`, or `verdict` disagrees with the gates |
+| `w4s-gate-failed` | an evaluated gate failed (exit 1; lists them) |
+| `w4s-evidence-base` | only with `--base DIR`: its tree hash is not the evidence's `base.sha256` |
+
+Passing prints the verdict, the gate values, what was not evaluated and **the limits of 15.1**.
+
+### 15.5 Rule tags of the screen
+`w4s-input` (unusable arguments or checkpoint), `w4s-model` (a model that cannot be loaded, different vocabularies, `trust_remote_code` is never set), `w4s-corpus` (no corpus, no `eval` split, a window with ids outside the vocabulary or shorter than 2), `w4s-patch` (the patch is malformed: carries `w1_patch.decode`'s own `q08-patch-*` tag in the message), `w4s-patch-mismatch`, `w4s-out` (the output cannot be written; nothing is left half written), `w4s-e2c` (E2c inputs unusable). No input reaches a traceback: `main` catches the tagged errors, and the tests feed truncated and corrupt files.
+
+### 15.6 The loader check (cancho; `src/qwen08_load.cho`, `src/qwen08_patch.cho`)
+**Design.** `--require-evidence` on a tool that takes `--patch FILE`: before the patch is opened, read `FILE.evidence.json` (at most 1 MiB), parse it with the JSON module the config reader uses, and refuse unless
+1. the file exists (`q08-evidence-missing`);
+2. it is a JSON object whose `schema` is the string `cancho-patch-evidence/1`, whose `verdict` is a string, and whose `patch` is an object with integer `bytes` and `crc32` (`q08-evidence-format`);
+3. `patch.bytes` equals the patch file's size and `patch.crc32` its trailer (`q08-evidence-patch`; the trailer is checked against the bytes by `open_patch` right after, so the pair binds the evidence to the content);
+4. `verdict` is `"pass"` (`q08-evidence-verdict`).
+**What it does not do**, said now: no SHA-256 (the loader has none; CRC-32 is accident detection, a forger can match it), no recomputation of the gates (the verifier is the Python tool), no check that the base is the one screened (the patch already refuses a base other than the one it was made from, `q08-patch-base`). The flag is **opt-in** and the default is unchanged, so no existing invocation changes behaviour; a deployment that wants the check passes the flag, and it reads as a gate against *unscreened* patches, not against hostile ones. Cost **[estimate]**: about 70 lines of cancho (one function in `qwen08_load.cho`, a 25-line size-and-trailer reader in `qwen08_patch.cho`, flag parsing in each main). **Decision rule:** implemented here only if the real count is under 150 lines; otherwise it stays as this section and a ticket. **[measured]** 94 added lines in total (comments included), so it is implemented (15.9). Where it is wired: `device/qwen08-load-main.cho` (`--patch FILE --require-evidence`, tested against the mock driver in `tests/qwen08_load.sh`), `device/run08-main.cho` (`--require-evidence`) and `device/w1-main.cho` (`--require-evidence yes`: that program reads its flags in pairs). The flag without `--patch` is a usage error (exit 2).
+
+### 15.7 Other models: what must change
+Screening itself is name-agnostic (it reads tensors by whatever names the checkpoints and the patch carry); what is Qwen3.5-0.8B's is below.
+
+| piece | today (Qwen3.5-0.8B) | for another model |
+|---|---|---|
+| checkpoint reader | safetensors, text tower under `model.language_model.*`, BF16 | any safetensors directory hashes and screens; a model `transformers` cannot load without remote code is refused (`w4s-model`) |
+| tokenizer and corpus | `corpus.json` holds Qwen token ids (vocabulary 248,320; stops 248044, 248046); `w4_collateral.py corpus` tokenizes with it | re-tokenize the corpus with the new tokenizer (ids are model-bound; the corpus hash changes, so evidence is not comparable across models). Base and edited must share a vocabulary |
+| layer and module names | `model.language_model.layers.{15,19}.mlp.down_proj.weight`, `D_MLP` 3584, in `w4_ckpt.py`, `w4_collateral.py`, `w4_search*.py` | only the *variant and search* tools use them; the screen and verifier do not. A new model needs its own names in those tools |
+| gate thresholds | `GATE`, scaled to Qwen3.5-0.8B's 4-bit rounding (4.3 reason, 11.2 anchors) | re-measure the q8 and q4 anchors on the new model first; the thresholds are **[choice]** and 4.3 says what to do when they are mis-scaled. The verifier insists on the registered ones |
+| E2c | 40 looping GSM8K generations of the Qwen base, W1's sampler, calibration of 14.7 | its own base loops and its own calibration (14.4) before the proxy means anything; until then it is informational |
+| patch format | CHOPATCH v1: BF16 2-D tensors, column patches, at most 64 tensors, dimensions up to 2^24 | another dtype or a quantized layout needs a v2; the loader refuses what it cannot read |
+| cancho loader | `qwen08_load.plan`, fixed dimensions in `qwen08.cho` `dims_ok` | a `<model>_load.cho`; the evidence check depends only on the patch file and is reused unchanged |
+
+### 15.8 Code and tests
+`examples/weightspace/w4_screen.py` (numpy; torch and transformers only inside `collect` and the E2c run) and `tests/w4_screen.py` (in the gate; skipped without numpy): planted logits for the gates, a toy safetensors pair and a CHOPATCH for hashing, materializing and the verifier's every tag, truncated and corrupt inputs. The loader check's tests are in `tests/qwen08_load.sh`.
+
+### 15.9 What is real and what is design only (2026-11-07)
+**Real, and held by the gate** (`tests/w4_screen.py`, 70 checks on toy data; `tests/qwen08_load.sh` mode `evidence`; mutants of the verifier's threshold, patch-identity and verdict checks were each caught):
+* `w4_screen.py verify PATCH [--evidence] [--base]` with every tag of 15.4; `run` end to end **with a stub in place of the model pass** (patch-only, edited-only and both; the evidence of a patch-only run verifies the patch); the gates as `w4_lib.gate` computes them, with their values and thresholds (the `ok` of every gate equals `w4_lib.gate`'s on planted cases, the mean KL equals a direct float64 computation); tree and patch hashes; patch materialization checked against the patch's own hashes; E2c's pair score from records; corrupt evidence (300) and corrupt patches (200) raise only tagged refusals.
+* The loader check: `qwen08_load.check_evidence`, `qwen08_patch.identity`, the flag in three mains (94 added lines of cancho). The Python writer's evidence file is loaded by the cancho tool; 12 faulty evidence files, a patch changed after screening and 120 corrupted evidence files are refused with `q08-evidence-*` tags (exit 1), none traps.
+**Designed only, not run:**
+* `collect` and the E2c model run (`--loops`) were **not executed on any model** in this work (the Mac's GPU was not ours and no forward pass was run); they are straight-line code over `transformers` and the same E2c functions that produced 14.7, but a first real run will find what the stub could not. The 512-token default window is a **[choice]**; a screen at that length has not been compared with 11.2's numbers on the same edit.
+* The repetition clauses (4.4) are not screened (`not_evaluated`).
+* The evidence is not signed and the loader's check is CRC-32 only (15.1, 15.6). No SHA-256 in cancho; if the loader is to resist a forger, that is a ticket: a SHA-256 in `src/` (about 80 lines) plus a signature scheme, neither designed here.
+* Another model (15.7) is a table, not code.
