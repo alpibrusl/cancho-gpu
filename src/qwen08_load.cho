@@ -609,6 +609,56 @@ pub fn open_patch[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), patch_
     return pr;
 }
 
+// A non-negative integer member `name` of the JSON object `node`, or -1.
+fn evidence_int[&t, &m](t: &!t [byte], m: &!m [int], tape: int, words: int, hs: int, n: int, node: int, name: &static [byte]) -> [] int {
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], node, name);
+    if v < 0 || !json.is_int(m[tape..tape + words], v) || !json.fits_int(t[hs..hs + n], m[tape..tape + words], v) {
+        return 0 - 1;
+    }
+    return json.to_int(t[hs..hs + n], m[tape..tape + words], v);
+}
+
+// `--require-evidence` (`docs/weight-space-w4.md` 15.6): refuse the patch at `patch_path` unless its sidecar
+// `<patch>.evidence.json` is a `cancho-patch-evidence/1` object whose `patch.bytes` and `patch.crc32` are this
+// file's size and trailer and whose `verdict` is "pass". CRC-32 binds the record to the file against accident, not
+// against a forger, and the gates are not recomputed: `w4_screen.py verify` is the full check. 0, or -1 refused.
+pub fn check_evidence[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), patch_path: int) -> [fs_read(""), file_read] int {
+    let mark = m[mem.text_slot()];
+    let (size, crc) = qwen08_patch.identity(m, t, fs, patch_path);
+    if size < 0 {
+        return 0 - 1;
+    }
+    let ev = text.f1(m, t, "$.evidence.json", patch_path);
+    let (hs, n, esize) = fileio.prefix(m, t, fs, text.bytes(t, ev), 1048576);
+    if hs == 0 - 1 {
+        return err.fail(m, t, "q08-evidence-missing", text.f1(m, t, "$ is missing or unreadable, and --require-evidence is set", ev));
+    }
+    if hs < 0 || esize > n {
+        return err.fail(m, t, "q08-evidence-format", text.f1(m, t, "$ does not fit, or is over 1 MiB", ev));
+    }
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    var sv = 0 - 1;
+    var pv = 0 - 1;
+    var vv = 0 - 1;
+    if json.parse(t[hs..hs + n], m[tape..tape + words]) >= 0 && json.is_object(m[tape..tape + words], 0) {
+        sv = json.get(t[hs..hs + n], m[tape..tape + words], 0, "schema");
+        pv = json.get(t[hs..hs + n], m[tape..tape + words], 0, "patch");
+        vv = json.get(t[hs..hs + n], m[tape..tape + words], 0, "verdict");
+    }
+    if sv < 0 || vv < 0 || pv < 0 || !json.is_object(m[tape..tape + words], pv) || !json.string_equals(t[hs..hs + n], m[tape..tape + words], sv, "cancho-patch-evidence/1") {
+        return err.fail(m, t, "q08-evidence-format", text.f1(m, t, "$ is not a cancho-patch-evidence/1 object with a verdict and a patch", ev));
+    }
+    if evidence_int(t, m, tape, words, hs, n, pv, "bytes") != size || evidence_int(t, m, tape, words, hs, n, pv, "crc32") != crc {
+        return err.fail(m, t, "q08-evidence-patch", text.f1(m, t, "$ was made for another patch file (size or CRC-32 differs)", ev));
+    }
+    if !json.string_equals(t[hs..hs + n], m[tape..tape + words], vv, "pass") {
+        return err.fail(m, t, "q08-evidence-verdict", text.f1(m, t, "the evidence in $ does not say pass", ev));
+    }
+    m[mem.text_slot()] = mark;
+    return 0;
+}
+
 // The patch seam: `n` values of tensor `rec` from value `done`, as the file has them (`t[raw..]`,
 // BF16 or F32), before they are converted. The entries of the patch for this tensor (linked by
 // `open_patch`; none for a tensor it does not name) that lie in `[done, done + n)` are overwritten.
