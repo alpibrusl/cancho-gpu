@@ -16,6 +16,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "optim"))
 import cnn_ref as R  # noqa: E402
 
 B1, B2, EPS = 0.9, 0.999, 1e-8
@@ -78,7 +79,7 @@ def input_tables(c, images, directory):
                 f.write(batch.reshape(half * c.h * c.h, c.cin).astype("<f2").tobytes())
 
 
-def write(directory, c, images, labels, steps, lr=2e-3, wd=0.01, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None):
+def write(directory, c, images, labels, steps, lr=2e-3, wd=0.01, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, opt=None):
     """Writes the session and answers its path. `images`: [S, N, h, h, cin] (S batches, taken round and round); `labels`: [S, N] ints. `c`: a cnn_ref.Config."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
@@ -339,25 +340,29 @@ def write(directory, c, images, labels, steps, lr=2e-3, wd=0.01, seed=1, grads=F
         f32_users["b_" + nm] = ["bf_" + nm + ".beta"]
     sz = {name: int(np.asarray(P[name]).size) for name in mats + vecs}
     common = dict(gs=repr(1.0 / (n * LOSS_SCALE)), b1=B1, b2=B2, eps=EPS)
-    for name in mats:
-        prog("a_" + name, os.path.join(ROOT, "examples", "gpt", "adamw_h.chx"), n=sz[name], bn=block(sz[name], 128), lwd=repr(lr * wd), **common)
-    for name in vecs:
-        prog("a_" + name, os.path.join(ROOT, "examples", "train", "adam.chx"), n=sz[name], bn=block(sz[name], 128), **common)
-    for name in mats + vecs:
-        res(f"a_{name}.w", p(name))
-        res(f"a_{name}.m", p("z" + name))
-        res(f"a_{name}.v", p("z" + name))
-        tab(f"a_{name}.s", p("sched"), steps)
-        link(grad_of[name], f"a_{name}.grad")
-        carry(f"a_{name}.wo", f"a_{name}.w")
-        carry(f"a_{name}.mo", f"a_{name}.m")
-        carry(f"a_{name}.vo", f"a_{name}.v")
-    for name in mats:
-        for u in f16_users[name]:
-            carry(f"a_{name}.wh", f"{u}.w")
-    for name in vecs:
-        for u in f32_users[name]:
-            carry(f"a_{name}.wo", u)
+    if opt:
+        import gpt_opt
+        gpt_opt.wire(L, p, mats, vecs, sz, grad_of, f16_users, f32_users, 1.0 / (n * LOSS_SCALE), B1, B2, EPS, steps, lr_fn, opt)
+    else:
+        for name in mats:
+            prog("a_" + name, os.path.join(ROOT, "examples", "gpt", "adamw_h.chx"), n=sz[name], bn=block(sz[name], 128), lwd=repr(lr * wd), **common)
+        for name in vecs:
+            prog("a_" + name, os.path.join(ROOT, "examples", "train", "adam.chx"), n=sz[name], bn=block(sz[name], 128), **common)
+        for name in mats + vecs:
+            res(f"a_{name}.w", p(name))
+            res(f"a_{name}.m", p("z" + name))
+            res(f"a_{name}.v", p("z" + name))
+            tab(f"a_{name}.s", p("sched"), steps)
+            link(grad_of[name], f"a_{name}.grad")
+            carry(f"a_{name}.wo", f"a_{name}.w")
+            carry(f"a_{name}.mo", f"a_{name}.m")
+            carry(f"a_{name}.vo", f"a_{name}.v")
+        for name in mats:
+            for u in f16_users[name]:
+                carry(f"a_{name}.wh", f"{u}.w")
+        for name in vecs:
+            for u in f32_users[name]:
+                carry(f"a_{name}.wo", u)
     L.append("steps")
     L.append(f"answer ls.dw scale 1/{n}")
     if grads:

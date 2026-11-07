@@ -3,7 +3,10 @@
 (docs/resident.md sections 15, 17, 18). The text is the Markdown documentation of two directories (no download), characters as tokens; the model, its start (gpt_ref.init_params), the
 batches and AdamW are the same for both.
 
-    python3 examples/gpt/compare_gpt.py [--steps 1500] [--layers 4] [--d 256] [--heads 4] [--t 128] [--b 32] [--lr 1e-3] [--only cancho,torch-mps,torch-mps-amp]"""
+    python3 examples/gpt/compare_gpt.py [--steps 1500] [--layers 4] [--d 256] [--heads 4] [--t 128] [--b 32] [--lr 1e-3] [--only cancho,torch-mps,torch-mps-amp] [--g6] [--clip 1.0]
+
+`--g6` trains cancho with the optimiser of examples/optim (docs/optimizer.md; decay `lr_t wd` as torch's, not the peak rate's), `--clip` adds the global-norm clip to both sides (torch's `clip_grad_norm_`);
+without them every recorded curve is reproduced as before (the default path is the old `adamw_h`)."""
 import math
 import os
 import sys
@@ -28,6 +31,8 @@ ONLY = arg("--only", "cancho,torch-mps,torch-mps-amp").split(",")
 SESSION = os.environ.get("SESSION", os.path.join(ROOT, "build", "cancho-gpu-metal-session"))
 DIR = arg("--dir", os.path.join(ROOT, "build", "gpt"))
 EVAL_EVERY = int(arg("--eval", 250))
+G6 = "--g6" in sys.argv or "--clip" in sys.argv
+CLIP = float(arg("--clip", 0)) or None
 
 
 def lr_at(step):
@@ -50,7 +55,7 @@ def run_cancho(c, params, tok, tgt, val_x, val_y):
     ckpt = os.path.join(DIR, "cancho-ckpt.bin")
     if os.path.exists(ckpt):
         os.remove(ckpt)
-    sess = G.write(os.path.join(DIR, "cancho"), c, tok, tgt, STEPS, lr=LR, wd=WD, params=params, lr_fn=lr_at, save=ckpt)
+    sess = G.write(os.path.join(DIR, "cancho"), c, tok, tgt, STEPS, lr=LR, wd=WD, params=params, lr_fn=lr_at, save=ckpt, opt=dict(accum=1, wd=WD, max_norm=CLIP) if G6 else None)
     p = subprocess.Popen([SESSION, sess], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     p.stdin.write("1\n")
     p.stdin.flush()
@@ -116,6 +121,8 @@ def run_torch(c, params, tok, tgt, val_x, val_y, device, amp):
         loss = forward(tokt[step - 1], tgtt[step - 1])
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        if CLIP:
+            torch.nn.utils.clip_grad_norm_([q for g in opt.param_groups for q in g["params"]], CLIP)
         opt.step()
         if step % EVAL_EVERY == 0 or step == 1:
             sync()

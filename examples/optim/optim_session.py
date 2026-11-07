@@ -23,7 +23,7 @@ def put(path, values, dtype="<f4"):
         f.write(np.asarray(values, dtype=dtype).reshape(-1).tobytes())
 
 
-def write(directory, params, grads, accum=1, steps=1, lr=None, wd=None, max_norm=None, gs=1.0, b1=0.9, b2=0.999, eps=1e-8, kdir=None, sc=None, mut=()):
+def write(directory, params, grads, accum=1, steps=1, lr=None, wd=None, max_norm=None, gs=1.0, b1=0.9, b2=0.999, eps=1e-8, kdir=None, sc=None, mut=(), half=False):
     """`kdir`: the directory the kernels are read from (the mutants' copy). `sc`: the accumulator's scale (default 1/accum)."""
     os.makedirs(directory, exist_ok=True)
     kdir = kdir or HERE
@@ -74,7 +74,7 @@ def write(directory, params, grads, accum=1, steps=1, lr=None, wd=None, max_norm
     L.append(f"link sq_{prev}.o -> clip.ss")
     for name, w, group in params:
         n = int(np.asarray(w).size)
-        prog("a_" + name, "adamw_g.chx", n=n, bn=block(n), gs=repr(gs), b1=repr(b1), ob1=repr(1.0 - b1), b2=repr(b2), ob2=repr(1.0 - b2), eps=repr(eps))
+        prog("a_" + name, "adamw_gh.chx" if half else "adamw_g.chx", n=n, bn=block(n), gs=repr(gs), b1=repr(b1), ob1=repr(1.0 - b1), b2=repr(b2), ob2=repr(1.0 - b2), eps=repr(eps))
         L.append(f"resident a_{name}.w {p(name)} f32")
         L.append(f"resident a_{name}.m {p(name + '.z')} f32")
         L.append(f"resident a_{name}.v {p(name + '.z')} f32")
@@ -88,6 +88,9 @@ def write(directory, params, grads, accum=1, steps=1, lr=None, wd=None, max_norm
     for name, w, group in params:
         for x in "wmv":
             L.append(f"answer a_{name}.{x}o")
+    if half:
+        for name, w, group in params:
+            L.append(f"answer a_{name}.wh")
     with open(p("session"), "w") as f:
         f.write("\n".join(L) + "\n")
     return p("session")

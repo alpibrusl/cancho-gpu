@@ -104,7 +104,7 @@ def wb_for(w):
     return next(b for b in range(min(w, 16), 0, -1) if w % b == 0)
 
 
-def write(directory, c, images, labels, steps, lr=2e-3, wd=0.01, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, keep=False):
+def write(directory, c, images, labels, steps, lr=2e-3, wd=0.01, seed=1, grads=False, lr_fn=None, params=None, dump=False, tune=None, keep=False, opt=None):
     """Writes the session and answers its path. `images`: [S, N, H, W, cin] (S batches, taken round and round); `labels`: [S, N]. `c`: a resnet_ref.Config."""
     os.makedirs(directory, exist_ok=True)
     p = lambda name: os.path.join(directory, name)
@@ -402,25 +402,29 @@ def write(directory, c, images, labels, steps, lr=2e-3, wd=0.01, seed=1, grads=F
         f32_users["b_" + nm] = ["bf_" + nm + ".beta"]
     sz = {name: int(np.asarray(P[name]).size) for name in mats + vecs}
     common = dict(gs=repr(1.0 / (n * LOSS_SCALE)), b1=B1, b2=B2, eps=EPS)
-    for name in mats:
-        prog("a_" + name, os.path.join(ROOT, "examples", "gpt", "adamw_h.chx"), n=sz[name], bn=block(sz[name], 128), lwd=repr(lr * wd), **common)
-    for name in vecs:
-        prog("a_" + name, os.path.join(ROOT, "examples", "train", "adam.chx"), n=sz[name], bn=block(sz[name], 128), **common)
-    for name in mats + vecs:
-        res(f"a_{name}.w", p(name))
-        res(f"a_{name}.m", p("z" + name))
-        res(f"a_{name}.v", p("z" + name))
-        tab(f"a_{name}.s", p("sched"), steps)
-        link(grad_of[name], f"a_{name}.grad")
-        carry(f"a_{name}.wo", f"a_{name}.w")
-        carry(f"a_{name}.mo", f"a_{name}.m")
-        carry(f"a_{name}.vo", f"a_{name}.v")
-    for name in mats:
-        for u in f16_users[name]:
-            carry(f"a_{name}.wh", f"{u}.w")
-    for name in vecs:
-        for u in f32_users[name]:
-            carry(f"a_{name}.wo", u)
+    if opt:
+        import gpt_opt
+        gpt_opt.wire(L, p, mats, vecs, sz, grad_of, f16_users, f32_users, 1.0 / (n * LOSS_SCALE), B1, B2, EPS, steps, lr_fn, opt)
+    else:
+        for name in mats:
+            prog("a_" + name, os.path.join(ROOT, "examples", "gpt", "adamw_h.chx"), n=sz[name], bn=block(sz[name], 128), lwd=repr(lr * wd), **common)
+        for name in vecs:
+            prog("a_" + name, os.path.join(ROOT, "examples", "train", "adam.chx"), n=sz[name], bn=block(sz[name], 128), **common)
+        for name in mats + vecs:
+            res(f"a_{name}.w", p(name))
+            res(f"a_{name}.m", p("z" + name))
+            res(f"a_{name}.v", p("z" + name))
+            tab(f"a_{name}.s", p("sched"), steps)
+            link(grad_of[name], f"a_{name}.grad")
+            carry(f"a_{name}.wo", f"a_{name}.w")
+            carry(f"a_{name}.mo", f"a_{name}.m")
+            carry(f"a_{name}.vo", f"a_{name}.v")
+        for name in mats:
+            for u in f16_users[name]:
+                carry(f"a_{name}.wh", f"{u}.w")
+        for name in vecs:
+            for u in f32_users[name]:
+                carry(f"a_{name}.wo", u)
     L.append("steps")
     L.append(f"answer ls.dw scale 1/{n}")
     if grads:
