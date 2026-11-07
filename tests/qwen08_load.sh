@@ -11,6 +11,8 @@
 #   * each refusal fixture is refused with its rule tag, every `q08-` rule in
 #     the sources has one (or a stated reason it cannot), the edit patch (T11, `src/qwen08_patch.cho`): base + patch equals the edited toy tensor by
 #     tensor, a malformed or mismatched patch is refused with its rule tag, hostile patches never trap;
+#   * `--require-evidence` (docs/weight-space-w4.md 15.6): a patch with the evidence `w4_screen.py` writes loads, a missing, malformed, stale or failing
+#     evidence is refused with its `q08-evidence-` tag, hostile evidence never traps;
 #   * hostile headers and configs never trap.
 #
 # The real checkpoint is `scripts/qwen08-load-check.sh` (check C2), not the gate.
@@ -35,5 +37,6 @@ python3 "$ROOT/tests/qwen08_load.py" fuzz "$BIN" "$WORK" 300 || fail=1
 if python3 -c 'import numpy' 2>/dev/null; then
   python3 "$ROOT/tests/qwen08_load.py" patch "$BIN" "$WORK" || fail=1
   python3 "$ROOT/tests/qwen08_load.py" patch-fuzz "$BIN" "$WORK" 150 || fail=1
+  python3 "$ROOT/tests/qwen08_load.py" evidence "$BIN" "$WORK" || fail=1
 fi
 exit $fail

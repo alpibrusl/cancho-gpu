@@ -57,7 +57,7 @@ fn bytes_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <prompt: ids, comma separated, or @request.json> [--trace] [--logits] [--timing] [--max-new N] [--force <ids>] [--batch <file>] [--patch <file>]\n");
+    io.error_all(io, "usage: cancho-gpu-run08 <model dir> <kernel dir> f32|f16 <tmax> <prompt: ids, comma separated, or @request.json> [--trace] [--logits] [--timing] [--max-new N] [--force <ids>] [--batch <file>] [--patch <file> [--require-evidence]]\n");
     return 2;
 }
 
@@ -397,6 +397,7 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
     var force = 0 - 1;
     var batch = 0 - 1;
     var patch_file = 0 - 1;
+    var need = false;
     var ai = 6;
     while ai < arg_count(args) {
         let flag = text.from_bytes(m, t, arg(args, ai));
@@ -406,6 +407,8 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
             logits = true;
         } else if text.is(t, flag, "--timing") {
             timing = true;
+        } else if text.is(t, flag, "--require-evidence") {
+            need = true;
         } else if (text.is(t, flag, "--max-new") || text.is(t, flag, "--force") || text.is(t, flag, "--batch") || text.is(t, flag, "--patch")) && ai + 1 < arg_count(args) {
             let vtext = text.from_bytes(m, t, arg(args, ai + 1));
             if text.is(t, flag, "--max-new") {
@@ -477,6 +480,12 @@ fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: 
         if tk < 0 {
             return cli.report(m, t, io);
         }
+    }
+    if need && (patch_file < 0 || qwen08_load.check_evidence(m, t, fs, patch_file) < 0) {
+        if patch_file < 0 {
+            return usage(io);
+        }
+        return cli.report(m, t, io);
     }
     let eng = qwen08.load_patched(m, t, ffi, fs, dir, kdir, mode, tmax, patch_file);
     if eng < 0 {

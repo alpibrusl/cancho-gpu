@@ -232,6 +232,7 @@ def check_reject(tool, fx):
             print(f"usage {argv}: exit {r.returncode}, expected 2")
             bad += 1
     skipped = {r for r in rules if r.startswith("q08-patch")} if not os.path.isdir(prd) else set()  # the patch fixtures need numpy
+    skipped |= {r for r in rules if r.startswith("q08-evidence")}   # their fixtures are made by `check_evidence` (mode `evidence`), which needs numpy
     for r in sorted(rules - seen - set(exempt) - skipped):
         print(f"rule `{r}` has no fixture in tests/qwen08/fixtures.py")
         bad += 1
@@ -427,8 +428,98 @@ def check_model(tool, d, mode, patch=None, oracle=None):
     return 1 if bad else 0
 
 
+def check_evidence(tool, fx):
+    """`--require-evidence` (docs/weight-space-w4.md 15.6): a patch with the evidence w4_screen.py writes loads; every other case is refused
+    with its `q08-evidence-*` tag, exit 1, and a tool run without the flag does not look at the evidence."""
+    import numpy as np
+    import w4_screen as S
+    good = os.path.join(fx, "patch", "ok.patch")
+    blob = open(good, "rb").read()
+    rng = np.random.default_rng(1)
+    lb = rng.normal(size=(8, 12))
+    summ = S.screen_windows([("en", lb, lb + 0.001, np.arange(8))])
+    ident = S.patch_identity(good, blob)
+
+    def ev(**kw):
+        e = S.build_evidence(summ, {"sha256": "0" * 64}, {"sha256": "1" * 64}, ident, {}, "toy", 12)
+        for k, v in kw.items():
+            e[k] = v
+        return e
+    bad = 0
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "x.patch")
+        open(path, "wb").write(blob)
+        side = path + ".evidence.json"
+
+        def run(flag=True):
+            r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch", path] + (["--require-evidence"] if flag else []), capture_output=True, text=True)
+            return r.returncode, r.stdout, r.stderr
+
+        def want(name, rule):
+            nonlocal bad
+            rc, out, err = run()
+            ok = (rc == 0 and "patched=2" in out) if rule is None else (rc == 1 and err.startswith(f"error[{rule}]"))
+            if not ok:
+                print(f"evidence/{name}: exit {rc}, stderr {err[:120]!r}")
+                bad += 1
+        want("missing", "q08-evidence-missing")
+        rc, out, err = run(False)
+        if rc != 0:
+            print("evidence/the flag is off and the patch is refused:", err[:100])
+            bad += 1
+        S.write_json(side, ev())
+        want("valid", None)
+        for name, text, rule in (
+                ("verdict fail", json.dumps(dict(ev(), verdict="fail")), "q08-evidence-verdict"),
+                ("verdict missing", json.dumps({k: v for k, v in ev().items() if k != "verdict"}), "q08-evidence-format"),
+                ("schema", json.dumps(dict(ev(), schema="x/1")), "q08-evidence-format"),
+                ("not json", "{oops", "q08-evidence-format"),
+                ("an array", "[1, 2]", "q08-evidence-format"),
+                ("empty", "", "q08-evidence-format"),
+                ("patch missing", json.dumps({k: v for k, v in ev().items() if k != "patch"}), "q08-evidence-format"),
+                ("patch null", json.dumps(dict(ev(), patch=None)), "q08-evidence-format"),
+                ("size", json.dumps(dict(ev(), patch=dict(ident, bytes=ident["bytes"] + 1))), "q08-evidence-patch"),
+                ("crc32", json.dumps(dict(ev(), patch=dict(ident, crc32=ident["crc32"] ^ 1))), "q08-evidence-patch"),
+                ("crc32 a string", json.dumps(dict(ev(), patch=dict(ident, crc32="7"))), "q08-evidence-patch"),
+                ("crc32 negative", json.dumps(dict(ev(), patch=dict(ident, crc32=-1))), "q08-evidence-patch")):
+            open(side, "w").write(text)
+            want(name, rule)
+        # the verifier and the loader agree on a patch changed after screening: evidence of another file
+        recs = w1_patch.decode(blob)
+        recs[0]["values"] = recs[0]["values"].copy()
+        recs[0]["values"][0, 0] ^= 1
+        open(path, "wb").write(w1_patch.encode(recs))
+        S.write_json(side, ev())
+        want("patch changed after screening", "q08-evidence-patch")
+        # hostile evidence never traps
+        rnd = random.Random(5)
+        text = json.dumps(ev()).encode()
+        open(path, "wb").write(blob)
+        for i in range(120):
+            b = bytearray(text)
+            for _ in range(1 + rnd.randrange(3)):
+                b[rnd.randrange(len(b))] = rnd.randrange(256)
+            if i % 4 == 0:
+                b = b[:rnd.randrange(len(b))]
+            open(side, "wb").write(bytes(b))
+            r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--patch", path, "--require-evidence"], capture_output=True, timeout=20)
+            e = r.stderr.decode(errors="replace")
+            if r.returncode not in (0, 1) or (r.returncode == 1 and not e.startswith("error[q08-evidence-")):
+                print(f"evidence fuzz {i}: exit {r.returncode}: {e[:100]!r}")
+                bad += 1
+        # no patch, or a patch the flag is not paired with
+        r = subprocess.run([tool, os.path.join(fx, "ok"), "f32", "--require-evidence"], capture_output=True, text=True)
+        if r.returncode != 2:
+            print("evidence/--require-evidence without --patch is a usage error:", r.returncode)
+            bad += 1
+    print("evidence: --require-evidence admits the screened patch and refuses the rest" if not bad else "evidence: FAILED")
+    return 1 if bad else 0
+
+
 def main():
     mode, tool = sys.argv[1], sys.argv[2]
+    if mode == "evidence":
+        return check_evidence(tool, sys.argv[3])
     if mode == "ok":
         return check_ok(tool, sys.argv[3])
     if mode == "reject":
