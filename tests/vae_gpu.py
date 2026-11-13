@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """D4c of docs/diffusion.md: the VAE decoder of Qwen-Image-2.1-Turbo on a Metal GPU, as one session of kernel programs, held to the float64 decoder (tools/vae_ref.py) and to D0's BF16 decode.
 
-    vae_gpu.py GOLDEN_DIR [--keep DIR] [--z LATENT.npy] [--save-rgb OUT.npy] [--time N]
+    vae_gpu.py GOLDEN_DIR [--keep DIR] [--z LATENT.npy] [--save-rgb OUT.npy] [--time N] [--no-ref]
+
+--no-ref: do not compute the float64 decoder (it takes minutes at 1024 x 1024); only the GPU image is written.
 
 --time N: time N requests (decodes) one at a time (tests/session_time.py), a probe as the answer.
 
@@ -297,7 +299,7 @@ for yy in range(L["h"]):
         img[:, yy, xx] = out[(yy + 1) * L["wp"] + xx + 1, :4] + bias_out
 img = np.clip(img, -1.0, 1.0)
 print("session: %d programs, answered in %.1f s (Metal; includes the compile and the upload of the weights)" % (n_prog, secs))
-exact = vr.decode(z)
+exact = img if "--no-ref" in sys.argv else vr.decode(z)
 if want is None:
     np.save(P("decoded_f64.npy"), exact)
     want = exact

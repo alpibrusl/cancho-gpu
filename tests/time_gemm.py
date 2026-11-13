@@ -3,7 +3,7 @@
 attention's three kernels, each alone in a session with the data resident: a request "N" runs the program N times in one command buffer with one wait (docs/resident.md section 12), so the time of N = 200
 less that of N = 1, over 199, is one run's. The inputs are zeros (the matrix unit's time does not depend on the values).
 
-    time_gemm.py
+    time_gemm.py [ROWS]     (ROWS, a multiple of 64, defaults to 320; 4160 is 1024 x 1024)
 """
 import os
 import sys
@@ -27,16 +27,18 @@ def zeros(name, n, dt):
     return path
 
 
-def bench(label, kernel, args, residents, flops):
+def bench(label, kernel, args, residents, flops, shape):
     lines = ["program p %s/%s.chx %s" % (CHX, kernel, args)]
     for name, n, dt, flag in residents:
         lines.append("resident p.%s %s %s" % (name, zeros(name, n, dt), flag))
+    lines.append("program probe %s/dit_rows2.chx m=%d n=%d bn=%d" % (CHX, shape[0], shape[1], next(b for b in (1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if shape[1] % b == 0)))
+    lines.append("link p.%s -> probe.x" % residents_out[kernel])
     lines.append("steps")
-    lines.append("answer p.%s" % residents_out[kernel])
+    lines.append("answer probe.y")
     open(os.path.join(tmp, "s.session"), "w").write("\n".join(lines) + "\n")
     import subprocess
     out = []
-    for n in (1, 200):
+    for n in (1, 20 if M > 1000 else 200):
         p = subprocess.Popen([SESSION, os.path.join(tmp, "s.session")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         p.stdin.write("1\n")
         p.stdin.flush()
@@ -48,22 +50,22 @@ def bench(label, kernel, args, residents, flops):
         out.append(time.perf_counter() - t0)
         p.stdin.close()
         p.wait()
-    per = (out[1] - out[0]) / 199
+    per = (out[1] - out[0]) / 19 if M > 1000 else (out[1] - out[0]) / 199
     print("%-46s %8.1f us a run  %6.2f TFLOPS" % (label, per * 1e6, flops / per / 1e12))
     return per
 
 
 residents_out = {"ported/gemm_mma": "y", "dit_scores": "sc", "dit_stats": "m", "dit_pv": "o"}
-M = 320
+M = int(sys.argv[1]) if len(sys.argv) > 1 else 320
 gemms = {}
-for label, n, k in (("q, k, v, o projection  [320 x 4096] x [4096 x 4096]", 4096, 4096), ("gate, up projection  [320 x 4096] x [4096 x 12288]", 12288, 4096), ("down projection  [320 x 12288] x [12288 x 4096]", 4096, 12288)):
-    gemms[label] = bench(label, "ported/gemm_mma", "m=%d n=%d k=%d" % (M, n, k), [("a", M * k, np.float16, "f16"), ("w", n * k, np.float16, "f16")], 2.0 * M * n * k)
+for label, n, k in (("q, k, v, o projection  [%d x 4096] x [4096 x 4096]" % M, 4096, 4096), ("gate, up projection  [%d x 4096] x [4096 x 12288]" % M, 12288, 4096), ("down projection  [%d x 12288] x [12288 x 4096]" % M, 4096, 12288)):
+    gemms[label] = bench(label, "ported/gemm_mma", "m=%d n=%d k=%d" % (M, n, k), [("a", M * k, np.float16, "f16"), ("w", n * k, np.float16, "f16")], 2.0 * M * n * k, (M, n))
 a = gemms[list(gemms)[0]]
 b = gemms[list(gemms)[1]]
 c = gemms[list(gemms)[2]]
-print("the matrix products of one block: 4 x %.0f + 2 x %.0f + 1 x %.0f us = %.1f ms; 32 blocks: %.0f ms (a step is 497 ms)" % (a * 1e6, b * 1e6, c * 1e6, (4 * a + 2 * b + c) * 1e3, 32 * (4 * a + 2 * b + c) * 1e3))
+print("the matrix products of one block: 4 x %.0f + 2 x %.0f + 1 x %.0f us = %.1f ms; 32 blocks: %.0f ms (a step: see the table)" % (a * 1e6, b * 1e6, c * 1e6, (4 * a + 2 * b + c) * 1e3, 32 * (4 * a + 2 * b + c) * 1e3))
 H, SP = 32, M
-sc = bench("dit_scores  32 heads, 320 x 320, d 128", "dit_scores", "nh=%d nq=%d t=%d qs=32 ts=64 d=128" % (H, SP, SP), [("q", SP * H * 128, np.float32, "f32"), ("k", SP * H * 128, np.float32, "f32"), ("mask", SP * SP, np.float32, "f32")], 2.0 * H * SP * SP * 128)
-st = bench("dit_stats", "dit_stats", "nh=%d nq=%d t=%d qs=32 cs=64" % (H, SP, SP), [("sc", H * SP * SP, np.float32, "f32")], 0.0)
-pv = bench("dit_pv", "dit_pv", "nh=%d nq=%d t=%d qs=32 cs=64 dw=32 d=128" % (H, SP, SP), [("sc", H * SP * SP, np.float32, "f32"), ("m", H * SP, np.float32, "f32"), ("z", H * SP, np.float32, "f32"), ("v", SP * H * 128, np.float32, "f32")], 2.0 * H * SP * SP * 128)
+sc = bench("dit_scores  32 heads, %d x %d, d 128" % (M, M), "dit_scores", "nh=%d nq=%d t=%d qs=32 ts=64 d=128" % (H, SP, SP), [("q", SP * H * 128, np.float32, "f32"), ("k", SP * H * 128, np.float32, "f32"), ("mask", SP * SP, np.float32, "f32")], 2.0 * H * SP * SP * 128, (H * SP, SP))
+st = bench("dit_stats", "dit_stats", "nh=%d nq=%d t=%d qs=32 cs=64" % (H, SP, SP), [("sc", H * SP * SP, np.float32, "f32")], 0.0, (H * SP, 1))
+pv = bench("dit_pv", "dit_pv", "nh=%d nq=%d t=%d qs=32 cs=64 dw=32 d=128" % (H, SP, SP), [("sc", H * SP * SP, np.float32, "f32"), ("m", H * SP, np.float32, "f32"), ("z", H * SP, np.float32, "f32"), ("v", SP * H * 128, np.float32, "f32")], 2.0 * H * SP * SP * 128, (SP, H * 128))
 print("attention of one block: %.1f ms; 32 blocks: %.0f ms" % ((sc + st + pv) * 1e3, 32 * (sc + st + pv) * 1e3))

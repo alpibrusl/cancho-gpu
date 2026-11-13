@@ -28,13 +28,14 @@ def main():
     text = np.load(sys.argv[sys.argv.index("--text") + 1]).astype(np.float64) if "--text" in sys.argv else None
     _, _, _, rope, tmask = ref.goldens(gold)
     lats, preds = [], []
+    assert lat.shape[0] == rope.shape[0] - 21, 'the latents and the rotary table disagree on the number of image tokens'
     for i in range(len(timesteps)):
         t0 = time.time()
         x, temb, mod = sr.front(gold, lat, timesteps[i] / 1000.0, text)
         for b in range(32):
             w = {k: ref.load64("transformer_blocks.%d.%s" % (b, v)) for k, v in ref.BLOCK0.items()}
             x = ref.block(x, w, mod, rope, tmask)
-        pred = sr.back(x, temb, tmask)[-256:]
+        pred = sr.back(x, temb, tmask)[21:]  # the image tokens' rows (all but the 21 text rows)
         lat = lat + (sigmas[i + 1] - sigmas[i]) * pred
         lats.append(lat.copy())
         preds.append(pred.copy())
