@@ -1,7 +1,7 @@
 # Image and video diffusion models in `.chx`
 
 > **Status (D6, 2026-11-13): Qwen-Image-2.1-Turbo generates a 256 x 256 image on a Metal GPU in cancho-gpu from its prompt and seed, text encoder, eight denoising steps and VAE decoder, with the host still doing the tokenisation,
-> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes about 1.26 times torch's time on MPS (about 52 s against 41 s: eight measured steps of 6.25 s plus D8's text and VAE times, not re-run end to end; D8b); image editing (the vision tower) is designed (D9) and not built, and video (§6) is not started.**
+> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes about 1.26 times torch's time on MPS (about 52 s against 41 s: eight measured steps of 6.25 s plus D8's text and VAE times, not re-run end to end; D8b); image editing (the vision tower) is designed (D9); its vision tower is held in float64 (D9a) and not yet on the GPU, and video (§6) is not started.**
 > The first target is an image model, Qwen-Image-2.1-Turbo (§2); video comes second (§6).
 > Every number below is either read from the model's files (the command is given), read from this
 > repository's own documents (named, not re-measured here), or marked **choice** or **open**.
@@ -93,6 +93,16 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D9a results (measured): the vision tower in float64
+
+`tools/vit_ref.py` is the Qwen3-VL vision tower of the checkpoint (27 blocks, deepstack at 8, 16, 24) in float64 numpy, written from the maths in `modeling_qwen3_vl.py` and `vision_utils.py` (patch order, the bilinear table with `align_corners`, the axial rotary, the mergers), with `--torch32` (transformers' own vision model, float32, the checkpoint's BF16 widened) as the oracle.
+
+* **[measured] Float64 against torch float32** on synthetic images (a gradient plus fixed noise: the tower's arithmetic does not depend on the picture): 64 x 64 (4 merged tokens): merged mean abs error 3.6e-06 of the output's rms; 128 x 192 (24 tokens, a 8 x 12 patch grid): 1.1e-05; 224 x 96: 7.3e-06; on the processor's own pixels at 256 x 384 (a 16 x 24 grid): **1.4e-05** (max 1.6e-04), deepstack maps below 1e-05. The three are not squares, so the interpolated table and the row/column rotary are exercised. The rope frequency ratio inside torch's model equals 10000^(-2/36) = 0.599484 as assumed (the checkpoint's config does not set a theta).
+* **[measured] The patches equal the processor's:** `Qwen3VLProcessor`'s `pixel_values` for the same uint8 image differ from `patches()` by 2.95e-8 (float32 rounding), grid `[1, 16, 24]`.
+* **[measured] The BF16 floor** (torch on the CPU in bfloat16 against float64, 256 x 384): merged mean abs error **4.6% of the rms** (max 0.86); the deepstack maps 2.4e-3, 7.2e-3 and 6.2e-3 in mean abs. The text encoder's floor was 2.1% (D5): the tower is noisier in BF16 than the language model, so the GPU's f16 tower should again be closer to float64 than torch's BF16 is, and that is a thing to measure in D9b, not to assume.
+* **[measured] One thing the processor does that the pipeline's resize does not:** an image below 65,536 pixels is **scaled up** (128 x 192 became a 14 x 20 grid), because `shortest_edge` in its config is a minimum pixel count. The pipeline's reference is 1,048,576 pixels, so this never applies to it; it matters only for small test images, which should be at least 256 x 256.
+* **Plan for D9b (from the shapes, not yet measured).** The head size of 72 does not fit the matrix unit's tiles, but the attention kernels can be reused unchanged by **padding each head to 128 with zeros in the weights** (rows of `qkv`, columns of `proj`; exact): the 36 second-half channels of q and k go to positions 64 to 99 so that `dit_rope16`'s rotate-half pairs the right channels; the score scale becomes 72^-1/2; 16 heads, `d` = 128. Two kernels are new: LayerNorm with weight and bias (rows of 1,152 and, for the deepstack mergers, of 4,608) and the exact GELU (`erf`, the mergers'; the blocks use the tanh form that `dit_gelu.chx` has). The cost of the padding is 1.8 times the attention flops of the tower, about 0.35 s of the tower's 27 layers at 1,024 x 1,024 **[estimate]**.
 
 ### D9 (design, 2026-11-13): image editing. Nothing here is built or measured; every claim is marked
 
