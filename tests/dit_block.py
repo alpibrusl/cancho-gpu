@@ -10,6 +10,7 @@ reference written from the mathematics of the block (tools/dit_block_ref.py has 
 * `dit_gate_res.chx` x + tanh(gate) * y, the gate row chosen as above.
 * `dit_swiglu.chx`  silu(g) * u, written as f16 (the input of the output projection).
 * `dit_to_f16.chx`  f32 to f16 (the attention output, before the output projection).
+* D2e: `dit_gelu` (tanh approximation, f16), `dit_silu` (f16), `dit_add`, `dit_modsplit` (the shared modulation's four blocks of [2, n]), `dit_rows2`.
 And the host's plan, as a pure-Python check (no kernel): the model rotates *interleaved* pairs (2j, 2j + 1) of a head; the kernel rotates halves (j, j + 64). Permuting the output
 channels of to_q and to_k (and the norm weights) within each head, even channels first, makes the two the same up to that one permutation, which leaves q . k and the RMSNorm
 unchanged. `permutation` below checks that on random data.
@@ -141,6 +142,47 @@ def t_cast(root, tmp):
     return (False, err) if o is None else close(o[0], x, True)
 
 
+def t_gelu(root, tmp):
+    s, n = 4, 256
+    x = rnd(17, s * n, -6, 6)
+    want = [0.5 * v * (1 + math.tanh(math.sqrt(2 / math.pi) * (v + 0.044715 * v ** 3))) for v in x]
+    o, err = run(root, "dit_gelu", [f"s={s}", f"n={n}", "bn=128"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
+def t_silu(root, tmp):
+    s, n = 4, 256
+    x = rnd(18, s * n, -8, 8)
+    want = [v / (1 + math.exp(-v)) for v in x]
+    o, err = run(root, "dit_silu", [f"s={s}", f"n={n}", "bn=128"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
+def t_add(root, tmp):
+    s, n = 4, 256
+    a, b = rnd(19, s * n, -5, 5), rnd(20, s * n, -5, 5)
+    o, err = run(root, "dit_add", [f"s={s}", f"n={n}", "bn=128"], {"a": a, "b": b}, ["z"], tmp)
+    return (False, err) if o is None else close(o[0], [u + v for u, v in zip(a, b)], False)
+
+
+def t_modsplit(root, tmp):
+    m, n = 64, 256
+    md = rnd(21, m * 4 * n, -3, 3)
+    want = [[md[r * 4 * n + c * n + j] for r in range(2) for j in range(n)] for c in range(4)]
+    o, err = run(root, "dit_modsplit", [f"m={m}", f"n={n}", "bn=128"], {"md": md}, ["s1", "g1", "s2", "g2"], tmp)
+    if o is None:
+        return False, err
+    results = [close(o[c], want[c], False) for c in range(4)]
+    return all(r[0] for r in results), max(r[1] for r in results)
+
+
+def t_rows2(root, tmp):
+    m, n = 64, 256
+    x = rnd(22, m * n, -3, 3)
+    o, err = run(root, "dit_rows2", [f"m={m}", f"n={n}", "bn=128"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], x[:2 * n], False)
+
+
 def permutation(bad=False):
     """The host plan: interleaved RoPE on the model's channels == rotate-half RoPE on channels permuted even-first; q . k and the RMSNorm are unchanged."""
     hd, h = 128, 64
@@ -173,7 +215,8 @@ def permutation(bad=False):
 
 
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
-         ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast)]
+         ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
+         ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2)]
 
 
 def gate(root):
@@ -203,6 +246,13 @@ EDITS = [
     ("dit_gate_res", "let a  = df * sl", "let a  = df * 0.5", "the selector is ignored in the gate"),
     ("dit_swiglu", "let sg = sigmoid &gt", "let sg = sigmoid &ut", "the sigmoid of u, not of g"),
     ("dit_to_f16", "load x[i, 0 ; 1, n]", "load x[0, 0 ; 1, n]", "row 0 for every row"),
+    ("dit_gelu", "let t1 = v3 * 0.044715", "let t1 = v3 * 0.04", "the cubic term's coefficient 0.04"),
+    ("dit_gelu", "let th = tanh t3", "let th = t3", "no tanh"),
+    ("dit_silu", "let a  = vv * sg", "let a  = vv + sg", "v + sigmoid(v)"),
+    ("dit_add", "store x + y ->", "store x - y ->", "a - b"),
+    ("dit_modsplit", "load md[0, 2 * n + j * bn ; 2, bn]", "load md[0, 3 * n + j * bn ; 2, bn]", "scale2 read from gate2's columns"),
+    ("dit_modsplit", "store b -> g1[0, j * bn]", "store b -> g1[0, 0]", "gate1 written at column 0 for every chunk"),
+    ("dit_rows2", "load x[0, j * bn ; 2, bn]", "load x[1, j * bn ; 2, bn]", "rows 1 and 2, not 0 and 1"),
 ]
 good, _ = permutation(bad=True)
 print(f"{'killed  ' if not good else 'SURVIVED'} permutation: the identity in place of the even-first permutation is refused")

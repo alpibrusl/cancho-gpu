@@ -79,7 +79,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 |---|---|---|
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
-| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
+| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** (built, below) the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
@@ -92,6 +92,28 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D2e results (measured): the whole step on the Metal GPU
+
+Five more kernels (`dit_gelu`, `dit_silu`, `dit_add`, `dit_modsplit`, `dit_rows2`; in `tests/dit_block.py` with seven mutants, **all killed**: every kernel of D2b to D2e is now under one gate and 17 mutants) put the rest of the step on the device:
+`txt_in` (RMSNorm with the zero-centred weight, matrix product, GELU, matrix product), `img_in`, the timestep embedding (matrix product, SiLU, matrix product), the shared modulation (SiLU, matrix product, split into the
+four [2, n] inputs), and at the end `norm_out` (SiLU of the embedding, matrix product, `dit_lnmod` with that scale) and `proj_out`. `tests/dit_full_gpu.py` runs it as **one session of 657 programs**; the host provides only the
+zero-padded text and latent matrices, the timestep's sinusoid (a table of cos and sin, like RoPE's) and the f16 weight files. The padded rows are zero and stay zero through the front end (the RMSNorm of a zero row is 0, GELU(0) = 0), so the
+text rows and the image rows are added (`dit_add`) into the joint sequence.
+
+| Comparison | Mean abs error | Max abs error |
+|---|---|---|
+| residual after block 4 / 8 / 16 / 24 / 32, against float64 | 1.1e-3 / 3.3e-3 / 6.3e-3 / 5.7e-3 / 1.1e-2 (5e-5 to 2.4e-4 of the rms) | 3.0 / 10.0 / 10.9 / 11.2 / 11.2 |
+| **the step's output [277, 64], GPU (front end, blocks, back end) against float64** | **5.9e-4 (3.7e-4 of the output rms 1.61)** | **6.9e-3** |
+| the step's output, GPU against torch BF16 (`step0_out`) | 9.6e-3 (6.0e-3 of the rms) | 0.132 |
+| (float64 against torch BF16, for scale) | 9.8e-3 | 0.133 |
+
+* **The whole step now needs no host arithmetic**, and it is still about **16 times closer to the exact step than torch's BF16 run (mean) and 19 times at the worst element**: D2d, with the front and back ends in float64 on the host, was 53 and 36 times. The difference is what the
+  front end loses in f16 (the latents, the text rows after their RMSNorm, the activations between `txt_in`'s products): the residual after block 4 has a mean error of 1.1e-3 against D2d's 2.4e-4, and a **maximum of 3.0 against 0.059**. The residual's peak is 9,130 and f16's spacing there is 4 to 8, so
+  a maximum error of 3 to 11 is the size of one f16 rounding of a massive activation; **I did not locate the element**, so that is the likely cause and not a shown one.
+* **Time:** 4.3 s for the session, with the compile of 657 programs and the upload of 14.3 GB, a cold start at 320 tokens (D2d: 3.9 s): **no speed is claimed.**
+* **A mistake of method, for the record:** the gate for these five kernels was written after the kernels (they compiled at the first try and the references were then written); the mutants, which are what shows the gate can fail, were written with it and all fail it. The earlier slices wrote the gate first.
+* **Not done:** the eight steps and the scheduler (D3), at any size; 1024 x 1024.
 
 ### D2d results (measured): the 32 blocks on the Metal GPU
 

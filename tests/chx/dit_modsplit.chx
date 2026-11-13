@@ -1,0 +1,22 @@
+// The shared modulation of a Qwen-Image-2.1 block, split (docs/diffusion.md D2e): the product of the timestep embedding with the modulation's weight is [m, 4 n] (m padded rows, of which rows 0 and 1 are
+// real: the sampled timestep's and t = 0's); the four blocks of n columns are scale1, gate1, scale2, gate2, and each is the [2, n] input of dit_lnmod.chx or dit_gate_res.chx.
+algo dit_modsplit(m, n, bn)
+  in  md: f32[m, 4 * n]
+  out s1: f32[2, n]
+  out g1: f32[2, n]
+  out s2: f32[2, n]
+  out g2: f32[2, n]
+{
+  grid j over n / bn
+  let a = load md[0, j * bn ; 2, bn]
+  let b = load md[0, n + j * bn ; 2, bn]
+  let c = load md[0, 2 * n + j * bn ; 2, bn]
+  let d = load md[0, 3 * n + j * bn ; 2, bn]
+  store a -> s1[0, j * bn]
+  store b -> g1[0, j * bn]
+  store c -> s2[0, j * bn]
+  store d -> g2[0, j * bn]
+}
+
+schedule dit_modsplit for apple-m-series { threads 256 }
+schedule dit_modsplit for nvidia-ada     { threads 256 }
