@@ -1,0 +1,13 @@
+// f32 to f16 with g zero guard rows each side, for the VAE decoder (docs/diffusion.md D4b): a convolution's input is read at rows g + p + (dy - 1) wp + dx - 1, so it needs the guards.
+algo vae_pad16(r, c, g)
+  in  x: f32[r, c]
+  out y: f16[r + 2 * g, c]
+{
+  grid i over r
+  let a  = load x[i, 0 ; 1, c]
+  let ah = stage f16 a
+  store ah -> y[g + i, 0]
+}
+
+schedule vae_pad16 for apple-m-series { threads 256 }
+schedule vae_pad16 for nvidia-ada     { threads 256 }

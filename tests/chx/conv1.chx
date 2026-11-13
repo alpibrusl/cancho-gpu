@@ -1,0 +1,20 @@
+// A 1 x 1 convolution of the VAE decoder (docs/diffusion.md D4b): y [r, cout] = x w^T over the rows of a guarded f16 matrix (g guard rows each side, as conv3.chx's input), w [cout, cin] f16, f32 accumulation on the matrix unit.
+// Used for the residual blocks' shortcut convolutions, the attention's projections and the up blocks' channel-selection shortcut. bn 16: the decoder's 144 and 4 (padded to 16) output channels are not multiples of 32.
+algo conv1(r, cin, cout, g)
+  in  x: f16[r + 2 * g, cin]
+  in  w: f16[cout, cin]
+  out y: f32[r, cout]
+  tile bm, bn, bk
+{
+  grid i over r / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for p in 0 .. cin / bk with c {
+    let at = load x[g + i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[j * bn, p * bk ; bn, bk] @shared
+    yield mma c at wt
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule conv1 for apple-m-series { threads 128 warps 2 2 bm 64 bn 16 bk 32 }
+schedule conv1 for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 16 bk 32 }

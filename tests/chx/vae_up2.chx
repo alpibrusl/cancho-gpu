@@ -1,0 +1,20 @@
+// The nearest upsample by 2 of the VAE decoder's up blocks (docs/diffusion.md D4b), in the bordered row layout (see tests/vae_pieces.py): x is the h x w image as r rows ((h + 2) (w + 2) rows, a border of zero pixels, zero rows up to a multiple
+// of 64), y the 2h x 2w image in r2 rows with g2 guard rows each side, f16. One instance a source pixel, which it writes to its four destinations: the offsets are affine in the two grid coordinates (i, j), not in a flat row index.
+algo vae_up2(h, w, c, r, r2, g2)
+  in  x: f32[r, c]
+  out y: f16[r2 + 2 * g2, c]
+{
+  grid i over h, j over w
+  let a   = load x[(i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let h00 = stage f16 &a
+  let h01 = stage f16 &a
+  let h10 = stage f16 &a
+  let h11 = stage f16 a
+  store h00 -> y[g2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0]
+  store h01 -> y[g2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0]
+  store h10 -> y[g2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0]
+  store h11 -> y[g2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0]
+}
+
+schedule vae_up2 for apple-m-series { threads 128 }
+schedule vae_up2 for nvidia-ada     { threads 128 }

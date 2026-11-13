@@ -5,7 +5,7 @@
 #
 # Canonical formatting, the file budget, the build, the unit tests, the
 # goldens (regression records of this compiler: scripts/record-golden.sh), the
-# refusal fixtures, the kernels against float64 references (tests/kernels.py), the diffusion attention kernels and their mutants (tests/dit_attention.py, docs/diffusion.md D1),
+# refusal fixtures, the kernels against float64 references (tests/kernels.py), the diffusion attention kernels and their mutants (tests/dit_attention.py, docs/diffusion.md D1), the VAE decoder's pieces and their mutants (tests/vae_pieces.py, D4b),
 # the cloud scripts' guard rails against a stub gcloud (tests/gcp.sh, docs/cloud.md), the device path against a mock driver and against an emulating one that runs the emitted CUDA on the CPU (docs/device.md 5, 5b), the sessions
 # (tests/session.py), the weight-space harness and its gradient arm (tests/weightspace.py, docs/weight-space.md), W1's weight diff and verdict rule (tests/w1.py), the Hugging Face reference goldens for Qwen3.5-0.8B (tests/hf08.py, golden/hf08/) and the readers against their recorded oracles
 # (docs/runtime.md; external tools, docs/native.md N2f) the Qwen3.5-0.8B weight loader on a toy checkpoint (tests/qwen08_load.sh) and its engine's build and refusals against the mock driver (tests/qwen08_engine.sh, docs/weight-space.md 14), the W1 generator's front door (tests/w1_driver.sh) and the cancho behaviour backend against a fake engine (tests/w1_cancho.py, T9), and W4's pure parts: KL/perplexity, the null-space projection, the repetition measures, the corpus rules and the gates, on toy data (tests/w4.py, docs/weight-space-w4.md; skipped without numpy) and its checkpoint writer on a toy checkpoint (tests/w4_ckpt.py, docs/weight-space-w4.md 13; skipped without numpy), E2c's pure parts (tests/w4_e2c.py, docs/weight-space-w4.md 14; skipped without numpy) and T12's (tests/w1_t12.py, docs/weight-space.md 14.15), the edit search on planted cases (tests/w4_search.py, docs/weight-space-w4-search.md; skipped without numpy), the edit screen and the patch evidence verifier on toy data (tests/w4_screen.py, docs/weight-space-w4.md 15; skipped without numpy) and the loader's `--require-evidence` (tests/qwen08_load.sh), and the gradient search's pure parts and its capture on a toy model (tests/w4_grad.py, docs/weight-space-w4-r4.md; skipped without numpy, its torch part without torch) and the R4b scale selection's pure parts (tests/w4_scale.py, docs/weight-space-w4-r4.md 9; skipped without numpy).
@@ -49,6 +49,8 @@ python3 tests/dit_attention.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_attention.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 python3 tests/dit_block.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_block.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
+python3 tests/vae_pieces.py "${CANCHO_GPU:-build/cancho-gpu}"
+python3 tests/vae_pieces.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
 python3 tests/samp_dev.py build/cancho-gpu-session

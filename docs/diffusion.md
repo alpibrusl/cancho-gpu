@@ -81,7 +81,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
 | D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** (built, below) the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
-| D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** its pieces as kernels, each against it; **D4c** the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
+| D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** (built, below) its pieces as kernels, each against it; **D4c** the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
 | D6 | End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
 
@@ -92,6 +92,18 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D4b results (measured): the decoder's pieces as kernels
+
+Ten new kernels (`vae_norm_silu`, `vae_bias`, `vae_bias_res`, `vae_pad16`, `vae_up2`, `vae_up2_epi`, `conv1`, `conv3_k16`, `vae_split16`, `vae_mask_add`), each held by `tests/vae_pieces.py` to a binary64 reference **written from the mathematics, every element, before the kernels** (it
+failed with a missing file first), on a 6 x 6 image in the layout of the plan (bordered rows rounded up to 64, `w + 3` guard rows), with **twelve mutants, all killed**. A first mutant (an eps of 0.01 in the norm) survived: the test rows had a norm far above it; a row of tiny norm
+and a zero interior row (whose result must be 0, not nan) were added, and it died. The worst error of every kernel is below its tolerance (f16 outputs: half an f16 step; f32: 2e-6 relative; the products 2e-5, for sums of 48 to 64 terms). Production shapes at 1024 x 1024 (rows 1,052,704 at the last block's 144 channels,
+264,256 at the 512 x 512 source of the last upsample, 4,416 at the attention's 64 x 64, `conv3_k16` at 144 -> 144) emit CUDA and Metal and none is refused; the goldens are 408 of 408, none a refusal. On the M4 Max, `scripts/metal-kernels.sh` runs the small cases against the interpreter: the f32 and
+f16 kernels are bit-identical or within 8.4e-7 (relative to the peak). Wired into `scripts/gate.sh`.
+
+* **Decisions made while building:** the norm's `max(|x|, 1e-12)` is `|x|^2 + 1e-24` under a reciprocal square root (the same for any row with a real norm, 0 and not nan for a zero row); `sqrt(c)` and the attention's `1 / sqrt(c)` are constants of the kernel (`sc=`), as `eps` is; the nearest upsample is a grid over
+  source rows and columns (the offsets are affine in the two coordinates, not in a flat row); the channel-selecting shortcut will be `conv1` with a host-made 0/1 matrix.
+* **Not done:** the decoder itself (D4c): chaining these with the existing `conv3.chx` (channels 64, 288, 576, 1152), `gemm_mma.chx` (the attention's scores), `dit_stats.chx` and `dit_pv.chx` (nh = 1, d = 1152) into one session; the kernel that lays the latents out as the first bordered image and undoes the latents' mean and std; the host's selection matrices; and the comparison with D0's `vae_out`. No timing.
 
 ### D4a results (measured): the decoder in float64, what it costs, and the plan
 

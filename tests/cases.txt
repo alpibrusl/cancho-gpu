@@ -452,3 +452,27 @@ tests/chx/dit_rows2.chx m=64 n=256 bn=128 --run
 # D3 (docs/diffusion.md): the flow-matching Euler update of the image tokens' latents (64 channels, 320 padded rows); tests/dit_block.py holds it to a reference.
 tests/chx/dit_euler.chx s=320 n=64
 tests/chx/dit_euler.chx s=12 n=64 --run
+
+
+# D4b (docs/diffusion.md): the pieces of the VAE decoder of Qwen-Image-2.1 at 1024 x 1024 (a 64 x 64 latent: 1024 x 1024 at the last block, 512 x 512 before the last upsample, 64 x 64 at the attention), and the test-sized ones with
+# --run; tests/vae_pieces.py holds each to a float64 reference. Rows are pixels of a bordered image rounded up to 64, g = w + 3 guard rows.
+tests/chx/vae_norm_silu.chx r=1052736 c=144 g=1027 sc=12.0
+tests/chx/vae_bias.chx r=1052736 c=144
+tests/chx/vae_bias_res.chx r=1052736 c=144
+tests/chx/vae_pad16.chx r=1052736 c=144 g=1027
+tests/chx/vae_up2.chx h=512 w=512 c=288 r=264256 r2=1052736 g2=1027
+tests/chx/vae_up2_epi.chx h=512 w=512 c=288 r=264256 r2=1052736
+tests/chx/conv1.chx r=1052736 cin=288 cout=144 g=1027
+tests/chx/conv3_k16.chx rp=1052736 cin=144 cout=144 wp=1026 g=1027
+tests/chx/vae_split16.chx r=4416 c=1152 sc=0.029462782549439483
+tests/chx/vae_mask_add.chx n=4416
+tests/chx/vae_norm_silu.chx r=64 c=64 g=9 sc=8.0 --run
+tests/chx/vae_bias.chx r=64 c=64 --run
+tests/chx/vae_bias_res.chx r=64 c=64 --run
+tests/chx/vae_pad16.chx r=64 c=64 g=9 --run
+tests/chx/vae_up2.chx h=6 w=6 c=32 r=64 r2=256 g2=15 --run
+tests/chx/vae_up2_epi.chx h=6 w=6 c=32 r=64 r2=256 --run
+tests/chx/conv1.chx r=64 cin=64 cout=48 g=9 --run
+tests/chx/conv3_k16.chx rp=64 cin=48 cout=48 wp=8 g=9 --run
+tests/chx/vae_split16.chx r=64 c=64 sc=0.125 --run
+tests/chx/vae_mask_add.chx n=64 --run

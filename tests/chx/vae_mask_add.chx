@@ -1,0 +1,14 @@
+// The additive key mask of the VAE attention's scores (docs/diffusion.md D4b): z = sc + mk, mk [1, n] being 0 for an interior pixel and a large negative number for a border or padding row (those are not keys).
+algo vae_mask_add(n)
+  in  sc: f32[n, n]
+  in  mk: f32[1, n]
+  out z:  f32[n, n]
+{
+  grid i over n
+  let a = load sc[i, 0 ; 1, n]
+  let m = load mk
+  store a + m -> z[i, 0]
+}
+
+schedule vae_mask_add for apple-m-series { threads 256 }
+schedule vae_mask_add for nvidia-ada     { threads 256 }
