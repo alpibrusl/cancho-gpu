@@ -81,7 +81,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
 | D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** (built, below) the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
-| D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
+| D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** its pieces as kernels, each against it; **D4c** the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
 | D6 | End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
 
@@ -92,6 +92,32 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D4a results (measured): the decoder in float64, what it costs, and the plan
+
+`python tools/vae_ref.py GOLDEN_DIR` is the decoder of `AutoencoderKLQwenImage21` for one frame in float64 (the structure is in the tool's docstring, read from `autoencoder_kl_qwenimage21.py`), held to D0's `vae_out`:
+
+| Comparison (output [4, 256, 256], clamped to [-1, 1], rms 0.82) | Mean abs error | Max abs error |
+|---|---|---|
+| float64 decoder vs **torch float32 on the CPU** (the same model) | **5.8e-7** | **8.8e-5** |
+| torch float32 vs torch BF16 on MPS (D0's golden) | 2.6e-3 | 0.40 |
+| float64 decoder vs torch BF16 | 2.6e-3 | 0.40 |
+
+* **The float64 decoder is the model** (it agrees with torch's float32 to 6e-7), and **the decoder's BF16 noise floor is 2.6e-3 mean and 0.40 max** (0.3% of the output's rms; the worst pixel is far from the mean: a deep network of 1,152 channels in 8 bits). Per channel, the first three
+  (colour) have a mean error of 3.0e-3 to 3.5e-3 and the fourth (the extra channel the pipeline drops) 2.9e-4. A decoder kernel is held to the float64 one first, and to the golden at this floor.
+* **The structure, measured from the weights and the code:** a 1x1 convolution, `conv_in` (64 -> 1152), a mid block (residual, **attention** over all `h w` positions with one head of 1,152, residual), **five up blocks** (1152 -> 1152, 1152 -> 1152, 1152 -> 576, 576 -> 288, 288 -> 144) of three
+  residual blocks each, the first four ending in a nearest-neighbour upsample by 2 and a 3 x 3 convolution, and each with a **shortcut** (DupUp3D: the block's input, channels repeated and rearranged into 2 x 2 positions, added to the output), then RMS norm, SiLU, `conv_out` (144 -> 4). Every convolution is 2-D
+  (the temporal ones do nothing for one frame; the first three up blocks' `factor_t` 2 only changes which of two rearranged frames the first-chunk rule keeps). The RMS norm is over the channels of each pixel (`x / |x| * sqrt(C) * gamma`), not over a group.
+* **What it costs:** **1.06 x 10^12 floating-point operations for a 16 x 16 latent (256 x 256 image), 1.7 x 10^13 for 64 x 64 (1024 x 1024)**, almost all in 3 x 3 convolutions: the three upsamplers' convolutions at the doubled resolution are 9% each at 256 x 256, and the first residual convolutions of
+  the last three blocks 5% each (the largest single convolution is 98 GFLOP at 256 x 256, 1.6 TFLOP at 1024 x 1024). The attention's scores are 4 x h w x h w x 1152 (7.7 x 10^10 at 1024 x 1024: small). The activations at 1024 x 1024 are 1024 x 1024 x 144 x 2 B = 302 MB in f16 at the end.
+  The README's best matrix product on this machine is 2.2 TFLOPS (512 x 512 x 512); the convolution kernel (`conv3`) has not been timed at this size, so **no time is claimed**: at that rate the 1024 x 1024 decode could not be under 8 s.
+* **The plan for D4b (choices, not built):**
+  * **Layout:** NHWC as a padded matrix of rows (one row a pixel, a border of zeros), f16, as the CIFAR network's (`docs/resident.md` section 18); `conv3.chx` (nine shifted products on the matrix unit; f16 in, f32 out, `bk` 32) covers the convolutions whose input channels are a multiple of 32
+    (64, 288, 576, 1152). **The 144-channel ones (the last block's, and `conv_out`'s input) are not** (144 = 4.5 x 32): a variant with `bk` 16 and `bn` 48, and `conv_out`'s 4 output channels are padded to 8 with zero weights.
+  * **Pieces that are new:** the RMS norm over channels with SiLU and the zero border (rows of up to 1,152 f32: it fits a threadgroup, like `dit_lnmod`); the bias, residual and border mask after a convolution; the nearest upsample (a grid over the input's rows and columns storing four windows: the offsets are affine in the two
+    coordinates, not in a flat row index); the shortcut, which for `in == out` is that upsample of the input and otherwise **selects channels** (block 2 and 3 take the odd channels, or the row phase's, of the input): a 0/1 selection matrix as a 1 x 1 convolution, exact in f16 (each output is one input times 1, accumulated in f32), made by the host;
+    and the mid block's attention (a matrix product for the scores with f16 q and k, the statistics and the weighted sum as `dit_stats.chx` and a `d` = 1152 version of `dit_pv.chx`: their tiles hold `d` columns, which needs a loop over `d`).
+  * **Gates:** each piece against a float64 reference, every element, with mutants, as D1 to D3; then the decoder on the GPU against this tool and against D0's `vae_out`.
 
 ### D3 results (measured): the eight steps on the Metal GPU
 
