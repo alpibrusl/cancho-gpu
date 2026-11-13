@@ -22,8 +22,15 @@ import time
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path = [q for q in sys.path if os.path.abspath(q or ".") != _here]  # python puts the script's directory first, and tests/kernels.py would answer transformers' optional `import kernels`
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("dit_edit_lib", os.path.join(_here, "dit_edit_lib.py"))  # by path: the `kernels` package is not installed, and tests/kernels.py would answer for it
+dit_edit_lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dit_edit_lib)
+Edit, statics = dit_edit_lib.Edit, dit_edit_lib.statics
 arg = lambda name, default=None: sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
 image, work = sys.argv[1], sys.argv[2]
 PROMPT = arg("--prompt")
@@ -109,7 +116,6 @@ cond = ve.normalise(mean).reshape(64, -1).T
 # ---- 4. the transformer: a prefix pass and the steps
 import dit_edit_ref as der  # noqa: E402
 import dit_step_ref as step  # noqa: E402
-from dit_edit_lib import Edit, statics  # noqa: E402
 from diffusers import FlowMatchEulerDiscreteScheduler  # noqa: E402
 import torch  # noqa: E402
 
