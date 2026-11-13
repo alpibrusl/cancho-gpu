@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """D9c of docs/diffusion.md: the text encoder of Qwen-Image-2.1-Turbo reading an image, on a Metal GPU in one session, held to the float64 run of tools/text_img_ref.py.
 
-    text_img_gpu.py REF_DIR WEIGHTS_DIR [--mutate pos1d|no-deepstack] [--time N]
+    text_img_gpu.py REF_DIR WEIGHTS_DIR [--mutate pos1d|no-deepstack] [--time N] [--no-ref] [--save OUT.npy]
+
+`--no-ref`: REF_DIR holds only ids.npy, positions.npy, embeds_in.npy and deep_f64.npy (built from the GPU's own vision tower by tests/edit_pipeline_gpu.py); nothing is compared, `--save` writes the rows from `drop_idx`.
 
 REF_DIR is the output of `python tools/text_img_ref.py REF_DIR [--size HxW]` (ids, mRoPE positions, the input embeddings with the vision tower's rows in place, the deepstack maps, the float64 residual stream after
 each layer). WEIGHTS_DIR holds the f16 weight files (written on the first run, 15.7 GB, and reused). Needs a Mac, the checkpoint, and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`.
@@ -34,7 +36,8 @@ ids = np.load(os.path.join(refdir, "ids.npy"))
 pos = np.load(os.path.join(refdir, "positions.npy"))
 x_in = np.load(os.path.join(refdir, "embeds_in.npy")).astype(np.float64)
 deep = np.load(os.path.join(refdir, "deep_f64.npy"))
-after = np.load(os.path.join(refdir, "after_f64.npy"))
+NOREF = "--no-ref" in sys.argv
+after = None if NOREF else np.load(os.path.join(refdir, "after_f64.npy"))
 pad_rows = np.nonzero(ids == ti.IMG_PAD)[0]
 drop = 14
 N = len(ids)
@@ -168,6 +171,12 @@ if r.returncode != 0 or not r.stdout.strip():
     sys.exit(1)
 nums = np.array(r.stdout.split(), dtype=np.float64).reshape(len(SHOW), SP, D)[:, :N]
 print("session: %d programs, answered in %.1f s (Metal; includes the compile and the upload of %.1f GB of weights)" % (n_prog[0], secs, NL * 0.4358))
+got = nums[-1][drop:]
+if "--save" in sys.argv:
+    np.save(sys.argv[sys.argv.index("--save") + 1], got.astype(np.float32))
+if NOREF:
+    print("text encoder done (no reference): %d rows kept" % got.shape[0])
+    sys.exit(0)
 rms = float(np.sqrt((after[NL - 1][drop:] ** 2).mean()))
 txt_rows = np.ones(N - drop, dtype=bool)
 txt_rows[np.nonzero(ids[drop:] == ti.IMG_PAD)[0]] = False

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """D9b of docs/diffusion.md: the Qwen3-VL vision tower of Qwen-Image-2.1-Turbo on a Metal GPU, as four short sessions, held to the float64 tower (tools/vit_ref.py).
 
-    vit_gpu.py WORK_DIR [--size N | --size HxW] [--ref DIR] [--time] [--mutate no-perm|keys-padded|scale-128]
+    vit_gpu.py WORK_DIR [--size N | --size HxW | --image PIXELS.npy] [--no-ref] [--save-out DIR] [--ref DIR] [--time] [--mutate no-perm|keys-padded|scale-128]
+
+`--image` reads a uint8 [H, W, 3] array (a real photograph, already resized: both sides multiples of 32), `--no-ref` skips the float64 tower and the comparison and `--save-out DIR` writes the GPU's merged tokens and deepstack maps (merged.npy [N/4, 4096], deep.npy [3, N/4, 4096], float32).
 
 Needs a Mac, the checkpoint, numpy, torch and safetensors (the venv of the first image edits), and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`.
 
@@ -43,8 +45,13 @@ f16 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f2")).tofile(p
 f32 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f4")).tofile(path)
 
 sz = arg("--size", "256x384")
-IH, IW = (int(a) for a in (sz.split("x") if "x" in sz else (sz, sz)))
-img = vr.synthetic(IH, IW)
+if arg("--image"):
+    img = np.round(np.load(arg("--image")).astype(np.float64))
+    IH, IW = img.shape[:2]
+else:
+    IH, IW = (int(a) for a in (sz.split("x") if "x" in sz else (sz, sz)))
+    img = vr.synthetic(IH, IW)
+NOREF = "--no-ref" in sys.argv
 pat, h, w = vr.patches(img)
 N = h * w
 NP = (N + 255) // 256 * 256
@@ -52,7 +59,9 @@ MP = NP // 4
 print("image %d x %d: %d patches (padded to %d), %d merged tokens (padded to %d)" % (IH, IW, N, NP, N // 4, MP), flush=True)
 
 # ---- the float64 reference
-if arg("--ref"):
+if NOREF:
+    want = want_deep = None
+elif arg("--ref"):
     rd = arg("--ref")
     assert np.abs(np.load(rd + "/patches.npy") - pat).max() < 1e-12, "--ref was saved for another image"
     want, want_deep = np.load(rd + "/merged_f64.npy"), np.load(rd + "/deep_f64.npy")
@@ -244,6 +253,13 @@ if TIME:
 
 got = np.fromfile(P("merged.bin"), dtype="<f4").reshape(MP, 4096)[:N // 4].astype(np.float64)
 gd = np.stack([np.fromfile(P("deep%d.bin" % i), dtype="<f4").reshape(MP, 4096)[:N // 4].astype(np.float64) for i in range(3)])
+if arg("--save-out"):
+    os.makedirs(arg("--save-out"), exist_ok=True)
+    np.save(os.path.join(arg("--save-out"), "merged.npy"), got.astype(np.float32))
+    np.save(os.path.join(arg("--save-out"), "deep.npy"), gd.astype(np.float32))
+if NOREF:
+    print("vision tower done (no reference): %d merged tokens" % got.shape[0])
+    sys.exit(0)
 rms = float(np.sqrt((want ** 2).mean()))
 e = np.abs(got - want)
 print("GPU vs float64: merged mean abs error %.3g (%.3g of the rms %.3g), max %.3g" % (e.mean(), e.mean() / rms, rms, e.max()))

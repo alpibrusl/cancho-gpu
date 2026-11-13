@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """D9d of docs/diffusion.md: the VAE encoder of Qwen-Image-2.1-Turbo on a Metal GPU, as one session of kernel programs, held to the float64 encoder (tools/vae_enc_ref.py).
 
-    vae_enc_gpu.py WORK_DIR [--size N | HxW] [--time N] [--mutate no-zero-frame|no-s2d-tap]
+    vae_enc_gpu.py WORK_DIR [--size N | HxW | --image RGBA.npy] [--no-ref] [--save-out MEAN.npy] [--time N] [--mutate no-zero-frame|no-s2d-tap]
 
 Needs a Mac, the checkpoint, numpy, torch and safetensors, and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`. The image is synthetic (RGB gradient plus noise, alpha 1: what `preprocess` gives an RGBA image).
 
@@ -36,7 +36,12 @@ os.makedirs(work, exist_ok=True)
 P = lambda n: os.path.join(work, n)
 sz = sys.argv[sys.argv.index("--size") + 1] if "--size" in sys.argv else "128x192"
 IH, IW = (int(a) for a in (sz.split("x") if "x" in sz else (sz, sz)))
-img = ve.synthetic(IH, IW)  # [4, H, W] in [-1, 1]
+if "--image" in sys.argv:  # a [4, H, W] float array in [-1, 1] (RGBA, alpha 1), both sides multiples of 16
+    img = np.load(sys.argv[sys.argv.index("--image") + 1]).astype(np.float64)
+    IH, IW = img.shape[1:]
+else:
+    img = ve.synthetic(IH, IW)  # [4, H, W] in [-1, 1]
+NOREF = "--no-ref" in sys.argv
 
 
 def lay(h, w):
@@ -314,6 +319,11 @@ got = np.zeros((64, L["h"], L["w"]))
 for yy in range(L["h"]):
     for xx in range(L["w"]):
         got[:, yy, xx] = out[(yy + 1) * L["wp"] + xx + 1, :64]
+if "--save-out" in sys.argv:
+    np.save(sys.argv[sys.argv.index("--save-out") + 1], got.astype(np.float32))
+if NOREF:
+    print("VAE encoder done (no reference): latent %s" % (got.shape,))
+    sys.exit(0)
 t0 = time.time()
 want = ve.encode(img)
 print("float64 encoder in %.0f s" % (time.time() - t0))
