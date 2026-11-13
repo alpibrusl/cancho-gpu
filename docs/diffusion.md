@@ -78,7 +78,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | Stage | What | Gate (written before the code) |
 |---|---|---|
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
-| D1 | Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
+| D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
 | D2 | One transformer block, then the 32-layer step. | One block: max abs error against D0 below a tolerance **chosen from what BF16 torch vs float64 gives**, measured first, not guessed. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
@@ -92,6 +92,27 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D1 results (measured)
+
+Three kernels, `dit_scores.chx`, `dit_stats.chx` and `dit_pv.chx` (`tests/chx/`), chained: for each head, a tile of `qs` queries against `ts` keys
+(scores, scale 1/sqrt(128), additive mask), the row maximum and normaliser over chunks of `cs` keys, then the weighted sum of v. The mask is an input
+(the host builds Qwen-Image 2.1's block-causal one); the kernels tile the queries as well as the keys, which the decode kernels of §3 did not.
+
+* **Gate** `python3 tests/dit_attention.py build/cancho-gpu` (written before the kernels: it failed with "cannot read dit_scores.chx", then passed). Three
+  cases through `cancho-gpu run` with real inputs, every output element against a binary64 reference that computes each row's softmax at once and builds
+  the mask from `build_qwenimage21_block_causal_mask`'s definition: 2 heads of 32 text positions; 3 heads of 48 positions (5 text, two image blocks, two padded keys);
+  2 heads of 64 with the row maximum in the last chunk. Max abs error **1.7e-7, 1.2e-7, 1.2e-7** (tolerance 2e-6).
+* **Mutants** `--mutants`: five deliberate changes (the scale 1/16, the mask read transposed, the running maximum kept from the first chunk, the normaliser skipping
+  the last chunk, v read from the first head's rows), **all killed**. A first version of the scale mutant survived because it changed the literal in the
+  kernel's header comment, not the code; the mutant now names `s * 0.0883...`.
+* **Production shape compiles:** 32 heads, 4,096 queries and keys, `qs` 32, `ts` and `cs` 64, `dw` 32 emit CUDA and Metal and pass `check` on both targets (the 32 KiB
+  threadgroup budget holds); the goldens are `tests/cases.txt`'s six new cases.
+* **On the GPU** (`scripts/metal-kernels.sh`, Apple M4 Max, 4 heads of 256 positions): worst relative difference from the interpreter **1.2e-7, 2.7e-7, 1.9e-7**.
+* **Not measured:** speed at 4,096 positions; the scores scratch for 32 heads at that size is 32 x 4,096 x 4,096 x 4 B = 2.1 GB, which is why a fused kernel
+  (no scratch) is a later step. The text mask golden of D0 is still missing. The three chained kernels were checked on 32 to 64 positions on the CPU and 256 on the GPU, not at 4,096.
+* **Repo state:** the goldens agree 368 of 368 with a binary built from these sources by the compiler at hand (`5a5dd1f`, not the pinned `a49ea77`, `--ignore-compiler-rev`); the
+  `build/cancho-gpu` left from 3 November disagreed on 29 older fp4 cases, which is a stale binary, not a change here.
 
 ### D0 results (measured)
 

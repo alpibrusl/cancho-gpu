@@ -416,3 +416,12 @@ tests/chx/dec_post.chx r=4
 tests/chx/kv_write_b.chx nb=2 nkv=2 tmax=64 ts=16 d=128
 tests/chx/ids_mix.chx r=8
 tests/chx/kv_import.chx nsrc=2 nkv=2 g=6 t=64 ts=4 d=128
+
+# D1 (docs/diffusion.md): block-causal attention for a diffusion transformer, head dimension 128, queries tiled as well as keys. Qwen-Image-2.1's shape
+# (32 heads, 4,096 image tokens at 1024 x 1024); tests/dit_attention.py holds what they compute to a float64 reference, every element.
+tests/chx/dit_scores.chx nh=32 nq=4096 t=4096 qs=32 ts=64 d=128
+tests/chx/dit_stats.chx nh=32 nq=4096 t=4096 qs=32 cs=64
+tests/chx/dit_pv.chx nh=32 nq=4096 t=4096 qs=32 cs=64 dw=32 d=128
+tests/chx/dit_scores.chx nh=2 nq=32 t=32 qs=8 ts=16 d=128 --run
+tests/chx/dit_stats.chx nh=2 nq=32 t=32 qs=8 cs=16 --run
+tests/chx/dit_pv.chx nh=2 nq=32 t=32 qs=8 cs=16 dw=32 d=128 --run

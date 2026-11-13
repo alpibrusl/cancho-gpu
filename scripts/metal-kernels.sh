@@ -64,5 +64,8 @@ dec_post r=4
 kv_write_b nb=2 nkv=2 tmax=64 ts=16 d=128
 ids_mix r=8
 kv_import nsrc=2 nkv=2 g=6 t=64 ts=4 d=128
+dit_scores nh=4 nq=256 t=256 qs=32 ts=64 d=128
+dit_stats nh=4 nq=256 t=256 qs=32 cs=64
+dit_pv nh=4 nq=256 t=256 qs=32 cs=64 dw=32 d=128
 CASES
 exit $fail
