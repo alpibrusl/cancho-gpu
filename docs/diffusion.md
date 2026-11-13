@@ -63,7 +63,7 @@ It is still not re-run.
 | Reading `.safetensors` | yes, in cancho: `src/safetensors.cho` and the Qwen2.5-0.5B loader. (`convert.py` is the 27B's route. Not a gap) |
 | Attention over many positions | **partly, and not the part this model needs.** Every attention kernel is a *decode* step: the `g` query heads that share one key/value head against that head's cache. `attention.chx` (d = 256) and `attention_d64.chx` bound the scores tile by the 32 KiB of threadgroup memory; `attention_scores`, `attention_stats` and `attention_pvl` (online softmax over chunks of `cs` positions, "no ceiling on `t` but the cache") remove that bound for the keys. The README's "split-KV is not built" is out of date for them. A transformer of diffusion needs **thousands of queries at once**, so the queries must be tiled too; no kernel does that |
 | Head dimension 128 | **no kernel**: the scale 1/sqrt(d) is a literal in each file (0.0625 for 256, 0.125 for 64) because "the surface has no scalar parameter"; d = 128 is a new file (1/sqrt(128)) |
-| Non-causal (bidirectional) attention | the decode kernels take an additive mask, so the mask can be all zeros; **open** whether the tiled kernel needs more |
+| The attention mask | **block-causal, not bidirectional** (read from `transformer_qwenimage21.py`, `build_qwenimage21_block_causal_mask`): a position attends to every earlier position of the joint text-and-image sequence, and every image attends to all of its own tokens; padded prompt positions are not keys. The decode kernels take an additive mask, which can say that for one query row; a tiled kernel needs it per tile |
 | Adaptive modulation (shift, scale, gate from the timestep) | no |
 | 3 x 3 convolution | yes, as nine shifted matmuls of a padded NHWC matrix, in the CIFAR-10 CNN (852,000 parameters, `docs/resident.md` §18); "only small tiles fit" in 32 KiB. The VAE's channels (up to 8 x 96 = 768 encoder, 8 x 144 = 1152 decoder, from `vae/config.json`) at image resolution are far from that network. `conv_step.chx` is the 4-tap depthwise convolution of a gated-delta layer, not this |
 | VAE decoder (residual blocks, up-sampling, the latent mean and std) | no |
@@ -77,8 +77,8 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 
 | Stage | What | Gate (written before the code) |
 |---|---|---|
-| D0 | A tool that runs the reference on a small fixed input (a 256 x 256 image, one prompt, seed fixed) and writes golden tensors: the text encoder's output, each stage's input and output of one transformer block, one full transformer step, the VAE decoder's output. | The tool's own output is deterministic: two runs give the same bytes. The goldens are under `golden/diffusion/`, with their sizes in the document. |
-| D1 | Bidirectional attention with head dimension 128 for N queries and N keys (N from a few hundred up to the sizes in §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
+| D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
+| D1 | Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
 | D2 | One transformer block, then the 32-layer step. | One block: max abs error against D0 below a tolerance **chosen from what BF16 torch vs float64 gives**, measured first, not guessed. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
@@ -93,14 +93,35 @@ stages need one reference image. **Choice:** it will be a photograph with a lice
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
 
+### D0 results (measured)
+
+`python tools/diffusion_golden.py OUTDIR --check` (the venv of the first edits; 5.4 s for one run, model load not included). The
+files are 11 MB in all, so they are **not committed**; `golden/diffusion/manifest.json` holds each tensor's shape, dtype and
+sha256, and the tool regenerates them. The hashes hold for this torch and this machine; a different torch or Mac may differ in the last
+bits, and that is a reason to re-run `--check`, not a failure of a kernel.
+
+| Tensor | Shape | |
+|---|---|---|
+| text embeddings | [1, 21, 4096] | 21 prompt tokens, hidden 4096 |
+| block 0 in / out | [1, 277, 4096] | joint sequence: 21 text + 256 image tokens |
+| step 0 in / out | [1, 256, 64] / [1, 277, 64] | the pipeline keeps the last 256 rows of the output |
+| latents after each step | [1, 256, 64] | 16 x 16 tokens of 64 channels |
+| VAE in / out | [1, 64, 1, 16, 16] / [1, 4, 1, 256, 256] | the decoder returns **4 channels** (`in_channels` 4: RGB plus one more, which the pipeline's postprocess drops); the VAE's tensors have a frame axis of 1 |
+
+The 256 x 256 image is 256 tokens, which is the §5 count (16 x 16 pixels a token) measured, not only read. The text mask was
+`None` for this single prompt, so no mask golden exists yet (a padded batch would need one).
+
 ## 5. Open questions, to answer by measuring before D1
 
-1. **The number of positions.** How many image tokens does a 1024 x 1024 image give (the
-   VAE's spatial factor, `patch_size` 1, the 64-channel latent)? It sets the attention size and
-   the memory of D1. Measure it from the pipeline's latent shape; do not infer it from a
-   resolution.
-2. **What `causal_condition` masks.** Read `QwenImage21Transformer2DModel` in the pinned
-   diffusers source (the `imgtest/.venv` has it) and put the answer here.
+1. **The number of positions** (answered by reading `pipeline_qwenimage21.py`, not by running it): the VAE
+   compresses 16x spatially and the transformer takes latents unpatched, so one token covers 16 x 16
+   pixels. A 1024 x 1024 image is 64 x 64 = **4,096 image tokens**, a 256 x 256 one 256, plus the prompt's tokens
+   and, when editing, the reference image's. D0 measures the real sequence lengths and writes them here.
+2. **What `causal_condition` does** (answered from `transformer_qwenimage21.py`): the text and reference-image tokens are
+   modulated from timestep 0, so their activations do not depend on the step and can be cached; only the target image's
+   tokens use the real timestep. The sequence is block-causal (§3). The pipeline's `use_kv_cache` relies on it and, by
+   its own docstring, changes the rounding, so the same seed gives a different image with it on and off: **choice**,
+   the goldens fix `use_kv_cache=False`.
 3. **f16 or f32 for BF16 weights** (answered in §3: there is no BF16 dtype). Whether this
    model's activations stay in f16's range is measured against D0's goldens before D2; if
    not, the transformer goes up as f32 (28.5 GB) or the overflowing tensors stay wide.

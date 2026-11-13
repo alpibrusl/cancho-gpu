@@ -1,0 +1,160 @@
+{
+ "size": 256,
+ "steps": 8,
+ "seed": 1,
+ "prompt": "A red bicycle leaning against a white wall, soft morning light.",
+ "seconds": 5.4,
+ "torch": "2.15.0",
+ "files": {
+  "block0_in": {
+   "shape": [
+    1,
+    277,
+    4096
+   ],
+   "dtype": "float32",
+   "sha256": "fbbbc6dda968da54aebe8dd9ba1bb43d84776e74c37263e9ae0077156824f97e"
+  },
+  "block0_out": {
+   "shape": [
+    1,
+    277,
+    4096
+   ],
+   "dtype": "float32",
+   "sha256": "488041bbc912803811d460a1546310c19251724eb068424931831094d07f98af"
+  },
+  "image": {
+   "shape": [
+    256,
+    256,
+    3
+   ],
+   "dtype": "uint8",
+   "sha256": "b5a233a78c618b5e6a1723334819b8e79d95e4f7b6ed0ceb1888b088a4aab037"
+  },
+  "latents_0": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "6886ad8c63f6763e0b67526125aee97f1779b644aaff2fe8a37b71fa46cd2521"
+  },
+  "latents_1": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "7294f21b762067eb5df8861d095dfb064d9598bb9191a7ee46f8b8c2f7ef5d60"
+  },
+  "latents_2": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "fd393b38ebe97b4f2a05563ac771fef32c171b39c9181b5a7b7920be0782fe0f"
+  },
+  "latents_3": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "611bbbbc75c0dd410ca5fd67396488022121b110a9212e014658309e74da49b2"
+  },
+  "latents_4": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "7b1a351544ddc578d3bfe89fa88fa2cda2c4144c70234d64871998f42b9d6dfb"
+  },
+  "latents_5": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "75f45da46bf47a9fb67ce3ef36e55a9f33f5d01cb5310680e49779c619a5460e"
+  },
+  "latents_6": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "2c95cf617b9359e72b390d92eaebaf8e087757b80c2c7a9a400b246685bc0a59"
+  },
+  "latents_7": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "d8d866425905fbfd3d09dca92200247f90eda7166415bcffbfe71c10b148fad0"
+  },
+  "step0_in": {
+   "shape": [
+    1,
+    256,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "b9d8a8447f8bd368b23b6906e5a24d21d194afc82adf9867796fbf08e97ab9ee"
+  },
+  "step0_out": {
+   "shape": [
+    1,
+    277,
+    64
+   ],
+   "dtype": "float32",
+   "sha256": "e10e4f4abeb4f97c98d99581f0f3383792600caf70cdbf66d4644b6dcd701e75"
+  },
+  "text_embeds": {
+   "shape": [
+    1,
+    21,
+    4096
+   ],
+   "dtype": "float32",
+   "sha256": "c2a5d53bce5ab5b6ca01647b57594c0c6b17e5830285e7ab0d624df4f0856e92"
+  },
+  "vae_in": {
+   "shape": [
+    1,
+    64,
+    1,
+    16,
+    16
+   ],
+   "dtype": "float32",
+   "sha256": "175b8739a251e4c7b24b00b82f9493979823c66ddb5dcb2ebf0cb556975ca6a3"
+  },
+  "vae_out": {
+   "shape": [
+    1,
+    4,
+    1,
+    256,
+    256
+   ],
+   "dtype": "float32",
+   "sha256": "9645eab830567a341035ddf2ab4e4f83191f8e6936b5892ab6dfd992d918d635"
+  }
+ },
+ "two_runs_identical": true,
+ "max_abs_difference_where_not": {}
+}
