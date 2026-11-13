@@ -79,7 +79,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 |---|---|---|
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
-| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** 32 blocks and the step. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
+| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
@@ -92,6 +92,33 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D2d results (measured): the 32 blocks on the Metal GPU
+
+`python tools/dit_step_ref.py GOLDEN_DIR REF_DIR` is the whole transformer step in float64 (the front end: `img_in`, `txt_in`, the timestep embedding and the shared modulation; 32 blocks; `norm_out` and `proj_out`), and
+`tests/dit_step_gpu.py GOLDEN_DIR REF_DIR` runs the 32 blocks as **one session of 640 programs** on the M4 Max, the residual stream of each block linked on the device to the next block's inputs. The front and back ends are on the host in float64 in this slice (D2e puts them on the GPU).
+D0 now also saves the timestep (1.0 at step 0). Neither script is in `scripts/gate.sh` (a Mac, the checkpoint, 14 GB of scratch disk).
+
+| Comparison | Mean abs error | Max abs error |
+|---|---|---|
+| residual after block 4, against float64 | 2.4e-4 (1.3e-5 of the rms 19.3) | 0.059 |
+| after block 8 | 6.9e-4 (1.9e-5 of 37.1) | 1.16 |
+| after block 16 | 1.6e-3 (3.8e-5 of 41.5) | 1.15 |
+| after block 24 | 1.4e-3 (3.4e-5 of 41.5) | 1.73 |
+| after block 32 | 3.1e-3 (6.7e-5 of 47) | 1.86 |
+| **the step's output [277, 64], GPU against float64** | **1.9e-4 (1.2e-4 of the output rms 1.61)** | **3.7e-3** |
+| the step's output, GPU against torch BF16 (D0's `step0_out`) | 9.8e-3 (6.1e-3 of the rms) | 0.133 |
+| (float64 against torch BF16, for scale) | 9.8e-3 | 0.133 |
+
+* **The GPU's step is about 53 times closer to the exact step than torch's own BF16 run (mean), and 36 times at the worst element**; against torch it shows torch's BF16 noise and nothing of its own. The residual's error grows with depth (2.4e-4 after
+  4 blocks, 3.1e-3 after 32) the way the activations do (the residual's rms goes from 19 to 47) and stays at 7e-5 of it.
+* **The f16 question of §5, answered for this step:** in float64, over the 32 blocks, the largest value of every tensor the GPU path holds in f16 is **21** (the input of q, k, v), **12.3** (gate, up), **59.3** (the attention output) and **4,923** (the output of
+  SwiGLU, the input of the down projection), against f16's 65,504; the residual, kept in f32, peaks at 9,130. **f16 activations do not overflow for this prompt at this step**; they are one prompt and one step, not a bound for others (a different prompt, or a later
+  step, has other activations): D3 sees the other seven steps, and a guard that refuses a tensor over 65,504 is cheap to add and is not built.
+* **Time:** the session answered in **3.9 s**, including compiling 640 programs and uploading 13.9 GB of weights (the weight files, written in 14 s, were in the page cache). That is a cold start for one step at 320 tokens; **no speed is claimed**, and 4,352 tokens (1024 x 1024)
+  have 14 times the work in every matrix product and 200 times in the scores.
+* **The front end** reproduces D0's modulation to 0.016 (max abs; torch's is BF16).
+* **Not done:** the front and back ends on the GPU (D2e); the eight steps (D3); anything at 1024 x 1024: the scores scratch there is 2.1 GB per layer, the weights' 13.9 GB are resident, and the session was not run at that size.
 
 ### D2c results (measured): block 0 on the Metal GPU
 

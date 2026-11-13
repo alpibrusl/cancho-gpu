@@ -6,7 +6,7 @@ input and write what each later stage is held to, as .npy files plus a manifest.
 No input photo: a prompt and a seed. Files written (float32 copies of the bf16 tensors, row-major):
   text_embeds        the transformer's `encoder_hidden_states` at step 0 (the text encoder's output)
   text_mask          its mask
-  step0_in/step0_out the transformer's `hidden_states` in and its output at step 0
+  step0_in/step0_out the transformer's `hidden_states` in and its output at step 0; step0_timestep the timestep / 1000 it was called with
   block0_in/out      transformer_blocks[0]'s hidden_states in and out at step 0
   block0_modulation  the shared modulation tensor [rows, 4 * 4096] that block 0 slices: scale1, gate1, scale2, gate2 (the last row is the t = 0 one)
   block0_rope        the rotary frequencies as [S, 64, 2] (real, imaginary), block0_target_mask which positions are the target image
@@ -36,6 +36,7 @@ def run(args, outdir):
     def tf_pre(mod, a, kw):
         if not first["done"]:
             put("step0_in", kw["hidden_states"])
+            put("step0_timestep", kw["timestep"])  # the sampled timestep / 1000, shape [1]
             put("text_embeds", kw["encoder_hidden_states"])
             m = kw.get("encoder_hidden_states_mask")
             if m is not None:

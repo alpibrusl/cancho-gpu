@@ -71,6 +71,7 @@ def block(x, w, mod, rope, tmask, peak=None):
 
     s1, g1, s2, g2 = (mod[:, i * D:(i + 1) * D] for i in range(4))
     a = layernorm(x) * (1 + pick(s1))
+    peak["ln1 (f16 input of q, k, v)"] = float(np.abs(a).max())
     q, k, v = (a @ w[n].T for n in ("q", "k", "v"))
     q, k, v = (t.reshape(S, H, HD) for t in (q, k, v))
     for name, t in (("q", q), ("k", k)):
@@ -96,10 +97,14 @@ def block(x, w, mod, rope, tmask, peak=None):
         p /= p.sum(-1, keepdims=True)
         o[:, h] = p @ v[:, h]
     peak["scores"] = max(peak.get("scores", 0), float(np.abs(q).max()), float(np.abs(k).max()))
+    peak["attention o (f16 input of the output projection)"] = float(np.abs(o).max())
     x = x + np.tanh(pick(g1)) * (o.reshape(S, D) @ w["o"].T)
     peak["after attention"] = float(np.abs(x).max())
     b = layernorm(x) * (1 + pick(s2))
-    m = (silu(b @ w["g"].T) * (b @ w["p"].T)) @ w["out"].T
+    peak["ln2 (f16 input of gate, up)"] = float(np.abs(b).max())
+    hh = silu(b @ w["g"].T) * (b @ w["p"].T)
+    peak["swiglu h (f16 input of down)"] = float(np.abs(hh).max())
+    m = hh @ w["out"].T
     peak["mlp output"] = float(np.abs(m).max())
     x = x + np.tanh(pick(g2)) * m
     peak["output"] = float(np.abs(x).max())
