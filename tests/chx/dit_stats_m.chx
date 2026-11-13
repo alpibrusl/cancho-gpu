@@ -32,5 +32,5 @@ algo dit_stats_m(nh, nq, t, qs, cs)
   store zz -> z[h * nq + qb * qs]
 }
 
-schedule dit_stats_m for apple-m-series { threads 256 }
+schedule dit_stats_m for apple-m-series { threads 64 }
 schedule dit_stats_m for nvidia-ada     { threads 128 }
