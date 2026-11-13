@@ -27,6 +27,10 @@
   * **Qwen2.5-0.5B and 1.5B**: the forward pass equal to transformers' (loss within 1.2e-4 and 5.2e-6), LoRA gradients at cosine 0.99986 and 0.99938 or better against peft, 300-step (0.5B) and 150-step (1.5B) LoRA runs whose loss curves equal peft float32's, and **full fine-tuning of the 0.5B** (the embedding table trained, resumable across sessions, a 300-step run against torch float32); the 1.5B full step fits in memory (four steps, no torch comparison); and a **4-bit NVFP4 base** for the 1.5B's LoRA (the new `i8` flag of `resident`, a dequantising kernel): forward 8.6e-5 from transformers' loss, 392 of 392 gradients at cosine 0.997738 or better against peft, a 150-step run 2.3e-4 from peft float32 on the same weights (M7 and M7.5 part A, sections 20 to 24, 27);
   * a **ResNet-18-class backbone** (11,181,632 parameters, at 96 x 128) for cancho-robot's vision, forward and backward equal to torch's, not yet timed (M9 V1, section 26).
   A fine-tuning **experiment** on cancho-code's job (M8) has its design, data pipeline (6,946 records, 2.78 M tokens, a contamination check) and two untuned baselines (`docs/roadmap-models.md` section 7, `docs/m8/`); no tuned model exists yet.
+* **Batched decode and a sampler on the device.** `qsw decode` generates for up to 32 sequences a step with the sampled ids kept on the GPU: the same 48 tokens as transformers' greedy generation, 35.6 ms a step at 32 x 1,152 (43.0 ms with LoRA adapters); prefill, LoRA in the step, temperature sampling at 0.99 ms for 32 rows, and a detokeniser that matches Hugging Face's on 461 of 461 ([`docs/decode.md`](docs/decode.md), [`docs/sampler.md`](docs/sampler.md)). It is what [cancho-rl](https://github.com/alpibrusl/cancho-rl) samples with.
+* **A complete optimiser.** Global-norm clipping, decay groups, a schedule and gradient accumulation as `.chx` kernels, held to torch and a binary64 version ([`docs/optimizer.md`](docs/optimizer.md)).
+* **Images.** Qwen-Image-2.1-Turbo (a 7.12 B diffusion transformer, the Qwen3-VL text encoder, a VAE decoder) from a prompt and seed to pixels, in kernels: at 1024 x 1024 the image is 0.16 of 255 from the exact float64 pipeline (49.3 dB; torch's BF16: 4.75, 26.2 dB), and a step takes 6.25 s against torch MPS's 4.99 s (the pipeline about 52 s against 41 s, estimated from the measured stages). Text to image only; image editing (the vision tower) is in progress and video is not started ([`docs/diffusion.md`](docs/diffusion.md)).
+* **Weight-space editing, with its negative results.** A pre-registered pipeline for editing a model's weights: the published edit costs 0.0205 nats a token (+1.3% perplexity), a gradient search for the loop-fixing edit was not recovered, and the engine side (a greedy runner, the edit as a 262,844-byte patch, agreement to 16,510 positions) runs on Metal ([`docs/weight-space-w4.md`](docs/weight-space-w4.md), [`docs/weight-space-w4-r4.md`](docs/weight-space-w4-r4.md)).
 * **An authority you can read.** The compiler performs `args`, `err_write`, `fs_read`, `fs_write`, `heap`, `io_write` and nothing else; the device program is the one that calls foreign code, and says so.
 
 How it is built, what it cost and what the language made hard: [`docs/design.md`](docs/design.md).
@@ -165,6 +169,10 @@ The epic is [cancho#251](https://github.com/alpibrusl/cancho/issues/251); each s
 | 9c | serving: OpenAI-compatible chat endpoint over the 27B, with streaming and the model's chat template ([`docs/serving.md`](docs/serving.md), [#7](https://github.com/alpibrusl/cancho-gpu/issues/7)) | **built**: one request at a time; batching and a prefix cache open |
 | 10 | Metal device path ([#8](https://github.com/alpibrusl/cancho-gpu/issues/8)) | **built and run on Apple Silicon** |
 | 11 | AMD ([#9](https://github.com/alpibrusl/cancho-gpu/issues/9)) | open |
+| decode | a batched decode, prefill, LoRA in the step and an on-device sampler for cancho-rl ([`docs/decode.md`](docs/decode.md)) | **built**; same tokens as transformers, 35.6 ms a step at 32 x 1,152 |
+| G6 | optimiser completeness: clipping, decay groups, schedule, accumulation ([`docs/optimizer.md`](docs/optimizer.md)) | **built**, held to torch |
+| diffusion | Qwen-Image-2.1-Turbo: text to image ([`docs/diffusion.md`](docs/diffusion.md)) | **built to 1024 x 1024**, 1.26 times torch's time (estimated); image editing in progress, video not started |
+| W4 | weight-space editing with gates ([`docs/weight-space-w4.md`](docs/weight-space-w4.md)) | pipeline and engine **built**; the edit searches **not recovered** |
 | 12 | scale: model adapters, KV offload ([#10](https://github.com/alpibrusl/cancho-gpu/issues/10)) | open |
 
 ## Where it stands against torch and others
@@ -227,6 +235,10 @@ Assembled from the limits paragraphs of the sections cited; none of these is hid
 | [docs/native.md](docs/native.md) | why the CPU path is 130 times slower than the language (a software f32), the swap for the real `f32` type, and N1 built (the CPU path 23 times faster, goldens byte-identical), and N2, which ended the Rust oracle (`chx.md`, 41 numeric references, recorded goldens) |
 | [docs/run.md](docs/run.md) | `cancho-gpu run`: a kernel on the CPU interpreter with inputs from files and its whole output printed; designed, built and measured |
 | [docs/comparison.md](docs/comparison.md) | compared with OpenNN: a two-layer network's forward pass on a CPU, outputs and timings, and where this project is worse |
+| [docs/decode.md](docs/decode.md), [docs/sampler.md](docs/sampler.md) | a batched decode of Qwen2.5-1.5B on the device and its sampler, the numbers and what they are held to |
+| [docs/optimizer.md](docs/optimizer.md) | clipping, decay groups, the schedule and accumulation, held to torch |
+| [docs/diffusion.md](docs/diffusion.md) | Qwen-Image-2.1-Turbo: design, every stage against float64 and torch, the timings at 256 and 1024 |
+| [docs/weight-space.md](docs/weight-space.md), [docs/weight-space-w4.md](docs/weight-space-w4.md) | editing a model's weights: the gates, the results and the negative ones |
 | [docs/rules.md](docs/rules.md) | every refusal rule and what triggers it |
 | [docs/device.md](docs/device.md) | driving a GPU: the shim, the authority it reports, the mock, what stays unproven |
 | [docs/runtime.md](docs/runtime.md) | reading a model: the GGUF and safetensors readers, the tokenizer and the sampler, where each differs from its oracle, how each is held to it (and where the tokenizer disagrees with Hugging Face) |
