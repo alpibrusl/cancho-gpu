@@ -1,7 +1,7 @@
 # Image and video diffusion models in `.chx`
 
 > **Status (D6, 2026-11-13): Qwen-Image-2.1-Turbo generates a 256 x 256 image on a Metal GPU in cancho-gpu from its prompt and seed, text encoder, eight denoising steps and VAE decoder, with the host still doing the tokenisation,
-> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes 1.34 times torch's time on MPS (55 s against 41 s); image editing (the vision tower) is not done and video (§6) is not started.**
+> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes about 1.26 times torch's time on MPS (about 52 s against 41 s: eight measured steps of 6.25 s plus D8's text and VAE times, not re-run end to end; D8b); image editing (the vision tower) is not done and video (§6) is not started.**
 > The first target is an image model, Qwen-Image-2.1-Turbo (§2); video comes second (§6).
 > Every number below is either read from the model's files (the command is given), read from this
 > repository's own documents (named, not re-measured here), or marked **choice** or **open**.
