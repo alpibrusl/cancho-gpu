@@ -15,6 +15,14 @@
    "dtype": "float32",
    "sha256": "fbbbc6dda968da54aebe8dd9ba1bb43d84776e74c37263e9ae0077156824f97e"
   },
+  "block0_modulation": {
+   "shape": [
+    2,
+    16384
+   ],
+   "dtype": "float32",
+   "sha256": "bce17875ad5396423ca7d484ff50c3db28310207c63bb943095c4d83d3735a07"
+  },
   "block0_out": {
    "shape": [
     1,
@@ -23,6 +31,22 @@
    ],
    "dtype": "float32",
    "sha256": "488041bbc912803811d460a1546310c19251724eb068424931831094d07f98af"
+  },
+  "block0_rope": {
+   "shape": [
+    277,
+    64,
+    2
+   ],
+   "dtype": "float32",
+   "sha256": "73d226fa7678b4bec98701ee423042680e224d062eb84052f08f78851acaf0a2"
+  },
+  "block0_target_mask": {
+   "shape": [
+    277
+   ],
+   "dtype": "float32",
+   "sha256": "f96e6d62e192793fe1bc65b6995c650728d798364c1a3c037ecc8274f088be9e"
   },
   "image": {
    "shape": [

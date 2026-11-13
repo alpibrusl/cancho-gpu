@@ -8,6 +8,8 @@ No input photo: a prompt and a seed. Files written (float32 copies of the bf16 t
   text_mask          its mask
   step0_in/step0_out the transformer's `hidden_states` in and its output at step 0
   block0_in/out      transformer_blocks[0]'s hidden_states in and out at step 0
+  block0_modulation  the shared modulation tensor [rows, 4 * 4096] that block 0 slices: scale1, gate1, scale2, gate2 (the last row is the t = 0 one)
+  block0_rope        the rotary frequencies as [S, 64, 2] (real, imaginary), block0_target_mask which positions are the target image
   latents_N          the latents after step N
   vae_in/vae_out     the VAE decode's input (after the mean/std) and output
   image              the final image, uint8 HxWx3
@@ -50,6 +52,15 @@ def run(args, outdir):
         if not b0["done"]:
             h = kw["hidden_states"] if "hidden_states" in kw else a[0]
             put("block0_in", h)
+            put("block0_modulation", kw["modulation"])
+            r = kw["rotary_emb"]
+            put("block0_rope", torch.view_as_real(r))  # [S, 64, 2]: real, imaginary of the complex frequencies
+            m = kw.get("target_token_mask")
+            if m is not None:
+                put("block0_target_mask", m.float())
+            kvld = kw.get("key_valid")
+            if kvld is not None:
+                put("block0_key_valid", kvld.float())
 
     def blk_post(mod, a, kw, out):
         if not b0["done"]:

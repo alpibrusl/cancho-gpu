@@ -79,7 +79,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 |---|---|---|
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
-| D2 | One transformer block, then the 32-layer step. | One block: max abs error against D0 below a tolerance **chosen from what BF16 torch vs float64 gives**, measured first, not guessed. One step: the same. |
+| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** the block on the Metal GPU; **D2d** 32 blocks and the step. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
@@ -92,6 +92,25 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D2a results (measured): the tolerance, and a float64 block
+
+`tools/dit_block_ref.py GOLDEN_DIR` computes block 0 in float64 from the checkpoint's weights, D0's block input, the shared modulation and the rotary frequencies
+(D0 now also saves `block0_modulation`, `block0_rope` and `block0_target_mask`; the earlier hashes did not change, and two runs still agree bit for bit), and compares it
+with the BF16 block output torch produced. The block's definition is in the tool's docstring, read from `transformer_qwenimage21.py`.
+
+| Measurement | Result |
+|---|---|
+| float64 block against torch BF16 on MPS, all 277 x 4096 outputs | mean abs error 0.0032, **1.9e-4 of the output's rms** (16.9); largest abs error **11.1** |
+| where the largest error is | token 19 (a text token), channel 2472: exact 2276.9, torch 2288.0; BF16's spacing at that size is 16. The block has **massive activations**: the input peaks at 2,352 against an rms of 16.9 |
+| relative error per element | not meaningful near zero (a value that cancels has a huge relative error): the error is reported against the rms, and the largest in BF16 steps of the value is 0.7 of a step at the outlier |
+| weights of block 0 narrowed from BF16 to f16 | **21,085 of 218,104,064 change (0.0097%)**; the block with f16 weights differs from the exact one by 1.1e-6 at most: **narrowing the weights is free** for this block |
+| largest activation in block 0 | 2,369 (output); attention scores' q and k peak at 25.6; f16 holds 65,504: **no overflow in block 0**, which says nothing about blocks 1 to 31 (measure them in D2d before choosing f16 over f32 for the activations) |
+
+**The tolerance, a choice from these numbers:** a kernel's block is held to the float64 block first (mean abs error at most 1e-3 of the output's rms: f16 matmuls
+with f32 accumulation should sit far below torch's BF16 at 1.9e-4 ... and if they do not, that is the finding), and to torch's BF16 golden at the BF16 noise floor: mean abs
+error at most 4e-4 of the rms and max abs error at most 24 (a step and a half of BF16 at the outlier). A kernel that is closer to float64 than torch's own BF16 is closer to
+the truth, not wrong.
 
 ### D1 results (measured)
 
