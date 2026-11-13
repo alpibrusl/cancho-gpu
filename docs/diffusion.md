@@ -82,7 +82,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** (built, below) the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** (built, below) its pieces as kernels, each against it; **D4c** (built, below) the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
-| D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
+| D5 | **Built for text-to-image** (below; the vision tower, needed for editing, is not). The text encoder. | Hidden states against D0's. |
 | D6 | End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
 
 Editing (the beach, clothes and Ghibli tests in `imgtest/`) needs the vision tower and the
@@ -92,6 +92,27 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D5 results (measured): the text encoder on the Metal GPU, with no new kernel
+
+`python tools/text_ref.py GOLDEN_DIR [OUTDIR] [--torch32]` is the language model of Qwen3-VL (36 layers) in float64, written from the mathematics of its text model (the structure is in the tool's docstring), and `tests/text_gpu.py GOLDEN_DIR REF_DIR` runs it on the M4 Max as **one session of 792
+programs**. D0 now also saves the templated prompt's token ids (**35 tokens**, 14 of them the chat template's system part, which the pipeline drops: 21 are kept) and `drop_idx`. Two facts read from `_get_qwen_prompt_embeds`: the pipeline takes the residual stream after the 36 layers **before the final RMSNorm** (it hooks `norm` to
+return its input), and it keeps rows from `drop_idx` on.
+
+| Comparison (the 21 kept rows x 4096, rms 12.1) | Mean abs error | Max abs error |
+|---|---|---|
+| float64 encoder vs **torch float32 on the CPU** (the same model) | **4.5e-5** | **5.3e-3** |
+| torch float32 vs torch BF16 on MPS (D0's `text_embeds`) | 0.255 (2.1% of the rms) | 188 |
+| **GPU encoder vs float64 encoder** | **5.4e-3 (4.5e-4 of the rms)** | **1.5** |
+| GPU encoder vs torch BF16 | 0.255 | 189 |
+
+* **The float64 encoder is the model** (it agrees with torch's float32 to 4.5e-5), and **torch's BF16 text encoder is 2.1% off the exact one on average, and by up to 188 at one element** (row 0, channel 1838: exact -100.4, torch +88.0, in a stream whose largest value is 13,518: the massive activations of the
+  chat template's first tokens). **The GPU's encoder is about 47 times closer to the exact one than torch's BF16 run (mean).** Consequence for D6: torch's BF16 image is *not* the exact image of its prompt, since every later stage starts from these embeddings; **the GPU's image has to be compared with the float64 pipeline's, not only with torch's**.
+* **No new kernel was needed:** the encoder is the DiT block with other constants. The rotary embedding of the text model is the rotate-half form with per-position tables (theta 5e6; mRoPE with the same position on its three axes is the ordinary one), so the DiT's channel permutation is not needed;
+  grouped attention (32 query heads, 8 key/value heads) is `dit_scores` / `dit_stats` / `dit_pv` with the key and value projections' rows repeated four times (50 MB of f16 a layer); the causal mask is an input. The embedding lookup (35 rows of 151,936 x 4096), the rotary tables and the weights are the host's.
+* **f16 range, for this prompt:** the largest values over the 36 layers, in float64: 165 (the first norm's output), 284 (the second's), 31 (attention), **6,409** (SwiGLU, the down projection's input), against f16's 65,504; the residual, in f32, peaks at 13,518. No overflow.
+* **Time:** 2.7 s for the session with the compile of 792 programs and the upload of 15.7 GB (a cold start; the weight files, written in 10 s, were in the page cache), 35 tokens padded to 64: **no speed is claimed.**
+* **Not done:** the vision tower (27 layers, patch 16, mRoPE, the deepstack mergers) that editing needs; the tokenizer on the device (the ids are D0's; cancho-gpu has a tokenizer that is checked against Hugging Face's for Qwen2.5, not run on this one); the whole pipeline end to end (D6).
 
 ### D4c results (measured): the VAE decoder on the Metal GPU
 

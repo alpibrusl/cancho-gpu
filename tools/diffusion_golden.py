@@ -4,6 +4,7 @@ input and write what each later stage is held to, as .npy files plus a manifest.
     python tools/diffusion_golden.py OUTDIR [--size 256] [--steps 8] [--seed 1] [--prompt TEXT]
 
 No input photo: a prompt and a seed. Files written (float32 copies of the bf16 tensors, row-major):
+  text_ids           the token ids of the templated prompt [1, N] (the text encoder's input); the pipeline keeps the hidden states from row `drop_idx` on
   text_embeds        the transformer's `encoder_hidden_states` at step 0 (the text encoder's output)
   text_mask          its mask
   step0_in/step0_out the transformer's `hidden_states` in and its output at step 0; step0_timestep the timestep / 1000 it was called with
@@ -69,6 +70,11 @@ def run(args, outdir):
             put("block0_out", out[0] if isinstance(out, tuple) else out)
             b0["done"] = True
 
+    def te_pre(mod, a, kw):
+        if "text_ids" not in cap and kw.get("input_ids") is not None:
+            put("text_ids", kw["input_ids"].float())  # the prompt's token ids with the chat template, [1, N]; the pipeline keeps the rows after `drop_idx`
+
+    pipe.text_encoder.register_forward_pre_hook(te_pre, with_kwargs=True)
     pipe.transformer.register_forward_pre_hook(tf_pre, with_kwargs=True)
     pipe.transformer.register_forward_hook(tf_post, with_kwargs=True)
     pipe.transformer.transformer_blocks[0].register_forward_pre_hook(blk_pre, with_kwargs=True)
@@ -93,6 +99,7 @@ def run(args, outdir):
                use_kv_cache=False, generator=torch.Generator("cpu").manual_seed(args.seed),
                callback_on_step_end=cb, callback_on_step_end_tensor_inputs=["latents"]).images[0]
     cap["image"] = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    cap["drop_idx"] = np.array([pipe._drop_idx], dtype=np.float32)
     cap["sigmas"] = pipe.scheduler.sigmas.float().cpu().numpy()  # the 8 sigmas of the shifted schedule and the terminal 0
     cap["timesteps"] = pipe.scheduler.timesteps.float().cpu().numpy()
     secs = time.time() - t0
