@@ -436,3 +436,15 @@ tests/chx/dit_lnmod.chx s=12 n=256 --run
 tests/chx/dit_rope.chx s=6 nh=3 h=64 --run
 tests/chx/dit_gate_res.chx s=12 n=256 --run
 tests/chx/dit_swiglu.chx s=6 n=384 bn=128 --run
+
+# D2e (docs/diffusion.md): the front and back ends of a Qwen-Image-2.1 step: GELU and SiLU with f16 output, the joint sequence's sum, the modulation split, the first two rows. tests/dit_block.py holds them to references.
+tests/chx/dit_gelu.chx s=4352 n=4096 bn=1024
+tests/chx/dit_silu.chx s=64 n=4096 bn=1024
+tests/chx/dit_add.chx s=4352 n=4096 bn=1024
+tests/chx/dit_modsplit.chx m=64 n=4096 bn=1024
+tests/chx/dit_rows2.chx m=64 n=4096 bn=1024
+tests/chx/dit_gelu.chx s=4 n=256 bn=128 --run
+tests/chx/dit_silu.chx s=4 n=256 bn=128 --run
+tests/chx/dit_add.chx s=4 n=256 bn=128 --run
+tests/chx/dit_modsplit.chx m=64 n=256 bn=128 --run
+tests/chx/dit_rows2.chx m=64 n=256 bn=128 --run
