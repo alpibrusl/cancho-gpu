@@ -81,7 +81,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
 | D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** (built, below) the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
-| D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** (built, below) its pieces as kernels, each against it; **D4c** the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
+| D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** (built, below) its pieces as kernels, each against it; **D4c** (built, below) the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
 | D6 | End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
 
@@ -92,6 +92,24 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D4c results (measured): the VAE decoder on the Metal GPU
+
+`tests/vae_gpu.py GOLDEN_DIR` (a Mac, the checkpoint and D0's goldens; not in `scripts/gate.sh`) runs the decoder of D0's 16 x 16 latent (`vae_in`) as **one session of 161 programs**: the pieces of D4b, the existing `conv3.chx` (64, 288, 576 and 1152 channels), `gemm_mma.chx` (the attention's scores),
+`dit_stats.chx` and `dit_pv.chx` (one head of 1152 over the 324 bordered pixels, 384 rows) and one more kernel, `vae_norm` (the attention block's norm without the SiLU; in `tests/vae_pieces.py` with two mutants, **fourteen mutants in all, every one killed**). The shortcut's selection
+matrices are built from DupUp3D's definition (output channel `o`, sub-position `(a, b)` reads input channel `((o ft + ft - 1) 4 + 2a + b) // reps`) and the first run agreed with the float64 decoder, which is the check that the rearrangement is right.
+
+| Comparison (output [4, 256, 256], clamped, rms 0.822) | Mean abs error | Max abs error |
+|---|---|---|
+| **GPU decoder vs float64 decoder** | **2.5e-4 (3.0e-4 of the rms)** | **0.047** |
+| GPU decoder vs torch BF16 on MPS (D0's `vae_out`) | 2.6e-3 | 0.39 |
+| (float64 decoder vs torch BF16, D4a, for scale) | 2.6e-3 | 0.40 |
+
+* **The GPU's decode is about ten times closer to the exact decoder than torch's own BF16 run (mean) and eight times at the worst pixel**; against torch it shows torch's BF16 noise. As 8-bit RGB the GPU's image differs from torch's by 0.65 of 255 on average (the two look the same).
+* **What is and is not end to end:** this is D0's final latents decoded by cancho-gpu (the latents are torch's BF16 trajectory's, not D3's, and the image is the 256 x 256 reference one); the host still lays the latent out as a bordered f16 matrix (D6 will do it on the device, with the latents' mean and std), supplies the weights as f16 files and the selection matrices, and clamps to [-1, 1] (a kernel is
+  not written for it: three lines). D3's latents on the GPU followed by this decoder is D6.
+* **Time:** 1.3 s for the session at 256 x 256, with the compile of 161 programs and the upload of the weights (a cold start): **no speed is claimed**; the cost is 1.06 x 10^12 FLOPs here and 1.7 x 10^13 at 1024 x 1024 (D4a), and **nothing has run at 1024 x 1024**: the scores scratch there is 4,416 x 4,416 x 4 B = 78 MB, the largest activations are 1,052,704 rows of 144 f32 channels (606 MB).
+* `vae_norm` is also in `tests/cases.txt` (the attention's size, 4,416 rows of 1,152) and `scripts/metal-kernels.sh` (bit-identical to the interpreter on the small case).
 
 ### D4b results (measured): the decoder's pieces as kernels
 

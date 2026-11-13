@@ -7,6 +7,7 @@ The layout (a choice, docs/resident.md section 18's): an image of h x w pixels w
 in raster order, followed by zero rows up to a multiple of 64 (R rows: the matrix unit's tile), and, for an f16 input of a convolution, g = w + 3 zero guard rows on each side. The rows of a convolution's
 output that are border are junk (they read across a row's end) and are zeroed by the next piece, which multiplies by an interior mask [R, 1].
 
+* `vae_norm`       the same norm without the SiLU (the attention block's);
 * `vae_norm_silu`  silu(rmsnorm(x)) over the channels of each row (x / max(|x|, 1e-12) * sqrt(c) * gamma), times the mask, as f16 with the guards.
 * `vae_bias`, `vae_bias_res`  (x + bias) * mask, and the same plus a residual (f32).
 * `vae_pad16`      f32 to f16 with the guards.
@@ -91,6 +92,23 @@ def t_norm_silu(root, tmp):
             want.append(v / (1 + math.exp(-v)) * MASK[p])
     want += [0.0] * (G * c)
     o, err = run(root, "vae_norm_silu", [f"r={R}", f"c={c}", f"g={G}", f"sc={math.sqrt(c)!r}"], {"x": x, "gamma": gamma, "mask": MASK}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
+def t_norm(root, tmp):
+    c = 64
+    x = rnd(30, R * c, -3, 3)
+    for j in range(c):
+        x[11 * c + j] *= 0.01
+        x[20 * c + j] = 0.0
+    gamma = rnd(31, c, 0.5, 1.5)
+    want = [0.0] * (G * c)
+    for p in range(R):
+        row = x[p * c:(p + 1) * c]
+        n = max(math.sqrt(sum(v * v for v in row)), 1e-12)
+        want += [row[j] / n * math.sqrt(c) * gamma[j] * MASK[p] for j in range(c)]
+    want += [0.0] * (G * c)
+    o, err = run(root, "vae_norm", [f"r={R}", f"c={c}", f"g={G}", f"sc={math.sqrt(c)!r}"], {"x": x, "gamma": gamma, "mask": MASK}, ["y"], tmp)
     return (False, err) if o is None else close(o[0], want, True)
 
 
@@ -228,7 +246,7 @@ def t_mask_add(root, tmp):
     return (False, err) if o is None else close(o[0], want, tol=1e-6)
 
 
-TESTS = [("vae_norm_silu (norm over channels, SiLU, mask, f16 with guards)", t_norm_silu), ("vae_bias", t_bias), ("vae_bias_res", t_bias_res), ("vae_pad16", t_pad16),
+TESTS = [("vae_norm_silu (norm over channels, SiLU, mask, f16 with guards)", t_norm_silu), ("vae_norm (no activation)", t_norm), ("vae_bias", t_bias), ("vae_bias_res", t_bias_res), ("vae_pad16", t_pad16),
          ("vae_up2 (nearest, bordered layout)", t_up2), ("vae_up2_epi (conv + bias + four shortcut sub-positions)", t_up2_epi), ("conv1 (1 x 1)", t_conv1),
          ("conv3_k16 (3 x 3, 48 channels)", t_conv3_k16), ("vae_split16 (q scaled, k, v)", t_split16), ("vae_mask_add", t_mask_add)]
 
@@ -251,6 +269,8 @@ EDITS = [
     ("vae_norm_silu", "let t  = ss + 0.000000000000000000000001", "let t  = ss + 0.01", "an eps of 0.01 in the norm"),
     ("vae_norm_silu", "let y1 = xn * sc", "let y1 = xn * 1", "no sqrt(c) factor"),
     ("vae_norm_silu", "let b  = a * m", "let b  = a * 1", "no border mask"),
+    ("vae_norm", "let t  = ss + 0.000000000000000000000001", "let t  = ss + 0.01", "an eps of 0.01 in the attention's norm"),
+    ("vae_norm", "let b  = y2 * m", "let b  = y2 * 1", "no border mask in the attention's norm"),
     ("vae_bias", "let s  = x + bb", "let s  = x - bb", "bias subtracted"),
     ("vae_bias_res", "let t  = s * mk", "let t  = s * 1", "no border mask on the residual path"),
     ("vae_pad16", "store ah -> y[g + i, 0]", "store ah -> y[i, 0]", "no guard offset"),

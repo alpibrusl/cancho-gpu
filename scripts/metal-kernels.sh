@@ -90,5 +90,6 @@ conv1 r=64 cin=64 cout=48 g=9
 conv3_k16 rp=64 cin=48 cout=48 wp=8 g=9
 f16:vae_split16 r=64 c=64 sc=0.125
 vae_mask_add n=64
+f16:vae_norm r=64 c=64 g=9 sc=8.0
 CASES
 exit $fail

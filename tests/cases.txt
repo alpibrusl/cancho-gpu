@@ -476,3 +476,5 @@ tests/chx/conv1.chx r=64 cin=64 cout=48 g=9 --run
 tests/chx/conv3_k16.chx rp=64 cin=48 cout=48 wp=8 g=9 --run
 tests/chx/vae_split16.chx r=64 c=64 sc=0.125 --run
 tests/chx/vae_mask_add.chx n=64 --run
+tests/chx/vae_norm.chx r=4416 c=1152 g=67 sc=33.94112549695428
+tests/chx/vae_norm.chx r=64 c=64 g=9 sc=8.0 --run
