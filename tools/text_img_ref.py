@@ -105,6 +105,7 @@ def main():
     np.save(out + "/out_f64.npy", x[drop:])
     np.save(out + "/pad_mask.npy", types[drop:].astype(bool))
     np.save(out + "/image_u8.npy", img.astype(np.uint8))
+    np.save(out + "/deep_f64.npy", deep)
     print("%d tokens (%d image pads, %d text), grid %s; output rows %d (from %d); rms %.4g" % (len(ids), len(pad), len(ids) - len(pad), grid, len(ids) - drop, drop, np.sqrt((x[drop:] ** 2).mean())))
     if "--torch32" in sys.argv:
         import torch

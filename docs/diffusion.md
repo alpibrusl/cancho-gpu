@@ -94,6 +94,14 @@ stages need one reference image. **Choice:** it will be a photograph with a lice
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
 
+### D9c-b results (measured): the text encoder reading an image on the Metal GPU
+
+`tests/text_img_gpu.py` is D5's session (795 programs, 36 layers, no new kernel) over the rows of the image template, with the rotary tables per row from the mRoPE positions (`dit_rope` already reads a table per row), the input rows the host built (token embeddings, the vision tower's merged embeddings at the image-pad rows) and three `dit_add` programs after layers 0, 1 and 2 for the deepstack maps. Held to `tools/text_img_ref.py`'s float64 run.
+
+* **[measured] 256 x 384 reference** (129 tokens, 96 of them image pads, padded to 192 rows): the residual stream after layers 4, 12, 24 and 36 is 8.7e-5, 1.2e-5, 4.1e-5 and 6.9e-4 of its rms from float64; the output (rows from `drop_idx`) **8.2e-4 of the rms over all rows and 5.8e-4 over the text rows**, which are the ones the transformer reads (the image-pad rows are replaced by the condition latents there). D5's bound for the language model is 5%, torch's BF16 floor 2.1%.
+* **[measured] Two host mutants fail**, which shows the comparison can see what an image adds: ordinary 1D positions instead of mRoPE (what D5 did for text): text rows 10.3% of the rms; no deepstack maps: 6.5%. The unmutated run is 0.058%.
+* The session starts in 3.3 s on this input (compile and upload of 15.7 GB included); the 1024 x 1024 case follows below when measured.
+
 ### D9c-a results (measured): the text encoder reading an image, in float64
 
 `tools/text_img_ref.py` composes the vision tower (D9a) and the 36 language-model layers (D5a) with what an image adds: token ids from the real processor for the pipeline's image template, the image-pad rows of the input embeddings replaced by the tower's merged embeddings, **mRoPE** (a running index for text; frame, row and column positions for the image block; the text after it resumes at `start + max(rows, columns)`; per rotary frequency the axis is height for j = 1, 4, ..., 58, width for j = 2, 5, ..., 59, frame otherwise) and the **deepstack** maps added at the image-pad rows after layers 0, 1 and 2.
