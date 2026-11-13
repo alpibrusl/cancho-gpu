@@ -2,7 +2,7 @@
 """D3 of docs/diffusion.md: the eight denoising steps of Qwen-Image-2.1-Turbo on a Metal GPU in one session, the latents carried on the device from one step to the next (the Euler update is a kernel too) -- the front end (txt_in, img_in, the timestep embedding, the shared modulation), the 32 blocks, the back end
 (norm_out, proj_out) and the update latents <- latents + (sigma_next - sigma) * prediction -- held to the float64 trajectory and to torch's BF16 latents after every step (D0's `latents_N`).
 
-    dit_loop_gpu.py GOLDEN_DIR TRAJ_DIR [--keep DIR] [--steps N]
+    dit_loop_gpu.py GOLDEN_DIR TRAJ_DIR [--keep DIR] [--steps N] [--text TEXT.npy] [--save-latents OUT.npy]
 
 TRAJ_DIR is the output of `python tools/dit_traj_ref.py GOLDEN_DIR TRAJ_DIR` (the float64 trajectory; optional: without it only torch's BF16 latents are compared).
 
@@ -74,7 +74,8 @@ allowed = ((idx[:, None] >= idx[None, :]) | (tm[:, None] & tm[None, :])) & (idx 
 f32(P("mask.f32"), np.where(allowed, 0.0, NEG))
 
 ld = lambda n: np.load(os.path.join(gold, n + ".npy")).astype(np.float64)
-latents, text = ld("step0_in")[0], ld("text_embeds")[0]
+latents = ld("step0_in")[0]
+text = np.load(sys.argv[sys.argv.index("--text") + 1]).astype(np.float64) if "--text" in sys.argv else ld("text_embeds")[0]
 sigmas, timesteps = ld("sigmas"), ld("timesteps")
 lat = np.zeros((SP, 64))
 lat[21:S] = latents
@@ -187,6 +188,8 @@ if r.returncode != 0 or len(lines) != NSTEPS:
     sys.exit(1)
 got = [np.array(l.split(), dtype=np.float64).reshape(SP, 64)[21:S] for l in lines]
 print("session: %d programs, %d steps in %.1f s (Metal; includes the compile and the upload of 14.3 GB of weights)" % (sum(1 for l in prog if l.startswith("program")), NSTEPS, secs))
+if "--save-latents" in sys.argv:
+    np.save(sys.argv[sys.argv.index("--save-latents") + 1], got[-1].astype(np.float32))  # the final latents [256, 64] (D6)
 f64 = np.load(os.path.join(trajdir, "latents_f64.npy")).astype(np.float64) if os.path.exists(os.path.join(trajdir, "latents_f64.npy")) else None
 ok = True
 for i in range(NSTEPS):

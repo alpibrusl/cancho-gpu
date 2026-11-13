@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """D5 of docs/diffusion.md: the text encoder of Qwen-Image-2.1-Turbo (36 layers of the language model of Qwen3-VL) on a Metal GPU in one session, held to the float64 encoder (tools/text_ref.py) and to torch's BF16 hidden states.
 
-    text_gpu.py GOLDEN_DIR [REF_DIR] [--keep DIR]
+    text_gpu.py GOLDEN_DIR [REF_DIR] [--keep DIR] [--save OUT.npy]
 
 REF_DIR is the output of `python tools/text_ref.py GOLDEN_DIR REF_DIR` (the float64 residual stream after each layer; optional). Needs a Mac, the checkpoint, D0's goldens (`text_ids`, `drop_idx`, `text_embeds`), numpy, torch and safetensors (the venv of the
 first image edits has them), `build/cancho-gpu-metal-session`, and about 18 GB of disk for the f16 weight files. Not in `scripts/gate.sh`.
@@ -151,6 +151,8 @@ if refdir and os.path.exists(os.path.join(refdir, "layers_f64.npy")):
 else:
     exact = None
 got = nums[-1][drop:]
+if "--save" in sys.argv:
+    np.save(sys.argv[sys.argv.index("--save") + 1], got.astype(np.float32))  # the kept rows [21, 4096]: the DiT session's text embeddings (D6)
 rms = float(np.sqrt((want ** 2).mean()))
 rows = [("GPU encoder vs torch BF16 (text_embeds)", got, want)]
 if exact is not None:

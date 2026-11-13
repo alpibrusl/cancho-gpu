@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """D4c of docs/diffusion.md: the VAE decoder of Qwen-Image-2.1-Turbo on a Metal GPU, as one session of kernel programs, held to the float64 decoder (tools/vae_ref.py) and to D0's BF16 decode.
 
-    vae_gpu.py GOLDEN_DIR [--keep DIR]
+    vae_gpu.py GOLDEN_DIR [--keep DIR] [--z LATENT.npy] [--save-rgb OUT.npy]
+
+--z gives the latent [64, h, w] to decode (after the mean/std of D6) instead of D0's `vae_in`; the comparison with D0's `vae_out` is then not meaningful and is skipped.
 
 Needs a Mac, the checkpoint, D0's goldens (`vae_in`, `vae_out`), numpy, torch and safetensors (the venv of the first image edits has them), and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`.
 
@@ -34,8 +36,9 @@ CHX = os.path.join(ROOT, "tests/chx")
 CONV3 = os.path.join(ROOT, "examples/cnn/conv3.chx")
 NEG = -1e9
 
-z = np.load(os.path.join(gold, "vae_in.npy")).astype(np.float64)[0, :, 0]  # [64, h, w]
-want = np.load(os.path.join(gold, "vae_out.npy")).astype(np.float64)[0, :, 0]
+ZGIVEN = "--z" in sys.argv
+z = np.load(sys.argv[sys.argv.index("--z") + 1]).astype(np.float64) if ZGIVEN else np.load(os.path.join(gold, "vae_in.npy")).astype(np.float64)[0, :, 0]  # [64, h, w]
+want = None if "--z" in sys.argv else np.load(os.path.join(gold, "vae_out.npy")).astype(np.float64)[0, :, 0]
 H0, W0 = z.shape[1:]
 work = keep or tempfile.mkdtemp()
 os.makedirs(work, exist_ok=True)
@@ -283,14 +286,19 @@ for yy in range(L["h"]):
 img = np.clip(img, -1.0, 1.0)
 print("session: %d programs, answered in %.1f s (Metal; includes the compile and the upload of the weights)" % (n_prog, secs))
 exact = vr.decode(z)
+if want is None:
+    np.save(P("decoded_f64.npy"), exact)
+    want = exact
 rms = float(np.sqrt((want ** 2).mean()))
 ok = True
-for label, a, b in (("GPU decoder vs float64 decoder", img, exact), ("GPU decoder vs torch BF16 (D0's vae_out)", img, want), ("(float64 decoder vs torch BF16, for scale)", exact, want)):
+for label, a, b in ((("GPU decoder vs float64 decoder", img, exact),) if ZGIVEN else (("GPU decoder vs float64 decoder", img, exact), ("GPU decoder vs torch BF16 (D0's vae_out)", img, want), ("(float64 decoder vs torch BF16, for scale)", exact, want))):
     d = np.abs(a - b)
     print("%-44s mean abs error %.4g (%.3g of the output rms %.3g), max abs error %.4g" % (label, d.mean(), d.mean() / rms, rms, d.max()))
 d = np.abs(img - exact)
 ok = d.mean() / rms < 5e-3
 rgb = ((img[:3] + 1) * 127.5).clip(0, 255).astype(np.uint8).transpose(1, 2, 0)
 np.save(P("decoded_rgb.npy"), rgb)
+if "--save-rgb" in sys.argv:
+    np.save(sys.argv[sys.argv.index("--save-rgb") + 1], rgb)
 print("%s the decoder on the GPU (mean error against the float64 decoder under 0.5%% of the output's rms); the 8-bit RGB image is %s" % ("ok  " if ok else "FAIL", P("decoded_rgb.npy")))
 sys.exit(0 if ok else 1)

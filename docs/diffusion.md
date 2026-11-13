@@ -1,6 +1,7 @@
 # Image and video diffusion models in `.chx`
 
-> **Status: design only. Nothing here is built, and no diffusion model has been run in cancho-gpu.**
+> **Status (D6, 2026-11-13): Qwen-Image-2.1-Turbo generates a 256 x 256 image on a Metal GPU in cancho-gpu from its prompt and seed, text encoder, eight denoising steps and VAE decoder, with the host still doing the tokenisation,
+> the initial noise, the embedding lookup and some layout (§4, "D6 results"). Image editing (the vision tower), 1024 x 1024 and any timing are not done; video (§6) is not started.**
 > The first target is an image model, Qwen-Image-2.1-Turbo (§2); video comes second (§6).
 > Every number below is either read from the model's files (the command is given), read from this
 > repository's own documents (named, not re-measured here), or marked **choice** or **open**.
@@ -83,7 +84,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** (built, below) its pieces as kernels, each against it; **D4c** (built, below) the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | **Built for text-to-image** (below; the vision tower, needed for editing, is not). The text encoder. | Hidden states against D0's. |
-| D6 | End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
+| D6 | **Built, without the timing** (below). End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
 
 Editing (the beach, clothes and Ghibli tests in `imgtest/`) needs the vision tower and the
 reference-image path; **choice:** text-to-image first, editing after D5's vision tower.
@@ -92,6 +93,30 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D6 results (measured): a text-to-image run on the Metal GPU
+
+`python tests/pipeline_gpu.py GOLDEN_DIR WORK_DIR` runs the pipeline for D0's prompt ("A red bicycle leaning against a white wall, soft morning light."), seed 1, 256 x 256, 8 steps, as **three sessions** (the text encoder of D5, 792 programs; the eight steps of D3, 659; the VAE decoder of D4c, 161), passing the
+text embeddings, the final latents and the layout through files on the host, and compares it with **the float64 pipeline** (the same three stages in float64 from the *exact* encoder's embeddings: `tools/text_ref.py`, `tools/dit_traj_ref.py --text`, `tools/vae_ref.py`) and with torch's BF16 one (D0).
+**What the GPU does:** the 36-layer text encoder, the 32-block transformer for eight steps with the Euler update, the VAE decoder. **What the host still does:** the tokenisation (D0's 35 token ids), the embedding lookup, the initial noise (torch's seeded random numbers, D0's `step0_in`; cancho-gpu does not reproduce torch's generator),
+the rotary and timestep tables, laying the final latents out for the decoder (undoing their mean and std; checked against D0's `vae_in` to 0.097, one BF16 step at that size), the weights as f16 files, the clamp and the 8-bit PNG.
+
+| Final latents [256, 64] (rms 1.22) | Mean abs error | Max abs error |
+|---|---|---|
+| GPU pipeline vs float64 pipeline | **2.0e-3** | 0.077 |
+| torch BF16 vs float64 pipeline | 2.2e-2 | 0.65 |
+| GPU pipeline vs torch BF16 | 2.4e-2 | 0.73 |
+
+| The 256 x 256 image, 8-bit RGB | Mean abs difference (of 255) | PSNR |
+|---|---|---|
+| **GPU pipeline vs float64 pipeline** | **0.49** | **43.2 dB** |
+| torch BF16 vs float64 pipeline | 4.18 | 26.6 dB |
+| GPU pipeline vs torch BF16 | 4.40 | 26.1 dB |
+
+* **The GPU's image is about nine times closer to the exact image of the prompt than torch's BF16 image is** (mean difference 0.49 against 4.18 of 255; 43 dB against 27 dB), because the errors the earlier stages measured add up the same way: torch's text embeddings are 2.1% off (D5), its eight steps drift 1.1e-2
+  (D3), its decoder adds 2.6e-3 (D4). The three images look the same (side by side: torch, float64, GPU).
+* The numbers are one prompt, one seed and 256 x 256; **it is not a claim about the model's quality, nor a speed**: each session's wall time here is dominated by writing and uploading 14 to 16 GB of f16 weights (text 14 s, the steps 20 s, the decoder 7 s, cold, with the host's Python work), and **nothing is timed against torch MPS**, which D6's row in §4 asked for and is not done.
+* **Not done:** timing; 1024 x 1024 (the attention scratch, 14x the work in the products, 1.7 x 10^13 FLOPs in the decoder: D2d and D4a give the sizes, none has run); editing, which needs the vision tower (D5); the host's list above, of which the tokenizer and the noise are the ones that stop it being "prompt and seed in, image out" with no host arithmetic.
 
 ### D5 results (measured): the text encoder on the Metal GPU, with no new kernel
 
