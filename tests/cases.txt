@@ -431,8 +431,8 @@ tests/chx/dit_pv.chx nh=2 nq=32 t=32 qs=8 cs=16 dw=32 d=128 --run
 tests/chx/dit_lnmod.chx s=4352 n=4096
 tests/chx/dit_rope.chx s=4352 nh=32 h=64
 tests/chx/dit_gate_res.chx s=4352 n=4096
-tests/chx/dit_swiglu.chx s=4352 n=12288
+tests/chx/dit_swiglu.chx s=4352 n=12288 bn=1024
 tests/chx/dit_lnmod.chx s=12 n=256 --run
 tests/chx/dit_rope.chx s=6 nh=3 h=64 --run
 tests/chx/dit_gate_res.chx s=12 n=256 --run
-tests/chx/dit_swiglu.chx s=6 n=384 --run
+tests/chx/dit_swiglu.chx s=6 n=384 bn=128 --run

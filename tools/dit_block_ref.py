@@ -23,12 +23,21 @@ import numpy as np
 from safetensors import safe_open
 from huggingface_hub import snapshot_download
 
-gold = sys.argv[1]
-snap = snapshot_download("Qwen/Qwen-Image-2.1-Turbo", allow_patterns=["transformer/*"])
-index = json.load(open(os.path.join(snap, "transformer/diffusion_pytorch_model.safetensors.index.json")))["weight_map"]
+
+SNAP = None
+INDEX = None
+
+
+def _snap():
+    global SNAP, INDEX
+    if SNAP is None:
+        SNAP = snapshot_download("Qwen/Qwen-Image-2.1-Turbo", allow_patterns=["transformer/*"])
+        INDEX = json.load(open(os.path.join(SNAP, "transformer/diffusion_pytorch_model.safetensors.index.json")))["weight_map"]
+    return SNAP, INDEX
 
 
 def weight(name):
+    snap, index = _snap()
     with safe_open(os.path.join(snap, "transformer", index[name]), framework="pt") as f:
         return f.get_tensor(name)
 
@@ -37,18 +46,8 @@ def load64(name):
     return weight(name).double().numpy()
 
 
-def ld(name):
-    return np.load(os.path.join(gold, name + ".npy")).astype(np.float64)
-
-
-x = ld("block0_in")[0]
-want = ld("block0_out")[0]
-mod = ld("block0_modulation")
-rope = ld("block0_rope")
-tmask = ld("block0_target_mask") > 0.5
-S, D = x.shape
-H, HD = 32, 128
-peak = {"input": float(np.abs(x).max())}
+BLOCK0 = {"q": "attn.to_q.weight", "k": "attn.to_k.weight", "v": "attn.to_v.weight", "o": "attn.to_out.0.weight", "nq": "attn.norm_q.weight", "nk": "attn.norm_k.weight",
+          "g": "img_mlp.gate_layer.weight", "p": "img_mlp.proj.weight", "out": "img_mlp.out.weight"}
 
 
 def layernorm(v):
@@ -57,15 +56,19 @@ def layernorm(v):
     return (v - mu) / np.sqrt(var + 1e-6)
 
 
-def pick(rows):  # rows [2, 4096]: target tokens take row 0, the others row 1
-    return np.where(tmask[:, None], rows[0][None], rows[1][None])
-
-
 def silu(v):
     return v / (1 + np.exp(-v))
 
 
-def block(x, w):
+def block(x, w, mod, rope, tmask, peak=None):
+    """The block on x [S, 4096] in float64: w the nine weights (BLOCK0's keys), mod [2, 16384], rope [S, 64, 2], tmask [S] bool (the target image's tokens)."""
+    S, D = x.shape
+    H, HD = 32, 128
+    peak = {} if peak is None else peak
+
+    def pick(rows):  # rows [2, 4096]: target tokens take row 0, the others row 1
+        return np.where(tmask[:, None], rows[0][None], rows[1][None])
+
     s1, g1, s2, g2 = (mod[:, i * D:(i + 1) * D] for i in range(4))
     a = layernorm(x) * (1 + pick(s1))
     q, k, v = (a @ w[n].T for n in ("q", "k", "v"))
@@ -103,35 +106,44 @@ def block(x, w):
     return x
 
 
-P = "transformer_blocks.0."
-names = {"q": "attn.to_q.weight", "k": "attn.to_k.weight", "v": "attn.to_v.weight", "o": "attn.to_out.0.weight", "nq": "attn.norm_q.weight", "nk": "attn.norm_k.weight",
-         "g": "img_mlp.gate_layer.weight", "p": "img_mlp.proj.weight", "out": "img_mlp.out.weight"}
-w = {k: load64(P + v) for k, v in names.items()}
-got = block(x.copy(), w)
+def goldens(gold):
+    ld = lambda name: np.load(os.path.join(gold, name + ".npy")).astype(np.float64)
+    return ld("block0_in")[0], ld("block0_out")[0], ld("block0_modulation"), ld("block0_rope"), ld("block0_target_mask") > 0.5
 
 
-def report(label, a, b):
-    d = np.abs(a - b)
-    rms = float(np.sqrt((b ** 2).mean()))
-    print("%-46s max abs %.4g  mean abs %.4g  relative to the output's rms (%.3g): max %.3g  mean %.3g" % (label, d.max(), d.mean(), rms, d.max() / rms, d.mean() / rms))
+def main():
+    gold = sys.argv[1]
+    x, want, mod, rope, tmask = goldens(gold)
+    peak = {"input": float(np.abs(x).max())}
+    w = {k: load64("transformer_blocks.0." + v) for k, v in BLOCK0.items()}
+    got = block(x.copy(), w, mod, rope, tmask, peak)
+
+    def report(label, a, b):
+        d = np.abs(a - b)
+        rms = float(np.sqrt((b ** 2).mean()))
+        print("%-46s max abs %.4g  mean abs %.4g  relative to the output's rms (%.3g): max %.3g  mean %.3g" % (label, d.max(), d.mean(), rms, d.max() / rms, d.mean() / rms))
 
 
-report("float64 block vs torch BF16 on MPS", got, want)
-d = np.abs(got - want)
-i = np.unravel_index(d.argmax(), d.shape)
-print("   the largest error is at token %d, channel %d: exact %.2f, torch %.2f (BF16 spacing there: %.0f)" % (i[0], i[1], got[i], want[i], 2.0 ** (np.floor(np.log2(abs(want[i]))) - 7)))
-rel = d / (np.abs(want) * 2.0 ** -8 + 1e-30)
-print("   error in units of half a BF16 step of the value (1 = one rounding): median %.3g, 99th percentile %.3g, 99.9th %.3g, max %.3g" % tuple(np.percentile(rel, [50, 99, 99.9, 100])))
-print("   largest values seen:", {k: round(v, 2) for k, v in peak.items()}, "(f16 holds 65504)")
+    report("float64 block vs torch BF16 on MPS", got, want)
+    d = np.abs(got - want)
+    i = np.unravel_index(d.argmax(), d.shape)
+    print("   the largest error is at token %d, channel %d: exact %.2f, torch %.2f (BF16 spacing there: %.0f)" % (i[0], i[1], got[i], want[i], 2.0 ** (np.floor(np.log2(abs(want[i]))) - 7)))
+    rel = d / (np.abs(want) * 2.0 ** -8 + 1e-30)
+    print("   error in units of half a BF16 step of the value (1 = one rounding): median %.3g, 99th percentile %.3g, 99.9th %.3g, max %.3g" % tuple(np.percentile(rel, [50, 99, 99.9, 100])))
+    print("   largest values seen:", {k: round(v, 2) for k, v in peak.items()}, "(f16 holds 65504)")
 
-# the weights narrowed to f16: how many change, and what the block gives with them
-changed = total = 0
-w16 = {}
-for k, v in w.items():
-    n = v.astype(np.float16).astype(np.float64)
-    w16[k] = n
-    changed += int((n != v).sum())
-    total += v.size
-print("weights of block 0 that change when narrowed BF16 -> f16: %d of %d (%.4f%%)" % (changed, total, 100.0 * changed / total))
-peak.clear()
-report("float64 block, weights narrowed to f16, vs exact", block(x.copy(), w16), got)
+    # the weights narrowed to f16: how many change, and what the block gives with them
+    changed = total = 0
+    w16 = {}
+    for k, v in w.items():
+        n = v.astype(np.float16).astype(np.float64)
+        w16[k] = n
+        changed += int((n != v).sum())
+        total += v.size
+    print("weights of block 0 that change when narrowed BF16 -> f16: %d of %d (%.4f%%)" % (changed, total, 100.0 * changed / total))
+    peak.clear()
+    report("float64 block, weights narrowed to f16, vs exact", block(x.copy(), w16, mod, rope, tmask), got)
+
+
+if __name__ == "__main__":
+    main()

@@ -9,6 +9,7 @@ reference written from the mathematics of the block (tools/dit_block_ref.py has 
 * `rmsnorm_rows.chx` (existing) the per-head RMSNorm of q and k with a [1, 128] weight, eps 1e-6.
 * `dit_gate_res.chx` x + tanh(gate) * y, the gate row chosen as above.
 * `dit_swiglu.chx`  silu(g) * u, written as f16 (the input of the output projection).
+* `dit_to_f16.chx`  f32 to f16 (the attention output, before the output projection).
 And the host's plan, as a pure-Python check (no kernel): the model rotates *interleaved* pairs (2j, 2j + 1) of a head; the kernel rotates halves (j, j + 64). Permuting the output
 channels of to_q and to_k (and the norm weights) within each head, even channels first, makes the two the same up to that one permutation, which leaves q . k and the RMSNorm
 unchanged. `permutation` below checks that on random data.
@@ -129,8 +130,15 @@ def t_swiglu(root, tmp):
     g = rnd(10, s * n, -4, 4)
     u = rnd(11, s * n, -2, 2)
     want = [v / (1 + math.exp(-v)) * w for v, w in zip(g, u)]
-    o, err = run(root, "dit_swiglu", [f"s={s}", f"n={n}"], {"g": g, "u": u}, ["y"], tmp)
+    o, err = run(root, "dit_swiglu", [f"s={s}", f"n={n}", "bn=128"], {"g": g, "u": u}, ["y"], tmp)
     return (False, err) if o is None else close(o[0], want, True)
+
+
+def t_cast(root, tmp):
+    s, n = 5, 256
+    x = rnd(16, s * n, -100, 100)
+    o, err = run(root, "dit_to_f16", [f"s={s}", f"n={n}"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], x, True)
 
 
 def permutation(bad=False):
@@ -165,7 +173,7 @@ def permutation(bad=False):
 
 
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
-         ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu)]
+         ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast)]
 
 
 def gate(root):
@@ -194,6 +202,7 @@ EDITS = [
     ("dit_gate_res", "let th = tanh gt", "let th = gt", "no tanh on the gate"),
     ("dit_gate_res", "let a  = df * sl", "let a  = df * 0.5", "the selector is ignored in the gate"),
     ("dit_swiglu", "let sg = sigmoid &gt", "let sg = sigmoid &ut", "the sigmoid of u, not of g"),
+    ("dit_to_f16", "load x[i, 0 ; 1, n]", "load x[0, 0 ; 1, n]", "row 0 for every row"),
 ]
 good, _ = permutation(bad=True)
 print(f"{'killed  ' if not good else 'SURVIVED'} permutation: the identity in place of the even-first permutation is refused")

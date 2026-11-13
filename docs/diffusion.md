@@ -79,7 +79,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 |---|---|---|
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
-| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** the block on the Metal GPU; **D2d** 32 blocks and the step. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
+| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** 32 blocks and the step. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
@@ -93,6 +93,26 @@ stages need one reference image. **Choice:** it will be a photograph with a lice
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
 
+### D2c results (measured): block 0 on the Metal GPU
+
+`tests/dit_block_gpu.py GOLDEN_DIR` (needs a Mac, the checkpoint, D0's goldens and the repo's session program; not in `scripts/gate.sh`) writes one **session of 20 kernel programs** and runs it on the M4 Max: `dit_lnmod`,
+three `gemm_mma` (q, k, v), two `rmsnorm_rows`, two `dit_rope`, `dit_scores`, `dit_stats`, `dit_pv`, `dit_to_f16`, `gemm_mma` (o), `dit_gate_res`, `dit_lnmod`, two `gemm_mma` (gate, up), `dit_swiglu`, `gemm_mma` (down), `dit_gate_res`.
+277 tokens are padded to 320 (the matrix unit's tile is 64); the weights are f16 files (436 MB), q and k permuted within each head. The session writer is Python, as the repository's others are (`examples/gpt/gpt_session.py`).
+
+| Comparison (277 tokens x 4096) | Mean abs error | Max abs error |
+|---|---|---|
+| session vs the **float64 block** | **5.5e-5 (3.3e-6 of the rms 16.9)** | **0.072** |
+| session vs torch BF16 on MPS (D0's golden) | 3.2e-3 (1.9e-4 of the rms) | 11.1 |
+| (torch BF16 vs float64, D2a, for scale) | 3.2e-3 | 11.1 |
+
+* **The GPU block is about 58 times closer to the exact block than torch's own BF16 run (mean), and 150 times at the worst element.** Against the golden it shows torch's BF16 noise and nothing of its own; the tolerance of
+  D2a (float64 within 1e-3 of the rms; the golden within 4e-4 and 24) holds with room.
+* **Time:** the session answered in **0.8 s**, which includes opening the device, compiling 20 programs and uploading 436 MB of weights. That is not a speed measurement of the block (one run, a cold start; 320 tokens, not 4,352); none is claimed.
+* **The test can fail** (`--mutate`): the channels of q and k not permuted (mean error 0.39, 2.3% of the rms: refused), the selector inverted (0.25: refused). A third, keys not masked at the padded positions, **passes, and is equivalent here**:
+  the padded rows are after every real token and the mask is causal, so no real query can see them; the mask for the padded keys matters for the padded queries only, which are dropped.
+* **On CUDA** the `gemm_mma` schedule's block is 128 (`bm 128`), so the sequence would be padded to a multiple of 128 there; the CUDA text of these kernels is emitted and held by goldens and has not run (no NVIDIA machine, as the README says).
+* **Not done:** 31 more blocks (the weights are 14.2 GB, and 436 MB x 32 does not go through one session file as written: D2d); the timestep embedding, `img_in`, `txt_in` and `norm_out`/`proj_out` around the blocks; activations of the later blocks (the f16 range question stays open until D2d measures them).
+
 ### D2b results (measured): the pieces between the matrix products
 
 Four new kernels and one existing one, each held by `tests/dit_block.py` to a binary64 reference, every element (the gate was written first and failed with "cannot read
@@ -104,7 +124,7 @@ dit_lnmod.chx"):
 | `dit_rope.chx` | rotate-half RoPE with per-position tables, rows of 128 (a head), `nh` to a token | 0.06 (2e-6 relative) |
 | `rmsnorm_rows.chx` (existing) | the per-head RMSNorm of q and k with a [1, 128] weight, eps 1e-6 | 0.19 |
 | `dit_gate_res.chx` | x + tanh(gate) * y, the gate row chosen per token | 0.16 |
-| `dit_swiglu.chx` | silu(g) * u, f16 output | 0.63 (f16) |
+| `dit_swiglu.chx` | silu(g) * u, f16 output (**corrected in D2c:** the first version took a whole row; at n = 12288 that needs 73,728 B of threadgroup memory against Metal's 32,768, and its production-shape golden had been recorded as a *refusal* (`REFUSED`) that I did not read; it now takes `bn` columns to a threadgroup, and no `dit_*` golden is a refusal) | 0.63 (f16) |
 
 * **The host's plan for RoPE, checked in pure Python:** the model rotates interleaved pairs (2j, 2j + 1); the kernel rotates halves. Permuting the output channels of `to_q` and `to_k`
   (and the two norm weights) within each head, even channels first, once at load, makes them the same up to that permutation, and leaves q . k and the RMSNorm unchanged

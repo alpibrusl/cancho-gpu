@@ -1,18 +1,18 @@
-// The gated activation of a Qwen-Image-2.1 block's MLP, for s rows of n (docs/diffusion.md D2b): y = silu(g) * u, with g = the gate projection and u = the up projection (f32 outputs of
+// The gated activation of a Qwen-Image-2.1 block's MLP, for s rows of n, bn columns to a threadgroup (a whole row of 12288 f32 does not fit the 32 KiB of Metal's threadgroup memory), (docs/diffusion.md D2b): y = silu(g) * u, with g = the gate projection and u = the up projection (f32 outputs of
 // gemm_mma.chx); y is f16, the input of the output projection. (swiglu.chx is one row of f32.)
-algo dit_swiglu(s, n)
+algo dit_swiglu(s, n, bn)
   in  g: f32[s, n]
   in  u: f32[s, n]
   out y: f16[s, n]
 {
-  grid i over s
-  let gt = load g[i, 0 ; 1, n]
-  let ut = load u[i, 0 ; 1, n]
+  grid i over s, j over n / bn
+  let gt = load g[i, j * bn ; 1, bn]
+  let ut = load u[i, j * bn ; 1, bn]
   let sg = sigmoid &gt
   let a  = gt * sg
   let o  = a * ut
   let oh = stage f16 o
-  store oh -> y[i, 0]
+  store oh -> y[i, j * bn]
 }
 
 schedule dit_swiglu for apple-m-series { threads 256 }

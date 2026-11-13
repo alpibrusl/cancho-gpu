@@ -73,6 +73,6 @@ dit_pv nh=4 nq=256 t=256 qs=32 cs=64 dw=32 d=128
 f16:dit_lnmod s=12 n=256
 dit_rope s=6 nh=3 h=64
 dit_gate_res s=12 n=256
-f16:dit_swiglu s=6 n=384
+f16:dit_swiglu s=6 n=384 bn=128
 CASES
 exit $fail
