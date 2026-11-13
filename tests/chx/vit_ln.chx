@@ -1,0 +1,29 @@
+// LayerNorm with weight and bias for the vision tower of Qwen-Image-2.1's text encoder (docs/diffusion.md D9b): y = (x - mean) / sqrt(var + 1e-6) * w + b over the n values of each of s rows (the biased
+// variance of torch's LayerNorm), f16 out because the matrix product that follows (gemm_mma.chx) takes f16. n is 1,152 for the blocks and the first merger, 4,608 for the deepstack mergers.
+algo vit_ln(s, n)
+  in  x: f32[s, n]
+  in  w: f32[1, n]
+  in  b: f32[1, n]
+  out y: f16[s, n]
+{
+  grid i over s
+  let x  = load x[i, 0 ; 1, n]
+  let sm = rowsum &x
+  let mu = sm * (1 / n)
+  let xc = x - mu
+  let sq = &xc * &xc
+  let vs = rowsum sq
+  let vr = vs * (1 / n)
+  let t  = vr + 0.000001
+  let rs = rsqrt t
+  let xn = xc * rs
+  let ww = load w
+  let bb = load b
+  let o1 = xn * ww
+  let o2 = o1 + bb
+  let oh = stage f16 o2
+  store oh -> y[i, 0]
+}
+
+schedule vit_ln for apple-m-series { threads 256 }
+schedule vit_ln for nvidia-ada     { threads 256 }

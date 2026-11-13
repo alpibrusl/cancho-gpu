@@ -81,10 +81,16 @@ dit_modsplit m=64 n=256 bn=128
 dit_rows2 m=64 n=256 bn=128
 dit_euler s=12 n=64
 f16:vae_norm_silu r=64 c=64 g=9 sc=8.0
+f16:dit_cat s=4 n=256 bn=128
+f16:vit_ln s=4 n=256
+f16:vit_bias_gelu s=4 n=256 bn=128
+f16:vit_bias_gelu_erf s=4 n=256 bn=128 m1=-1
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64
 f16:vae_pad16 r=64 c=64 g=9
 f16:vae_up2 h=6 w=6 c=32 r=64 r2=256 g2=15
+f16:vae_s2d h=6 w=6 c=32 r=64 r2=64 g2=6
+f16:vae_avg2 h=6 w=6 c=32 r=64 r2=64 g2=6
 vae_up2_epi h=6 w=6 c=32 r=64 r2=256
 conv1 r=64 cin=64 cout=48 g=9
 conv3_k16 rp=64 cin=48 cout=48 wp=8 g=9

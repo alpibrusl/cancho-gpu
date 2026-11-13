@@ -14,6 +14,7 @@ output that are border are junk (they read across a row's end) and are zeroed by
 * `vae_up2`        the nearest upsample by 2 (h x w to 2h x 2w), f32 in the bordered layout, f16 with guards out.
 * `vae_up2_epi`    after the upsample's convolution: conv + bias + the shortcut's four sub-positions (s00, s01, s10, s11), written at the doubled resolution.
 * `conv1`          a 1 x 1 convolution (a product) over the guarded f16 rows; `conv3_k16`  the 3 x 3 convolution for channels that are a multiple of 16 and not of 32 (the decoder's 144).
+* `vae_s2d`, `vae_avg2`  the encoder's (D9d): the space-to-depth of a stride-2 convolution (four pixels as 4c channels) and the 2 x 2 mean of the average-down shortcut;
 * `vae_split16`    the attention's qkv product [R, 3c] to q * 1/sqrt(c) and k as f16 and v as f32;  `vae_mask_add`  the additive key mask on the scores.
 
 Mutants: one deliberate change to a copy of each kernel, which the gate must fail.
@@ -162,6 +163,53 @@ def t_up2(root, tmp):
     return (False, err) if o is None else close(o[0], want, True)
 
 
+def down_layout(h, w):
+    wp2 = w // 2 + 2
+    rp2 = (h // 2 + 2) * wp2
+    return wp2, rp2, (rp2 + 63) // 64 * 64, wp2 + 1
+
+
+def _bordered_input(c, seed):
+    x = [0.0] * (R * c)
+    r = random.Random(seed)
+    for pidx in range(R):
+        if interior(pidx):
+            for j in range(c):
+                x[pidx * c + j] = r.uniform(-4, 4)
+    return x
+
+
+def t_s2d(root, tmp):
+    c = 32
+    x = _bordered_input(c, 20)
+    wp2, rp2, R2, g2 = down_layout(H, Wd)
+    want = [0.0] * ((R2 + 2 * g2) * 4 * c)
+    for I in range(H // 2):
+        for J in range(Wd // 2):
+            dst = g2 + (I + 1) * wp2 + J + 1
+            for a in range(2):
+                for b in range(2):
+                    src = (2 * I + a + 1) * WP + 2 * J + b + 1
+                    for j in range(c):
+                        want[dst * 4 * c + (2 * a + b) * c + j] = f16r(x[src * c + j])
+    o, err = run(root, "vae_s2d", [f"h={H}", f"w={Wd}", f"c={c}", f"r={R}", f"r2={R2}", f"g2={g2}"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
+def t_avg2(root, tmp):
+    c = 32
+    x = _bordered_input(c, 21)
+    wp2, rp2, R2, g2 = down_layout(H, Wd)
+    want = [0.0] * ((R2 + 2 * g2) * c)
+    for I in range(H // 2):
+        for J in range(Wd // 2):
+            dst = g2 + (I + 1) * wp2 + J + 1
+            for j in range(c):
+                want[dst * c + j] = sum(x[((2 * I + a + 1) * WP + 2 * J + b + 1) * c + j] for a in range(2) for b in range(2)) / 4
+    o, err = run(root, "vae_avg2", [f"h={H}", f"w={Wd}", f"c={c}", f"r={R}", f"r2={R2}", f"g2={g2}"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
 def t_up2_epi(root, tmp):
     c = 32
     wp2, rp2, R2, g2 = up_layout(H, Wd)
@@ -248,7 +296,8 @@ def t_mask_add(root, tmp):
 
 TESTS = [("vae_norm_silu (norm over channels, SiLU, mask, f16 with guards)", t_norm_silu), ("vae_norm (no activation)", t_norm), ("vae_bias", t_bias), ("vae_bias_res", t_bias_res), ("vae_pad16", t_pad16),
          ("vae_up2 (nearest, bordered layout)", t_up2), ("vae_up2_epi (conv + bias + four shortcut sub-positions)", t_up2_epi), ("conv1 (1 x 1)", t_conv1),
-         ("conv3_k16 (3 x 3, 48 channels)", t_conv3_k16), ("vae_split16 (q scaled, k, v)", t_split16), ("vae_mask_add", t_mask_add)]
+         ("conv3_k16 (3 x 3, 48 channels)", t_conv3_k16), ("vae_split16 (q scaled, k, v)", t_split16), ("vae_mask_add", t_mask_add),
+         ("vae_s2d (space to depth for the strided convolutions)", t_s2d), ("vae_avg2 (2 x 2 mean for the average-down shortcut)", t_avg2)]
 
 
 def gate(root):
@@ -280,6 +329,10 @@ EDITS = [
     ("conv3_k16", "3 * dy * cin + dx * cin + p * bk", "3 * dy * cin + dy * cin + p * bk", "the taps' column index uses dy twice"),
     ("vae_split16", "let qs = a * sc", "let qs = a * 1", "q not scaled"),
     ("vae_mask_add", "store a + m -> z[i, 0]", "store a - m -> z[i, 0]", "the mask subtracted"),
+    ("vae_s2d", "store h01 -> y[g2 + (i + 1) * (w / 2 + 2) + j + 1, c]", "store h01 -> y[g2 + (i + 1) * (w / 2 + 2) + j + 1, 2 * c]", "the (0, 1) copy at the (1, 0) channels"),
+    ("vae_s2d", "load x[(2 * i + 2) * (w + 2) + 2 * j + 2, 0 ; 1, c]", "load x[(2 * i + 2) * (w + 2) + 2 * j + 1, 0 ; 1, c]", "the (1, 1) source read from the (1, 0) pixel"),
+    ("vae_avg2", "let m   = s2 * 0.25", "let m   = s2 * 0.5", "a mean over two, not four"),
+    ("vae_avg2", "let s1  = p10 + p11", "let s1  = p10 + p10", "the (1, 1) pixel left out"),
 ]
 survived = 0
 for kernel, old, new, what in EDITS:

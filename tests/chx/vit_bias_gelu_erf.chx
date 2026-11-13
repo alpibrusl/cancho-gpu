@@ -1,0 +1,49 @@
+// y = gelu(x + b), the exact form v Phi(v) = 0.5 v (1 + erf(v / sqrt 2)) of torch's `nn.GELU()`, for s rows of n, bn columns to a threadgroup, f16 out (docs/diffusion.md D9b): the vision tower's mergers. `m1` is the constant -1 (the surface has no negative literal and a constant cannot stand alone).
+// The surface has no erf; erf is Abramowitz and Stegun's 7.1.26 (|error| < 1.5e-7, below the f16 the result is rounded to): erf(z) = sign(z) (1 - (a1 t + a2 t^2 + ... + a5 t^5) exp(-z^2)), t = 1 / (1 + p |z|).
+algo vit_bias_gelu_erf(s, n, bn, m1)
+  in  x: f32[s, n]
+  in  b: f32[1, n]
+  out y: f16[s, n]
+{
+  grid i over s, j over n / bn
+  let xx = load x[i, j * bn ; 1, bn]
+  let bb = load b[0, j * bn ; 1, bn]
+  let vv = xx + bb
+  let z  = &vv * 0.7071067811865476
+  let zp = relu &z
+  let zm = &z * m1
+  let zn = relu zm
+  let az = zp + zn
+  let s0 = step z
+  let s1 = s0 * 2
+  let sg = s1 - 1
+  let a2 = &az * &az
+  let q0 = az * 0.3275911
+  let q1 = q0 + 1
+  let lq = log q1
+  let lm = lq * m1
+  let tt = exp lm
+  let c5 = &tt * 1.061405429
+  let c4 = c5 - 1.453152027
+  let c3 = c4 * &tt
+  let c2 = c3 + 1.421413741
+  let c1 = c2 * &tt
+  let c0 = c1 - 0.284496736
+  let cc = c0 * &tt
+  let cd = cc + 0.254829592
+  let pl = cd * tt
+  let a3 = a2 * m1
+  let ex = exp a3
+  let pe = pl * ex
+  let pn = pe * m1
+  let er = pn + 1
+  let ef = sg * er
+  let e1 = ef + 1
+  let g0 = vv * e1
+  let g1 = g0 * 0.5
+  let oh = stage f16 g1
+  store oh -> y[i, j * bn]
+}
+
+schedule vit_bias_gelu_erf for apple-m-series { threads 256 }
+schedule vit_bias_gelu_erf for nvidia-ada     { threads 256 }
