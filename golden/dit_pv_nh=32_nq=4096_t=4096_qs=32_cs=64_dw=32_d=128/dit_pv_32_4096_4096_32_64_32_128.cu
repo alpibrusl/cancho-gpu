@@ -68,7 +68,7 @@ extern "C" __global__ void dit_pv_32_4096_4096_32_64_32_128(
             if (e < 1024u) {
                 const uint i = e / 32u, j = e % 32u;
                 float s = 0.0f;
-                for (uint p = 0; p < 64u; ++p) s += float((scratch + 0)[i * 64u + p]) * float(float(p3_v[((uint)(0 + 4096 * gid + 64 * v4) + (((p * 32u + j)) / 32u % 64u)) * 128u + ((uint)(0 + 32 * gid3) + (((p * 32u + j)) / 1u % 32u)) * 1u]));
+                for (uint p = 0; p < 64u; ++p) s += float((scratch + 0)[i * 64u + p]) * float(float(p3_v[((uint)(0 + 64 * v4) + (((p * 32u + j)) / 32u % 64u)) * 4096u + ((uint)(0 + 128 * gid + 32 * gid3) + (((p * 32u + j)) / 1u % 32u)) * 1u]));
                 v13[k] = float(s);
             }
         }
@@ -84,7 +84,7 @@ extern "C" __global__ void dit_pv_32_4096_4096_32_64_32_128(
     for (uint k = 0; k < 8u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 1024u) {
-            p4_o[((uint)(0 + 4096 * gid + 32 * gid2) + ((e) / 32u % 32u)) * 128u + ((uint)(0 + 32 * gid3) + ((e) / 1u % 32u)) * 1u] = float(float(v5[k]));
+            p4_o[((uint)(0 + 32 * gid2) + ((e) / 32u % 32u)) * 4096u + ((uint)(0 + 128 * gid + 32 * gid3) + ((e) / 1u % 32u)) * 1u] = float(float(v5[k]));
         }
     }
 }

@@ -425,3 +425,14 @@ tests/chx/dit_pv.chx nh=32 nq=4096 t=4096 qs=32 cs=64 dw=32 d=128
 tests/chx/dit_scores.chx nh=2 nq=32 t=32 qs=8 ts=16 d=128 --run
 tests/chx/dit_stats.chx nh=2 nq=32 t=32 qs=8 cs=16 --run
 tests/chx/dit_pv.chx nh=2 nq=32 t=32 qs=8 cs=16 dw=32 d=128 --run
+
+# D2b (docs/diffusion.md): the pieces of a Qwen-Image-2.1 block that are not attention or a matrix product, at 1024 x 1024 (4,096 image tokens + 256 text) and hidden 4096 / MLP 12288;
+# tests/dit_block.py holds what they compute to a float64 reference, every element. dit_scores, dit_stats and dit_pv above are token-major since this slice.
+tests/chx/dit_lnmod.chx s=4352 n=4096
+tests/chx/dit_rope.chx s=4352 nh=32 h=64
+tests/chx/dit_gate_res.chx s=4352 n=4096
+tests/chx/dit_swiglu.chx s=4352 n=12288
+tests/chx/dit_lnmod.chx s=12 n=256 --run
+tests/chx/dit_rope.chx s=6 nh=3 h=64 --run
+tests/chx/dit_gate_res.chx s=12 n=256 --run
+tests/chx/dit_swiglu.chx s=6 n=384 --run

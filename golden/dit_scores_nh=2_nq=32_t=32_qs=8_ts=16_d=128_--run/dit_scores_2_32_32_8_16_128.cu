@@ -34,17 +34,17 @@ extern "C" __global__ void dit_scores_2_32_32_8_16_128(
             for (uint u = 0; u < 4u; u += 1u) {
                 const uint p = p0 + u;
                 float xa[8][1];
-                xa[0][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 0u))]));
-                xa[1][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 128u))]));
-                xa[2][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 256u))]));
-                xa[3][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 384u))]));
-                xa[4][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 512u))]));
-                xa[5][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 640u))]));
-                xa[6][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 768u))]));
-                xa[7][0] = float(float(p0_q[(uint)(0 + 32 * gid + 8 * gid2) * 128u + (uint)(0) * 1u + ((p + 896u))]));
+                xa[0][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 0u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 0u)) / 1u % 128u)) * 1u]));
+                xa[1][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 128u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 128u)) / 1u % 128u)) * 1u]));
+                xa[2][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 256u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 256u)) / 1u % 128u)) * 1u]));
+                xa[3][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 384u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 384u)) / 1u % 128u)) * 1u]));
+                xa[4][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 512u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 512u)) / 1u % 128u)) * 1u]));
+                xa[5][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 640u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 640u)) / 1u % 128u)) * 1u]));
+                xa[6][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 768u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 768u)) / 1u % 128u)) * 1u]));
+                xa[7][0] = float(float(p0_q[((uint)(0 + 8 * gid2) + (((p + 896u)) / 128u % 8u)) * 256u + ((uint)(0 + 128 * gid) + (((p + 896u)) / 1u % 128u)) * 1u]));
                 {
                     const uint j = min(sgid * 4u + 0u, 15u);
-                    const float w0 = float(float(p1_k[(uint)(0 + 32 * gid + 16 * gid3) * 128u + (uint)(0) * 1u + ((j * 128u + p))]));
+                    const float w0 = float(float(p1_k[((uint)(0 + 16 * gid3) + (((j * 128u + p)) / 128u % 16u)) * 256u + ((uint)(0 + 128 * gid) + (((j * 128u + p)) / 1u % 128u)) * 1u]));
                     s[0][0] += xa[0][0] * w0;
                     s[0][1] += xa[1][0] * w0;
                     s[0][2] += xa[2][0] * w0;
@@ -56,7 +56,7 @@ extern "C" __global__ void dit_scores_2_32_32_8_16_128(
                 }
                 {
                     const uint j = min(sgid * 4u + 1u, 15u);
-                    const float w0 = float(float(p1_k[(uint)(0 + 32 * gid + 16 * gid3) * 128u + (uint)(0) * 1u + ((j * 128u + p))]));
+                    const float w0 = float(float(p1_k[((uint)(0 + 16 * gid3) + (((j * 128u + p)) / 128u % 16u)) * 256u + ((uint)(0 + 128 * gid) + (((j * 128u + p)) / 1u % 128u)) * 1u]));
                     s[1][0] += xa[0][0] * w0;
                     s[1][1] += xa[1][0] * w0;
                     s[1][2] += xa[2][0] * w0;
@@ -68,7 +68,7 @@ extern "C" __global__ void dit_scores_2_32_32_8_16_128(
                 }
                 {
                     const uint j = min(sgid * 4u + 2u, 15u);
-                    const float w0 = float(float(p1_k[(uint)(0 + 32 * gid + 16 * gid3) * 128u + (uint)(0) * 1u + ((j * 128u + p))]));
+                    const float w0 = float(float(p1_k[((uint)(0 + 16 * gid3) + (((j * 128u + p)) / 128u % 16u)) * 256u + ((uint)(0 + 128 * gid) + (((j * 128u + p)) / 1u % 128u)) * 1u]));
                     s[2][0] += xa[0][0] * w0;
                     s[2][1] += xa[1][0] * w0;
                     s[2][2] += xa[2][0] * w0;
@@ -80,7 +80,7 @@ extern "C" __global__ void dit_scores_2_32_32_8_16_128(
                 }
                 {
                     const uint j = min(sgid * 4u + 3u, 15u);
-                    const float w0 = float(float(p1_k[(uint)(0 + 32 * gid + 16 * gid3) * 128u + (uint)(0) * 1u + ((j * 128u + p))]));
+                    const float w0 = float(float(p1_k[((uint)(0 + 16 * gid3) + (((j * 128u + p)) / 128u % 16u)) * 256u + ((uint)(0 + 128 * gid) + (((j * 128u + p)) / 1u % 128u)) * 1u]));
                     s[3][0] += xa[0][0] * w0;
                     s[3][1] += xa[1][0] * w0;
                     s[3][2] += xa[2][0] * w0;

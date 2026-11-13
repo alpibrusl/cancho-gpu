@@ -1,0 +1,19 @@
+// The gated activation of a Qwen-Image-2.1 block's MLP, for s rows of n (docs/diffusion.md D2b): y = silu(g) * u, with g = the gate projection and u = the up projection (f32 outputs of
+// gemm_mma.chx); y is f16, the input of the output projection. (swiglu.chx is one row of f32.)
+algo dit_swiglu(s, n)
+  in  g: f32[s, n]
+  in  u: f32[s, n]
+  out y: f16[s, n]
+{
+  grid i over s
+  let gt = load g[i, 0 ; 1, n]
+  let ut = load u[i, 0 ; 1, n]
+  let sg = sigmoid &gt
+  let a  = gt * sg
+  let o  = a * ut
+  let oh = stage f16 o
+  store oh -> y[i, 0]
+}
+
+schedule dit_swiglu for apple-m-series { threads 256 }
+schedule dit_swiglu for nvidia-ada     { threads 256 }

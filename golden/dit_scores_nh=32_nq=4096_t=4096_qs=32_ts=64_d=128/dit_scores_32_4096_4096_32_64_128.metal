@@ -22,7 +22,7 @@ kernel void dit_scores_32_4096_4096_32_64_128(
         if (e < 2048u) {
             const uint i = e / 64u, j = e % 64u;
             float s = 0.0f;
-            for (uint p = 0; p < 128u; ++p) s += float(float(p0_q[(uint)(0 + 4096 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((i * 128u + p))])) * float(float(p1_k[(uint)(0 + 4096 * gid + 64 * gid3) * 128u + (uint)(0) * 1u + ((j * 128u + p))]));
+            for (uint p = 0; p < 128u; ++p) s += float(float(p0_q[((uint)(0 + 32 * gid2) + (((i * 128u + p)) / 128u % 32u)) * 4096u + ((uint)(0 + 128 * gid) + (((i * 128u + p)) / 1u % 128u)) * 1u])) * float(float(p1_k[((uint)(0 + 64 * gid3) + (((j * 128u + p)) / 128u % 64u)) * 4096u + ((uint)(0 + 128 * gid) + (((j * 128u + p)) / 1u % 128u)) * 1u]));
             v5[k] = float(s);
         }
     }

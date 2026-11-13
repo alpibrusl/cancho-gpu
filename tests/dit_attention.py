@@ -5,7 +5,7 @@ as three kernels chained through `cancho-gpu run`, against a float64 reference w
     dit_attention.py <cancho-gpu> [--mutants]
 
 The kernels are `dit_scores.chx` (the scores of a tile of queries against a tile of keys, scaled by 1/sqrt(128), plus an additive mask),
-`dit_stats.chx` (the row maximum and normaliser over chunks of keys) and `dit_pv.chx` (the weighted sum of v). Chained they are
+`dit_stats.chx` (the row maximum and normaliser over chunks of keys) and `dit_pv.chx` (the weighted sum of v). Token-major q, k, v and output ([n, nh * 128], as the projections write them). Chained they are
 softmax(q k^T / sqrt(128) + mask) v for every head, with the queries tiled as well as the keys (the kernels of the decode path tile only the keys).
 
 The mask is built here from the definition in diffusers' `build_qwenimage21_block_causal_mask` (transformer_qwenimage21.py): position q may attend to
@@ -46,16 +46,16 @@ def block_causal_mask(image_ids, key_valid):
 
 
 def reference(nh, n, d, q, k, v, mask):
-    out = []
+    out = [0.0] * (nh * n * d)
     scale = 1.0 / math.sqrt(d)
     for h in range(nh):
         for i in range(n):
-            s = [sum(q[(h * n + i) * d + c] * k[(h * n + j) * d + c] for c in range(d)) * scale + mask[i * n + j] for j in range(n)]
+            s = [sum(q[(i * nh + h) * d + c] * k[(j * nh + h) * d + c] for c in range(d)) * scale + mask[i * n + j] for j in range(n)]
             mx = max(s)
             e = [math.exp(x - mx) for x in s]
             z = sum(e)
             for col in range(d):
-                out.append(sum(e[j] / z * v[(h * n + j) * d + col] for j in range(n)))
+                out[(i * nh + h) * d + col] = sum(e[j] / z * v[(j * nh + h) * d + col] for j in range(n))
     return out
 
 
@@ -82,7 +82,7 @@ def case(root, name, nh, n, d, qs, ts, cs, dw, image_ids, key_valid, late_max=Fa
     v = [rnd.uniform(-1, 1) for _ in range(nh * n * d)]
     if late_max:  # the largest score of row 0 is in the last chunk
         for c in range(d):
-            k[(n - 1) * d + c] = q[c] * 3.0
+            k[((n - 1) * nh) * d + c] = q[c] * 3.0
     mask = block_causal_mask(image_ids, key_valid)
     want = reference(nh, n, d, q, k, v, mask)
     with tempfile.TemporaryDirectory() as tmp:
@@ -125,7 +125,7 @@ EDITS = [
     ("dit_scores", "load mask[qb * qs, sp * ts ; qs, ts]", "load mask[sp * ts, qb * qs ; qs, ts]", "the mask is read transposed"),
     ("dit_stats", "yield m1 + relu (cm - &m1)", "yield m1", "the running maximum keeps the first chunk's"),
     ("dit_stats", "for c in 0 .. t / cs with z0", "for c in 0 .. t / cs - 1 with z0", "the normaliser skips the last chunk"),
-    ("dit_pv", "load v[h * t + c * cs, dc * dw ; cs, dw]", "load v[c * cs, dc * dw ; cs, dw]", "v is read from the first head's rows"),
+    ("dit_pv", "load v[c * cs, h * d + dc * dw ; cs, dw]", "load v[c * cs, dc * dw ; cs, dw]", "v is read from the first head's columns"),
 ]
 survived = 0
 for kernel, old, new, what in EDITS:

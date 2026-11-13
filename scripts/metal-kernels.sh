@@ -13,10 +13,13 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN=$ROOT/build/cancho-gpu-metal-device
 fail=0
 while read -r kernel rest; do
+  # a case written `f16:name` has an f16 output: a one-bit difference of the f32 result can flip an f16 rounding (half a step is 4.9e-4 of the value), so its bound is 5e-4
+  tol=1e-5
+  case "$kernel" in f16:*) kernel=${kernel#f16:}; tol=5e-4 ;; esac
   # shellcheck disable=SC2086
   "$BIN" run "$ROOT/tests/chx/$kernel.chx" $rest > "${TMPDIR:-/tmp}/metal-kernels.out" 2>&1 || { echo "$kernel $rest: failed: $(tail -1 "${TMPDIR:-/tmp}/metal-kernels.out")"; fail=1; continue; }
   worst=$(grep '^compare:' "${TMPDIR:-/tmp}/metal-kernels.out" | awk '{d=$(NF-3); p=$NF; r=(p>0)?d/p:d; if (r>m) m=r} END {printf "%.2e", m}')
-  ok=$(echo "$worst" | awk '{print ($1 <= 1e-5) ? "ok" : "TOO FAR"}')
+  ok=$(echo "$worst" | awk -v t="$tol" '{print ($1 <= t) ? "ok" : "TOO FAR"}')
   echo "$ok  $kernel $rest: worst relative difference $worst"
   [ "$ok" = ok ] || fail=1
 done <<'CASES'
@@ -67,5 +70,9 @@ kv_import nsrc=2 nkv=2 g=6 t=64 ts=4 d=128
 dit_scores nh=4 nq=256 t=256 qs=32 ts=64 d=128
 dit_stats nh=4 nq=256 t=256 qs=32 cs=64
 dit_pv nh=4 nq=256 t=256 qs=32 cs=64 dw=32 d=128
+f16:dit_lnmod s=12 n=256
+dit_rope s=6 nh=3 h=64
+dit_gate_res s=12 n=256
+f16:dit_swiglu s=6 n=384
 CASES
 exit $fail

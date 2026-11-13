@@ -1,3 +1,4 @@
+// q, k and v are token-major, as the projections write them: row i is [head 0's 128 values, head 1's, ...], so a head's tile is a window at column h * d and no transpose is needed.
 // The scores of a diffusion transformer's attention, tiled over the queries as well as the keys (docs/diffusion.md D1): head h's rows qb * qs .. (qb + 1) * qs
 // of q against positions sp * ts .. (sp + 1) * ts of its keys,
 //
@@ -7,14 +8,14 @@
 // host), shared by every head. The scores go to an [nh * nq, t] scratch for dit_stats.chx and dit_pv.chx. The decode kernels tile only the keys (their query rows are
 // the g heads that share a key/value head); here a head has nq queries and the tile is [qs, ts].
 algo dit_scores(nh, nq, t, qs, ts, d)
-  in  q:    f32[nh * nq, d]
-  in  k:    f32[nh * t, d]
+  in  q:    f32[nq, nh * d]
+  in  k:    f32[t, nh * d]
   in  mask: f32[nq, t]
   out sc:   f32[nh * nq, t]
 {
   grid h over nh, qb over nq / qs, sp over t / ts
-  let qt = load q[h * nq + qb * qs, 0 ; qs, d]
-  let kt = load k[h * t + sp * ts, 0 ; ts, d]
+  let qt = load q[qb * qs, h * d ; qs, d]
+  let kt = load k[sp * ts, h * d ; ts, d]
   let s  = matmul_nt qt kt
   let sd = s * 0.08838834764831845
   let mk = load mask[qb * qs, sp * ts ; qs, ts]

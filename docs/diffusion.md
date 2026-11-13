@@ -64,7 +64,7 @@ It is still not re-run.
 | Attention over many positions | **partly, and not the part this model needs.** Every attention kernel is a *decode* step: the `g` query heads that share one key/value head against that head's cache. `attention.chx` (d = 256) and `attention_d64.chx` bound the scores tile by the 32 KiB of threadgroup memory; `attention_scores`, `attention_stats` and `attention_pvl` (online softmax over chunks of `cs` positions, "no ceiling on `t` but the cache") remove that bound for the keys. The README's "split-KV is not built" is out of date for them. A transformer of diffusion needs **thousands of queries at once**, so the queries must be tiled too; no kernel does that |
 | Head dimension 128 | **no kernel**: the scale 1/sqrt(d) is a literal in each file (0.0625 for 256, 0.125 for 64) because "the surface has no scalar parameter"; d = 128 is a new file (1/sqrt(128)) |
 | The attention mask | **block-causal, not bidirectional** (read from `transformer_qwenimage21.py`, `build_qwenimage21_block_causal_mask`): a position attends to every earlier position of the joint text-and-image sequence, and every image attends to all of its own tokens; padded prompt positions are not keys. The decode kernels take an additive mask, which can say that for one query row; a tiled kernel needs it per tile |
-| Adaptive modulation (shift, scale, gate from the timestep) | no |
+| Adaptive modulation (scale and gate from the timestep, per token) | **built in D2b**: `dit_lnmod.chx` and `dit_gate_res.chx` |
 | 3 x 3 convolution | yes, as nine shifted matmuls of a padded NHWC matrix, in the CIFAR-10 CNN (852,000 parameters, `docs/resident.md` §18); "only small tiles fit" in 32 KiB. The VAE's channels (up to 8 x 96 = 768 encoder, 8 x 144 = 1152 decoder, from `vae/config.json`) at image resolution are far from that network. `conv_step.chx` is the 4-tap depthwise convolution of a gated-delta layer, not this |
 | VAE decoder (residual blocks, up-sampling, the latent mean and std) | no |
 | Vision tower (27-layer ViT, patch 16, mRoPE) for the text encoder | no |
@@ -79,7 +79,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 |---|---|---|
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
-| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** the block on the Metal GPU; **D2d** 32 blocks and the step. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
+| D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** the block on the Metal GPU; **D2d** 32 blocks and the step. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
 | D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
@@ -92,6 +92,34 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D2b results (measured): the pieces between the matrix products
+
+Four new kernels and one existing one, each held by `tests/dit_block.py` to a binary64 reference, every element (the gate was written first and failed with "cannot read
+dit_lnmod.chx"):
+
+| Kernel | What | Worst error, as a fraction of its tolerance |
+|---|---|---|
+| `dit_lnmod.chx` | layer norm without affine, times 1 + scale; the scale row (the t = 0 one for text, the sampled one for the target image) chosen per token by a selector; **f16 output** for the next matrix product | 0.48 (f16 half-step tolerance), with an outlier of 2,300 and a row of variance ~5e-7 so that eps is tested |
+| `dit_rope.chx` | rotate-half RoPE with per-position tables, rows of 128 (a head), `nh` to a token | 0.06 (2e-6 relative) |
+| `rmsnorm_rows.chx` (existing) | the per-head RMSNorm of q and k with a [1, 128] weight, eps 1e-6 | 0.19 |
+| `dit_gate_res.chx` | x + tanh(gate) * y, the gate row chosen per token | 0.16 |
+| `dit_swiglu.chx` | silu(g) * u, f16 output | 0.63 (f16) |
+
+* **The host's plan for RoPE, checked in pure Python:** the model rotates interleaved pairs (2j, 2j + 1); the kernel rotates halves. Permuting the output channels of `to_q` and `to_k`
+  (and the two norm weights) within each head, even channels first, once at load, makes them the same up to that permutation, and leaves q . k and the RMSNorm unchanged
+  (equal to 12 digits). The identity permutation in its place is refused by the gate.
+* **Attention layout:** the D1 kernels now take q, k, v and give o **token-major** (`[tokens, 32 x 128]`, as the projections write them: a head's tile is a window at column
+  `h * 128`), so no transpose sits between the projections and attention. The D1 gate and its five mutants were rerun on the new layout: all pass, all killed.
+* **Mutants:** eight deliberate changes (the scale used without the 1, eps 1e-4, the selector ignored in two kernels, the second half's sign, position 0's tables for every token,
+  no tanh, the sigmoid of u) plus the identity permutation: **all killed**. The eps mutant survived the first inputs, because a row's variance was always far above eps; the row
+  of tiny variance was added for it.
+* **On the GPU:** `scripts/metal-kernels.sh` runs all of them against the interpreter on the M4 Max: the f32 kernels within 2.7e-7 (relative to the output's peak), `dit_lnmod` within
+  1.6e-4. The script now has a bound of 5e-4 for a case written `f16:name`: a one-bit difference of an f32 result flips an f16 rounding (half a step is 4.9e-4 of the value), so 1e-5
+  would refuse a correct kernel. The whole script passes.
+* **Goldens:** 376 of 376 agree (the D1 ones were recorded again for the new layout; no other directory changed).
+* **Not done:** the matrix products. `tests/chx/ported/gemm_mma.chx` (f16 weights and activations, f32 accumulation) is the candidate, held at the block's shapes in D2c. The sequence length
+  must be a multiple of its tile (64 on Apple), so the host pads the prompt; the padded rows must not be keys (the mask already says so).
 
 ### D2a results (measured): the tolerance, and a float64 block
 

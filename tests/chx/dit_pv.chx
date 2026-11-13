@@ -1,3 +1,4 @@
+// v and o are token-major (see dit_scores.chx): head h's window is at column h * d.
 // The product with v for a diffusion transformer's attention (docs/diffusion.md D1): head h's query tile qb, the columns dc * dw .. (dc + 1) * dw of v,
 //
 //     o = sum over chunks of  exp(s - m) / z  v
@@ -8,8 +9,8 @@ algo dit_pv(nh, nq, t, qs, cs, dw, d)
   in  sc: f32[nh * nq, t]
   in  m:  f32[nh * nq]
   in  z:  f32[nh * nq]
-  in  v:  f32[nh * t, d]
-  out o:  f32[nh * nq, d]
+  in  v:  f32[t, nh * d]
+  out o:  f32[nq, nh * d]
 {
   grid h over nh, qb over nq / qs, dc over d / dw
   let a0 = zeros f32[qs, dw]
@@ -20,10 +21,10 @@ algo dit_pv(nh, nq, t, qs, cs, dw, d)
     let sh = sm - mm
     let e  = exp sh
     let p  = e / zz
-    let vt = load v[h * t + c * cs, dc * dw ; cs, dw]
+    let vt = load v[c * cs, h * d + dc * dw ; cs, dw]
     yield a0 + matmul p vt
   }
-  store acc -> o[h * nq + qb * qs, dc * dw]
+  store acc -> o[qb * qs, h * d + dc * dw]
 }
 
 schedule dit_pv for apple-m-series { threads 256 }
