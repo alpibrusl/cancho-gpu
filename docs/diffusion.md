@@ -100,7 +100,7 @@ checked in size. No photograph of a person taken by or sent by a user of this pr
 
 * **[measured] 256 x 384 reference** (129 tokens, 96 of them image pads, padded to 192 rows): the residual stream after layers 4, 12, 24 and 36 is 8.7e-5, 1.2e-5, 4.1e-5 and 6.9e-4 of its rms from float64; the output (rows from `drop_idx`) **8.2e-4 of the rms over all rows and 5.8e-4 over the text rows**, which are the ones the transformer reads (the image-pad rows are replaced by the condition latents there). D5's bound for the language model is 5%, torch's BF16 floor 2.1%.
 * **[measured] Two host mutants fail**, which shows the comparison can see what an image adds: ordinary 1D positions instead of mRoPE (what D5 did for text): text rows 10.3% of the rms; no deepstack maps: 6.5%. The unmutated run is 0.058%.
-* The session starts in 3.3 s on this input (compile and upload of 15.7 GB included); the 1024 x 1024 case follows below when measured.
+* **[measured] 1024 x 1024 reference** (1,057 tokens: 1,024 image pads and 33 text, a 64 x 64 patch grid, padded to 1,088 rows): output **1.3e-3 of the rms over all rows, 7.3e-4 over the text rows** (the residual after layer 36 is 1.3e-3; after layer 4, 8.2e-5). The session answers in 12.3 s with the compile and the upload of 15.7 GB, and **2.3 s in steady state** (weights resident; the f32 attention of D1 over 1,088 rows is not optimised, and the products dominate). Torch's time for this encoder and its BF16 floor at this size were not measured.
 
 ### D9c-a results (measured): the text encoder reading an image, in float64
 
