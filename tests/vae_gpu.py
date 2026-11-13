@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """D4c of docs/diffusion.md: the VAE decoder of Qwen-Image-2.1-Turbo on a Metal GPU, as one session of kernel programs, held to the float64 decoder (tools/vae_ref.py) and to D0's BF16 decode.
 
-    vae_gpu.py GOLDEN_DIR [--keep DIR] [--z LATENT.npy] [--save-rgb OUT.npy]
+    vae_gpu.py GOLDEN_DIR [--keep DIR] [--z LATENT.npy] [--save-rgb OUT.npy] [--time N]
+
+--time N: time N requests (decodes) one at a time (tests/session_time.py), a probe as the answer.
 
 --z gives the latent [64, h, w] to decode (after the mean/std of D6) instead of D0's `vae_in`; the comparison with D0's `vae_out` is then not meaningful and is skipped.
 
@@ -26,6 +28,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vae_ref as vr  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -267,10 +270,19 @@ x = norm(x, vr.W("decoder.norm_out.gamma").reshape(-1), 144, L)
 wout = np.zeros((16, 9 * 144))
 wout[:4] = conv_w3("decoder.conv_out")
 y = conv3(x, None, 144, 16, L, wout)
+TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
+if TIME:
+    program("probe", "dit_rows2", f"m={L['R']} n=16 bn=16"); link(y, "probe.x")
 prog.append("steps")
-prog.append("answer " + y)
+prog.append("answer probe.y" if TIME else "answer " + y)
 open(P("vae.session"), "w").write("\n".join(prog) + "\n")
 
+if TIME:
+    import session_time
+    ts = session_time.timed(SESSION, P("vae.session"), TIME)
+    rest = ts[1:]
+    print("TIME VAE decode, %d x %d: first request %.3f s (device, compile, upload); then median %.4f s (min %.4f, max %.4f) over %d" % (L["h"], L["w"], ts[0], sorted(rest)[len(rest) // 2], min(rest), max(rest), len(rest)))
+    sys.exit(0)
 t0 = time.time()
 r = subprocess.run([SESSION, P("vae.session")], input="1\n", capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0

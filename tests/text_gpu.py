@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """D5 of docs/diffusion.md: the text encoder of Qwen-Image-2.1-Turbo (36 layers of the language model of Qwen3-VL) on a Metal GPU in one session, held to the float64 encoder (tools/text_ref.py) and to torch's BF16 hidden states.
 
-    text_gpu.py GOLDEN_DIR [REF_DIR] [--keep DIR] [--save OUT.npy]
+    text_gpu.py GOLDEN_DIR [REF_DIR] [--keep DIR] [--save OUT.npy] [--time N]
+
+--time N: instead of comparing, time N requests of the session one at a time (tests/session_time.py) with a probe as the answer.
 
 REF_DIR is the output of `python tools/text_ref.py GOLDEN_DIR REF_DIR` (the float64 residual stream after each layer; optional). Needs a Mac, the checkpoint, D0's goldens (`text_ids`, `drop_idx`, `text_embeds`), numpy, torch and safetensors (the venv of the
 first image edits has them), `build/cancho-gpu-metal-session`, and about 18 GB of disk for the f16 weight files. Not in `scripts/gate.sh`.
@@ -21,6 +23,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import text_ref as tr  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -127,11 +130,22 @@ for i in range(NL):
     program(n("sw"), "dit_swiglu", f"s={SP} n={3 * D} bn=1024"); link(n("gg") + ".y", n("sw") + ".g"); link(n("gu") + ".y", n("sw") + ".u")
     program(n("gd"), "ported/gemm_mma", f"m={SP} n={D} k={3 * D}"); link(n("sw") + ".y", n("gd") + ".a"); res(n("gd") + ".w", "wd%d.f16" % i, "f16")
     program(n("ad2"), "dit_add", f"s={SP} n={D} bn=1024"); link(n("ad1") + ".z", n("ad2") + ".a"); link(n("gd") + ".y", n("ad2") + ".b")
+TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
+if TIME:
+    program("probe", "dit_rows2", f"m={SP} n={D} bn=1024"); link("L%d_ad2.z" % (NL - 1), "probe.x")
 prog.append("steps")
-for b in SHOW:
-    prog.append("answer L%d_ad2.z" % (b - 1))
+if TIME:
+    prog.append("answer probe.y")
+else:
+    for b in SHOW:
+        prog.append("answer L%d_ad2.z" % (b - 1))
 open(P("text.session"), "w").write("\n".join(prog) + "\n")
 
+if TIME:
+    import session_time
+    ts = session_time.timed(SESSION, P("text.session"), TIME)
+    print("TIME text encoder, 35 tokens padded to 64: first request %.3f s (device, compile, upload); then median %.4f s (min %.4f, max %.4f) over %d" % (ts[0], sorted(ts[1:])[len(ts[1:]) // 2], min(ts[1:]), max(ts[1:]), len(ts) - 1))
+    sys.exit(0)
 t0 = time.time()
 r = subprocess.run([SESSION, P("text.session")], input="1\n", capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0

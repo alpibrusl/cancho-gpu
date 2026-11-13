@@ -2,7 +2,9 @@
 """D3 of docs/diffusion.md: the eight denoising steps of Qwen-Image-2.1-Turbo on a Metal GPU in one session, the latents carried on the device from one step to the next (the Euler update is a kernel too) -- the front end (txt_in, img_in, the timestep embedding, the shared modulation), the 32 blocks, the back end
 (norm_out, proj_out) and the update latents <- latents + (sigma_next - sigma) * prediction -- held to the float64 trajectory and to torch's BF16 latents after every step (D0's `latents_N`).
 
-    dit_loop_gpu.py GOLDEN_DIR TRAJ_DIR [--keep DIR] [--steps N] [--text TEXT.npy] [--save-latents OUT.npy]
+    dit_loop_gpu.py GOLDEN_DIR TRAJ_DIR [--keep DIR] [--steps N] [--text TEXT.npy] [--save-latents OUT.npy] [--time N]
+
+--time N: time N requests (steps) one at a time (tests/session_time.py), a probe as the answer; the first includes the device, compile and upload.
 
 TRAJ_DIR is the output of `python tools/dit_traj_ref.py GOLDEN_DIR TRAJ_DIR` (the float64 trajectory; optional: without it only torch's BF16 latents are compared).
 
@@ -27,6 +29,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dit_block_ref as ref  # noqa: E402
 import dit_step_ref as stepref  # noqa: E402
 
@@ -176,9 +179,20 @@ program("euh", "dit_to_f16", f"s={SP} n=64"); link("eu.z", "euh.x")
 prog.append("carry eu.z -> eu.lat")
 prog.append("carry euh.y -> ii.a")
 prog.append("steps")
-prog.append("answer eu.z")
+TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
+if TIME:
+    program("probe", "dit_rows2", f"m={SP} n=64 bn=64"); link("eu.z", "probe.x")
+    prog.append("answer probe.y")
+else:
+    prog.append("answer eu.z")
 open(P("full.session"), "w").write("\n".join(prog) + "\n")
 
+if TIME:
+    import session_time
+    ts = session_time.timed(SESSION, P("full.session"), TIME)
+    rest = ts[1:]
+    print("TIME one denoising step (text 21 + image 256 tokens padded to 320): first request %.3f s (device, compile, upload); then median %.4f s (min %.4f, max %.4f) over %d steps" % (ts[0], sorted(rest)[len(rest) // 2], min(rest), max(rest), len(rest)))
+    sys.exit(0)
 t0 = time.time()
 r = subprocess.run([SESSION, P("full.session")], input="1\n" * NSTEPS, capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0

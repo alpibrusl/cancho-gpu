@@ -1,7 +1,7 @@
 # Image and video diffusion models in `.chx`
 
 > **Status (D6, 2026-11-13): Qwen-Image-2.1-Turbo generates a 256 x 256 image on a Metal GPU in cancho-gpu from its prompt and seed, text encoder, eight denoising steps and VAE decoder, with the host still doing the tokenisation,
-> the initial noise, the embedding lookup and some layout (§4, "D6 results"). Image editing (the vision tower), 1024 x 1024 and any timing are not done; video (§6) is not started.**
+> the initial noise, the embedding lookup and some layout (§4, "D6 results"). Image editing (the vision tower) and 1024 x 1024 are not done; the stages are timed at 256 x 256 against torch on MPS ("D6b"); video (§6) is not started.**
 > The first target is an image model, Qwen-Image-2.1-Turbo (§2); video comes second (§6).
 > Every number below is either read from the model's files (the command is given), read from this
 > repository's own documents (named, not re-measured here), or marked **choice** or **open**.
@@ -84,7 +84,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. Split: **D4a** a float64 decoder and the cost (built, below); **D4b** (built, below) its pieces as kernels, each against it; **D4c** (built, below) the decoder on the GPU. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | **Built for text-to-image** (below; the vision tower, needed for editing, is not). The text encoder. | Hidden states against D0's. |
-| D6 | **Built, without the timing** (below). End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
+| D6 | **Built, and timed at 256 x 256** (below). End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
 
 Editing (the beach, clothes and Ghibli tests in `imgtest/`) needs the vision tower and the
 reference-image path; **choice:** text-to-image first, editing after D5's vision tower.
@@ -117,6 +117,31 @@ the rotary and timestep tables, laying the final latents out for the decoder (un
   (D3), its decoder adds 2.6e-3 (D4). The three images look the same (side by side: torch, float64, GPU).
 * The numbers are one prompt, one seed and 256 x 256; **it is not a claim about the model's quality, nor a speed**: each session's wall time here is dominated by writing and uploading 14 to 16 GB of f16 weights (text 14 s, the steps 20 s, the decoder 7 s, cold, with the host's Python work), and **nothing is timed against torch MPS**, which D6's row in §4 asked for and is not done.
 * **Not done:** timing; 1024 x 1024 (the attention scratch, 14x the work in the products, 1.7 x 10^13 FLOPs in the decoder: D2d and D4a give the sizes, none has run); editing, which needs the vision tower (D5); the host's list above, of which the tokenizer and the noise are the ones that stop it being "prompt and seed in, image out" with no host arithmetic.
+
+### D6b results (measured): the time of each stage against torch on MPS, 256 x 256
+
+Both on this machine (Apple M4 Max, 64 GB), one stage at a time, the weights resident, the same prompt. torch: `python tools/diffusion_time.py` (diffusers, BF16, MPS, GPU synchronised around each stage's forward calls, one warm-up and seven timed pipeline runs, spreads under 1%). cancho-gpu:
+`tests/text_gpu.py`, `tests/dit_loop_gpu.py` and `tests/vae_gpu.py` with `--time N` (the session is started once and sent N requests one at a time, `tests/session_time.py`; the answer is a probe of two rows so the size of the answer is not timed; 11 to 16 requests, spreads under 1%).
+`tests/time_gemm.py` times kernels alone (a request of N repetitions in one command buffer, the difference between N = 200 and N = 1).
+
+| Stage | torch MPS, BF16 | cancho-gpu, steady state | cancho-gpu / torch | cancho-gpu, first request (device, compile, upload) |
+|---|---|---|---|---|
+| text encoder (35 tokens; 64 padded rows on cancho-gpu) | 0.153 s | 0.190 s | 1.24 | 2.68 s |
+| one transformer step (277 tokens; 320 padded rows on cancho-gpu) | 0.385 s | 0.497 s | 1.29 | 3.72 s |
+| eight steps | 3.08 s | 3.98 s | 1.29 | |
+| VAE decode (256 x 256) | 0.087 s | 0.132 s | 1.52 | 0.34 s |
+| **the three stages** | **3.32 s** | **4.30 s** | **1.30** | 6.7 s |
+
+**cancho-gpu is 30% slower than torch on MPS at 256 x 256** (the encoder 24%, the transformer 29%, the decoder 52%), which is the answer to D6's timing row; it is not ahead of it anywhere here. The torch pipeline call as a whole took 3.33 s (the stages' 3.32 s plus the scheduler, tokenisation and post-processing).
+
+**Where the transformer step's 497 ms goes** (kernels alone, `tests/time_gemm.py`): the matrix products are **432 ms (87%)**: `gemm_mma.chx` runs the 4096 x 4096 products at 9.3 TFLOPS, the 12288-wide ones at 12.2 and 9.0 TFLOPS; the attention is **61 ms (12%)**: `dit_scores` takes 1.43 ms a block at
+0.59 TFLOPS (the slowest kernel by far per FLOP), `dit_pv` 0.42 ms at 2.0 TFLOPS, `dit_stats` 0.06 ms; the rest (norms, RoPE, residuals, casts) is the last ~1%.
+
+* **How much of the 29% is padding:** cancho-gpu runs 320 rows where torch runs 277, which is 15.5% more work in every product and in the attention. Divided out, the step would be about 430 ms against torch's 385: **about 12% slower per token**, which is the matrix products' rate (9 to 12 TFLOPS against torch's roughly 10 on the useful 3.96 TFLOP) and the scores kernel. The padding is the
+  matrix unit's tile (64) and a choice of this slice, not of the hardware: a tile of 8 or 16 rows on the last block of a product is not written.
+* **What the comparison is not:** one machine, one prompt, one size; a cancho-gpu step uses f16 operands with f32 accumulation and f32 intermediates against torch's BF16 throughout (different bytes moved); torch's attention is a fused kernel and cancho-gpu's materialises the scores (a 32 x 320 x 320 f32 scratch here, 2.1 GB per layer at 1024 x 1024). The
+  cold first request (device, compile and upload of 15 GB) is not what torch's number includes (its model is already loaded).
+* **Where the next gain is, from the profile:** the scores kernel (about 9% of the step, 0.59 TFLOPS against 9 to 12 for the products: a fused attention would remove it and the scratch), then the padding; the products themselves are within the range of torch's overall rate.
 
 ### D5 results (measured): the text encoder on the Metal GPU, with no new kernel
 
