@@ -1,0 +1,31 @@
+// The weighted sum of v for a diffusion transformer's attention on the matrix unit (docs/diffusion.md D8): o = sum over key chunks of  exp(s + mask - m) / z  v, for head h, the query rows i * bm .. and the columns j * bn .. of its v. The weights are formed in f32 from the
+// scores, the mask and the statistics of dit_stats_m.chx, rounded to f16 (`stage`) and multiplied by f16 v (token-major [t, nh * d]) with f32 accumulation (`mma_nn`: v is stored [k, n]).
+algo dit_pv_mma(nh, nq, t, d)
+  in  sc:   f32[nh * nq, t]
+  in  mask: f32[nq, t]
+  in  m:    f32[nh * nq]
+  in  z:    f32[nh * nq]
+  in  v:    f16[t, nh * d]
+  out o:    f32[nq, nh * d]
+  tile bm, bn, bk
+{
+  grid h over nh, i over nq / bm, j over d / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. t / bk with acc {
+    let sm = load sc[h * nq + i * bm, p * bk ; bm, bk]
+    let mk = load mask[i * bm, p * bk ; bm, bk]
+    let s2 = sm + mk
+    let mm = load m[h * nq + i * bm ; bm]
+    let zz = load z[h * nq + i * bm ; bm]
+    let sh = s2 - mm
+    let e  = exp sh
+    let pp = e / zz
+    let ph = stage f16 pp
+    let vt = load v[p * bk, h * d + j * bn ; bk, bn] @shared
+    yield mma_nn acc ph vt
+  }
+  store acc -> o[i * bm, h * d + j * bn]
+}
+
+schedule dit_pv_mma for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule dit_pv_mma for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

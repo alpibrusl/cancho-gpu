@@ -1,0 +1,20 @@
+// The attention scores of a diffusion transformer on the matrix unit (docs/diffusion.md D8): head h's q k^T for the query rows i * bm .. and key rows j * bn .., from f16 q and k (token-major [n, nh * d]; q already scaled by 1/sqrt(d), dit_rope16.chx),
+// accumulated in f32 on the matrix unit and stored as f32 in an [nh * nq, t] scratch. The mask is not added here (the accumulator cannot be touched after the product): dit_stats_m.chx and dit_pv_mma.chx add it where they read the scores.
+algo dit_scores_mma(nh, nq, t, d)
+  in  q:  f16[nq, nh * d]
+  in  k:  f16[t, nh * d]
+  out sc: f32[nh * nq, t]
+  tile bm, bn, bk
+{
+  grid h over nh, i over nq / bm, j over t / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. d / bk with acc {
+    let at = load q[i * bm, h * d + p * bk ; bm, bk] @shared
+    let wt = load k[j * bn, h * d + p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> sc[h * nq + i * bm, j * bn]
+}
+
+schedule dit_scores_mma for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule dit_scores_mma for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }

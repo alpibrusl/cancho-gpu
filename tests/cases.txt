@@ -478,3 +478,16 @@ tests/chx/vae_split16.chx r=64 c=64 sc=0.125 --run
 tests/chx/vae_mask_add.chx n=64 --run
 tests/chx/vae_norm.chx r=4416 c=1152 g=67 sc=33.94112549695428
 tests/chx/vae_norm.chx r=64 c=64 g=9 sc=8.0 --run
+
+# D8 (docs/diffusion.md): the attention on the matrix unit in f16, at 1024 x 1024 (4,224 rows: 4,117 tokens rounded up to 128, the CUDA schedule's tile; the Metal one needs 64) and test-sized with --run; tests/dit_attention_mma.py holds them to
+# float64 references. dit_rows2h is the f16 probe of the timing sessions.
+tests/chx/dit_rope16.chx s=4224 nh=32 h=64 sc=0.08838834764831845
+tests/chx/dit_scores_mma.chx nh=32 nq=4224 t=4224 d=128
+tests/chx/dit_stats_m.chx nh=32 nq=4224 t=4224 qs=32 cs=64
+tests/chx/dit_pv_mma.chx nh=32 nq=4224 t=4224 d=128
+tests/chx/dit_rows2h.chx m=4224 n=4096 bn=1024
+tests/chx/dit_rope16.chx s=128 nh=2 h=64 sc=0.08838834764831845 --run
+tests/chx/dit_scores_mma.chx nh=2 nq=128 t=128 d=128 --run
+tests/chx/dit_stats_m.chx nh=2 nq=128 t=128 qs=32 cs=64 --run
+tests/chx/dit_pv_mma.chx nh=2 nq=128 t=128 d=128 --run
+tests/chx/dit_rows2h.chx m=64 n=256 bn=128 --run

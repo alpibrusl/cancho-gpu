@@ -94,3 +94,13 @@ for label, kernel, args, res_, shape, count, out in smalls:
     per = bench(label.split("  x")[0], kernel, args, res_, 0.0, shape)
     total += per * count
 print("the small kernels of one block: %.1f ms; 32 blocks: %.0f ms" % (total * 1e3, 32 * total * 1e3))
+
+# the attention on the matrix unit (docs/diffusion.md D8)
+residents_out.update({"dit_rope16": "y", "dit_scores_mma": "sc", "dit_stats_m": "m", "dit_pv_mma": "o"})
+H16.add("dit_rope16")
+r16 = bench("dit_rope16  (x2 per block)", "dit_rope16", "s=%d nh=32 h=64 sc=0.08838834764831845" % M, [("x", M * D, f32_, "f32"), ("cs", M * 64, f32_, "f32"), ("sn", M * 64, f32_, "f32")], 0.0, (M * 32, 128))
+s2 = bench("dit_scores_mma  32 heads, %d x %d, d 128" % (M, M), "dit_scores_mma", "nh=32 nq=%d t=%d d=128" % (M, M), [("q", M * D, np.float16, "f16"), ("k", M * D, np.float16, "f16")], 2.0 * 32 * M * M * 128, (32 * M, M))
+t2 = bench("dit_stats_m", "dit_stats_m", "nh=32 nq=%d t=%d qs=32 cs=64" % (M, M), [("sc", 32 * M * M, f32_, "f32"), ("mask", M * M, f32_, "f32")], 0.0, (32 * M, 1))
+p2 = bench("dit_pv_mma", "dit_pv_mma", "nh=32 nq=%d t=%d d=128" % (M, M), [("sc", 32 * M * M, f32_, "f32"), ("mask", M * M, f32_, "f32"), ("m", 32 * M, f32_, "f32"), ("z", 32 * M, f32_, "f32"), ("v", M * D, np.float16, "f16")], 2.0 * 32 * M * M * 128, (M, D))
+att = s2 + t2 + p2 + 2 * r16 + 0.0002  # + the cast of v (dit_to_f16, about 0.2 ms)
+print("attention of one block on the matrix unit (two rope16, the cast of v, scores, stats, pv): %.1f ms; 32 blocks: %.0f ms" % (att * 1e3, 32 * att * 1e3))

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """D7 of docs/diffusion.md: the eight denoising steps of Qwen-Image-2.1-Turbo at any size on a Metal GPU, as many short sessions, because the 32 blocks of one session do not fit in memory at 1024 x 1024.
 
-    dit_big.py GOLDEN_DIR WORK_DIR [--text TEXT.npy] [--steps N] [--group G] [--time] [--ref TRAJ_DIR]
+    dit_big.py GOLDEN_DIR WORK_DIR [--text TEXT.npy] [--steps N] [--group G] [--time] [--ref TRAJ_DIR] [--attn mma|f32]
 
 Why sessions: a session allocates a buffer for every output of every program and gives none back, so 32 blocks keep 32 attention score matrices of 32 x 4160 x 4160 x 4 B = 2.2 GB each at 1024 x 1024 (71 GB in all), and a table
 (the way a session reads a different weight each repetition) is capped at the session's 512 MiB byte pool, against 33.5 MB to 100 MB of f16 weights a layer. So a step is: one **front** session (txt_in, img_in, the timestep
 embedding, the modulation), `32 / G` **group** sessions of G blocks (default 4), and one **back** session (norm_out, proj_out, the Euler update); the residual stream, the modulation, the embedding's SiLU and the latents go from one to the next through binary files
 (`save` and `checkpoint`, then `resident ... f32`). The kernels are exactly those of tests/dit_loop_gpu.py (D3), whose single-session run at 256 x 256 this must reproduce; the weights are written once (14.3 GB) and each group session uploads its own 1.75 GB.
+
+`--attn`: `mma` (the default) is D8's attention on the matrix unit in f16 (dit_rope16, dit_scores_mma, dit_stats_m, dit_pv_mma); `f32` is D1's (the generic f32 product).
 
 `--time`: each session is driven interactively (tests/session_time.py's way) and the second of two identical requests is timed: the steady state with the weights on the device (the first request's time is the cold start). A step's time is then the sum of its sessions'
 steady-state request times: the front, `32 / G` groups and the back. The host's file writing and reading between sessions, and each session's start (device, compile, upload), are reported separately and are not in that sum.
@@ -30,6 +32,7 @@ arg = lambda name, default=None: sys.argv[sys.argv.index(name) + 1] if name in s
 NSTEPS = int(arg("--steps", 8))
 G = int(arg("--group", 4))
 TIME = "--time" in sys.argv
+ATTN = arg("--attn", "mma")
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
 CHX = os.path.join(ROOT, "tests/chx")
 NEG = -1e9
@@ -168,14 +171,25 @@ def group(g, xfile, outfile):
         for nm, src, wf in (("nq", "gq", "nq"), ("nk", "gk", "nk")):
             s.program(n(nm), "rmsnorm_rows", f"r={SP * H} n={HD} eps=0.000001")
             s.link(n(src) + ".y", n(nm) + ".x"); s.res(n(nm) + ".w", "%s%d.f32" % (wf, b))
-        for rn, src in (("rq", "nq"), ("rk", "nk")):
-            s.program(n(rn), "dit_rope", f"s={SP} nh={H} h=64")
-            s.link(n(src) + ".y", n(rn) + ".x"); s.res(n(rn) + ".cs", "cs.f32"); s.res(n(rn) + ".sn", "sn.f32")
-        s.program(n("sc"), "dit_scores", f"nh={H} nq={SP} t={SP} qs=32 ts=64 d={HD}")
-        s.link(n("rq") + ".y", n("sc") + ".q"); s.link(n("rk") + ".y", n("sc") + ".k"); s.res(n("sc") + ".mask", "mask.f32")
-        s.program(n("st"), "dit_stats", f"nh={H} nq={SP} t={SP} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc")
-        s.program(n("pv"), "dit_pv", f"nh={H} nq={SP} t={SP} qs=32 cs=64 dw=32 d={HD}")
-        s.link(n("sc") + ".sc", n("pv") + ".sc"); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(n("gv") + ".y", n("pv") + ".v")
+        if ATTN == "mma":
+            for rn, src, sc_ in (("rq", "nq", repr(1 / math.sqrt(HD))), ("rk", "nk", "1.0")):
+                s.program(n(rn), "dit_rope16", f"s={SP} nh={H} h=64 sc={sc_}")
+                s.link(n(src) + ".y", n(rn) + ".x"); s.res(n(rn) + ".cs", "cs.f32"); s.res(n(rn) + ".sn", "sn.f32")
+            s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={SP} t={SP} d={HD}")
+            s.link(n("rq") + ".y", n("sc") + ".q"); s.link(n("rk") + ".y", n("sc") + ".k")
+            s.program(n("st"), "dit_stats_m", f"nh={H} nq={SP} t={SP} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", "mask.f32")
+            s.program(n("vh"), "dit_to_f16", f"s={SP} n={D}"); s.link(n("gv") + ".y", n("vh") + ".x")
+            s.program(n("pv"), "dit_pv_mma", f"nh={H} nq={SP} t={SP} d={HD}")
+            s.link(n("sc") + ".sc", n("pv") + ".sc"); s.res(n("pv") + ".mask", "mask.f32"); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(n("vh") + ".y", n("pv") + ".v")
+        else:
+            for rn, src in (("rq", "nq"), ("rk", "nk")):
+                s.program(n(rn), "dit_rope", f"s={SP} nh={H} h=64")
+                s.link(n(src) + ".y", n(rn) + ".x"); s.res(n(rn) + ".cs", "cs.f32"); s.res(n(rn) + ".sn", "sn.f32")
+            s.program(n("sc"), "dit_scores", f"nh={H} nq={SP} t={SP} qs=32 ts=64 d={HD}")
+            s.link(n("rq") + ".y", n("sc") + ".q"); s.link(n("rk") + ".y", n("sc") + ".k"); s.res(n("sc") + ".mask", "mask.f32")
+            s.program(n("st"), "dit_stats", f"nh={H} nq={SP} t={SP} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc")
+            s.program(n("pv"), "dit_pv", f"nh={H} nq={SP} t={SP} qs=32 cs=64 dw=32 d={HD}")
+            s.link(n("sc") + ".sc", n("pv") + ".sc"); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(n("gv") + ".y", n("pv") + ".v")
         s.program(n("c1"), "dit_to_f16", f"s={SP} n={D}"); s.link(n("pv") + ".o", n("c1") + ".x")
         s.program(n("go"), "ported/gemm_mma", f"m={SP} n={D} k={D}"); s.link(n("c1") + ".y", n("go") + ".a"); s.res(n("go") + ".w", "wo%d.f16" % b, "f16")
         s.program(n("gr1"), "dit_gate_res", f"s={SP} n={D}")

@@ -1,0 +1,36 @@
+// dit_stats.chx for scores without the mask added (docs/diffusion.md D8): the row maximum m and the normaliser z = sum exp(s + mask - m) of each of head h's qs query rows of tile qb, over all t keys, a chunk of cs positions at a time;
+// mask is the additive [nq, t] matrix (0 where a position may attend, a large negative number where it may not), shared by every head.
+algo dit_stats_m(nh, nq, t, qs, cs)
+  in  sc:   f32[nh * nq, t]
+  in  mask: f32[nq, t]
+  out m:    f32[nh * nq]
+  out z:    f32[nh * nq]
+{
+  grid h over nh, qb over nq / qs
+  let f0 = load sc[h * nq + qb * qs, 0 ; qs, cs]
+  let k0 = load mask[qb * qs, 0 ; qs, cs]
+  let s0 = f0 + k0
+  let m1 = rowmax s0
+  let mx = for c in 1 .. t / cs with m1 {
+    let sm = load sc[h * nq + qb * qs, c * cs ; qs, cs]
+    let mk = load mask[qb * qs, c * cs ; qs, cs]
+    let s1 = sm + mk
+    let cm = rowmax s1
+    yield m1 + relu (cm - &m1)
+  }
+  let z0 = zeros f32[qs]
+  let zz = for c in 0 .. t / cs with z0 {
+    let sm = load sc[h * nq + qb * qs, c * cs ; qs, cs]
+    let mk = load mask[qb * qs, c * cs ; qs, cs]
+    let s2 = sm + mk
+    let sh = s2 - &mx
+    let e  = exp sh
+    let cz = rowsum e
+    yield z0 + cz
+  }
+  store mx -> m[h * nq + qb * qs]
+  store zz -> z[h * nq + qb * qs]
+}
+
+schedule dit_stats_m for apple-m-series { threads 256 }
+schedule dit_stats_m for nvidia-ada     { threads 128 }

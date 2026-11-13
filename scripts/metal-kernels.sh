@@ -91,5 +91,9 @@ conv3_k16 rp=64 cin=48 cout=48 wp=8 g=9
 f16:vae_split16 r=64 c=64 sc=0.125
 vae_mask_add n=64
 f16:vae_norm r=64 c=64 g=9 sc=8.0
+f16:dit_rope16 s=128 nh=2 h=64 sc=0.08838834764831845
+dit_scores_mma nh=2 nq=128 t=128 d=128
+dit_stats_m nh=2 nq=128 t=128 qs=32 cs=64
+dit_pv_mma nh=2 nq=128 t=128 d=128
 CASES
 exit $fail

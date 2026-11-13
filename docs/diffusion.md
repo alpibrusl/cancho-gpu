@@ -1,7 +1,7 @@
 # Image and video diffusion models in `.chx`
 
 > **Status (D6, 2026-11-13): Qwen-Image-2.1-Turbo generates a 256 x 256 image on a Metal GPU in cancho-gpu from its prompt and seed, text encoder, eight denoising steps and VAE decoder, with the host still doing the tokenisation,
-> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7"), 2.9 times slower than torch on MPS; image editing (the vision tower) is not done and video (§6) is not started.**
+> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes 1.34 times torch's time on MPS (55 s against 41 s); image editing (the vision tower) is not done and video (§6) is not started.**
 > The first target is an image model, Qwen-Image-2.1-Turbo (§2); video comes second (§6).
 > Every number below is either read from the model's files (the command is given), read from this
 > repository's own documents (named, not re-measured here), or marked **choice** or **open**.
@@ -118,7 +118,33 @@ the rotary and timestep tables, laying the final latents out for the decoder (un
 * The numbers are one prompt, one seed and 256 x 256; **it is not a claim about the model's quality, nor a speed**: each session's wall time here is dominated by writing and uploading 14 to 16 GB of f16 weights (text 14 s, the steps 20 s, the decoder 7 s, cold, with the host's Python work), and **nothing is timed against torch MPS**, which D6's row in §4 asked for and is not done.
 * **Not done:** timing; 1024 x 1024 (the attention scratch, 14x the work in the products, 1.7 x 10^13 FLOPs in the decoder: D2d and D4a give the sizes, none has run); editing, which needs the vision tower (D5); the host's list above, of which the tokenizer and the noise are the ones that stop it being "prompt and seed in, image out" with no host arithmetic.
 
-### D7 results (measured): 1024 x 1024
+### D8 results (measured): the attention on the matrix unit
+
+The profile of D7 said the attention was 66% of a step (9.8 s of 14.8 s at 1024 x 1024), `dit_scores` on the generic f32 product at 0.64 TFLOPS, so four kernels (`tests/chx/dit_rope16.chx`, `dit_scores_mma.chx`, `dit_stats_m.chx`, `dit_pv_mma.chx`) put it on the matrix unit in f16, held by `tests/dit_attention_mma.py` to two binary64 references,
+**every element** (the gate was written first and failed with "cannot read dit_rope16.chx"): one with the f16 roundings the kernels make (q times the scale after the rotation, k, v and the weights, tolerance 1e-4: **6.1e-5 and 2.3e-5** measured) and the exact attention (tolerance 5e-3: **4.1e-4 and 3.8e-4**); **nine mutants, all killed** (one was refused at first for a wrong text, fixed).
+The accumulator of a matrix-unit product cannot be touched after it (no scaling, no mask), so the scale is folded into q (rounded to f16 with it) and the mask is added where the scores are read, in `dit_stats_m` and `dit_pv_mma`; the weights `exp(s + mask - m) / z` are formed in f32, rounded to f16 (`stage`) and multiplied by f16 v with `mma_nn`. The scores still go to an `[nh * nq, t]` f32 scratch (2.2 GB a block): an
+attention that never stores them needs the softmax's running state carried through the loop, and a loop carries one tile and a matrix-unit accumulator cannot be rescaled: **not expressible in this language today**. The Metal schedule is bm 64, bn 64, bk 32; the CUDA one for `dit_pv_mma` first needed 68,608 B of static threadgroup memory against 49,152 (the golden was a refusal, which I read this time) and is now the same 64 x 64 x 32.
+
+| Kernel alone, 4,160 rows, one block | before (D7) | on the matrix unit |
+|---|---|---|
+| scores | `dit_scores` 223 ms, 0.64 TFLOPS | `dit_scores_mma` **11.5 ms, 12.3 TFLOPS** |
+| statistics | `dit_stats` 9.5 ms | `dit_stats_m` 17.9 ms (reads the mask) |
+| weighted sum | `dit_pv` 73 ms, 1.95 TFLOPS | `dit_pv_mma` **24.9 ms, 5.7 TFLOPS** |
+| the whole attention of a block (with the rotations to f16 and the cast of v) | 305 ms | **55 ms** |
+
+| One transformer step at 1024 x 1024 (steady state, second request of each session; two runs gave the same) | torch MPS | before | **now** |
+|---|---|---|---|
+| step | 4.99 s | 14.78 s (2.96x) | **6.67 s (1.34x)**: front 0.03 s + 8 groups of 4 blocks at 0.83 s + back 0.002 s |
+| the attention's part | | 9.8 s | 1.8 s |
+| the three stages (text 0.19 s, eight steps, VAE 1.88 s) | 41.4 s | about 120 s | **about 55 s (1.34x)** |
+
+The eight steps took 89 s of wall time with the ten sessions of each step starting and the host's files (155 s before). **cancho-gpu is now 1.34 times torch's time on MPS at 1024 x 1024**, and its step is 2.2 times faster than D7's. The step is now matrix products 4.6 s (69%), attention 1.8 s (27%), small kernels 0.25 s (4%). Not measured at 256 x 256 with the new attention (D6b's 0.497 s used the f32 one).
+
+**What it cost in accuracy: nothing measurable.** At 256 x 256 the final latents are 1.39e-3 from the float64 trajectory (1.25e-3 with the f32 attention; torch 1.12e-2). At 1024 x 1024: final latents 1.37e-3 (1.73e-3 before; torch 4.0e-2), and the image **0.16 of 255 from the float64 pipeline, 49.3 dB** (0.18 and 48.5 dB before; torch 4.75, 26.2 dB).
+
+**Tile schedules tried for `gemm_mma` at 4,160 x 4,096 x 4,096 (the products are 69% of the step): none beats the present one** (bm 64, bn 64, bk 32, 128 threads: 13.0 TFLOPS; bk 64, or 64 x 128, or 32 x 128: 12.4; 128 x 64 and 128 x 32: 12.5 on 4,224 rows; 128 x 128: 0.9 to 8.2 TFLOPS, register pressure). What is left to gain is in a different product kernel (double buffering is not expressible either), in the statistics (0.57 s a step; it re-reads the mask) and the weighted sum (0.8 s), and in the decoder (1.88 s against torch's 1.29 s).
+
+### D7 results (measured): 1024 x 1024 (with the attention of D1; D8 above replaces its timing)
 
 **The image** (cancho-gpu on the right; torch BF16 on the left; the prompt and seed of D0): `scratchpad/compare1024.png` is not in the repository (images are not committed). The scene is the same (a red bicycle with a basket against a cream wall, the shadow of a leafy branch, the kerb and a yellow line), and the two differ in small details (the kickstand).
 
