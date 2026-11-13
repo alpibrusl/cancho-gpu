@@ -491,3 +491,10 @@ tests/chx/dit_scores_mma.chx nh=2 nq=128 t=128 d=128 --run
 tests/chx/dit_stats_m.chx nh=2 nq=128 t=128 qs=32 cs=64 --run
 tests/chx/dit_pv_mma.chx nh=2 nq=128 t=128 d=128 --run
 tests/chx/dit_rows2h.chx m=64 n=256 bn=128 --run
+tests/chx/vit_ln.chx s=4096 n=1152
+tests/chx/vit_ln.chx s=1024 n=4608
+tests/chx/vit_bias_gelu.chx s=4096 n=4352 bn=256
+tests/chx/vit_bias_gelu_erf.chx s=1024 n=4608 bn=512 m1=-1
+tests/chx/vit_ln.chx s=4 n=64 --run
+tests/chx/vit_bias_gelu.chx s=4 n=256 bn=128 --run
+tests/chx/vit_bias_gelu_erf.chx s=4 n=256 bn=128 m1=-1 --run

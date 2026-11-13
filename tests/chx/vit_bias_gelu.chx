@@ -1,0 +1,26 @@
+// y = gelu_tanh(x + b) for s rows of n, bn columns to a threadgroup, f16 out (docs/diffusion.md D9b): the vision tower's MLP between its two matrix products (bias of the first, then torch's
+// `gelu_pytorch_tanh`). The padded columns of the intermediate (4,304 padded to 4,352) have x = 0 and b = 0, and gelu(0) = 0, so they stay zero.
+algo vit_bias_gelu(s, n, bn)
+  in  x: f32[s, n]
+  in  b: f32[1, n]
+  out y: f16[s, n]
+{
+  grid i over s, j over n / bn
+  let xx = load x[i, j * bn ; 1, bn]
+  let bb = load b[0, j * bn ; 1, bn]
+  let vv = xx + bb
+  let v2 = &vv * &vv
+  let v3 = v2 * &vv
+  let t1 = v3 * 0.044715
+  let t2 = &vv + t1
+  let t3 = t2 * 0.7978845608028654
+  let th = tanh t3
+  let t4 = th + 1
+  let t5 = vv * t4
+  let t6 = t5 * 0.5
+  let oh = stage f16 t6
+  store oh -> y[i, j * bn]
+}
+
+schedule vit_bias_gelu for apple-m-series { threads 256 }
+schedule vit_bias_gelu for nvidia-ada     { threads 256 }

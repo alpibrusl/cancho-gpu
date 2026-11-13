@@ -81,6 +81,9 @@ dit_modsplit m=64 n=256 bn=128
 dit_rows2 m=64 n=256 bn=128
 dit_euler s=12 n=64
 f16:vae_norm_silu r=64 c=64 g=9 sc=8.0
+f16:vit_ln s=4 n=256
+f16:vit_bias_gelu s=4 n=256 bn=128
+f16:vit_bias_gelu_erf s=4 n=256 bn=128 m1=-1
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64
 f16:vae_pad16 r=64 c=64 g=9
