@@ -80,7 +80,7 @@ Each stage ends when its gate passes; none starts before the one above it. A gat
 | D0 | **Built** (`tools/diffusion_golden.py`). Runs the reference on a fixed small input (256 x 256, one prompt, seed 1, 8 steps, `use_kv_cache=False`) and writes golden tensors: the text encoder's output, block 0's input and output, one full transformer step, the latents after each step, the VAE's input and output, the image. | Two runs give the same bytes. **Measured 2026-11-13 (torch 2.15.0, MPS, BF16): they do, for all 15 tensors** (`--check`). |
 | D1 | **Built** (below). Block-causal attention with head dimension 128 for N queries and N keys (N from a few hundred up to 4,096 image tokens plus the prompt, §5, question 1): tiled over both, online softmax (the chunked kernels of §3 tile the keys only). | Against a float64 reference written from the mathematics (`tests/kernels.py` style), including the mutants that must fail it; then against D0's block goldens. |
 | D2 | One transformer block, then the 32-layer step. Split: **D2a** the tolerance and a float64 block (built, below); **D2b** (built, below) each piece as a kernel against that reference (layer norm with modulation, per-head RMSNorm, 3-axis RoPE, the D1 attention, tanh-gated residual, SwiGLU, f16 matmuls with 4096 x 4096 and 12288 x 4096 weights); **D2c** (built, below) the block on the Metal GPU; **D2d** (built, below, with the front and back ends on the host) 32 blocks and the step; **D2e** (built, below) the front and back ends on the GPU. | One block: max abs error against D0 below the tolerance D2a measured. One step: the same. |
-| D3 | Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
+| D3 | **Built** (below). Eight steps with the saved schedule, from a fixed noise. | The latent after 8 steps against torch's, with the error reported per step. |
 | D4 | The VAE decoder. | The decoded image against D0's, in max abs error and PSNR. |
 | D5 | The text encoder (text part first, the vision tower later: it is needed for editing, not for text-to-image). | Hidden states against D0's, per layer. |
 | D6 | End to end: prompt to PNG on the GPU, timed against torch MPS on the same machine, same seed. | A text-to-image run whose image matches torch's within the D3 and D4 tolerances. The time is a measurement, reported with the cases where cancho-gpu is slower, as `README.md` does for training. |
@@ -92,6 +92,30 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D3 results (measured): the eight steps on the Metal GPU
+
+`python tools/dit_traj_ref.py GOLDEN_DIR TRAJ_DIR` runs the eight steps in float64 (the transformer of `tools/dit_step_ref.py` and the Euler update `latents <- latents + (sigma_next - sigma) * prediction`, with D0's sigmas: 1, 0.978453, 0.95418,
+0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0, which are the checkpoint's `sample_sigmas` unshifted; 14 s a step), and `tests/dit_loop_gpu.py GOLDEN_DIR TRAJ_DIR` runs them on the M4 Max as **one session of 659 programs**:
+the 657 of D2e, `dit_euler` (a new kernel, in `tests/dit_block.py` with two mutants, both killed) and its f16 copy. The 14 GB of weights are uploaded once; each step reads its timestep embedding and its `dt` from a **table**, and the
+latents go from one step to the next by **`carry`**, on the device. D0 now also saves the sigmas and timesteps.
+
+| Step | latents rms | GPU vs float64: mean abs error (of the rms) | torch BF16 vs float64: mean abs error | GPU vs torch BF16 |
+|---|---|---|---|---|
+| 0 | 0.982 | 1.2e-5 (1.3e-5) | 1.13e-3 | 1.13e-3 |
+| 1 | 0.960 | 1.9e-5 (2.0e-5) | 1.55e-3 | 1.55e-3 |
+| 2 | 0.936 | 2.7e-5 (2.9e-5) | 1.89e-3 | 1.89e-3 |
+| 3 | 0.910 | 4.0e-5 (4.4e-5) | 2.23e-3 | 2.24e-3 |
+| 4 | 0.873 | 6.7e-5 (7.7e-5) | 2.44e-3 | 2.46e-3 |
+| 5 | 0.802 | 1.9e-4 (2.4e-4) | 2.98e-3 | 3.07e-3 |
+| 6 | 0.837 | 5.1e-4 (6.1e-4) | 5.02e-3 | 5.31e-3 |
+| **7 (the final latents)** | 1.224 | **1.3e-3 (1.0e-3)**, max 0.039 | **1.1e-2**, max 0.237 | 1.2e-2, max 0.276 |
+
+* **The GPU's trajectory stays close to the exact one at every step and ends about nine times closer to it than torch's BF16 run (mean) and six times at the worst element.** Against torch's BF16 latents the difference is torch's own error, as before.
+* The GPU's error grows about 100-fold over the eight steps (1.2e-5 to 1.3e-3), as torch's does (1.1e-3 to 1.1e-2): the steps' sizes grow (the last one is 0.41 of the whole range) and each carries the previous steps' error. The final latents' relative error is 0.1% for the GPU.
+* **Time:** 8 steps in 6.1 s, with the compile and the 14.3 GB upload included, at 320 tokens: **no speed is claimed.**
+* **The check in the test is deliberately loose** (the mean error against torch's BF16 latents under 5% of their rms, and finite): it is torch's noise that sets it; the float64 comparison is what is reported.
+* **Not done:** the VAE decoder (D4), the text encoder (D5), the image (D6); anything at 1024 x 1024.
 
 ### D2e results (measured): the whole step on the Metal GPU
 

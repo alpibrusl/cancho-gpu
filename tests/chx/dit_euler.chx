@@ -1,0 +1,22 @@
+// The flow-matching Euler update of a denoising step (docs/diffusion.md D3): z = latents + dt * prediction, for the image tokens only (sel is 1 on their rows and 0 on the text and padding rows, so those stay as they are,
+// zero), with dt = sigma_next - sigma, one number for the step (a [1, 1] input, a table of the eight steps' in the session). s rows of n (64 latent channels), f32: the latents are the master copy, the f16 copy the next
+// step's img_in reads is made by dit_to_f16.chx.
+algo dit_euler(s, n)
+  in  lat: f32[s, n]
+  in  pr:  f32[s, n]
+  in  sel: f32[s, 1]
+  in  dt:  f32[1, 1]
+  out z:   f32[s, n]
+{
+  grid i over s
+  let l  = load lat[i, 0 ; 1, n]
+  let p  = load pr[i, 0 ; 1, n]
+  let sl = load sel[i, 0 ; 1, 1]
+  let d  = load dt
+  let a  = p * sl
+  let b  = a * d
+  store l + b -> z[i, 0]
+}
+
+schedule dit_euler for apple-m-series { threads 64 }
+schedule dit_euler for nvidia-ada     { threads 64 }

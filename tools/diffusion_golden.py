@@ -12,6 +12,7 @@ No input photo: a prompt and a seed. Files written (float32 copies of the bf16 t
   block0_rope        the rotary frequencies as [S, 64, 2] (real, imaginary), block0_target_mask which positions are the target image
   latents_N          the latents after step N
   vae_in/vae_out     the VAE decode's input (after the mean/std) and output
+  sigmas, timesteps  the scheduler's 9 sigmas (8 + the terminal 0) and 8 timesteps (a step is latents + (sigma_next - sigma) * prediction)
   image              the final image, uint8 HxWx3
 The manifest (manifest.json) holds each file's shape, dtype and sha256; with --check it runs the reference a
 second time and says whether the two runs agree bit for bit (MPS bf16 need not: the answer is recorded, not assumed).
@@ -92,6 +93,8 @@ def run(args, outdir):
                use_kv_cache=False, generator=torch.Generator("cpu").manual_seed(args.seed),
                callback_on_step_end=cb, callback_on_step_end_tensor_inputs=["latents"]).images[0]
     cap["image"] = np.asarray(img.convert("RGB"), dtype=np.uint8)
+    cap["sigmas"] = pipe.scheduler.sigmas.float().cpu().numpy()  # the 8 sigmas of the shifted schedule and the terminal 0
+    cap["timesteps"] = pipe.scheduler.timesteps.float().cpu().numpy()
     secs = time.time() - t0
     man = {}
     for k, v in sorted(cap.items()):

@@ -79,5 +79,6 @@ f16:dit_silu s=4 n=256 bn=128
 dit_add s=4 n=256 bn=128
 dit_modsplit m=64 n=256 bn=128
 dit_rows2 m=64 n=256 bn=128
+dit_euler s=12 n=64
 CASES
 exit $fail

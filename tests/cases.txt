@@ -448,3 +448,7 @@ tests/chx/dit_silu.chx s=4 n=256 bn=128 --run
 tests/chx/dit_add.chx s=4 n=256 bn=128 --run
 tests/chx/dit_modsplit.chx m=64 n=256 bn=128 --run
 tests/chx/dit_rows2.chx m=64 n=256 bn=128 --run
+
+# D3 (docs/diffusion.md): the flow-matching Euler update of the image tokens' latents (64 channels, 320 padded rows); tests/dit_block.py holds it to a reference.
+tests/chx/dit_euler.chx s=320 n=64
+tests/chx/dit_euler.chx s=12 n=64 --run

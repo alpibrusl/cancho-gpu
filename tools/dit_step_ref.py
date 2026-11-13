@@ -26,9 +26,12 @@ def gelu_tanh(v):
     return 0.5 * v * (1 + np.tanh(math.sqrt(2 / math.pi) * (v + 0.044715 * v ** 3)))
 
 
-def front(gold):
+def front(gold, latents=None, t=None):
+    """The front end in float64. `latents` [256, 64] and `t` (the timestep / 1000) default to D0's step 0."""
     ld = lambda n: np.load(os.path.join(gold, n + ".npy")).astype(np.float64)
-    latents, text, t = ld("step0_in")[0], ld("text_embeds")[0], float(ld("step0_timestep")[0])
+    text = ld("text_embeds")[0]
+    latents = ld("step0_in")[0] if latents is None else latents
+    t = float(ld("step0_timestep")[0]) if t is None else t
     w = ref.load64
     tw = w("txt_in.text_norm.weight")
     tn = text / np.sqrt((text ** 2).mean(-1, keepdims=True) + 1e-6) * (tw + 1)

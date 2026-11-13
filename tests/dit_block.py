@@ -10,7 +10,7 @@ reference written from the mathematics of the block (tools/dit_block_ref.py has 
 * `dit_gate_res.chx` x + tanh(gate) * y, the gate row chosen as above.
 * `dit_swiglu.chx`  silu(g) * u, written as f16 (the input of the output projection).
 * `dit_to_f16.chx`  f32 to f16 (the attention output, before the output projection).
-* D2e: `dit_gelu` (tanh approximation, f16), `dit_silu` (f16), `dit_add`, `dit_modsplit` (the shared modulation's four blocks of [2, n]), `dit_rows2`.
+* D2e: `dit_gelu` (tanh approximation, f16), `dit_silu` (f16), `dit_add`, `dit_modsplit` (the shared modulation's four blocks of [2, n]), `dit_rows2`; D3: `dit_euler` (the flow-matching Euler update of the image tokens).
 And the host's plan, as a pure-Python check (no kernel): the model rotates *interleaved* pairs (2j, 2j + 1) of a head; the kernel rotates halves (j, j + 64). Permuting the output
 channels of to_q and to_k (and the norm weights) within each head, even channels first, makes the two the same up to that one permutation, which leaves q . k and the RMSNorm
 unchanged. `permutation` below checks that on random data.
@@ -183,6 +183,16 @@ def t_rows2(root, tmp):
     return (False, err) if o is None else close(o[0], x[:2 * n], False)
 
 
+def t_euler(root, tmp):
+    s, n = 12, 64
+    lat, pr = rnd(23, s * n, -3, 3), rnd(24, s * n, -2, 2)
+    sel = selector(s)
+    dt = [-0.0215]
+    want = [lat[i * n + j] + dt[0] * sel[i] * pr[i * n + j] for i in range(s) for j in range(n)]
+    o, err = run(root, "dit_euler", [f"s={s}", f"n={n}"], {"lat": lat, "pr": pr, "sel": sel, "dt": dt}, ["z"], tmp)
+    return (False, err) if o is None else close(o[0], want, False)
+
+
 def permutation(bad=False):
     """The host plan: interleaved RoPE on the model's channels == rotate-half RoPE on channels permuted even-first; q . k and the RMSNorm are unchanged."""
     hd, h = 128, 64
@@ -216,7 +226,8 @@ def permutation(bad=False):
 
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
          ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
-         ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2)]
+         ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2),
+         ("dit_euler", t_euler)]
 
 
 def gate(root):
@@ -253,6 +264,8 @@ EDITS = [
     ("dit_modsplit", "load md[0, 2 * n + j * bn ; 2, bn]", "load md[0, 3 * n + j * bn ; 2, bn]", "scale2 read from gate2's columns"),
     ("dit_modsplit", "store b -> g1[0, j * bn]", "store b -> g1[0, 0]", "gate1 written at column 0 for every chunk"),
     ("dit_rows2", "load x[0, j * bn ; 2, bn]", "load x[1, j * bn ; 2, bn]", "rows 1 and 2, not 0 and 1"),
+    ("dit_euler", "let b  = a * d", "let b  = a + d", "the step size added, not multiplied"),
+    ("dit_euler", "let sl = load sel[i, 0 ; 1, 1]", "let sl = load sel[0, 0 ; 1, 1]", "the first row's selector for every row (no image row is updated)"),
 ]
 good, _ = permutation(bad=True)
 print(f"{'killed  ' if not good else 'SURVIVED'} permutation: the identity in place of the even-first permutation is refused")
