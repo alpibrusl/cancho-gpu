@@ -55,6 +55,8 @@ python3 tests/vae_pieces.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/vae_pieces.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 python3 tests/vit_pieces.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/vit_pieces.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
+python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}"
+python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
 python3 tests/samp_dev.py build/cancho-gpu-session

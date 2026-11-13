@@ -60,8 +60,9 @@ def silu(v):
     return v / (1 + np.exp(-v))
 
 
-def block(x, w, mod, rope, tmask, peak=None):
-    """The block on x [S, 4096] in float64: w the nine weights (BLOCK0's keys), mod [2, 16384], rope [S, 64, 2], tmask [S] bool (the target image's tokens)."""
+def block(x, w, mod, rope, tmask, peak=None, allowed=None):
+    """The block on x [S, 4096] in float64: w the nine weights (BLOCK0's keys), mod [2, 16384], rope [S, 64, 2], tmask [S] bool (the target image's tokens);
+    `allowed` [S, S] bool overrides the block-causal mask built from tmask (D9e: an edit has a condition image's block as well)."""
     S, D = x.shape
     H, HD = 32, 128
     peak = {} if peak is None else peak
@@ -88,7 +89,8 @@ def block(x, w, mod, rope, tmask, peak=None):
 
     q, k = rot(q), rot(k)
     idx = np.arange(S)
-    allowed = (idx[:, None] >= idx[None, :]) | (tmask[:, None] & tmask[None, :])
+    if allowed is None:
+        allowed = (idx[:, None] >= idx[None, :]) | (tmask[:, None] & tmask[None, :])
     o = np.empty((S, H, HD))
     for h in range(H):
         sc = q[:, h] @ k[:, h].T / np.sqrt(HD)

@@ -1,0 +1,16 @@
+// Row concatenation of two f16 matrices, y = [a; b], for s rows of n (docs/diffusion.md D9e): an edit's keys (or values) are the cached prefix's followed by the target tokens' own, and the attention kernels read one
+// [t, nh * d] matrix. bn columns to a threadgroup; the two stores of an instance are at rows i and s + i.
+algo dit_cat(s, n, bn)
+  in  a: f16[s, n]
+  in  b: f16[s, n]
+  out y: f16[2 * s, n]
+{
+  grid i over s, j over n / bn
+  let x1 = load a[i, j * bn ; 1, bn]
+  let x2 = load b[i, j * bn ; 1, bn]
+  store x1 -> y[i, j * bn]
+  store x2 -> y[s + i, j * bn]
+}
+
+schedule dit_cat for apple-m-series { threads 256 }
+schedule dit_cat for nvidia-ada     { threads 256 }

@@ -502,3 +502,5 @@ tests/chx/vae_s2d.chx h=1024 w=1024 c=96 r=1052736 r2=264256 g2=515
 tests/chx/vae_avg2.chx h=1024 w=1024 c=96 r=1052736 r2=264256 g2=515
 tests/chx/vae_s2d.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run
 tests/chx/vae_avg2.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run
+tests/chx/dit_cat.chx s=4160 n=4096 bn=1024
+tests/chx/dit_cat.chx s=4 n=256 bn=128 --run
