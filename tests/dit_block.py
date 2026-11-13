@@ -193,6 +193,18 @@ def t_euler(root, tmp):
     return (False, err) if o is None else close(o[0], want, False)
 
 
+def t_rows2h(root, tmp):
+    m, n = 64, 256
+    x = [f16r(v) for v in rnd(26, m * n, -300, 300)]
+    o, err = run(root, "dit_rows2h", [f"m={m}", f"n={n}", "bn=128"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], x[:2 * n], False)
+
+
+def f16r(v):
+    import struct
+    return struct.unpack("<e", struct.pack("<e", v))[0]
+
+
 def permutation(bad=False):
     """The host plan: interleaved RoPE on the model's channels == rotate-half RoPE on channels permuted even-first; q . k and the RMSNorm are unchanged."""
     hd, h = 128, 64
@@ -227,7 +239,7 @@ def permutation(bad=False):
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
          ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
          ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2),
-         ("dit_euler", t_euler)]
+         ("dit_euler", t_euler), ("dit_rows2h (f16 probe)", t_rows2h)]
 
 
 def gate(root):
@@ -264,6 +276,7 @@ EDITS = [
     ("dit_modsplit", "load md[0, 2 * n + j * bn ; 2, bn]", "load md[0, 3 * n + j * bn ; 2, bn]", "scale2 read from gate2's columns"),
     ("dit_modsplit", "store b -> g1[0, j * bn]", "store b -> g1[0, 0]", "gate1 written at column 0 for every chunk"),
     ("dit_rows2", "load x[0, j * bn ; 2, bn]", "load x[1, j * bn ; 2, bn]", "rows 1 and 2, not 0 and 1"),
+    ("dit_rows2h", "load x[0, j * bn ; 2, bn]", "load x[1, j * bn ; 2, bn]", "rows 1 and 2, not 0 and 1"),
     ("dit_euler", "let b  = a * d", "let b  = a + d", "the step size added, not multiplied"),
     ("dit_euler", "let sl = load sel[i, 0 ; 1, 1]", "let sl = load sel[0, 0 ; 1, 1]", "the first row's selector for every row (no image row is updated)"),
 ]

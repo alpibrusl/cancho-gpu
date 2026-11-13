@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """D6b of docs/diffusion.md: how fast `gemm_mma.chx` runs at the shapes of the transformer's block (320 rows: 277 tokens padded to the matrix unit's tile of 64), on the Metal GPU, and the
 attention's three kernels, each alone in a session with the data resident: a request "N" runs the program N times in one command buffer with one wait (docs/resident.md section 12), so the time of N = 200
-less that of N = 1, over 199, is one run's. The inputs are zeros (the matrix unit's time does not depend on the values).
+less that of N = 1, over 199, is one run's. The inputs are zeros by default (RANDOM_DATA=1: random numbers: the time of a matrix product does depend on the values, through the power the unit draws).
 
     time_gemm.py [ROWS]     (ROWS, a multiple of 64, defaults to 320; 4160 is 1024 x 1024)
 """
@@ -21,9 +21,15 @@ CHX = os.path.join(ROOT, "tests/chx")
 tmp = tempfile.mkdtemp()
 
 
+RANDOM = os.environ.get("RANDOM_DATA") == "1"  # random inputs instead of zeros: the matrix unit's power, and so its clock, depends on the data
+
+
 def zeros(name, n, dt):
     path = os.path.join(tmp, name)
-    np.zeros(n, dtype=dt).tofile(path)
+    if RANDOM:
+        (np.random.default_rng(1).standard_normal(n) * 0.5).astype(dt).tofile(path)
+    else:
+        np.zeros(n, dtype=dt).tofile(path)
     return path
 
 
@@ -31,7 +37,7 @@ def bench(label, kernel, args, residents, flops, shape):
     lines = ["program p %s/%s.chx %s" % (CHX, kernel, args)]
     for name, n, dt, flag in residents:
         lines.append("resident p.%s %s %s" % (name, zeros(name, n, dt), flag))
-    lines.append("program probe %s/dit_rows2.chx m=%d n=%d bn=%d" % (CHX, shape[0], shape[1], next(b for b in (1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if shape[1] % b == 0)))
+    lines.append("program probe %s/%s.chx m=%d n=%d bn=%d" % (CHX, "dit_rows2h" if kernel in H16 else "dit_rows2", shape[0], shape[1], next(b for b in (1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1) if shape[1] % b == 0)))
     lines.append("link p.%s -> probe.x" % residents_out[kernel])
     lines.append("steps")
     lines.append("answer probe.y")
@@ -55,6 +61,7 @@ def bench(label, kernel, args, residents, flops, shape):
     return per
 
 
+H16 = {"dit_lnmod", "dit_to_f16", "dit_swiglu"}  # kernels whose output is f16: the probe widens it
 residents_out = {"ported/gemm_mma": "y", "dit_scores": "sc", "dit_stats": "m", "dit_pv": "o"}
 M = int(sys.argv[1]) if len(sys.argv) > 1 else 320
 gemms = {}
@@ -69,3 +76,21 @@ sc = bench("dit_scores  32 heads, %d x %d, d 128" % (M, M), "dit_scores", "nh=%d
 st = bench("dit_stats", "dit_stats", "nh=%d nq=%d t=%d qs=32 cs=64" % (H, SP, SP), [("sc", H * SP * SP, np.float32, "f32")], 0.0, (H * SP, 1))
 pv = bench("dit_pv", "dit_pv", "nh=%d nq=%d t=%d qs=32 cs=64 dw=32 d=128" % (H, SP, SP), [("sc", H * SP * SP, np.float32, "f32"), ("m", H * SP, np.float32, "f32"), ("z", H * SP, np.float32, "f32"), ("v", SP * H * 128, np.float32, "f32")], 2.0 * H * SP * SP * 128, (SP, H * 128))
 print("attention of one block: %.1f ms; 32 blocks: %.0f ms" % ((sc + st + pv) * 1e3, 32 * (sc + st + pv) * 1e3))
+
+# the small kernels of a block, at the same row count (counts per block in the label)
+f32_ = np.float32
+D = 4096
+smalls = [
+    ("dit_lnmod  x2", "dit_lnmod", "s=%d n=%d" % (M, D), [("x", M * D, f32_, "f32"), ("sc", 2 * D, f32_, "f32"), ("sel", M, f32_, "f32")], (M, D), 2, "y"),
+    ("rmsnorm_rows (per head q, k)  x2", "rmsnorm_rows", "r=%d n=128 eps=0.000001" % (M * 32), [("x", M * D, f32_, "f32"), ("w", 128, f32_, "f32")], (M * 32, 128), 2, "y"),
+    ("dit_rope  x2", "dit_rope", "s=%d nh=32 h=64" % M, [("x", M * D, f32_, "f32"), ("cs", M * 64, f32_, "f32"), ("sn", M * 64, f32_, "f32")], (M * 32, 128), 2, "y"),
+    ("dit_to_f16  x1", "dit_to_f16", "s=%d n=%d" % (M, D), [("x", M * D, f32_, "f32")], (M, D), 1, "y"),
+    ("dit_gate_res  x2", "dit_gate_res", "s=%d n=%d" % (M, D), [("x", M * D, f32_, "f32"), ("y", M * D, f32_, "f32"), ("g", 2 * D, f32_, "f32"), ("sel", M, f32_, "f32")], (M, D), 2, "z"),
+    ("dit_swiglu  x1", "dit_swiglu", "s=%d n=%d bn=1024" % (M, 3 * D), [("g", M * 3 * D, f32_, "f32"), ("u", M * 3 * D, f32_, "f32")], (M, 3 * D), 1, "y"),
+]
+total = 0.0
+for label, kernel, args, res_, shape, count, out in smalls:
+    residents_out[kernel] = out
+    per = bench(label.split("  x")[0], kernel, args, res_, 0.0, shape)
+    total += per * count
+print("the small kernels of one block: %.1f ms; 32 blocks: %.0f ms" % (total * 1e3, 32 * total * 1e3))

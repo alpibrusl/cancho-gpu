@@ -223,15 +223,15 @@ for i in range(NSTEPS):
     f16(P("emb%d.f16" % i), e)
     f32(P("dt%d.f32" % i), np.array([[sigmas[i + 1] - sigmas[i]]]))
     r, w = front(i)
-    tot["front"].append(r[-3] if TIME else r[0])
+    tot["front"].append(r[-2] if TIME else r[0])
     x = "x_in.bin"
     for g in range(NB // G):
         out = "x_g%d.bin" % g
         r, w = group(g, x, out)
-        tot["group"].append(r[-3] if TIME else r[0])
+        tot["group"].append(r[-2] if TIME else r[0])
         x = out
     r, w = back(i, x)
-    tot["back"].append(r[-3] if TIME else r[0])
+    tot["back"].append(r[-2] if TIME else r[0])
     os.replace(P("lat_new.f32"), P("lat.f32"))
     os.replace(P("lat_new.f16"), P("lat.f16"))
     new = np.fromfile(P("lat.f32"), dtype="<f4").reshape(SP, 64)[21:S].astype(np.float64)
