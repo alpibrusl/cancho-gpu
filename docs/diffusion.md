@@ -1,7 +1,7 @@
 # Image and video diffusion models in `.chx`
 
 > **Status (D6, 2026-11-13): Qwen-Image-2.1-Turbo generates a 256 x 256 image on a Metal GPU in cancho-gpu from its prompt and seed, text encoder, eight denoising steps and VAE decoder, with the host still doing the tokenisation,
-> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes about 1.26 times torch's time on MPS (about 52 s against 41 s: eight measured steps of 6.25 s plus D8's text and VAE times, not re-run end to end; D8b); image editing (the vision tower) is designed (D9); its vision tower runs on the GPU (D9a, D9b: 0.95 s at 1024 x 1024, 17 times closer to float64 than torch's BF16), and video (§6) is not started.**
+> the initial noise, the embedding lookup and some layout (§4, "D6 results"). The same run at 1024 x 1024 works ("D7") and, with the attention on the matrix unit ("D8"), takes about 1.26 times torch's time on MPS (about 52 s against 41 s: eight measured steps of 6.25 s plus D8's text and VAE times, not re-run end to end; D8b); image editing (the vision tower) is designed (D9); its vision tower (0.95 s), its text encoder reading an image (2.3 s) and its VAE encoder (0.48 s) run on the GPU at 1024 x 1024 (D9a to D9d), each closer to float64 than torch's BF16; the transformer with a condition (D9e) is not built, and video (§6) is not started.**
 > The first target is an image model, Qwen-Image-2.1-Turbo (§2); video comes second (§6).
 > Every number below is either read from the model's files (the command is given), read from this
 > repository's own documents (named, not re-measured here), or marked **choice** or **open**.
@@ -93,6 +93,16 @@ reference-image path; **choice:** text-to-image first, editing after D5's vision
 stages need one reference image. **Choice:** it will be a photograph with a licence that allows redistribution (public
 domain or CC0, from Wikimedia Commons), added to `tests/` with its source URL, author and licence in a file beside it, and
 checked in size. No photograph of a person taken by or sent by a user of this project goes into the repository.
+
+### D9d results (measured): the VAE encoder
+
+`tools/vae_enc_ref.py` is the encoder in float64 (from `autoencoder_kl_qwenimage21.py`); `tests/vae_enc_gpu.py` runs it as one session of 121 programs on the GPU. The convolutions of this VAE are all 2D (the "3D" class is the image specialisation), the `time_conv` layers are not applied to a first frame, and the alpha channel of a preprocessed RGB image is a constant 1. **Two details a reader would get wrong from the names:** the average-down shortcut of the three "temporal" blocks pads the single frame in front with a zero frame, so output channel 2c is **zero** and 2c + 1 is the 2 x 2 mean of input channel c (the first block's shortcut is a plain 2 x 2 mean, the last block's is the identity); and the stride-2 convolution pads one row at the bottom and one column on the right only.
+
+* **[measured] Float64 against torch float32** (the posterior's mean, `encode(...).mode()`): 64 x 64 image: 7.4e-7 of the rms; 96 x 160: 8.6e-7.
+* **Two kernels are new** (`vae_s2d`, the space-to-depth that turns a stride-2 3 x 3 convolution into a stride-1 one over 4c channels with the taps placed at offsets 0 and +1, since the surface has no strided window; `vae_avg2`, the 2 x 2 mean), with float64 tests and four more mutants in `tests/vae_pieces.py` (18 killed, 0 survived), four goldens (431 of 431 agree) and Metal-against-interpreter cases (identical). The shortcut's channel spreading is a 1 x 1 convolution with a 0/1 matrix, as in the decoder.
+* **[measured] Accuracy on the GPU against float64:** 128 x 192 (an 8 x 12 latent): mean abs error **6.7e-4 of the rms**; 1024 x 1024 (a 64 x 64 latent): **1.2e-3**; after the latents' mean and std (what the transformer reads) 1.1e-3 in absolute mean error. Torch's BF16 (on the CPU) at 128 x 192 is **7.7e-3**, so the GPU is about 11 times closer to float64 there; torch's BF16 at 1024 x 1024 was not measured. **The bound in the script, 1.5e-3, was chosen after these two results** (a fifth of the 7.7e-3), so it is a regression guard and not an a priori criterion; its first value, 5e-3, was written before the BF16 floor was known and was too loose to mean anything.
+* **[measured] Two host mutants fail:** the zero frame forgotten in the shortcut: 0.27 of the rms; the last tap of the strided kernel dropped: 0.083. The unmutated run is 6.7e-4.
+* **[measured] Time**, steady state with the weights resident: **0.48 s at 1024 x 1024** (first request, with the compile and upload, 0.73 s). The decoder's 1.88 s is for a larger network at the same size. Torch's time for the encoder was not measured.
 
 ### D9c-b results (measured): the text encoder reading an image on the Metal GPU
 
