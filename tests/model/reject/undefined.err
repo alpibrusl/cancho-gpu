@@ -1,0 +1,1 @@
+error[session]: model line 2: `X` is not defined (const NAME = value, a block's parameter or a repeat's index)

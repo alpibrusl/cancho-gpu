@@ -26,6 +26,7 @@ import fileio;
 import ir;
 import kinds;
 import runcmd;
+import model;
 
 // The session record's words.
 pub fn s_progs() -> [] int {
@@ -202,7 +203,12 @@ fn source[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, lin
 // Read the session file `src` and set it up. Answers the session record, or -1 with a refusal. `want` and `have` are `--target`.
 // With `device` each program is also lowered to Metal source (for `apple-m-series`, which the caller names with `--target`): the
 // record of a program is then (name, prog, globals, the lowering `lower.lower` answers).
-pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), src: int, want: int, have: bool, device: bool) -> [fs_read(""), file_read] int {
+pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), src0: int, defs: int, want: int, have: bool, device: bool) -> [fs_read(""), file_read] int {
+    // a model file (`docs/resident.md` section 31) is expanded to the plain session file first; a file with none of its directives is unchanged
+    let src = model.expand(m, t, src0, defs);
+    if src < 0 {
+        return 0 - 1;
+    }
     let progs_raw = mem.list(m);
     let res_raw = mem.list(m);
     let link_raw = mem.list(m);

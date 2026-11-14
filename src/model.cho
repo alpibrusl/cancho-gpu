@@ -1,0 +1,772 @@
+edition 5;
+module model;
+
+// Model files (`docs/resident.md` section 31, issue #151): a session file with what a Python generator did with loops, written in the file. `expand` turns the text of a model file into the plain session file
+// that `session.open` reads, and leaves a file that has none of the directives below exactly as it is (so no session file written before keeps a different line number in its refusals).
+//
+//     const D = 4096                      an integer constant (later ones shadow earlier ones)
+//     text DIR = /some/where              a text constant: the rest of the line, used as `$DIR` (paths and names, never in an expression)
+//     block layer(i, n)                   a block with parameters; its body is expanded where it is used
+//         program L${i}_n1 rmsnorm.chx r=$SP n=$D
+//     end
+//     repeat i in 0 .. 36                 i = 0, 1, ..., 35
+//         use layer(i, 36)                the body of the block with the arguments (integer expressions)
+//         if i > 0                        a line or block only when the expression is not zero
+//             alias L${i - 1}_x.y L${i}_x.y
+//         else
+//             ...
+//         end
+//     end
+//
+// `NAME=value` arguments after the file's name define constants before the first line (an integer when the value is all digits, else text); the file's own `const` and `text` of the same name do not replace them, so a model's constants are defaults. `$name` and `${expression}` in any other line become decimal integers (or the text). An expression has integers, names, `+ - * / %`, a unary `-`, parentheses and the comparisons `< <= > >= == !=` (1 or 0) and `&&` and `||` (loosest); `/` and `%` are
+// the language's integer ones and a division by zero is refused. Lines that are blank or begin with `#` are dropped, and leading blanks are removed from the others. Every refusal is the rule `session`, with the line of the model file.
+
+import mem;
+import text;
+import err;
+
+fn is_space(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 13;
+}
+
+fn is_digit(c: int) -> [] bool {
+    return c >= '0' && c <= '9';
+}
+
+fn is_ident_start(c: int) -> [] bool {
+    return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_';
+}
+
+fn is_ident(c: int) -> [] bool {
+    return is_ident_start(c) || is_digit(c);
+}
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], line: int, msg: &static [byte]) -> [] int {
+    return err.fail(m, t, "session", text.f2(m, t, "model line $: $", text.num(m, t, line), text.lit(m, t, msg)));
+}
+
+fn bad_name[&m, &t](m: &!m [int], t: &!t [byte], line: int, name: int, msg: &static [byte]) -> [] int {
+    return err.fail(m, t, "session", text.f3(m, t, "model line $: `$` $", text.num(m, t, line), name, text.lit(m, t, msg)));
+}
+
+// `h` without its leading and trailing blanks.
+fn trim[&t](t: &!t [byte], h: int) -> [] int {
+    var a = 0;
+    var b = text.size(h);
+    while a < b && is_space(text.at(t, h, a)) {
+        a = a + 1;
+    }
+    while b > a && is_space(text.at(t, h, b - 1)) {
+        b = b - 1;
+    }
+    return text.sub(h, a, b);
+}
+
+// The first word of a trimmed line and the rest after it (trimmed).
+fn first_word[&t](t: &!t [byte], h: int) -> [] (int, int) {
+    var j = 0;
+    while j < text.size(h) && !is_space(text.at(t, h, j)) {
+        j = j + 1;
+    }
+    return (text.sub(h, 0, j), trim(t, text.sub(h, j, text.size(h))));
+}
+
+// What a trimmed line is: 8 blank or a comment, 1 const, 9 text, 2 block, 3 end, 4 use, 5 repeat, 6 if, 7 else, 0 an ordinary line.
+fn code[&t](t: &!t [byte], line: int) -> [] int {
+    if text.size(line) == 0 || text.at(t, line, 0) == '#' {
+        return 8;
+    }
+    let (w, rest) = first_word(t, line);
+    if text.is(t, w, "const") {
+        return 1;
+    }
+    if text.is(t, w, "block") {
+        return 2;
+    }
+    if text.is(t, w, "end") {
+        return 3;
+    }
+    if text.is(t, w, "use") {
+        return 4;
+    }
+    if text.is(t, w, "repeat") {
+        return 5;
+    }
+    if text.is(t, w, "if") {
+        return 6;
+    }
+    if text.is(t, w, "else") {
+        return 7;
+    }
+    if text.is(t, w, "text") {
+        return 9;
+    }
+    return 0;
+}
+
+fn valid_name[&t](t: &!t [byte], name: int) -> [] bool {
+    var ok = text.size(name) > 0 && is_ident_start(text.at(t, name, 0));
+    var k = 0;
+    while ok && k < text.size(name) {
+        if !is_ident(text.at(t, name, k)) {
+            ok = false;
+        }
+        k = k + 1;
+    }
+    return ok;
+}
+
+// The record of `name` in the environment (latest first), or -1. A record is `[name, value, kind]`: kind 0 an integer, 1 a text (the value is its handle); 2 and 3 are the same two defined on the command line, which a `const` or `text` of the file does not replace.
+fn lookup[&m, &t](m: &!m [int], t: &!t [byte], env: int, name: int) -> [] int {
+    var i = mem.size(m, env) - 1;
+    while i >= 0 {
+        let r = mem.get(m, env, i);
+        if text.eq(t, m[r], name) {
+            return r;
+        }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+fn skip[&t](t: &!t [byte], e: int, p: int) -> [] int {
+    var q = p;
+    while q < text.size(e) && is_space(text.at(t, e, q)) {
+        q = q + 1;
+    }
+    return q;
+}
+
+// ---------------------------------------------------------------------
+// Expressions: answers (value, position after it); a refusal is recorded in the error list and the caller checks `err.failed`.
+// ---------------------------------------------------------------------
+
+fn primary[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let q = skip(t, e, p);
+    let n = text.size(e);
+    if q >= n {
+        let r = bad(m, t, line, "an expression ends too soon");
+        return (0, q);
+    }
+    let c = text.at(t, e, q);
+    if c == '(' {
+        let (v, r) = disj(m, t, env, e, q + 1, line);
+        let r2 = skip(t, e, r);
+        if r2 >= n || text.at(t, e, r2) != ')' {
+            let z = bad(m, t, line, "a `(` is not closed");
+            return (0, r2);
+        }
+        return (v, r2 + 1);
+    }
+    if is_digit(c) {
+        var v = 0;
+        var r = q;
+        while r < n && is_digit(text.at(t, e, r)) {
+            v = v * 10 + (text.at(t, e, r) - '0');
+            r = r + 1;
+        }
+        return (v, r);
+    }
+    if is_ident_start(c) {
+        var r = q;
+        while r < n && is_ident(text.at(t, e, r)) {
+            r = r + 1;
+        }
+        let name = text.sub(e, q, r);
+        let rec = lookup(m, t, env, name);
+        if rec < 0 {
+            let z = bad_name(m, t, line, name, "is not defined (const NAME = value, a block's parameter or a repeat's index)");
+            return (0, r);
+        }
+        if m[rec + 2] % 2 == 1 {
+            let z = bad_name(m, t, line, name, "is a text constant, not a number");
+            return (0, r);
+        }
+        return (m[rec + 1], r);
+    }
+    let z = bad(m, t, line, "an expression has a character that is not part of one");
+    return (0, q);
+}
+
+fn unary[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let q = skip(t, e, p);
+    if q < text.size(e) && text.at(t, e, q) == '-' {
+        let (v, r) = unary(m, t, env, e, q + 1, line);
+        return (0 - v, r);
+    }
+    return primary(m, t, env, e, q, line);
+}
+
+fn mul[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let (v0, q0) = unary(m, t, env, e, p, line);
+    var v = v0;
+    var q = q0;
+    var going = !err.failed(m);
+    while going {
+        q = skip(t, e, q);
+        if q < text.size(e) && (text.at(t, e, q) == '*' || text.at(t, e, q) == '/' || text.at(t, e, q) == '%') {
+            let op = text.at(t, e, q);
+            let (w, r) = unary(m, t, env, e, q + 1, line);
+            if err.failed(m) {
+                return (0, r);
+            }
+            if op == '*' {
+                v = v * w;
+            } else if w == 0 {
+                let z = bad(m, t, line, "a division by zero");
+                return (0, r);
+            } else if op == '/' {
+                v = v / w;
+            } else {
+                v = v % w;
+            }
+            q = r;
+        } else {
+            going = false;
+        }
+    }
+    return (v, q);
+}
+
+fn add[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let (v0, q0) = mul(m, t, env, e, p, line);
+    var v = v0;
+    var q = q0;
+    var going = !err.failed(m);
+    while going {
+        q = skip(t, e, q);
+        if q < text.size(e) && (text.at(t, e, q) == '+' || text.at(t, e, q) == '-') {
+            let op = text.at(t, e, q);
+            let (w, r) = mul(m, t, env, e, q + 1, line);
+            if err.failed(m) {
+                return (0, r);
+            }
+            if op == '+' {
+                v = v + w;
+            } else {
+                v = v - w;
+            }
+            q = r;
+        } else {
+            going = false;
+        }
+    }
+    return (v, q);
+}
+
+// A comparison (1 or 0) of two sums, or one sum.
+fn cmp[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let (v, q0) = add(m, t, env, e, p, line);
+    if err.failed(m) {
+        return (0, q0);
+    }
+    let q = skip(t, e, q0);
+    let n = text.size(e);
+    if q >= n {
+        return (v, q);
+    }
+    let c = text.at(t, e, q);
+    var two = false;
+    if q + 1 < n && text.at(t, e, q + 1) == '=' {
+        two = true;
+    }
+    var kind = 0;
+    var width = 0;
+    if c == '<' && two {
+        kind = 2;
+        width = 2;
+    } else if c == '<' {
+        kind = 1;
+        width = 1;
+    } else if c == '>' && two {
+        kind = 4;
+        width = 2;
+    } else if c == '>' {
+        kind = 3;
+        width = 1;
+    } else if c == '=' && two {
+        kind = 5;
+        width = 2;
+    } else if c == '!' && two {
+        kind = 6;
+        width = 2;
+    }
+    if kind == 0 {
+        return (v, q);
+    }
+    let (w, r) = add(m, t, env, e, q + width, line);
+    if err.failed(m) {
+        return (0, r);
+    }
+    var yes = false;
+    if kind == 1 {
+        yes = v < w;
+    } else if kind == 2 {
+        yes = v <= w;
+    } else if kind == 3 {
+        yes = v > w;
+    } else if kind == 4 {
+        yes = v >= w;
+    } else if kind == 5 {
+        yes = v == w;
+    } else {
+        yes = v != w;
+    }
+    if yes {
+        return (1, r);
+    }
+    return (0, r);
+}
+
+// Comparisons joined by `&&` (both not zero: 1, else 0).
+fn conj[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let (v0, q0) = cmp(m, t, env, e, p, line);
+    var v = v0;
+    var q = q0;
+    var going = !err.failed(m);
+    while going {
+        q = skip(t, e, q);
+        if q + 1 < text.size(e) && text.at(t, e, q) == '&' && text.at(t, e, q + 1) == '&' {
+            let (w, r) = cmp(m, t, env, e, q + 2, line);
+            if err.failed(m) {
+                return (0, r);
+            }
+            if v != 0 && w != 0 {
+                v = 1;
+            } else {
+                v = 0;
+            }
+            q = r;
+        } else {
+            going = false;
+        }
+    }
+    return (v, q);
+}
+
+// Conjunctions joined by `||` (either not zero: 1, else 0): the loosest operator.
+fn disj[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, p: int, line: int) -> [] (int, int) {
+    let (v0, q0) = conj(m, t, env, e, p, line);
+    var v = v0;
+    var q = q0;
+    var going = !err.failed(m);
+    while going {
+        q = skip(t, e, q);
+        if q + 1 < text.size(e) && text.at(t, e, q) == '|' && text.at(t, e, q + 1) == '|' {
+            let (w, r) = conj(m, t, env, e, q + 2, line);
+            if err.failed(m) {
+                return (0, r);
+            }
+            if v != 0 || w != 0 {
+                v = 1;
+            } else {
+                v = 0;
+            }
+            q = r;
+        } else {
+            going = false;
+        }
+    }
+    return (v, q);
+}
+
+// The value of a whole expression text, or 0 with a refusal recorded.
+fn eval[&m, &t](m: &!m [int], t: &!t [byte], env: int, e: int, line: int) -> [] int {
+    let (v, q) = disj(m, t, env, e, 0, line);
+    if err.failed(m) {
+        return 0;
+    }
+    if skip(t, e, q) < text.size(e) {
+        let z = bad(m, t, line, "an expression has something after its end");
+        return 0;
+    }
+    return v;
+}
+
+// ---------------------------------------------------------------------
+// Lines
+// ---------------------------------------------------------------------
+
+// Append the decimal digits of `n` to the text being built (no allocation besides the bytes).
+fn put_int[&m, &t](m: &!m [int], t: &!t [byte], n: int) -> [] int {
+    var rest = n;
+    if n < 0 {
+        text.put_byte(m, t, byte_of('-'));
+    }
+    if rest > 0 {
+        rest = 0 - rest;
+    }
+    var scale = 1;
+    while rest / scale <= 0 - 10 {
+        scale = scale * 10;
+    }
+    while scale > 0 {
+        let d = 0 - rest / scale % 10;
+        text.put_byte(m, t, byte_of('0' + d));
+        scale = scale / 10;
+    }
+    return 0;
+}
+
+// An ordinary line with `$name` and `${expression}` replaced by decimal integers. Answers the new text, or -1.
+fn subst[&m, &t](m: &!m [int], t: &!t [byte], env: int, line: int, lineno: int) -> [] int {
+    let from = text.begin(m);
+    let n = text.size(line);
+    var i = 0;
+    while i < n {
+        let c = text.at(t, line, i);
+        if c == '$' {
+            if i + 1 < n && text.at(t, line, i + 1) == '{' {
+                var j = i + 2;
+                while j < n && text.at(t, line, j) != '}' {
+                    j = j + 1;
+                }
+                if j >= n {
+                    return bad(m, t, lineno, "a `${` is not closed");
+                }
+                let v = eval(m, t, env, text.sub(line, i + 2, j), lineno);
+                if err.failed(m) {
+                    return 0 - 1;
+                }
+                put_int(m, t, v);
+                i = j + 1;
+            } else if i + 1 < n && is_ident_start(text.at(t, line, i + 1)) {
+                var j = i + 1;
+                while j < n && is_ident(text.at(t, line, j)) {
+                    j = j + 1;
+                }
+                let name = text.sub(line, i + 1, j);
+                let rec = lookup(m, t, env, name);
+                if rec < 0 {
+                    return bad_name(m, t, lineno, name, "is not defined");
+                }
+                if m[rec + 2] % 2 == 1 {
+                    text.put_str(m, t, m[rec + 1]);
+                } else {
+                    put_int(m, t, m[rec + 1]);
+                }
+                i = j;
+            } else {
+                return bad(m, t, lineno, "a `$` is followed by a name or {expression}");
+            }
+        } else {
+            text.put_byte(m, t, byte_of(c));
+            i = i + 1;
+        }
+    }
+    return text.finish(m, from);
+}
+
+// The line index of the `end` that closes the construct opened at line `i`, or -1.
+fn find_end[&m, &t](m: &!m [int], t: &!t [byte], lines: int, i: int) -> [] int {
+    var depth = 1;
+    var j = i + 1;
+    while j < mem.size(m, lines) {
+        let c = code(t, trim(t, mem.get(m, lines, j)));
+        if c == 2 || c == 5 || c == 6 {
+            depth = depth + 1;
+        } else if c == 3 {
+            depth = depth - 1;
+            if depth == 0 {
+                return j;
+            }
+        }
+        j = j + 1;
+    }
+    let z = bad(m, t, i + 1, "this construct has no `end`");
+    return 0 - 1;
+}
+
+// The line of the `else` of the `if` at line `i` (which ends at `end`), or -1 when it has none.
+fn find_else[&m, &t](m: &!m [int], t: &!t [byte], lines: int, i: int, end: int) -> [] int {
+    var depth = 1;
+    var j = i + 1;
+    while j < end {
+        let c = code(t, trim(t, mem.get(m, lines, j)));
+        if c == 2 || c == 5 || c == 6 {
+            depth = depth + 1;
+        } else if c == 3 {
+            depth = depth - 1;
+        } else if c == 7 && depth == 1 {
+            return j;
+        }
+        j = j + 1;
+    }
+    return 0 - 1;
+}
+
+// The pieces of `NAME(a, b, c)`: answers (the name, the list of the texts between the commas at the top level), or (-1, 0).
+fn call_parts[&m, &t](m: &!m [int], t: &!t [byte], h: int, lineno: int) -> [] (int, int) {
+    let open = text.index_of(t, h, '(', 0);
+    let n = text.size(h);
+    if open <= 0 || text.at(t, h, n - 1) != ')' {
+        let z = bad(m, t, lineno, "expected NAME(arguments)");
+        return (0 - 1, 0);
+    }
+    let name = trim(t, text.sub(h, 0, open));
+    let parts = mem.list(m);
+    var depth = 0;
+    var from = open + 1;
+    var j = open + 1;
+    while j < n {
+        let c = text.at(t, h, j);
+        if c == '(' {
+            depth = depth + 1;
+        } else if c == ')' && depth > 0 {
+            depth = depth - 1;
+        } else if c == ',' && depth == 0 || c == ')' && j == n - 1 {
+            let piece = trim(t, text.sub(h, from, j));
+            if text.size(piece) > 0 || c == ',' || mem.size(m, parts) > 0 {
+                mem.push(m, parts, piece);
+            }
+            from = j + 1;
+        }
+        j = j + 1;
+    }
+    return (name, parts);
+}
+
+fn find_block[&m, &t](m: &!m [int], t: &!t [byte], blocks: int, name: int) -> [] int {
+    var i = mem.size(m, blocks) - 1;
+    while i >= 0 {
+        let b = mem.get(m, blocks, i);
+        if text.eq(t, m[b], name) {
+            return b;
+        }
+        i = i - 1;
+    }
+    return 0 - 1;
+}
+
+// Expand lines `i0 .. i1` with the environment `env` into `out`. Answers 0, or -1.
+fn run[&m, &t](m: &!m [int], t: &!t [byte], lines: int, blocks: int, env: int, i0: int, i1: int, out: int, depth: int) -> [] int {
+    if depth > 64 {
+        return bad(m, t, i0 + 1, "blocks are used inside blocks more than 64 deep (a block that uses itself?)");
+    }
+    var i = i0;
+    while i < i1 {
+        let line = trim(t, mem.get(m, lines, i));
+        let lineno = i + 1;
+        let c = code(t, line);
+        if c == 8 {
+            i = i + 1;
+        } else if c == 0 {
+            let s = subst(m, t, env, line, lineno);
+            if s < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, out, s);
+            i = i + 1;
+        } else if c == 1 {
+            let (w, rest) = first_word(t, line);
+            let eq = text.index_of(t, rest, '=', 0);
+            if eq <= 0 {
+                return bad(m, t, lineno, "expected `const NAME = expression`");
+            }
+            let name = trim(t, text.sub(rest, 0, eq));
+            if !valid_name(t, name) {
+                return bad(m, t, lineno, "a constant's name is letters, digits and `_`, not starting with a digit");
+            }
+            let v = eval(m, t, env, text.sub(rest, eq + 1, text.size(rest)), lineno);
+            if err.failed(m) {
+                return 0 - 1;
+            }
+            let fixed = lookup(m, t, env, name);
+            if fixed < 0 || m[fixed + 2] < 2 {
+                mem.push(m, env, mem.rec3(m, name, v, 0));
+            }
+            i = i + 1;
+        } else if c == 9 {
+            let (w, rest) = first_word(t, line);
+            let eq = text.index_of(t, rest, '=', 0);
+            if eq <= 0 {
+                return bad(m, t, lineno, "expected `text NAME = the rest of the line`");
+            }
+            let name = trim(t, text.sub(rest, 0, eq));
+            if !valid_name(t, name) {
+                return bad(m, t, lineno, "a constant's name is letters, digits and `_`, not starting with a digit");
+            }
+            let fixed = lookup(m, t, env, name);
+            if fixed < 0 || m[fixed + 2] < 2 {
+                mem.push(m, env, mem.rec3(m, name, trim(t, text.sub(rest, eq + 1, text.size(rest))), 1));
+            }
+            i = i + 1;
+        } else if c == 2 {
+            let (w, rest) = first_word(t, line);
+            let end = find_end(m, t, lines, i);
+            if end < 0 {
+                return 0 - 1;
+            }
+            let (name, params) = call_parts(m, t, rest, lineno);
+            if name < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, blocks, mem.rec4(m, name, params, i + 1, end));
+            i = end + 1;
+        } else if c == 4 {
+            let (w, rest) = first_word(t, line);
+            let (name, args) = call_parts(m, t, rest, lineno);
+            if name < 0 {
+                return 0 - 1;
+            }
+            let b = find_block(m, t, blocks, name);
+            if b < 0 {
+                return bad_name(m, t, lineno, name, "is not a block (block NAME(parameters) ... end, before it is used)");
+            }
+            if mem.size(m, args) != mem.size(m, m[b + 1]) {
+                return bad_name(m, t, lineno, name, "is used with another number of arguments than it has parameters");
+            }
+            let inner = mem.copy(m, env);
+            var a = 0;
+            while a < mem.size(m, args) {
+                let v = eval(m, t, env, mem.get(m, args, a), lineno);
+                if err.failed(m) {
+                    return 0 - 1;
+                }
+                mem.push(m, inner, mem.rec3(m, mem.get(m, m[b + 1], a), v, 0));
+                a = a + 1;
+            }
+            if run(m, t, lines, blocks, inner, m[b + 2], m[b + 3], out, depth + 1) < 0 {
+                return 0 - 1;
+            }
+            i = i + 1;
+        } else if c == 5 {
+            let (w, rest) = first_word(t, line);
+            let end = find_end(m, t, lines, i);
+            if end < 0 {
+                return 0 - 1;
+            }
+            let isin = text.find(t, rest, text.lit(m, t, " in "), 0);
+            let dots = text.find(t, rest, text.lit(m, t, " .. "), 0);
+            if isin <= 0 || dots < isin {
+                return bad(m, t, lineno, "expected `repeat NAME in first .. last` (last is not reached)");
+            }
+            let name = trim(t, text.sub(rest, 0, isin));
+            let first = eval(m, t, env, text.sub(rest, isin + 4, dots), lineno);
+            let last = eval(m, t, env, text.sub(rest, dots + 4, text.size(rest)), lineno);
+            if err.failed(m) {
+                return 0 - 1;
+            }
+            var v = first;
+            while v < last {
+                let inner = mem.copy(m, env);
+                mem.push(m, inner, mem.rec3(m, name, v, 0));
+                if run(m, t, lines, blocks, inner, i + 1, end, out, depth + 1) < 0 {
+                    return 0 - 1;
+                }
+                v = v + 1;
+            }
+            i = end + 1;
+        } else if c == 6 {
+            let (w, rest) = first_word(t, line);
+            let end = find_end(m, t, lines, i);
+            if end < 0 {
+                return 0 - 1;
+            }
+            let other = find_else(m, t, lines, i, end);
+            let v = eval(m, t, env, rest, lineno);
+            if err.failed(m) {
+                return 0 - 1;
+            }
+            var a = i + 1;
+            var b = end;
+            if other >= 0 {
+                b = other;
+            }
+            if v == 0 {
+                a = end;
+                b = end;
+                if other >= 0 {
+                    a = other + 1;
+                    b = end;
+                }
+            }
+            let inner = mem.copy(m, env);
+            if run(m, t, lines, blocks, inner, a, b, out, depth + 1) < 0 {
+                return 0 - 1;
+            }
+            i = end + 1;
+        } else if c == 3 {
+            return bad(m, t, lineno, "an `end` with nothing open");
+        } else {
+            return bad(m, t, lineno, "an `else` outside an `if`");
+        }
+    }
+    return 0;
+}
+
+// The text of a model file as a plain session file; a text with none of the directives is answered unchanged. Answers the text, or -1 with a refusal (`session`).
+pub fn expand[&m, &t](m: &!m [int], t: &!t [byte], src: int, defs: int) -> [] int {
+    let lines = mem.list(m);
+    let total = text.size(src);
+    var pos = 0;
+    var any = false;
+    while pos < total {
+        var end = text.index_of(t, src, 10, pos);
+        if end < 0 {
+            end = total;
+        }
+        let line = text.sub(src, pos, end);
+        mem.push(m, lines, line);
+        let c = code(t, trim(t, line));
+        if c >= 1 && c <= 7 || c == 9 {
+            any = true;
+        }
+        pos = end + 1;
+    }
+    if !any {
+        return src;
+    }
+    let out = mem.list(m);
+    let env = mem.list(m);
+    let blocks = mem.list(m);
+    var d = 0;
+    while d < mem.size(m, defs) {
+        let def = mem.get(m, defs, d);
+        let eq = text.index_of(t, def, '=', 0);
+        let name = text.sub(def, 0, eq);
+        if eq <= 0 || !valid_name(t, name) {
+            return bad_name(m, t, 0, def, "is not NAME=value (letters, digits and `_` in the name)");
+        }
+        let value = text.sub(def, eq + 1, text.size(def));
+        var digits = text.size(value) > 0;
+        var k = 0;
+        while digits && k < text.size(value) {
+            if !is_digit(text.at(t, value, k)) && !(k == 0 && text.at(t, value, 0) == '-' && text.size(value) > 1) {
+                digits = false;
+            }
+            k = k + 1;
+        }
+        if digits {
+            var neg = false;
+            var v = 0;
+            k = 0;
+            while k < text.size(value) {
+                if text.at(t, value, k) == '-' {
+                    neg = true;
+                } else {
+                    v = v * 10 + (text.at(t, value, k) - '0');
+                }
+                k = k + 1;
+            }
+            if neg {
+                v = 0 - v;
+            }
+            mem.push(m, env, mem.rec3(m, name, v, 2));
+        } else {
+            mem.push(m, env, mem.rec3(m, name, value, 3));
+        }
+        d = d + 1;
+    }
+    if run(m, t, lines, blocks, env, 0, mem.size(m, lines), out, 0) < 0 {
+        return 0 - 1;
+    }
+    let from = text.begin(m);
+    var k = 0;
+    while k < mem.size(m, out) {
+        text.put_str(m, t, mem.get(m, out, k));
+        text.put_byte(m, t, byte_of(10));
+        k = k + 1;
+    }
+    return text.finish(m, from);
+}

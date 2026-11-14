@@ -1,0 +1,12 @@
+program L0 x
+resident L0.x a
+program L1 x
+link L0.y -> L1.x
+program L2 x
+link L1.y -> L2.x
+program L3 x
+link L2.y -> L3.x
+answer L3.y
+pair 1 0
+pair 2 0
+pair 2 1

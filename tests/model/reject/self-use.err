@@ -1,0 +1,1 @@
+error[session]: model line 2: blocks are used inside blocks more than 64 deep (a block that uses itself?)

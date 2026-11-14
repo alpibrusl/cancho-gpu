@@ -1,0 +1,2 @@
+text T = abc
+x ${T + 1}

@@ -1,0 +1,149 @@
+# The text encoder of Qwen-Image-2.1-Turbo reading an image: Qwen3-VL's language model, 36 layers over SP rows (docs/diffusion.md D9c), as a model file (docs/resident.md section 31).
+# It expands to the session file that tests/text_img_gpu.py writes (the pipeline's form: the last layer saved, a probe answered).
+#
+#     cancho-gpu model-expand models/qwen3vl_text.model CHX=<tests/chx> WORK=<the directory of the f32/f16 weight and input files> SP=<rows>
+#     cancho-gpu-metal-session models/qwen3vl_text.model CHX=... WORK=... SP=...
+#
+# The first three layers add a feature map of the vision tower after the residual (deepstack: `dsa`); every layer after the first puts its activations in the buffers of the layer before (`alias`, resident.md 21.4), except the residual stream.
+# NOREF=1 (the default here) is the pipeline's form; NOREF=0 answers the stream after layers 4, 12, 24 and 36 instead, for the comparison with the float64 run.
+text CHX = tests/chx
+text WORK = .
+const SP = 1088
+const NOREF = 1
+const D = 4096
+const H = 32
+const HD = 128
+const NL = 36
+
+block layer(i)
+    program L${i}_n1 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+    if i == 0
+        resident L0_n1.x $WORK/x0.f32 f32
+    end
+    if i >= 1 && i <= 3
+        link L${i - 1}_dsa.z -> L${i}_n1.x
+    end
+    if i > 3
+        link L${i - 1}_ad2.z -> L${i}_n1.x
+    end
+    resident L${i}_n1.w $WORK/l1${i}.f32 f32
+    program L${i}_c1 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_n1.y -> L${i}_c1.x
+    program L${i}_gq $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gq.a
+    resident L${i}_gq.w $WORK/wq${i}.f16 f16
+    program L${i}_gk $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gk.a
+    resident L${i}_gk.w $WORK/wk${i}.f16 f16
+    program L${i}_gv $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gv.a
+    resident L${i}_gv.w $WORK/wv${i}.f16 f16
+    program L${i}_nq $CHX/rmsnorm_rows.chx r=${SP * H} n=$HD eps=0.000001
+    link L${i}_gq.y -> L${i}_nq.x
+    resident L${i}_nq.w $WORK/qn${i}.f32 f32
+    program L${i}_nk $CHX/rmsnorm_rows.chx r=${SP * H} n=$HD eps=0.000001
+    link L${i}_gk.y -> L${i}_nk.x
+    resident L${i}_nk.w $WORK/kn${i}.f32 f32
+    program L${i}_rq $CHX/dit_rope.chx s=$SP nh=$H h=64
+    link L${i}_nq.y -> L${i}_rq.x
+    resident L${i}_rq.cs $WORK/cs.f32 f32
+    resident L${i}_rq.sn $WORK/sn.f32 f32
+    program L${i}_rk $CHX/dit_rope.chx s=$SP nh=$H h=64
+    link L${i}_nk.y -> L${i}_rk.x
+    resident L${i}_rk.cs $WORK/cs.f32 f32
+    resident L${i}_rk.sn $WORK/sn.f32 f32
+    program L${i}_sc $CHX/dit_scores.chx nh=$H nq=$SP t=$SP qs=32 ts=64 d=$HD
+    link L${i}_rq.y -> L${i}_sc.q
+    link L${i}_rk.y -> L${i}_sc.k
+    resident L${i}_sc.mask $WORK/mask.f32 f32
+    program L${i}_st $CHX/dit_stats.chx nh=$H nq=$SP t=$SP qs=32 cs=64
+    link L${i}_sc.sc -> L${i}_st.sc
+    program L${i}_pv $CHX/dit_pv.chx nh=$H nq=$SP t=$SP qs=32 cs=64 dw=32 d=$HD
+    link L${i}_sc.sc -> L${i}_pv.sc
+    link L${i}_st.m -> L${i}_pv.m
+    link L${i}_st.z -> L${i}_pv.z
+    link L${i}_gv.y -> L${i}_pv.v
+    program L${i}_c2 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_pv.o -> L${i}_c2.x
+    program L${i}_go $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c2.y -> L${i}_go.a
+    resident L${i}_go.w $WORK/wo${i}.f16 f16
+    program L${i}_ad1 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    if i == 0
+        resident L0_ad1.a $WORK/x0.f32 f32
+    end
+    if i >= 1 && i <= 3
+        link L${i - 1}_dsa.z -> L${i}_ad1.a
+    end
+    if i > 3
+        link L${i - 1}_ad2.z -> L${i}_ad1.a
+    end
+    link L${i}_go.y -> L${i}_ad1.b
+    program L${i}_n2 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+    link L${i}_ad1.z -> L${i}_n2.x
+    resident L${i}_n2.w $WORK/l2${i}.f32 f32
+    program L${i}_c3 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_n2.y -> L${i}_c3.x
+    program L${i}_gg $CHX/ported/gemm_mma.chx m=$SP n=${3 * D} k=$D
+    link L${i}_c3.y -> L${i}_gg.a
+    resident L${i}_gg.w $WORK/wg${i}.f16 f16
+    program L${i}_gu $CHX/ported/gemm_mma.chx m=$SP n=${3 * D} k=$D
+    link L${i}_c3.y -> L${i}_gu.a
+    resident L${i}_gu.w $WORK/wu${i}.f16 f16
+    program L${i}_sw $CHX/dit_swiglu.chx s=$SP n=${3 * D} bn=1024
+    link L${i}_gg.y -> L${i}_sw.g
+    link L${i}_gu.y -> L${i}_sw.u
+    program L${i}_gd $CHX/ported/gemm_mma.chx m=$SP n=$D k=${3 * D}
+    link L${i}_sw.y -> L${i}_gd.a
+    resident L${i}_gd.w $WORK/wd${i}.f16 f16
+    program L${i}_ad2 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    link L${i}_ad1.z -> L${i}_ad2.a
+    link L${i}_gd.y -> L${i}_ad2.b
+    if i < 3
+        program L${i}_dsa $CHX/dit_add.chx s=$SP n=$D bn=1024
+        link L${i}_ad2.z -> L${i}_dsa.a
+        resident L${i}_dsa.b $WORK/ds${i}.f32 f32
+    end
+    if i > 0
+        alias L${i - 1}_n1.y L${i}_n1.y
+        alias L${i - 1}_c1.y L${i}_c1.y
+        alias L${i - 1}_gq.y L${i}_gq.y
+        alias L${i - 1}_gk.y L${i}_gk.y
+        alias L${i - 1}_gv.y L${i}_gv.y
+        alias L${i - 1}_nq.y L${i}_nq.y
+        alias L${i - 1}_nk.y L${i}_nk.y
+        alias L${i - 1}_rq.y L${i}_rq.y
+        alias L${i - 1}_rk.y L${i}_rk.y
+        alias L${i - 1}_sc.sc L${i}_sc.sc
+        alias L${i - 1}_st.m L${i}_st.m
+        alias L${i - 1}_st.z L${i}_st.z
+        alias L${i - 1}_pv.o L${i}_pv.o
+        alias L${i - 1}_c2.y L${i}_c2.y
+        alias L${i - 1}_go.y L${i}_go.y
+        alias L${i - 1}_ad1.z L${i}_ad1.z
+        alias L${i - 1}_n2.y L${i}_n2.y
+        alias L${i - 1}_c3.y L${i}_c3.y
+        alias L${i - 1}_gg.y L${i}_gg.y
+        alias L${i - 1}_gu.y L${i}_gu.y
+        alias L${i - 1}_sw.y L${i}_sw.y
+        alias L${i - 1}_gd.y L${i}_gd.y
+    end
+end
+
+repeat i in 0 .. NL
+    use layer(i)
+end
+
+if NOREF == 1
+    program probe $CHX/dit_rows2.chx m=$SP n=$D bn=1024
+    link L${NL - 1}_ad2.z -> probe.x
+    save L${NL - 1}_ad2.z $WORK/last.f32 f32
+    steps
+    answer probe.y
+else
+    steps
+    answer L3_ad2.z
+    answer L11_ad2.z
+    answer L23_ad2.z
+    answer L35_ad2.z
+end

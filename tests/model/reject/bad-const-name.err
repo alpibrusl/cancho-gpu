@@ -1,0 +1,1 @@
+error[session]: model line 1: a constant's name is letters, digits and `_`, not starting with a digit

@@ -1297,3 +1297,27 @@ A session whose programs read a buffer that an earlier request wrote (a cache of
 
 `tests/reload.py` (a Mac; not in `scripts/gate.sh`): a program's output becomes another's input, whose answer then follows it; eight refusals (no pairs, no destination, an empty destination, a wrong arrow, an unknown program, an input as source, an output as destination, a linked parameter as destination). The refusal of two parameters of different type or size is in the parser and is **not tested**. Use: `docs/diffusion.md` D12, where it moves the keys and values of the prefix pass into the cache of the steps so that both run in one session.
 
+## 31. Model files: a session file with blocks and repetition (measured)
+
+Every model that runs here is described, at the bottom, in this repository's own syntax: `.chx` kernels and a session file. But the session files were written by Python generators (`tests/text_img_gpu.py`, `tests/dit_edit_lib.py`, ...): a layer was a loop that printed about 25 programs and their links, 32 or 36 times, with the names built by string formatting, so a model could not be read as a model, a layer count was a code change, and the generators were Python the project is leaving (issue #151). A **model file** is a session file that may also say what those loops said. `src/model.cho` (cancho, no Rust, no change to the compiler of `.chx`) expands it to the plain session file before `session.open` reads it; **a file with none of the directives is left exactly as it is**, so no session file written before changes (nor the line numbers in its refusals). The directives, one to a line, `#` comments and blank lines dropped, leading blanks removed:
+
+```
+const D = 4096                  an integer constant (a later one shadows an earlier one)
+text DIR = /some/where          a text constant: the rest of the line (paths, names; not in an expression)
+block layer(i, n)               a block with parameters; its body is expanded where it is used, and a const in it does not leak out
+    program L${i}_n1 $DIR/rmsnorm_rows.chx r=$SP n=$D
+end
+repeat i in 0 .. 36             i = 0 .. 35 (the last is not reached)
+    use layer(i, 36)            the arguments are integer expressions
+    if i > 0 && i <= 3          a line or block only when the expression is not zero (an optional `else`)
+        alias L${i - 1}_x.y L${i}_x.y
+    end
+end
+```
+
+`$name` and `${expression}` in any other line become a decimal integer (or the text of a `text` constant). An expression has integers, names, `+ - * / %`, a unary `-`, parentheses, the comparisons `< <= > >= == !=` (1 or 0), `&&` and `||`; a division by zero is refused. **`NAME=value` arguments after the file** (`cancho-gpu model-expand FILE NAME=value ...`, and the same after the file given to `cancho-gpu-session` and `cancho-gpu-metal-session`) define constants first: an integer when the value is all digits, else text; **the file's own `const` and `text` of that name do not replace them**, so a model's constants are defaults (the paths of a run, the number of rows). `cancho-gpu model-expand` prints the expansion. Every refusal is the rule `session`, with `model line N` of the model file; 19 are in `tests/model/reject/`.
+
+* **[measured] Two real models, byte for byte.** `models/qwen3vl_text.model` (149 lines) expands to the **3,196 lines** that `tests/text_img_gpu.py` writes for the text encoder of Qwen-Image-2.1-Turbo reading an image (36 layers, the deepstack maps of the first three, the layer-to-layer aliases, the pipeline's probe and save; `NOREF=0` gives the form with the answers for the float64 comparison), and `models/qwen_image_dit.model` (142 lines) to the **3,310 lines** that `tests/dit_edit_lib.py` writes for the transformer with a condition image as one session for the prefix pass and the steps (32 blocks). **Both are `cmp`-identical** to the Python generators' files (the second compared with the generator run without a GPU, only to write the file: `tests/dit_edit_lib.py`'s `_blocks`). The text encoder then ran **straight from its model file** on the Metal GPU (`cancho-gpu-metal-session models/qwen3vl_text.model CHX=... WORK=... SP=1088`): the output file is byte-identical to the one the Python-generated session wrote, in 7.5 s.
+* **Held in the gate** (`tests/model.sh`, 28 checks): the five expansion fixtures of `tests/model/ok/` byte for byte, the 19 refusals, the SHA-256 of both real models' expansions (`golden/model/`, with fixed definitions; recorded when they were compared with the generators' files), and a model file (a chain of three additions) given to the CPU session with its definitions on the command line: it answers what its expansion answers.
+* **Not done, and said so:** the weight files (the f16 conversion and head permutation of the checkpoint stay host tools, as do the tokenisation, the noise and the transformer's front and back ends); the other generators (the vision tower's four sessions, the VAE's, the Qwen2.5 training sessions) are not yet model files, and the Python generators were not removed (the scripts still write their own session files, which the model files equal); a model's paths are definitions on the command line or text constants, not relative to the model file; a refusal after the expansion (a parameter not supplied, an alias that reads) names the line of the *expanded* file, which `model-expand` prints.
+
