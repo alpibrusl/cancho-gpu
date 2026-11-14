@@ -1,0 +1,30 @@
+// The softmax statistics of a diffusion transformer's scores (docs/diffusion.md D1): the row maximum m and the normaliser z = sum exp(s - m) of each of head h's
+// qs query rows of tile qb, over all t keys, a chunk of cs positions at a time (attention_stats.chx's two loops, with a tile of qs query rows of one head in place
+// of a key/value head's g). The maximum starts at the first chunk's, not at a sentinel (see attention_stats.chx).
+algo dit_stats(nh, nq, t, qs, cs)
+  in  sc: f32[nh * nq, t]
+  out m:  f32[nh * nq]
+  out z:  f32[nh * nq]
+{
+  grid h over nh, qb over nq / qs
+  let f0 = load sc[h * nq + qb * qs, 0 ; qs, cs]
+  let m1 = rowmax f0
+  let mx = for c in 1 .. t / cs with m1 {
+    let sm = load sc[h * nq + qb * qs, c * cs ; qs, cs]
+    let cm = rowmax sm
+    yield m1 + relu (cm - &m1)
+  }
+  let z0 = zeros f32[qs]
+  let zz = for c in 0 .. t / cs with z0 {
+    let sm = load sc[h * nq + qb * qs, c * cs ; qs, cs]
+    let sh = sm - &mx
+    let e  = exp sh
+    let cz = rowsum e
+    yield z0 + cz
+  }
+  store mx -> m[h * nq + qb * qs]
+  store zz -> z[h * nq + qb * qs]
+}
+
+schedule dit_stats for apple-m-series { threads 256 }
+schedule dit_stats for nvidia-ada     { threads 128 }

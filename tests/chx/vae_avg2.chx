@@ -1,0 +1,21 @@
+// The 2 x 2 mean of the VAE encoder's average-down shortcut (docs/diffusion.md D9d): the h x w image (bordered rows, f32, r rows) to the (h/2) x (w/2) image of the mean of each 2 x 2 group, f16 with g2 guard rows
+// each side in r2 rows (the input of the 1 x 1 convolution, with a selection matrix, that spreads the channels as AvgDown3D does).
+algo vae_avg2(h, w, c, r, r2, g2)
+  in  x: f32[r, c]
+  out y: f16[r2 + 2 * g2, c]
+{
+  grid i over h / 2, j over w / 2
+  let p00 = load x[(2 * i + 1) * (w + 2) + 2 * j + 1, 0 ; 1, c]
+  let p01 = load x[(2 * i + 1) * (w + 2) + 2 * j + 2, 0 ; 1, c]
+  let p10 = load x[(2 * i + 2) * (w + 2) + 2 * j + 1, 0 ; 1, c]
+  let p11 = load x[(2 * i + 2) * (w + 2) + 2 * j + 2, 0 ; 1, c]
+  let s0  = p00 + p01
+  let s1  = p10 + p11
+  let s2  = s0 + s1
+  let m   = s2 * 0.25
+  let mh  = stage f16 m
+  store mh -> y[g2 + (i + 1) * (w / 2 + 2) + j + 1, 0]
+}
+
+schedule vae_avg2 for apple-m-series { threads 128 }
+schedule vae_avg2 for nvidia-ada     { threads 128 }

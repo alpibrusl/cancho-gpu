@@ -1,0 +1,27 @@
+// The rotary embedding of a Qwen-Image-2.1 block, in the rotate-half form (docs/diffusion.md D2b): a row is one head of 2h values (h = 64: the head's 128), nh rows to a token,
+// and the tables cs, sn are one row of h per *position* (rope.chx's are shared by every row): y = [x1 c - x2 s, x2 c + x1 s] with x1, x2 the two halves of the row.
+// The model rotates interleaved pairs (2j, 2j + 1); the host permutes the output channels of to_q and to_k within each head, even channels first, once at load time,
+// which turns that into this and leaves q . k unchanged (tests/dit_block.py, `permutation`). The tables are the cos and sin of the model's complex frequencies.
+algo dit_rope(s, nh, h)
+  in  x:  f32[s * nh, 2 * h]
+  in  cs: f32[s, h]
+  in  sn: f32[s, h]
+  out y:  f32[s * nh, 2 * h]
+{
+  grid t over s
+  let x1 = load x[t * nh, 0 ; nh, h]
+  let x2 = load x[t * nh, h ; nh, h]
+  let c  = load cs[t, 0 ; 1, h]
+  let sg = load sn[t, 0 ; 1, h]
+  let a  = &x1 * &c
+  let b  = &x2 * &sg
+  let lo = a - b
+  let d  = x2 * c
+  let e  = x1 * sg
+  let hi = d + e
+  store lo -> y[t * nh, 0]
+  store hi -> y[t * nh, h]
+}
+
+schedule dit_rope for apple-m-series { threads 128 }
+schedule dit_rope for nvidia-ada     { threads 128 }

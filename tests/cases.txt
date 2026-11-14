@@ -416,3 +416,91 @@ tests/chx/dec_post.chx r=4
 tests/chx/kv_write_b.chx nb=2 nkv=2 tmax=64 ts=16 d=128
 tests/chx/ids_mix.chx r=8
 tests/chx/kv_import.chx nsrc=2 nkv=2 g=6 t=64 ts=4 d=128
+
+# D1 (docs/diffusion.md): block-causal attention for a diffusion transformer, head dimension 128, queries tiled as well as keys. Qwen-Image-2.1's shape
+# (32 heads, 4,096 image tokens at 1024 x 1024); tests/dit_attention.py holds what they compute to a float64 reference, every element.
+tests/chx/dit_scores.chx nh=32 nq=4096 t=4096 qs=32 ts=64 d=128
+tests/chx/dit_stats.chx nh=32 nq=4096 t=4096 qs=32 cs=64
+tests/chx/dit_pv.chx nh=32 nq=4096 t=4096 qs=32 cs=64 dw=32 d=128
+tests/chx/dit_scores.chx nh=2 nq=32 t=32 qs=8 ts=16 d=128 --run
+tests/chx/dit_stats.chx nh=2 nq=32 t=32 qs=8 cs=16 --run
+tests/chx/dit_pv.chx nh=2 nq=32 t=32 qs=8 cs=16 dw=32 d=128 --run
+
+# D2b (docs/diffusion.md): the pieces of a Qwen-Image-2.1 block that are not attention or a matrix product, at 1024 x 1024 (4,096 image tokens + 256 text) and hidden 4096 / MLP 12288;
+# tests/dit_block.py holds what they compute to a float64 reference, every element. dit_scores, dit_stats and dit_pv above are token-major since this slice.
+tests/chx/dit_lnmod.chx s=4352 n=4096
+tests/chx/dit_rope.chx s=4352 nh=32 h=64
+tests/chx/dit_gate_res.chx s=4352 n=4096
+tests/chx/dit_swiglu.chx s=4352 n=12288 bn=1024
+tests/chx/dit_lnmod.chx s=12 n=256 --run
+tests/chx/dit_rope.chx s=6 nh=3 h=64 --run
+tests/chx/dit_gate_res.chx s=12 n=256 --run
+tests/chx/dit_swiglu.chx s=6 n=384 bn=128 --run
+
+# D2e (docs/diffusion.md): the front and back ends of a Qwen-Image-2.1 step: GELU and SiLU with f16 output, the joint sequence's sum, the modulation split, the first two rows. tests/dit_block.py holds them to references.
+tests/chx/dit_gelu.chx s=4352 n=4096 bn=1024
+tests/chx/dit_silu.chx s=64 n=4096 bn=1024
+tests/chx/dit_add.chx s=4352 n=4096 bn=1024
+tests/chx/dit_modsplit.chx m=64 n=4096 bn=1024
+tests/chx/dit_rows2.chx m=64 n=4096 bn=1024
+tests/chx/dit_gelu.chx s=4 n=256 bn=128 --run
+tests/chx/dit_silu.chx s=4 n=256 bn=128 --run
+tests/chx/dit_add.chx s=4 n=256 bn=128 --run
+tests/chx/dit_modsplit.chx m=64 n=256 bn=128 --run
+tests/chx/dit_rows2.chx m=64 n=256 bn=128 --run
+
+# D3 (docs/diffusion.md): the flow-matching Euler update of the image tokens' latents (64 channels, 320 padded rows); tests/dit_block.py holds it to a reference.
+tests/chx/dit_euler.chx s=320 n=64
+tests/chx/dit_euler.chx s=12 n=64 --run
+
+
+# D4b (docs/diffusion.md): the pieces of the VAE decoder of Qwen-Image-2.1 at 1024 x 1024 (a 64 x 64 latent: 1024 x 1024 at the last block, 512 x 512 before the last upsample, 64 x 64 at the attention), and the test-sized ones with
+# --run; tests/vae_pieces.py holds each to a float64 reference. Rows are pixels of a bordered image rounded up to 64, g = w + 3 guard rows.
+tests/chx/vae_norm_silu.chx r=1052736 c=144 g=1027 sc=12.0
+tests/chx/vae_bias.chx r=1052736 c=144
+tests/chx/vae_bias_res.chx r=1052736 c=144
+tests/chx/vae_pad16.chx r=1052736 c=144 g=1027
+tests/chx/vae_up2.chx h=512 w=512 c=288 r=264256 r2=1052736 g2=1027
+tests/chx/vae_up2_epi.chx h=512 w=512 c=288 r=264256 r2=1052736
+tests/chx/conv1.chx r=1052736 cin=288 cout=144 g=1027
+tests/chx/conv3_k16.chx rp=1052736 cin=144 cout=144 wp=1026 g=1027
+tests/chx/vae_split16.chx r=4416 c=1152 sc=0.029462782549439483
+tests/chx/vae_mask_add.chx n=4416
+tests/chx/vae_norm_silu.chx r=64 c=64 g=9 sc=8.0 --run
+tests/chx/vae_bias.chx r=64 c=64 --run
+tests/chx/vae_bias_res.chx r=64 c=64 --run
+tests/chx/vae_pad16.chx r=64 c=64 g=9 --run
+tests/chx/vae_up2.chx h=6 w=6 c=32 r=64 r2=256 g2=15 --run
+tests/chx/vae_up2_epi.chx h=6 w=6 c=32 r=64 r2=256 --run
+tests/chx/conv1.chx r=64 cin=64 cout=48 g=9 --run
+tests/chx/conv3_k16.chx rp=64 cin=48 cout=48 wp=8 g=9 --run
+tests/chx/vae_split16.chx r=64 c=64 sc=0.125 --run
+tests/chx/vae_mask_add.chx n=64 --run
+tests/chx/vae_norm.chx r=4416 c=1152 g=67 sc=33.94112549695428
+tests/chx/vae_norm.chx r=64 c=64 g=9 sc=8.0 --run
+
+# D8 (docs/diffusion.md): the attention on the matrix unit in f16, at 1024 x 1024 (4,224 rows: 4,117 tokens rounded up to 128, the CUDA schedule's tile; the Metal one needs 64) and test-sized with --run; tests/dit_attention_mma.py holds them to
+# float64 references. dit_rows2h is the f16 probe of the timing sessions.
+tests/chx/dit_rope16.chx s=4224 nh=32 h=64 sc=0.08838834764831845
+tests/chx/dit_scores_mma.chx nh=32 nq=4224 t=4224 d=128
+tests/chx/dit_stats_m.chx nh=32 nq=4224 t=4224 qs=32 cs=64
+tests/chx/dit_pv_mma.chx nh=32 nq=4224 t=4224 d=128
+tests/chx/dit_rows2h.chx m=4224 n=4096 bn=1024
+tests/chx/dit_rope16.chx s=128 nh=2 h=64 sc=0.08838834764831845 --run
+tests/chx/dit_scores_mma.chx nh=2 nq=128 t=128 d=128 --run
+tests/chx/dit_stats_m.chx nh=2 nq=128 t=128 qs=32 cs=64 --run
+tests/chx/dit_pv_mma.chx nh=2 nq=128 t=128 d=128 --run
+tests/chx/dit_rows2h.chx m=64 n=256 bn=128 --run
+tests/chx/vit_ln.chx s=4096 n=1152
+tests/chx/vit_ln.chx s=1024 n=4608
+tests/chx/vit_bias_gelu.chx s=4096 n=4352 bn=256
+tests/chx/vit_bias_gelu_erf.chx s=1024 n=4608 bn=512 m1=-1
+tests/chx/vit_ln.chx s=4 n=64 --run
+tests/chx/vit_bias_gelu.chx s=4 n=256 bn=128 --run
+tests/chx/vit_bias_gelu_erf.chx s=4 n=256 bn=128 m1=-1 --run
+tests/chx/vae_s2d.chx h=1024 w=1024 c=96 r=1052736 r2=264256 g2=515
+tests/chx/vae_avg2.chx h=1024 w=1024 c=96 r=1052736 r2=264256 g2=515
+tests/chx/vae_s2d.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run
+tests/chx/vae_avg2.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run
+tests/chx/dit_cat.chx s=4160 n=4096 bn=1024
+tests/chx/dit_cat.chx s=4 n=256 bn=128 --run

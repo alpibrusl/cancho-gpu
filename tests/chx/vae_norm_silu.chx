@@ -1,0 +1,29 @@
+// silu(rmsnorm(x)) for the VAE decoder of Qwen-Image-2.1 (docs/diffusion.md D4b): each row of x [r, c] is one pixel's c channels; the norm is torch's F.normalize over the channels times sqrt(c) times gamma
+// (sc = sqrt(c), a constant: the surface has no square root of a constant), then SiLU, then the row's interior mask (the border rows of a convolution's output are junk and become zero here), written as f16 with g zero
+// guard rows each side: the input of the next convolution. F.normalize divides by max(|x|, 1e-12); here by sqrt(|x|^2 + 1e-24), which is the same for every row whose norm is far above 1e-12 and is 0 (not nan) for a zero row.
+algo vae_norm_silu(r, c, g, sc)
+  in  x:     f32[r, c]
+  in  gamma: f32[1, c]
+  in  mask:  f32[r, 1]
+  out y:     f16[r + 2 * g, c]
+{
+  grid i over r
+  let x  = load x[i, 0 ; 1, c]
+  let sq = &x * &x
+  let ss = rowsum sq
+  let t  = ss + 0.000000000000000000000001
+  let rs = rsqrt t
+  let xn = x * rs
+  let y1 = xn * sc
+  let gm = load gamma
+  let y2 = y1 * gm
+  let sg = sigmoid &y2
+  let a  = y2 * sg
+  let m  = load mask[i, 0 ; 1, 1]
+  let b  = a * m
+  let bh = stage f16 b
+  store bh -> y[g + i, 0]
+}
+
+schedule vae_norm_silu for apple-m-series { threads 256 }
+schedule vae_norm_silu for nvidia-ada     { threads 256 }

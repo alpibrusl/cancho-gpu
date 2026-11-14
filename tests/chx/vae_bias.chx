@@ -1,0 +1,18 @@
+// z = (x + bias) * mask for the VAE decoder (docs/diffusion.md D4b): the epilogue of a convolution, in f32. Rows of [r, c] are pixels; the mask zeroes the border rows.
+algo vae_bias(r, c)
+  in  x: f32[r, c]
+  in  b: f32[1, c]
+  in  m: f32[r, 1]
+  out z: f32[r, c]
+{
+  grid i over r
+  let x  = load x[i, 0 ; 1, c]
+  let bb = load b
+  let s  = x + bb
+  let mk = load m[i, 0 ; 1, 1]
+  let t  = s * mk
+  store t -> z[i, 0]
+}
+
+schedule vae_bias for apple-m-series { threads 256 }
+schedule vae_bias for nvidia-ada     { threads 256 }

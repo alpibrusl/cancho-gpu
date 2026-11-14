@@ -1,0 +1,25 @@
+// The gated residual of a Qwen-Image-2.1 block (docs/diffusion.md D2b): z = x + tanh(gate) * y, the gate row chosen per token as dit_lnmod.chx chooses the scale
+// (g holds the two rows of the modulation, sel is 1 for a target-image token). y is the output of the projection (attention's or the MLP's), x the residual stream, f32.
+algo dit_gate_res(s, n)
+  in  x:   f32[s, n]
+  in  y:   f32[s, n]
+  in  g:   f32[2, n]
+  in  sel: f32[s, 1]
+  out z:   f32[s, n]
+{
+  grid i over s
+  let sl = load sel[i, 0 ; 1, 1]
+  let g0 = load g[0, 0 ; 1, n]
+  let g1 = load g[1, 0 ; 1, n]
+  let df = g0 - &g1
+  let a  = df * sl
+  let gt = g1 + a
+  let th = tanh gt
+  let xr = load x[i, 0 ; 1, n]
+  let yr = load y[i, 0 ; 1, n]
+  let m  = th * yr
+  store xr + m -> z[i, 0]
+}
+
+schedule dit_gate_res for apple-m-series { threads 256 }
+schedule dit_gate_res for nvidia-ada     { threads 256 }

@@ -1,0 +1,26 @@
+// rmsnorm over the channels of each row without an activation (docs/diffusion.md D4c): the attention block's norm in the VAE decoder, which is vae_norm_silu.chx without the SiLU: x / max(|x|, 1e-12) * sqrt(c) * gamma, times the
+// row's interior mask, f16 with g guard rows each side (the input of a 1 x 1 convolution).
+algo vae_norm(r, c, g, sc)
+  in  x:     f32[r, c]
+  in  gamma: f32[1, c]
+  in  mask:  f32[r, 1]
+  out y:     f16[r + 2 * g, c]
+{
+  grid i over r
+  let x  = load x[i, 0 ; 1, c]
+  let sq = &x * &x
+  let ss = rowsum sq
+  let t  = ss + 0.000000000000000000000001
+  let rs = rsqrt t
+  let xn = x * rs
+  let y1 = xn * sc
+  let gm = load gamma
+  let y2 = y1 * gm
+  let m  = load mask[i, 0 ; 1, 1]
+  let b  = y2 * m
+  let bh = stage f16 b
+  store bh -> y[g + i, 0]
+}
+
+schedule vae_norm for apple-m-series { threads 256 }
+schedule vae_norm for nvidia-ada     { threads 256 }

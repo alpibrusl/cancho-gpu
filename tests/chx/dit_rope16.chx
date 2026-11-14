@@ -1,0 +1,29 @@
+// dit_rope.chx with an f16 output and a constant factor (docs/diffusion.md D8): the rotate-half rotary embedding of the rows of a head (2h values, nh rows to a token, tables [s, h] per position), times sc, rounded to f16.
+// For q sc is 1/sqrt(128), the attention's scale, so that the scores come out of the matrix product already scaled (an accumulator on the matrix unit cannot be scaled afterwards); for k it is 1. The input of dit_scores_mma.chx.
+algo dit_rope16(s, nh, h, sc)
+  in  x:  f32[s * nh, 2 * h]
+  in  cs: f32[s, h]
+  in  sn: f32[s, h]
+  out y:  f16[s * nh, 2 * h]
+{
+  grid t over s
+  let x1  = load x[t * nh, 0 ; nh, h]
+  let x2  = load x[t * nh, h ; nh, h]
+  let c   = load cs[t, 0 ; 1, h]
+  let sg  = load sn[t, 0 ; 1, h]
+  let a   = &x1 * &c
+  let b   = &x2 * &sg
+  let lo  = a - b
+  let d   = x2 * c
+  let e   = x1 * sg
+  let hi  = d + e
+  let lo2 = lo * sc
+  let hi2 = hi * sc
+  let loh = stage f16 lo2
+  let hih = stage f16 hi2
+  store loh -> y[t * nh, 0]
+  store hih -> y[t * nh, h]
+}
+
+schedule dit_rope16 for apple-m-series { threads 128 }
+schedule dit_rope16 for nvidia-ada     { threads 128 }

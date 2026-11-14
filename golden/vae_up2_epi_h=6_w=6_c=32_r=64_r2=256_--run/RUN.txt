@@ -1,0 +1,2 @@
+nvidia-ada: z [256, 32] = mean 0.0215, peak 1.4152, first [0.0, 0.0, 0.0, 0.0]
+apple-m-series: z [256, 32] = mean 0.0215, peak 1.4152, first [0.0, 0.0, 0.0, 0.0]

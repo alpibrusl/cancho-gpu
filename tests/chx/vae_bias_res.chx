@@ -1,0 +1,20 @@
+// z = (x + bias) * mask + res for the VAE decoder (docs/diffusion.md D4b): the end of a residual block, the convolution's epilogue plus the shortcut (in f32). The residual's border rows are zero.
+algo vae_bias_res(r, c)
+  in  x:   f32[r, c]
+  in  b:   f32[1, c]
+  in  m:   f32[r, 1]
+  in  res: f32[r, c]
+  out z:   f32[r, c]
+{
+  grid i over r
+  let x  = load x[i, 0 ; 1, c]
+  let bb = load b
+  let s  = x + bb
+  let mk = load m[i, 0 ; 1, 1]
+  let t  = s * mk
+  let rr = load res[i, 0 ; 1, c]
+  store t + rr -> z[i, 0]
+}
+
+schedule vae_bias_res for apple-m-series { threads 256 }
+schedule vae_bias_res for nvidia-ada     { threads 256 }

@@ -1,0 +1,14 @@
+// z = a + b for s rows of n, bn columns to a threadgroup, f32 (docs/diffusion.md D2e: the joint sequence is the text tokens' rows and the image tokens' rows, each zero where the other's are).
+algo dit_add(s, n, bn)
+  in  a: f32[s, n]
+  in  b: f32[s, n]
+  out z: f32[s, n]
+{
+  grid i over s, j over n / bn
+  let x = load a[i, j * bn ; 1, bn]
+  let y = load b[i, j * bn ; 1, bn]
+  store x + y -> z[i, j * bn]
+}
+
+schedule dit_add for apple-m-series { threads 256 }
+schedule dit_add for nvidia-ada     { threads 256 }

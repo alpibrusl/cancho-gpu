@@ -1,0 +1,34 @@
+// The adaptive layer norm of a Qwen-Image-2.1 block (docs/diffusion.md D2b): y = layernorm(x) * (1 + scale), the layer norm without an affine (eps 1e-6, the biased variance of
+// torch's LayerNorm), the scale row chosen per token: sc holds the two rows of the shared modulation (row 0 from the sampled timestep, row 1 from t = 0) and sel is 1 for a
+// token of the target image (it takes row 0) and 0 for a text or reference token (row 1). y is f16: it is the input of the matrix product that follows (gemm_mma.chx).
+algo dit_lnmod(s, n)
+  in  x:   f32[s, n]
+  in  sc:  f32[2, n]
+  in  sel: f32[s, 1]
+  out y:   f16[s, n]
+{
+  grid i over s
+  let x  = load x[i, 0 ; 1, n]
+  let sm = rowsum &x
+  let mu = sm * (1 / n)
+  let xc = x - mu
+  let sq = &xc * &xc
+  let vs = rowsum sq
+  let vr = vs * (1 / n)
+  let t  = vr + 0.000001
+  let rs = rsqrt t
+  let xn = xc * rs
+  let sl = load sel[i, 0 ; 1, 1]
+  let s0 = load sc[0, 0 ; 1, n]
+  let s1 = load sc[1, 0 ; 1, n]
+  let df = s0 - &s1
+  let a  = df * sl
+  let sc = s1 + a
+  let g  = sc + 1
+  let o  = xn * g
+  let oh = stage f16 o
+  store oh -> y[i, 0]
+}
+
+schedule dit_lnmod for apple-m-series { threads 256 }
+schedule dit_lnmod for nvidia-ada     { threads 256 }

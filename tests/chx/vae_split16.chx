@@ -1,0 +1,22 @@
+// The attention of the VAE decoder's mid block, after its qkv product (docs/diffusion.md D4b): qkv [r, 3 c] f32 is split into q times sc (= 1/sqrt(c), a constant) as f16, k as f16 and v as f32, so that the scores are one matrix product
+// (gemm_mma.chx) of f16 operands and the weighted sum (dit_pv.chx) takes v in f32.
+algo vae_split16(r, c, sc)
+  in  qkv: f32[r, 3 * c]
+  out q:   f16[r, c]
+  out k:   f16[r, c]
+  out v:   f32[r, c]
+{
+  grid i over r
+  let a  = load qkv[i, 0 ; 1, c]
+  let b  = load qkv[i, c ; 1, c]
+  let d  = load qkv[i, 2 * c ; 1, c]
+  let qs = a * sc
+  let qh = stage f16 qs
+  let kh = stage f16 b
+  store qh -> q[i, 0]
+  store kh -> k[i, 0]
+  store d -> v[i, 0]
+}
+
+schedule vae_split16 for apple-m-series { threads 256 }
+schedule vae_split16 for nvidia-ada     { threads 256 }

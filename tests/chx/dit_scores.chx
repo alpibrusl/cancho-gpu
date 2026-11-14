@@ -1,0 +1,26 @@
+// q, k and v are token-major, as the projections write them: row i is [head 0's 128 values, head 1's, ...], so a head's tile is a window at column h * d and no transpose is needed.
+// The scores of a diffusion transformer's attention, tiled over the queries as well as the keys (docs/diffusion.md D1): head h's rows qb * qs .. (qb + 1) * qs
+// of q against positions sp * ts .. (sp + 1) * ts of its keys,
+//
+//     sc = q k^T / sqrt(128) + mask        (d MUST be 128: the scale 0.08838834764831845 is a literal, as attention_scores_b.chx's is)
+//
+// mask is the additive [nq, t] matrix (0 where a position may attend, a large negative number where it may not: the block-causal one of Qwen-Image 2.1, built by the
+// host), shared by every head. The scores go to an [nh * nq, t] scratch for dit_stats.chx and dit_pv.chx. The decode kernels tile only the keys (their query rows are
+// the g heads that share a key/value head); here a head has nq queries and the tile is [qs, ts].
+algo dit_scores(nh, nq, t, qs, ts, d)
+  in  q:    f32[nq, nh * d]
+  in  k:    f32[t, nh * d]
+  in  mask: f32[nq, t]
+  out sc:   f32[nh * nq, t]
+{
+  grid h over nh, qb over nq / qs, sp over t / ts
+  let qt = load q[qb * qs, h * d ; qs, d]
+  let kt = load k[sp * ts, h * d ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.08838834764831845
+  let mk = load mask[qb * qs, sp * ts ; qs, ts]
+  store sd + mk -> sc[h * nq + qb * qs, sp * ts]
+}
+
+schedule dit_scores for apple-m-series { threads 512 }
+schedule dit_scores for nvidia-ada     { threads 128 }

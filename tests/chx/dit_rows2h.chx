@@ -1,0 +1,13 @@
+// The first two rows of an f16 [m, n] matrix, widened to f32 [2, n] (a probe: the answer of a session that times kernels with f16 outputs; dit_rows2.chx does the same for f32).
+algo dit_rows2h(m, n, bn)
+  in  x: f16[m, n]
+  out y: f32[2, n]
+{
+  grid j over n / bn
+  let a = load x[0, j * bn ; 2, bn]
+  let w = stage f32 a
+  store w -> y[0, j * bn]
+}
+
+schedule dit_rows2h for apple-m-series { threads 256 }
+schedule dit_rows2h for nvidia-ada     { threads 256 }

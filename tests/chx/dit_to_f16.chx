@@ -1,0 +1,14 @@
+// f32 to f16 for s rows of n (docs/diffusion.md D2c): the attention output is f32 (dit_pv.chx) and the matrix unit's product (gemm_mma.chx) takes f16, so the activation is rounded
+// to f16 here, to nearest even, as `stage f16` says.
+algo dit_to_f16(s, n)
+  in  x: f32[s, n]
+  out y: f16[s, n]
+{
+  grid i over s
+  let a  = load x[i, 0 ; 1, n]
+  let ah = stage f16 a
+  store ah -> y[i, 0]
+}
+
+schedule dit_to_f16 for apple-m-series { threads 256 }
+schedule dit_to_f16 for nvidia-ada     { threads 256 }

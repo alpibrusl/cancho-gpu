@@ -1,0 +1,12 @@
+// The first two rows of an [m, n] matrix, as [2, n] (docs/diffusion.md D2e: norm_out's scale is a product of m padded rows of which rows 0 and 1 are real, and dit_lnmod.chx takes [2, n]).
+algo dit_rows2(m, n, bn)
+  in  x: f32[m, n]
+  out y: f32[2, n]
+{
+  grid j over n / bn
+  let a = load x[0, j * bn ; 2, bn]
+  store a -> y[0, j * bn]
+}
+
+schedule dit_rows2 for apple-m-series { threads 256 }
+schedule dit_rows2 for nvidia-ada     { threads 256 }

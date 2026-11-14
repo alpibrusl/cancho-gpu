@@ -1,0 +1,34 @@
+// The end of an up block that upsamples (docs/diffusion.md D4b): z = conv + bias + shortcut at the doubled resolution. cv is the upsample's 3 x 3 convolution of the doubled image (r2 rows, f32), and s00, s01, s10, s11 the
+// shortcut's four sub-positions at the source resolution (r rows: each a product of the block's input with a 0/1 selection matrix, which is DupUp3D's channel rearrangement). Destination pixel (2i + 1 + a, 2j + 1 + b) takes
+// s_ab at source pixel (i, j). Rows that are not written (the border, the padding) stay zero.
+algo vae_up2_epi(h, w, c, r, r2)
+  in  cv:  f32[r2, c]
+  in  b:   f32[1, c]
+  in  s00: f32[r, c]
+  in  s01: f32[r, c]
+  in  s10: f32[r, c]
+  in  s11: f32[r, c]
+  out z:   f32[r2, c]
+{
+  grid i over h, j over w
+  let bb  = load b
+  let c00 = load cv[(2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c01 = load cv[(2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let c10 = load cv[(2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c11 = load cv[(2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let r00 = load s00[(i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r01 = load s01[(i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r10 = load s10[(i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r11 = load s11[(i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let a00 = c00 + &bb
+  let a01 = c01 + &bb
+  let a10 = c10 + &bb
+  let a11 = c11 + bb
+  store a00 + r00 -> z[(2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0]
+  store a01 + r01 -> z[(2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0]
+  store a10 + r10 -> z[(2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0]
+  store a11 + r11 -> z[(2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0]
+}
+
+schedule vae_up2_epi for apple-m-series { threads 128 }
+schedule vae_up2_epi for nvidia-ada     { threads 128 }
