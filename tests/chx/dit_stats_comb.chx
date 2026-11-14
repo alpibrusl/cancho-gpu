@@ -1,0 +1,28 @@
+// The merge of dit_stats_c.chx's chunks (docs/diffusion.md D10): m = the maximum over the chunks, z = sum over chunks of zc * exp(mc - m), the same m and z as dit_stats_m.chx up to the order of the sums.
+algo dit_stats_comb(nh, nq, nc, qs)
+  in  mc: f32[nc * nh * nq]
+  in  zc: f32[nc * nh * nq]
+  out m:  f32[nh * nq]
+  out z:  f32[nh * nq]
+{
+  grid h over nh, qb over nq / qs
+  let m1 = load mc[h * nq + qb * qs ; qs]
+  let mx = for c in 1 .. nc with m1 {
+    let cm = load mc[c * nh * nq + h * nq + qb * qs ; qs]
+    yield m1 + relu (cm - &m1)
+  }
+  let z0 = zeros f32[qs]
+  let zz = for c in 0 .. nc with z0 {
+    let cm = load mc[c * nh * nq + h * nq + qb * qs ; qs]
+    let cz = load zc[c * nh * nq + h * nq + qb * qs ; qs]
+    let d  = cm - &mx
+    let w  = exp d
+    let t2 = cz * w
+    yield z0 + t2
+  }
+  store mx -> m[h * nq + qb * qs]
+  store zz -> z[h * nq + qb * qs]
+}
+
+schedule dit_stats_comb for apple-m-series { threads 64 }
+schedule dit_stats_comb for nvidia-ada     { threads 128 }

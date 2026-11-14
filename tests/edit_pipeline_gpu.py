@@ -2,7 +2,7 @@
 """D9g of docs/diffusion.md: an image edit on a Metal GPU from a photograph and a prompt to the pixels, in the stages of D9: the vision tower (D9b), the language model reading the image (D9c), the VAE encoder (D9d), the transformer's prefix
 pass and eight cached steps with the Euler update (D9e), the VAE decoder (D4c).
 
-    edit_pipeline_gpu.py IMAGE WORK_DIR --prompt TEXT [--seed N] [--steps N] --weights DIR --text-weights DIR [--out PNG] [--resident]
+    edit_pipeline_gpu.py IMAGE WORK_DIR --prompt TEXT [--seed N] [--steps N] --weights DIR --text-weights DIR [--out PNG] [--resident] [--subprocess]
 
 IMAGE is a photograph (scripts/fetch-test-photo.sh); WORK_DIR keeps every stage's files; `--weights` is the directory of f16 block weights of tests/dit_big.py (head-permuted) and `--text-weights` the directory of the text encoder's
 (tests/text_img_gpu.py writes it on first use, 15.7 GB). Needs a Mac, the checkpoint, the venv of the first image edits, and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`. The result is written to WORK_DIR/edited.png
@@ -45,13 +45,33 @@ timings = {}
 
 
 def run(args, log, label):
+    """A stage script, run inside this process (runpy, with its own argv and its output kept in a log), so that the interpreter and the heavy imports are paid once: as subprocesses the four stages cost
+    about 12 s of start-up and imports (D9k). `--subprocess` on the command line runs them as separate processes, as D9g did."""
     t0 = time.time()
-    r = subprocess.run([PY] + args, capture_output=True, text=True, cwd=ROOT)
-    open(P(log), "w").write(r.stdout + r.stderr)
+    if "--subprocess" in sys.argv:
+        r = subprocess.run([PY] + args, capture_output=True, text=True, cwd=ROOT)
+        out, code = r.stdout + r.stderr, r.returncode
+    else:
+        import contextlib
+        import io
+        import runpy
+        buf, code = io.StringIO(), 0
+        old_argv, old_path = sys.argv, list(sys.path)
+        sys.argv = [os.path.join(ROOT, args[0])] + args[1:]
+        sys.path.insert(0, os.path.join(ROOT, "tests"))  # what python does for a script: its own directory first
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                runpy.run_path(os.path.join(ROOT, args[0]), run_name="__main__")
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        finally:
+            sys.argv, sys.path[:] = old_argv, old_path
+        out = buf.getvalue()
+    open(P(log), "w").write(out)
     timings[label] = time.time() - t0
-    print("%-34s %s in %.0f s" % (label, "ok" if r.returncode == 0 else "FAILED (%d)" % r.returncode, timings[label]), flush=True)
-    if r.returncode != 0:
-        print(r.stdout[-1500:], r.stderr[-1500:])
+    print("%-34s %s in %.0f s" % (label, "ok" if code == 0 else "FAILED (%d)" % code, timings[label]), flush=True)
+    if code != 0:
+        print(out[-3000:])
         sys.exit(1)
 
 

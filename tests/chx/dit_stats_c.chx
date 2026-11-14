@@ -1,0 +1,22 @@
+// The statistics of a softmax in one pass over the scores (docs/diffusion.md D10): for every chunk c of cs keys, the row maximum mc and the sum zc = sum exp(s + mask - mc) of the qs query rows of head h's tile qb, each chunk its own threadgroup,
+// so that the scores are read once (dit_stats_m.chx reads them twice, once for the maximum and once for the sum). dit_stats_comb.chx merges the chunks. mc and zc are chunk-major: [c, h * nq + row].
+algo dit_stats_c(nh, nq, t, qs, cs)
+  in  sc:   f32[nh * nq, t]
+  in  mask: f32[nq, t]
+  out mc:   f32[(t / cs) * nh * nq]
+  out zc:   f32[(t / cs) * nh * nq]
+{
+  grid h over nh, qb over nq / qs, c over t / cs
+  let s0 = load sc[h * nq + qb * qs, c * cs ; qs, cs]
+  let k0 = load mask[qb * qs, c * cs ; qs, cs]
+  let s1 = s0 + k0
+  let cm = rowmax &s1
+  let sh = s1 - &cm
+  let e  = exp sh
+  let cz = rowsum e
+  store cm -> mc[c * nh * nq + h * nq + qb * qs]
+  store cz -> zc[c * nh * nq + h * nq + qb * qs]
+}
+
+schedule dit_stats_c for apple-m-series { threads 64 }
+schedule dit_stats_c for nvidia-ada     { threads 128 }

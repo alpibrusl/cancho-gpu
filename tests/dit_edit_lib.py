@@ -18,6 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
 CHX = os.path.join(ROOT, "tests/chx")
 NEG = -1e9
+ONE_PASS = os.environ.get("DIT_STATS") != "two"
 NB, D, H, HD = 32, 4096, 32, 128
 f16 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f2")).tofile(path)
 f32 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f4")).tofile(path)
@@ -146,7 +147,11 @@ class Edit:
                     s.link(n(src) + ".y", n(cn) + ".b")
             s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={NP} t={t} d={HD}")
             s.link(n("rq") + ".y", n("sc") + ".q"); s.link(kk, n("sc") + ".k")
-            s.program(n("st"), "dit_stats_m", f"nh={H} nq={NP} t={t} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
+            if ONE_PASS:  # the statistics in one pass over the scores, per chunk of 64 keys and then merged (D10); `DIT_STATS=two` runs D8's two-pass kernel instead
+                s.program(n("stc"), "dit_stats_c", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("stc") + ".sc"); s.res(n("stc") + ".mask", P(maskf))
+                s.program(n("st"), "dit_stats_comb", f"nh={H} nq={NP} nc={t // 64} qs=32"); s.link(n("stc") + ".mc", n("st") + ".mc"); s.link(n("stc") + ".zc", n("st") + ".zc")
+            else:
+                s.program(n("st"), "dit_stats_m", f"nh={H} nq={NP} t={t} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
             s.program(n("pv"), "dit_pv_mma", f"nh={H} nq={NP} t={t} d={HD}")
             s.link(n("sc") + ".sc", n("pv") + ".sc"); s.res(n("pv") + ".mask", P(maskf)); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(vv, n("pv") + ".v")
             s.program(n("c1"), "dit_to_f16", f"s={NP} n={D}"); s.link(n("pv") + ".o", n("c1") + ".x")
@@ -169,7 +174,7 @@ class Edit:
             if alias and b > lo:
                 # the activations of block b live in the buffers of block b - 1's (docs/resident.md 21.4): the session file's checks prove nothing reads them any more. The residual stream
                 # (gr2.z, which is saved at the end) and what a prefix pass saves (the keys and values) keep their own
-                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z"), ("pv", "o"), ("c1", "y"),
+                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z")] + ([("stc", "mc"), ("stc", "zc")] if ONE_PASS else []) + [ ("pv", "o"), ("c1", "y"),
                         ("go", "y"), ("gr1", "z"), ("lnm2", "y"), ("gg", "y"), ("gp", "y"), ("sw", "y"), ("gd", "y")]
                 outs += [("ck", "y"), ("cv", "y")] if not prefix else []
                 outs += [("rk", "y"), ("vh", "y")] if not prefix else []

@@ -4,7 +4,7 @@
     dit_attention_mma.py <cancho-gpu> [--mutants]
 
 Four kernels chained through `cancho-gpu run`: `dit_rope16` (the rotary embedding of dit_rope.chx, times a constant, written as f16: q gets 1/sqrt(128), k gets 1), `dit_scores_mma` (q k^T on the matrix unit from f16 q and k, f32 accumulation, the scores stored in f32),
-`dit_stats_m` (the row maximum and normaliser of scores + mask) and `dit_pv_mma` (the weights exp(s + mask - m) / z rounded to f16 and multiplied by f16 v on the matrix unit). v is rounded to f16 by `dit_to_f16.chx`. The mask is added where it is read (stats and the product), since a matrix-unit accumulator cannot be touched after the product.
+`dit_stats_m` (the row maximum and normaliser of scores + mask; D10 adds the same in one pass, `dit_stats_c` and `dit_stats_comb`, which the weighted sum is given and which are held to `dit_stats_m`'s) and `dit_pv_mma` (the weights exp(s + mask - m) / z rounded to f16 and multiplied by f16 v on the matrix unit). v is rounded to f16 by `dit_to_f16.chx`. The mask is added where it is read (stats and the product), since a matrix-unit accumulator cannot be touched after the product.
 
 Two references, in binary64, **every element**:
  1. the same arithmetic with the f16 roundings the kernels make (q * scale after the rotation, k, v, and the weights p), whose difference from the kernels is the f32 accumulation and the rounding ties: tolerance 1e-4 absolute (the outputs are of the order of 0.3);
@@ -119,7 +119,21 @@ def case(root, name, nh, n, ids, valid, seed):
         o, err = run(root, "dit_stats_m", [f"nh={nh}", f"nq={n}", f"t={n}", "qs=32", "cs=64"], {"sc": sc, "mask": mask}, ["m", "z"], tmp)
         if o is None:
             return False, "dit_stats_m: " + err
+        m_two, z_two = o
+        # the same statistics in one pass over the scores (D10): the pipeline's pair of kernels, and what the weighted sum below is given
+        o, err = run(root, "dit_stats_c", [f"nh={nh}", f"nq={n}", f"t={n}", "qs=16", "cs=64"], {"sc": sc, "mask": mask}, ["mc", "zc"], tmp)
+        if o is None:
+            return False, "dit_stats_c: " + err
+        mc, zc = o
+        o, err = run(root, "dit_stats_comb", [f"nh={nh}", f"nq={n}", f"nc={n // 64}", "qs=32"], {"mc": mc, "zc": zc}, ["m", "z"], tmp)
+        if o is None:
+            return False, "dit_stats_comb: " + err
         m, z = o
+        # the one-pass statistics against the two-pass ones: the maximum exactly, the normaliser to the order of the f32 sums
+        dm = max(abs(a - b) for a, b in zip(m, m_two))
+        dz = max(abs(a - b) / max(abs(b), 1e-30) for a, b in zip(z, z_two))
+        if dm != 0.0 or dz > 1e-5:
+            return False, "the one-pass statistics differ from the two-pass ones: maximum %.3g, normaliser %.3g (relative; tolerance 0 and 1e-5)" % (dm, dz)
         o, err = run(root, "dit_pv_mma", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"sc": sc, "mask": mask, "m": m, "z": z, "v": v16}, ["o"], tmp)
         if o is None:
             return False, "dit_pv_mma: " + err
@@ -149,6 +163,11 @@ EDITS = [
     ("dit_scores_mma", "store acc -> sc[h * nq + i * bm, j * bn]", "store acc -> sc[i * bm, j * bn]", "every head written to the first head's rows"),
     ("dit_stats_m", "let s0 = f0 + k0", "let s0 = f0", "no mask in the first chunk's maximum"),
     ("dit_stats_m", "let sh = s2 - &mx", "let sh = sm - &mx", "no mask in the normaliser"),
+    ("dit_stats_c", "let s1 = s0 + k0", "let s1 = s0", "no mask in the chunks' statistics"),
+    ("dit_stats_c", "let sh = s1 - &cm", "let sh = s1", "the chunk's own maximum not subtracted"),
+    ("dit_stats_c", "store cz -> zc[c * nh * nq + h * nq + qb * qs]", "store cz -> zc[h * nq + qb * qs]", "every chunk's sum written to the first chunk's place"),
+    ("dit_stats_comb", "let d  = cm - &mx", "let d  = cm", "a chunk's sum not rescaled to the global maximum"),
+    ("dit_stats_comb", "yield m1 + relu (cm - &m1)", "yield m1", "the maximum of the first chunk only"),
     ("dit_pv_mma", "let s2 = sm + mk", "let s2 = sm + sm", "the mask replaced by the scores"),
     ("dit_pv_mma", "let ph = stage f16 pp", "let ph = stage f16 e", "the weights not divided by the normaliser"),
     ("dit_pv_mma", "load v[p * bk, h * d + j * bn ; bk, bn] @shared", "load v[p * bk, j * bn ; bk, bn] @shared", "v always read from the first head"),
