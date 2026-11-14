@@ -74,6 +74,49 @@ fn buffer_of[&m](m: &!m [int], bufs: int, pi: int, ai: int) -> [] int {
     return mem.get(m, mem.get(m, bufs, pi), ai);
 }
 
+// A binary resident file, read and sent to its device buffer a chunk at a time (so that a file larger than the byte pool is not refused: the pool only has to hold one chunk).
+// `rec` is a record of the session's `resident` list (program, parameter, file name). Answers 0, or -1 with a refusal. Setup uses it once for each file, and the request `reload` again.
+fn upload_binary[&m, &t, &f, &s](m: &!m [int], t: &!t [byte], ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), progs: int, bufs: int, rec: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
+    let mark = m[mem.text_slot()];
+    // a binary resident file: its bytes are the device's, and go up as they are, a chunk at a time, so that a file larger than the byte pool (Qwen2.5-0.5B's f32 table is 545 MB,
+    // docs/resident.md section 24) is not refused: the pool only has to hold one chunk
+    let want = m[g + 3] * kinds.size_bytes(m[g]);
+    let path = text.bytes(t, m[rec + 2]);
+    let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 1);
+    if ftop < 0 {
+        let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
+        return 0 - 1;
+    }
+    if fsize != want {
+        let e = err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes", m[rec + 2], text.num(m, t, fsize)));
+        return 0 - 1;
+    }
+    var off = 0;
+    while off < want {
+        var piece = want - off;
+        if piece > chunk_cap() {
+            piece = chunk_cap();
+        }
+        let at = m[mem.text_slot()];
+        if piece > len(t) - at {
+            let e = err.fail(m, t, "usage", text.f1(m, t, "the byte pool cannot hold a chunk of $", m[rec + 2]));
+            return 0 - 1;
+        }
+        if fileio.read_at(t, fs, text.bytes(t, m[rec + 2]), off, at, piece) != piece {
+            let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
+            return 0 - 1;
+        }
+        if metal.cgpu_upload_at(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), off, t[at..at + piece]) < 0 {
+            let e = device_fail(m, t, ffi, "uploading resident data");
+            return 0 - 1;
+        }
+        off = off + piece;
+    }
+    m[mem.text_slot()] = mark;
+    return 0;
+}
+
 // Compile every kernel, give every parameter a buffer (a linked input shares the buffer of the output it is linked from) and upload
 // the resident data. Answers (the list of each program's kernel function, the list of each program's buffers), or (-1, -1).
 fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), sess: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] (int, int) {
@@ -267,39 +310,8 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             // the buffer already holds this file: an earlier declaration uploaded it
             e0 = 0;
         } else if m[rec + 2] >= 0 {
-            // a binary resident file: its bytes are the device's, and go up as they are, a chunk at a time, so that a file larger than the byte pool (Qwen2.5-0.5B's f32 table is 545 MB,
-            // docs/resident.md section 24) is not refused: the pool only has to hold one chunk
-            let want = m[g + 3] * kinds.size_bytes(m[g]);
-            let path = text.bytes(t, m[rec + 2]);
-            let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, path, 1);
-            if ftop < 0 {
-                let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
+            if upload_binary(m, t, ffi, fs, progs, bufs, rec) < 0 {
                 return (0 - 1, 0 - 1);
-            }
-            if fsize != want {
-                let e = err.fail(m, t, "usage", text.f2(m, t, "the binary file $ has $ bytes", m[rec + 2], text.num(m, t, fsize)));
-                return (0 - 1, 0 - 1);
-            }
-            var off = 0;
-            while off < want {
-                var piece = want - off;
-                if piece > chunk_cap() {
-                    piece = chunk_cap();
-                }
-                let at = m[mem.text_slot()];
-                if piece > len(t) - at {
-                    let e = err.fail(m, t, "usage", text.f1(m, t, "the byte pool cannot hold a chunk of $", m[rec + 2]));
-                    return (0 - 1, 0 - 1);
-                }
-                if fileio.read_at(t, fs, text.bytes(t, m[rec + 2]), off, at, piece) != piece {
-                    let e = err.fail(m, t, "io", text.f1(m, t, "cannot read $", m[rec + 2]));
-                    return (0 - 1, 0 - 1);
-                }
-                if metal.cgpu_upload_at(ffi, buffer_of(m, bufs, m[rec], m[rec + 1]), off, t[at..at + piece]) < 0 {
-                    let e = device_fail(m, t, ffi, "uploading resident data");
-                    return (0 - 1, 0 - 1);
-                }
-                off = off + piece;
             }
         } else {
             let at = devcodec.encode(m, t, fm, g);
@@ -466,6 +478,22 @@ fn checkpoint[&m, &t, &i, &f, &s](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: 
     return ckpt.print_totals(m, t, io, totals);
 }
 
+// The request `reload`: the named binary resident files are read again and sent to their buffers (`session.reload_request`). Answers the number of files sent, as one line.
+fn reload[&m, &t, &i, &f, &s](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &f Ffi("libmetalgpu"), fs: &s Fs(""), sess: int, bufs: int, recs: int) -> [io_write, ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let progs = m[sess + session.s_progs()];
+    var k = 0;
+    while k < mem.size(m, recs) {
+        if upload_binary(m, t, ffi, fs, progs, bufs, mem.get(m, recs, k)) < 0 {
+            return 0 - 1;
+        }
+        k = k + 1;
+    }
+    io.write_all(io, text.bytes(t, text.num(m, t, mem.size(m, recs))));
+    io.write_all(io, "\n");
+    let _flushed = flush_out(io);
+    return 0;
+}
+
 fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_read, io_write, err_write, fs_read(""), fs_write(""), file_read, file_write, args, ffi("libmetalgpu")] int {
     if arg_count(args) != 2 {
         return usage(io);
@@ -514,6 +542,13 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
             if asked > 0 {
                 done = checkpoint(m, t, io, ffi, fs, sess, bufs);
             } else if asked == 0 {
+                let (kind, recs) = session.reload_request(m, t, sess, text.handle(tmark, n));
+                if kind < 0 {
+                    done = 0 - 1;
+                } else if kind > 0 {
+                    done = reload(m, t, io, ffi, fs, sess, bufs, recs);
+                }
+                if kind == 0 {
                 let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
                 done = reps;
                 if done >= 0 {
@@ -524,6 +559,7 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
                 }
                 if done >= 0 {
                     done = session.print_answers(m, t, fm, io, sess);
+                }
                 }
             }
             if done < 0 {
