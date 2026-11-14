@@ -160,6 +160,15 @@ def block(x, ctx, proj, cos, sin, b):
     return x + ff * g2
 
 
+def head(x, temb, f, h, w):
+    """The output: x [tokens, 3072], temb [tokens, 3072] -> the velocity [48, F, H, W]: (norm_out(x) (1 + scale) + shift) with (shift, scale) = the head's table + the time embedding of the token, `proj_out` (3,072 -> 192), and the 1 x 2 x 2 patches put back."""
+    tab = W("scale_shift_table")[0]
+    shift, scale = tab[0] + temb, tab[1] + temb
+    y = layer_norm(x) * (1 + scale) + shift
+    y = y @ W("proj_out.weight").T + W("proj_out.bias")
+    return y.reshape(f, h // 2, w // 2, 1, 2, 2, 48).transpose(6, 0, 3, 1, 4, 2, 5).reshape(48, f, h, w)
+
+
 def inputs(f, h, w, ntext, seed):
     rng = np.random.default_rng(seed)
     lat = rng.standard_normal((48, f, h, w))
@@ -169,7 +178,7 @@ def inputs(f, h, w, ntext, seed):
     return lat, txt, t
 
 
-def forward(lat, txt, t, nblocks, stages=None):
+def forward(lat, txt, t, nblocks, stages=None, with_head=False):
     f, h, w = lat.shape[1:]
     x = patchify(lat)
     cos, sin = rope_tables(f, h // 2, w // 2)
@@ -181,6 +190,11 @@ def forward(lat, txt, t, nblocks, stages=None):
         x = block(x, ctx, proj, cos, sin, b)
         if stages is not None:
             stages["block%d" % b] = x
+    if with_head:
+        out = head(x, temb, f, h, w)
+        if stages is not None:
+            stages["head"] = out
+        return out
     return x
 
 
@@ -189,8 +203,24 @@ if __name__ == "__main__":
     ntext, nblocks, seed = int(arg("--text", 16)), int(arg("--blocks", 2)), int(arg("--seed", 0))
     lat, txt, t = inputs(f, h, w, ntext, seed)
     st = {}
-    out = forward(lat, txt, t, nblocks, st)
-    print("latent [48, %d, %d, %d] -> %d tokens, text %d tokens, %d blocks: output rms %.4g" % (f, h, w, len(out), ntext, nblocks, np.sqrt((out ** 2).mean())))
+    out = forward(lat, txt, t, nblocks, st, with_head="--full" in sys.argv)
+    print("latent [48, %d, %d, %d] -> %d tokens, text %d tokens, %d blocks%s: output rms %.4g" % (f, h, w, f * (h // 2) * (w // 2), ntext, nblocks, " and the head" if "--full" in sys.argv else "", np.sqrt((out ** 2).mean())))
+    if "--full" in sys.argv and ("--torch32" in sys.argv or "--bf16" in sys.argv):
+        # the whole model, as the pipeline calls it: one timestep a token, the velocity [48, F, H, W]
+        import torch
+        from diffusers import WanTransformer3DModel
+        for dt, name in ((torch.float32, "float32"), (torch.bfloat16, "bfloat16")):
+            if (dt == torch.float32 and "--torch32" not in sys.argv) or (dt == torch.bfloat16 and "--bf16" not in sys.argv):
+                continue
+            m = WanTransformer3DModel.from_pretrained(_DIR, torch_dtype=dt).eval()
+            with torch.no_grad():
+                v = m(hidden_states=torch.tensor(lat, dtype=dt)[None], timestep=torch.tensor(t, dtype=torch.float32)[None], encoder_hidden_states=torch.tensor(txt, dtype=dt)[None], return_dict=False)[0][0]
+            a, e = v.float().double().numpy(), st["head"]
+            r = float(np.sqrt((e ** 2).mean()))
+            dd = np.abs(a - e)
+            print("\ntorch %s, the whole model, against float64: mean abs error %.3g (%.3g of the rms %.3g), max %.3g" % (name, dd.mean(), dd.mean() / r, r, dd.max()))
+            del m
+        sys.exit(0)
     if "--torch32" in sys.argv or "--bf16" in sys.argv:
         import torch
         from diffusers import WanTransformer3DModel

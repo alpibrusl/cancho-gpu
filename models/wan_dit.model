@@ -3,7 +3,8 @@
 # a modulated layer norm, a feed-forward with a tanh GELU, a gated residual. Per token the modulation has two rows (the sampled timestep's and t = 0's: the conditioning frame), chosen by `sel`.
 # The weights are f16 files in WDIR written by tests/wan_gpu.py: q and k of the self-attention (and their norms) with the channels of a head permuted even-first, so that `dit_rope16`'s rotate-half is the model's rotary rotation of adjacent pairs.
 #
-#     cancho-gpu model-expand models/wan_dit.model CHX=<tests/chx> WORK=<inputs and modulation> WDIR=<weights> S=<tokens> T=<text tokens> NB=<blocks>
+#     cancho-gpu model-expand models/wan_dit.model CHX=<tests/chx> WORK=<inputs and modulation> WDIR=<weights> S=<tokens, a multiple of 64> T=<text tokens> NB=<blocks> HEAD=<1 for the output layer>
+# HEAD=1 ends with the output layer: a modulated layer norm with the head's own (shift, scale), `proj_out` (3,072 -> 192) and its bias, saved as head_out.f32 ([S, 192]: the 1 x 2 x 2 patches of 48 channels).
 text CHX = tests/chx
 text WORK = .
 text WDIR = .
@@ -11,6 +12,7 @@ text RQSC = 0.08838834764831843
 const S = 128
 const T = 64
 const NB = 1
+const HEAD = 0
 const D = 3072
 const FF = 14336
 const H = 24
@@ -187,6 +189,21 @@ repeat b in 0 .. NB
     use blk(b)
 end
 
+if HEAD == 1
+    program hd_ln $CHX/dit_wan_lnmod.chx s=$S n=$D
+    link b${NB - 1}_gr2.z -> hd_ln.x
+    resident hd_ln.sh $WORK/head_sh.f32 f32
+    resident hd_ln.sc $WORK/head_sc.f32 f32
+    resident hd_ln.sel $WORK/sel.f32 f32
+    program hd_g $CHX/ported/gemm_mma.chx m=$S n=192 k=$D
+    link hd_ln.y -> hd_g.a
+    resident hd_g.w $WDIR/proj_out.f16 f16
+    program hd_b $CHX/vae_bias.chx r=$S c=192
+    link hd_g.y -> hd_b.x
+    resident hd_b.b $WDIR/proj_out_b.f32 f32
+    resident hd_b.m $WORK/ones_s.f32 f32
+    save hd_b.z $WORK/head_out.f32 f32
+end
 save b${NB - 1}_gr2.z $WORK/x_out.f32 f32
 program probe $CHX/dit_rows2.chx m=$S n=$D bn=1024
 link b${NB - 1}_gr2.z -> probe.x
