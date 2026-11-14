@@ -1,0 +1,9 @@
+# a block with parameters, used with expressions; a block's own const does not leak out of it
+const W = 10
+block pair(i, j)
+    const W = 99
+    program P${i}_${j} k.chx w=$W s=${i * j}
+end
+use pair(1, 2)
+use pair(W, 3 + 1)
+program after w=$W

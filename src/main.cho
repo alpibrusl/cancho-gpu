@@ -59,6 +59,7 @@ import tokenize;
 import chat;
 import chat_w1;
 import sample;
+import model;
 
 fn words() -> [] int {
     return 100000000;
@@ -74,7 +75,7 @@ fn floats_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.chx> [name=value ...] [--run]\n       cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME FILE ...] [--out NAME ...]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu detokenize <tokenizer.json | model.gguf> <ids>\n       cancho-gpu chat <request.json> [qwen35-08b-w1]\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed> [<penalty> <seen.txt>]\n");
+    io.error_all(io, "usage: cancho-gpu emit <file.chx> <dir> [name=value ...] [--run]\n       cancho-gpu check <file.chx> [name=value ...] [--run]\n       cancho-gpu run <file.chx> [name=value ...] [--target T] [--in NAME FILE ...] [--out NAME ...]\n       cancho-gpu gguf <file.gguf> [--sum]\n       cancho-gpu model-expand <model file> [NAME=value ...]\n       cancho-gpu safetensors <file>\n       cancho-gpu tokenize <tokenizer.json | model.gguf> <corpus>\n       cancho-gpu detokenize <tokenizer.json | model.gguf> <ids>\n       cancho-gpu chat <request.json> [qwen35-08b-w1]\n       cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed> [<penalty> <seen.txt>]\n");
     return 2;
 }
 
@@ -176,6 +177,34 @@ fn run_safetensors[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, 
     return 0;
 }
 
+// `cancho-gpu model-expand <model file>`: the plain session file a model file expands to, on standard output (docs/resident.md section 31).
+fn run_model_expand[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, args] int {
+    let file = arg(args, 2);
+    let (top, got, whole) = fileio.prefix(m, t, fs, file, gguf_cap());
+    if top < 0 || got != whole {
+        io.error_all(io, "error[io]: cannot read ");
+        io.error_all(io, file);
+        io.error_all(io, "\n");
+        return 1;
+    }
+    let defs = mem.list(m);
+    var ai = 3;
+    while ai < arg_count(args) {
+        let word = text.from_bytes(m, t, arg(args, ai));
+        if text.index_of(t, word, '=', 0) <= 0 {
+            return usage(io);
+        }
+        mem.push(m, defs, word);
+        ai = ai + 1;
+    }
+    let out = model.expand(m, t, text.handle(top, got), defs);
+    if out < 0 {
+        return cli.report(m, t, io);
+    }
+    io.write_all(io, text.bytes(t, out));
+    return 0;
+}
+
 fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), fs_write(""), file_read, args] int {
     if arg_count(args) < 3 {
         return usage(io);
@@ -186,6 +215,9 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
     }
     if text.is(t, cmd, "gguf") {
         return run_gguf(m, t, io, fs, args);
+    }
+    if text.is(t, cmd, "model-expand") && arg_count(args) >= 3 {
+        return run_model_expand(m, t, io, fs, args);
     }
     if text.is(t, cmd, "safetensors") {
         return run_safetensors(m, t, io, fs, args);

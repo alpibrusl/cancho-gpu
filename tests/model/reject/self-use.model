@@ -1,0 +1,4 @@
+block loop(i)
+use loop(i)
+end
+use loop(0)

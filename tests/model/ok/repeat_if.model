@@ -1,0 +1,24 @@
+# repeat, nested if and else, a block used inside a repeat
+const NL = 4
+block layer(i)
+    program L$i x
+    if i == 0
+        resident L0.x a
+    else
+        link L${i - 1}.y -> L$i.x
+        if i == NL - 1
+            answer L$i.y
+        end
+    end
+end
+repeat i in 0 .. NL
+    use layer(i)
+end
+repeat j in 2 .. 2
+    never $j
+end
+repeat k in 1 .. 3
+    repeat m in 0 .. k
+        pair $k $m
+    end
+end

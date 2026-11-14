@@ -1,0 +1,5 @@
+# a session file with none of the directives is not touched: blank lines, comments and the indentation stay
+program a k.chx n=1
+
+  program b k.chx n=2   # a trailing comment stays too
+steps

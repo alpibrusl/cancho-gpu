@@ -1,0 +1,1 @@
+error[session]: model line 3: `b` is used with another number of arguments than it has parameters

@@ -1,0 +1,7 @@
+# integer expressions: precedence, unary minus, parentheses, division and remainder, comparisons, && and ||
+const A = 7
+const B = A * 2 + 1
+const C = (A + 1) * 2 - -3
+n=$A,$B,$C,${A / 2},${A % 4},${-A + 10},${B - A - 2}
+lt=${A < B} le=${A <= 7} gt=${A > B} ge=${B >= 15} eq=${A == 7} ne=${A != 7}
+logic=${A < B && B < 20} ${A > B || B == 15} ${A > B || B == 14} ${1 && 0}

@@ -1,0 +1,142 @@
+# The transformer of Qwen-Image-2.1-Turbo with a condition image, 32 blocks, as the one session that runs the prefix pass and the eight steps (docs/diffusion.md D9e to D12), as a model file (docs/resident.md section 31).
+# It expands to the session file that tests/dit_edit_lib.py writes with `unified=True` (`--unified`): each block's keys and values are `dit_cat` of a cache (`kz`, `vz`, zeros before the prefix pass has copied its own into them) and the block's own, the statistics
+# are taken in one pass per chunk of 64 keys and merged (dit_stats_c, dit_stats_comb), and every block puts its activations in the buffers of the block before (`alias`) except the residual stream and the keys and values that are copied.
+#
+#     cancho-gpu model-expand models/qwen_image_dit.model CHX=<tests/chx> WORK=<work dir> WDIR=<the f16 block weights> NP=<rows, a multiple of 64>
+text CHX = tests/chx
+text WORK = .
+text WDIR = .
+text RQSC = 0.08838834764831843
+const NP = 4160
+const D = 4096
+const H = 32
+const HD = 128
+const NB = 32
+const T = 2 * NP
+
+block blk(b)
+    program b${b}_lnm1 $CHX/dit_lnmod.chx s=$NP n=$D
+    if b == 0
+        resident b0_lnm1.x $WORK/xu.f32 f32
+    else
+        link b${b - 1}_gr2.z -> b${b}_lnm1.x
+    end
+    resident b${b}_lnm1.sc $WORK/ms_s1.bin f32
+    resident b${b}_lnm1.sel $WORK/sel_u.f32 f32
+    program b${b}_gq $CHX/ported/gemm_mma.chx m=$NP n=$D k=$D
+    link b${b}_lnm1.y -> b${b}_gq.a
+    resident b${b}_gq.w $WDIR/wq${b}.f16 f16
+    program b${b}_gk $CHX/ported/gemm_mma.chx m=$NP n=$D k=$D
+    link b${b}_lnm1.y -> b${b}_gk.a
+    resident b${b}_gk.w $WDIR/wk${b}.f16 f16
+    program b${b}_gv $CHX/ported/gemm_mma.chx m=$NP n=$D k=$D
+    link b${b}_lnm1.y -> b${b}_gv.a
+    resident b${b}_gv.w $WDIR/wv${b}.f16 f16
+    program b${b}_nq $CHX/rmsnorm_rows.chx r=${NP * H} n=$HD eps=0.000001
+    link b${b}_gq.y -> b${b}_nq.x
+    resident b${b}_nq.w $WDIR/nq${b}.f32 f32
+    program b${b}_nk $CHX/rmsnorm_rows.chx r=${NP * H} n=$HD eps=0.000001
+    link b${b}_gk.y -> b${b}_nk.x
+    resident b${b}_nk.w $WDIR/nk${b}.f32 f32
+    program b${b}_rq $CHX/dit_rope16.chx s=$NP nh=$H h=64 sc=$RQSC
+    link b${b}_nq.y -> b${b}_rq.x
+    resident b${b}_rq.cs $WORK/cs_u.f32 f32
+    resident b${b}_rq.sn $WORK/sn_u.f32 f32
+    program b${b}_rk $CHX/dit_rope16.chx s=$NP nh=$H h=64 sc=1.0
+    link b${b}_nk.y -> b${b}_rk.x
+    resident b${b}_rk.cs $WORK/cs_u.f32 f32
+    resident b${b}_rk.sn $WORK/sn_u.f32 f32
+    program b${b}_vh $CHX/dit_to_f16.chx s=$NP n=$D
+    link b${b}_gv.y -> b${b}_vh.x
+    program b${b}_ck $CHX/dit_cat.chx s=$NP n=$D bn=1024
+    resident b${b}_ck.a $WORK/kz${b}.f16 f16
+    link b${b}_rk.y -> b${b}_ck.b
+    program b${b}_cv $CHX/dit_cat.chx s=$NP n=$D bn=1024
+    resident b${b}_cv.a $WORK/vz${b}.f16 f16
+    link b${b}_vh.y -> b${b}_cv.b
+    program b${b}_sc $CHX/dit_scores_mma.chx nh=$H nq=$NP t=$T d=$HD
+    link b${b}_rq.y -> b${b}_sc.q
+    link b${b}_ck.y -> b${b}_sc.k
+    program b${b}_stc $CHX/dit_stats_c.chx nh=$H nq=$NP t=$T qs=16 cs=64
+    link b${b}_sc.sc -> b${b}_stc.sc
+    resident b${b}_stc.mask $WORK/mask_u.f32 f32
+    program b${b}_st $CHX/dit_stats_comb.chx nh=$H nq=$NP nc=${T / 64} qs=32
+    link b${b}_stc.mc -> b${b}_st.mc
+    link b${b}_stc.zc -> b${b}_st.zc
+    program b${b}_pv $CHX/dit_pv_mma.chx nh=$H nq=$NP t=$T d=$HD
+    link b${b}_sc.sc -> b${b}_pv.sc
+    resident b${b}_pv.mask $WORK/mask_u.f32 f32
+    link b${b}_st.m -> b${b}_pv.m
+    link b${b}_st.z -> b${b}_pv.z
+    link b${b}_cv.y -> b${b}_pv.v
+    program b${b}_c1 $CHX/dit_to_f16.chx s=$NP n=$D
+    link b${b}_pv.o -> b${b}_c1.x
+    program b${b}_go $CHX/ported/gemm_mma.chx m=$NP n=$D k=$D
+    link b${b}_c1.y -> b${b}_go.a
+    resident b${b}_go.w $WDIR/wo${b}.f16 f16
+    program b${b}_gr1 $CHX/dit_gate_res.chx s=$NP n=$D
+    if b == 0
+        resident b0_gr1.x $WORK/xu.f32 f32
+    else
+        link b${b - 1}_gr2.z -> b${b}_gr1.x
+    end
+    link b${b}_go.y -> b${b}_gr1.y
+    resident b${b}_gr1.g $WORK/ms_g1.bin f32
+    resident b${b}_gr1.sel $WORK/sel_u.f32 f32
+    program b${b}_lnm2 $CHX/dit_lnmod.chx s=$NP n=$D
+    link b${b}_gr1.z -> b${b}_lnm2.x
+    resident b${b}_lnm2.sc $WORK/ms_s2.bin f32
+    resident b${b}_lnm2.sel $WORK/sel_u.f32 f32
+    program b${b}_gg $CHX/ported/gemm_mma.chx m=$NP n=${3 * D} k=$D
+    link b${b}_lnm2.y -> b${b}_gg.a
+    resident b${b}_gg.w $WDIR/wg${b}.f16 f16
+    program b${b}_gp $CHX/ported/gemm_mma.chx m=$NP n=${3 * D} k=$D
+    link b${b}_lnm2.y -> b${b}_gp.a
+    resident b${b}_gp.w $WDIR/wp${b}.f16 f16
+    program b${b}_sw $CHX/dit_swiglu.chx s=$NP n=${3 * D} bn=1024
+    link b${b}_gg.y -> b${b}_sw.g
+    link b${b}_gp.y -> b${b}_sw.u
+    program b${b}_gd $CHX/ported/gemm_mma.chx m=$NP n=$D k=${3 * D}
+    link b${b}_sw.y -> b${b}_gd.a
+    resident b${b}_gd.w $WDIR/wout${b}.f16 f16
+    program b${b}_gr2 $CHX/dit_gate_res.chx s=$NP n=$D
+    link b${b}_gr1.z -> b${b}_gr2.x
+    link b${b}_gd.y -> b${b}_gr2.y
+    resident b${b}_gr2.g $WORK/ms_g2.bin f32
+    resident b${b}_gr2.sel $WORK/sel_u.f32 f32
+    if b > 0
+        alias b${b - 1}_lnm1.y b${b}_lnm1.y
+        alias b${b - 1}_gq.y b${b}_gq.y
+        alias b${b - 1}_gk.y b${b}_gk.y
+        alias b${b - 1}_gv.y b${b}_gv.y
+        alias b${b - 1}_nq.y b${b}_nq.y
+        alias b${b - 1}_nk.y b${b}_nk.y
+        alias b${b - 1}_rq.y b${b}_rq.y
+        alias b${b - 1}_sc.sc b${b}_sc.sc
+        alias b${b - 1}_st.m b${b}_st.m
+        alias b${b - 1}_st.z b${b}_st.z
+        alias b${b - 1}_stc.mc b${b}_stc.mc
+        alias b${b - 1}_stc.zc b${b}_stc.zc
+        alias b${b - 1}_pv.o b${b}_pv.o
+        alias b${b - 1}_c1.y b${b}_c1.y
+        alias b${b - 1}_go.y b${b}_go.y
+        alias b${b - 1}_gr1.z b${b}_gr1.z
+        alias b${b - 1}_lnm2.y b${b}_lnm2.y
+        alias b${b - 1}_gg.y b${b}_gg.y
+        alias b${b - 1}_gp.y b${b}_gp.y
+        alias b${b - 1}_sw.y b${b}_sw.y
+        alias b${b - 1}_gd.y b${b}_gd.y
+        alias b${b - 1}_ck.y b${b}_ck.y
+        alias b${b - 1}_cv.y b${b}_cv.y
+    end
+end
+
+repeat b in 0 .. NB
+    use blk(b)
+end
+
+save b${NB - 1}_gr2.z $WORK/x_u_${NB}.bin f32
+program probe $CHX/dit_rows2.chx m=$NP n=$D bn=1024
+link b${NB - 1}_gr2.z -> probe.x
+steps
+answer probe.y

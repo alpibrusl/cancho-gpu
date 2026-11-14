@@ -51,7 +51,7 @@ fn line_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-metal-session <session file>\n");
+    io.error_all(io, "usage: cancho-gpu-metal-session <session file> [NAME=value ...]\n");
     return 2;
 }
 
@@ -531,8 +531,19 @@ fn copy[&m, &t, &i, &f](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &f Ffi("li
 }
 
 fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_read, io_write, err_write, fs_read(""), fs_write(""), file_read, file_write, args, ffi("libmetalgpu")] int {
-    if arg_count(args) != 2 {
+    if arg_count(args) < 2 {
         return usage(io);
+    }
+    // `NAME=value` definitions for a model file (docs/resident.md section 31)
+    let defs = mem.list(m);
+    var ai = 2;
+    while ai < arg_count(args) {
+        let word = text.from_bytes(m, t, arg(args, ai));
+        if text.index_of(t, word, '=', 0) <= 0 {
+            return usage(io);
+        }
+        mem.push(m, defs, word);
+        ai = ai + 1;
     }
     let file = arg(args, 1);
     let top = m[mem.text_slot()];
@@ -545,7 +556,7 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     }
     m[mem.text_slot()] = top + got;
     // The target is the device's: apple-m-series.
-    let sess = session.open(m, t, fm, fs, text.handle(top, got), text.lit(m, t, "apple-m-series"), true, true);
+    let sess = session.open(m, t, fm, fs, text.handle(top, got), defs, text.lit(m, t, "apple-m-series"), true, true);
     if sess < 0 {
         return cli.report(m, t, io);
     }

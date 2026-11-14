@@ -1,0 +1,1 @@
+error[session]: model line 1: expected `const NAME = expression`

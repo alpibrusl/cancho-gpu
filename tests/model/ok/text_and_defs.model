@@ -1,0 +1,6 @@
+# text constants, and a definition from the command line wins over the file's own constant
+text DIR = /some/where
+text NAME = model one
+const N = 3
+program p $DIR/k.chx n=$N
+note $NAME

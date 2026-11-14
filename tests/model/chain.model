@@ -1,0 +1,17 @@
+# a chain of NL additions z_i = z_(i-1) + y, written once: the CPU session runs it directly (tests/model.sh), as the expansion
+const NL = 3
+text DIR = tests/model
+block add(i)
+    program A$i $CHX/dit_add.chx s=2 n=4 bn=4
+    if i == 0
+        resident A0.a $DIR/x.txt
+    else
+        link A${i - 1}.z -> A$i.a
+    end
+    resident A$i.b $DIR/y.txt
+end
+repeat i in 0 .. NL
+    use add(i)
+end
+steps
+answer A${NL - 1}.z

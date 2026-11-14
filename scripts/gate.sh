@@ -59,6 +59,7 @@ python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
+sh tests/model.sh build/cancho-gpu-session
 python3 tests/samp_dev.py build/cancho-gpu-session
 python3 tests/carry_dev.py build/cancho-gpu-session
 python3 tests/train.py build/cancho-gpu-session

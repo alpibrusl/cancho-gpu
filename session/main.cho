@@ -37,22 +37,31 @@ fn line_cap() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-session <session file> [--target nvidia-ada|apple-m-series]\n");
+    io.error_all(io, "usage: cancho-gpu-session <session file> [--target nvidia-ada|apple-m-series] [NAME=value ...]\n");
     return 2;
 }
 
 fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_read, io_write, err_write, fs_read(""), fs_write(""), file_read, file_write, args] int {
-    if arg_count(args) != 2 && arg_count(args) != 4 {
+    if arg_count(args) < 2 {
         return usage(io);
     }
     var want = text.empty();
     var have = false;
-    if arg_count(args) == 4 {
-        if !text.is(t, text.from_bytes(m, t, arg(args, 2)), "--target") {
+    // `--target T`, and `NAME=value` definitions for a model file (docs/resident.md section 31), in any order after the file
+    let defs = mem.list(m);
+    var ai = 2;
+    while ai < arg_count(args) {
+        let word = text.from_bytes(m, t, arg(args, ai));
+        if text.is(t, word, "--target") && ai + 1 < arg_count(args) {
+            want = text.from_bytes(m, t, arg(args, ai + 1));
+            have = true;
+            ai = ai + 2;
+        } else if text.index_of(t, word, '=', 0) > 0 {
+            mem.push(m, defs, word);
+            ai = ai + 1;
+        } else {
             return usage(io);
         }
-        want = text.from_bytes(m, t, arg(args, 3));
-        have = true;
     }
     let file = arg(args, 1);
     let top = m[mem.text_slot()];
@@ -64,7 +73,7 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
         return 1;
     }
     m[mem.text_slot()] = top + got;
-    let sess = session.open(m, t, fm, fs, text.handle(top, got), want, have, false);
+    let sess = session.open(m, t, fm, fs, text.handle(top, got), defs, want, have, false);
     if sess < 0 {
         return cli.report(m, t, io);
     }
