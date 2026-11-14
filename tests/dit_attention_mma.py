@@ -132,7 +132,7 @@ def case(root, name, nh, n, ids, valid, seed):
         # the one-pass statistics against the two-pass ones: the maximum exactly, the normaliser to the order of the f32 sums
         dm = max(abs(a - b) for a, b in zip(m, m_two))
         dz = max(abs(a - b) / max(abs(b), 1e-30) for a, b in zip(z, z_two))
-        if dm != 0.0 or dz > 1e-5:
+        if not (dm == 0.0 and dz <= 1e-5):
             return False, "the one-pass statistics differ from the two-pass ones: maximum %.3g, normaliser %.3g (relative; tolerance 0 and 1e-5)" % (dm, dz)
         # and the online version, one kernel carrying the maximum and the normaliser together (D14), held to the same
         o, err = run(root, "dit_stats_o", [f"nh={nh}", f"nq={n}", f"t={n}", "qs=16", "cs=64"], {"sc": sc, "mask": mask}, ["m", "z"], tmp)
@@ -140,7 +140,7 @@ def case(root, name, nh, n, ids, valid, seed):
             return False, "dit_stats_o: " + err
         dm = max(abs(a - b) for a, b in zip(o[0], m_two))
         dz = max(abs(a - b) / max(abs(b), 1e-30) for a, b in zip(o[1], z_two))
-        if dm != 0.0 or dz > 1e-5:
+        if not (dm == 0.0 and dz <= 1e-5):
             return False, "the online statistics differ from the two-pass ones: maximum %.3g, normaliser %.3g (relative; tolerance 0 and 1e-5)" % (dm, dz)
         o, err = run(root, "dit_pv_mma", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"sc": sc, "mask": mask, "m": m, "z": z, "v": v16}, ["o"], tmp)
         if o is None:
@@ -148,7 +148,24 @@ def case(root, name, nh, n, ids, valid, seed):
     got = o[0]
     e1 = max(abs(a - b) for a, b in zip(got, want1))
     e2 = max(abs(a - b) for a, b in zip(got, want2))
-    return len(got) == len(want1) and e1 <= 1e-4 and e2 <= 5e-3, "max abs error %.3g against the f16-rounded reference (tolerance 1e-4), %.3g against the exact one (5e-3), over %d elements" % (e1, e2, len(want1))
+    # the same attention in one kernel with an online softmax (D15), from the same f16 q, k, v and the same mask: held to the exact reference, and to the three-kernel result
+    with tempfile.TemporaryDirectory() as tmp:
+        o, err = run(root, "dit_attn_fused", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"q": q16, "k": k16, "v": v16, "mask": mask, "init": [-1e30] * n}, ["o"], tmp)
+        if o is None:
+            return False, "dit_attn_fused: " + err
+        fused = o[0]
+        # `spill`: relu(q k^T) of the scores of every head, the fragment accumulator turned into an ordinary tile before the relu (D15)
+        o, err = run(root, "spill_relu", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"q": q16, "k": k16}, ["sc"], tmp)
+        if o is None:
+            return False, "spill_relu: " + err
+        relu_got = o[0]
+    relu_want = [max(0.0, sum(q16[(i * nh + h) * D + c] * k16[(j * nh + h) * D + c] for c in range(D))) for h in range(nh) for i in range(n) for j in range(n)]
+    ef = max(abs(a - b) for a, b in zip(fused, want2))
+    ec = max(abs(a - b) for a, b in zip(fused, got))
+    er = max(abs(a - b) for a, b in zip(relu_got, relu_want))
+    if len(fused) != len(want2) or not (ef <= 5e-3 and ec <= 2e-3 and er <= 1e-4):  # written so that a NaN fails
+        return False, "the fused attention is %.3g from the exact one (tolerance 5e-3) and %.3g from the three-kernel one (2e-3); spill_relu %.3g from relu(q k^T) (1e-4)" % (ef, ec, er)
+    return len(got) == len(want1) and e1 <= 1e-4 and e2 <= 5e-3, "max abs error %.3g against the f16-rounded reference (tolerance 1e-4), %.3g against the exact one (5e-3); the fused kernel %.3g from the exact one, spill_relu %.3g; over %d elements" % (e1, e2, ef, er, len(want1))
 
 
 def gate(root):
@@ -178,6 +195,11 @@ EDITS = [
     ("dit_stats_o", "yield mn, zs + cz", "yield zs + cz, mn", "the two carries swapped"),
     ("dit_stats_o", "let r  = relu (cm - &m1)", "let r  = cm - &m1", "the maximum free to fall as well as rise"),
     ("dit_stats_o", "let s2 = sm + mk", "let s2 = sm - mk", "the mask subtracted after the first chunk"),
+    ("dit_attn_fused", "let os = o0 * al", "let os = o0 + al", "the output so far added to, not multiplied by, the rescaling factor"),
+    ("dit_attn_fused", "let ls = l0 * &al", "let ls = l0 + &al", "the normaliser so far added to, not multiplied by, the rescaling factor"),
+    ("dit_attn_fused", "let s2 = s + mk", "let s2 = s - mk", "the mask subtracted"),
+    ("dit_attn_fused", "yield mn, ls + ez, os + pv", "yield mn, os + pv, ls + ez", "the normaliser and the output swapped"),
+    ("spill_relu", "store relu s -> sc[h * nq + i * bm, j * bn]", "store s -> sc[h * nq + i * bm, j * bn]", "no relu after the spill"),
     ("dit_stats_comb", "let d  = cm - &mx", "let d  = cm + &mx", "a chunk's sum rescaled by the wrong sign"),
     ("dit_stats_comb", "yield m1 + relu (cm - &m1)", "yield m1 + (cm - &m1)", "the maximum free to fall as well as rise"),
     ("dit_pv_mma", "let s2 = sm + mk", "let s2 = sm + sm", "the mask replaced by the scores"),
@@ -188,7 +210,7 @@ survived = 0
 for kernel, old, new, what in EDITS:
     with tempfile.TemporaryDirectory() as tmp:
         for f in os.listdir("tests/chx"):
-            if f.endswith(".chx") and (f.startswith("dit_") or f.startswith("conv")):
+            if f.endswith(".chx") and (f.startswith("dit_") or f.startswith("conv") or f.startswith("spill_")):
                 shutil.copy(os.path.join("tests/chx", f), tmp)
         shutil.copytree("tests/chx/ported", os.path.join(tmp, "ported"))
         path = os.path.join(tmp, kernel + ".chx")

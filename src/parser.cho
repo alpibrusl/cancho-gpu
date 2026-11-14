@@ -371,6 +371,13 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         }
         return node(m, kinds.e_add_window(), acc, name, offs, 0, 0);
     }
+    if text.is(t, s, "spill") {
+        let e = atom(m, t, p);
+        if e < 0 {
+            return 0 - 1;
+        }
+        return node(m, kinds.e_spill(), e, 0, 0, 0, 0);
+    }
     if text.is(t, s, "stage") {
         let dat = here(m, t, p);
         let dn = want_ident(m, t, p);

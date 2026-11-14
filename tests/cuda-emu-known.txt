@@ -45,3 +45,4 @@ vit_bias_gelu_s=4096_n=4352_bn=256|noref|the interpreter's memory cannot hold th
 dit_stats_c_nh=32_nq=4160_t=8320_qs=16_cs=64|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D10)
 dit_stats_comb_nh=32_nq=4160_nc=130_qs=32|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D10)
 dit_stats_o_nh=32_nq=4160_t=8320_qs=16_cs=64|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D14)
+dit_attn_fused_nh=32_nq=4160_t=8320_d=128|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D15)

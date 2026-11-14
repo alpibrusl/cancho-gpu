@@ -264,6 +264,9 @@ fn substitute[&m, &t](m: &!m [int], t: &!t [byte], e: int, vals: int) -> [] int 
     if k == kinds.e_stage() {
         return parser.node(m, k, m[e + 1], substitute(m, t, m[e + 2], vals), 0, 0, 0);
     }
+    if k == kinds.e_spill() {
+        return parser.node(m, k, substitute(m, t, m[e + 1], vals), 0, 0, 0, 0);
+    }
     if k == kinds.e_add_window() {
         return parser.node(m, k, substitute(m, t, m[e + 1], vals), m[e + 2], m[e + 3], 0, 0);
     }
@@ -429,6 +432,16 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         let o = ir.make_op(m, kinds.op_add_window(), arg_of(m, m[e + 1], m[a]), view, 0, 0);
         let v = ir.emit(m, t, b, name, o);
         set_space(m, cx, v, kinds.frag());
+        return value(m, v, m[a + 1], m[a + 2]);
+    }
+    if k == kinds.e_spill() {
+        let a = lower(m, t, st, env, cx, m[e + 1], name);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let o = ir.make_op(m, kinds.op_spill(), arg_of(m, m[e + 1], m[a]), 0, 0, 0);
+        let v = ir.emit(m, t, b, name, o);
+        set_space(m, cx, v, kinds.threadgroup());
         return value(m, v, m[a + 1], m[a + 2]);
     }
     if k == kinds.e_stage() {

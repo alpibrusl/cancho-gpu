@@ -90,7 +90,7 @@ fn op_vars[&m](m: &!m [int], o: int, out: int) -> [] int {
         mem.push(m, out, ir.var_of(m[o + 2]));
         return 0;
     }
-    if k == kinds.op_scale() || k == kinds.op_stage() {
+    if k == kinds.op_scale() || k == kinds.op_stage() || k == kinds.op_spill() {
         mem.push(m, out, ir.var_of(m[o + 1]));
         return 0;
     }
@@ -336,6 +336,9 @@ fn op[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     if k == kinds.op_stage() {
         return stage(m, t, g, x, o);
     }
+    if k == kinds.op_spill() {
+        return spill(m, t, g, x, o);
+    }
     if k == kinds.op_mma() {
         return mma(m, t, g, x, o);
     }
@@ -412,6 +415,39 @@ fn fill[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     }
     let name = gen.declare_reg(m, t, g, x, ty);
     return gen.owned1(m, t, g, ir.elems(m, ty), text.f3(m, t, "$[k] = $($);", name, st, value));
+}
+
+// `spill acc`: the fragments of a matrix-unit accumulator written to threadgroup memory, where they are an ordinary tile (docs/chx.md, docs/diffusion.md D15). Each warp stores its own fragments; a barrier after
+// makes the tile visible to every thread.
+fn spill[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
+    let la = gen.loc(m, t, g, ir.var_of(m[o + 1]));
+    if la < 0 {
+        return 0 - 1;
+    }
+    if m[la] != gen.l_frag() {
+        return fail(m, t, "spill takes a fragment tile");
+    }
+    let (cn, ct, geom) = (m[la + 1], m[la + 2], m[la + 3]);
+    let shape = ir.shape(m, ct);
+    let ty = ir.tile(m, ir.dtype(m, ct), shape, kinds.threadgroup());
+    let name = gen.declare_tg(m, t, g, x, ty);
+    let ld = gen.row_len(m, g, x, mem.get(m, shape, 1));
+    let rows = mem.get(m, shape, 0) / m[geom];
+    let cols = mem.get(m, shape, 1) / m[geom + 1];
+    let l = mem.list(m);
+    mem.push(m, l, n(m, t, 32 * m[geom + 1]));
+    mem.push(m, l, n(m, t, rows));
+    mem.push(m, l, n(m, t, m[geom + 4]));
+    mem.push(m, l, n(m, t, ld));
+    mem.push(m, l, n(m, t, m[geom + 1]));
+    mem.push(m, l, n(m, t, cols));
+    mem.push(m, l, n(m, t, m[geom + 4]));
+    let at = text.fmt(m, t, "((tid / $u) * $u + i * $u) * $u + (tid / 32u % $u) * $u + j * $u", l);
+    let st = dialect.frag_store(m, t, gen.dia(m, g), text.f1(m, t, "$[i][j]", cn), text.f2(m, t, "&$[$]", name, at), ld);
+    gen.barrier(m, t, g);
+    gen.line(m, t, g, text.f3(m, t, "for (uint i = 0; i < $u; ++i) for (uint j = 0; j < $u; ++j) $", n(m, t, m[geom + 2]), n(m, t, m[geom + 3]), st));
+    gen.barrier(m, t, g);
+    return 0;
 }
 
 fn stage[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {

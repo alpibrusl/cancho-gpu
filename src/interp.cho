@@ -378,6 +378,22 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
         }
         return out;
     }
+    if k == kinds.op_spill() {
+        let a = operand(m, t, it, m[o + 1]);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let out = new_tile(m, t, fm, ir.tile(m, ir.dtype(m, m[a]), ir.shape(m, m[a]), kinds.threadgroup()));
+        if out < 0 {
+            return 0 - 1;
+        }
+        var i = 0;
+        while i < m[out + 2] {
+            fm[m[out + 1] + i] = fm[m[a + 1] + i];
+            i = i + 1;
+        }
+        return out;
+    }
     if k == kinds.op_stage() {
         let a = operand(m, t, it, m[o + 1]);
         if a < 0 {
