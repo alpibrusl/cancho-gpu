@@ -147,6 +147,12 @@ for i in range(NL):
     program(n("ad2"), "dit_add", f"s={SP} n={D} bn=1024"); link(n("ad1") + ".z", n("ad2") + ".a"); link(n("gd") + ".y", n("ad2") + ".b")
     if i < 3:  # deepstack: add the i-th vision feature map at the image-pad rows
         program(n("dsa"), "dit_add", f"s={SP} n={D} bn=1024"); link(n("ad2") + ".z", n("dsa") + ".a"); res(n("dsa") + ".b", "ds%d.f32" % i)
+    if i > 0 and "--no-alias" not in sys.argv:
+        # layer i's activations live in layer i - 1's buffers (docs/resident.md 21.4, as in D9i): the session file's checks prove nothing reads them any more. The residual stream (ad2.z and dsa.z,
+        # which the answers read) keeps its own. Without this the session touches 14 GB of fresh activation buffers on its first request (D9k)
+        for sfx, o in (("n1", "y"), ("c1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("rk", "y"), ("sc", "sc"), ("st", "m"), ("st", "z"), ("pv", "o"), ("c2", "y"),
+                       ("go", "y"), ("ad1", "z"), ("n2", "y"), ("c3", "y"), ("gg", "y"), ("gu", "y"), ("sw", "y"), ("gd", "y")):
+            prog.append("alias L%d_%s.%s L%d_%s.%s" % (i - 1, sfx, o, i, sfx, o))
 TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
 if TIME:
     program("probe", "dit_rows2", f"m={SP} n={D} bn=1024"); link("L%d_ad2.z" % (NL - 1), "probe.x")

@@ -484,11 +484,15 @@ tests/chx/vae_norm.chx r=64 c=64 g=9 sc=8.0 --run
 tests/chx/dit_rope16.chx s=4224 nh=32 h=64 sc=0.08838834764831845
 tests/chx/dit_scores_mma.chx nh=32 nq=4224 t=4224 d=128
 tests/chx/dit_stats_m.chx nh=32 nq=4224 t=4224 qs=32 cs=64
+tests/chx/dit_stats_c.chx nh=32 nq=4160 t=8320 qs=16 cs=64
+tests/chx/dit_stats_comb.chx nh=32 nq=4160 nc=130 qs=32
 tests/chx/dit_pv_mma.chx nh=32 nq=4224 t=4224 d=128
 tests/chx/dit_rows2h.chx m=4224 n=4096 bn=1024
 tests/chx/dit_rope16.chx s=128 nh=2 h=64 sc=0.08838834764831845 --run
 tests/chx/dit_scores_mma.chx nh=2 nq=128 t=128 d=128 --run
 tests/chx/dit_stats_m.chx nh=2 nq=128 t=128 qs=32 cs=64 --run
+tests/chx/dit_stats_c.chx nh=2 nq=128 t=192 qs=16 cs=64 --run
+tests/chx/dit_stats_comb.chx nh=2 nq=128 nc=3 qs=32 --run
 tests/chx/dit_pv_mma.chx nh=2 nq=128 t=128 d=128 --run
 tests/chx/dit_rows2h.chx m=64 n=256 bn=128 --run
 tests/chx/vit_ln.chx s=4096 n=1152
