@@ -689,25 +689,30 @@ The 256 x 256 image is 256 tokens, which is the §5 count (16 x 16 pixels a toke
    across steps ("prefix KV caching"). Whether D2 needs it to be fast, or only to be correct,
    is open; correctness comes first, so the first version recomputes.
 
-## 6. Video, second
+## 6. Video and audio (design; nothing built, nothing measured on the GPU)
 
-Not started; only the shape of the problem is recorded, from the model cards (read on 2026-11-13,
-not measured here).
+Facts below were read on 2026-11-14 from the model repositories' configuration files and cards (Hugging Face; the sizes from the repositories' file listings) and are marked **[read]**; the arithmetic on them is **[estimate]**. Nothing here has run.
 
-* **MiniMax-H3** (`MiniMaxAI/MiniMax-H3`, 498.5 GB in the repository): a 33 B-parameter
-  dense transformer, a Qwen3-VL-32B text encoder, a visual VAE and a 32 kHz stereo audio VAE;
-  4 to 15 s of video at 768 p by default. Its own examples use four GPUs. At BF16 it does not
-  fit in this machine; the community repackagings are 12.5 to 40 GB for the transformer in
-  formats (`int8_convrot`, `w4a8`) that are not NVFP4. **Open:** whether NVFP4, which cancho-gpu
-  has (`docs/weight-space*.md`, README), can carry a 33 B transformer here (about 17 GB of weights
-  at 4 bits, **an estimate**, plus the 32 B text encoder).
-* **Lance** (`bytedance-research/Lance`, 30.9 GB, Apache-2.0): a 3 B language model, a
-  Qwen2.5-VL vision tower and Wan2.2's VAE; 480 p, 12 fps. Its README requires CUDA and 40 GB of
-  VRAM; it has not been tried on a Mac. It is the smaller road to video, and the VAE is the 3-D
-  convolution that D4 does not cover.
+### 6.1 Video: Wan2.2-TI2V-5B is the target
 
-Video stages (V0 onward) will be written when D3 has passed: they reuse D0's method, and the
-choice between the two models above needs the memory numbers of §5, question 4.
+* **Why this one.** Public (not gated), **Apache-2.0** **[read]**, 34.2 GB in the repository **[read]**: the text encoder 11.4 GB (umT5-XXL, three shards), the transformer 20.0 GB (five shards, float32: about 10 GB as the f16 files this repository uses), the VAE 2.82 GB (float32). The two alternatives in the first version of this section are set aside: **MiniMax-H3** (498.5 GB, a 33 B transformer, four GPUs in its own examples) does not fit this machine at all; **Lance** (3 B, 30.9 GB) is documented as needing CUDA and 40 GB of VRAM and is less specified.
+* **The transformer** (`WanTransformer3DModel`, `transformer/config.json`) **[read]**: 30 layers, 24 heads of 128 (hidden 3,072 is derived), `ffn_dim` 14,336, patch size (1, 2, 2), 48 input and output channels, `text_dim` 4,096, `freq_dim` 256, RMS norm of q and k across the heads, a norm on the cross-attention. "A 5B dense model" (the card). How the text enters (cross-attention, from `cross_attn_norm` and `text_dim`) and the rotary layout over (time, height, width) are **not stated on those pages**: to be read from `diffusers/models/transformers/transformer_wan.py` before a reference is written.
+* **The VAE** (`AutoencoderKLWan`, `vae/config.json`) **[read]**: `z_dim` 48, `scale_factor_temporal` 4 and `scale_factor_spatial` 16, a 2 x 2 patchify (12 input channels), `dim_mult` [1, 2, 4, 4], `base_dim` 160, `decoder_base_dim` 256, two residual blocks a level, `temperal_downsample` [false, true, true], `is_residual`: 4 x 16 x 16 compression, 4 x 32 x 32 with the transformer's patch. Whether its convolutions are causal along time is **not stated there** (the Wan VAEs are known to cache frames in chunks; to be read from the source).
+* **Defaults** **[read]**: 1280 x 704 at 24 fps, "a 5-second 720P video in under 9 minutes on a single consumer-grade GPU"; the number of steps and the guidance scale are **not stated**.
+* **What that costs here, from the shapes [estimate].** 121 frames at 1280 x 704 are 31 latent frames of 22 x 40 patches: **27,280 tokens**. Per transformer call: the products about 2 x 5e9 x 27,280 = **273 TFLOP**; the attention 4 N^2 x 3,072 x 30 layers = **274 TFLOP** (9.1 TFLOP a block); at this repository's measured 13 TFLOPS for products and about 8 for the attention (D11, D13) that is about **55 s a call** (twice with classifier-free guidance); with 50 steps that is **about 45 minutes to 1.5 hours** for a 5-second 720p video: too slow to be pleasant, possible to run. A small video (640 x 352, 33 frames: 9 latent frames of 11 x 20, **1,980 tokens**) is about 3 s a call. The scores of one head at 27,280 tokens are 2.8 GB (70 GB for 24 heads), so the attention has to run in blocks of queries (1,024 queries: 2.7 GB of scores) with the three kernels that exist; **a fused attention would remove that need and is not built (#150, D15, D16)**. The VAE decode of 121 frames at 1280 x 704 is about 104 times the pixels of the image decoder's 1024 x 1024: of the order of **minutes** at this repository's decoder rate, in chunks of frames.
+* **Stages, each gated before the next (D0's method: a float64 reference written from the source, held to torch, then the GPU held to the reference, with mutants).**
+  V0. The transformer **block** in float64 (adaLN modulation, self-attention with 3-D rotary positions and RMS-normed q and k, cross-attention to the text, the feed-forward), on small shapes, against `WanTransformer3DModel` in float32; needs the first shard (4.98 GB).
+  V1. That block on the GPU with the attention in query blocks; then the 30 blocks in one session (model file, `docs/resident.md` section 31) and a step.
+  V2. The VAE decoder: causal 3-D convolutions as a sum of the three temporal taps (each a 2-D 3 x 3 convolution of the kernels that exist, over frames, with the cache of the last frames between chunks), in float64 then on the GPU. No new kernel is expected for it; the cache is session state.
+  V3. The text encoder: umT5-XXL's encoder (a T5: relative position bias, RMS norm, gated GELU; 11.4 GB), which is not a layout the existing runners have.
+  V4. The pipeline (scheduler, guidance, the noise, the unpatchify) and its time against torch on this machine.
+
+### 6.2 Audio: nothing is chosen, and the first candidate found is not usable
+
+* **Recognition is already planned and is not generation:** `docs/roadmap-models.md` M6 (Whisper: a log-mel spectrogram as a product with a precomputed cosine and sine matrix, the encoder, the decoder).
+* **FreyaTTS** (a 183.2 M flow-matching DiT, Apache-2.0, 32 Euler steps; found in a technical report, `arXiv 2607.09530`, read through a summary): **character-level for Turkish only** (92 symbols), the audio codec is a frozen AudioVAE2 from VoxCPM2 whose decoder architecture the report does not state, and **no weights repository was found on the Hub** (a search on 2026-11-14 returned nothing). Not a target.
+* **Stable Audio Open Small** (341 M, 1.68 GB of float32 weights **[read]**, the Stability AI Community Licence, **gated: the licence must be accepted on the Hub by whoever downloads it**): the repository's file listing shows an autoencoder, the conditioner (a text encoder) and a DiT as separate parts in its on-device export; its architecture was **not read** (a gated repository's files cannot be read without the licence). It is the candidate to read next, if the licence is accepted.
+* **What audio would need that the language does not have [read from this repository's sources]:** the surface's elementwise functions are `rsqrt`, `exp`, `log`, `sigmoid`, `softplus`, `relu`, `step` and `tanh`: **no `sin` or `cos`** (the Snake activation of audio VAEs and vocoders is `x + sin^2(a x) / a`); the 1-D and transposed convolutions of an audio autoencoder are not built (the 2-D 3 x 3 convolution of the VAE is, `resident.md` 18); a short-time Fourier transform and its inverse are a product with a precomputed matrix (G15 of `roadmap-models.md`).
 
 ## 7. What this document does not claim
 
