@@ -44,3 +44,4 @@ vae_up2_h=512_w=512_c=288_r=264256_r2=1052736_g2=1027|noref|the interpreter's me
 vit_bias_gelu_s=4096_n=4352_bn=256|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D2 to D9)
 dit_stats_c_nh=32_nq=4160_t=8320_qs=16_cs=64|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D10)
 dit_stats_comb_nh=32_nq=4160_nc=130_qs=32|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D10)
+dit_stats_o_nh=32_nq=4160_t=8320_qs=16_cs=64|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D14)

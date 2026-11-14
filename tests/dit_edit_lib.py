@@ -18,7 +18,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
 CHX = os.path.join(ROOT, "tests/chx")
 NEG = -1e9
-ONE_PASS = os.environ.get("DIT_STATS") != "two"
+STATS = os.environ.get("DIT_STATS", "online")  # "online": one kernel carrying the maximum and the normaliser (D14); "chunk": dit_stats_c and dit_stats_comb (D10); "two": D8's two passes
+ONE_PASS = STATS != "two"
 NB, D, H, HD = 32, 4096, 32, 128
 f16 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f2")).tofile(path)
 f32 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f4")).tofile(path)
@@ -150,7 +151,9 @@ class Edit:
                     s.link(n(src) + ".y", n(cn) + ".b")
             s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={NP} t={t} d={HD}")
             s.link(n("rq") + ".y", n("sc") + ".q"); s.link(kk, n("sc") + ".k")
-            if ONE_PASS:  # the statistics in one pass over the scores, per chunk of 64 keys and then merged (D10); `DIT_STATS=two` runs D8's two-pass kernel instead
+            if STATS == "online":  # the statistics in one pass over the scores, one kernel carrying the maximum and the normaliser (D14)
+                s.program(n("st"), "dit_stats_o", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
+            elif ONE_PASS:  # the statistics in one pass over the scores, per chunk of 64 keys and then merged (D10); `DIT_STATS=two` runs D8's two-pass kernel instead
                 s.program(n("stc"), "dit_stats_c", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("stc") + ".sc"); s.res(n("stc") + ".mask", P(maskf))
                 s.program(n("st"), "dit_stats_comb", f"nh={H} nq={NP} nc={t // 64} qs=32"); s.link(n("stc") + ".mc", n("st") + ".mc"); s.link(n("stc") + ".zc", n("st") + ".zc")
             else:
@@ -177,7 +180,7 @@ class Edit:
             if alias and b > lo:
                 # the activations of block b live in the buffers of block b - 1's (docs/resident.md 21.4): the session file's checks prove nothing reads them any more. The residual stream
                 # (gr2.z, which is saved at the end) and what a prefix pass saves (the keys and values) keep their own
-                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z")] + ([("stc", "mc"), ("stc", "zc")] if ONE_PASS else []) + [ ("pv", "o"), ("c1", "y"),
+                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z")] + ([("stc", "mc"), ("stc", "zc")] if STATS == "chunk" else []) + [ ("pv", "o"), ("c1", "y"),
                         ("go", "y"), ("gr1", "z"), ("lnm2", "y"), ("gg", "y"), ("gp", "y"), ("sw", "y"), ("gd", "y")]
                 outs += [("ck", "y"), ("cv", "y")] if not prefix else []
                 outs += [("rk", "y"), ("vh", "y")] if not (prefix or unified) else []
@@ -215,7 +218,7 @@ class Edit:
             self._blocks("unified", 0, NB, x, False, alias=True, keep_open=True, unified=True)
         elif phase != self.phase:
             self._phase_files(phase)
-            self._ask("reload " + names + " b0_lnm1.sel b0_rq.cs b0_rq.sn b0_%s.mask" % ("stc" if ONE_PASS else "st"))
+            self._ask("reload " + names + " b0_lnm1.sel b0_rq.cs b0_rq.sn b0_%s.mask" % ("stc" if STATS == "chunk" else "st"))
         else:
             self._ask("reload " + names)
         self._ask("1")

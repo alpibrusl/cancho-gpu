@@ -134,6 +134,14 @@ def case(root, name, nh, n, ids, valid, seed):
         dz = max(abs(a - b) / max(abs(b), 1e-30) for a, b in zip(z, z_two))
         if dm != 0.0 or dz > 1e-5:
             return False, "the one-pass statistics differ from the two-pass ones: maximum %.3g, normaliser %.3g (relative; tolerance 0 and 1e-5)" % (dm, dz)
+        # and the online version, one kernel carrying the maximum and the normaliser together (D14), held to the same
+        o, err = run(root, "dit_stats_o", [f"nh={nh}", f"nq={n}", f"t={n}", "qs=16", "cs=64"], {"sc": sc, "mask": mask}, ["m", "z"], tmp)
+        if o is None:
+            return False, "dit_stats_o: " + err
+        dm = max(abs(a - b) for a, b in zip(o[0], m_two))
+        dz = max(abs(a - b) / max(abs(b), 1e-30) for a, b in zip(o[1], z_two))
+        if dm != 0.0 or dz > 1e-5:
+            return False, "the online statistics differ from the two-pass ones: maximum %.3g, normaliser %.3g (relative; tolerance 0 and 1e-5)" % (dm, dz)
         o, err = run(root, "dit_pv_mma", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"sc": sc, "mask": mask, "m": m, "z": z, "v": v16}, ["o"], tmp)
         if o is None:
             return False, "dit_pv_mma: " + err
@@ -163,11 +171,15 @@ EDITS = [
     ("dit_scores_mma", "store acc -> sc[h * nq + i * bm, j * bn]", "store acc -> sc[i * bm, j * bn]", "every head written to the first head's rows"),
     ("dit_stats_m", "let s0 = f0 + k0", "let s0 = f0", "no mask in the first chunk's maximum"),
     ("dit_stats_m", "let sh = s2 - &mx", "let sh = sm - &mx", "no mask in the normaliser"),
-    ("dit_stats_c", "let s1 = s0 + k0", "let s1 = s0", "no mask in the chunks' statistics"),
+    ("dit_stats_c", "let s1 = s0 + k0", "let s1 = s0 - k0", "the mask subtracted in the chunks' statistics"),
     ("dit_stats_c", "let sh = s1 - &cm", "let sh = s1", "the chunk's own maximum not subtracted"),
     ("dit_stats_c", "store cz -> zc[c * nh * nq + h * nq + qb * qs]", "store cz -> zc[h * nq + qb * qs]", "every chunk's sum written to the first chunk's place"),
-    ("dit_stats_comb", "let d  = cm - &mx", "let d  = cm", "a chunk's sum not rescaled to the global maximum"),
-    ("dit_stats_comb", "yield m1 + relu (cm - &m1)", "yield m1", "the maximum of the first chunk only"),
+    ("dit_stats_o", "let zs = z1 * al", "let zs = z1 + al", "the sum so far added to, not multiplied by, the rescaling factor"),
+    ("dit_stats_o", "yield mn, zs + cz", "yield zs + cz, mn", "the two carries swapped"),
+    ("dit_stats_o", "let r  = relu (cm - &m1)", "let r  = cm - &m1", "the maximum free to fall as well as rise"),
+    ("dit_stats_o", "let s2 = sm + mk", "let s2 = sm - mk", "the mask subtracted after the first chunk"),
+    ("dit_stats_comb", "let d  = cm - &mx", "let d  = cm + &mx", "a chunk's sum rescaled by the wrong sign"),
+    ("dit_stats_comb", "yield m1 + relu (cm - &m1)", "yield m1 + (cm - &m1)", "the maximum free to fall as well as rise"),
     ("dit_pv_mma", "let s2 = sm + mk", "let s2 = sm + sm", "the mask replaced by the scores"),
     ("dit_pv_mma", "let ph = stage f16 pp", "let ph = stage f16 e", "the weights not divided by the normaliser"),
     ("dit_pv_mma", "load v[p * bk, h * d + j * bn ; bk, bn] @shared", "load v[p * bk, j * bn ; bk, bn] @shared", "v always read from the first head"),

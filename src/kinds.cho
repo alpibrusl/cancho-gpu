@@ -252,6 +252,11 @@ pub fn s_yield() -> [] int {
     return 43;
 }
 
+// `let a, b = for ...`: names, loop
+pub fn s_letn() -> [] int {
+    return 44;
+}
+
 // --- IR ops (`ir::Op`, the ones a `.chx` program can produce)
 pub fn op_fill() -> [] int {
     return 1;
