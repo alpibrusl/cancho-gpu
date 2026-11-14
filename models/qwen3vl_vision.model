@@ -1,0 +1,186 @@
+# The vision tower of Qwen3-VL (27 blocks over NP patches, 16 heads of 72 padded to 128, a deepstack merger after blocks 8, 16 and 24, the final merger) as the four sessions of tests/vit_gpu.py: one model file, a range of blocks a run
+# (docs/diffusion.md D9b, docs/resident.md section 31). It expands to the session file that script writes for that range.
+#
+#     cancho-gpu model-expand models/qwen3vl_vision.model CHX=<tests/chx> WORK=<the weight and input files> NP=<patches, padded to 256> NAME=s1 LO=0 HI=9 FIRST=1 FINAL=0
+#     ... NAME=s2 LO=9  HI=17 FIRST=0 FINAL=0     NAME=s3 LO=17 HI=25 FIRST=0 FINAL=0     NAME=s4 LO=25 HI=27 FIRST=0 FINAL=1
+#
+# FIRST=1 starts with the patch embedding and the position embeddings; a session that is not the first reads the stream the one before saved (x_in.bin); FINAL=1 ends with the merger. A deepstack merger saves deep0.bin, deep1.bin, deep2.bin.
+text CHX = tests/chx
+text WORK = .
+text NAME = s1
+text RQSC = 0.11785113019775793
+const NP = 4352
+const LO = 0
+const HI = 9
+const FIRST = 1
+const FINAL = 0
+const D = 1152
+const NH = 16
+const PHD = 128
+const QD = 2048
+const FFP = 4352
+const MP = NP / 4
+
+block deep(k, prev)
+    program ds${k}_ln $CHX/vit_ln.chx s=$MP n=4608
+    link b${prev}_r2.z -> ds${k}_ln.x
+    resident ds${k}_ln.w $WORK/ds${k}_nw.f32 f32
+    resident ds${k}_ln.b $WORK/ds${k}_nb.f32 f32
+    program ds${k}_g1 $CHX/ported/gemm_mma.chx m=$MP n=4608 k=4608
+    link ds${k}_ln.y -> ds${k}_g1.a
+    resident ds${k}_g1.w $WORK/ds${k}_w1.f16 f16
+    program ds${k}_ge $CHX/vit_bias_gelu_erf.chx s=$MP n=4608 bn=512 m1=-1
+    link ds${k}_g1.y -> ds${k}_ge.x
+    resident ds${k}_ge.b $WORK/ds${k}_b1.f32 f32
+    program ds${k}_g2 $CHX/ported/gemm_mma.chx m=$MP n=4096 k=4608
+    link ds${k}_ge.y -> ds${k}_g2.a
+    resident ds${k}_g2.w $WORK/ds${k}_w2.f16 f16
+    program ds${k}_b2 $CHX/vae_bias.chx r=$MP c=4096
+    link ds${k}_g2.y -> ds${k}_b2.x
+    resident ds${k}_b2.b $WORK/ds${k}_b2.f32 f32
+    resident ds${k}_b2.m $WORK/ones_m.f32 f32
+    save ds${k}_b2.z $WORK/deep${k}.bin f32
+end
+
+block blk(b)
+    program b${b}_ln1 $CHX/vit_ln.chx s=$NP n=$D
+    if b == LO && FIRST == 0
+        resident b${b}_ln1.x $WORK/x_in.bin f32
+    else
+        if b == LO
+            link pa.z -> b${b}_ln1.x
+        else
+            link b${b - 1}_r2.z -> b${b}_ln1.x
+        end
+    end
+    resident b${b}_ln1.w $WORK/norm1w${b}.f32 f32
+    resident b${b}_ln1.b $WORK/norm1b${b}.f32 f32
+    program b${b}_gq $CHX/ported/gemm_mma.chx m=$NP n=$QD k=$D
+    link b${b}_ln1.y -> b${b}_gq.a
+    resident b${b}_gq.w $WORK/wq${b}.f16 f16
+    program b${b}_bq $CHX/vae_bias.chx r=$NP c=$QD
+    link b${b}_gq.y -> b${b}_bq.x
+    resident b${b}_bq.b $WORK/bq${b}.f32 f32
+    resident b${b}_bq.m $WORK/ones_n.f32 f32
+    program b${b}_gk $CHX/ported/gemm_mma.chx m=$NP n=$QD k=$D
+    link b${b}_ln1.y -> b${b}_gk.a
+    resident b${b}_gk.w $WORK/wk${b}.f16 f16
+    program b${b}_bk $CHX/vae_bias.chx r=$NP c=$QD
+    link b${b}_gk.y -> b${b}_bk.x
+    resident b${b}_bk.b $WORK/bk${b}.f32 f32
+    resident b${b}_bk.m $WORK/ones_n.f32 f32
+    program b${b}_gv $CHX/ported/gemm_mma.chx m=$NP n=$QD k=$D
+    link b${b}_ln1.y -> b${b}_gv.a
+    resident b${b}_gv.w $WORK/wv${b}.f16 f16
+    program b${b}_bv $CHX/vae_bias.chx r=$NP c=$QD
+    link b${b}_gv.y -> b${b}_bv.x
+    resident b${b}_bv.b $WORK/bv${b}.f32 f32
+    resident b${b}_bv.m $WORK/ones_n.f32 f32
+    program b${b}_rq $CHX/dit_rope16.chx s=$NP nh=$NH h=64 sc=$RQSC
+    link b${b}_bq.z -> b${b}_rq.x
+    resident b${b}_rq.cs $WORK/cs.f32 f32
+    resident b${b}_rq.sn $WORK/sn.f32 f32
+    program b${b}_rk $CHX/dit_rope16.chx s=$NP nh=$NH h=64 sc=1.0
+    link b${b}_bk.z -> b${b}_rk.x
+    resident b${b}_rk.cs $WORK/cs.f32 f32
+    resident b${b}_rk.sn $WORK/sn.f32 f32
+    program b${b}_sc $CHX/dit_scores_mma.chx nh=$NH nq=$NP t=$NP d=$PHD
+    link b${b}_rq.y -> b${b}_sc.q
+    link b${b}_rk.y -> b${b}_sc.k
+    program b${b}_st $CHX/dit_stats_m.chx nh=$NH nq=$NP t=$NP qs=32 cs=64
+    link b${b}_sc.sc -> b${b}_st.sc
+    resident b${b}_st.mask $WORK/mask.f32 f32
+    program b${b}_vh $CHX/dit_to_f16.chx s=$NP n=$QD
+    link b${b}_bv.z -> b${b}_vh.x
+    program b${b}_pv $CHX/dit_pv_mma.chx nh=$NH nq=$NP t=$NP d=$PHD
+    link b${b}_sc.sc -> b${b}_pv.sc
+    resident b${b}_pv.mask $WORK/mask.f32 f32
+    link b${b}_st.m -> b${b}_pv.m
+    link b${b}_st.z -> b${b}_pv.z
+    link b${b}_vh.y -> b${b}_pv.v
+    program b${b}_c1 $CHX/dit_to_f16.chx s=$NP n=$QD
+    link b${b}_pv.o -> b${b}_c1.x
+    program b${b}_go $CHX/ported/gemm_mma.chx m=$NP n=$D k=$QD
+    link b${b}_c1.y -> b${b}_go.a
+    resident b${b}_go.w $WORK/wo${b}.f16 f16
+    program b${b}_r1 $CHX/vae_bias_res.chx r=$NP c=$D
+    link b${b}_go.y -> b${b}_r1.x
+    resident b${b}_r1.b $WORK/bo${b}.f32 f32
+    resident b${b}_r1.m $WORK/ones_n.f32 f32
+    if b == LO && FIRST == 0
+        resident b${b}_r1.res $WORK/x_in.bin f32
+    else
+        if b == LO
+            link pa.z -> b${b}_r1.res
+        else
+            link b${b - 1}_r2.z -> b${b}_r1.res
+        end
+    end
+    program b${b}_ln2 $CHX/vit_ln.chx s=$NP n=$D
+    link b${b}_r1.z -> b${b}_ln2.x
+    resident b${b}_ln2.w $WORK/norm2w${b}.f32 f32
+    resident b${b}_ln2.b $WORK/norm2b${b}.f32 f32
+    program b${b}_f1 $CHX/ported/gemm_mma.chx m=$NP n=$FFP k=$D
+    link b${b}_ln2.y -> b${b}_f1.a
+    resident b${b}_f1.w $WORK/w1_${b}.f16 f16
+    program b${b}_ge $CHX/vit_bias_gelu.chx s=$NP n=$FFP bn=256
+    link b${b}_f1.y -> b${b}_ge.x
+    resident b${b}_ge.b $WORK/b1_${b}.f32 f32
+    program b${b}_f2 $CHX/ported/gemm_mma.chx m=$NP n=$D k=$FFP
+    link b${b}_ge.y -> b${b}_f2.a
+    resident b${b}_f2.w $WORK/w2_${b}.f16 f16
+    program b${b}_r2 $CHX/vae_bias_res.chx r=$NP c=$D
+    link b${b}_f2.y -> b${b}_r2.x
+    resident b${b}_r2.b $WORK/b2_${b}.f32 f32
+    resident b${b}_r2.m $WORK/ones_n.f32 f32
+    link b${b}_r1.z -> b${b}_r2.res
+    if b == 8
+        use deep(0, b)
+    end
+    if b == 16
+        use deep(1, b)
+    end
+    if b == 24
+        use deep(2, b)
+    end
+end
+
+if FIRST == 1
+    program pe $CHX/ported/gemm_mma.chx m=$NP n=$D k=768
+    resident pe.a $WORK/patch.f16 f16
+    resident pe.w $WORK/wpe.f16 f16
+    program pa $CHX/dit_add.chx s=$NP n=$D bn=128
+    link pe.y -> pa.a
+    resident pa.b $WORK/posb.f32 f32
+end
+
+repeat b in LO .. HI
+    use blk(b)
+end
+
+if FINAL == 1
+    program mg_ln $CHX/vit_ln.chx s=$NP n=$D
+    link b${HI - 1}_r2.z -> mg_ln.x
+    resident mg_ln.w $WORK/merger_nw.f32 f32
+    resident mg_ln.b $WORK/merger_nb.f32 f32
+    program mg_g1 $CHX/ported/gemm_mma.chx m=$MP n=4608 k=4608
+    link mg_ln.y -> mg_g1.a
+    resident mg_g1.w $WORK/merger_w1.f16 f16
+    program mg_ge $CHX/vit_bias_gelu_erf.chx s=$MP n=4608 bn=512 m1=-1
+    link mg_g1.y -> mg_ge.x
+    resident mg_ge.b $WORK/merger_b1.f32 f32
+    program mg_g2 $CHX/ported/gemm_mma.chx m=$MP n=4096 k=4608
+    link mg_ge.y -> mg_g2.a
+    resident mg_g2.w $WORK/merger_w2.f16 f16
+    program mg_b2 $CHX/vae_bias.chx r=$MP c=4096
+    link mg_g2.y -> mg_b2.x
+    resident mg_b2.b $WORK/merger_b2.f32 f32
+    resident mg_b2.m $WORK/ones_m.f32 f32
+    save mg_b2.z $WORK/merged.bin f32
+end
+
+save b${HI - 1}_r2.z $WORK/x_out_$NAME.bin f32
+program probe $CHX/dit_rows2.chx m=$NP n=$D bn=384
+link b${HI - 1}_r2.z -> probe.x
+steps
+answer probe.y

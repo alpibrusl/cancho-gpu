@@ -5,8 +5,8 @@
 #
 #  1. every tests/model/ok/X.model (with the definitions in X.args, if there) expands to X.out, byte for byte;
 #  2. every tests/model/reject/X.model is refused with the rule `session`, exit 1, nothing on standard output, and the message in X.err;
-#  3. the two real models of models/ (the text encoder's 36 layers and the transformer's 32 blocks) expand to files of the recorded SHA-256 (golden/model/): the expansions that tests/text_img_gpu.py and tests/dit_edit_lib.py write,
-#     compared byte for byte on a Mac with the checkpoint when they were recorded (docs/resident.md section 31);
+#  3. the five real models of models/ (the text encoder, the transformer, the vision tower's four sessions, the VAE's encoder and decoder) expand to files of the recorded SHA-256 (golden/model/): the expansions that tests/text_img_gpu.py,
+#     tests/dit_edit_lib.py, tests/vit_gpu.py, tests/vae_enc_gpu.py and tests/vae_gpu.py write, compared byte for byte when they were recorded (docs/resident.md section 31);
 #  4. with a CPU session binary: a model file given to it (with its definitions on the command line) answers what its expansion answers.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -45,6 +45,12 @@ check() {
 tag=ref;     check qwen3vl_text CHX=/chx WORK=/w SP=1088 NOREF=0
 tag=noref;   check qwen3vl_text CHX=/chx WORK=/w SP=1088 NOREF=1
 tag=step;    check qwen_image_dit CHX=/chx WORK=/w WDIR=/wd NP=4160
+tag=s1;      check qwen3vl_vision CHX=/chx WORK=/w NP=4352 NAME=s1 LO=0 HI=9 FIRST=1 FINAL=0
+tag=s2;      check qwen3vl_vision CHX=/chx WORK=/w NP=4352 NAME=s2 LO=9 HI=17 FIRST=0 FINAL=0
+tag=s3;      check qwen3vl_vision CHX=/chx WORK=/w NP=4352 NAME=s3 LO=17 HI=25 FIRST=0 FINAL=0
+tag=s4;      check qwen3vl_vision CHX=/chx WORK=/w NP=4352 NAME=s4 LO=25 HI=27 FIRST=0 FINAL=1
+tag=enc;     check qwen_image_vae_encoder CHX=/chx CONV3=/conv3 WORK=/w IH=1376 IW=768
+tag=dec;     check qwen_image_vae_decoder CHX=/chx CONV3=/conv3 WORK=/w H0=86 W0=48
 if [ -n "$SESSION" ]; then
   "$BIN" model-expand tests/model/chain.model CHX=tests/chx > "$WORK/chain.session"
   a=$(echo 1 | "$SESSION" "$WORK/chain.session")

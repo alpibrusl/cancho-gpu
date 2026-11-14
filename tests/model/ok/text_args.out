@@ -1,0 +1,6 @@
+program op1 k.chx c=8
+link in0.z -> op1.x
+program op2 k.chx c=16
+link op1.y -> op2.x
+program op3 k.chx c=16
+link op2.y -> op3.x
