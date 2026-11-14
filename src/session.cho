@@ -859,6 +859,48 @@ fn locate[&m, &t](m: &!m [int], t: &!t [byte], progs: int, pname: int, aname: in
     return (pi, ai, mem.get(m, ir.p_params(m, prog), ai));
 }
 
+// The request `reload P.PARAM ...` (`docs/resident.md` section 29), for a device session: (1, the `resident` records of the named parameters) when the line is the word `reload` and at least one
+// `PROGRAM.PARAM`, each of which must be a binary resident file (the record carries its file's name: a request never names a file); (0, 0) when the line does not start with `reload`; (-1, 0) with a refusal.
+pub fn reload_request[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> [] (int, int) {
+    let words = tokens(m, t, line);
+    if mem.size(m, words) == 0 || !text.is(t, mem.get(m, words, 0), "reload") {
+        return (0, 0);
+    }
+    if mem.size(m, words) == 1 {
+        let r = err.fail(m, t, "session", text.lit(m, t, "reload PROGRAM.PARAM ... names the parameters to read again"));
+        return (0 - 1, 0);
+    }
+    let progs = m[sess + s_progs()];
+    let resident = m[sess + s_resident()];
+    let out = mem.list(m);
+    var w = 1;
+    while w < mem.size(m, words) {
+        let (pn, an) = dotted(m, t, mem.get(m, words, w));
+        let pi = prog_index(m, t, progs, pn);
+        if pn < 0 || pi < 0 {
+            let r = err.fail(m, t, "session", text.f1(m, t, "`$` is not PROGRAM.PARAM of the session", mem.get(m, words, w)));
+            return (0 - 1, 0);
+        }
+        let ai = runcmd.find(m, t, m[mem.get(m, progs, pi) + 1], an);
+        var found = 0 - 1;
+        var k = 0;
+        while k < mem.size(m, resident) {
+            let rec = mem.get(m, resident, k);
+            if m[rec] == pi && m[rec + 1] == ai && m[rec + 2] >= 0 {
+                found = rec;
+            }
+            k = k + 1;
+        }
+        if ai < 0 || found < 0 {
+            let r = err.fail(m, t, "session", text.f1(m, t, "`$` is not a binary resident file of the session", mem.get(m, words, w)));
+            return (0 - 1, 0);
+        }
+        mem.push(m, out, found);
+        w = w + 1;
+    }
+    return (1, out);
+}
+
 // How many numbers a request line holds.
 pub fn input_count[&m](m: &!m [int], sess: int) -> [] int {
     let progs = m[sess + s_progs()];

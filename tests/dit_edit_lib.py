@@ -59,11 +59,18 @@ class Session:
     def save(self, out, path, flag):
         self.lines.append(f"save {out} {path} {flag}")
 
-    def run(self, probe_of, probe_m, probe_n):
+    def alias(self, a, b):
+        self.lines.append(f"alias {a} {b}")
+
+    def write(self, probe_of, probe_m, probe_n):
         self.program("probe", "dit_rows2", f"m={probe_m} n={probe_n} bn=1024")
         self.link(probe_of, "probe.x")
         path = os.path.join(self.work, self.name + ".session")
         open(path, "w").write("\n".join(self.lines) + "\nsteps\nanswer probe.y\n")
+        return path
+
+    def run(self, probe_of, probe_m, probe_n):
+        path = self.write(probe_of, probe_m, probe_n)
         p = subprocess.Popen([SESSION, path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         reqs = []
         for line in (["1\n", "1\n"] if self.timed else ["1\n"]) + ["checkpoint\n"]:
@@ -80,12 +87,13 @@ class Session:
 
 
 class Edit:
-    def __init__(self, work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None):
+    def __init__(self, work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None, resident=False):
         self.work, self.wdir, self.NP, self.NPR, self.NTG, self.GP, self.GS, self.timed, self.mut = work, wdir, np_, npr, ntg, gp, gs, time, mut
         os.makedirs(work, exist_ok=True)
         self.P = lambda n: os.path.join(work, n)
         self.W = lambda n: os.path.join(wdir, n)
         self.secs = {"prefix": 0.0, "step": 0.0}
+        self.resident, self.proc = resident, None  # resident: one session of all 32 blocks for the prefix and one that stays open for every step (docs/diffusion.md D9i)
 
     def static(self, cs_pre, sn_pre, cs_tgt, sn_tgt, mask_pre, mask_step):
         P, NP = self.P, self.NP
@@ -99,7 +107,7 @@ class Edit:
         for i, nm in enumerate(("s1", "g1", "s2", "g2")):
             f32(self.P("ms_%s.bin" % nm), mod[:, i * D:(i + 1) * D])
 
-    def _blocks(self, name, lo, hi, xfile, prefix):
+    def _blocks(self, name, lo, hi, xfile, prefix, alias=False, keep_open=False):
         P, W, NP, mut = self.P, self.W, self.NP, self.mut
         s = Session(self.work, name, self.timed)
         suf = "pre" if prefix else "tgt"
@@ -158,14 +166,30 @@ class Edit:
             s.program(n("gr2"), "dit_gate_res", f"s={NP} n={D}")
             s.link(n("gr1") + ".z", n("gr2") + ".x"); s.link(n("gd") + ".y", n("gr2") + ".y"); s.res(n("gr2") + ".g", P("ms_g2.bin")); s.res(n("gr2") + ".sel", sel_f)
             prev = n("gr2") + ".z"
+            if alias and b > lo:
+                # the activations of block b live in the buffers of block b - 1's (docs/resident.md 21.4): the session file's checks prove nothing reads them any more. The residual stream
+                # (gr2.z, which is saved at the end) and what a prefix pass saves (the keys and values) keep their own
+                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z"), ("pv", "o"), ("c1", "y"),
+                        ("go", "y"), ("gr1", "z"), ("lnm2", "y"), ("gg", "y"), ("gp", "y"), ("sw", "y"), ("gd", "y")]
+                outs += [("ck", "y"), ("cv", "y")] if not prefix else []
+                outs += [("rk", "y"), ("vh", "y")] if not prefix else []
+                for sfx, o in outs:
+                    s.alias("b%d_%s.%s" % (b - 1, sfx, o), "b%d_%s.%s" % (b, sfx, o))
         outf = P("x_%s_%d.bin" % (suf, hi))
         s.save(prev, outf, "f32")
+        if keep_open:
+            path = s.write(prev, NP, D)
+            self.proc = subprocess.Popen([SESSION, path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(path + ".err", "w"), text=True, bufsize=1)
+            return outf, 0.0
         return outf, s.run(prev, NP, D)
 
     def prefix(self, x_pre):
         f32(self.P("xpre.f32"), x_pre)
         x = self.P("xpre.f32")
         self.secs["prefix"] = 0.0
+        if self.resident:
+            x, self.secs["prefix"] = self._blocks("preall", 0, NB, x, True, alias=True)
+            return
         for lo in range(0, NB, self.GP):
             x, secs = self._blocks("pre%d" % lo, lo, lo + self.GP, x, True)
             self.secs["prefix"] += secs
@@ -174,9 +198,34 @@ class Edit:
         f32(self.P("xtgt.f32"), x_tgt)
         x = self.P("xtgt.f32")
         self.secs["step"] = 0.0
+        if self.resident:
+            t0 = time.perf_counter()
+            if self.proc is None:
+                x, _ = self._blocks("stpall", 0, NB, x, False, alias=True, keep_open=True)
+            else:  # the weights, the cached keys and values and every buffer stay on the device: only the step's input and modulation are read again
+                self._ask("reload b0_lnm1.x b0_lnm1.sc b0_gr1.g b0_lnm2.sc b0_gr2.g")
+            self._ask("1")
+            self._ask("checkpoint")
+            self.secs["step"] = time.perf_counter() - t0
+            return np.fromfile(self.P("x_tgt_%d.bin" % NB), dtype="<f4").reshape(self.NP, D).astype(np.float64)
         for lo in range(0, NB, self.GS):
             x, secs = self._blocks("stp%d" % lo, lo, lo + self.GS, x, False)
             self.secs["step"] += secs
             if report:
                 report(lo + self.GS, np.fromfile(x, dtype="<f4").reshape(self.NP, D)[:self.NTG].astype(np.float64))
         return np.fromfile(x, dtype="<f4").reshape(self.NP, D).astype(np.float64)
+
+    def _ask(self, line):
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+        out = self.proc.stdout.readline()
+        if not out:
+            raise SystemExit("the resident session stopped on %r: %s" % (line, open(os.path.join(self.work, "stpall.session.err")).read()[:800]))
+        return out
+
+    def close(self):
+        """End the resident step session, if one is open."""
+        if self.proc is not None:
+            self.proc.stdin.close()
+            self.proc.wait()
+            self.proc = None
