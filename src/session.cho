@@ -901,6 +901,91 @@ pub fn reload_request[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int)
     return (1, out);
 }
 
+// The request `copy P.OUT -> Q.PARAM ...` (`docs/resident.md` section 30), for a device session: (1, a list of (source program, source parameter, destination program, destination parameter)) when the line is the word
+// `copy` and one or more `PROGRAM.OUT -> PROGRAM.PARAM`; the source must be an output of a kernel and the destination a resident parameter (a file's, or a table's, but not a linked or carried one: it has a buffer of its own that
+// nothing else writes), of the same element type and size; (0, 0) when the line does not start with `copy`; (-1, 0) with a refusal. The copy is made on the device after the request that made the output, and never names a file.
+pub fn copy_request[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> [] (int, int) {
+    let words = tokens(m, t, line);
+    if mem.size(m, words) == 0 || !text.is(t, mem.get(m, words, 0), "copy") {
+        return (0, 0);
+    }
+    let nw = mem.size(m, words);
+    if nw < 4 || (nw - 1) % 3 != 0 {
+        let r = err.fail(m, t, "session", text.lit(m, t, "copy PROGRAM.OUT -> PROGRAM.PARAM [...]"));
+        return (0 - 1, 0);
+    }
+    let progs = m[sess + s_progs()];
+    let resident = m[sess + s_resident()];
+    let links = m[sess + s_links()];
+    let carries = m[sess + s_carries()];
+    let out = mem.list(m);
+    var w = 1;
+    while w < nw {
+        let (sn, san) = dotted(m, t, mem.get(m, words, w));
+        let (dn, dan) = dotted(m, t, mem.get(m, words, w + 2));
+        if !text.is(t, mem.get(m, words, w + 1), "->") || sn < 0 || dn < 0 {
+            let r = err.fail(m, t, "session", text.lit(m, t, "copy PROGRAM.OUT -> PROGRAM.PARAM [...]"));
+            return (0 - 1, 0);
+        }
+        let sp = prog_index(m, t, progs, sn);
+        let dp = prog_index(m, t, progs, dn);
+        var sa = 0 - 1;
+        var da = 0 - 1;
+        if sp >= 0 {
+            sa = runcmd.find(m, t, m[mem.get(m, progs, sp) + 1], san);
+        }
+        if dp >= 0 {
+            da = runcmd.find(m, t, m[mem.get(m, progs, dp) + 1], dan);
+        }
+        if sa < 0 || da < 0 {
+            let r = err.fail(m, t, "session", text.f2(m, t, "`$` or `$` is not PROGRAM.PARAM of the session", mem.get(m, words, w), mem.get(m, words, w + 2)));
+            return (0 - 1, 0);
+        }
+        if !ir.param_writable(m, mem.get(m, ir.p_params(m, m[mem.get(m, progs, sp) + 1]), sa)) {
+            let r = err.fail(m, t, "session", text.f1(m, t, "`$` is not an output of a kernel", mem.get(m, words, w)));
+            return (0 - 1, 0);
+        }
+        var is_res = false;
+        var k = 0;
+        while k < mem.size(m, resident) {
+            let rec = mem.get(m, resident, k);
+            if m[rec] == dp && m[rec + 1] == da {
+                is_res = true;
+            }
+            k = k + 1;
+        }
+        k = 0;
+        while k < mem.size(m, links) {
+            let l = mem.get(m, links, k);
+            if m[l + 2] == dp && m[l + 3] == da {
+                is_res = false;
+            }
+            k = k + 1;
+        }
+        k = 0;
+        while k < mem.size(m, carries) {
+            let c = mem.get(m, carries, k);
+            if m[c + 2] == dp && m[c + 3] == da {
+                is_res = false;
+            }
+            k = k + 1;
+        }
+        if !is_res {
+            let r = err.fail(m, t, "session", text.f1(m, t, "`$` is not a resident parameter that nothing else writes", mem.get(m, words, w + 2)));
+            return (0 - 1, 0);
+        }
+        let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
+        let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
+        if m[gs] != m[gd] || m[gs + 3] != m[gd + 3] {
+            let r = err.fail(m, t, "session", text.f2(m, t, "`$` and `$` differ in type or size", mem.get(m, words, w), mem.get(m, words, w + 2)));
+            return (0 - 1, 0);
+        }
+        mem.push(m, out, mem.rec4(m, sp, sa, dp, da));
+        w = w + 3;
+    }
+    return (1, out);
+}
+
 // How many numbers a request line holds.
 pub fn input_count[&m](m: &!m [int], sess: int) -> [] int {
     let progs = m[sess + s_progs()];

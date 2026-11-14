@@ -273,10 +273,11 @@ wout = np.zeros((16, 9 * 144))
 wout[:4] = conv_w3("decoder.conv_out")
 y = conv3(x, None, 144, 16, L, wout)
 TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
-if TIME:
-    program("probe", "dit_rows2", f"m={L['R']} n=16 bn=16"); link(y, "probe.x")
+program("probe", "dit_rows2", f"m={L['R']} n=16 bn=16"); link(y, "probe.x")
+if not TIME:  # the result goes out as a binary file on `checkpoint`, not as millions of numbers of text (D12): the answer is the probe's two rows
+    prog.append(f"save {y} {P('y.f32')} f32")
 prog.append("steps")
-prog.append("answer probe.y" if TIME else "answer " + y)
+prog.append("answer probe.y")
 open(P("vae.session"), "w").write("\n".join(prog) + "\n")
 
 if TIME:
@@ -286,12 +287,12 @@ if TIME:
     print("TIME VAE decode, %d x %d: first request %.3f s (device, compile, upload); then median %.4f s (min %.4f, max %.4f) over %d" % (L["h"], L["w"], ts[0], sorted(rest)[len(rest) // 2], min(rest), max(rest), len(rest)))
     sys.exit(0)
 t0 = time.time()
-r = subprocess.run([SESSION, P("vae.session")], input="1\n", capture_output=True, text=True, timeout=7200)
+r = subprocess.run([SESSION, P("vae.session")], input="1\ncheckpoint\n", capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0
 if r.returncode != 0 or not r.stdout.strip():
     print("FAIL the session did not answer: status %d, %s" % (r.returncode, r.stderr.strip()[:800]))
     sys.exit(1)
-out = np.array(r.stdout.split(), dtype=np.float64).reshape(L["R"], 16)
+out = np.fromfile(P("y.f32"), dtype="<f4").reshape(L["R"], 16).astype(np.float64)
 bias_out = vr.W("decoder.conv_out.bias")
 img = np.zeros((4, L["h"], L["w"]))
 for yy in range(L["h"]):

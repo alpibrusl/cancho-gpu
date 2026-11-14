@@ -88,15 +88,18 @@ class Session:
 
 
 class Edit:
-    def __init__(self, work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None, resident=False):
+    def __init__(self, work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None, resident=False, unified=False):
         self.work, self.wdir, self.NP, self.NPR, self.NTG, self.GP, self.GS, self.timed, self.mut = work, wdir, np_, npr, ntg, gp, gs, time, mut
         os.makedirs(work, exist_ok=True)
         self.P = lambda n: os.path.join(work, n)
         self.W = lambda n: os.path.join(wdir, n)
         self.secs = {"prefix": 0.0, "step": 0.0}
-        self.resident, self.proc = resident, None  # resident: one session of all 32 blocks for the prefix and one that stays open for every step (docs/diffusion.md D9i)
+        self.unified, self.phase, self.errfile = unified, None, None
+        self.resident, self.proc = resident or unified, None  # resident: one session of all 32 blocks for the prefix and one that stays open for every step (docs/diffusion.md D9i)
 
     def static(self, cs_pre, sn_pre, cs_tgt, sn_tgt, mask_pre, mask_step):
+        self.tab = {"prefix": (cs_pre, sn_pre), "step": (cs_tgt, sn_tgt)}
+        self.mask_pre, self.mask_step = mask_pre, mask_step
         P, NP = self.P, self.NP
         f32(P("cs_pre.f32"), cs_pre); f32(P("sn_pre.f32"), sn_pre); f32(P("cs_tgt.f32"), cs_tgt); f32(P("sn_tgt.f32"), sn_tgt)
         f32(P("sel_pre.f32"), np.ones((NP, 1)) if self.mut == "prefix-sampled-t" else np.zeros((NP, 1)))  # the prefix reads the t = 0 row of the modulation
@@ -108,10 +111,10 @@ class Edit:
         for i, nm in enumerate(("s1", "g1", "s2", "g2")):
             f32(self.P("ms_%s.bin" % nm), mod[:, i * D:(i + 1) * D])
 
-    def _blocks(self, name, lo, hi, xfile, prefix, alias=False, keep_open=False):
+    def _blocks(self, name, lo, hi, xfile, prefix, alias=False, keep_open=False, unified=False):
         P, W, NP, mut = self.P, self.W, self.NP, self.mut
         s = Session(self.work, name, self.timed)
-        suf = "pre" if prefix else "tgt"
+        suf = "u" if unified else ("pre" if prefix else "tgt")
         prev = None
         for b in range(lo, hi):
             n = lambda t: "b%d_%s" % (b, t)
@@ -137,8 +140,8 @@ class Edit:
                 s.save(n("vh") + ".y", P("vpre%d.f16" % b), "f16")
                 kk, vv, t, maskf = n("rk") + ".y", n("vh") + ".y", NP, "mask_pre.f32"
             else:
-                kk, vv, t, maskf = n("ck") + ".y", n("cv") + ".y", 2 * NP, "mask_step.f32"
-                for cn, src, pf in (("ck", "rk", "kpre"), ("cv", "vh", "vpre")):
+                kk, vv, t, maskf = n("ck") + ".y", n("cv") + ".y", 2 * NP, "mask_u.f32" if unified else "mask_step.f32"
+                for cn, src, pf in (("ck", "rk", "kz" if unified else "kpre"), ("cv", "vh", "vz" if unified else "vpre")):
                     s.program(n(cn), "dit_cat", f"s={NP} n={D} bn=1024")
                     if mut == "no-cat":  # the cached prefix left out: the target's own twice
                         s.link(n(src) + ".y", n(cn) + ".a")
@@ -177,18 +180,66 @@ class Edit:
                 outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z")] + ([("stc", "mc"), ("stc", "zc")] if ONE_PASS else []) + [ ("pv", "o"), ("c1", "y"),
                         ("go", "y"), ("gr1", "z"), ("lnm2", "y"), ("gg", "y"), ("gp", "y"), ("sw", "y"), ("gd", "y")]
                 outs += [("ck", "y"), ("cv", "y")] if not prefix else []
-                outs += [("rk", "y"), ("vh", "y")] if not prefix else []
+                outs += [("rk", "y"), ("vh", "y")] if not (prefix or unified) else []
                 for sfx, o in outs:
                     s.alias("b%d_%s.%s" % (b - 1, sfx, o), "b%d_%s.%s" % (b, sfx, o))
         outf = P("x_%s_%d.bin" % (suf, hi))
         s.save(prev, outf, "f32")
         if keep_open:
             path = s.write(prev, NP, D)
-            self.proc = subprocess.Popen([SESSION, path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(path + ".err", "w"), text=True, bufsize=1)
+            self.errfile = path + ".err"
+            self.proc = subprocess.Popen([SESSION, path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(self.errfile, "w"), text=True, bufsize=1)
             return outf, 0.0
         return outf, s.run(prev, NP, D)
 
+    # ---- one session for the prefix pass and every step (D12): the prefix is a step whose first NP keys (the cache, zeros at first) are all hidden by the mask, whose rows are modulated from t = 0 (`sel` zeros) and rotated by the
+    # prefix's tables; after it the keys and values it computed are copied on the device to the cache (`copy`) and the same programs run the steps with the target's inputs. Only the files that differ between the two are read again.
+    def _phase_files(self, phase):
+        P, NP = self.P, self.NP
+        cs, sn = self.tab[phase]
+        f32(P("cs_u.f32"), cs); f32(P("sn_u.f32"), sn)
+        f32(P("sel_u.f32"), np.zeros((NP, 1)) if phase == "prefix" else np.ones((NP, 1)))
+        f32(P("mask_u.f32"), np.concatenate([np.full((NP, NP), NEG), self.mask_pre], 1) if phase == "prefix" else self.mask_step)
+
+    def _unified(self, x, phase, secs_key):
+        t0 = time.perf_counter()
+        names = "b0_lnm1.x b0_lnm1.sc b0_gr1.g b0_lnm2.sc b0_gr2.g"
+        if self.proc is None:
+            self._phase_files(phase)
+            zero = np.zeros((self.NP, D), dtype="<f2")
+            for b in range(NB):  # the cache before the prefix pass has filled it: finite, and hidden by the mask
+                for pf in ("kz", "vz"):
+                    path = self.P("%s%d.f16" % (pf, b))
+                    if not os.path.exists(path) or os.path.getsize(path) != zero.nbytes:
+                        zero.tofile(path)
+            self._blocks("unified", 0, NB, x, False, alias=True, keep_open=True, unified=True)
+        elif phase != self.phase:
+            self._phase_files(phase)
+            self._ask("reload " + names + " b0_lnm1.sel b0_rq.cs b0_rq.sn b0_%s.mask" % ("stc" if ONE_PASS else "st"))
+        else:
+            self._ask("reload " + names)
+        self._ask("1")
+        self.phase = phase
+        self.secs[secs_key] = time.perf_counter() - t0
+
+    def _prefix_unified(self, x_pre):
+        f32(self.P("xu.f32"), x_pre)
+        self._unified(self.P("xu.f32"), "prefix", "prefix")
+        t0 = time.perf_counter()
+        self._ask("copy " + " ".join("b%d_rk.y -> b%d_ck.a b%d_vh.y -> b%d_cv.a" % (b, b, b, b) for b in range(NB)))
+        self.secs["prefix"] += time.perf_counter() - t0
+
+    def _step_unified(self, x_tgt):
+        f32(self.P("xu.f32"), x_tgt)
+        self._unified(self.P("xu.f32"), "step", "step")
+        t0 = time.perf_counter()
+        self._ask("checkpoint")
+        self.secs["step"] += time.perf_counter() - t0
+        return np.fromfile(self.P("x_u_%d.bin" % NB), dtype="<f4").reshape(self.NP, D).astype(np.float64)
+
     def prefix(self, x_pre):
+        if self.unified:
+            return self._prefix_unified(x_pre)
         f32(self.P("xpre.f32"), x_pre)
         x = self.P("xpre.f32")
         self.secs["prefix"] = 0.0
@@ -200,6 +251,8 @@ class Edit:
             self.secs["prefix"] += secs
 
     def step(self, x_tgt, report=None):
+        if self.unified:
+            return self._step_unified(x_tgt)
         f32(self.P("xtgt.f32"), x_tgt)
         x = self.P("xtgt.f32")
         self.secs["step"] = 0.0
@@ -225,7 +278,7 @@ class Edit:
         self.proc.stdin.flush()
         out = self.proc.stdout.readline()
         if not out:
-            raise SystemExit("the resident session stopped on %r: %s" % (line, open(os.path.join(self.work, "stpall.session.err")).read()[:800]))
+            raise SystemExit("the resident session stopped on %r: %s" % (line, open(self.errfile).read()[:800]))
         return out
 
     def close(self):

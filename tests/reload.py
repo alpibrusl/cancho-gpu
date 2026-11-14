@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""docs/resident.md section 29: the Metal session's request `reload P.PARAM ...` re-reads a binary resident file onto its buffer.
+"""docs/resident.md sections 29 and 30: the Metal session's requests `reload P.PARAM ...` (re-reads a binary resident file onto its buffer) and `copy P.OUT -> Q.PARAM ...` (an output copied on the device to a resident parameter).
 
     python3 tests/reload.py [build/cancho-gpu-metal-session]
 
 A session with one program (the first two rows of a [4, 64] matrix) whose input is a resident f32 file; the file is rewritten between requests. Checks: the answer follows the file only after `reload`
 (before it the device still holds the old data); two files (a second program on its own file) reload by name in one request; a name that is not a program, not a parameter, not resident, an output, or no
-name at all is refused with the rule `session`, which ends the session as every refusal of a request does. Needs a Mac.
+name at all is refused with the rule `session`, which ends the session as every refusal of a request does. `copy`: the output of one program becomes the input of another after the request that made it, the second program's answer follows, and eight malformed or illegal copies are refused. Needs a Mac.
 """
 import os
 import subprocess
@@ -73,4 +73,30 @@ for bad in ("reload", "reload nope.x", "reload pa.nope", "reload pa.y", "reload 
     err = p.stderr.read()
     p.stdin.close(); p.wait()
     check("refused: %r (rule session)" % bad, out == [] and "error[session]" in err and p.returncode != 0)
+# ---- copy
+fc, fd = os.path.join(tmp, "c.f32"), os.path.join(tmp, "d.f32")
+c0, d0 = rng.standard_normal((2, 64)), rng.standard_normal((2, 64))
+wr(fc, c0); wr(fd, d0)
+sess2 = os.path.join(tmp, "s2.session")
+open(sess2, "w").write("\n".join([
+    f"program pa {CHX} m=2 n=64 bn=64", f"resident pa.x {fc} f32",
+    f"program pb {CHX} m=2 n=64 bn=64", f"resident pb.x {fd} f32",
+    f"program pc {CHX} m=2 n=64 bn=64", "link pb.y -> pc.x",
+    "steps", "answer pa.y", "answer pb.y", "answer pc.y", ""]))
+sess_save, sess = sess, sess2
+p = start()
+got = np.array(ask(p, "1"), dtype=np.float64)
+check("copy: before the copy pb holds its own file", np.allclose(got[128:256], d0.astype("f4").ravel(), atol=0))
+check("copy: one pair answers 1", ask(p, "copy pa.y -> pb.x") == ["1"])
+got = np.array(ask(p, "1"), dtype=np.float64)
+check("copy: pb now computes from pa's output", np.allclose(got[128:256], c0.astype("f4").ravel(), atol=0) and np.allclose(got[:128], c0.astype("f4").ravel(), atol=0))
+p.stdin.close(); p.wait()
+for bad in ("copy", "copy pa.y", "copy pa.y -> ", "copy pa.y => pb.x", "copy nope.y -> pb.x", "copy pa.x -> pb.x", "copy pa.y -> pb.y", "copy pa.y -> pc.x"):
+    p = start()
+    ask(p, "1")
+    out = ask(p, bad)
+    err = p.stderr.read()
+    p.stdin.close(); p.wait()
+    check("refused: %r (rule session)" % bad, out == [] and "error[session]" in err and p.returncode != 0)
+sess = sess_save
 sys.exit(1 if fails else 0)

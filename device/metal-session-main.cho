@@ -494,6 +494,42 @@ fn reload[&m, &t, &i, &f, &s](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &f F
     return 0;
 }
 
+// The request `copy`: each source output is copied to its destination buffer on the device, a chunk at a time through the byte pool (`session.copy_request`). Answers the number of copies, as one line.
+fn copy[&m, &t, &i, &f](m: &!m [int], t: &!t [byte], io: &!i Io, ffi: &f Ffi("libmetalgpu"), sess: int, bufs: int, pairs: int) -> [io_write, ffi("libmetalgpu")] int {
+    let progs = m[sess + session.s_progs()];
+    var k = 0;
+    while k < mem.size(m, pairs) {
+        let pr = mem.get(m, pairs, k);
+        let g = mem.get(m, m[mem.get(m, progs, m[pr]) + 2], m[pr + 1]);
+        let bytes = m[g + 3] * kinds.size_bytes(m[g]);
+        let mark = m[mem.text_slot()];
+        var off = 0;
+        while off < bytes {
+            var piece = bytes - off;
+            if piece > chunk_cap() {
+                piece = chunk_cap();
+            }
+            let at = m[mem.text_slot()];
+            if piece > len(t) - at {
+                return err.fail(m, t, "usage", text.lit(m, t, "the byte pool cannot hold a chunk of a copy"));
+            }
+            if metal.cgpu_download_at(ffi, buffer_of(m, bufs, m[pr], m[pr + 1]), off, t[at..at + piece]) < 0 {
+                return device_fail(m, t, ffi, "reading a copy's source");
+            }
+            if metal.cgpu_upload_at(ffi, buffer_of(m, bufs, m[pr + 2], m[pr + 3]), off, t[at..at + piece]) < 0 {
+                return device_fail(m, t, ffi, "writing a copy's destination");
+            }
+            off = off + piece;
+        }
+        m[mem.text_slot()] = mark;
+        k = k + 1;
+    }
+    io.write_all(io, text.bytes(t, text.num(m, t, mem.size(m, pairs))));
+    io.write_all(io, "\n");
+    let _flushed = flush_out(io);
+    return 0;
+}
+
 fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu")) -> [io_read, io_write, err_write, fs_read(""), fs_write(""), file_read, file_write, args, ffi("libmetalgpu")] int {
     if arg_count(args) != 2 {
         return usage(io);
@@ -548,7 +584,17 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
                 } else if kind > 0 {
                     done = reload(m, t, io, ffi, fs, sess, bufs, recs);
                 }
+                var kcopy = 0;
                 if kind == 0 {
+                    let (ck, pairs) = session.copy_request(m, t, sess, text.handle(tmark, n));
+                    kcopy = ck;
+                    if ck < 0 {
+                        done = 0 - 1;
+                    } else if ck > 0 {
+                        done = copy(m, t, io, ffi, sess, bufs, pairs);
+                    }
+                }
+                if kind == 0 && kcopy == 0 {
                     let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
                     done = reps;
                     if done >= 0 {

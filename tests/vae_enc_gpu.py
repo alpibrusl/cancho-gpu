@@ -295,10 +295,11 @@ x = norm(x, vr.W("encoder.norm_out.gamma").reshape(-1), 768, L)
 x = bias(conv3(x, None, 768, 128, L, conv_w3("encoder.conv_out")), vr.W("encoder.conv_out.bias"), 128, L)
 x = bias(conv1(pad16(x, 128, L), 128, 128, L, conv_w1("quant_conv")), vr.W("quant_conv.bias"), 128, L)
 TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
-if TIME:
-    program("probe", "dit_rows2", f"m={L['R']} n=128 bn=128"); link(x, "probe.x")
+program("probe", "dit_rows2", f"m={L['R']} n=128 bn=128"); link(x, "probe.x")
+if not TIME:  # the result goes out as a binary file on `checkpoint`, not as millions of numbers of text (D12): the answer is the probe's two rows
+    prog.append(f"save {x} {P('x.f32')} f32")
 prog.append("steps")
-prog.append("answer probe.y" if TIME else "answer " + x)
+prog.append("answer probe.y")
 open(P("enc.session"), "w").write("\n".join(prog) + "\n")
 
 if TIME:
@@ -308,12 +309,12 @@ if TIME:
     print("TIME VAE encode, %d x %d: first request %.3f s (device, compile, upload); then median %.4f s (min %.4f, max %.4f) over %d" % (IH, IW, ts[0], sorted(rest)[len(rest) // 2], min(rest), max(rest), len(rest)))
     sys.exit(0)
 t0 = time.time()
-r = subprocess.run([SESSION, P("enc.session")], input="1\n", capture_output=True, text=True, timeout=7200)
+r = subprocess.run([SESSION, P("enc.session")], input="1\ncheckpoint\n", capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0
 if r.returncode != 0 or not r.stdout.strip():
     print("FAIL the session did not answer: status %d, %s" % (r.returncode, r.stderr.strip()[:800]))
     sys.exit(1)
-out = np.array(r.stdout.split(), dtype=np.float64).reshape(L["R"], 128)
+out = np.fromfile(P("x.f32"), dtype="<f4").reshape(L["R"], 128).astype(np.float64)
 print("session: %d programs, answered in %.1f s (Metal; includes the compile and the upload)" % (n_prog, secs))
 got = np.zeros((64, L["h"], L["w"]))
 for yy in range(L["h"]):
