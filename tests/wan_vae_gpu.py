@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V2 of docs/diffusion.md section 6: the VAE decoder of Wan2.2-TI2V-5B (AutoencoderKLWan) on a Metal GPU, as one session of kernel programs, held to the float64 decoder of tools/wan_vae_ref.py.
 
-    wan_vae_gpu.py WORK_DIR [--frames F] [--size HxW] [--seed S] [--no-ref] [--save VIDEO.npy] [--mutate NAME]
+    wan_vae_gpu.py WORK_DIR [--frames F] [--size HxW] [--seed S] [--z LATENT.npy] [--no-ref] [--save VIDEO.npy] [--mutate NAME]
 
 Needs a Mac, the first shards of `Wan-AI/Wan2.2-TI2V-5B-Diffusers` (the VAE) in the Hugging Face cache, numpy and safetensors (the venv of the first image edits), and `build/cancho-gpu-metal-session`.
 Not in `scripts/gate.sh`. The latent is [48, F, h, w]; the video is [3, 1 + 4 (F - 1), 16 h, 16 w] in [-1, 1].
@@ -294,7 +294,8 @@ def upblock(x, x0, L, cin, cout, p, temporal, last):
 
 
 # ---- the decoder
-z = wv.latent(F, H0, W0, SEED)  # [48, F, h, w]
+z = np.load(arg("--z")).astype(np.float64) if "--z" in sys.argv else wv.latent(F, H0, W0, SEED)  # [48, F, h, w]; --z: a latent as the pipeline hands it to the decoder (z * std + mean)
+F, H0, W0 = z.shape[1:]
 L = lay(H0, W0, F, 0)
 zr = np.zeros((L["R"] + 2 * L["g"], 64))
 for f in range(F):
