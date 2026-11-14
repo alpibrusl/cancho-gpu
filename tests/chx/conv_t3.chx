@@ -1,0 +1,23 @@
+// The temporal 3x1x1 causal convolution (`time_conv` of a video VAE's temporal upsample, docs/diffusion.md V2): conv3t.chx without the spatial taps. The same layout (n frames of s rows, g >= 2 s guard rows each
+// side); the output at row p reads the rows p + (dt-2) s, dt = 0, 1, 2. w [cout, 3 cin], tap dt at column dt cin.
+algo conv_t3(rp, cin, cout, s, g)
+  in  x: f16[rp + 2 * g, cin]
+  in  w: f16[cout, 3 * cin]
+  out y: f32[rp, cout]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dt in 0 .. 3 with c {
+    let c = for p in 0 .. cin / bk with c {
+      let at = load x[g + i * bm + dt * s - 2 * s, p * bk ; bm, bk] @shared
+      let wt = load w[j * bn, dt * cin + p * bk ; bn, bk] @shared
+      yield mma c at wt
+    }
+    yield c
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule conv_t3 for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv_t3 for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

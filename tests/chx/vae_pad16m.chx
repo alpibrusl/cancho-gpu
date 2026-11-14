@@ -1,0 +1,17 @@
+// f32 to f16 with g zero guard rows each side and a row mask, for a video VAE (docs/diffusion.md V2): y = x * m. The mask hides the frames a convolution must not see (the first latent frame of the temporal upsample's
+// `time_conv`: the model's feature cache holds "Rep" in its place, a window of zeros).
+algo vae_pad16m(r, c, g)
+  in  x: f32[r, c]
+  in  m: f32[r, 1]
+  out y: f16[r + 2 * g, c]
+{
+  grid i over r
+  let a  = load x[i, 0 ; 1, c]
+  let mk = load m[i, 0 ; 1, 1]
+  let b  = a * mk
+  let bh = stage f16 b
+  store bh -> y[g + i, 0]
+}
+
+schedule vae_pad16m for apple-m-series { threads 256 }
+schedule vae_pad16m for nvidia-ada     { threads 256 }

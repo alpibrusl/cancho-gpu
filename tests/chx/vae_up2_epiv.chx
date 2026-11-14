@@ -1,0 +1,39 @@
+// vae_up2_epi.chx for a clip, an up block that doubles space only (docs/diffusion.md V2): z = (conv + bias + shortcut) fa at the doubled resolution, for the n frames (s rows each at the source size, s2 at the doubled size).
+// fa [n, 1] is 0 for the zero frame at the head of a clip's layout and 1 for the others, so that frame stays zero (the bias and the shortcut must not make it a frame).
+algo vae_up2_epiv(n, h, w, c, s, s2, r, r2)
+  in  cv:  f32[r2, c]
+  in  b:   f32[1, c]
+  in  fa:  f32[n, 1]
+  in  s00: f32[r, c]
+  in  s01: f32[r, c]
+  in  s10: f32[r, c]
+  in  s11: f32[r, c]
+  out z:   f32[r2, c]
+{
+  grid f over n, i over h, j over w
+  let bb  = load b
+  let m   = load fa[f, 0 ; 1, 1]
+  let c00 = load cv[f * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c01 = load cv[f * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let c10 = load cv[f * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c11 = load cv[f * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let r00 = load s00[f * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r01 = load s01[f * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r10 = load s10[f * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r11 = load s11[f * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let a00 = c00 + &bb
+  let a01 = c01 + &bb
+  let a10 = c10 + &bb
+  let a11 = c11 + bb
+  let z00 = (a00 + r00) * &m
+  let z01 = (a01 + r01) * &m
+  let z10 = (a10 + r10) * &m
+  let z11 = (a11 + r11) * m
+  store z00 -> z[f * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0]
+  store z01 -> z[f * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0]
+  store z10 -> z[f * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0]
+  store z11 -> z[f * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0]
+}
+
+schedule vae_up2_epiv for apple-m-series { threads 128 }
+schedule vae_up2_epiv for nvidia-ada     { threads 128 }
