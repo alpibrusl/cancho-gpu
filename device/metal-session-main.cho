@@ -549,17 +549,17 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
                     done = reload(m, t, io, ffi, fs, sess, bufs, recs);
                 }
                 if kind == 0 {
-                let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
-                done = reps;
-                if done >= 0 {
-                    done = session.fill_inputs(m, t, fm, sess, rest);
-                }
-                if done >= 0 {
-                    done = on_device(m, t, fm, ffi, sess, funcs, bufs, reps);
-                }
-                if done >= 0 {
-                    done = session.print_answers(m, t, fm, io, sess);
-                }
+                    let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
+                    done = reps;
+                    if done >= 0 {
+                        done = session.fill_inputs(m, t, fm, sess, rest);
+                    }
+                    if done >= 0 {
+                        done = on_device(m, t, fm, ffi, sess, funcs, bufs, reps);
+                    }
+                    if done >= 0 {
+                        done = session.print_answers(m, t, fm, io, sess);
+                    }
                 }
             }
             if done < 0 {
