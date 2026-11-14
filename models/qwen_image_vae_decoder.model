@@ -1,0 +1,209 @@
+# The VAE decoder of Qwen-Image-2.1-Turbo (docs/diffusion.md D4c) as a model file (docs/resident.md section 31): it expands to the session file that tests/vae_gpu.py writes (161 operations and a probe).
+# Named by the generator's counter as the encoder's is (models/qwen_image_vae_encoder.model, whose helper blocks these are); the weight files the generator writes are the ones read here.
+#
+#     cancho-gpu model-expand models/qwen_image_vae_decoder.model CHX=<tests/chx> CONV3=<examples/cnn/conv3.chx> WORK=<work dir> H0=<latent height> W0=<latent width>
+#
+# The latent is [64, H0, W0]; the image is 16 times that in each side.
+text CHX = tests/chx
+text CONV3 = examples/cnn/conv3.chx
+text WORK = .
+text SC144 = 12.0
+text SC288 = 16.97056274847714
+text SC576 = 24.0
+text SC1152 = 33.94112549695428
+text SCA = 0.029462782549439483
+const H0 = 16
+const W0 = 16
+
+# ---- one operation each; (u) is the counter, (h, w) the level's image size, `src` the name of the output it reads
+block norm(u, src, c, scn, h, w, plain)
+    const WP = w + 2
+    const G = WP + 1
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    if plain == 0
+        program nm${u} $CHX/vae_norm_silu.chx r=$R c=$c g=$G sc=$scn
+    else
+        program nm${u} $CHX/vae_norm.chx r=$R c=$c g=$G sc=$scn
+    end
+    link $src -> nm${u}.x
+    resident nm${u}.gamma $WORK/nm${u}g.f32 f32
+    resident nm${u}.mask $WORK/mask${h}.f32 f32
+end
+
+block conv3(u, src, cin, cout, h, w)
+    const WP = w + 2
+    const G = WP + 1
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    if cin % 32 != 0 || cout % 32 != 0
+        program cv${u} $CHX/conv3_k16.chx rp=$R cin=$cin cout=$cout wp=$WP g=$G
+    else
+        program cv${u} $CONV3 rp=$R cin=$cin cout=$cout wp=$WP g=$G
+    end
+    link $src -> cv${u}.x
+    resident cv${u}.w $WORK/cv${u}.f16 f16
+end
+
+block conv1(u, src, cin, cout, h, w)
+    const WP = w + 2
+    const G = WP + 1
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    program c1${u} $CHX/conv1.chx r=$R cin=$cin cout=$cout g=$G
+    link $src -> c1${u}.x
+    resident c1${u}.w $WORK/c1${u}.f16 f16
+end
+
+block bias(u, src, c, h, w)
+    const WP = w + 2
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    program bi${u} $CHX/vae_bias.chx r=$R c=$c
+    link $src -> bi${u}.x
+    resident bi${u}.b $WORK/bi${u}b.f32 f32
+    resident bi${u}.m $WORK/mask${h}.f32 f32
+end
+
+block pad16(u, src, c, h, w)
+    const WP = w + 2
+    const G = WP + 1
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    program pd${u} $CHX/vae_pad16.chx r=$R c=$c g=$G
+    link $src -> pd${u}.x
+end
+
+block bias_res(u, src, rsrc, c, h, w)
+    const WP = w + 2
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    program br${u} $CHX/vae_bias_res.chx r=$R c=$c
+    link $src -> br${u}.x
+    link $rsrc -> br${u}.res
+    resident br${u}.b $WORK/br${u}b.f32 f32
+    resident br${u}.m $WORK/mask${h}.f32 f32
+end
+
+# ---- a residual block over (cin -> cout): 6 counters when the channels are equal (the output is br(u + 5).z), 9 when they are not (br(u + 8).z)
+block resnet_same(u, src, c, scn, h, w)
+    use norm(u, src, c, scn, h, w, 0)
+    use conv3(u + 1, "nm${u}.y", c, c, h, w)
+    use bias(u + 2, "cv${u + 1}.y", c, h, w)
+    use norm(u + 3, "bi${u + 2}.z", c, scn, h, w, 0)
+    use conv3(u + 4, "nm${u + 3}.y", c, c, h, w)
+    use bias_res(u + 5, "cv${u + 4}.y", src, c, h, w)
+end
+
+block resnet_diff(u, src, cin, cout, scin, scout, h, w)
+    use norm(u, src, cin, scin, h, w, 0)
+    use conv3(u + 1, "nm${u}.y", cin, cout, h, w)
+    use bias(u + 2, "cv${u + 1}.y", cout, h, w)
+    use norm(u + 3, "bi${u + 2}.z", cout, scout, h, w, 0)
+    use conv3(u + 4, "nm${u + 3}.y", cout, cout, h, w)
+    use pad16(u + 5, src, cin, h, w)
+    use conv1(u + 6, "pd${u + 5}.y", cin, cout, h, w)
+    use bias(u + 7, "c1${u + 6}.y", cout, h, w)
+    use bias_res(u + 8, "cv${u + 4}.y", "bi${u + 7}.z", cout, h, w)
+end
+
+# ---- the attention of the middle block over one head of c channels (11 counters, the output is br(u + 10).z)
+block attention(u, src, c, scn, h, w)
+    const WP = w + 2
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    use norm(u, src, c, scn, h, w, 1)
+    use conv1(u + 1, "nm${u}.y", c, 3 * c, h, w)
+    use bias(u + 2, "c1${u + 1}.y", 3 * c, h, w)
+    program sp${u + 3} $CHX/vae_split16.chx r=$R c=$c sc=$SCA
+    link bi${u + 2}.z -> sp${u + 3}.qkv
+    program sc${u + 4} $CHX/ported/gemm_mma.chx m=$R n=$R k=$c
+    link sp${u + 3}.q -> sc${u + 4}.a
+    link sp${u + 3}.k -> sc${u + 4}.w
+    program ma${u + 5} $CHX/vae_mask_add.chx n=$R
+    link sc${u + 4}.y -> ma${u + 5}.sc
+    resident ma${u + 5}.mk $WORK/ma${u + 5}mk.f32 f32
+    program st${u + 6} $CHX/dit_stats.chx nh=1 nq=$R t=$R qs=32 cs=64
+    link ma${u + 5}.z -> st${u + 6}.sc
+    program pv${u + 7} $CHX/dit_pv.chx nh=1 nq=$R t=$R qs=32 cs=64 dw=32 d=$c
+    link ma${u + 5}.z -> pv${u + 7}.sc
+    link st${u + 6}.m -> pv${u + 7}.m
+    link st${u + 6}.z -> pv${u + 7}.z
+    link sp${u + 3}.v -> pv${u + 7}.v
+    use pad16(u + 8, "pv${u + 7}.o", c, h, w)
+    use conv1(u + 9, "pd${u + 8}.y", c, c, h, w)
+    use bias_res(u + 10, "c1${u + 9}.y", src, c, h, w)
+end
+
+# ---- the stride-2 upsample at the end of an up block (8 counters, the output is ep(u + 7).z): the nearest-neighbour doubling and its 3 x 3 convolution at the doubled size, the four sub-position shortcuts of the block's input x0, and the epilogue that adds them
+block up(u, x, x0, cin, cout, h, w)
+    const WP = w + 2
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    const h2 = h * 2
+    const w2 = w * 2
+    const WP2 = w2 + 2
+    const R2 = ((h2 + 2) * WP2 + 63) / 64 * 64
+    const G2 = WP2 + 1
+    program up${u} $CHX/vae_up2.chx h=$h w=$w c=$cout r=$R r2=$R2 g2=$G2
+    link $x -> up${u}.x
+    use conv3(u + 1, "up${u}.y", cout, cout, h2, w2)
+    use pad16(u + 2, x0, cin, h, w)
+    use conv1(u + 3, "pd${u + 2}.y", cin, cout, h, w)
+    use conv1(u + 4, "pd${u + 2}.y", cin, cout, h, w)
+    use conv1(u + 5, "pd${u + 2}.y", cin, cout, h, w)
+    use conv1(u + 6, "pd${u + 2}.y", cin, cout, h, w)
+    program ep${u + 7} $CHX/vae_up2_epi.chx h=$h w=$w c=$cout r=$R r2=$R2
+    link cv${u + 1}.y -> ep${u + 7}.cv
+    resident ep${u + 7}.b $WORK/ep${u + 7}b.f32 f32
+    link c1${u + 3}.y -> ep${u + 7}.s00
+    link c1${u + 4}.y -> ep${u + 7}.s01
+    link c1${u + 5}.y -> ep${u + 7}.s10
+    link c1${u + 6}.y -> ep${u + 7}.s11
+end
+
+# ---- the decoder: the levels are the latent, then 2, 4, 8 and 16 times its size
+const L0H = H0
+const L0W = W0
+const L1H = H0 * 2
+const L1W = W0 * 2
+const L2H = H0 * 4
+const L2W = W0 * 4
+const L3H = H0 * 8
+const L3W = W0 * 8
+const L4H = H0 * 16
+const L4W = W0 * 16
+
+# the post-quantisation convolution reads the guarded f16 latent, then the input convolution (64 -> 1152) and the middle block
+program c11 $CHX/conv1.chx r=${((H0 + 2) * (W0 + 2) + 63) / 64 * 64} cin=64 cout=64 g=${W0 + 3}
+resident c11.x $WORK/z.f16 f16
+resident c11.w $WORK/c11.f16 f16
+use bias(2, "c11.y", 64, L0H, L0W)
+use pad16(3, "bi2.z", 64, L0H, L0W)
+use conv3(4, "pd3.y", 64, 1152, L0H, L0W)
+use bias(5, "cv4.y", 1152, L0H, L0W)
+use resnet_same(6, "bi5.z", 1152, SC1152, L0H, L0W)
+use attention(12, "br11.z", 1152, SC1152, L0H, L0W)
+use resnet_same(23, "br22.z", 1152, SC1152, L0H, L0W)
+
+# the five up blocks (three residual blocks each, and an upsample after the first four)
+use resnet_same(29, "br28.z", 1152, SC1152, L0H, L0W)
+use resnet_same(35, "br34.z", 1152, SC1152, L0H, L0W)
+use resnet_same(41, "br40.z", 1152, SC1152, L0H, L0W)
+use up(47, "br46.z", "br28.z", 1152, 1152, L0H, L0W)
+use resnet_same(55, "ep54.z", 1152, SC1152, L1H, L1W)
+use resnet_same(61, "br60.z", 1152, SC1152, L1H, L1W)
+use resnet_same(67, "br66.z", 1152, SC1152, L1H, L1W)
+use up(73, "br72.z", "ep54.z", 1152, 1152, L1H, L1W)
+use resnet_diff(81, "ep80.z", 1152, 576, SC1152, SC576, L2H, L2W)
+use resnet_same(90, "br89.z", 576, SC576, L2H, L2W)
+use resnet_same(96, "br95.z", 576, SC576, L2H, L2W)
+use up(102, "br101.z", "ep80.z", 1152, 576, L2H, L2W)
+use resnet_diff(110, "ep109.z", 576, 288, SC576, SC288, L3H, L3W)
+use resnet_same(119, "br118.z", 288, SC288, L3H, L3W)
+use resnet_same(125, "br124.z", 288, SC288, L3H, L3W)
+use up(131, "br130.z", "ep109.z", 576, 288, L3H, L3W)
+use resnet_diff(139, "ep138.z", 288, 144, SC288, SC144, L4H, L4W)
+use resnet_same(148, "br147.z", 144, SC144, L4H, L4W)
+use resnet_same(154, "br153.z", 144, SC144, L4H, L4W)
+
+# the output norm and convolution (144 -> 16, the first four channels are the image), and the probe
+use norm(160, "br159.z", 144, SC144, L4H, L4W, 0)
+use conv3(161, "nm160.y", 144, 16, L4H, L4W)
+program probe $CHX/dit_rows2.chx m=${((L4H + 2) * (L4W + 2) + 63) / 64 * 64} n=16 bn=16
+link cv161.y -> probe.x
+save cv161.y $WORK/y.f32 f32
+steps
+answer probe.y

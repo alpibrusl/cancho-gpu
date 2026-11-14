@@ -619,11 +619,25 @@ fn run[&m, &t](m: &!m [int], t: &!t [byte], lines: int, blocks: int, env: int, i
             let inner = mem.copy(m, env);
             var a = 0;
             while a < mem.size(m, args) {
-                let v = eval(m, t, env, mem.get(m, args, a), lineno);
-                if err.failed(m) {
-                    return 0 - 1;
+                let arg = mem.get(m, args, a);
+                let pname = mem.get(m, m[b + 1], a);
+                let known = lookup(m, t, env, arg);
+                if text.size(arg) >= 2 && text.at(t, arg, 0) == '"' && text.at(t, arg, text.size(arg) - 1) == '"' {
+                    // a text argument "...": `$name` and `${expression}` are replaced inside it (no commas or parentheses in it)
+                    let s = subst(m, t, env, text.sub(arg, 1, text.size(arg) - 1), lineno);
+                    if s < 0 {
+                        return 0 - 1;
+                    }
+                    mem.push(m, inner, mem.rec3(m, pname, s, 1));
+                } else if known >= 0 && m[known + 2] % 2 == 1 {
+                    mem.push(m, inner, mem.rec3(m, pname, m[known + 1], 1));
+                } else {
+                    let v = eval(m, t, env, arg, lineno);
+                    if err.failed(m) {
+                        return 0 - 1;
+                    }
+                    mem.push(m, inner, mem.rec3(m, pname, v, 0));
                 }
-                mem.push(m, inner, mem.rec3(m, mem.get(m, m[b + 1], a), v, 0));
                 a = a + 1;
             }
             if run(m, t, lines, blocks, inner, m[b + 2], m[b + 3], out, depth + 1) < 0 {

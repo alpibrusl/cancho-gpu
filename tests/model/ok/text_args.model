@@ -1,0 +1,10 @@
+# block parameters that hold text: a quoted argument (with $name and ${expression} replaced), a text constant's name, and an integer
+block op(u, src, c)
+    program op${u} k.chx c=$c
+    link $src -> op${u}.x
+end
+text FIRST = in0.z
+use op(1, FIRST, 8)
+use op(2, "op${1}.y", 16)
+const K = 2
+use op(K + 1, "op${K}.y", K * 8)
