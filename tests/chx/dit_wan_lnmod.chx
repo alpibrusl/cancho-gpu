@@ -1,0 +1,41 @@
+// The adaptive layer norm of a Wan2.2 block (docs/diffusion.md section 6, V1): y = layernorm(x) * (1 + scale) + shift, the layer norm without an affine (eps 1e-6, the biased variance of torch's LayerNorm), the two vectors chosen per token:
+// sh and sc hold the two rows of the modulation (row 0 from the sampled timestep, row 1 from t = 0) and sel is 1 for a token that takes row 0 and 0 for a token that takes row 1 (TI2V: the conditioning frame's tokens are at t = 0).
+// y is f16: it is the input of the matrix product that follows (gemm_mma.chx). dit_lnmod.chx is the same without the shift.
+algo dit_wan_lnmod(s, n)
+  in  x:   f32[s, n]
+  in  sh:  f32[2, n]
+  in  sc:  f32[2, n]
+  in  sel: f32[s, 1]
+  out y:   f16[s, n]
+{
+  grid i over s
+  let x  = load x[i, 0 ; 1, n]
+  let sm = rowsum &x
+  let mu = sm * (1 / n)
+  let xc = x - mu
+  let sq = &xc * &xc
+  let vs = rowsum sq
+  let vr = vs * (1 / n)
+  let t  = vr + 0.000001
+  let rs = rsqrt t
+  let xn = xc * rs
+  let sl = load sel[i, 0 ; 1, 1]
+  let c0 = load sc[0, 0 ; 1, n]
+  let c1 = load sc[1, 0 ; 1, n]
+  let dc = c0 - &c1
+  let ac = dc * &sl
+  let cc = c1 + ac
+  let g  = cc + 1
+  let h0 = load sh[0, 0 ; 1, n]
+  let h1 = load sh[1, 0 ; 1, n]
+  let dh = h0 - &h1
+  let ah = dh * sl
+  let hh = h1 + ah
+  let o  = xn * g
+  let o2 = o + hh
+  let oh = stage f16 o2
+  store oh -> y[i, 0]
+}
+
+schedule dit_wan_lnmod for apple-m-series { threads 256 }
+schedule dit_wan_lnmod for nvidia-ada     { threads 256 }

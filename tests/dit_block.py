@@ -87,6 +87,37 @@ def t_lnmod(root, tmp):
     return (False, err) if o is None else close(o[0], want, True)
 
 
+def t_wan_lnmod(root, tmp):
+    s, n = 12, 256
+    x = rnd(21, s * n, -2, 2)
+    x[3 * n + 17] = 900.0
+    for j in range(n):  # a row whose variance (about 1e-6) is comparable to eps, so that eps is tested
+        x[5 * n + j] *= 1e-3
+    sh = rnd(22, 2 * n, -1, 1)
+    sc = rnd(23, 2 * n, -0.5, 0.5)
+    sel = selector(s)
+    want = []
+    for i in range(s):
+        row = x[i * n:(i + 1) * n]
+        mu = sum(row) / n
+        var = sum((v - mu) ** 2 for v in row) / n
+        for j in range(n):
+            want.append((row[j] - mu) / math.sqrt(var + 1e-6) * (1 + pick(sel, sc[:n], sc[n:], i, j)) + pick(sel, sh[:n], sh[n:], i, j))
+    o, err = run(root, "dit_wan_lnmod", [f"s={s}", f"n={n}"], {"x": x, "sh": sh, "sc": sc, "sel": sel}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
+def t_wan_gate(root, tmp):
+    s, n = 12, 256
+    x = rnd(24, s * n, -2, 2)
+    y = rnd(25, s * n, -3, 3)
+    g = rnd(26, 2 * n, -2, 2)
+    sel = selector(s)
+    want = [x[i * n + j] + pick(sel, g[:n], g[n:], i, j) * y[i * n + j] for i in range(s) for j in range(n)]
+    o, err = run(root, "dit_wan_gate_res", [f"s={s}", f"n={n}"], {"x": x, "y": y, "g": g, "sel": sel}, ["z"], tmp)
+    return (False, err) if o is None else close(o[0], want, False)
+
+
 def t_rope(root, tmp):
     s, nh, h = 6, 3, 64
     x = rnd(3, s * nh * 2 * h)
@@ -237,7 +268,7 @@ def permutation(bad=False):
 
 
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
-         ("dit_gate_res", t_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
+         ("dit_gate_res", t_gate), ("dit_wan_lnmod (shift and 1 + scale)", t_wan_lnmod), ("dit_wan_gate_res (no tanh)", t_wan_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
          ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2),
          ("dit_euler", t_euler), ("dit_rows2h (f16 probe)", t_rows2h)]
 
@@ -263,6 +294,12 @@ EDITS = [
     ("dit_lnmod", "let g  = sc + 1", "let g  = sc + 0", "the scale is used as scale, not 1 + scale"),
     ("dit_lnmod", "let t  = vr + 0.000001", "let t  = vr + 0.0001", "eps 1e-4 for 1e-6"),
     ("dit_lnmod", "let a  = df * sl", "let a  = df * 0.5", "the selector is ignored: halfway between the two modulation rows"),
+    ("dit_wan_lnmod", "let g  = cc + 1", "let g  = cc + 0", "the scale is used as scale, not 1 + scale"),
+    ("dit_wan_lnmod", "let o2 = o + hh", "let o2 = o - hh", "the shift subtracted"),
+    ("dit_wan_lnmod", "let ah = dh * sl", "let ah = dh * 0.5", "the selector is ignored for the shift"),
+    ("dit_wan_lnmod", "let t  = vr + 0.000001", "let t  = vr + 0.0001", "eps 1e-4 for 1e-6"),
+    ("dit_wan_gate_res", "let m  = gt * yr", "let m  = yr", "no gate"),
+    ("dit_wan_gate_res", "let a  = df * sl", "let a  = df * 0.5", "the selector is ignored in the gate"),
     ("dit_rope", "let hi = d + e", "let hi = d - e", "the sign of the second half"),
     ("dit_rope", "let c  = load cs[t, 0 ; 1, h]", "let c  = load cs[0, 0 ; 1, h]", "the tables of position 0 for every token"),
     ("dit_gate_res", "let th = tanh gt", "let th = gt", "no tanh on the gate"),
