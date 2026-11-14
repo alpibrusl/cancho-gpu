@@ -41,7 +41,7 @@ dim       := ce                                               // a constant expr
 ce        := ce ('+'|'-') ce | ce ('*'|'/') ce | '(' ce ')' | NUMBER | NAME      // * and / bind tighter
 
 block     := { stmt } '}'
-stmt      := 'let' NAME '=' expr
+stmt      := 'let' NAME {',' NAME} '=' expr                    // several names only for a loop that carries as many tiles
            | 'store' expr '->' NAME [ '[' ce {',' ce} ']' ]    // a window of an output at these offsets
            | 'grid' NAME 'over' ce {',' NAME 'over' ce}        // the program instance's coordinates
            | 'yield' expr {',' expr}                           // the value(s) of a loop body
@@ -113,7 +113,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `stage T a` | a copy of `a` in `shared` memory, rounded to `T` |
 | `add_window acc x[o]` | `acc` plus the window of `x` at offsets `o`, of `acc`'s shape |
 | `store e -> y[o]` | write `e` into the window of `y` at `o` (the origin if no offsets), rounding to `y`'s dtype |
-| `for i in a .. b with c { ... yield e }` | run the body for `i = a, a+1, ..., b-1`, with the carried tile `c` bound to the previous iteration's `yield` (to `c`'s initial value at first); the loop's value is the last yield. At most one carried tile; it must be yielded in every iteration with the same type (`carry`) |
+| `for i in a .. b with c { ... yield e }` | run the body for `i = a, a+1, ..., b-1`, with the carried tile `c` bound to the previous iteration's `yield` (to `c`'s initial value at first); the loop's value is the last yield. **Several tiles may be carried** (`for i in a .. b with x, y { ... yield p, q }`): the loop then has as many values, bound by `let u, v = for ...` (one name for each carried tile, in order); each carried tile is consumed once an iteration, as with one, and every iteration yields one tile for each, in order, with the type that carry had (`carry`). A loop carries at least one tile. The first user is an online softmax: `tests/chx/dit_stats_o.chx` carries the running maximum and the running normaliser (`docs/diffusion.md` D14) |
 | `grid i over e, j over f, k over g` | the instance's coordinates: the kernel is run for every `(i, j, k)` in `0..e x 0..f x 0..g`, instances independent; **at most three axes** (the third is folded into the launch's second dimension, which the kernel splits again: `gid2 = y % f`, `gid3 = y / f`), not inside a loop (`grid`). **A kernel with no `grid` is one instance, which runs on one threadgroup: a core of the GPU.** Parallelism is only what the grid says (`native.md` N4: two products of 2 MB took 150 us without one and 10 us with) |
 
 ### Reductions: the order is not specified

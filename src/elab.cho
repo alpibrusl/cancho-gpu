@@ -612,8 +612,20 @@ fn lower_bin[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e:
     return value(m, v, ls, dt);
 }
 
-// `for i in a .. b with acc { ...; yield e }`.
+// `for i in a .. b with acc { ...; yield e }`, as a single value: a loop that carries one tile.
 fn lower_for[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int) -> [] int {
+    if mem.size(m, m[e + 4]) != 1 {
+        return bad(m, t, "carry", text.f2(m, t, "a loop that carries $ tiles binds $ names: `let a, b = for ...`", text.num(m, t, mem.size(m, m[e + 4])), text.num(m, t, mem.size(m, m[e + 4]))));
+    }
+    let vals = lower_for_all(m, t, st, env, cx, e);
+    if vals < 0 {
+        return 0 - 1;
+    }
+    return mem.get(m, vals, 0);
+}
+
+// The same loop for any number of carried tiles: answers the list of its results (lowered values, one for each carry), or -1.
+fn lower_for_all[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int) -> [] int {
     let b = m[st];
     let index = m[e + 1];
     let start = constant(m, t, m[e + 2], cx);
@@ -645,8 +657,8 @@ fn lower_for[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e:
         mem.push(m, seen, mem.rec3(m, m[r + 2], m[r + 3], sp));
         i = i + 1;
     }
-    if mem.size(m, carry) != 1 {
-        return bad(m, t, "carry", text.f2(m, t, "a loop carries one tile for now, `for $` carries $", index, text.num(m, t, mem.size(m, carry))));
+    if mem.size(m, carry) == 0 {
+        return bad(m, t, "carry", text.f1(m, t, "`for $` carries nothing: a loop carries at least one tile", index));
     }
     let opened = ir.for_begin(m, t, b, tys);
     let params = m[opened + 1];
@@ -680,10 +692,16 @@ fn lower_for[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e:
     if failed {
         return 0 - 1;
     }
-    let out = mem.get(m, outs, 0);
-    let s0 = mem.get(m, seen, 0);
-    set_space(m, cx, out, m[s0 + 2]);
-    return value(m, out, m[s0], m[s0 + 1]);
+    let results = mem.list(m);
+    i = 0;
+    while i < mem.size(m, outs) {
+        let out = mem.get(m, outs, i);
+        let si = mem.get(m, seen, i);
+        set_space(m, cx, out, m[si + 2]);
+        mem.push(m, results, value(m, out, m[si], m[si + 1]));
+        i = i + 1;
+    }
+    return results;
 }
 
 // Run statements in order. Answers the yielded values (a list of lowered
@@ -702,6 +720,25 @@ fn lower_block[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, 
                 return 0 - 1;
             }
             mem.push(m, env, mem.rec4(m, m[s + 1], m[v], m[v + 1], m[v + 2]));
+        } else if k == kinds.s_letn() {
+            // `let a, b = for ...`: one name for each tile the loop carries
+            let loop = m[s + 2];
+            if m[loop] != kinds.e_for() {
+                return bad(m, t, "carry", text.lit(m, t, "several names are bound only by a loop: `let a, b = for ... with x, y { ... yield p, q }`"));
+            }
+            if mem.size(m, m[s + 1]) != mem.size(m, m[loop + 4]) {
+                return bad(m, t, "carry", text.f2(m, t, "`let` binds $ names but the loop carries $ tiles", text.num(m, t, mem.size(m, m[s + 1])), text.num(m, t, mem.size(m, m[loop + 4]))));
+            }
+            let rs = lower_for_all(m, t, st, env, cx, loop);
+            if rs < 0 {
+                return 0 - 1;
+            }
+            var q = 0;
+            while q < mem.size(m, rs) {
+                let v = mem.get(m, rs, q);
+                mem.push(m, env, mem.rec4(m, mem.get(m, m[s + 1], q), m[v], m[v + 1], m[v + 2]));
+                q = q + 1;
+            }
         } else if k == kinds.s_store() {
             let e = substitute(m, t, m[s + 1], vals);
             let v = lower(m, t, st, env, cx, e, text.lit(m, t, "y"));

@@ -506,14 +506,31 @@ fn block[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
     while !eat_punct(m, t, p, "}") {
         if eat_kw(m, t, p, "let") {
             let dst = want_ident(m, t, p);
-            if dst < 0 || want_punct(m, t, p, "=") < 0 {
+            if dst < 0 {
+                return 0 - 1;
+            }
+            // `let a, b = for ...` binds the results of a loop that carries two tiles or more
+            let more = mem.list(m);
+            mem.push(m, more, dst);
+            while eat_punct(m, t, p, ",") {
+                let next = want_ident(m, t, p);
+                if next < 0 {
+                    return 0 - 1;
+                }
+                mem.push(m, more, next);
+            }
+            if want_punct(m, t, p, "=") < 0 {
                 return 0 - 1;
             }
             let e = expr(m, t, p);
             if e < 0 {
                 return 0 - 1;
             }
-            mem.push(m, body, node(m, kinds.s_let(), dst, e, 0, 0, 0));
+            if mem.size(m, more) == 1 {
+                mem.push(m, body, node(m, kinds.s_let(), dst, e, 0, 0, 0));
+            } else {
+                mem.push(m, body, node(m, kinds.s_letn(), more, e, 0, 0, 0));
+            }
         } else if eat_kw(m, t, p, "store") {
             let e = expr(m, t, p);
             if e < 0 || want_punct(m, t, p, "->") < 0 {

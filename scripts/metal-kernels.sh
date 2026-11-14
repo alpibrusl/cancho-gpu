@@ -102,6 +102,7 @@ dit_scores_mma nh=2 nq=128 t=128 d=128
 dit_stats_m nh=2 nq=128 t=128 qs=32 cs=64
 dit_stats_c nh=2 nq=128 t=192 qs=16 cs=64
 dit_stats_comb nh=2 nq=128 nc=3 qs=32
+dit_stats_o nh=2 nq=128 t=192 qs=16 cs=64
 dit_pv_mma nh=2 nq=128 t=128 d=128
 CASES
 exit $fail
