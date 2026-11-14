@@ -1,0 +1,30 @@
+// The causal 3x3x3 convolution of a video VAE (docs/diffusion.md V2), the 2-D conv3.chx with a loop over three frames: the clip is a padded image matrix of n frames, each frame s = (h+2)(w+2) rows (the
+// bordered image), the frames one after the other, and g zero guard rows each side with g >= 2 s + wp + 1: the output at row p reads the input rows p + (dt-2) s + (dy-1) wp + (dx-1), so frame t sees frames t-2,
+// t-1 and t (the two frames before the clip are the guard's zeros: a causal convolution of kernel 3 pads two zero frames in front, none after). w [cout, 27 cin], tap (dt, dy, dx) at column (9 dt + 3 dy + dx) cin.
+algo conv3t(rp, cin, cout, wp, s, g)
+  in  x: f16[rp + 2 * g, cin]
+  in  w: f16[cout, 27 * cin]
+  out y: f32[rp, cout]
+  tile bm, bn, bk
+{
+  grid i over rp / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for dt in 0 .. 3 with c {
+    let c = for dy in 0 .. 3 with c {
+      let c = for dx in 0 .. 3 with c {
+        let c = for p in 0 .. cin / bk with c {
+          let at = load x[g + i * bm + dt * s - 2 * s + dy * wp + dx - wp - 1, p * bk ; bm, bk] @shared
+          let wt = load w[j * bn, 9 * dt * cin + 3 * dy * cin + dx * cin + p * bk ; bn, bk] @shared
+          yield mma c at wt
+        }
+        yield c
+      }
+      yield c
+    }
+    yield c
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule conv3t for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv3t for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

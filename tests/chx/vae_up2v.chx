@@ -1,0 +1,20 @@
+// vae_up2.chx for a clip (docs/diffusion.md V2): the nearest upsample by 2 of every frame of a video VAE's feature map. x is n frames of s = (h+2)(w+2) rows (f32, r rows in all), y the n frames of the 2h x 2w images
+// in s2 = (2h+2)(2w+2) rows each, r2 rows and g2 guard rows each side, f16. One instance a source pixel of one frame. A zero frame (the zero frame of a causal clip) stays a zero frame.
+algo vae_up2v(n, h, w, c, s, s2, r, r2, g2)
+  in  x: f32[r, c]
+  out y: f16[r2 + 2 * g2, c]
+{
+  grid f over n, i over h, j over w
+  let a   = load x[f * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let h00 = stage f16 &a
+  let h01 = stage f16 &a
+  let h10 = stage f16 &a
+  let h11 = stage f16 a
+  store h00 -> y[g2 + f * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0]
+  store h01 -> y[g2 + f * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0]
+  store h10 -> y[g2 + f * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0]
+  store h11 -> y[g2 + f * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0]
+}
+
+schedule vae_up2v for apple-m-series { threads 128 }
+schedule vae_up2v for nvidia-ada     { threads 128 }

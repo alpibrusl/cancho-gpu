@@ -1,0 +1,65 @@
+// The end of an up block that doubles space and time (docs/diffusion.md V2): z = conv + bias + shortcut at the doubled resolution for the frames 2 t and 2 t + 1 of each source frame t (n of them), s rows a frame at the source
+// size, s2 at the doubled size. cv is the 3 x 3 convolution of the upsampled clip (frames 2 t and 2 t + 1, r2 rows, f32) and s_kab the shortcut's eight sub-positions (DupUp3D: k the time slot, (a, b) the 2 x 2 position)
+// at the source resolution, read from the row offset so (the source frames after a zero frame at the head of their layout: so = s, else 0). fa [n, 1] is 0 for t = 0 and 1 for the others: slot k = 0 of the first source frame is
+// the frame DupUp3D's first-chunk rule drops, the zero frame at the head of the clip's layout, and stays zero.
+algo vae_up3_epi(n, h, w, c, s, s2, so, r, r2)
+  in  cv:  f32[r2, c]
+  in  b:   f32[1, c]
+  in  fa:  f32[n, 1]
+  in  s000: f32[r, c]
+  in  s001: f32[r, c]
+  in  s010: f32[r, c]
+  in  s011: f32[r, c]
+  in  s100: f32[r, c]
+  in  s101: f32[r, c]
+  in  s110: f32[r, c]
+  in  s111: f32[r, c]
+  out z:   f32[r2, c]
+{
+  grid t over n, i over h, j over w
+  let bb = load b
+  let m  = load fa[t, 0 ; 1, 1]
+  let c000 = load cv[(2 * t + 0) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c001 = load cv[(2 * t + 0) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let c010 = load cv[(2 * t + 0) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c011 = load cv[(2 * t + 0) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let c100 = load cv[(2 * t + 1) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c101 = load cv[(2 * t + 1) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let c110 = load cv[(2 * t + 1) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0 ; 1, c]
+  let c111 = load cv[(2 * t + 1) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0 ; 1, c]
+  let r000 = load s000[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r001 = load s001[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r010 = load s010[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r011 = load s011[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r100 = load s100[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r101 = load s101[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r110 = load s110[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let r111 = load s111[so + t * s + (i + 1) * (w + 2) + j + 1, 0 ; 1, c]
+  let a000 = (c000 + &bb) + r000
+  let a001 = (c001 + &bb) + r001
+  let a010 = (c010 + &bb) + r010
+  let a011 = (c011 + &bb) + r011
+  let a100 = (c100 + &bb) + r100
+  let a101 = (c101 + &bb) + r101
+  let a110 = (c110 + &bb) + r110
+  let a111 = (c111 + bb) + r111
+  let z000 = a000 * &m
+  let z001 = a001 * &m
+  let z010 = a010 * &m
+  let z011 = a011 * m
+  let z100 = a100
+  let z101 = a101
+  let z110 = a110
+  let z111 = a111
+  store z000 -> z[(2 * t + 0) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0]
+  store z001 -> z[(2 * t + 0) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0]
+  store z010 -> z[(2 * t + 0) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0]
+  store z011 -> z[(2 * t + 0) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0]
+  store z100 -> z[(2 * t + 1) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 1, 0]
+  store z101 -> z[(2 * t + 1) * s2 + (2 * i + 1) * (2 * w + 2) + 2 * j + 2, 0]
+  store z110 -> z[(2 * t + 1) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 1, 0]
+  store z111 -> z[(2 * t + 1) * s2 + (2 * i + 2) * (2 * w + 2) + 2 * j + 2, 0]
+}
+
+schedule vae_up3_epi for apple-m-series { threads 128 }
+schedule vae_up3_epi for nvidia-ada     { threads 128 }

@@ -1,0 +1,32 @@
+// The temporal doubling of a video VAE's up block (docs/diffusion.md V2): `time_conv`'s output y2 [rows, 2 c] is (2, c) channels, and the two halves interleave in time. One instance a source frame f (n of them) and a
+// row q of the frame (s rows): the frame f of y2 (read at row offset so) goes to the frames 2 f and 2 f + 1 of z; the first latent frame (f = 0) is not doubled: it passes as it is (x3, the block's output before the
+// doubling) into slot 1, and slot 0 is the zero frame that stands for the causal window's pad (fm [n, 1] is 0 for f = 0 and 1 for the others: slot 0 = fm (a + b0), slot 1 = fm (b + b1) + (1 - fm) x3). mk [s, 1] zeroes the border rows.
+algo vae_tint(n, c, s, so, r, r2)
+  in  y2: f32[r, 2 * c]
+  in  b:  f32[1, 2 * c]
+  in  x3: f32[r, c]
+  in  fm: f32[n, 1]
+  in  mk: f32[s, 1]
+  out z:  f32[r2, c]
+{
+  grid f over n, q over s
+  let a  = load y2[so + f * s + q, 0 ; 1, c]
+  let bv = load y2[so + f * s + q, c ; 1, c]
+  let b0 = load b[0, 0 ; 1, c]
+  let b1 = load b[0, c ; 1, c]
+  let xs = load x3[so + f * s + q, 0 ; 1, c]
+  let m  = load fm[f, 0 ; 1, 1]
+  let k  = load mk[q, 0 ; 1, 1]
+  let mm = m * &k
+  let a1 = a + b0
+  let b2 = bv + b1
+  let om = k - &mm
+  let zb = b2 * &mm
+  let za = a1 * mm
+  let zs = xs * om
+  store za -> z[2 * f * s + q, 0]
+  store zb + zs -> z[(2 * f + 1) * s + q, 0]
+}
+
+schedule vae_tint for apple-m-series { threads 128 }
+schedule vae_tint for nvidia-ada     { threads 128 }
