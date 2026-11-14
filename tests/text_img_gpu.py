@@ -156,8 +156,14 @@ for i in range(NL):
 TIME = int(sys.argv[sys.argv.index("--time") + 1]) if "--time" in sys.argv else 0
 if TIME:
     program("probe", "dit_rows2", f"m={SP} n={D} bn=1024"); link("L%d_ad2.z" % (NL - 1), "probe.x")
+if NOREF and not TIME:
+    # the pipeline asks for the last layer only: a probe answers (one line), the layer goes out as a binary file on `checkpoint` instead of as 1088 x 4096 numbers of text (D12)
+    program("probe", "dit_rows2", f"m={SP} n={D} bn=1024"); link("L%d_ad2.z" % (NL - 1), "probe.x")
+    prog.append(f"save L{NL - 1}_ad2.z {P('last.f32')} f32")
 prog.append("steps")
-if TIME:
+if NOREF and not TIME:
+    prog.append("answer probe.y")
+elif TIME:
     prog.append("answer probe.y")
 else:
     for b in SHOW:
@@ -170,12 +176,15 @@ if TIME:
     print("TIME text encoder reading an image, N tokens padded to a multiple of 64: first request %.3f s (device, compile, upload); then median %.4f s (min %.4f, max %.4f) over %d" % (ts[0], sorted(ts[1:])[len(ts[1:]) // 2], min(ts[1:]), max(ts[1:]), len(ts) - 1))
     sys.exit(0)
 t0 = time.time()
-r = subprocess.run([SESSION, P("text.session")], input="1\n", capture_output=True, text=True, timeout=7200)
+r = subprocess.run([SESSION, P("text.session")], input="1\ncheckpoint\n" if NOREF else "1\n", capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0
 if r.returncode != 0 or not r.stdout.strip():
     print("FAIL the session did not answer: status %d, %s" % (r.returncode, r.stderr.strip()[:800]))
     sys.exit(1)
-nums = np.array(r.stdout.split(), dtype=np.float64).reshape(len(SHOW), SP, D)[:, :N]
+if NOREF:
+    nums = np.fromfile(P("last.f32"), dtype="<f4").reshape(1, SP, D)[:, :N].astype(np.float64)
+else:
+    nums = np.array(r.stdout.split(), dtype=np.float64).reshape(len(SHOW), SP, D)[:, :N]
 print("session: %d programs, answered in %.1f s (Metal; includes the compile and the upload of %.1f GB of weights)" % (n_prog[0], secs, NL * 0.4358))
 got = nums[-1][drop:]
 if "--save" in sys.argv:

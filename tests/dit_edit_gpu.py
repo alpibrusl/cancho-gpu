@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """D9e of docs/diffusion.md: one denoising step of Qwen-Image-2.1-Turbo's transformer **with a condition image** on a Metal GPU, as a prefix pass and a cached step, held to the float64 step of tools/dit_edit_ref.py.
 
-    dit_edit_gpu.py DE_DIR WORK_DIR --weights DIR [--gp N] [--gs N] [--time] [--resident] [--mutate cond-causal|prefix-sampled-t|no-cat]
+    dit_edit_gpu.py DE_DIR WORK_DIR --weights DIR [--gp N] [--gs N] [--time] [--resident] [--unified] [--mutate cond-causal|prefix-sampled-t|no-cat]
 
 DE_DIR is the output of `tools/dit_edit_ref.py` (the joint sequence after the front end, the rotary angles, the mask, the modulation, and the float64 residual after every block). `--weights` is the directory of f16 block
 weights that tests/dit_big.py writes (head-permuted, so dit_rope16's rotate-half is the model's rotary embedding). Needs a Mac, the checkpoint, and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`.
@@ -29,7 +29,7 @@ de, work = sys.argv[1], sys.argv[2]
 WDIR = arg("--weights")
 GP, GS = int(arg("--gp", 32)), int(arg("--gs", 32))
 TIME = "--time" in sys.argv
-RES = "--resident" in sys.argv  # one session of all 32 blocks for the prefix and one that stays open for the steps (D9i)
+RES = "--resident" in sys.argv or "--unified" in sys.argv  # one session of all 32 blocks for the prefix and one that stays open for the steps (D9i)
 MUT = arg("--mutate")  # a deliberate host-side bug, which the comparison must refuse
 D = 4096
 ld = lambda n: np.load(os.path.join(de, n + ".npy"))
@@ -47,7 +47,7 @@ xp = np.zeros((NP, D))
 xp[:NPR] = x0[pre]
 xt = np.zeros((NP, D))
 xt[:NTG] = x0[tgt]
-e = Edit(work, WDIR, NP, NPR, NTG, GP, GS, time=TIME, mut=MUT, resident=RES)
+e = Edit(work, WDIR, NP, NPR, NTG, GP, GS, time=TIME, mut=MUT, resident=RES, unified="--unified" in sys.argv)
 e.static(*statics(rope, allowed, pre, tgt, NP, MUT))
 e.modulation(mod)
 e.prefix(xp)

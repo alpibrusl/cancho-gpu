@@ -2,7 +2,7 @@
 """D9g of docs/diffusion.md: an image edit on a Metal GPU from a photograph and a prompt to the pixels, in the stages of D9: the vision tower (D9b), the language model reading the image (D9c), the VAE encoder (D9d), the transformer's prefix
 pass and eight cached steps with the Euler update (D9e), the VAE decoder (D4c).
 
-    edit_pipeline_gpu.py IMAGE WORK_DIR --prompt TEXT [--seed N] [--steps N] --weights DIR --text-weights DIR [--out PNG] [--resident] [--subprocess]
+    edit_pipeline_gpu.py IMAGE WORK_DIR --prompt TEXT [--seed N] [--steps N] --weights DIR --text-weights DIR [--out PNG] [--resident] [--unified] [--subprocess]
 
 IMAGE is a photograph (scripts/fetch-test-photo.sh); WORK_DIR keeps every stage's files; `--weights` is the directory of f16 block weights of tests/dit_big.py (head-permuted) and `--text-weights` the directory of the text encoder's
 (tests/text_img_gpu.py writes it on first use, 15.7 GB). Needs a Mac, the checkpoint, the venv of the first image edits, and `build/cancho-gpu-metal-session`. Not in `scripts/gate.sh`. The result is written to WORK_DIR/edited.png
@@ -157,7 +157,7 @@ pre, tgt = np.nonzero(~sel)[0], np.nonzero(sel)[0]
 NPR, NTG = len(pre), len(tgt)
 NP = max((NPR + 63) // 64 * 64, (NTG + 63) // 64 * 64)
 print("joint sequence %d: prefix %d rows, target %d rows, padded to %d" % (len(x), NPR, NTG, NP), flush=True)
-e = Edit(P("edit_work"), WDIR, NP, NPR, NTG, int(arg("--gp", 4)), int(arg("--gs", 2)), resident="--resident" in sys.argv)
+e = Edit(P("edit_work"), WDIR, NP, NPR, NTG, int(arg("--gp", 4)), int(arg("--gs", 2)), resident="--resident" in sys.argv, unified="--unified" in sys.argv)
 e.static(*statics(rope, allowed, pre, tgt, NP))
 timings["host: front end, step 0"] = time.time() - t0
 t_prefix = t_steps = 0.0
