@@ -1,0 +1,51 @@
+// The attention of a diffusion transformer in one kernel, with an online softmax and without writing the scores (docs/diffusion.md D15; issues #149 and #150): for head h and the query rows i * bm .., the loop over chunks of bn keys carries the
+// running maximum m, the running normaliser l and the output o (three tiles), as a flash attention does. Per chunk: the scores s = q k^T on the matrix unit, spilled from the fragment accumulator into an ordinary tile (`spill`), the mask
+// added, the maximum raised, p = exp(s + mask - m) rounded to f16 (`stage`), the chunk's p v on the matrix unit into a fresh accumulator, spilled, and o = o exp(old - new) + p v. The mask is the additive [nq, t] matrix of dit_stats_m.chx
+// and `init` the starting maximum, a large negative number (the surface has no negative literal; exp(init - m) is 0). q is already scaled by 1/sqrt(d) (dit_rope16.chx). The output is o / l, [nq, nh * d] f32, and the final running maximum `mo`.
+algo dit_attn_fused(nh, nq, t, d)
+  in  q:    f16[nq, nh * d]
+  in  k:    f16[t, nh * d]
+  in  v:    f16[t, nh * d]
+  in  mask: f32[nq, t]
+  in  init: f32[nq]
+  out o:    f32[nq, nh * d]
+  out mo:   f32[nh * nq]
+  tile bm, bn, bk
+{
+  grid h over nh, i over nq / bm
+  let m0 = load init[i * bm ; bm]
+  let l0 = zeros f32[bm]
+  let o0 = zeros f32[bm, d]
+  let mx, ll, oo = for c in 0 .. t / bn with m0, l0, o0 {
+    let sacc = zeros f32[bm, bn] @frag
+    let sacc = for p in 0 .. d / bk with sacc {
+      let at = load q[i * bm, h * d + p * bk ; bm, bk] @shared
+      let wt = load k[c * bn, h * d + p * bk ; bn, bk] @shared
+      yield mma sacc at wt
+    }
+    let s  = spill sacc
+    let mk = load mask[i * bm, c * bn ; bm, bn]
+    let s2 = s + mk
+    let cm = rowmax &s2
+    let r  = relu (cm - &m0)
+    let mn = &m0 + r
+    let nr = m0 - &mn
+    let al = exp nr
+    let sh = s2 - &mn
+    let e  = exp sh
+    let ez = rowsum &e
+    let ph = stage f16 e
+    let vt = load v[c * bn, h * d ; bn, d] @shared
+    let pacc = zeros f32[bm, d] @frag
+    let pacc = mma_nn pacc ph vt
+    let pv = spill pacc
+    let ls = l0 * &al
+    let os = o0 * al
+    yield mn, ls + ez, os + pv
+  }
+  store mx -> mo[h * nq + i * bm]
+  store oo / ll -> o[i * bm, h * d]
+}
+
+schedule dit_attn_fused for apple-m-series { threads 128 warps 2 2 bm 16 bn 32 bk 32 }
+schedule dit_attn_fused for nvidia-ada     { threads 64 warps 1 2 bm 16 bn 32 bk 32 }

@@ -177,6 +177,11 @@ pub fn e_mma() -> [] int {
     return 6;
 }
 
+// `spill acc`: a fragment accumulator as an ordinary tile in threadgroup memory
+pub fn e_spill() -> [] int {
+    return 15;
+}
+
 pub fn e_matmul() -> [] int {
     return 7;
 }
@@ -304,6 +309,10 @@ pub fn op_stage() -> [] int {
 
 pub fn op_add_window() -> [] int {
     return 12;
+}
+
+pub fn op_spill() -> [] int {
+    return 14;
 }
 
 pub fn op_dequant_fp4() -> [] int {

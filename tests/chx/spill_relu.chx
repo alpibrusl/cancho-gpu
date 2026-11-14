@@ -1,0 +1,21 @@
+// `spill` (docs/diffusion.md D15): the scores q k^T of one tile on the matrix unit, spilled from the fragment accumulator into an ordinary tile in threadgroup memory, where an element-wise operation (relu) is allowed, then stored.
+// The test of the operation: y = relu(q k^T) for head h's query rows i * bm .. and key rows j * bn ..
+algo spill_relu(nh, nq, t, d)
+  in  q:  f16[nq, nh * d]
+  in  k:  f16[t, nh * d]
+  out sc: f32[nh * nq, t]
+  tile bm, bn, bk
+{
+  grid h over nh, i over nq / bm, j over t / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. d / bk with acc {
+    let at = load q[i * bm, h * d + p * bk ; bm, bk] @shared
+    let wt = load k[j * bn, h * d + p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  let s = spill acc
+  store relu s -> sc[h * nq + i * bm, j * bn]
+}
+
+schedule spill_relu for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule spill_relu for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }

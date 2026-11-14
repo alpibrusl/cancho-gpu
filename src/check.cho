@@ -204,7 +204,7 @@ fn tile_of[&m, &t](m: &!m [int], t: &!t [byte], c: int, ty: int, what: &static [
         return 0 - 1;
     }
     if ir.space(m, x) == kinds.frag() {
-        return diag(m, t, c, "type", text.f1(m, t, "$ is a matrix fragment; it can be accumulated into with `mma`, stored, or carried through a loop, and nothing else", text.lit(m, t, what)));
+        return diag(m, t, c, "type", text.f1(m, t, "$ is a matrix fragment; it can be accumulated into with `mma`, stored, spilled into an ordinary tile with `spill`, or carried through a loop, and nothing else", text.lit(m, t, what)));
     }
     return x;
 }
@@ -377,6 +377,20 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
             return diag(m, t, c, "shape", text.f2(m, t, "window of $ added into a $ tile", sd(m, t, m[vw + 1]), sd(m, t, ir.shape(m, tl))));
         }
         return tl;
+    }
+    if k == kinds.op_spill() {
+        let tys = args(m, t, c, mem.of1(m, m[o + 1]));
+        if tys < 0 {
+            return 0 - 1;
+        }
+        let tl = tile_any(m, t, c, mem.get(m, tys, 0), "spilled tile");
+        if tl < 0 {
+            return 0 - 1;
+        }
+        if ir.space(m, tl) != kinds.frag() {
+            return diag(m, t, c, "type", text.lit(m, t, "`spill` takes a matrix fragment (an `mma` accumulator); any other tile is already an ordinary tile"));
+        }
+        return ir.tile(m, ir.dtype(m, tl), ir.shape(m, tl), kinds.threadgroup());
     }
     if k == kinds.op_stage() {
         let tys = args(m, t, c, mem.of1(m, m[o + 1]));
