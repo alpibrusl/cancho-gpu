@@ -3,7 +3,7 @@
 
     python tools/wan_ref.py [--frames F] [--size HxW] [--text N] [--blocks B] [--seed S] [--torch32] [--bf16] [--mutate NAME]
 
-The weights are the first shard of `Wan-AI/Wan2.2-TI2V-5B-Diffusers` (the patch embedding, the condition embedder, the head's table and blocks 0 to 7: `hf download` it first; the cache is read). A latent [48, F, H, W] is patched by a 1 x 2 x 2 convolution into F x H/2 x W/2 tokens of width 3,072;
+The weights are the first shard of `Wan-AI/Wan2.2-TI2V-5B-Diffusers` by default (the patch embedding, the condition embedder, the head's table and blocks 0 to 6 whole: `hf download` it first; the cache is read), or `--weights DIR` of any Diffusers `transformer` directory (the distilled FastWan one is a single bf16 file). A latent [48, F, H, W] is patched by a 1 x 2 x 2 convolution into F x H/2 x W/2 tokens of width 3,072;
 the timestep is **one per token** (TI2V: the conditioning frame's tokens are at t = 0, the others at the sampled t), embedded by a sinusoidal table and two linear layers, and projected to six modulation vectors a token; the text (umT5's [N, 4,096]) goes through
 `text_embedder` (linear, tanh GELU, linear); the rotary table is the three axes of one head's 128 channels split 44 (time), 42 (height), 42 (width), each axis the half-frequencies of its own length repeated for the pair. A block: the layer norm without affine modulated by
 (shift, scale) from `scale_shift_table + temb`, self-attention with RMS norms of q and k across the 24 heads (3,072) and the rotary rotation of adjacent pairs, a gated residual; a layer norm with affine, cross-attention to the text (no rotary), a plain residual;
@@ -22,12 +22,29 @@ import numpy as np
 from safetensors import safe_open
 
 arg = lambda name, default=None: sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
-SNAP = glob.glob(os.path.expanduser("~/.cache/huggingface/hub/models--Wan-AI--Wan2.2-TI2V-5B-Diffusers/snapshots/*"))[0]
-CFG = json.load(open(SNAP + "/transformer/config.json"))
+# the transformer's weights: `--weights DIR` (a `transformer` directory of a Diffusers snapshot, with an index or a single file), by default the first shard of the base model in the Hugging Face cache
+_HUB = os.path.expanduser("~/.cache/huggingface/hub/")
+_DIR = arg("--weights") or glob.glob(_HUB + "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers/snapshots/*")[0] + "/transformer"
+CFG = json.load(open(_DIR + "/config.json"))
 MUT = arg("--mutate")
 D, NH, HD, FFN, EPS = CFG["num_attention_heads"] * CFG["attention_head_dim"], CFG["num_attention_heads"], CFG["attention_head_dim"], CFG["ffn_dim"], CFG["eps"]
-_f = safe_open(SNAP + "/transformer/diffusion_pytorch_model-00001-of-00005.safetensors", framework="np")
-W = lambda name: _f.get_tensor(name).astype(np.float64)
+_files = {}
+_index = json.load(open(_DIR + "/diffusion_pytorch_model.safetensors.index.json"))["weight_map"] if os.path.exists(_DIR + "/diffusion_pytorch_model.safetensors.index.json") else None
+
+
+def _open(fname):
+    if fname not in _files:
+        _files[fname] = safe_open(_DIR + "/" + fname, framework="pt")  # torch tensors: bfloat16 files cannot be read as numpy
+    return _files[fname]
+
+
+def tensor(name):
+    if _index is None:
+        return _open("diffusion_pytorch_model.safetensors").get_tensor(name)
+    return _open(_index[name]).get_tensor(name)
+
+
+W = lambda name: tensor(name).float().numpy().astype(np.float64)
 
 
 def layer_norm(x, w=None, b=None):
@@ -184,7 +201,7 @@ if __name__ == "__main__":
             if (dt == torch.float32 and "--torch32" not in sys.argv) or (dt == torch.bfloat16 and "--bf16" not in sys.argv):
                 continue
             m = WanTransformer3DModel(**cfg)
-            sd = {k: torch.tensor(_f.get_tensor(k)) for k in _f.keys() if k.startswith(("patch_embedding", "condition_embedder")) or any(k.startswith("blocks.%d." % b) for b in range(nblocks))}
+            sd = {k: tensor(k).float() for k in (_index or {k2: 0 for k2 in _open("diffusion_pytorch_model.safetensors").keys()}) if k.startswith(("patch_embedding", "condition_embedder")) or any(k.startswith("blocks.%d." % b) for b in range(nblocks))}
             miss = m.load_state_dict(sd, strict=False)
             assert not [k for k in miss.missing_keys if not k.startswith(("proj_out", "scale_shift_table"))], miss.missing_keys
             m = m.to(dt).eval()
