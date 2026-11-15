@@ -330,11 +330,19 @@ y = conv3t(x, 256, 16, L, wout)
 program("probe", "dit_rows2", f"m={L['R']} n=16 bn=16")
 link(y, "probe.x")
 prog.append(f"save {y} {P('y.f32')} f32")
+if "--no-alias" not in sys.argv:
+    import session_alias
+    al = session_alias.alias_lines(prog)
+    prog[:0] = []  # aliases follow every program and link they name
+    prog.extend(al)
+    print("%d aliases" % len(al), flush=True)
 prog.append("steps")
 prog.append("answer probe.y")
 open(P("wan_vae.session"), "w").write("\n".join(prog) + "\n")
 
 print("latent [48, %d, %d, %d]: decoded layout %d x %d, %d slots; %d programs" % (F, H0, W0, L["h"], L["w"], L["slots"], n_prog), flush=True)
+if "--dry" in sys.argv:  # write the session file and stop (memory accounting: examples/qwen/session_memory.py)
+    sys.exit(0)
 t0 = time.time()
 r = subprocess.run([SESSION, P("wan_vae.session")], input="1\ncheckpoint\n", capture_output=True, text=True, timeout=7200)
 secs = time.time() - t0
