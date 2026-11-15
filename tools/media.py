@@ -4,6 +4,7 @@
     scripts/media video "PROMPT" -o DIR [--frames N] [--size WxH] [--seed S] [--fps N]
     scripts/media edit  IMAGE "INSTRUCTION" -o DIR [--seed S] [--steps N]
     scripts/media image "PROMPT" -o DIR        (not wired: see `media image --help`)
+    scripts/media models                       (the supported models per task; `--model NAME` on each task)
     scripts/media doctor                       (what is installed and what is missing)
 
 It wraps the drivers that exist and does no GPU work itself: `video` is tools/wan_text.py (umT5 on the host) then tests/wan_video_gpu.py (FastWan2.2-TI2V-5B: three DMD steps and the VAE decoder, on the
@@ -23,6 +24,24 @@ HF = os.path.expanduser("~/.cache/huggingface/hub")
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
 MAX_TOKENS = 4000  # the transformer's attention is the three-kernel one here: measured only up to 1,100 tokens (V4a); the scores are 24 heads x S^2 x 4 B a block
 MAX_PIXEL_FRAMES = 33 * 1280 * 704  # the decoder: 33 frames at 1280 x 704 in 21.6 s; 49 frames took 3 times as long (V2b)
+
+
+# The models each task can use. A model is a name, the Hugging Face repositories it needs, and the driver that runs it; a new model is a new entry and its driver (docs/cli.md). Only these two exist.
+MODELS = {
+    "video": {"fastwan2.2-ti2v-5b": {"repo": "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", "also": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "note": "3 DMD steps, 640x352 to 1280x704, up to 33 frames measured"}},
+    "edit": {"qwen-image-2.1-turbo": {"repo": "Qwen/Qwen-Image-2.1-Turbo", "also": None, "note": "8 steps, image + instruction"}},
+    "image": {},  # no text-to-image driver for a free prompt yet
+}
+DEFAULT = {"video": "fastwan2.2-ti2v-5b", "edit": "qwen-image-2.1-turbo"}
+
+
+def pick(task, name):
+    """The registry entry for `name` (or the task's only model), or a refusal that lists what is supported."""
+    have = MODELS[task]
+    name = (name or DEFAULT.get(task, "")).lower()
+    if name not in have:
+        die("model %r is not supported for %s; supported: %s" % (name, task, ", ".join(have) or "none"))
+    return name, have[name]
 
 
 def die(msg, code=2):
@@ -74,6 +93,7 @@ def run(cmd, label):
 
 def cmd_video(a):
     need_gpu()
+    model, info = pick("video", a.model)
     w, h = (int(v) for v in a.size.lower().split("x"))
     if w % 32 or h % 32 or w < 64 or h < 64:
         die("--size WxH: both sides must be multiples of 32 (the latent is 16 times smaller and is cut into 2 x 2 patches); %s is not" % a.size)
@@ -87,8 +107,8 @@ def cmd_video(a):
             "Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force" % (frames, w, h, tokens))
     if frames * w * h > MAX_PIXEL_FRAMES and not a.force:
         die("%d frames at %dx%d decode as one clip: measured up to 33 frames at 1280x704 (21.6 s); 49 took 66.6 s and more is untried (V2b). Use --force to try" % (frames, w, h))
-    tdir = a.weights or snapshot("FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", "transformer")
-    if not tdir or not snapshot("Wan-AI/Wan2.2-TI2V-5B-Diffusers"):
+    tdir = a.weights or snapshot(info["repo"], "transformer")
+    if not tdir or not snapshot(info["also"]):
         die("weights not in the Hugging Face cache: `hf download FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers` and `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (or pass --weights DIR)")
     out = os.path.abspath(a.output)
     os.makedirs(out, exist_ok=True)
@@ -111,11 +131,12 @@ def cmd_video(a):
 
 def cmd_edit(a):
     need_gpu()
+    model, info = pick("edit", a.model)
     if not os.path.isfile(a.image):
         die("no such image: " + a.image)
     wd = a.weights or os.environ.get("CANCHO_MEDIA_EDIT_WEIGHTS") or os.path.join(CACHE, "qwen-edit-dit")
     tw = a.text_weights or os.environ.get("CANCHO_MEDIA_EDIT_TEXT_WEIGHTS") or os.path.join(CACHE, "qwen-edit-text")
-    if not snapshot("Qwen/Qwen-Image-2.1-Turbo", "transformer"):
+    if not snapshot(info["repo"], "transformer"):
         die("Qwen-Image-2.1-Turbo is not in the Hugging Face cache (the repository's directory is empty): `hf download Qwen/Qwen-Image-2.1-Turbo` (about 50 GB)")
     if not os.path.isdir(wd):
         die("the transformer's f16 block weights (head-permuted, 14 GB, written by tests/dit_big.py: docs/diffusion.md D7) are not at %s: pass --weights DIR or set CANCHO_MEDIA_EDIT_WEIGHTS" % wd)
@@ -128,7 +149,17 @@ def cmd_edit(a):
     print("done: " + os.path.join(out, "edited.png"))
 
 
+def cmd_models(a):
+    for task, have in MODELS.items():
+        print("%s:" % task)
+        for name, info in have.items():
+            print("  %-22s %s%s  [%s]" % (name, info["repo"], " (default)" if DEFAULT.get(task) == name else "", info["note"]))
+        if not have:
+            print("  (none supported yet)")
+
+
 def cmd_image(a):
+    pick("image", a.model)
     die("text to image from a free prompt is not wired. The generator of docs/diffusion.md D6 (tests/pipeline_gpu.py) runs the prompt of D0's golden (its token ids and noise are files), and the "
         "tokeniser, the noise and the text encoder for a prompt of your own were built only for the edit pipeline. Meanwhile `media edit` takes an image and an instruction", 3)
 
@@ -166,6 +197,7 @@ def main():
     v.add_argument("-o", "--output", required=True, help="directory for video.gif, video.mp4, frames/")
     v.add_argument("--frames", type=int, default=17, help="video frames; rounded up to 1 + 4k (default 17)")
     v.add_argument("--size", default="640x352", help="WxH pixels, multiples of 32 (default 640x352)")
+    v.add_argument("--model", help="model name (`media models`; default %s)" % DEFAULT["video"])
     v.add_argument("--seed", type=int, default=0)
     v.add_argument("--fps", type=int, default=16)
     v.add_argument("--weights", help="FastWan transformer directory (default: the Hugging Face cache)")
@@ -176,6 +208,7 @@ def main():
     e.add_argument("image")
     e.add_argument("instruction")
     e.add_argument("-o", "--output", required=True, help="directory for edited.png")
+    e.add_argument("--model", help="model name (`media models`; default %s)" % DEFAULT["edit"])
     e.add_argument("--seed", type=int, default=0)
     e.add_argument("--steps", type=int, default=8)
     e.add_argument("--weights", help="head-permuted f16 transformer blocks (env CANCHO_MEDIA_EDIT_WEIGHTS)")
@@ -184,7 +217,9 @@ def main():
     i = sub.add_parser("image", help="text to image (not wired: says why)")
     i.add_argument("prompt")
     i.add_argument("-o", "--output")
+    i.add_argument("--model", help="model name (`media models`)")
     i.set_defaults(f=cmd_image)
+    sub.add_parser("models", help="list the supported models per task").set_defaults(f=cmd_models)
     d = sub.add_parser("doctor", help="check what is installed")
     d.set_defaults(f=cmd_doctor)
     a = p.parse_args()

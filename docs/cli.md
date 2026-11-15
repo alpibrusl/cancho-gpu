@@ -4,6 +4,7 @@
 
 ```
 scripts/media doctor
+scripts/media models
 scripts/media video "A red fox running through fresh snow in a pine forest at sunrise, cinematic" -o out/fox --frames 17 --size 640x352 --seed 1
 scripts/media edit photo.jpg "Make it a bright sunny afternoon." -o out/sunny --weights DIR --text-weights DIR
 scripts/media image "..."     # says why it does not run
@@ -11,6 +12,7 @@ scripts/media image "..."     # says why it does not run
 
 * **`video`**: `tools/wan_text.py` (umT5 on the host, torch) then `tests/wan_video_gpu.py` (FastWan2.2-TI2V-5B, three DMD steps, the VAE decoder, Metal). Writes `video.gif`, `video.mp4` (if `ffmpeg` exists), `frames/`, `prompt.txt` in `-o DIR`. `--frames` is rounded up to 1 + 4k; `--size WxH` in pixels, multiples of 32. The 10 GB of f16 weight files are written once to `~/.cache/cancho-media/wan-f16` (`CANCHO_MEDIA_CACHE`, `--wdir`) and reused.
 * **`edit`**: `tests/edit_pipeline_gpu.py --resident` (Qwen-Image-2.1-Turbo: vision tower, language model, VAE encoder, eight steps, decoder). Writes `edited.png`.
+* **`--model NAME`** on `video`, `edit` and `image`; **`models`** lists them. The registry (`MODELS` in `tools/media.py`) holds, per task, the model's name and Hugging Face repositories; today `video`: `fastwan2.2-ti2v-5b` (default), `edit`: `qwen-image-2.1-turbo` (default), `image`: none. Any other name is refused with the supported list (run: `wan2.1`, `flux`, `foo`). Adding a model is a registry entry **and a driver for it**: the drivers fix the architecture's dimensions, kernels and sampler, so `--model` does not make another checkpoint run by itself.
 * **`doctor`**: what is installed (platform, session binary, the two Wan and the Qwen snapshots, ffmpeg, the python modules, free disk).
 * **One GPU job at a time**: a lock file (`gpu.lock` in the cache directory) refuses a second run.
 * **Limits** are the measured ones, not the model's; `--force` goes past them: more than 4,000 tokens (the denoiser's attention is the three-kernel one here, measured only to 1,100 tokens: the fused `ATT=1` of docs/diffusion.md V1b is **not** wired into `tests/wan_video_gpu.py`), more than 33 frames at 1280 x 704 of decode (V2b).
