@@ -15,13 +15,13 @@ scripts/media image "..."     # says why it does not run
 * **`--model NAME`** on `video`, `edit` and `image`; **`models`** lists them. The registry (`MODELS` in `tools/media.py`) holds, per task, the model's name and Hugging Face repositories; today `video`: `fastwan2.2-ti2v-5b` (default), `edit`: `qwen-image-2.1-turbo` (default), `image`: none. Any other name is refused with the supported list (run: `wan2.1`, `flux`, `foo`). Adding a model is a registry entry **and a driver for it**: the drivers fix the architecture's dimensions, kernels and sampler, so `--model` does not make another checkpoint run by itself.
 * **`doctor`**: what is installed (platform, session binary, the two Wan and the Qwen snapshots, ffmpeg, the python modules, free disk).
 * **One GPU job at a time**: a lock file (`gpu.lock` in the cache directory) refuses a second run.
-* **Limits** are the measured ones, not the model's; `--force` goes past them: more than 4,000 tokens (the denoiser's attention is the three-kernel one here, measured only to 1,100 tokens: the fused `ATT=1` of docs/diffusion.md V1b is **not** wired into `tests/wan_video_gpu.py`), more than 33 frames at 1280 x 704 of decode (V2b).
+* **Limits** are the measured ones, not the model's; `--force` goes past them: more than 4,000 tokens (the denoiser's attention is the three-kernel one here, measured only to 1,100 tokens: the fused `ATT=1` of docs/diffusion.md V1b is **not** wired into `tests/wan_video_gpu.py`), more than 17 x 1024 x 576 pixel-frames of decode: the decoder runs out of GPU memory above about that (17 frames of 1024 x 576 and 33 of 640 x 352 run; 17 of 1152 x 640 and 33 of 960 x 512 do not: V2b).
 
 ## What was run (2026-11-15, Apple M4 Max, 64 GB)
 
 * `doctor`: all rows `ok`.
 * **`video`, 17 frames, 640 x 352, seed 1**, the fox prompt above: **44 s of wall clock** for the command (text encoder 12 s; the GPU stage 32 s: writing the weight files 13 s, three steps 3.3 + 1.1 + 1.1 s, decoder 12.2 s), `video.mp4` and `video.gif` written. One run, a cold start of the weight files; the result was looked at, not compared with torch's pipeline.
-* Refusals checked by hand: a size that is not a multiple of 32, 121 frames at 1280 x 704 (27,280 tokens), a missing image, missing edit weights, a second job while the lock is held, `image`.
+* Refusals checked by hand: a size that is not a multiple of 32, 121 frames at 1280 x 704 (27,280 tokens: refused for the tokens first), a missing image, missing edit weights, a second job while the lock is held, `image`.
 
 ## What this does not do
 

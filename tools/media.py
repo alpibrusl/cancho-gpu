@@ -23,7 +23,7 @@ CACHE = os.path.expanduser(os.environ.get("CANCHO_MEDIA_CACHE", "~/.cache/cancho
 HF = os.path.expanduser("~/.cache/huggingface/hub")
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
 MAX_TOKENS = 4000  # the transformer's attention is the three-kernel one here: measured only up to 1,100 tokens (V4a); the scores are 24 heads x S^2 x 4 B a block
-MAX_PIXEL_FRAMES = 33 * 1280 * 704  # the decoder: 33 frames at 1280 x 704 in 21.6 s; 49 frames took 3 times as long (V2b)
+MAX_PIXEL_FRAMES = 17 * 1024 * 576  # the decoder runs out of GPU memory above about this (docs/diffusion.md V2b): 17 frames of 1024 x 576 work, 17 of 1152 x 640 and 33 of 960 x 512 do not
 
 
 # The models each task can use. A model is a name, the Hugging Face repositories it needs, and the driver that runs it; a new model is a new entry and its driver (docs/cli.md). Only these two exist.
@@ -106,7 +106,7 @@ def cmd_video(a):
         die("%d frames at %dx%d are %d tokens: the denoiser's attention here is measured only up to about 1,100 (docs/diffusion.md V4a; the fused switch `ATT=1` is not wired into this driver). "
             "Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force" % (frames, w, h, tokens))
     if frames * w * h > MAX_PIXEL_FRAMES and not a.force:
-        die("%d frames at %dx%d decode as one clip: measured up to 33 frames at 1280x704 (21.6 s); 49 took 66.6 s and more is untried (V2b). Use --force to try" % (frames, w, h))
+        die("%d frames at %dx%d decode as one clip and the decoder runs out of GPU memory above about 17 frames of 1024x576 or 33 of 640x352 (docs/diffusion.md V2b). Use fewer frames or a smaller size, or --force" % (frames, w, h))
     tdir = a.weights or snapshot(info["repo"], "transformer")
     if not tdir or not snapshot(info["also"]):
         die("weights not in the Hugging Face cache: `hf download FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers` and `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (or pass --weights DIR)")
