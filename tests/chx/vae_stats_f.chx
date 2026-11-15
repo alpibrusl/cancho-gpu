@@ -1,0 +1,36 @@
+// dit_stats_o.chx for the frames of a clip: the softmax statistics of each frame's scores [nf * sp, sp]. The mask is one frame's [sp, sp] (0 for a key that is a pixel, a large negative number for the border and the padding),
+// shared by the frames. m and z are [nf * sp].
+algo vae_stats_f(nf, sp, qs, cs)
+  in  sc:   f32[nf * sp, sp]
+  in  mask: f32[sp, sp]
+  out m:    f32[nf * sp]
+  out z:    f32[nf * sp]
+{
+  grid f over nf, qb over sp / qs
+  let f0 = load sc[f * sp + qb * qs, 0 ; qs, cs]
+  let k0 = load mask[qb * qs, 0 ; qs, cs]
+  let s0 = f0 + k0
+  let m1 = rowmax &s0
+  let e0 = exp (s0 - &m1)
+  let z1 = rowsum e0
+  let mx, zz = for c in 1 .. sp / cs with m1, z1 {
+    let sm = load sc[f * sp + qb * qs, c * cs ; qs, cs]
+    let mk = load mask[qb * qs, c * cs ; qs, cs]
+    let s2 = sm + mk
+    let cm = rowmax &s2
+    let r  = relu (cm - &m1)
+    let mn = &m1 + r
+    let nr = m1 - &mn
+    let al = exp nr
+    let sh = s2 - &mn
+    let e  = exp sh
+    let cz = rowsum e
+    let zs = z1 * al
+    yield mn, zs + cz
+  }
+  store mx -> m[f * sp + qb * qs]
+  store zz -> z[f * sp + qb * qs]
+}
+
+schedule vae_stats_f for apple-m-series { threads 64 }
+schedule vae_stats_f for nvidia-ada     { threads 128 }

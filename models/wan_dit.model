@@ -4,6 +4,7 @@
 # The weights are f16 files in WDIR written by tests/wan_gpu.py: q and k of the self-attention (and their norms) with the channels of a head permuted even-first, so that `dit_rope16`'s rotate-half is the model's rotary rotation of adjacent pairs.
 #
 #     cancho-gpu model-expand models/wan_dit.model CHX=<tests/chx> WORK=<inputs and modulation> WDIR=<weights> S=<tokens, a multiple of 64> T=<text tokens> NB=<blocks> HEAD=<1 for the output layer>
+# ATT=1 runs the self-attention as one fused kernel (dit_attn_fused: no scores in memory, about three times slower, any number of tokens; needs WORK/init_s.f32, S values of -3e4: a large negative number, but not so large that adding the first chunk's maximum to it loses it).
 # HEAD=1 ends with the output layer: a modulated layer norm with the head's own (shift, scale), `proj_out` (3,072 -> 192) and its bias, saved as head_out.f32 ([S, 192]: the 1 x 2 x 2 patches of 48 channels).
 text CHX = tests/chx
 text WORK = .
@@ -13,6 +14,7 @@ const S = 128
 const T = 64
 const NB = 1
 const HEAD = 0
+const ATT = 0
 const D = 3072
 const FF = 14336
 const H = 24
@@ -65,18 +67,27 @@ block blk(b)
     resident b${b}_rk.sn $WORK/sn.f32 f32
     program b${b}_vh $CHX/dit_to_f16.chx s=$S n=$D
     link b${b}_bv.z -> b${b}_vh.x
-    program b${b}_sc $CHX/dit_scores_mma.chx nh=$H nq=$S t=$S d=$HD
-    link b${b}_rq.y -> b${b}_sc.q
-    link b${b}_rk.y -> b${b}_sc.k
-    program b${b}_st $CHX/dit_stats_o.chx nh=$H nq=$S t=$S qs=16 cs=64
-    link b${b}_sc.sc -> b${b}_st.sc
-    resident b${b}_st.mask $WORK/mask_self.f32 f32
-    program b${b}_pv $CHX/dit_pv_mma.chx nh=$H nq=$S t=$S d=$HD
-    link b${b}_sc.sc -> b${b}_pv.sc
-    resident b${b}_pv.mask $WORK/mask_self.f32 f32
-    link b${b}_st.m -> b${b}_pv.m
-    link b${b}_st.z -> b${b}_pv.z
-    link b${b}_vh.y -> b${b}_pv.v
+    if ATT == 0
+        program b${b}_sc $CHX/dit_scores_mma.chx nh=$H nq=$S t=$S d=$HD
+        link b${b}_rq.y -> b${b}_sc.q
+        link b${b}_rk.y -> b${b}_sc.k
+        program b${b}_st $CHX/dit_stats_o.chx nh=$H nq=$S t=$S qs=16 cs=64
+        link b${b}_sc.sc -> b${b}_st.sc
+        resident b${b}_st.mask $WORK/mask_self.f32 f32
+        program b${b}_pv $CHX/dit_pv_mma.chx nh=$H nq=$S t=$S d=$HD
+        link b${b}_sc.sc -> b${b}_pv.sc
+        resident b${b}_pv.mask $WORK/mask_self.f32 f32
+        link b${b}_st.m -> b${b}_pv.m
+        link b${b}_st.z -> b${b}_pv.z
+        link b${b}_vh.y -> b${b}_pv.v
+    else
+        program b${b}_pv $CHX/dit_attn_fused.chx nh=$H nq=$S t=$S d=$HD
+        link b${b}_rq.y -> b${b}_pv.q
+        link b${b}_rk.y -> b${b}_pv.k
+        link b${b}_vh.y -> b${b}_pv.v
+        resident b${b}_pv.mask $WORK/mask_self.f32 f32
+        resident b${b}_pv.init $WORK/init_s.f32 f32
+    end
     program b${b}_c1 $CHX/dit_to_f16.chx s=$S n=$D
     link b${b}_pv.o -> b${b}_c1.x
     program b${b}_go $CHX/ported/gemm_mma.chx m=$S n=$D k=$D

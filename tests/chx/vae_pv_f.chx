@@ -1,0 +1,30 @@
+// dit_pv_mma.chx for the frames of a clip: o = softmax(scores + mask) v within each frame, from the scores [nf * sp, sp], the shared one-frame mask [sp, sp], the statistics [nf * sp] and v [nf * sp, d] f16; o [nf * sp, d] f32.
+algo vae_pv_f(nf, sp, d)
+  in  sc:   f32[nf * sp, sp]
+  in  mask: f32[sp, sp]
+  in  m:    f32[nf * sp]
+  in  z:    f32[nf * sp]
+  in  v:    f16[nf * sp, d]
+  out o:    f32[nf * sp, d]
+  tile bm, bn, bk
+{
+  grid f over nf, i over sp / bm, j over d / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. sp / bk with acc {
+    let sm = load sc[f * sp + i * bm, p * bk ; bm, bk]
+    let mk = load mask[i * bm, p * bk ; bm, bk]
+    let s2 = sm + mk
+    let mm = load m[f * sp + i * bm ; bm]
+    let zz = load z[f * sp + i * bm ; bm]
+    let sh = s2 - mm
+    let e  = exp sh
+    let pp = e / zz
+    let ph = stage f16 pp
+    let vt = load v[f * sp + p * bk, j * bn ; bk, bn] @shared
+    yield mma_nn acc ph vt
+  }
+  store acc -> o[f * sp + i * bm, j * bn]
+}
+
+schedule vae_pv_f for apple-m-series { threads 256 warps 8 1 bm 64 bn 128 bk 32 }
+schedule vae_pv_f for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 64 bk 32 }

@@ -1,0 +1,20 @@
+// dit_scores_mma.chx for the frames of a clip (docs/diffusion.md V2 follow-up): one head of d channels, attention within each frame. q and k are [nf * sp, d] f16 (nf frames of sp rows, sp a multiple of the tile), the scores of
+// frame f are the rows f * sp .. of an [nf * sp, sp] f32 scratch: nf matrices of sp x sp, not one of (nf sp)^2.
+algo vae_scores_f(nf, sp, d)
+  in  q:  f16[nf * sp, d]
+  in  k:  f16[nf * sp, d]
+  out sc: f32[nf * sp, sp]
+  tile bm, bn, bk
+{
+  grid f over nf, i over sp / bm, j over sp / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. d / bk with acc {
+    let at = load q[f * sp + i * bm, p * bk ; bm, bk] @shared
+    let wt = load k[f * sp + j * bn, p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> sc[f * sp + i * bm, j * bn]
+}
+
+schedule vae_scores_f for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
+schedule vae_scores_f for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }

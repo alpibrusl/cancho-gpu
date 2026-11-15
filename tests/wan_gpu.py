@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V1 of docs/diffusion.md section 6: blocks of Wan2.2-TI2V-5B's transformer on a Metal GPU, from models/wan_dit.model, held to the float64 reference of tools/wan_ref.py.
 
-    wan_gpu.py WORK_DIR [--blocks B] [--head] [--frames F] [--size HxW] [--text T] [--seed S] [--mutate NAME]
+    wan_gpu.py WORK_DIR [--blocks B] [--head] [--frames F] [--size HxW] [--text T] [--seed S] [--fused] [--no-ref] [--mutate NAME]
 
 Needs a Mac, the first shard of `Wan-AI/Wan2.2-TI2V-5B-Diffusers` in the Hugging Face cache (blocks 0 to 6 are whole in it), numpy and safetensors (the venv of the first image edits; `--bf16` also needs torch and diffusers), and `build/cancho-gpu-metal-session`.
 Not in `scripts/gate.sh`. The text's tokens must be a multiple of 64; the latent's tokens (F x H/2 x W/2) are padded to one (the padded keys are hidden by the self-attention's mask, as in the edit's). `--head` adds the output layer (norm, `proj_out`) and compares the velocity [48, F, H, W].
@@ -39,7 +39,8 @@ SP = (S + 63) // 64 * 64
 assert T % 64 == 0, "the text's tokens (%d) must be a multiple of 64" % T
 HEAD = "--head" in sys.argv
 stages = {}
-want = wr.forward(lat, txt, t, NB, stages, with_head=HEAD)
+NOREF = "--no-ref" in sys.argv  # time only: the host's front end, no float64 blocks
+want = wr.forward(lat, txt, t, 0 if NOREF else NB, stages, with_head=HEAD and not NOREF)
 print("latent [48, %d, %d, %d]: %d tokens (padded to %d), text %d, %d blocks%s; float64 output rms %.4g" % (F, H, Wd, S, SP, T, NB, " and the output layer" if HEAD else "", np.sqrt((want ** 2).mean())), flush=True)
 NEG = -1e9
 pad = lambda a, fill: np.concatenate([a, np.full((SP - S,) + a.shape[1:], fill)], 0)
@@ -101,11 +102,12 @@ if HEAD:
     f32(P("head_sc.f32"), np.stack([tab[1] + temb_t, tab[1] + temb_0]))
     f16(P("proj_out.f16"), wr.W("proj_out.weight"))
     f32(P("proj_out_b.f32"), vec(wr.W("proj_out.bias")))
+f32(P("init_s.f32"), np.full((SP, 1), -3e4))
 f32(P("ci_t.f32"), np.ones((T, HD // 2)))
 f32(P("si_t.f32"), np.zeros((T, HD // 2)))
 
 # ---- the session, from the model file
-defs = ["CHX=" + os.path.join(ROOT, "tests/chx"), "WORK=" + work, "WDIR=" + work, "S=%d" % SP, "T=%d" % T, "NB=%d" % NB, "HEAD=%d" % int(HEAD)]
+defs = ["CHX=" + os.path.join(ROOT, "tests/chx"), "WORK=" + work, "WDIR=" + work, "S=%d" % SP, "T=%d" % T, "NB=%d" % NB, "HEAD=%d" % int(HEAD), "ATT=%d" % int("--fused" in sys.argv)]
 model = os.path.join(ROOT, "models/wan_dit.model")
 import time  # noqa: E402
 
@@ -121,6 +123,9 @@ if HEAD:
     got = y.reshape(F, H // 2, Wd // 2, 1, 2, 2, 48).transpose(6, 0, 3, 1, 4, 2, 5).reshape(48, F, H, Wd)
 else:
     got = np.fromfile(P("x_out.f32"), dtype="<f4").reshape(SP, D)[:S].astype(np.float64)
+if NOREF:
+    print("no reference: output rms %.4g, finite %s" % (np.sqrt((got ** 2).mean()), bool(np.isfinite(got).all())))
+    sys.exit(0)
 rms = float(np.sqrt((want ** 2).mean()))
 d = np.abs(got - want)
 print("output %s vs float64: mean abs error %.4g (%.3g of the rms %.3g), max %.4g" % (list(got.shape), d.mean(), d.mean() / rms, rms, d.max()))
