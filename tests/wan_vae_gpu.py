@@ -11,10 +11,10 @@ rows a frame, the whole rounded up to 64 rows), f32 between the blocks, f16 with
 current one as shifted windows of the same matrix, and the guard's zeros are the two frames a causal convolution pads in front of the clip. The temporal doubling of an up block (the model's `upsample3d`) adds a **zero frame at
 the head** of the layout (the doubled clip has 2 n slots for its 2 n - 1 frames, slot 0 zero): it is the causal window's zero pad for the next convolution, so nothing else has to know about it; every kernel that could write
 into it (the masks, `fa`, `fm`) writes zeros. The first latent frame is not doubled and is hidden from `time_conv` (the model's cache holds "Rep" there); `vae_tint.chx` interleaves the two halves of `time_conv`'s
-2 c channels in time. Up blocks 0 and 1 double time and space, block 2 only space, block 3 neither. Attention (the middle block, one head of 1024 channels over the positions of one frame) is over all the frames' rows
-with a block-diagonal mask (a matrix of n x n floats: small clips only).
+2 c channels in time. Up blocks 0 and 1 double time and space, block 2 only space, block 3 neither. Attention (the middle block, one head of 1024 channels over the positions of one frame) is per frame: the scores are
+nf matrices of sp x sp (vae_scores_f, vae_stats_f, vae_pv_f: the frame is a grid dimension) with one frame's mask shared by all; a frame's rows are padded to a multiple of 64 so that no tile spans two frames.
 
-`--mutate` makes one deliberate error that the comparison must refuse: `sees-first` (`time_conv` also sees the first latent frame), `swap-halves` (the two halves of its output exchanged), `visible-zero-frame` (the head slot is
+`--mutate` makes one deliberate error that the comparison must refuse: `border-keys` (the attention's keys include the border and padding rows), `sees-first` (`time_conv` also sees the first latent frame), `swap-halves` (the two halves of its output exchanged), `visible-zero-frame` (the head slot is
 data: the masks do not zero it and the shortcut's `fa` writes into it; `fa` alone is **not** a mutant that fails: every reader of another frame reads through a mask, so the zero frame is zero twice over).
 What stays on the host: the latent as a bordered f16 matrix, the weights as f16 files, the selection matrices of the shortcuts, the masks, and the unpatchify and the clamp of the output.
 """
@@ -49,7 +49,7 @@ f32 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f4")).tofile(p
 
 def lay(h, w, slots, junk):
     wp = w + 2
-    s = (h + 2) * wp
+    s = ((h + 2) * wp + 63) // 64 * 64  # a frame's rows, padded to a multiple of 64 so that a tile never spans two frames (the attention is within a frame)
     return {"h": h, "w": w, "wp": wp, "S": s, "slots": slots, "junk": junk, "R": (slots * s + 63) // 64 * 64, "g": 2 * s + wp + 1}
 
 
@@ -196,30 +196,27 @@ def resnet(x, cin, cout, L, p):
 def attention(x, c, L, p):
     nrm = norm(x, W(p + ".norm.gamma").reshape(-1), c, L, silu=False)
     qkv = bias(conv1(nrm, c, 3 * c, L, conv_w1(p + ".to_qkv")), W(p + ".to_qkv.bias"), 3 * c, L)
-    sp = fresh("sp")
-    program(sp, "vae_split16", f"r={L['R']} c={c} sc={1 / math.sqrt(c)!r}")
-    link(qkv, sp + ".qkv")
+    sp_ = fresh("sp")
+    program(sp_, "vae_split16", f"r={L['R']} c={c} sc={1 / math.sqrt(c)!r}")
+    link(qkv, sp_ + ".qkv")
+    nf, sp = L["slots"], L["S"]
     sc = fresh("sc")
-    program(sc, "ported/gemm_mma", f"m={L['R']} n={L['R']} k={c}")
-    link(sp + ".q", sc + ".a"); link(sp + ".k", sc + ".w")
-    ma = fresh("ma")
-    program(ma, "vae_mask_add2", f"n={L['R']}")
-    link(sc + ".y", ma + ".sc")
-    mk = np.full((L["R"], L["R"]), NEG, dtype=np.float32)
-    fr = interior(L) > 0
-    for f in range(L["slots"]):
-        mk[f * L["S"]:(f + 1) * L["S"], f * L["S"]:(f + 1) * L["S"]][:, fr] = 0.0  # a frame's rows (pixels and border) see that frame's pixels
-    name = "attn_mask_%d_%d_%d" % (L["h"], L["w"], L["slots"])
+    program(sc, "vae_scores_f", f"nf={nf} sp={sp} d={c}")
+    link(sp_ + ".q", sc + ".q"); link(sp_ + ".k", sc + ".k")
+    name = "attn_mask_%d_%d_%s" % (L["h"], L["w"], MUT == "border-keys")
+    mk = np.where((interior(L) > 0) | (MUT == "border-keys"), 0.0, NEG)[None, :].repeat(sp, 0)  # one frame's [sp, sp]: a key that is a pixel
     if name not in _made:
         f32(P(name + ".f32"), mk)
         _made.add(name)
-    res(ma + ".mk", name + ".f32")
     st = fresh("st")
-    program(st, "dit_stats", f"nh=1 nq={L['R']} t={L['R']} qs=32 cs=64")
-    link(ma + ".z", st + ".sc")
+    program(st, "vae_stats_f", f"nf={nf} sp={sp} qs=16 cs=64")
+    link(sc + ".sc", st + ".sc"); res(st + ".mask", name + ".f32")
+    vh = fresh("vh")
+    program(vh, "dit_to_f16", f"s={L['R']} n={c}")
+    link(sp_ + ".v", vh + ".x")
     pv = fresh("pv")
-    program(pv, "dit_pv", f"nh=1 nq={L['R']} t={L['R']} qs=32 cs=64 dw=32 d={c}")
-    link(ma + ".z", pv + ".sc"); link(st + ".m", pv + ".m"); link(st + ".z", pv + ".z"); link(sp + ".v", pv + ".v")
+    program(pv, "vae_pv_f", f"nf={nf} sp={sp} d={c}")
+    link(sc + ".sc", pv + ".sc"); res(pv + ".mask", name + ".f32"); link(st + ".m", pv + ".m"); link(st + ".z", pv + ".z"); link(vh + ".y", pv + ".v")
     pr = conv1(pad16(pv + ".o", c, L), c, c, L, conv_w1(p + ".proj"))
     return bias_res(pr, W(p + ".proj.bias"), x, c, L)
 
