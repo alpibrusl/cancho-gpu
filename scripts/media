@@ -1,0 +1,5 @@
+#!/bin/sh
+# cancho-media: see docs/cli.md. Uses the venv of the first image edits unless CANCHO_MEDIA_PY names another interpreter.
+PY=${CANCHO_MEDIA_PY:-$HOME/Workspace/alpibrusl/cancho/imgtest/.venv/bin/python}
+[ -x "$PY" ] || PY=python3
+exec "$PY" "$(dirname "$0")/../tools/media.py" "$@"
