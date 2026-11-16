@@ -8,6 +8,7 @@ import http.server;
 import files;
 import jobs;
 import results;
+import auth;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -53,12 +54,16 @@ fn number_of[&t](text: &t [byte]) -> [] int {
     return n;
 }
 
-fn serve[&h, &k, &l, &i, &f, &d, &y](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], site: &y [byte], port: int) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
+fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], site: &y [byte], token: &z [byte], port: int) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
     match poller_new() {
         Polling::Ok(p) => {
             var srv = server.open(heap, p, listener, 65536, 0, 30);
-            var line = buffer.append(heap, buffer.empty(heap, 64), "listening on ");
+            var line = buffer.append(heap, buffer.empty(heap, 128), "listening on ");
             line = buffer.push_nat(heap, line, port);
+            line = buffer.append(heap, line, "\nopen http://127.0.0.1:");
+            line = buffer.push_nat(heap, line, port);
+            line = buffer.append(heap, line, "/?token=");
+            line = buffer.append(heap, line, token);
             line = buffer.push(heap, line, byte_of(10));
             borrow line as &lb in {
                 io.error_all(con, buffer.bytes(lb));
@@ -133,7 +138,31 @@ fn serve[&h, &k, &l, &i, &f, &d, &y](heap: &!h Heap, clock: &k Clock, listener: 
                             let keep = http.keeps_alive(table);
                             let path = http.path(head, table);
                             let method = http.method(head, table);
-                            if bytes.equal(path, "/") && bytes.equal(method, "GET") {
+                            var gate = 0;
+                            if auth.host_ok(head, table, port) == false || auth.origin_ok(head, table, port) == false {
+                                gate = 403;
+                            } else if bytes.equal(path, "/") && bytes.equal(method, "GET") && auth.login_ok(head, table, token) {
+                                gate = 302;
+                            } else if auth.token_ok(head, table, token) == false {
+                                gate = 401;
+                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false {
+                                gate = 415;
+                            }
+                            if gate == 403 {
+                                out = server.failure(heap, out, 403, "forbidden: not this server's own host or origin", keep);
+                            } else if gate == 302 {
+                                var extra = buffer.append(heap, buffer.empty(heap, 128), "Set-Cookie: studio=");
+                                extra = buffer.append(heap, extra, token);
+                                extra = buffer.append(heap, extra, "; HttpOnly; SameSite=Strict; Path=/\r\nLocation: /\r\n");
+                                borrow extra as &eb in {
+                                    out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, buffer.bytes(eb));
+                                }
+                                buffer.drop(heap, extra);
+                            } else if gate == 401 {
+                                out = server.failure(heap, out, 401, "a token is needed: open the URL the server printed", keep);
+                            } else if gate == 415 {
+                                out = server.failure(heap, out, 415, "a POST is application/json", keep);
+                            } else if bytes.equal(path, "/") && bytes.equal(method, "GET") {
                                 var served = false;
                                 if len(site) > 0 {
                                     let (sst, sdata) = results.site_file(heap, fs, site, "index.html");
@@ -255,6 +284,9 @@ fn main(world: World) -> [] int {
                 if port > 0 && port < 65536 && files.path_ok(fr, arg(g, 2)) && (arg_count(g) == 3 || files.path_ok(fr, arg(g, 3))) {
                     status = 3;
                     borrow net as &nn in {
+                        let token = auth.make(h, fr);
+                        borrow token as &tk in {
+                        if len(buffer.bytes(tk)) == 32 {
                         match tcp_listen_on(nn, "127.0.0.1", port, 1024, 0) {
                             Listening::Ok(l) => {
                                 var listener = l;
@@ -263,9 +295,9 @@ fn main(world: World) -> [] int {
                                     borrow mut io as &!i in {
                                         borrow clock as &c in {
                                             if arg_count(g) == 4 {
-                                                status = serve(h, c, lh, i, fr, arg(g, 2), arg(g, 3), port);
+                                                status = serve(h, c, lh, i, fr, arg(g, 2), arg(g, 3), buffer.bytes(tk), port);
                                             } else {
-                                                status = serve(h, c, lh, i, fr, arg(g, 2), "", port);
+                                                status = serve(h, c, lh, i, fr, arg(g, 2), "", buffer.bytes(tk), port);
                                             }
                                         }
                                     }
@@ -275,6 +307,11 @@ fn main(world: World) -> [] int {
                             Listening::Failed(e) => {
                             }
                         }
+                        } else {
+                            status = 6;
+                        }
+                        }
+                        buffer.drop(h, token);
                     }
                 } else {
                     borrow mut io as &!i in {

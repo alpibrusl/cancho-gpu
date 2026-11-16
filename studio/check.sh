@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -97,11 +97,14 @@ fi
 printf '#!/bin/sh\nfor a in "$@"; do echo "[$a]"; done\n[ "$1" = edit ] && exit 3\nexit 0\n' > "$T/media"
 chmod +x "$T/media"
 mkdir "$T/data"
-build/studio 18091 "$T/data" >/dev/null 2>&1 &
+build/studio 18091 "$T/data" >"$T/s1.log" 2>&1 &
 SP=$!
 trap 'kill $SP 2>/dev/null; rm -rf "$T"' EXIT
 sleep 1
-post() { curl -s -w ' %{http_code}' -XPOST localhost:18091/api/jobs -d "$1"; }
+TOK1=$(grep -o 'token=[0-9a-f]*' "$T/s1.log" | cut -d= -f2); TOK=$TOK1
+# every request carries the token (the way a script would: a bearer header); a POST says it is JSON
+c() { curl -s -H "Authorization: Bearer $TOK" "$@"; }
+post() { c -w ' %{http_code}' -XPOST -H 'Content-Type: application/json' localhost:18091/api/jobs -d "$1"; }
 check "POST a video job" "$(post '{"kind":"video","prompt":"-a fox; $(rm -rf /) \"q\"","frames":9,"size":"640x352","seed":3}')" '{"id":1} 202'
 check "POST an edit job" "$(post '{"kind":"edit","prompt":"sunny","image":"/tmp/p.jpg"}')" '{"id":2} 202'
 check "empty prompt refused" "$(post '{"kind":"video","prompt":""}')" '{"error":"prompt is a string of 1 to 1000 bytes"} 422'
@@ -110,14 +113,14 @@ check "frames over 129 refused" "$(post '{"kind":"video","prompt":"x","frames":5
 check "bad size refused" "$(post '{"kind":"video","prompt":"x","size":"64x3520000"}' | tail -c 4)" ' 422'
 check "unknown kind refused" "$(post '{"kind":"nope","prompt":"x"}')" '{"error":"kind is video or edit"} 422'
 check "not JSON refused" "$(post 'not json' | tail -c 4)" ' 422'
-check "queued" "$(curl -s localhost:18091/api/jobs/1)" '{"id":1,"state":"queued"}'
-check "unknown job" "$(curl -s -w ' %{http_code}' localhost:18091/api/jobs/99)" '{"error":"no such job"} 404'
-check "id that is not digits" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/api/jobs/1a)" 422
+check "queued" "$(c localhost:18091/api/jobs/1)" '{"id":1,"state":"queued"}'
+check "unknown job" "$(c -w ' %{http_code}' localhost:18091/api/jobs/99)" '{"error":"no such job"} 404'
+check "id that is not digits" "$(c -o /dev/null -w '%{http_code}' localhost:18091/api/jobs/1a)" 422
 check "queue file" "$(tr '\n' ' ' < "$T/data/queue")" '1 2 '
 check "argv: the prompt is one entry after --" "$(tr '\0' '\n' < "$T/data/1.argv" | tail -1)" '-a fox; $(rm -rf /) "q"'
 build/studio_worker "$T/media" /Users/test "$T/data"
-check "job 1 done" "$(curl -s localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
-check "job 2 failed 3" "$(curl -s localhost:18091/api/jobs/2)" '{"id":2,"state":"failed 3"}'
+check "job 1 done" "$(c localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
+check "job 2 failed 3" "$(c localhost:18091/api/jobs/2)" '{"id":2,"state":"failed 3"}'
 check "job 1 got its arguments" "$(grep -c . "$T/data/1.log")" 11
 # The results page and the files (job 1 done with a fake result, job 2 failed, job 3 queued).
 mkdir -p "$T/data/out/1"
@@ -125,45 +128,81 @@ printf '\211PNG\r\n\032\n\0\0binary\377\0' > "$T/data/out/1/video.mp4"
 cp "$T/data/out/1/video.mp4" "$T/data/secret.bin"
 printf '3 queued\n' >/dev/null
 printf 'video\0q\0' > "$T/data/3.argv"
-curl -s localhost:18091/jobs/1 > "$T/page1"
+c localhost:18091/jobs/1 > "$T/page1"
 check "page of a done job: state" "$(grep -c 'state: done' "$T/page1")" 1
 check "page of a done job: the video" "$(grep -c 'src=/files/1/video.mp4' "$T/page1")" 1
 check "page of a done job: no picture it does not have" "$(grep -c 'edited.png\|video.gif' "$T/page1")" 0
-check "page of a failed job: no result" "$(curl -s localhost:18091/jobs/2 | grep -c 'state: failed 3.*\(video\|edited\)')" 0
-check "page of a queued job refreshes" "$(curl -s localhost:18091/jobs/3 | grep -c 'refresh')" 1
-check "page of an unknown job" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/jobs/99)" 404
-check "page of a bad id" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/jobs/1a)" 422
-curl -s -D "$T/hdr" localhost:18091/files/1/video.mp4 > "$T/got.bin"
+check "page of a failed job: no result" "$(c localhost:18091/jobs/2 | grep -c 'state: failed 3.*\(video\|edited\)')" 0
+check "page of a queued job refreshes" "$(c localhost:18091/jobs/3 | grep -c 'refresh')" 1
+check "page of an unknown job" "$(c -o /dev/null -w '%{http_code}' localhost:18091/jobs/99)" 404
+check "page of a bad id" "$(c -o /dev/null -w '%{http_code}' localhost:18091/jobs/1a)" 422
+c -D "$T/hdr" localhost:18091/files/1/video.mp4 > "$T/got.bin"
 check "file: the bytes arrive unchanged" "$(cmp "$T/got.bin" "$T/data/out/1/video.mp4" && echo same)" same
 check "file: media type" "$(grep -ci '^content-type: video/mp4' "$T/hdr")" 1
-check "file: the log is the worker's output" "$(curl -s localhost:18091/files/1/log | head -1)" '[video]'
+check "file: the log is the worker's output" "$(c localhost:18091/files/1/log | head -1)" '[video]'
 head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
-check "file: 6 MB arrive unchanged (streamed)" "$(curl -s localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
-check "file: Content-Length is the size" "$(curl -s -D - -o /dev/null localhost:18091/files/1/video.gif | tr -d '\r' | grep -i '^content-length' | awk '{print $2}')" 6000000
+check "file: 6 MB arrive unchanged (streamed)" "$(c localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
+check "file: Content-Length is the size" "$(c -D - -o /dev/null localhost:18091/files/1/video.gif | tr -d '\r' | grep -i '^content-length' | awk '{print $2}')" 6000000
 head -c 40000000 /dev/urandom > "$T/data/out/1/video.gif"
-check "file: 40 MB arrive unchanged" "$(curl -s localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
-check "file: two in a row on one connection" "$(curl -s localhost:18091/files/1/video.gif localhost:18091/files/1/video.gif | wc -c | tr -d ' ')" 80000000
-check "the server serves after streaming" "$(curl -s localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
+check "file: 40 MB arrive unchanged" "$(c localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
+check "file: two in a row on one connection" "$(c localhost:18091/files/1/video.gif localhost:18091/files/1/video.gif | wc -c | tr -d ' ')" 80000000
+check "the server serves after streaming" "$(c localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
 head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
 head -c 150000 /dev/urandom > "$T/data/out/1/edited.png"
-check "file: 150 KB arrive unchanged" "$(curl -s localhost:18091/files/1/edited.png | cmp - "$T/data/out/1/edited.png" && echo same)" same
+check "file: 150 KB arrive unchanged" "$(c localhost:18091/files/1/edited.png | cmp - "$T/data/out/1/edited.png" && echo same)" same
 rm "$T/data/out/1/edited.png"
-check "file: a name not on the list" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1/secret.bin)" 404
-check "file: a path is not a name" "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' 'localhost:18091/files/1/../secret.bin')" 404
-check "file: a file the job does not have" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1/edited.png)" 404
-check "file: bad id" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1a/log)" 422
+check "file: a name not on the list" "$(c -o /dev/null -w '%{http_code}' localhost:18091/files/1/secret.bin)" 404
+check "file: a path is not a name" "$(c --path-as-is -o /dev/null -w '%{http_code}' 'localhost:18091/files/1/../secret.bin')" 404
+check "file: a file the job does not have" "$(c -o /dev/null -w '%{http_code}' localhost:18091/files/1/edited.png)" 404
+check "file: bad id" "$(c -o /dev/null -w '%{http_code}' localhost:18091/files/1a/log)" 422
 # The page and the list, from a server with a site directory (port 18094).
-build/studio 18094 "$T/data" "$T/site" >/dev/null 2>&1 &
+build/studio 18094 "$T/data" "$T/site" >"$T/s2.log" 2>&1 &
 SP2=$!
 trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
 sleep 1
-check "site: / is index.html" "$(curl -s localhost:18094/ | cmp - "$T/site/index.html" && echo same)" same
-check "site: /app.js is app.js, a script" "$(curl -s -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
-check "site: app.js bytes unchanged" "$(curl -s localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
-check "site: no site, / is the stub" "$(curl -s localhost:18091/ | grep -c 'Slice 1')" 1
-post '{"kind":"video","prompt":"third"}' >/dev/null
-check "jobs: newest first" "$(curl -s localhost:18094/jobs | grep -o 'job [0-9]*' | tr '\n' ' ')" 'job 3 job 2 job 1 '
-check "jobs: states" "$(curl -s localhost:18094/jobs | grep -o '</a>: [a-z0-9 ]*' | tr '\n' ' ')" '</a>: queued </a>: failed 3 </a>: done '
+TOK2=$(grep -o 'token=[0-9a-f]*' "$T/s2.log" | cut -d= -f2); TOK=$TOK2
+check "site: / is index.html" "$(c localhost:18094/ | cmp - "$T/site/index.html" && echo same)" same
+check "site: /app.js is app.js, a script" "$(c -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
+check "site: app.js bytes unchanged" "$(c localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
+TOK=$TOK1
+check "site: no site, / is the stub" "$(c localhost:18091/ | grep -c 'Slice 1')" 1
+TOK=$TOK1 post '{"kind":"video","prompt":"third"}' >/dev/null
+check "jobs: newest first" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'job [0-9]*' | tr '\n' ' ')" 'job 3 job 2 job 1 '
+check "jobs: states" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o '</a>: [a-z0-9 ]*' | tr '\n' ' ')" '</a>: queued </a>: failed 3 </a>: done '
 rc=0; build/studio 18095 "$T/data" relative 2>/dev/null || rc=$?; check "relative site dir refused" "$rc" 2
+# Who may talk to the server (studio/auth.cho): the token, the host, the origin, the content type. Server 1, port 18091. `u` is a request without the token.
+u() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+check "auth: no token: 401" "$(u localhost:18091/api/models)" 401
+check "auth: wrong token: 401" "$(u -H 'Authorization: Bearer 00000000000000000000000000000000' localhost:18091/api/models)" 401
+check "auth: a token of another length: 401" "$(u -H 'Authorization: Bearer abc' localhost:18091/api/models)" 401
+check "auth: the page needs it too: 401" "$(u localhost:18091/)" 401
+check "auth: the results need it: 401" "$(u localhost:18091/jobs/1)" 401
+check "auth: a POST without it: 401, and nothing queued" "$(u -XPOST -H 'Content-Type: application/json' localhost:18091/api/jobs -d '{"kind":"video","prompt":"x"}') $(wc -l < "$T/data/queue" | tr -d ' ')" "401 3"
+check "auth: bearer works" "$(u -H "Authorization: Bearer $TOK1" localhost:18091/api/models)" 200
+check "auth: the cookie works" "$(u -H "Cookie: a=b; studio=$TOK1; c=d" localhost:18091/api/models)" 200
+check "auth: a cookie with the wrong value: 401" "$(u -H "Cookie: studio=${TOK1}x" localhost:18091/api/models)" 401
+check "auth: the token is 32 hex characters" "$(printf %s "$TOK1" | grep -cE '^[0-9a-f]{32}$')" 1
+check "auth: the printed URL is the loopback one" "$(grep -c "^open http://127.0.0.1:18091/?token=$TOK1\$" "$T/s1.log")" 1
+check "auth: the URL logs in: 302 to /" "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "localhost:18091/?token=$TOK1")" "302 http://localhost:18091/"
+curl -s -D "$T/login" -o /dev/null "localhost:18091/?token=$TOK1"
+check "auth: ...with a cookie HttpOnly and SameSite=Strict" "$(tr -d '\r' < "$T/login" | grep -i '^set-cookie' | grep -c "studio=$TOK1; HttpOnly; SameSite=Strict; Path=/")" 1
+check "auth: a wrong token in the URL: 401" "$(u 'localhost:18091/?token=00000000000000000000000000000000')" 401
+check "auth: the URL token is taken on / only" "$(u "localhost:18091/api/models?token=$TOK1")" 401
+check "auth: the cookie logs in the page" "$(u -H "Cookie: studio=$TOK1" localhost:18091/)" 200
+check "auth: a rebinding Host: 403" "$(u -H "Authorization: Bearer $TOK1" -H 'Host: rebinding.example:18091' localhost:18091/api/models)" 403
+check "auth: the right host on the wrong port: 403" "$(u -H "Authorization: Bearer $TOK1" -H 'Host: localhost:9' localhost:18091/api/models)" 403
+check "auth: 127.0.0.1:port is accepted" "$(u -H "Authorization: Bearer $TOK1" -H 'Host: 127.0.0.1:18091' localhost:18091/api/models)" 200
+check "auth: localhost:port with trailing text: 403" "$(u -H "Authorization: Bearer $TOK1" -H 'Host: localhost:18091.evil.example' localhost:18091/api/models)" 403
+check "auth: a foreign Origin: 403" "$(u -H "Authorization: Bearer $TOK1" -H 'Origin: http://evil.example' localhost:18091/api/models)" 403
+check "auth: Origin null: 403" "$(u -H "Authorization: Bearer $TOK1" -H 'Origin: null' localhost:18091/api/models)" 403
+check "auth: Origin http://localhost.evil.example:18091: 403" "$(u -H "Authorization: Bearer $TOK1" -H 'Origin: http://localhost.evil.example:18091' localhost:18091/api/models)" 403
+check "auth: the page's own Origin is accepted" "$(u -H "Authorization: Bearer $TOK1" -H 'Origin: http://localhost:18091' localhost:18091/api/models)" 200
+# The attack that was measured on the unguarded server (2026-11-16: 202 and a job in the queue): another site's page POSTs text/plain with the user's own cookie.
+Q=$(wc -l < "$T/data/queue" | tr -d ' ')
+check "attack: foreign Origin, text/plain, cookie: 403" "$(u -XPOST -H 'Origin: http://evil.example' -H 'Content-Type: text/plain' -H "Cookie: studio=$TOK1" localhost:18091/api/jobs -d '{"kind":"edit","prompt":"x","image":"/etc/hosts"}')" 403
+check "attack: ...and no job was queued" "$(wc -l < "$T/data/queue" | tr -d ' ')" "$Q"
+check "auth: same origin, text/plain: 415" "$(u -XPOST -H 'Content-Type: text/plain' -H "Cookie: studio=$TOK1" localhost:18091/api/jobs -d '{"kind":"video","prompt":"x"}')" 415
+check "auth: no Content-Type on a POST: 415" "$(u -XPOST -H 'Content-Type:' -H "Cookie: studio=$TOK1" localhost:18091/api/jobs -d '{"kind":"video","prompt":"x"}')" 415
+check "auth: two servers, two tokens" "$([ "$TOK1" != "$TOK2" ] && echo different)" different
 rc=0; build/studio 18092 relative 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 2
 exit $fail
