@@ -1,6 +1,6 @@
 # The Wan VAE encoder, in cancho (design, 2026-11-16)
 
-> **Status: the encoder for one frame is built and measured (sections 8 to 10): E1 the float64 reference, E2 and E3 the GPU session; what #174 still needs is not here (the end of section 10).** This document began as a design before any code and says, in place, where building corrected it. Issue [#174](https://github.com/alpibrusl/cancho-gpu/issues/174) (image to video) needs the VAE *encoder* of `Wan2.2-TI2V-5B`; only the decoder exists. Claims are tagged **[read]** (from the source or the checkpoint, not run), **[measured]** (run, with the command) or **[estimate]**. The owner chose, on 2026-11-16, to build it **native in cancho** (no new Python, no new Rust): the session as a `.model` file, the weights written by a cancho command, the float64 reference a cancho program. This is the first of a chain; each slice is its own PR and holds a measured result before the next starts.
+> **Status: the encoder for one frame is built and measured (sections 8 to 10): E1 the float64 reference, E2 and E3 the GPU session; the sampler's use of its latent is section 11: it runs and holds frame 0, and the video does not continue from it.** This document began as a design before any code and says, in place, where building corrected it. Issue [#174](https://github.com/alpibrusl/cancho-gpu/issues/174) (image to video) needs the VAE *encoder* of `Wan2.2-TI2V-5B`; only the decoder exists. Claims are tagged **[read]** (from the source or the checkpoint, not run), **[measured]** (run, with the command) or **[estimate]**. The owner chose, on 2026-11-16, to build it **native in cancho** (no new Python, no new Rust): the session as a `.model` file, the weights written by a cancho command, the float64 reference a cancho program. This is the first of a chain; each slice is its own PR and holds a measured result before the next starts.
 
 ## 1. What the encoder is
 
@@ -135,7 +135,7 @@ The first row is the one that matters most: **the GPU encoder, never tuned, equa
 * **One frame only, which is what `video_condition = image` needs (#174).** A clip of more than one frame is not encoded by the GPU path; the float64 reference does (sections 3 and 9), the kernels for the temporal downsample are not built here.
 * **No real photograph went through it**: the pictures are the torch run's noise and a synthetic smooth-plus-noise pattern; the comparison does not depend on content, but a photograph was not tried.
 * **The comparison at 640 x 352 is to the float64 reference, not to torch** (torch's data are the three small clips of section 8). Torch float32 at that size was not run.
-* **`#174` is not finished by this.** What remains: the denoiser's per-token timestep, the mixing of the first frame in the sampler, and `media video --image`. This encoder gives the first frame's 48 normalised latent channels; nothing yet consumes them.
+* **`#174` is not finished by this.** What remained: the denoiser's per-token timestep, the mixing of the first frame in the sampler, and `media video --image`. The first two are section 11 (they run; the result is not what the issue hoped for); `media video --image` is not built.
 * The session is run by hand (`printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session ...`); `media` does not call it.
 * Not in `scripts/gate.sh` except the codec check: the encoder needs a Mac, the checkpoint and `build/cancho-gpu-metal-session`.
 
@@ -147,4 +147,42 @@ build/wan_vae_enc_gpu prepare <vae/diffusion_pytorch_model.safetensors> <work di
 printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session <work dir>/enc.session
 build/wan_vae_enc_gpu compare <work dir> <reference mean> <H> <W>
 build/wan_vae_enc_gpu latent <vae/config.json> <work dir> <H> <W> <out.f32>
+```
+
+## 11. The first frame in the sampler (measured, 2026-11-16): it runs, frame 0 holds, and the video does not follow it
+
+**What was done.** `tests/wan_video_gpu.py --cond COND.f32` (the file `latent` writes, `[48, H/16, W/16]` normalised singles). Two changes, both host-side:
+
+* **The per-token timestep was already in the denoiser.** Issue #174 said the script "appears to use one scalar timestep (not verified)": **verified, the session (`models/wan_dit.model`) has had two modulation rows and a per-token selector since V1**, held to torch with the conditioning frame at t = 0 (V0, V1b: 7.0e-4 of the rms for the whole model). What the video script did was write the *same* row twice and a selector of all ones. Now row 1 is the t = 0 row (`time_embed` of 0, in every block's six vectors and in the head's shift and scale) and the selector is 0 on the first frame's tokens (`S = F x (H/2)(W/2)`, frame-major: the first `(H/2)(W/2)` tokens). No kernel, no model file changed.
+* **The mixing** `(1 - mask) * cond + mask * latents`, mask 0 on frame 0, applied to the initial noise, to every `x0` and to every re-noised latent (so before each call and after the last), as `pipeline_wan_i2v.py` does in the `expand_timesteps` branch **[read, diffusers]**.
+
+**What was read and does not support it.** FastVideo's `DmdDenoisingStage` (`fastvideo/pipelines/basic/wan/stages/dmd.py`), the sampler of the distilled weights this repository runs, **has no first-frame mask, no per-token timestep and no mixing**: it concatenates the image latent onto the **channels** of the input (a model with more than 48 input channels) and gives one scalar timestep. TI2V-5B's transformer has 48, so that path is not this model's. Whether the DMD-distilled FastWan2.2-TI2V-5B was ever trained to continue a clean first frame is **not read from anywhere**; diffusers' mixing is what the issue asked for and what is built, and it was not checked against FastVideo's own TI2V path (not read: only `dmd.py` was).
+
+**[measured] Test**, 17 frames of 640 x 352 (a latent of 48 x 5 x 22 x 40), seed 1, the fox prompt of V4a, three steps. The picture is **frame 0 of the text-to-video run with the same seed and prompt** (a picture the model itself made: nothing of anyone's; an earlier try with the synthetic noise pattern of section 10 was useless, a VAE of 16 times compression cannot hold per-pixel noise), encoded by this section's GPU encoder (`prepare` with that picture as `input.f32`, `latent`).
+
+| quantity | text to video (control) | with the first frame |
+|---|---|---|
+| latent frame 0 against the condition | 0.57 of the rms | **0** |
+| decoded frame 0 against the picture | 0 (it is the picture) | 0.0434 |
+| encode then decode of the picture alone, against it | | **0.0434** |
+| decoded frame 0 against that round trip | | **0** |
+| frame 1 against frame 0 | 0.142 | **0.455** |
+| frame 4 against frame 0 | 0.339 | **0.654** |
+| frame 8 / frame 16 against frame 0 | 0.46 / 0.60 | **0.734 / 0.776** |
+
+Relative rms differences (the script prints the last four rows). **Frame 0 is exactly the encoder's picture decoded (the 4.3% is the VAE's own round trip), and the mixing holds. But the video does not continue from it:** frame 1 is 3.2 times further from frame 0 than in the text-to-video run, and **looked at, frame 0 is the blurred fox seen from behind and frame 1 a sharper fox facing the camera**: a cut, in the same colours and scene. **This is the opposite of what the issue wanted, and it is measured once, on one picture, one prompt, one seed.**
+
+**[measured] Mutants.** (A) the selector all ones, frame 0's tokens at the sampled timestep: the mixing holds (frame 0 exact) and the continuation is **worse**, 0.436 / 0.772 / 0.819 / 0.851: the t = 0 row helps a little (frame 4: 0.654 against 0.772), which is a **weak** detector, one number and no threshold written before the run. (B) the mixing only on the initial noise, not after each step: frame 0 off the condition by **1.08** of its rms and decoded 0.70 from the picture: refused strongly.
+
+**What others did (searched 2026-11-16, read, not run).** `Blaizzy/mlx-video` (`mlx_video/models/wan_2/generate.py`, `i2v_utils.py`), a Wan2.2 port for Apple silicon, does the TI2V-5B image-to-video **as this section does**: mask 0 on frame 0 and 1 elsewhere, the latents initialised `(1 - mask) * z + mask * noise`, the timestep per token (`mask * t`, frame 0 at 0), and `latents = (1 - mask) * z + mask * latents` **after each scheduler step**, nothing after the loop. So the mixing and the per-token timestep here agree with an independent implementation of the **base** model (40 steps, guidance 5; not the distilled one). Two things differ from this section: it blends after the scheduler step and not also before the first call (the same thing, once the initial latents are mixed), and it has no re-noising step (not DMD). A community conversion of the distilled weights, `lBroth/FastWan2.2-TI2V-5B-MLX`, calls itself image to video with "3 denoise steps (sigmas 1.0, 0.757, 0.522, 0.0, guide=1, renoise)"; its sampler code is not in the repository and **how it handles the first frame was not found** (the `videoboom` project it links was not read). FastVideo's own distilled-model page is text to video. **Nothing found says the distilled model continues a clean first frame well, or badly.**
+
+**What this does not show, and the causes that are open (none was tested).** (1) The distilled model may simply not do image conditioning this way (DMD distils a text-to-video model; the base model's I2V behaviour is in the 50-step pipeline, whose weights past block 6 are not in the cache here). (2) The three steps start from noise at t = 1000 with only frame 0 clean; a sampler that handles the first frame differently (or fewer re-noising steps) was not tried. (3) A defect of mine in the host arithmetic that the tests above do not see; the per-token path itself is held by V0/V1b, the encoder by section 10, so the likeliest place is the combination, which has **no torch reference at all** (the issue's last item, `WanImageToVideoPipeline` at small size, is not done: that needs the base weights). **The right next step is that reference**, not a command line over this.
+
+**Commands** (one GPU job at a time; the encoder's, then the video's)
+
+```
+build/wan_vae_enc_gpu prepare <vae/diffusion_pytorch_model.safetensors> <work> $PWD <picture.f32 [3,H,W] in [-1,1]> 352 640
+printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session <work>/enc.session
+build/wan_vae_enc_gpu latent <vae/config.json> <work> 352 640 <cond.f32>
+python tests/wan_video_gpu.py <out> --weights <FastWan transformer dir> --text <text.npy> --frames 5 --size 22x40 --seed 1 --cond <cond.f32>
 ```
