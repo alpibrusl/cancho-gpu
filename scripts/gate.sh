@@ -31,6 +31,7 @@ python3 tests/cuda_emu_selftest.py
 CANCHO="$CANCHO" tests/cuda-emu.sh
 tests/gguf.sh
 tests/safetensors.sh
+CANCHO="$CANCHO" tests/wan_enc.sh
 tests/tokenizer.sh
 python3 tests/tokenizer_hf.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/detokenize_hf.py "${CANCHO_GPU:-build/cancho-gpu}"

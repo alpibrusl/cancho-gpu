@@ -1,0 +1,106 @@
+edition 9;
+
+module wenc_codec;
+
+import std.buffer;
+import files;
+
+// `wenc_codec` -- binary arrays for the kernels of the Metal session: IEEE half precision (f16) and single (f32), little endian, as the session's `resident` lines read them (docs/wan-vae-encoder.md, slice E3).
+//
+// cancho has `f32` and no `f16`; `f16_bits` is written here: round to nearest, ties to even, from a binary64 value (numpy's `astype("<f2")` of a float64 array, which the Python generators used, rounds the same way), with
+// subnormals, overflow to infinity and NaN. `tests/wan_enc/codec_check.cho` holds it to known bit patterns.
+
+// The 16 bits of the half nearest `x`.
+pub fn f16_bits(x: float) -> [] int {
+    let b = bits_of(x);
+    var sign = 0;
+    if b < 0 {
+        sign = 32768;
+    }
+    let e = b >> 52 & 2047;
+    let m = b & 4503599627370495;
+    if e == 2047 {
+        if m != 0 {
+            return sign | 32256;
+        }
+        return sign | 31744;
+    }
+    if e == 0 {
+        return sign;
+    }
+    var exp = e - 1023;
+    if exp > 15 {
+        return sign | 31744;
+    }
+    let full = 4503599627370496 | m;
+    if exp >= 0 - 14 {
+        var m10 = m >> 42;
+        let rest = m & 4398046511103;
+        let half = 2199023255552;
+        if rest > half || rest == half && m10 & 1 == 1 {
+            m10 = m10 + 1;
+        }
+        if m10 == 1024 {
+            m10 = 0;
+            exp = exp + 1;
+            if exp > 15 {
+                return sign | 31744;
+            }
+        }
+        return sign | exp + 15 << 10 | m10;
+    }
+    let shift = 42 + (0 - 14 - exp);
+    if shift > 53 {
+        return sign;
+    }
+    var q = full >> shift;
+    let rest = full & (1 << shift) - 1;
+    let half = 1 << shift - 1;
+    if rest > half || rest == half && q & 1 == 1 {
+        q = q + 1;
+    }
+    return sign | q;
+}
+
+// The 32 bits of the single nearest `x`.
+pub fn f32_word(x: float) -> [] int {
+    return bits_of32(f32_of(x)) & 4294967295;
+}
+
+// `values` as a file of halves (2 bytes each).
+pub fn write_f16[&h, &f, &p, &v](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], values: &v [float]) -> [heap, fs_write(""), file_write] int {
+    var out = buffer.empty(heap, len(values) * 2 + 8);
+    var i = 0;
+    while i < len(values) {
+        let w = f16_bits(values[i]);
+        out = buffer.push(heap, out, byte_of(w & 255));
+        out = buffer.push(heap, out, byte_of(w >> 8 & 255));
+        i = i + 1;
+    }
+    var status = 0 - 1;
+    borrow out as &ob in {
+        status = files.write_big(fs, path, buffer.bytes(ob));
+    }
+    buffer.drop(heap, out);
+    return status;
+}
+
+// `values` as a file of singles (4 bytes each).
+pub fn write_f32[&h, &f, &p, &v](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], values: &v [float]) -> [heap, fs_write(""), file_write] int {
+    var out = buffer.empty(heap, len(values) * 4 + 8);
+    var i = 0;
+    while i < len(values) {
+        let w = f32_word(values[i]);
+        out = buffer.push(heap, out, byte_of(w & 255));
+        out = buffer.push(heap, out, byte_of(w >> 8 & 255));
+        out = buffer.push(heap, out, byte_of(w >> 16 & 255));
+        out = buffer.push(heap, out, byte_of(w >> 24 & 255));
+        i = i + 1;
+    }
+    var status = 0 - 1;
+    borrow out as &ob in {
+        status = files.write_big(fs, path, buffer.bytes(ob));
+    }
+    buffer.drop(heap, out);
+    return status;
+}
