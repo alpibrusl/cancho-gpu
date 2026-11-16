@@ -31,6 +31,25 @@ check "job 1 not run twice (log unchanged)" "$(wc -l < "$T/1.log" | tr -d ' ')" 
 rc=0; build/studio_worker 2>/dev/null || rc=$?; check "usage: exit 2" "$rc" 2
 rc=0; build/studio_worker "$T/fake.sh" /Users/test relative/dir 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 3
 
+# The script is started beneath its directory (`exec_spawn_under`), so the report says `exec_under`, not `exec("")` (any program anywhere). Measured before: `exec("")`.
+if [ -n "${CANCHO_AUTH:-1}" ]; then
+  A=$($C authority studio/worker.cho studio/files.cho --std 2>&1)
+  check "exec: the report names exec_under" "$(echo "$A" | grep -c '^    exec_under$')" 1
+  check "exec: ...and no longer exec(\"\")" "$(echo "$A" | grep -c 'exec("")')" 0
+fi
+rc=0; build/studio_worker relative.sh /Users/test "$T" 2>/dev/null || rc=$?; check "exec: a script with no directory refused: exit 3" "$rc" 3
+rc=0; build/studio_worker /no/such/dir/fake.sh /Users/test "$T" 2>/dev/null || rc=$?; check "exec: a script in a directory that is not there: exit 3" "$rc" 3
+rc=0; build/studio_worker "$T/.." /Users/test "$T" 2>/dev/null || rc=$?; check "exec: a name that is .. refused: exit 3" "$rc" 3
+rc=0; build/studio_worker "$T/" /Users/test "$T" 2>/dev/null || rc=$?; check "exec: an empty name refused: exit 3" "$rc" 3
+V=$(mktemp -d); mkdir "$V/bin" "$V/data"
+printf '#!/bin/sh\npwd -P\necho "arg0=$0"\n' > "$V/bin/where.sh"; chmod +x "$V/bin/where.sh"
+printf 'x\0' > "$V/data/1.argv"; printf '1\n' > "$V/data/queue"
+rc=0; build/studio_worker "$V/bin/where.sh" /Users/test "$V/data" || rc=$?
+check "exec: a script in another directory runs" "$(cat "$V/data/1.state")" done
+check "exec: ...started in its own directory" "$(head -1 "$V/data/1.log")" "$(cd "$V/bin" && pwd -P)"
+check "exec: ...by its name" "$(tail -1 "$V/data/1.log")" "arg0=where.sh"
+rm -rf "$V"
+
 # Tidying `out/<id>` after a job that is done: work files go, results, prompt and frames/ stay; a failed job keeps everything; a link is left alone.
 M=$(mktemp -d)
 printf '#!/bin/sh\n[ "$1" = fail ] && exit 7\nexit 0\n' > "$M/fake.sh"; chmod +x "$M/fake.sh"
