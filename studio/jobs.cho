@@ -48,6 +48,30 @@ fn model_ok[&t](text: &t [byte]) -> [] bool {
     return true;
 }
 
+// A size for a picture made from a prompt (docs/text-to-image.md): `WxH`, both multiples of 32, at least 64, and at most 1024 x 1024 pixels (the largest measured).
+fn image_size_ok[&t](text: &t [byte]) -> [] bool {
+    var x = 0;
+    while x < len(text) && int_of(text[x]) != 120 {
+        x = x + 1;
+    }
+    if x == 0 || x >= len(text) - 1 {
+        return false;
+    }
+    var w = 0;
+    var h = 0;
+    var k = 0;
+    while k < x {
+        w = w * 10 + (int_of(text[k]) - 48);
+        k = k + 1;
+    }
+    k = x + 1;
+    while k < len(text) {
+        h = h * 10 + (int_of(text[k]) - 48);
+        k = k + 1;
+    }
+    return w >= 64 && h >= 64 && w % 32 == 0 && h % 32 == 0 && w * h <= 1048576;
+}
+
 fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
     return buffer.push_nat(heap, buffer.empty(heap, 12), n);
 }
@@ -91,6 +115,7 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
             let prompt_n = json.get(body, tp, 0, "prompt");
             let is_video = kind_n >= 0 && json.string_equals(body, tp, kind_n, "video");
             let is_edit = kind_n >= 0 && json.string_equals(body, tp, kind_n, "edit");
+            let is_image = kind_n >= 0 && json.string_equals(body, tp, kind_n, "image");
             let image_n = json.get(body, tp, 0, "image");
             let frames_n = json.get(body, tp, 0, "frames");
             let size_n = json.get(body, tp, 0, "size");
@@ -100,24 +125,30 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
             let fps_n = json.get(body, tp, 0, "fps");
             let model_n = json.get(body, tp, 0, "model");
             var why = "";
-            if is_video == false && is_edit == false {
-                why = "kind is video or edit";
+            if is_video == false && is_edit == false && is_image == false {
+                why = "kind is video, edit or image";
             } else if prompt_n < 0 || json.string_length(body, tp, prompt_n) < 1 || json.string_length(body, tp, prompt_n) > 1000 {
                 why = "prompt is a string of 1 to 1000 bytes";
             } else if is_edit && (image_n < 0 || json.string_length(body, tp, image_n) < 2 || json.string_length(body, tp, image_n) > 400) {
                 why = "an edit needs image: the absolute path of a file on the server's machine";
+            } else if is_image && frames_n >= 0 {
+                why = "frames is for a video";
             } else if frames_n >= 0 && (json.to_int(body, tp, frames_n) < 1 || json.to_int(body, tp, frames_n) > 129) {
                 why = "frames is an integer from 1 to 129";
             } else if seed_n >= 0 && (json.to_int(body, tp, seed_n) < 0 || json.to_int(body, tp, seed_n) > 2147483647) {
                 why = "seed is an integer from 0 to 2147483647";
-            } else if steps_n >= 0 && (is_edit == false || json.is_int(tp, steps_n) == false || json.to_int(body, tp, steps_n) < 1 || json.to_int(body, tp, steps_n) > 50) {
-                why = "steps is an integer from 1 to 50, for an edit";
+            } else if steps_n >= 0 && ((is_edit == false && is_image == false) || json.is_int(tp, steps_n) == false || json.to_int(body, tp, steps_n) < 1 || json.to_int(body, tp, steps_n) > 50) {
+                why = "steps is an integer from 1 to 50, for an edit or an image";
             } else if fps_n >= 0 && (is_video == false || json.is_int(tp, fps_n) == false || json.to_int(body, tp, fps_n) < 1 || json.to_int(body, tp, fps_n) > 60) {
                 why = "fps is an integer from 1 to 60, for a video";
             } else if model_n >= 0 && (json.is_string(tp, model_n) == false || json.string_plain(tp, model_n) == false || model_ok(json.string_view(body, tp, model_n)) == false) {
                 why = "model is a name from /api/models: 1 to 40 of a-z, 0-9, dot, dash, underscore";
             } else if size_n >= 0 && (json.string_plain(tp, size_n) == false || size_ok(json.string_view(body, tp, size_n)) == false) {
                 why = "size is WxH, for example 640x352";
+            } else if is_image && size_n >= 0 && image_size_ok(json.string_view(body, tp, size_n)) == false {
+                why = "an image's size is WxH, both multiples of 32, at least 64, at most 1024 x 1024 pixels in all";
+            } else if is_image && rewrite_n >= 0 && json.string_equals(body, tp, rewrite_n, "off") == false {
+                why = "rewrite is not available for an image (the rewriter has no template for it yet)";
             } else if rewrite_n >= 0 && (json.is_string(tp, rewrite_n) == false || (json.string_equals(body, tp, rewrite_n, "on") == false && json.string_equals(body, tp, rewrite_n, "off") == false && json.string_equals(body, tp, rewrite_n, "ab") == false)) {
                 why = "rewrite is on, off or ab";
             }
@@ -138,6 +169,10 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                     var e = 0;
                     if is_video {
                         let (l1, e1) = process.add(heap, list, "video");
+                        list = l1;
+                        bad = bad + e1;
+                    } else if is_image {
+                        let (l1, e1) = process.add(heap, list, "image");
                         list = l1;
                         bad = bad + e1;
                     } else {
@@ -165,7 +200,7 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                         }
                         buffer.drop(heap, fb);
                     }
-                    if is_video && size_n >= 0 {
+                    if (is_video || is_image) && size_n >= 0 {
                         let (l6, e6) = process.add(heap, list, "--size");
                         list = l6;
                         bad = bad + e6;
@@ -197,7 +232,7 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                         list = lb;
                         bad = bad + eb;
                     }
-                    if is_edit && steps_n >= 0 {
+                    if (is_edit || is_image) && steps_n >= 0 {
                         let (lc, ec) = process.add(heap, list, "--steps");
                         list = lc;
                         bad = bad + ec;
@@ -269,6 +304,9 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             var rewrite_on = rewrite_default;
                             if rewrite_n >= 0 {
                                 rewrite_on = json.string_equals(body, tp, rewrite_n, "on");
+                            }
+                            if is_image {
+                                rewrite_on = false;
                             }
                             if force == 1 {
                                 rewrite_on = false;

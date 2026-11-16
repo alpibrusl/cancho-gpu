@@ -58,19 +58,19 @@ M=$(mktemp -d)
 printf '#!/bin/sh\n[ "$1" = fail ] && exit 7\nexit 0\n' > "$M/fake.sh"; chmod +x "$M/fake.sh"
 for id in 7 8; do
   mkdir -p "$M/out/$id/frames"
-  for f in video.mp4 video.gif edited.png prompt.txt ci_s.f32 ctx.f16 text.npy video.npy; do printf 'x' > "$M/out/$id/$f"; done
+  for f in video.mp4 video.gif edited.png image.png prompt.txt ci_s.f32 ctx.f16 text.npy video.npy; do printf 'x' > "$M/out/$id/$f"; done
   printf 'x' > "$M/out/$id/frames/f000.png"
   mkdir "$M/out/$id/vae"; printf 'x' > "$M/out/$id/vae/cv1.f16"; printf 'x' > "$M/out/$id/vae/bi2.f32"
 done
 printf 'secret' > "$M/secret.txt"; ln -s "$M/secret.txt" "$M/out/7/link"
 printf 'video\0ok\0' > "$M/7.argv"; printf 'fail\0x\0' > "$M/8.argv"; printf '7\n8\n' > "$M/queue"
 build/studio_worker "$M/fake.sh" /Users/test "$M"
-check "tidy: work files removed" "$(ls "$M/out/7" | tr '\n' ' ')" 'edited.png frames link prompt.txt vae video.gif video.mp4 '
+check "tidy: work files removed" "$(ls "$M/out/7" | tr '\n' ' ')" 'edited.png frames image.png link prompt.txt vae video.gif video.mp4 '
 check "tidy: frames/ untouched" "$(ls "$M/out/7/frames")" f000.png
 check "tidy: a subdirectory of work files is emptied" "$(ls "$M/out/7/vae" | wc -l | tr -d ' ')" 0
 check "tidy: a link is not followed or removed" "$(cat "$M/secret.txt")" secret
 check "tidy: the log says how many" "$(tail -1 "$M/7.log")" "studio: removed 6 work files from out/7"
-check "tidy: a failed job keeps everything" "$(ls "$M/out/8" | wc -l | tr -d ' ')" 10
+check "tidy: a failed job keeps everything" "$(ls "$M/out/8" | wc -l | tr -d ' ')" 11
 rm -rf "$M"
 
 # The worker in a loop (`--every`): a job that arrives later is run; TERM while it waits stops it at once (exit 0); TERM during a job lets that job end first.
@@ -170,7 +170,7 @@ check "empty prompt refused" "$(post '{"kind":"video","prompt":""}')" '{"error":
 check "an edit without image refused" "$(post '{"kind":"edit","prompt":"x"}' | sed 's/:.*//')" '{"error"'
 check "frames over 129 refused" "$(post '{"kind":"video","prompt":"x","frames":500}' | tail -c 4)" ' 422'
 check "bad size refused" "$(post '{"kind":"video","prompt":"x","size":"64x3520000"}' | tail -c 4)" ' 422'
-check "unknown kind refused" "$(post '{"kind":"nope","prompt":"x"}')" '{"error":"kind is video or edit"} 422'
+check "unknown kind refused" "$(post '{"kind":"nope","prompt":"x"}')" '{"error":"kind is video, edit or image"} 422'
 check "not JSON refused" "$(post 'not json' | tail -c 4)" ' 422'
 check "queued" "$(c localhost:18091/api/jobs/1)" '{"id":1,"state":"queued"}'
 check "unknown job" "$(c -w ' %{http_code}' localhost:18091/api/jobs/99)" '{"error":"no such job"} 404'
@@ -571,4 +571,29 @@ check "design: a job page names its files that exist, and the log" "$(cget /jobs
 check "design: a failed job's page says so instead of a result" "$(cget /jobs/$((VF + 1)) | grep -c 'class=alert role=alert')" 1
 check "design: the edit form has the drop zone and the instruction as a text area" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'type=file accept=image/jpeg,image/png,image/webp required.*<textarea name=prompt')" 1
 check "design: the stylesheet names the font stack with the system font as fallback and loads nothing" "$(curl -s -H "$(hdr)" localhost:18097/style.css | grep -c "IBM Plex Sans',system-ui") $(curl -s -H "$(hdr)" localhost:18097/style.css | grep -c '@import\|url(')" "1 0"
+# Text to image (docs/text-to-image.md): the kind `image`.
+Iq=$(wc -l < "$R/off/queue" | tr -d ' ')
+IM=$(pj '{"kind":"image","prompt":"a lighthouse","size":"512x512","seed":3,"steps":4,"model":"qwen-image-2.1-turbo"}'); IMI=$(echo "$IM" | jq -r .id)
+check "image: the arguments media gets" "$(argv_of $IMI)" "image -o $R/off/out/X --size 512x512 --seed 3 --model qwen-image-2.1-turbo --steps 4 -- a lighthouse "
+IP=$(pj '{"kind":"image","prompt":"plain"}'); IPI=$(echo "$IP" | jq -r .id)
+check "image: with nothing else, only the kind, the output and the prompt" "$(argv_of $IPI)" "image -o $R/off/out/X -- plain "
+Iq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"frames":17' '"fps":24' '"size":"500x512"' '"size":"1056x1056"' '"size":"2048x2048"' '"size":"32x32"' '"steps":51' '"steps":0' '"rewrite":"on"' '"rewrite":"ab"'; do
+  check "image: refused 422: $bad" "$(po "{\"kind\":\"image\",\"prompt\":\"x\",$bad}" | tail -c 4)" " 422"
+done
+check "image: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Iq2"
+check "image: a size at the limit is accepted (1024x1024, 512x1024, 96x96)" "$(for z in 1024x1024 512x1024 96x96; do po "{\"kind\":\"image\",\"prompt\":\"x\",\"size\":\"$z\"}" | tail -c 4; done | tr '\n' ' ')" " 202  202  202"
+check "image: rewrite off is accepted" "$(po '{"kind":"image","prompt":"x","rewrite":"off"}' | tail -c 4)" " 202"
+IW=$(pn '{"kind":"image","prompt":"no rewrite on an image"}' | sed 's/ [0-9][0-9][0-9]$//'); IWI=$(echo "$IW" | jq -r .id)
+check "image: the server's rewrite default (on) does not apply to an image" "$(tr -d '\n' < "$R/on/$IWI.rewrite")" off
+IV=$(pj '{"kind":"image","prompt":"vary an image","variations":2,"size":"512x512"}'); IVF=$(echo "$IV" | jq -r .id)
+check "image: variations make a set of images with the seeds 1 and 2" "$(for k in 0 1; do argv_of $((IVF + k)) | sed 's#.*--seed \([0-9]*\) .*#\1#'; echo; done | tr '\n' ' ') $(echo "$IV" | jq -r '.set')" "1 2  /sets/$IVF"
+mkdir -p "$R/off/out/$IMI"; printf 'PNGDATA' > "$R/off/out/$IMI/image.png"; echo done > "$R/off/$IMI.state"
+check "image: a finished image shows on its page" "$(cget /jobs/$IMI | grep -c "alt=\"the generated picture\" src=/files/$IMI/image.png")" 1
+check "image: ...is served as a PNG" "$(curl -s -D - -o /dev/null -H "$(hdr)" localhost:18097/files/$IMI/image.png | tr -d '\r' | grep -i '^content-type' | tr 'A-Z' 'a-z')" "content-type: image/png"
+check "image: ...and is its own thumbnail on /jobs" "$(cget /jobs | grep -c "loading=lazy src=/files/$IMI/image.png")" 1
+check "image: ...and the page lists the file" "$(cget /jobs/$IMI | grep -o '<li><a href=/files/[0-9]*/[a-z.]*' | sed 's#.*/files/[0-9]*/##' | tr '\n' ' ')" "image.png log "
+mkdir -p "$R/off/out/$IVF"; printf 'PNGDATA' > "$R/off/out/$IVF/image.png"; echo done > "$R/off/$IVF.state"
+check "image: a set's cell shows the image" "$(cget /sets/$IVF | grep -c "alt=\"variation\" src=/files/$IVF/image.png")" 1
+check "image: the OpenAPI document names the kind and the file" "$(jq -r '.components.schemas.NewJob.properties.kind.enum | join(",")' studio/openapi.json) $(jq -r '.paths["/files/{id}/{name}"].get.parameters[1].schema.enum | index("image.png")' studio/openapi.json)" "video,edit,image 1"
 exit $fail
