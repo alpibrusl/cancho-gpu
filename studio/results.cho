@@ -13,7 +13,7 @@ import files;
 //
 // `media` writes `<data>/out/N/{edited.png,video.mp4,video.gif}`; the worker writes `<data>/N.log`.
 
-fn id_ok[&i](id: &i [byte]) -> [] bool {
+pub fn id_ok[&i](id: &i [byte]) -> [] bool {
     if len(id) == 0 || len(id) > 9 {
         return false;
     }
@@ -33,7 +33,7 @@ fn word_char(c: int) -> [] bool {
 }
 
 // `<data>/N<tail>`
-fn job_path[&h, &d, &i, &t](heap: &!h Heap, dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap] buffer.Buffer {
+pub fn job_path[&h, &d, &i, &t](heap: &!h Heap, dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap] buffer.Buffer {
     var p = buffer.append(heap, buffer.empty(heap, 64), dir);
     p = buffer.append(heap, p, "/");
     p = buffer.append(heap, p, id);
@@ -51,7 +51,7 @@ fn out_path[&h, &d, &i, &n](heap: &!h Heap, dir: &d [byte], id: &i [byte], name:
     return p;
 }
 
-fn has_out[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
+pub fn has_out[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
     let p = out_path(heap, dir, id, name);
     var yes = false;
     borrow p as &pb in {
@@ -62,7 +62,7 @@ fn has_out[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i
 }
 
 // (known, the state word): `queued` when there is an argument file but no state yet; letters, digits and spaces only, so it can go into HTML as it is.
-fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (bool, buffer.Buffer) {
+pub fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (bool, buffer.Buffer) {
     var word = buffer.empty(heap, 16);
     var known = false;
     let sp = job_path(heap, dir, id, ".state");
@@ -96,7 +96,7 @@ fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id:
 }
 
 // `text` as HTML text: `& < > " '` become entities. A model's words are untrusted and are shown only through this.
-fn escape[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+pub fn escape[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
     var out = b;
     var i = 0;
     while i < len(text) {
@@ -120,7 +120,7 @@ fn escape[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] b
 }
 
 // The contents of `<data>/<id><tail>` (empty if it is not there), and whether it was.
-fn job_file[&h, &f, &d, &i, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, bool) {
+pub fn job_file[&h, &f, &d, &i, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, bool) {
     let p = job_path(heap, dir, id, tail);
     var found = false;
     var out = buffer.empty(heap, 8);

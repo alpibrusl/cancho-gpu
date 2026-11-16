@@ -18,7 +18,7 @@ import jobs;
 // by the picture's first bytes (JPEG, PNG or WebP; anything else is refused, whatever its name or `Content-Type` says).
 
 pub fn form_page() -> [] &static [byte] {
-    return "<!doctype html><meta charset=utf-8><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md) <select name=rewrite><option value=off>off<option value=on>on</select></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
+    return "<!doctype html><meta charset=utf-8><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md) <select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
 }
 
 // (from, to) of the boundary in a `Content-Type` value, or (-1, -1) for none, an empty one or one over 70 bytes.
@@ -168,7 +168,7 @@ fn id_in[&t](answer: &t [byte]) -> [] int {
     return n;
 }
 
-// Handle a POST /edit. (status, text, id): 302 with the job's id and an empty text, or the status `jobs.create` or this function refuses with and a one-line JSON `{"error": ..}`.
+// Handle a POST /edit. (status, text, id): 302 with the job's id and an empty text (or the text `pair` when the job was made as a pair: the person is sent to /compare/N), or the status `jobs.create` or this function refuses with and a one-line JSON `{"error": ..}`.
 pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte], rewrite_default: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer, int) {
     var status = 422;
     var why = "a multipart/form-data body with a boundary is needed";
@@ -199,8 +199,8 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "the picture is not a JPEG, PNG or WebP file";
             } else if sf >= 0 && st > sf && all_digits(body[sf..st]) == false {
                 why = "seed is an integer from 0 to 2147483647";
-            } else if rwf >= 0 && rwt > rwf && bytes.equal(body[rwf..rwt], "on") == false && bytes.equal(body[rwf..rwt], "off") == false {
-                why = "rewrite is on or off";
+            } else if rwf >= 0 && rwt > rwf && bytes.equal(body[rwf..rwt], "on") == false && bytes.equal(body[rwf..rwt], "off") == false && bytes.equal(body[rwf..rwt], "ab") == false {
+                why = "rewrite is on, off or ab";
             } else {
                 let id = jobs.next_id(heap, fs, dir);
                 status = 500;
@@ -252,11 +252,16 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                         }
                         buffer.drop(heap, json);
                         if status == 202 {
+                            var paired = false;
                             borrow answer as &ab in {
                                 made = id_in(buffer.bytes(ab));
+                                paired = bytes.find(buffer.bytes(ab), "pair") >= 0;
                             }
                             buffer.drop(heap, answer);
                             answer = buffer.empty(heap, 8);
+                            if paired {
+                                answer = buffer.append(heap, answer, "pair");
+                            }
                             status = 302;
                         }
                     }

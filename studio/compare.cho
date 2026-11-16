@@ -1,0 +1,441 @@
+edition 9;
+
+module compare;
+
+import std.buffer;
+import std.bytes;
+import files;
+import results;
+
+// `compare` -- the blind comparison of docs/studio-rewrite.md (R4). A pair is two jobs of the same request, same seed: `<N>.pair` holds `<M> <flip>`; job N ran with the prompt as written, job M with a rewritten one.
+// `flip` (a random bit made when the pair was) says which is shown on the left: 0 N, 1 M. The page shows two results labelled `left` and `right` and **nothing that says which is which** until a choice is recorded
+// in `<N>.verdict` (`left`, `right` or `tie`, once: it is never changed). It is blind **by convention**, not by force: the job ids appear in the page's source (the lower one is always the prompt as written), and
+// `/jobs/N` shows every prompt; the person who runs the evaluation agrees not to look.
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// The pair of job `id` (text): (found, the other job, flip).
+fn read_pair[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (bool, int, int) {
+    var found = false;
+    var other = 0;
+    var flip = 0;
+    let (b, ok) = results.job_file(heap, fs, dir, id, ".pair");
+    if ok {
+        borrow b as &br in {
+            let t = buffer.bytes(br);
+            var sp = 0;
+            while sp < len(t) && int_of(t[sp]) != 32 {
+                sp = sp + 1;
+            }
+            let m = num(t[0..sp]);
+            if m > 0 && sp + 2 <= len(t) && (int_of(t[sp + 1]) == 48 || int_of(t[sp + 1]) == 49) {
+                found = true;
+                other = m;
+                flip = int_of(t[sp + 1]) - 48;
+            }
+        }
+    }
+    buffer.drop(heap, b);
+    return (found, other, flip);
+}
+
+fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
+    return buffer.push_nat(heap, buffer.empty(heap, 12), n);
+}
+
+// One side: its label and the result, or the state it is in. `jid` is the job's id as text.
+fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], jid: &j [byte], label: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = buffer.append(heap, page, "<div style=\"flex:1;min-width:0\"><h2>");
+    p = buffer.append(heap, p, label);
+    p = buffer.append(heap, p, "</h2>");
+    let (known, state) = results.state_word(heap, fs, dir, jid);
+    var done = false;
+    borrow state as &sb in {
+        done = bytes.equal(buffer.bytes(sb), "done");
+        if done == false {
+            p = buffer.append(heap, p, "<p>");
+            p = buffer.append(heap, p, buffer.bytes(sb));
+            p = buffer.append(heap, p, "</p>");
+        }
+    }
+    buffer.drop(heap, state);
+    if done {
+        if results.has_out(heap, fs, dir, jid, "edited.png") {
+            p = buffer.append(heap, p, "<img alt=\"the result\" style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, jid);
+            p = buffer.append(heap, p, "/edited.png>");
+        }
+        if results.has_out(heap, fs, dir, jid, "video.mp4") {
+            p = buffer.append(heap, p, "<video controls loop style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, jid);
+            p = buffer.append(heap, p, "/video.mp4></video>");
+        }
+    }
+    p = buffer.append(heap, p, "</div>");
+    return p;
+}
+
+// The last entry of a job's argument list: the prompt as written.
+fn last_entry[&l](list: &l [byte]) -> [] (int, int) {
+    var end = len(list);
+    if end > 0 && int_of(list[end - 1]) == 0 {
+        end = end - 1;
+    }
+    var start = end;
+    while start > 0 && int_of(list[start - 1]) != 0 {
+        start = start - 1;
+    }
+    return (start, end);
+}
+
+fn id_text[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
+    return digits(heap, n);
+}
+
+// `GET /compare/N`: (status, HTML). 404 if N has no pair, 422 for an id that is not digits.
+pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    if results.id_ok(id) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
+    }
+    let (found, other, flip) = read_pair(heap, fs, dir, id);
+    if found == false {
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "no such pair"));
+    }
+    let oid = id_text(heap, other);
+    var left = oid;
+    var right = buffer.append(heap, buffer.empty(heap, 12), id);
+    if flip == 0 {
+        buffer.drop(heap, left);
+        left = buffer.append(heap, buffer.empty(heap, 12), id);
+        buffer.drop(heap, right);
+        right = id_text(heap, other);
+    }
+    let (v, has_v) = results.job_file(heap, fs, dir, id, ".verdict");
+    var active = false;
+    var both_done = true;
+    borrow left as &lb in {
+        borrow right as &rb in {
+            let (k1, s1) = results.state_word(heap, fs, dir, buffer.bytes(lb));
+            let (k2, s2) = results.state_word(heap, fs, dir, buffer.bytes(rb));
+            borrow s1 as &s1r in {
+                borrow s2 as &s2r in {
+                    both_done = bytes.equal(buffer.bytes(s1r), "done") && bytes.equal(buffer.bytes(s2r), "done");
+                    active = bytes.equal(buffer.bytes(s1r), "queued") || bytes.equal(buffer.bytes(s1r), "running") || bytes.equal(buffer.bytes(s2r), "queued") || bytes.equal(buffer.bytes(s2r), "running");
+                }
+            }
+            buffer.drop(heap, s1);
+            buffer.drop(heap, s2);
+        }
+    }
+    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8>");
+    if active {
+        page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
+    }
+    page = buffer.append(heap, page, "<title>cancho-studio: compare</title><h1>left or right</h1><p>Two jobs ran the same request with the same seed. One used the prompt as it was written, the other a rewritten one. Which is which is hidden until you choose.</p><div style=\"display:flex;gap:1rem\">");
+    borrow left as &lb2 in {
+        page = cell(heap, page, fs, dir, buffer.bytes(lb2), "left");
+    }
+    borrow right as &rb2 in {
+        page = cell(heap, page, fs, dir, buffer.bytes(rb2), "right");
+    }
+    page = buffer.append(heap, page, "</div>");
+    if has_v == false {
+        if both_done {
+            page = buffer.append(heap, page, "<form method=post action=/compare/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "><p>Which result is better?</p><button name=choice value=left>left</button> <button name=choice value=right>right</button> <button name=choice value=tie>no difference</button></form>");
+        } else {
+            page = buffer.append(heap, page, "<p>You can choose when both have finished.</p>");
+        }
+    } else {
+        var choice = "";
+        borrow v as &vr in {
+            if bytes.starts_with(buffer.bytes(vr), "left") {
+                choice = "left";
+            } else if bytes.starts_with(buffer.bytes(vr), "right") {
+                choice = "right";
+            } else {
+                choice = "no difference";
+            }
+        }
+        page = buffer.append(heap, page, "<p>You chose: ");
+        page = buffer.append(heap, page, choice);
+        page = buffer.append(heap, page, ".</p>");
+        // the reveal
+        let oid2 = id_text(heap, other);
+        var nw = buffer.empty(heap, 8);
+        var has_new = false;
+        borrow oid2 as &o2r in {
+            let (b2, ok2) = results.job_file(heap, fs, dir, buffer.bytes(o2r), ".prompt.new");
+            buffer.drop(heap, nw);
+            nw = b2;
+            has_new = ok2;
+        }
+        buffer.drop(heap, oid2);
+        let (ag, has_argv) = results.job_file(heap, fs, dir, id, ".argv");
+        page = buffer.append(heap, page, "<p>The left result used ");
+        if flip == 0 {
+            page = buffer.append(heap, page, "the prompt as written");
+        } else {
+            page = buffer.append(heap, page, "the rewritten prompt");
+        }
+        page = buffer.append(heap, page, "; the right one used ");
+        if flip == 0 {
+            page = buffer.append(heap, page, "the rewritten prompt");
+        } else {
+            page = buffer.append(heap, page, "the prompt as written");
+        }
+        page = buffer.append(heap, page, ".</p>");
+        if has_argv {
+            borrow ag as &agr in {
+                let (a, b) = last_entry(buffer.bytes(agr));
+                page = buffer.append(heap, page, "<p>as written: ");
+                page = results.escape(heap, page, buffer.bytes(agr)[a..b]);
+                page = buffer.append(heap, page, "</p>");
+            }
+        }
+        if has_new {
+            borrow nw as &nwr in {
+                page = buffer.append(heap, page, "<p>rewritten: ");
+                page = results.escape(heap, page, buffer.bytes(nwr));
+                page = buffer.append(heap, page, "</p>");
+            }
+        } else {
+            page = buffer.append(heap, page, "<p><b>This pair does not count:</b> the rewritten job ran with the prompt as written (the rewrite failed or was off; see its log, job ");
+            page = buffer.push_nat(heap, page, other);
+            page = buffer.append(heap, page, ").</p>");
+        }
+        buffer.drop(heap, nw);
+        buffer.drop(heap, ag);
+    }
+    page = buffer.append(heap, page, "<p><a href=/compare>all comparisons</a> | <a href=/>studio</a></p>");
+    buffer.drop(heap, left);
+    buffer.drop(heap, right);
+    buffer.drop(heap, v);
+    return (200, page);
+}
+
+// `POST /compare/N` with the form's body `choice=left|right|tie`: (status, text). 302 is the caller's to send (to `/compare/N`); 404 no pair, 409 already chosen, 422 a body that is not one of the three,
+// 500 the choice could not be written. The choice is written once and never changed.
+pub fn choose[&h, &f, &d, &i, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+    if results.id_ok(id) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
+    }
+    let (found, other, flip) = read_pair(heap, fs, dir, id);
+    if found == false {
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "no such pair"));
+    }
+    var word = "";
+    if bytes.equal(body, "choice=left") {
+        word = "left\n";
+    } else if bytes.equal(body, "choice=right") {
+        word = "right\n";
+    } else if bytes.equal(body, "choice=tie") {
+        word = "tie\n";
+    }
+    if len(word) == 0 {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "choice is left, right or tie"));
+    }
+    let (v, has_v) = results.job_file(heap, fs, dir, id, ".verdict");
+    buffer.drop(heap, v);
+    if has_v {
+        return (409, buffer.append(heap, buffer.empty(heap, 48), "a choice was already made"));
+    }
+    var finished = false;
+    let oid = id_text(heap, other);
+    borrow oid as &or in {
+        let (k1, s1) = results.state_word(heap, fs, dir, id);
+        let (k2, s2) = results.state_word(heap, fs, dir, buffer.bytes(or));
+        borrow s1 as &s1r in {
+            borrow s2 as &s2r in {
+                finished = bytes.equal(buffer.bytes(s1r), "done") && bytes.equal(buffer.bytes(s2r), "done");
+            }
+        }
+        buffer.drop(heap, s1);
+        buffer.drop(heap, s2);
+    }
+    buffer.drop(heap, oid);
+    if finished == false {
+        return (409, buffer.append(heap, buffer.empty(heap, 48), "both jobs must have finished first"));
+    }
+    var path = buffer.append(heap, buffer.empty(heap, 64), dir);
+    path = buffer.push(heap, path, byte_of(47));
+    path = buffer.append(heap, path, id);
+    path = buffer.append(heap, path, ".verdict");
+    var wrote = 0 - 1;
+    borrow path as &pb in {
+        wrote = files.write_all(fs, buffer.bytes(pb), word);
+    }
+    buffer.drop(heap, path);
+    if wrote != 0 {
+        return (500, buffer.append(heap, buffer.empty(heap, 48), "the choice could not be written"));
+    }
+    return (302, buffer.empty(heap, 8));
+}
+
+// One pair of the list or the tally: the verdict as 0 none, 1 the rewritten won, 2 the prompt as written won, 3 a tie; and 1 if it counts (the rewritten job really ran with a rewritten prompt).
+fn outcome[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, bool, int) {
+    let (found, other, flip) = read_pair(heap, fs, dir, id);
+    var kind = 0;
+    var counts = false;
+    var result = 0;
+    if found {
+        let (ag, has_argv) = results.job_file(heap, fs, dir, id, ".argv");
+        borrow ag as &agr in {
+            if bytes.starts_with(buffer.bytes(agr), "video") {
+                kind = 1;
+            } else if bytes.starts_with(buffer.bytes(agr), "edit") {
+                kind = 2;
+            }
+        }
+        buffer.drop(heap, ag);
+        let oid = id_text(heap, other);
+        borrow oid as &or in {
+            let (nw, has_new) = results.job_file(heap, fs, dir, buffer.bytes(or), ".prompt.new");
+            buffer.drop(heap, nw);
+            counts = has_new;
+        }
+        buffer.drop(heap, oid);
+        let (v, has_v) = results.job_file(heap, fs, dir, id, ".verdict");
+        if has_v {
+            borrow v as &vr in {
+                let left_is_rewritten = flip == 1;
+                if bytes.starts_with(buffer.bytes(vr), "left") {
+                    result = 2;
+                    if left_is_rewritten {
+                        result = 1;
+                    }
+                } else if bytes.starts_with(buffer.bytes(vr), "right") {
+                    result = 1;
+                    if left_is_rewritten {
+                        result = 2;
+                    }
+                } else {
+                    result = 3;
+                }
+            }
+        }
+        buffer.drop(heap, v);
+    }
+    return (kind, counts, result);
+}
+
+// `GET /compare`: the pairs in `queue` (the 200 last, newest first), each a link, and the tally per kind of the choices that count. The decision rule of the design is read off this by a person.
+pub fn index[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var text = buffer.empty(heap, 8);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var list = buffer.empty(heap, 512);
+    var won = 0;
+    var lost = 0;
+    var tied = 0;
+    var won_e = 0;
+    var lost_e = 0;
+    var tied_e = 0;
+    var open_pairs = 0;
+    var void_pairs = 0;
+    var shown = 0;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 && shown < 200 {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                let id = all[start..stop];
+                if results.id_ok(id) {
+                    let (found, other, flip) = read_pair(heap, fs, dir, id);
+                    if found {
+                        let (kind, counts, result) = outcome(heap, fs, dir, id);
+                        list = buffer.append(heap, list, "<li><a href=/compare/");
+                        list = buffer.append(heap, list, id);
+                        list = buffer.append(heap, list, ">pair ");
+                        list = buffer.append(heap, list, id);
+                        list = buffer.append(heap, list, "</a>: ");
+                        if result == 0 {
+                            list = buffer.append(heap, list, "not chosen yet");
+                            open_pairs = open_pairs + 1;
+                        } else if counts == false {
+                            list = buffer.append(heap, list, "chosen, does not count (the rewrite did not happen)");
+                            void_pairs = void_pairs + 1;
+                        } else {
+                            list = buffer.append(heap, list, "chosen");
+                            if kind == 1 {
+                                if result == 1 {
+                                    won = won + 1;
+                                } else if result == 2 {
+                                    lost = lost + 1;
+                                } else {
+                                    tied = tied + 1;
+                                }
+                            } else {
+                                if result == 1 {
+                                    won_e = won_e + 1;
+                                } else if result == 2 {
+                                    lost_e = lost_e + 1;
+                                } else {
+                                    tied_e = tied_e + 1;
+                                }
+                            }
+                        }
+                        list = buffer.append(heap, list, "</li>");
+                        shown = shown + 1;
+                    }
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><title>cancho-studio: comparisons</title><h1>comparisons</h1><p>video: the rewritten prompt won ");
+    page = buffer.push_nat(heap, page, won);
+    page = buffer.append(heap, page, ", the prompt as written won ");
+    page = buffer.push_nat(heap, page, lost);
+    page = buffer.append(heap, page, ", ties ");
+    page = buffer.push_nat(heap, page, tied);
+    page = buffer.append(heap, page, ".</p><p>edit: the rewritten prompt won ");
+    page = buffer.push_nat(heap, page, won_e);
+    page = buffer.append(heap, page, ", the prompt as written won ");
+    page = buffer.push_nat(heap, page, lost_e);
+    page = buffer.append(heap, page, ", ties ");
+    page = buffer.push_nat(heap, page, tied_e);
+    page = buffer.append(heap, page, ".</p><p>not chosen yet: ");
+    page = buffer.push_nat(heap, page, open_pairs);
+    page = buffer.append(heap, page, "; not counted: ");
+    page = buffer.push_nat(heap, page, void_pairs);
+    page = buffer.append(heap, page, ".</p><ul>");
+    borrow list as &lstr in {
+        page = buffer.append(heap, page, buffer.bytes(lstr));
+    }
+    buffer.drop(heap, list);
+    page = buffer.append(heap, page, "</ul><p><a href=/>studio</a></p>");
+    return page;
+}

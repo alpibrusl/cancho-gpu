@@ -11,6 +11,7 @@ import results;
 import auth;
 import range;
 import upload;
+import compare;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -184,7 +185,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 gate = 302;
                             } else if auth.token_ok(head, table, token) == false {
                                 gate = 401;
-                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && (bytes.equal(path, "/edit") == false || auth.multipart_ok(head, table) == false) {
+                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && (bytes.equal(path, "/edit") == false || auth.multipart_ok(head, table) == false) && (bytes.starts_with(path, "/compare/") == false || auth.form_ok(head, table) == false) {
                                 gate = 415;
                             }
                             if gate == 403 {
@@ -241,7 +242,15 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                             } else if bytes.equal(path, "/edit") && bytes.equal(method, "POST") {
                                 let (ust, utext, uid) = upload.handle(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr), rewrite_on);
                                 if ust == 302 {
+                                    var to_pair = false;
+                                    borrow utext as &utp in {
+                                        to_pair = len(buffer.bytes(utp)) > 0;
+                                    }
                                     var extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /jobs/");
+                                    if to_pair {
+                                        buffer.drop(heap, extra);
+                                        extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /compare/");
+                                    }
                                     extra = buffer.push_nat(heap, extra, uid);
                                     extra = buffer.append(heap, extra, "\r\n");
                                     borrow extra as &eb in {
@@ -254,6 +263,34 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     }
                                 }
                                 buffer.drop(heap, utext);
+                            } else if bytes.equal(path, "/compare") && bytes.equal(method, "GET") {
+                                let cmp_list = compare.index(heap, fs, dir);
+                                borrow cmp_list as &cl in {
+                                    out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(cl), keep, "");
+                                }
+                                buffer.drop(heap, cmp_list);
+                            } else if bytes.starts_with(path, "/compare/") && bytes.equal(method, "GET") {
+                                let (cst, cpage) = compare.page(heap, fs, dir, path[9..len(path)]);
+                                borrow cpage as &cp in {
+                                    out = server.reply_as(heap, out, cst, "text/html; charset=utf-8", buffer.bytes(cp), keep, "");
+                                }
+                                buffer.drop(heap, cpage);
+                            } else if bytes.starts_with(path, "/compare/") && bytes.equal(method, "POST") {
+                                let (vst, vtext) = compare.choose(heap, fs, dir, path[9..len(path)], server.body(sr));
+                                if vst == 302 {
+                                    var vextra = buffer.append(heap, buffer.empty(heap, 48), "Location: /compare/");
+                                    vextra = buffer.append(heap, vextra, path[9..len(path)]);
+                                    vextra = buffer.append(heap, vextra, "\r\n");
+                                    borrow vextra as &veb in {
+                                        out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, buffer.bytes(veb));
+                                    }
+                                    buffer.drop(heap, vextra);
+                                } else {
+                                    borrow vtext as &vtb in {
+                                        out = server.reply_as(heap, out, vst, "text/plain; charset=utf-8", buffer.bytes(vtb), keep, "");
+                                    }
+                                }
+                                buffer.drop(heap, vtext);
                             } else if bytes.equal(path, "/jobs") && bytes.equal(method, "GET") {
                                 let list = results.job_list(heap, fs, dir);
                                 borrow list as &lb in {
