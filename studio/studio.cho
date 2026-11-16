@@ -11,7 +11,9 @@ import results;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
-//   studio <port> <absolute data-dir>
+//   studio <port> <absolute data-dir> [<absolute site-dir>]
+//
+//     <site-dir> holds `index.html` and `app.js`, the page `cancho-ui build studio/ui/studio.cui --page -o <site-dir>` wrote; without it `GET /` is a stub.
 //
 //     POST /api/jobs      {kind, prompt, ...} -> 202 {"id":N}: `<data>/N.argv` and a line in `<data>/queue` (docs/studio.md); `studio_worker` runs it
 //     GET  /api/jobs/N    {"id":N,"state":"queued|running|done|failed C"}
@@ -19,7 +21,9 @@ import results;
 //     GET /jobs/N        the job's page: state, the result when done, the log (HTML the server writes)
 //     GET /files/N/NAME  edited.png, video.mp4, video.gif or log of job N (a closed list of names)
 //
-//     GET /              the page (HTML the server writes)
+//     GET /jobs          the jobs, newest first, each a link to its page
+//     GET /app.js        <site-dir>/app.js
+//     GET /              <site-dir>/index.html, or the stub (HTML the server writes)
 //     GET /api/models    the registry of tools/media.py, as JSON
 //
 // Listens on 127.0.0.1 only (`tcp_listen_on`): the authority row names the host. Checked with lsof.
@@ -49,7 +53,7 @@ fn number_of[&t](text: &t [byte]) -> [] int {
     return n;
 }
 
-fn serve[&h, &k, &l, &i, &f, &d](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], port: int) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
+fn serve[&h, &k, &l, &i, &f, &d, &y](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], site: &y [byte], port: int) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
     match poller_new() {
         Polling::Ok(p) => {
             var srv = server.open(heap, p, listener, 65536, 0, 30);
@@ -129,8 +133,37 @@ fn serve[&h, &k, &l, &i, &f, &d](heap: &!h Heap, clock: &k Clock, listener: &!l 
                             let keep = http.keeps_alive(table);
                             let path = http.path(head, table);
                             let method = http.method(head, table);
-                            if bytes.equal(path, "/") {
-                                out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", page(), keep, "");
+                            if bytes.equal(path, "/") && bytes.equal(method, "GET") {
+                                var served = false;
+                                if len(site) > 0 {
+                                    let (sst, sdata) = results.site_file(heap, fs, site, "index.html");
+                                    if sst == 200 {
+                                        borrow sdata as &sb in {
+                                            out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(sb), keep, "");
+                                        }
+                                        served = true;
+                                    }
+                                    buffer.drop(heap, sdata);
+                                }
+                                if served == false {
+                                    out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", page(), keep, "");
+                                }
+                            } else if bytes.equal(path, "/app.js") && bytes.equal(method, "GET") && len(site) > 0 {
+                                let (sst, sdata) = results.site_file(heap, fs, site, "app.js");
+                                if sst == 200 {
+                                    borrow sdata as &sb in {
+                                        out = server.reply_as(heap, out, 200, "text/javascript; charset=utf-8", buffer.bytes(sb), keep, "");
+                                    }
+                                } else {
+                                    out = server.failure(heap, out, 404, "not found", keep);
+                                }
+                                buffer.drop(heap, sdata);
+                            } else if bytes.equal(path, "/jobs") && bytes.equal(method, "GET") {
+                                let list = results.job_list(heap, fs, dir);
+                                borrow list as &lb in {
+                                    out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(lb), keep, "");
+                                }
+                                buffer.drop(heap, list);
                             } else if bytes.equal(path, "/api/models") {
                                 out = server.reply_as(heap, out, 200, "application/json", models(), keep, "");
                             } else if bytes.equal(path, "/api/jobs") && bytes.equal(method, "POST") {
@@ -215,11 +248,11 @@ fn main(world: World) -> [] int {
     release(tty);
     var status = 2;
     borrow args as &g in {
-        if arg_count(g) == 3 {
+        if arg_count(g) == 3 || arg_count(g) == 4 {
             let port = number_of(arg(g, 1));
             borrow fs as &fr in {
             borrow mut heap as &!h in {
-                if port > 0 && port < 65536 && files.path_ok(fr, arg(g, 2)) {
+                if port > 0 && port < 65536 && files.path_ok(fr, arg(g, 2)) && (arg_count(g) == 3 || files.path_ok(fr, arg(g, 3))) {
                     status = 3;
                     borrow net as &nn in {
                         match tcp_listen_on(nn, "127.0.0.1", port, 1024, 0) {
@@ -229,7 +262,11 @@ fn main(world: World) -> [] int {
                                     listener_nonblocking(lh);
                                     borrow mut io as &!i in {
                                         borrow clock as &c in {
-                                            status = serve(h, c, lh, i, fr, arg(g, 2), port);
+                                            if arg_count(g) == 4 {
+                                                status = serve(h, c, lh, i, fr, arg(g, 2), arg(g, 3), port);
+                                            } else {
+                                                status = serve(h, c, lh, i, fr, arg(g, 2), "", port);
+                                            }
                                         }
                                     }
                                 }
@@ -241,7 +278,7 @@ fn main(world: World) -> [] int {
                     }
                 } else {
                     borrow mut io as &!i in {
-                        io.error_all(i, "usage: studio <port> <absolute data-dir>\n");
+                        io.error_all(i, "usage: studio <port> <absolute data-dir> [<absolute site-dir>]\n");
                     }
                 }
             }

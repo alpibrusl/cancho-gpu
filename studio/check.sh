@@ -82,6 +82,17 @@ rc=0; build/studio_worker "$L/fake.sh" /Users/test "$L" --every 0 2>/dev/null ||
 rc=0; build/studio_worker "$L/fake.sh" /Users/test "$L" --every abc 2>/dev/null || rc=$?; check "loop: --every abc is usage (exit 2)" "$rc" 2
 rm -rf "$L"
 
+# The page (studio/ui/studio.cui): checked and replayed with cancho-ui when UI names its binary; built into a site directory for the server below.
+mkdir -p "$T/site"
+if [ -n "${UI:-}" ]; then
+  check "ui: cancho-ui check" "$($UI check studio/ui/studio.cui >/dev/null 2>&1; echo $?)" 0
+  check "ui: replay trace passes" "$($UI test studio/ui/studio.cui studio/ui/studio.trace.json 2>&1 | tail -1 | cut -c1-4)" PASS
+  $UI build studio/ui/studio.cui --page -o "$T/site" --name cancho-studio >/dev/null 2>&1
+else
+  echo "skip ui checks (set UI to the cancho-ui binary)"
+  printf '<!doctype html><title>fake page</title>' > "$T/site/index.html"; printf 'console.log(1)' > "$T/site/app.js"
+fi
+
 # The server, the queue and the worker together, with a fake `media` that prints its arguments (port 18091).
 printf '#!/bin/sh\nfor a in "$@"; do echo "[$a]"; done\n[ "$1" = edit ] && exit 3\nexit 0\n' > "$T/media"
 chmod +x "$T/media"
@@ -141,5 +152,18 @@ check "file: a name not on the list" "$(curl -s -o /dev/null -w '%{http_code}' l
 check "file: a path is not a name" "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' 'localhost:18091/files/1/../secret.bin')" 404
 check "file: a file the job does not have" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1/edited.png)" 404
 check "file: bad id" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1a/log)" 422
+# The page and the list, from a server with a site directory (port 18094).
+build/studio 18094 "$T/data" "$T/site" >/dev/null 2>&1 &
+SP2=$!
+trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
+sleep 1
+check "site: / is index.html" "$(curl -s localhost:18094/ | cmp - "$T/site/index.html" && echo same)" same
+check "site: /app.js is app.js, a script" "$(curl -s -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
+check "site: app.js bytes unchanged" "$(curl -s localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
+check "site: no site, / is the stub" "$(curl -s localhost:18091/ | grep -c 'Slice 1')" 1
+post '{"kind":"video","prompt":"third"}' >/dev/null
+check "jobs: newest first" "$(curl -s localhost:18094/jobs | grep -o 'job [0-9]*' | tr '\n' ' ')" 'job 3 job 2 job 1 '
+check "jobs: states" "$(curl -s localhost:18094/jobs | grep -o '</a>: [a-z0-9 ]*' | tr '\n' ' ')" '</a>: queued </a>: failed 3 </a>: done '
+rc=0; build/studio 18095 "$T/data" relative 2>/dev/null || rc=$?; check "relative site dir refused" "$rc" 2
 rc=0; build/studio 18092 relative 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 2
 exit $fail

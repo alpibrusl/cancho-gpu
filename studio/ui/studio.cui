@@ -1,0 +1,114 @@
+// studio/ui/studio.cui: the page of cancho-studio (docs/studio.md). A form that starts a job (`POST api/jobs`), and the state of the job just started (`GET api/jobs/N`, read every 3 s
+// while it is queued or running). The picture or the video of a finished job is on the server's own page, `/jobs/N` (and `/jobs`). This page cannot link to it: a `Link` takes a file of this site or an absolute URL with a scheme
+// (`link-file-invalid` for `jobs` and for `/jobs`, measured on cancho-ui main b9745db, 2026-11-16), and a route of the server is neither. So it names the path in text (docs/studio.md, "What cancho-ui would need").
+//
+// Authority: `Network` (read this site's job state) and `NetworkWrite` (start a job); nothing else. Frames, size and seed are chosen from fixed lists, so the only free text in the body is
+// the prompt (quoted by `json.quote`) and an edit's image path, a path on the machine the server runs on (the server checks it).
+
+component Studio {
+    requires Network;
+    requires NetworkWrite;
+
+    state kind: String = "video";
+    state prompt: String = "";
+    state image: String = "";
+    state frames: String = "17";
+    state size: String = "640x352";
+    state seed: String = "0";
+    state job: String = "";
+    state job_state: String = "";
+    state note: String = "Nothing started yet.";
+    state busy: Bool = false;
+    state accepted: Bool = false;
+    state active: Bool = false;
+    state extra: String = "";
+    state is_edit: Bool = false;
+    state is_video: Bool = true;
+    state ready: Bool = false;
+    state blocked: Bool = true;
+    state sent: Result[String, String] = Ok("");
+    state polled: Result[String, String] = Ok("");
+
+    every 3000 Poll;
+
+    on Kind(v) {
+        kind = v;
+        is_edit = v == "edit";
+        is_video = v != "edit";
+        ready = !busy && len(prompt) > 0 && (v != "edit" || len(image) > 0);
+        blocked = !ready;
+    }
+    on Prompt(v) {
+        prompt = v;
+        ready = !busy && len(v) > 0 && (kind != "edit" || len(image) > 0);
+        blocked = !ready;
+    }
+    on Image(v) {
+        image = v;
+        ready = !busy && len(prompt) > 0 && (kind != "edit" || len(v) > 0);
+        blocked = !ready;
+    }
+    on Frames(v) { frames = v; }
+    on Size(v) { size = v; }
+    on Seed(v) { seed = v; }
+
+    on Start {
+        busy = true;
+        blocked = true;
+        note = "Sending ...";
+        extra = if kind == "edit" { ",\"image\":" + json.quote(image) } else { "" };
+        sent = await(net.post("api/jobs", "\{\"kind\":" + json.quote(kind) + ",\"prompt\":" + json.quote(prompt) + ",\"frames\":" + frames + ",\"size\":" + json.quote(size) + ",\"seed\":" + seed + extra + "\}"));
+        accepted = match sent {
+            Ok(reply) => { json.get(reply, "status", "") == "202" }
+            Err(e) => { false }
+            Cancelled => { false }
+        };
+        note = match sent {
+            Ok(reply) => {
+                if accepted {
+                    "Job " + json.get(json.get(reply, "body", ""), "id", "?") + " is queued."
+                } else {
+                    "The server refused it: " + json.get(json.get(reply, "body", ""), "error", "status " + json.get(reply, "status", "?")) + "."
+                }
+            }
+            Err(e) => { "Could not reach the server: " + e }
+            Cancelled => { "Cancelled." }
+        };
+        job = match sent {
+            Ok(reply) => { if accepted { json.get(json.get(reply, "body", ""), "id", "") } else { job } }
+            Err(e) => { job }
+            Cancelled => { job }
+        };
+        job_state = if accepted { "queued" } else { job_state };
+        busy = false;
+        blocked = !ready;
+    }
+
+    on Poll {
+        active = len(job) > 0 && (job_state == "queued" || job_state == "running");
+        if active {
+            polled = await(net.get("api/jobs/" + job));
+            job_state = match polled {
+                Ok(text) => { json.get(text, "state", job_state) }
+                Err(e) => { job_state }
+                Cancelled => { job_state }
+            };
+        }
+    }
+
+    view {
+        Column {
+            Heading { level: 1 "cancho-studio" }
+            Select { label: "What to make" options: ["video", "edit"] value: kind on: Kind }
+            TextField { label: "Prompt" value: prompt on: Prompt }
+            TextField { label: "Picture to edit (a path on the server's machine)" value: image on: Image disabled: is_video }
+            Select { label: "Frames (a video)" options: ["17", "9", "25", "33"] value: frames on: Frames disabled: is_edit }
+            Select { label: "Size (a video)" options: ["640x352", "512x288", "1024x576"] value: size on: Size disabled: is_edit }
+            Select { label: "Seed" options: ["0", "1", "2", "3", "4"] value: seed on: Seed }
+            Button { label: "Start" on: Start disabled: blocked }
+            Text { role: status "{note}" }
+            Text { "job {job}: {job_state}" }
+            Text { "Result of job {job}: open /jobs/{job} on this server. All jobs: /jobs." }
+        }
+    }
+}

@@ -153,6 +153,78 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     return (200, page);
 }
 
+// `GET /jobs`: the jobs in `queue`, newest first (the 200 last), each a link to its page and its state.
+pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><title>cancho-studio jobs</title><h1>jobs</h1><ul>");
+    var text = buffer.empty(heap, 8);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var shown = 0;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 && shown < 200 {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                let id = all[start..stop];
+                if id_ok(id) {
+                    let (known, word) = state_word(heap, fs, dir, id);
+                    if known {
+                        page = buffer.append(heap, page, "<li><a href=/jobs/");
+                        page = buffer.append(heap, page, id);
+                        page = buffer.append(heap, page, ">job ");
+                        page = buffer.append(heap, page, id);
+                        page = buffer.append(heap, page, "</a>: ");
+                        borrow word as &wb in {
+                            page = buffer.append(heap, page, buffer.bytes(wb));
+                        }
+                        page = buffer.append(heap, page, "</li>");
+                        shown = shown + 1;
+                    }
+                    buffer.drop(heap, word);
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    page = buffer.append(heap, page, "</ul><p><a href=/>studio</a></p>");
+    return page;
+}
+
+// A file of the site directory (the page `cancho-ui build --page` wrote): 200 and its bytes, or 404. `name` is one of the server's own literals, never the client's.
+pub fn site_file[&h, &f, &s, &n](heap: &!h Heap, fs: &f Fs(""), site: &s [byte], name: &n [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    var p = buffer.append(heap, buffer.empty(heap, 64), site);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    var status = 200;
+    var data = buffer.empty(heap, 8);
+    borrow p as &pb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+        buffer.drop(heap, data);
+        data = b;
+        if e != 0 {
+            status = 404;
+        }
+    }
+    buffer.drop(heap, p);
+    return (status, data);
+}
+
 // The media type for a name of the closed list, or "" for a name that is not on it.
 pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
     if bytes.equal(name, "edited.png") {
