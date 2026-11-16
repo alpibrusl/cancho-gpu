@@ -191,6 +191,7 @@ def main():
     p = argparse.ArgumentParser(prog="media", description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                                 epilog="examples:\n  media video \"A red fox running through snow\" -o out/fox --frames 17 --size 640x352 --seed 1\n"
                                        "  media edit photo.jpg \"Make it a bright sunny afternoon.\" -o out/sunny\n  media doctor")
+    p.add_argument("--online", action="store_true", help="let the Hugging Face libraries contact the Hub (needed once, to fill the cache); the default is HF_HUB_OFFLINE=1, nothing leaves the machine")
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("video", help="a video from a prompt (FastWan2.2-TI2V-5B, 3 steps)")
     v.add_argument("prompt")
@@ -223,6 +224,8 @@ def main():
     d = sub.add_parser("doctor", help="check what is installed")
     d.set_defaults(f=cmd_doctor)
     a = p.parse_args()
+    if not a.online:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")  # inherited by the stages (subprocess): the cache is read, the Hub is not asked
     a.f(a)
 
 
