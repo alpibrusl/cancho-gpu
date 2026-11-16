@@ -1,0 +1,32 @@
+{
+  "schema": "cancho-ui-trace",
+  "version": "0.1.0",
+  "component": "Studio",
+  "note": "A video job: refused while the prompt is empty, started, queued, running, done, and no more polling after it. Then an edit: refused without a picture, started, and the server's refusal shown. net.post and net.get answers are scripted.",
+  "steps": [
+    { "event": "Start", "expect": { "outcome": "disabled" } },
+    { "event": "Prompt", "params": ["a fox"], "state": { "prompt": "a fox", "blocked": false } },
+    { "event": "Start",
+      "expect": { "outcome": "suspended",
+                  "issued": [ { "request": 1, "effect": "net.post",
+                                "args": ["api/jobs", "{\"kind\":\"video\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0}"] } ] },
+      "state": { "blocked": true, "note": "Sending ..." } },
+    { "resolve": 1, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":5}\"}" },
+      "state": { "job": "5", "job_state": "queued", "note": "Job 5 is queued.", "busy": false } },
+    { "event": "Poll",
+      "expect": { "outcome": "suspended", "issued": [ { "request": 2, "effect": "net.get", "args": ["api/jobs/5"] } ] } },
+    { "resolve": 2, "with": { "Ok": "{\"id\":5,\"state\":\"running\"}" }, "state": { "job_state": "running" } },
+    { "event": "Poll", "expect": { "issued": [ { "request": 3, "effect": "net.get", "args": ["api/jobs/5"] } ] } },
+    { "resolve": 3, "with": { "Ok": "{\"id\":5,\"state\":\"done\"}" }, "state": { "job_state": "done" } },
+    { "event": "Poll", "expect": { "outcome": "completed" }, "state": { "job_state": "done" } },
+    { "event": "Kind", "params": ["edit"], "state": { "kind": "edit", "is_edit": true, "is_video": false, "blocked": true } },
+    { "event": "Start", "expect": { "outcome": "disabled" } },
+    { "event": "Image", "params": ["/photos/a.jpg"], "state": { "blocked": false } },
+    { "event": "Start",
+      "expect": { "outcome": "suspended",
+                  "issued": [ { "request": 4, "effect": "net.post",
+                                "args": ["api/jobs", "{\"kind\":\"edit\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"image\":\"/photos/a.jpg\"}"] } ] } },
+    { "resolve": 4, "with": { "Ok": "{\"status\":422,\"body\":\"{\\\"error\\\":\\\"no such image\\\"}\"}" },
+      "state": { "job": "5", "note": "The server refused it: no such image.", "busy": false } }
+  ]
+}
