@@ -1,0 +1,89 @@
+# cancho-studio: a prompt-rewriting layer (design, 2026-11-16)
+
+> **Status: design; nothing is built and nothing about the *quality* of rewriting is known.** Claims are tagged **[read]** (source or document, not run), **[measured]** (run, with the command) or **[estimate]**. Cancho native: no Python, no Rust. The owner asked (2026-11-16) for a layer that reads the prompt, and for an edit the picture, and rewrites the prompt "to improve performance", with `qwen3.8:27b` as the default model. That the rewrite *improves* anything is the hypothesis this design is built to test, not a premise (section 8).
+
+## 1. What it does
+
+Before a job runs, a local vision-language model reads the person's prompt and, for an edit, the picture, and writes a prompt for the generator. The job runs with the rewritten prompt. **Both prompts are kept and shown**; the original is never lost. Every failure of the layer (the model not running, too slow, an unusable answer) runs the job with the original prompt and says why: the layer can make a job better or leave it as it was, never block it.
+
+## 2. What is there today
+
+* **[measured]** (2026-11-16, `curl localhost:11434/api/tags`, `/api/show`, `/api/ps`, `lsof`) Ollama 0.40.16 runs on this machine with `qwen3.8:27b-mlx`: 27.8 B parameters, `nvfp4`, family `qwen3_5`, 64 blocks, context 262,144, capabilities completion, **vision**, tools, thinking, **16 GiB** on disk. Also `qwen3.5:9b` and `qwen3.5:4b` (both with vision), `qwen3:8b`, `nomic-embed-text`. Nothing is loaded now (`/api/ps` is empty). The machine has **64 GB** of memory.
+* **[measured]** **Ollama listens on `*:11434`, every interface**, not on the loopback only (`lsof -nP -iTCP:11434 -sTCP:LISTEN`: `ollama *:11434`). This design sends the picture only to `127.0.0.1`, but the service itself is open to the local network. Binding it to the loopback (`OLLAMA_HOST=127.0.0.1`) is the owner's to decide and is outside this change; it is noted because the layer's privacy argument ("the picture does not leave the machine") is about *our* connection, not about who else can talk to that service.
+* **[read, and seen in `studio/check.sh`'s output]** A job's `<id>.argv` is the argument list of `media`: for an edit `edit -o <out> [--seed S] -- <image path> <prompt>`, for a video `video -o <out> [--frames N] [--size WxH] [--seed S] -- <prompt>`. The prompt is **always the last entry**, the picture's path (edit only) the one before it.
+* **[read]** What reads the prompt downstream: the video model's text encoder is umT5, text only (`tools/wan_text.py`); the edit model's text encoder is a **vision-language model that already sees the picture** (`models/qwen3vl_text.model` with its vision tower, docs/diffusion.md D9). So a rewrite has a clearer job for video (turn a short request into the descriptive text the model was trained on, **a belief, not checked here**) than for an edit, where the encoder already has the picture and a longer instruction may add noise. The design does not assume either; section 8 measures.
+* **[measured]** The pinned compiler (a49ea779) accepts `edition 10;` and `narrow(net, "127.0.0.1:11434")` (a program with that line builds and its report says it touches no network because nothing dials). **Not yet measured:** the report row of a program that does dial, `net_out("127.0.0.1:11434")` (`docs/net-bounds.md` 3A says exact hosts are built in edition 10); that is the first thing slice R1 checks.
+* **[read]** `examples/base64/base64.cho` in the cancho repository is a base64 codec written in cancho; the picture goes to Ollama as base64 in JSON (`images`), so an encoder is needed (to be ported into this repository's tests/studio code, not called out to a tool).
+
+## 3. Decisions
+
+**D1. It runs in the worker, not in the server.** A 27 B model reading a picture takes far longer than a request should, and the server answers everything on one thread. The worker already runs one job at a time and is where long things belong. The server only records the choice (D2).
+
+**D2. The choice is per job.** `POST /api/jobs` and `POST /edit` take an optional `rewrite`: `"on"` or `"off"` (a form field in `/edit`; a `Select` in the cancho-ui page). Absent, the server's default applies (`--rewrite on|off` when the server starts; **proposed default `off`**, see section 9). The server writes the choice to `<data>/<id>.rewrite` (`on` or `off`) next to `<id>.argv`. `<id>.argv` is never changed: it is the record of what was asked.
+
+**D3. The step.** For a job whose `<id>.rewrite` is `on` and a worker started with a rewriter, before it spawns `media`:
+
+1. read `<id>.argv`; the prompt is its last entry; for an edit the picture's path is the entry before it, read as bytes (at most 16 MiB: the limit uploads already have; a larger file skips the picture and says so);
+2. build one request to Ollama's `POST /api/chat` with `stream: false`, `think: false`, `keep_alive: 0` (the model unloads when the answer is done: D6), `options` with a low temperature and a cap on `num_predict`, **no `tools`**, a system message from section 5 and a user message holding the prompt (and, for an edit, `images: [<base64>]`);
+3. send it over a plain TCP connection to `127.0.0.1:11434` and read the answer, bounded to 1 MiB, under a deadline (default 600 s: it includes loading the model);
+4. take `message.content`, trim it, remove one pair of surrounding quotes or a code fence, replace newlines with spaces; **accept it only if it is 1 to 1,000 bytes with no NUL and no other control character**, else fall back (D4);
+5. write `<id>.prompt.orig` (the original prompt) and `<id>.prompt.new`, append one line to `<id>.log` (`studio: prompt rewritten by <model> in <s> s`) and spawn `media` with the argument list of `<id>.argv` whose last entry is the new prompt.
+
+**D4. Fail open.** Connection refused, a deadline, a non-200 answer, JSON that does not parse, no `message.content`, an empty or over-long or unclean result: the job runs with the original prompt and `<id>.log` says `studio: prompt not rewritten: <reason>`. A reason is a fixed phrase; none contains text from the model.
+
+**D5. Transparency.** `GET /jobs/N` shows the original and, if there is one, the rewritten prompt and the model's name. The rewritten text is the model's output and so **untrusted**: it is HTML-escaped (`& < > " '`) where it is shown; `studio/results.cho` has no escape function today (it prints only state words made of letters, digits and spaces) and this slice adds one with its own test.
+
+**D6. One heavy thing at a time.** The step ends, and the model is unloaded by `keep_alive: 0`, before `media` starts, because the worker is sequential. **[estimate]** The 27 B model is 16 GiB; the edit pipeline holds the 14 GB transformer and a 15.7 GB text encoder (docs/diffusion.md, `docs/cli.md`) on a 64 GB machine: together about 46 GB plus the system, tight; one at a time is safe. **[to measure in R2]** that `/api/ps` is empty when `media` starts, and the time the load adds to a job.
+
+**D7. Authority.** The worker's report gains one outbound row, bounded to `127.0.0.1:11434` by `narrow(net, "127.0.0.1:11434")` (edition 10), and nothing else: no other host, no foreign code. The file read of the picture is the `fs_read` it already has. The picture is sent only to that address; the host is not an argument, so it cannot be pointed elsewhere without changing the program. (The URL fetch of `docs/studio-fetch.md` is a different program, the server, and is the one that holds an unbounded `net_out`.)
+
+**D8. What the model's text can do.** It is a string for a diffusion model. It is passed to `media` as one argument by `std.process` (which refuses a NUL), never to a shell, never executed, never used as a path. A picture or prompt that tells the model to say something else (prompt injection) can at worst make a worse prompt; the layer sends no tools and acts on nothing the model says except to use it as the prompt, capped at 1,000 bytes.
+
+**D9. The model.** Default `qwen3.8:27b-mlx`; `studio_worker ... --rewriter NAME` names another (`qwen3.5:9b` is the lighter one with vision). The name is not checked against Ollama's list when the worker starts: a wrong one fails at the call and falls open (D4).
+
+**D10. Privacy.** The picture's bytes go to `127.0.0.1:11434` and nowhere else; they are not logged and not written anywhere new; their path is not sent. The prompts are the person's own text and are kept (`<id>.prompt.orig`, `<id>.prompt.new`, the log).
+
+## 4. What is built before anything is claimed
+
+The step is checked **against a stub of Ollama's `/api/chat`** (a small cancho program that answers a canned JSON, or a scripted failure), so the checks need no GPU and no model: the effective argument list; the original kept; each failure of D4; a prompt with quotes, backslashes, `;` and UTF-8 passing as data; the 1,000-byte and control-character rules; the report row. Then the real model, once, to measure (R2).
+
+## 5. The two system prompts (drafts, to be tested, not claims)
+
+Kept as plain files `studio/rewrite/edit.txt` and `studio/rewrite/video.txt` (data, read at start; a missing file turns the layer off with a message). Drafts:
+
+* edit: "You write the instruction for an image-editing model. You are given a picture and the person's request. Write one imperative instruction, in English, at most 60 words, that says exactly what to change and what to keep as it is. Do not describe the whole picture. Add nothing the person did not ask for. Reply with the instruction only."
+* video: "You write the text prompt for a text-to-video model. Expand the person's request into one paragraph of at most 120 words: the subject, the action, the setting, the camera, the light and the style. Keep every fact of the request and add no new subject. Reply with the prompt only."
+
+Whether to keep the person's language or write English, and whether `think: true` helps, are measured in R2, not decided here.
+
+## 6. Slices, each with a gate that can fail
+
+| slice | what | held to |
+|---|---|---|
+| R0 | this document | review |
+| R1 | the worker's step in cancho (an HTTP request over `tcp_connect_start`, a base64 encoder, the JSON build and parse with `std.json`, the sanitiser, the effective argument list), checked against a stub; the `narrow` row measured | the checks of section 4; mutants (accept an unclean answer, skip the length bound, send to another host, lose the original, ignore a failure) must each fail one |
+| R2 | the real model once: cold and warm latency, memory (`/api/ps` during and after), the examples recorded, the system prompts iterated **on a development set that the evaluation of R5 does not use** | numbers measured and written down; nothing about quality yet |
+| R3 | the server and the pages: `rewrite` in `POST /api/jobs` and `/edit`, `<id>.rewrite`, the escaped display in `/jobs/N`, the OpenAPI document | `studio/check.sh` rows; the whole flow in a browser once |
+| R4 | comparison: `rewrite: "ab"` makes two jobs with the same seed, one with the original prompt and one rewritten, and a page `/compare/N` shows them side by side **without saying which is which** (the order is random and recorded) | the page and the recording are checked; the pairs are made |
+| R5 | the evaluation of section 8, by the owner | the result written down as it comes out |
+
+## 7. What it costs (to be measured, not guessed)
+
+Each rewritten job pays the model's load and generation: **[estimate]** from tens of seconds to minutes for a 16 GiB model from disk, before the job's own 44 s (video) or 90 s (edit) (`docs/cli.md`, `docs/diffusion.md`). Nothing here has been timed. R2 measures it, cold and warm, and the number goes in this section.
+
+## 8. How "improves" will be decided
+
+Written before any rewritten result exists. **Null hypothesis: rewriting does not make the owner prefer the result.**
+
+* A set of **20 cases** (prompt, and for an edit a picture of the owner's choosing, never committed), a mix of video and edit, written before R2's prompts are tuned and kept apart from the development set.
+* For each case, **the same seed**, two jobs: the original prompt and the rewritten one (R4). The owner sees them side by side in an order unknown to the owner and picks the better one, or "no difference".
+* **Decision rule, fixed now, one for each kind** (10 video cases, 10 edit cases; a kind is judged alone, because the two text encoders differ): the layer is switched on by default **for a kind** only if the rewritten result wins **at least 9 of its 10** (a tie counts as not winning). Under the null a win is as likely as a loss, so the chance of 9 or 10 wins is (10 + 1) / 1,024, about **0.011** one-sided (**[computed by hand from the binomial, not run]**; 8 of 10 would be 56 / 1,024, about 0.055, which is why it is not the bar). Otherwise that kind stays off. The results are written down either way, with the counts.
+* An automatic judge (the same Qwen) is **not** used as proof: it would favour its own wording. It may be used to look for failures, never to decide.
+* What this does not show even if it passes: that the rewrite helps for pictures and prompts unlike the 20, or that a different seed would agree.
+
+## 9. Not decided
+
+* **Default on or off.** The owner chose the model; whether the layer is on by default is a separate question, and the rule of section 8 says off until measured. Proposed: the server's default is `off`, the page offers a choice, and R5 may change it.
+* **Language.** Keep the person's language or always write English.
+* **A large picture.** The picture is sent as it is (up to 16 MiB, so about 21 MB of base64 in the JSON); there is no image decoder in cancho to shrink it, and Ollama resizes on its side. R2 measures whether that is a problem.
+* **Whether Ollama should be bound to the loopback** (section 2).
