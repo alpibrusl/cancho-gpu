@@ -12,6 +12,7 @@ import auth;
 import range;
 import upload;
 import compare;
+import sets;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -263,6 +264,12 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     }
                                 }
                                 buffer.drop(heap, utext);
+                            } else if bytes.starts_with(path, "/sets/") && bytes.equal(method, "GET") {
+                                let (sst, spage) = sets.page(heap, fs, dir, path[6..len(path)]);
+                                borrow spage as &sp in {
+                                    out = server.reply_as(heap, out, sst, "text/html; charset=utf-8", buffer.bytes(sp), keep, "");
+                                }
+                                buffer.drop(heap, spage);
                             } else if bytes.equal(path, "/compare") && bytes.equal(method, "GET") {
                                 let cmp_list = compare.index(heap, fs, dir);
                                 borrow cmp_list as &cl in {

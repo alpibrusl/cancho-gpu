@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -287,6 +287,8 @@ row '/files/{id}/{name}' GET /files/1/log -H 'Range: bytes=0-3'
 row '/files/{id}/{name}' GET /files/1/log -H 'Range: bytes=99999-'
 row '/files/{id}/{name}' GET /files/1/nothing
 row '/files/{id}/{name}' GET /files/x/log
+row '/sets/{id}' GET /sets/1
+row '/sets/{id}' GET /sets/x
 row /app.js GET /app.js
 row / GET /
 row /openapi.json GET /openapi.json
@@ -298,7 +300,7 @@ check "openapi: 500 on POST /api/jobs is listed (not reached by a request here)"
 for p in $(grep -o 'equal(path, "/[a-z./]*")' studio/studio.cho | grep -o '"/[a-z./]*"' | tr -d '"' | grep -v '^/$' | sort -u); do
   check "openapi: the server's route $p is in the document" "$(grep -c "^    \"$p\": {" studio/openapi.json)" 1
 done
-for p in /api/jobs/ /jobs/ /files/ /compare/; do
+for p in /api/jobs/ /jobs/ /files/ /compare/ /sets/; do
   check "openapi: the server's prefix route $p is in the document" "$(grep -c "^    \"$p" studio/openapi.json)" 1
 done
 if command -v jq >/dev/null 2>&1; then
@@ -492,4 +494,32 @@ PIC1=$(tr '\0' '\n' < "$R/off/$EID.argv" | grep '/upload-'); PIC2=$(tr '\0' '\n'
 check "edit: ...and both jobs of the pair name the same uploaded picture" "$([ -n "$PIC1" ] && [ "$PIC1" = "$PIC2" ] && echo same)" same
 check "edit: ...with the rewrite off on the first and on on the second" "$(cat "$R/off/$EID.rewrite") $(cat "$R/off/$((EID + 1)).rewrite")" "off on"
 check "edit: the form offers ab" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'value=ab')" 1
+# Variations (docs/studio-variations.md, V1): one request, N jobs, the seeds s .. s+N-1, a set file written after the jobs, a page of the set.
+Vq=$(wc -l < "$R/off/queue" | tr -d ' ')
+VR=$(pj '{"kind":"video","prompt":"fox","seed":5,"variations":3}'); VF=$(echo "$VR" | jq -r .id)
+check "variations: the answer holds the three ids, consecutive, and the set's address" "$(echo "$VR" | jq -c '[.ids, .set]')" "[[$VF,$((VF + 1)),$((VF + 2))],\"/sets/$VF\"]"
+check "variations: the seeds are 5, 6 and 7, one in each argument list" "$(for k in 0 1 2; do tr '\0' ' ' < "$R/off/$((VF + k)).argv" | sed 's#.*--seed \([0-9]*\) .*#\1#'; echo; done | tr '\n' ' ')" "5 6 7 "
+check "variations: ...and nothing else differs (prompt, kind)" "$(for k in 0 1 2; do tr '\0' ' ' < "$R/off/$((VF + k)).argv" | sed 's#out/[0-9]*#out/X#; s#--seed [0-9]*#--seed S#'; done | sort -u | wc -l | tr -d ' ')" 1
+check "variations: the set file is the ids, then the first seed" "$(tr '\n' '|' < "$R/off/$VF.set")" "$VF $((VF + 1)) $((VF + 2))|5|"
+check "variations: all three are in the queue, in order" "$(tail -3 "$R/off/queue" | tr '\n' ' ')" "$VF $((VF + 1)) $((VF + 2)) "
+VD=$(pj '{"kind":"video","prompt":"no seed","variations":2}'); VDF=$(echo "$VD" | jq -r .id)
+check "variations: with no seed they start at 1" "$(for k in 0 1; do tr '\0' ' ' < "$R/off/$((VDF + k)).argv" | sed 's#.*--seed \([0-9]*\) .*#\1#'; echo; done | tr '\n' ' ')" "1 2 "
+Vq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"variations":1' '"variations":9' '"variations":"3"' '"variations":2.5' '"variations":0' '"variations":-2'; do
+  check "variations: $bad is refused: 422" "$(po "{\"kind\":\"video\",\"prompt\":\"x\",$bad}" | tail -c 4)" " 422"
+done
+check "variations: with rewrite ab is refused: 422" "$(po '{"kind":"video","prompt":"x","variations":2,"rewrite":"ab"}' | tail -c 4)" " 422"
+check "variations: a seed whose last variation would pass 2147483647 is refused: 422" "$(po '{"kind":"video","prompt":"x","variations":3,"seed":2147483646}' | tail -c 4)" " 422"
+check "variations: ...and the largest that fits is accepted" "$(po '{"kind":"video","prompt":"x","variations":3,"seed":2147483645}' | tail -c 4)" " 202"
+check "variations: a bad request makes no job (the prompt is empty)" "$(po '{"kind":"video","prompt":"","variations":4}' | tail -c 4) $(wc -l < "$R/off/queue" | tr -d ' ')" " 422 $((Vq2 + 3))"
+check "variations: the refusals above queued nothing (6 + 3 + the accepted three)" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$((Vq2 + 3))"
+check "variations: the page shows each variation with its seed" "$(cget /sets/$VF | grep -o 'variation [0-9], seed [0-9]*' | tr '\n' ';')" "variation 1, seed 5;variation 2, seed 6;variation 3, seed 7;"
+check "variations: while the jobs wait the page refreshes and says so" "$(cget /sets/$VF | grep -c 'http-equiv=refresh') $(cget /sets/$VF | grep -o '<p>queued</p>' | wc -l | tr -d ' ')" "1 3"
+finish $VF $((VF + 1)) $((VF + 2))
+check "variations: when all are done, three videos and no refresh" "$(cget /sets/$VF | grep -o '<video' | wc -l | tr -d ' ') $(cget /sets/$VF | grep -c 'http-equiv=refresh')" "3 0"
+echo failed 3 > "$R/off/$((VF + 1)).state"; rm -f "$R/off/out/$((VF + 1))/video.mp4"
+check "variations: one failed shows as it is and the others stay" "$(cget /sets/$VF | grep -o '<p>failed 3</p>' | wc -l | tr -d ' ') $(cget /sets/$VF | grep -o '<video' | wc -l | tr -d ' ')" "1 2"
+check "variations: /sets of a job that is not the first of a set: 404" "$(cget /sets/$((VF + 1)) | tail -c 4)" " 404"
+check "variations: /sets of an id that is not digits: 422" "$(cget /sets/x1 | tail -c 4)" " 422"
+check "variations: /sets with no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/sets/$VF)" 401
 exit $fail
