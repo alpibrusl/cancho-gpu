@@ -1,0 +1,185 @@
+edition 9;
+
+module auth;
+
+import std.buffer;
+import std.bytes;
+import std.http;
+
+// `auth` -- who may talk to the studio (docs/studio.md, "Safety"). The server listens on 127.0.0.1 only, which keeps other machines out and nothing else: any page open in the
+// browser can send a request to localhost, and a name that resolves to 127.0.0.1 can pass for the studio's own (DNS rebinding). So, in this order, for every request:
+//
+//   1. `Host` is `127.0.0.1:<port>` or `localhost:<port>`            otherwise 403 (a rebinding name)
+//   2. `Origin`, when there is one, is `http://` + such a host      otherwise 403 (a request made by another site's page)
+//   3. the token: `Authorization: Bearer <token>` or the cookie `studio=<token>`    otherwise 401
+//   4. a POST has `Content-Type: application/json`                  otherwise 415 (a form or `text/plain` is what a page can send without asking)
+//
+// The token is 32 hex characters (16 bytes of `/dev/urandom`) made when the server starts and printed in a URL, `http://127.0.0.1:<port>/?token=<token>`, as Jupyter does. Opening that URL is
+// the one place the token is accepted in a query: the server answers `302 /` with `Set-Cookie: studio=<token>; HttpOnly; SameSite=Strict; Path=/`, so the token leaves the address bar and
+// the history, the page's own requests carry the cookie, and a request from another site does not (`SameSite=Strict`). It is not stored anywhere and a restart makes a new one.
+
+// 32 hex characters from 16 bytes of `/dev/urandom`, or an empty buffer if they could not be read.
+pub fn make[&h, &f](heap: &!h Heap, fs: &f Fs("")) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var raw = buffer.empty(heap, 16);
+    var have = 0;
+    match open_read(fs, "/dev/urandom") {
+        Opened::Failed(e) => {
+        }
+        Opened::Ok(o) => {
+            var file = o;
+            let scratch = box_slice(heap, 16, byte_of(0));
+            var tries = 0;
+            borrow mut scratch as &!sw in {
+                borrow mut file as &!x in {
+                    while have < 16 && tries < 100 {
+                        tries = tries + 1;
+                        match file_read(x, contents(sw)[0..16 - have]) {
+                            Read::Got(n) => {
+                                raw = buffer.append(heap, raw, contents(sw)[0..n]);
+                                have = have + n;
+                            }
+                            Read::End => {
+                                tries = 100;
+                            }
+                            Read::Failed(e) => {
+                                tries = 100;
+                            }
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, scratch);
+            file_close(file);
+        }
+    }
+    var hex = buffer.empty(heap, 32);
+    if have == 16 {
+        borrow raw as &rb in {
+            let all = buffer.bytes(rb);
+            var i = 0;
+            while i < len(all) {
+                let v = int_of(all[i]);
+                let hi = v / 16;
+                let lo = v - hi * 16;
+                var c1 = 48 + hi;
+                if hi > 9 {
+                    c1 = 87 + hi;
+                }
+                var c2 = 48 + lo;
+                if lo > 9 {
+                    c2 = 87 + lo;
+                }
+                hex = buffer.push(heap, hex, byte_of(c1));
+                hex = buffer.push(heap, hex, byte_of(c2));
+                i = i + 1;
+            }
+        }
+    }
+    buffer.drop(heap, raw);
+    return hex;
+}
+
+// Do the two texts hold the same bytes? The time does not depend on where they first differ.
+fn same[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var diff = 0;
+    var i = 0;
+    while i < len(x) {
+        diff = diff + (int_of(x[i]) - int_of(y[i])) * (int_of(x[i]) - int_of(y[i]));
+        i = i + 1;
+    }
+    return diff == 0;
+}
+
+// Is `text` the decimal digits of `port`, and nothing else?
+fn port_is[&t](text: &t [byte], port: int) -> [] bool {
+    if len(text) == 0 || len(text) > 5 {
+        return false;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return false;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n == port;
+}
+
+// `127.0.0.1:<port>` or `localhost:<port>`.
+fn local_host[&t](text: &t [byte], port: int) -> [] bool {
+    if bytes.starts_with(text, "127.0.0.1:") {
+        return port_is(text[10..len(text)], port);
+    }
+    if bytes.starts_with(text, "localhost:") {
+        return port_is(text[10..len(text)], port);
+    }
+    return false;
+}
+
+pub fn host_ok[&s, &t](head: &s [byte], table: &t [int], port: int) -> [] bool {
+    return local_host(http.header(head, table, "host"), port);
+}
+
+// No `Origin` header at all (a request that is not from a page's script, or a plain navigation) is fine; one that is there must be this server's own, spelled `http://` + a local host.
+pub fn origin_ok[&s, &t](head: &s [byte], table: &t [int], port: int) -> [] bool {
+    if http.find_header(head, table, "origin") < 0 {
+        return true;
+    }
+    let o = http.header(head, table, "origin");
+    if bytes.starts_with(o, "http://") == false {
+        return false;
+    }
+    return local_host(o[7..len(o)], port);
+}
+
+// A POST's body is JSON only if it says so.
+pub fn json_ok[&s, &t](head: &s [byte], table: &t [int]) -> [] bool {
+    return bytes.starts_with(http.header(head, table, "content-type"), "application/json");
+}
+
+// `Authorization: Bearer <token>` or a `studio=<token>` cookie.
+pub fn token_ok[&s, &t, &k](head: &s [byte], table: &t [int], token: &k [byte]) -> [] bool {
+    if len(token) == 0 {
+        return false;
+    }
+    let a = http.header(head, table, "authorization");
+    if bytes.starts_with(a, "Bearer ") && same(a[7..len(a)], token) {
+        return true;
+    }
+    let c = http.header(head, table, "cookie");
+    var at = 0;
+    while at < len(c) {
+        while at < len(c) && int_of(c[at]) == 32 {
+            at = at + 1;
+        }
+        var stop = at;
+        while stop < len(c) && int_of(c[stop]) != 59 {
+            stop = stop + 1;
+        }
+        let piece = c[at..stop];
+        if bytes.starts_with(piece, "studio=") && same(piece[7..len(piece)], token) {
+            return true;
+        }
+        at = stop + 1;
+    }
+    return false;
+}
+
+// `GET /?token=<token>`: the one place a token is taken from the address.
+pub fn login_ok[&s, &t, &k](head: &s [byte], table: &t [int], token: &k [byte]) -> [] bool {
+    if len(token) == 0 {
+        return false;
+    }
+    let q = http.query(head, table);
+    let (from, to) = http.query_value(q, "token");
+    if to < 0 {
+        return false;
+    }
+    return same(q[from..to], token);
+}
