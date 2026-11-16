@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V4a of docs/diffusion.md section 6: a video from a prompt, the denoiser and the decoder of FastWan2.2-TI2V-5B on a Metal GPU.
 
-    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N]
+    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32]
 
 F is the number of latent frames (the video has 1 + 4 (F - 1)), HxW the latent's size in pixels / 16 (22x40 is 640 x 352); `--text` is tools/wan_text.py's output (the umT5 encoder runs on the HOST, in torch: the one stage that
 does not run on the GPU); `--wdir` holds the f16 weight files of tests/wan_gpu.py's layout (written on first use, 10 GB); the output is WORK_DIR/video.gif and WORK_DIR/frames/.
@@ -11,6 +11,11 @@ of the noisy latents x, the clean latents are x0 = x - sigma(t) v, and, but afte
 sigma(t) is the training scheduler's table (shift 8: sigma = 8 s / (1 + 7 s) for s = i / 1000, the table's entry nearest to t). The latents go to the decoder as x0 std + mean (tests/wan_vae_gpu.py, V2).
 On the host: the noise, the sampler's arithmetic, the patch embedding, the condition embedder (a timestep's modulation tables), the text's projection, the rotary tables and the weight files. On the GPU: the 30 blocks and the output layer of the transformer
 (models/wan_dit.model; one session whose weights stay on the device through the three steps, the step's inputs `reload`ed) and the decoder.
+
+`--cond` is image to video (docs/wan-vae-encoder.md section 11): the file is `[48, H, W]` singles, the first frame's latent as `tests/wan_vae_enc_gpu.cho latent` writes it (already `(mean - latents_mean) / latents_std`). As diffusers'
+`WanImageToVideoPipeline` does in the `expand_timesteps` branch (read, `pipeline_wan_i2v.py`): the tokens of frame 0 are given the timestep 0 (the session's per-token selector: the second row of every modulation table), and the latents
+are mixed `(1 - mask) * cond + mask * latents` (mask 0 on frame 0, 1 elsewhere) before every call of the transformer and after the last. FastVideo's `DmdDenoisingStage` has no such code (it concatenates the image latent on the
+channels, which this 48-channel model cannot take): that this mixing is right for the DISTILLED weights is not read from FastVideo and is not measured.
 """
 import json
 import os
@@ -46,6 +51,23 @@ S = F * (H // 2) * (Wd // 2)
 SP = (S + 63) // 64 * 64
 NEG = -1e9
 vec = lambda a: np.asarray(a)[None]
+COND = arg("--cond")
+NP = (H // 2) * (Wd // 2)  # the tokens of one latent frame
+cond = None
+if COND:
+    cond = np.fromfile(COND, dtype="<f4").astype(np.float64)
+    assert cond.size == 48 * H * Wd, "the condition has %d values, the latent's frame needs %d" % (cond.size, 48 * H * Wd)
+    cond = cond.reshape(48, 1, H, Wd)
+    assert F >= 2
+
+
+def mix(a):
+    """(1 - mask) * cond + mask * a: frame 0 is the condition."""
+    if cond is None:
+        return a
+    out = a.copy()
+    out[:, :1] = cond
+    return out
 
 
 def sigma_table():
@@ -105,7 +127,10 @@ cos, sin = wr.rope_tables(F, H // 2, Wd // 2)
 pad = lambda a, fill: np.concatenate([a, np.full((SP - S,) + a.shape[1:], fill)], 0)
 f32(P("cs.f32"), pad(cos, 1.0))
 f32(P("sn.f32"), pad(sin, 0.0))
-f32(P("sel.f32"), np.ones((SP, 1)))  # every token at the sampled timestep (no conditioning frame: text to video)
+sel = np.ones((SP, 1))
+if cond is not None:
+    sel[:NP] = 0.0  # the conditioning frame's tokens take the t = 0 row
+f32(P("sel.f32"), sel)
 f32(P("ones_s.f32"), np.ones((SP, 1)))
 f32(P("ones_t.f32"), np.ones((T, 1)))
 ms = np.zeros((SP, SP))
@@ -120,21 +145,21 @@ tab_head = wr.W("scale_shift_table")[0]
 
 
 def write_step_inputs(lat, t):
-    """The inputs that change with the step: the patch embedding of the latents and the modulation tables of the timestep (two identical rows: the sampled one and the unused t = 0 one)."""
+    """The inputs that change with the step: the patch embedding of the latents and the modulation tables of the timestep (row 0: the sampled timestep's; row 1: t = 0's, which the conditioning frame's tokens take; with no condition the selector never picks row 1)."""
     f32(P("x0.f32"), pad(wr.patchify(lat), 0.0))
-    temb, proj = wr.time_embed(np.array([float(t)]))
+    temb, proj = wr.time_embed(np.array([float(t), 0.0]))
     for b in range(NB):
         tab = wr.W("blocks.%d.scale_shift_table" % b)[0]
-        row = tab + proj[0]
+        row, row0 = tab + proj[0], tab + proj[1]
         for k, nm in enumerate(("sh1", "sc1", "g1", "sh2", "sc2", "g2")):
-            f32(P("m%d_%s.f32" % (b, nm)), np.stack([row[k], row[k]]))
-    f32(P("head_sh.f32"), np.stack([tab_head[0] + temb[0]] * 2))
-    f32(P("head_sc.f32"), np.stack([tab_head[1] + temb[0]] * 2))
+            f32(P("m%d_%s.f32" % (b, nm)), np.stack([row[k], row0[k]]))
+    f32(P("head_sh.f32"), np.stack([tab_head[0] + temb[0], tab_head[0] + temb[1]]))
+    f32(P("head_sc.f32"), np.stack([tab_head[1] + temb[0], tab_head[1] + temb[1]]))
 
 
 RELOAD = ["b0_lnm1.x", "hd_ln.sh", "hd_ln.sc"] + ["b%d_%s" % (b, n) for b in range(NB) for n in ("lnm1.sh", "lnm1.sc", "gr1.g", "lnm2.sh", "lnm2.sc", "gr2.g")]
 rng = np.random.default_rng(SEED)
-lat = rng.standard_normal((48, F, H, Wd))
+lat = mix(rng.standard_normal((48, F, H, Wd)))
 write_step_inputs(lat, STEPS[0])
 defs = ["CHX=" + os.path.join(ROOT, "tests/chx"), "WORK=" + work, "WDIR=" + WDIR, "S=%d" % SP, "T=%d" % T, "NB=%d" % NB, "HEAD=1"]
 print("latent [48, %d, %d, %d]: %d tokens (padded to %d), text %d tokens (padded to %d); video %d frames of %d x %d" % (F, H, Wd, S, SP, text.shape[0], T, 1 + 4 * (F - 1), 16 * H, 16 * Wd), flush=True)
@@ -162,11 +187,11 @@ for i, t in enumerate(STEPS):
     y = np.fromfile(P("head_out.f32"), dtype="<f4").reshape(SP, 192)[:S].astype(np.float64)
     v = y.reshape(F, H // 2, Wd // 2, 1, 2, 2, 48).transpose(6, 0, 3, 1, 4, 2, 5).reshape(48, F, H, Wd)
     sg = sigma_of(t)
-    x0 = lat - sg * v
+    x0 = mix(lat - sg * v)
     print("step %d: t = %d, sigma = %.4f, velocity rms %.4g, x0 rms %.4g, %.1f s%s" % (i, t, sg, np.sqrt((v ** 2).mean()), np.sqrt((x0 ** 2).mean()), time.time() - t0, " (includes the upload of the weights)" if i == 0 else ""), flush=True)
     if i < len(STEPS) - 1:
         sn = sigma_of(STEPS[i + 1])
-        lat = (1 - sn) * x0 + sn * rng.standard_normal(x0.shape)
+        lat = mix((1 - sn) * x0 + sn * rng.standard_normal(x0.shape))
 proc.stdin.close()
 proc.wait()
 print("denoiser: %.1f s in all" % (time.time() - t_start), flush=True)
@@ -189,6 +214,9 @@ vid = np.load(P("video.npy"))  # [3, T, H, W] in [-1, 1]
 print("decoder: %.1f s; video %s" % (time.time() - t0, list(vid.shape)), flush=True)
 from PIL import Image  # noqa: E402
 
+if cond is not None:
+    rm = lambda a: float(np.sqrt((a ** 2).mean()))
+    print("condition: latent frame 0 against the condition %.3g of its rms (0 when the mixing holds); video frame k against frame 0, relative rms: %s" % (rm(x0[:, :1] - cond) / rm(cond), ", ".join("k=%d %.3f" % (k, rm(vid[:, k] - vid[:, 0]) / rm(vid[:, 0])) for k in (1, 4, 8, 16) if k < vid.shape[1])), flush=True)
 os.makedirs(P("frames"), exist_ok=True)
 frames = []
 for k in range(vid.shape[1]):
