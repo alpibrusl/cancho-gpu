@@ -1,0 +1,410 @@
+edition 10;
+
+module rewrite;
+
+import std.buffer;
+import std.bytes;
+import std.json;
+
+// `rewrite` -- one call to a local Ollama that rewrites a prompt (docs/studio-rewrite.md, slice R1).
+//
+// `ask` sends `POST /api/chat` to **127.0.0.1:11434** and nowhere else: the `Net` it is given is the one `narrow(net, "127.0.0.1:11434")` made (edition 10, exact host), so the authority report names
+// that one address and a program cannot point it elsewhere. The request is HTTP/1.0 (the answer is then not chunked and ends when the server closes) with a JSON body made by `std.json`'s writer (every
+// string escaped by it, none by hand); the picture, if there is one, goes in as base64. The answer is read under a deadline on a `Poller`, at most 1 MiB of it, parsed with `std.json`, and `message.content`
+// is cleaned (`clean`) and accepted only if it is a prompt the rest of the studio would accept (1 to 1,000 bytes, no control character). Every way it can fail is a small code with a fixed phrase
+// (`reason`); no phrase contains text from the model or from the network.
+
+pub fn max_prompt() -> [] int {
+    return 1000;
+}
+
+// 1 MiB: the most of an answer this reads.
+fn max_answer() -> [] int {
+    return 1048576;
+}
+
+// Why a call or a text was refused. 0 is no refusal.
+pub fn reason(code: int) -> [] &static [byte] {
+    if code == 0 {
+        return "ok";
+    }
+    if code == 1 {
+        return "could not connect to the rewriter";
+    }
+    if code == 2 {
+        return "could not send the request";
+    }
+    if code == 3 {
+        return "the rewriter did not answer in time";
+    }
+    if code == 4 {
+        return "the rewriter answered with an error";
+    }
+    if code == 5 {
+        return "the answer was not what was expected";
+    }
+    if code == 6 {
+        return "the text was empty, too long or not clean";
+    }
+    if code == 7 {
+        return "the answer was too large";
+    }
+    if code == 8 {
+        return "the poller could not be made";
+    }
+    return "unknown";
+}
+
+fn b64_char(v: int) -> [] int {
+    if v < 26 {
+        return 65 + v;
+    }
+    if v < 52 {
+        return 97 + v - 26;
+    }
+    if v < 62 {
+        return 48 + v - 52;
+    }
+    if v == 62 {
+        return 43;
+    }
+    return 47;
+}
+
+// RFC 4648 section 4: standard alphabet, `=` padding, no line breaks.
+pub fn b64[&h, &d](heap: &!h Heap, data: &d [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, len(data) / 3 * 4 + 8);
+    var i = 0;
+    while i + 2 < len(data) {
+        let n = int_of(data[i]) << 16 | int_of(data[i + 1]) << 8 | int_of(data[i + 2]);
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 18 & 63)));
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 12 & 63)));
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 6 & 63)));
+        out = buffer.push(heap, out, byte_of(b64_char(n & 63)));
+        i = i + 3;
+    }
+    if len(data) - i == 1 {
+        let n = int_of(data[i]) << 16;
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 18 & 63)));
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 12 & 63)));
+        out = buffer.push(heap, out, byte_of(61));
+        out = buffer.push(heap, out, byte_of(61));
+    }
+    if len(data) - i == 2 {
+        let n = int_of(data[i]) << 16 | int_of(data[i + 1]) << 8;
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 18 & 63)));
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 12 & 63)));
+        out = buffer.push(heap, out, byte_of(b64_char(n >> 6 & 63)));
+        out = buffer.push(heap, out, byte_of(61));
+    }
+    return out;
+}
+
+// The JSON body of `/api/chat`: `stream` false, `think` false, `keep_alive` 0 (the model is unloaded once it has answered, so it is not resident beside the generator), a low temperature, a cap on the
+// tokens, a system message and a user message; `picture` (base64) is added as `images` when it is not empty. No `tools`.
+pub fn body_of[&h, &m, &s, &p, &i](heap: &!h Heap, model: &m [byte], system: &s [byte], prompt: &p [byte], picture: &i [byte]) -> [heap] buffer.Buffer {
+    var w = json.writer(heap, 1024 + len(picture) + len(prompt) + len(system));
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "model");
+    w = json.put_string(heap, w, model);
+    w = json.put_key(heap, w, "stream");
+    w = json.put_bool(heap, w, false);
+    w = json.put_key(heap, w, "think");
+    w = json.put_bool(heap, w, false);
+    w = json.put_key(heap, w, "keep_alive");
+    w = json.put_int(heap, w, 0);
+    w = json.put_key(heap, w, "options");
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "temperature");
+    w = json.put_float(heap, w, 0.3);
+    w = json.put_key(heap, w, "num_predict");
+    w = json.put_int(heap, w, 400);
+    w = json.end_object(heap, w);
+    w = json.put_key(heap, w, "messages");
+    w = json.begin_array(heap, w);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "role");
+    w = json.put_string(heap, w, "system");
+    w = json.put_key(heap, w, "content");
+    w = json.put_string(heap, w, system);
+    w = json.end_object(heap, w);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "role");
+    w = json.put_string(heap, w, "user");
+    w = json.put_key(heap, w, "content");
+    w = json.put_string(heap, w, prompt);
+    if len(picture) > 0 {
+        w = json.put_key(heap, w, "images");
+        w = json.begin_array(heap, w);
+        w = json.put_string(heap, w, picture);
+        w = json.end_array(heap, w);
+    }
+    w = json.end_object(heap, w);
+    w = json.end_array(heap, w);
+    w = json.end_object(heap, w);
+    return json.finish(w);
+}
+
+fn is_space(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 10 || c == 13;
+}
+
+// What a model's text must become to be a prompt: (0, the prompt) or (6, empty). Surrounding white space is trimmed; one code fence around the whole text, or one pair of double quotes, is removed;
+// a newline, carriage return or tab becomes a space; the result must be 1 to 1,000 bytes and hold no other control character (below 32, or 127). It does not repair anything else: a text that is not clean is refused.
+pub fn clean[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (int, buffer.Buffer) {
+    var from = 0;
+    var to = len(text);
+    while from < to && is_space(int_of(text[from])) {
+        from = from + 1;
+    }
+    while to > from && is_space(int_of(text[to - 1])) {
+        to = to - 1;
+    }
+    if to - from >= 6 && bytes.starts_with(text[from..to], "```") && bytes.ends_with(text[from..to], "```") {
+        from = from + 3;
+        while from < to && int_of(text[from]) != 10 {
+            from = from + 1;
+        }
+        to = to - 3;
+        while from < to && is_space(int_of(text[from])) {
+            from = from + 1;
+        }
+        while to > from && is_space(int_of(text[to - 1])) {
+            to = to - 1;
+        }
+    }
+    if to - from >= 2 && int_of(text[from]) == 34 && int_of(text[to - 1]) == 34 {
+        from = from + 1;
+        to = to - 1;
+    }
+    var out = buffer.empty(heap, 256);
+    var count = 0;
+    var bad = false;
+    var i = from;
+    while i < to {
+        var c = int_of(text[i]);
+        if c == 10 || c == 13 || c == 9 {
+            c = 32;
+        }
+        if c < 32 || c == 127 {
+            bad = true;
+        }
+        out = buffer.push(heap, out, byte_of(c));
+        count = count + 1;
+        i = i + 1;
+    }
+    if bad || count < 1 || count > max_prompt() {
+        buffer.drop(heap, out);
+        return (6, buffer.empty(heap, 8));
+    }
+    return (0, out);
+}
+
+// The prompt in an Ollama answer: `message.content` of the JSON in `body`, cleaned. (code, prompt).
+pub fn from_answer[&h, &b](heap: &!h Heap, body: &b [byte]) -> [heap] (int, buffer.Buffer) {
+    var code = 5;
+    var result = buffer.empty(heap, 8);
+    let tape = box_slice(heap, json.tape_len(body), 0);
+    borrow mut tape as &!tw in {
+        let nodes = json.parse(body, contents(tw));
+        if nodes > 0 && json.is_object(contents(tw), 0) {
+            let msg = json.get(body, contents(tw), 0, "message");
+            if msg >= 0 && json.is_object(contents(tw), msg) {
+                let content = json.get(body, contents(tw), msg, "content");
+                if content >= 0 && json.is_string(contents(tw), content) {
+                    let n = json.string_length(body, contents(tw), content);
+                    if n >= 0 && n <= 16384 {
+                        let raw = box_slice(heap, n + 1, byte_of(0));
+                        borrow mut raw as &!rw in {
+                            let got = json.string_into(body, contents(tw), content, contents(rw));
+                            if got >= 0 && got <= n {
+                                let (c, text) = clean(heap, contents(rw)[0..got]);
+                                buffer.drop(heap, result);
+                                result = text;
+                                code = c;
+                            }
+                        }
+                        unbox_slice(heap, raw);
+                    } else {
+                        code = 6;
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, tape);
+    return (code, result);
+}
+
+// The body of an HTTP answer when its status is 200: (0, from) with `from` the index of the body's first byte; else (4 for any other status, 5 for something that is not an HTTP answer, 0 - 1).
+pub fn body_start[&a](answer: &a [byte]) -> [] (int, int) {
+    if bytes.starts_with(answer, "HTTP/1.") == false || len(answer) < 12 {
+        return (5, 0);
+    }
+    let cut = bytes.find(answer, "\r\n\r\n");
+    if cut < 0 {
+        return (5, 0);
+    }
+    if bytes.equal(answer[9..12], "200") == false {
+        return (4, 0);
+    }
+    return (0, cut + 4);
+}
+
+// Milliseconds left until `deadline` (unix ms), never below 1.
+fn left[&k](clock: &k Clock, deadline: int) -> [clock] int {
+    let now = clock_unix_ms(clock);
+    if now >= deadline {
+        return 0;
+    }
+    return deadline - now;
+}
+
+// Ask the rewriter for a prompt: (0, the prompt) or (a reason code, empty). `net` is the `Net` narrowed to 127.0.0.1:11434; `seconds` is the whole budget (connecting, loading the model, answering). `picture` is the
+// raw bytes of the picture (empty for none); they are encoded here and never kept.
+pub fn ask[&h, &n, &k, &m, &s, &p, &i](heap: &!h Heap, net: &n Net("127.0.0.1:11434"), clock: &k Clock, model: &m [byte], system: &s [byte], prompt: &p [byte], picture: &i [byte], seconds: int) -> [heap, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] (int, buffer.Buffer) {
+    let deadline = clock_unix_ms(clock) + seconds * 1000;
+    var body = buffer.empty(heap, 8);
+    if len(picture) > 0 {
+        let enc = b64(heap, picture);
+        borrow enc as &eb in {
+            buffer.drop(heap, body);
+            body = body_of(heap, model, system, prompt, buffer.bytes(eb));
+        }
+        buffer.drop(heap, enc);
+    } else {
+        buffer.drop(heap, body);
+        body = body_of(heap, model, system, prompt, "");
+    }
+    var body_len = 0;
+    borrow body as &bl in {
+        body_len = buffer.size(bl);
+    }
+    var req = buffer.append(heap, buffer.empty(heap, body_len + 256), "POST /api/chat HTTP/1.0\r\nHost: 127.0.0.1:11434\r\nContent-Type: application/json\r\nContent-Length: ");
+    req = buffer.push_nat(heap, req, body_len);
+    req = buffer.append(heap, req, "\r\n\r\n");
+    borrow body as &bb in {
+        req = buffer.append(heap, req, buffer.bytes(bb));
+    }
+    var req_len = 0;
+    borrow req as &rl in {
+        req_len = buffer.size(rl);
+    }
+    buffer.drop(heap, body);
+    var code = 1;
+    var resp = buffer.empty(heap, 4096);
+    var resp_len = 0;
+    match tcp_connect(net, "127.0.0.1", 11434) {
+        Dialed::Failed(e) => {
+        }
+        Dialed::Ok(opened) => {
+            var conn = opened;
+            code = 8;
+            borrow mut conn as &!cn0 in {
+                conn_nonblocking(cn0);
+            }
+            match poller_new() {
+                Polling::Failed(e) => {
+                }
+                Polling::Ok(pl) => {
+                    var poller = pl;
+                    code = 0;
+                    borrow conn as &cr in {
+                        borrow mut poller as &!pw in {
+                            poller_add_conn(pw, cr, 1, 2);
+                        }
+                    }
+                    let events = box_slice(heap, 8, 0);
+                    let scratch = box_slice(heap, 65536, byte_of(0));
+                    var sent = 0;
+                    var reading = false;
+                    var finished = false;
+                    while finished == false && code == 0 {
+                        var moved = false;
+                        if reading == false {
+                            borrow mut conn as &!cw in {
+                                borrow req as &rq in {
+                                    match conn_write(cw, buffer.bytes(rq)[sent..buffer.size(rq)]) {
+                                        Sent::Wrote(w) => {
+                                            sent = sent + w;
+                                            moved = true;
+                                        }
+                                        Sent::Again => {
+                                        }
+                                        Sent::Failed(e) => {
+                                            code = 2;
+                                        }
+                                    }
+                                }
+                            }
+                            if sent >= req_len && code == 0 {
+                                reading = true;
+                                borrow conn as &cr2 in {
+                                    borrow mut poller as &!pw2 in {
+                                        poller_modify(pw2, cr2, 1, 1);
+                                    }
+                                }
+                            }
+                        } else {
+                            borrow mut conn as &!cn in {
+                                borrow mut scratch as &!sc in {
+                                    match conn_read(cn, contents(sc)) {
+                                        Received::Data(got) => {
+                                            resp = buffer.append(heap, resp, contents(sc)[0..got]);
+                                            moved = true;
+                                            resp_len = resp_len + got;
+                                            if resp_len > max_answer() {
+                                                code = 7;
+                                            }
+                                        }
+                                        Received::End => {
+                                            finished = true;
+                                        }
+                                        Received::Again => {
+                                        }
+                                        Received::Failed(e) => {
+                                            code = 4;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if moved == false && finished == false && code == 0 {
+                            let ms = left(clock, deadline);
+                            if ms == 0 {
+                                code = 3;
+                            } else {
+                                borrow mut poller as &!pw3 in {
+                                    borrow mut events as &!ew in {
+                                        poller_wait(pw3, contents(ew), ms);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    unbox_slice(heap, events);
+                    unbox_slice(heap, scratch);
+                    poller_close(poller);
+                }
+            }
+            conn_close(conn);
+        }
+    }
+    buffer.drop(heap, req);
+    var prompt_out = buffer.empty(heap, 8);
+    if code == 0 {
+        borrow resp as &rr in {
+            let (status, from) = body_start(buffer.bytes(rr));
+            if status != 0 {
+                code = status;
+            } else {
+                let (c, text) = from_answer(heap, buffer.bytes(rr)[from..buffer.size(rr)]);
+                buffer.drop(heap, prompt_out);
+                prompt_out = text;
+                code = c;
+            }
+        }
+    }
+    buffer.drop(heap, resp);
+    return (code, prompt_out);
+}

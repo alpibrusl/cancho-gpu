@@ -1,0 +1,196 @@
+edition 10;
+
+import std.buffer;
+import std.io;
+import files;
+import rewrite;
+
+// rewrite_cli -- the rewriter of `studio/rewrite.cho` as a command, to check it and to use it by hand (docs/studio-rewrite.md, slice R1).
+//
+//   rewrite_cli clean <text>                                          the cleaning rule, on a text
+//   rewrite_cli b64 <file>                                            a file as base64 (RFC 4648, no line breaks)
+//   rewrite_cli ask <model> <system file> <prompt> <picture file|-> <seconds>
+//                                                                     one call to the Ollama at 127.0.0.1:11434
+//
+// Prints `code <n> <reason>` on the first line and, when there is one, the text on the second; the exit status is the code (0: a prompt). Built with
+//   cancho build studio/rewrite_cli.cho studio/rewrite.cho studio/files.cho --std -o build/rewrite_cli
+// Its authority is the point: `cancho authority` on it must name `net_out("127.0.0.1:11434")` and no other network.
+
+fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+fn put_bytes[&i, &t](io: &!i Io, text: &t [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+fn put_int[&i](io: &!i Io, n: int) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](24, byte_of(0));
+        var k = 0;
+        var v = n;
+        if v == 0 {
+            out[0] = byte_of(48);
+            k = 1;
+        }
+        while v > 0 {
+            out[k] = byte_of(48 + v % 10);
+            v = v / 10;
+            k = k + 1;
+        }
+        var l = 0;
+        var r = k - 1;
+        while l < r {
+            let tmp = out[l];
+            out[l] = out[r];
+            out[r] = tmp;
+            l = l + 1;
+            r = r - 1;
+        }
+        io.write_all(io, out[0..k]);
+    }
+    return 0;
+}
+
+fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 6 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn report[&i, &t](io: &!i Io, code: int, text: &t [byte]) -> [io_write] int {
+    put(io, "code ");
+    put_int(io, code);
+    put(io, " ");
+    put_bytes(io, rewrite.reason(code));
+    put(io, "\n");
+    if len(text) > 0 {
+        put_bytes(io, text);
+        put(io, "\n");
+    }
+    return code;
+}
+
+fn run[&i, &h, &f, &n, &k, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), net: &n Net("127.0.0.1:11434"), clock: &k Clock, args: &a Args) -> [args, io_write, heap, fs_read(""), file_read, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] int {
+    if arg_count(args) >= 3 && is_text(arg(args, 1), "clean") {
+        let (code, text) = rewrite.clean(heap, arg(args, 2));
+        var status = 0;
+        borrow text as &tb in {
+            status = report(io, code, buffer.bytes(tb));
+        }
+        buffer.drop(heap, text);
+        return status;
+    }
+    if arg_count(args) == 3 && is_text(arg(args, 1), "b64") {
+        let (data, e) = files.read_all(heap, fs, arg(args, 2));
+        if e != 0 {
+            put(io, "cannot read the file\n");
+            buffer.drop(heap, data);
+            return 100;
+        }
+        var enc = buffer.empty(heap, 8);
+        borrow data as &db in {
+            buffer.drop(heap, enc);
+            enc = rewrite.b64(heap, buffer.bytes(db));
+        }
+        borrow enc as &eb in {
+            put_bytes(io, buffer.bytes(eb));
+        }
+        put(io, "\n");
+        buffer.drop(heap, enc);
+        buffer.drop(heap, data);
+        return 0;
+    }
+    if arg_count(args) == 7 && is_text(arg(args, 1), "ask") {
+        let seconds = num(arg(args, 6));
+        if seconds < 1 || seconds > 3600 {
+            put(io, "seconds is 1 to 3600\n");
+            return 101;
+        }
+        let (system, e1) = files.read_all(heap, fs, arg(args, 3));
+        var picture = buffer.empty(heap, 8);
+        var e2 = 0;
+        if is_text(arg(args, 5), "-") == false {
+            let (p, e) = files.read_all(heap, fs, arg(args, 5));
+            buffer.drop(heap, picture);
+            picture = p;
+            e2 = e;
+        }
+        var status = 102;
+        if e1 == 0 && e2 == 0 {
+            borrow system as &sb in {
+                borrow picture as &pb in {
+                    let (code, text) = rewrite.ask(heap, net, clock, arg(args, 2), buffer.bytes(sb), arg(args, 4), buffer.bytes(pb), seconds);
+                    borrow text as &tb in {
+                        status = report(io, code, buffer.bytes(tb));
+                    }
+                    buffer.drop(heap, text);
+                }
+            }
+        } else {
+            put(io, "cannot read the system prompt or the picture\n");
+        }
+        buffer.drop(heap, system);
+        buffer.drop(heap, picture);
+        return status;
+    }
+    put(io, "usage: rewrite_cli clean <text> | b64 <file> | ask <model> <system file> <prompt> <picture file|-> <seconds>\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(signals);
+    release(exec);
+    release(tty);
+    let ollama = narrow(net, "127.0.0.1:11434");
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow ollama as &o in {
+                    borrow clock as &c in {
+                        borrow args as &g in {
+                            status = run(i, h, f, o, c, g);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    release(ollama);
+    release(clock);
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}
