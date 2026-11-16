@@ -43,6 +43,11 @@ Until 1 and 2 exist: `edit` takes a path on the server's machine, and the result
 * `edit`: the photo is read, never committed or uploaded; the server logs the path's basename, not the prompt.
 * The page requires `Network` and `NetworkWrite` and nothing else; `cancho-ui authority` lists them.
 
+## Built so far (2026-11-16)
+
+* **Slice 1**: `studio/studio.cho`, the loopback server (page, `/api/models`).
+* **Worker, slice 2a**: `studio/worker.cho` (+ `studio/files.cho`): `studio_worker <script> <home> <job-dir>` starts the script on the argument list in `<job-dir>/argv` (NUL-separated, as the server will write it), output to `<job-dir>/log`, and writes `<job-dir>/state` (`running`, then `done` or `failed N`). One job per process; the queue (the server writing `argv` and starting workers one at a time) is not built. `studio/check.sh` runs it against a fake script, no GPU: 9 checks pass (arguments with shell metacharacters arrive as data; exit 7 is `failed 7`; a missing `argv` writes nothing; a relative job directory is refused). **Not checked:** the worker running the real `scripts/media`; the authority report (the worker holds `Exec("")`, not narrowed to the script's prefix: a gap).
+
 ## Slices
 
 1. Server with `/api/models` and `/api/jobs` (fake worker that sleeps), tested over real sockets as `cancho-web/examples/users` is. Gate: OpenAPI document checked in.

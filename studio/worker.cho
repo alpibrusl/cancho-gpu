@@ -1,0 +1,138 @@
+edition 9;
+
+import std.buffer;
+import std.io;
+import files;
+
+// studio_worker -- runs one job: docs/studio.md, slice 2.
+//
+//   studio_worker <script> <home> <job-dir>
+//
+// `<job-dir>/argv` holds the argument list of `<script>` (the studio's `media`), each entry followed by a NUL, as the server wrote it after
+// `std.process.add` had refused any entry with a NUL in it. The worker starts `<script>` on that list, its output and errors written to
+// `<job-dir>/log`, waits for it, and writes `<job-dir>/state`: `running` first, then `done` or `failed <code>`. It reads no prompt and
+// interprets nothing: the list is the server's, the process is the script's.
+
+// `<dir>/<name>` as bytes.
+fn under[&h, &d, &n](heap: &!h Heap, dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 128), dir);
+    b = buffer.push(heap, b, byte_of(47));
+    return buffer.append(heap, b, name);
+}
+
+fn put[&h, &f, &d, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], name: &static [byte], text: &t [byte]) -> [heap, fs_write(""), file_write] int {
+    let p = under(heap, dir, name);
+    var code = 0;
+    borrow p as &pb in {
+        code = files.write_all(fs, buffer.bytes(pb), text);
+    }
+    buffer.drop(heap, p);
+    return code;
+}
+
+// Start `script` on `list` with the output in `log`, and wait: the exit status, 128 + the signal, 255 if it did not run.
+fn run[&x, &s, &l, &e](exec: &x Exec(""), script: &s [byte], list: &l [byte], env: &e [byte], log: File) -> [exec("")] int {
+    match exec_spawn(exec, script, list, env, Stdio::Null, Stdio::File(log), Stdio::Null) {
+        Spawned::Ok(child) => {
+            match child_wait(child) {
+                Exited::Code(n) => {
+                    return n;
+                }
+                Exited::Signaled(sg) => {
+                    return 128 + sg;
+                }
+                Exited::Failed(er) => {
+                    return 255;
+                }
+            }
+        }
+        Spawned::Failed(er) => {
+            return 255;
+        }
+    }
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(signals);
+    release(tty);
+    release(net);
+    release(clock);
+    var status = 2;
+    borrow args as &g in {
+        if arg_count(g) == 4 {
+            let script = arg(g, 1);
+            let home = arg(g, 2);
+            let dir = arg(g, 3);
+            borrow fs as &f in {
+                borrow mut heap as &!h in {
+                    let argv_path = under(h, dir, "argv");
+                    var list = buffer.empty(h, 8);
+                    var errno = 0 - 1;
+                    borrow argv_path as &ap in {
+                        let (b, e) = files.read_all(h, f, buffer.bytes(ap));
+                        buffer.drop(h, list);
+                        list = b;
+                        errno = e;
+                    }
+                    buffer.drop(h, argv_path);
+                    status = 3;
+                    if errno == 0 && files.path_ok(f, script) {
+                        status = 4;
+                        put(h, f, dir, "state", "running\n");
+                        let log_path = under(h, dir, "log");
+                        borrow log_path as &lp in {
+                            if files.path_ok(f, buffer.bytes(lp)) {
+                                match open_write(f, buffer.bytes(lp)) {
+                                    Opened::Ok(log) => {
+                                        var env = buffer.append(h, buffer.empty(h, 128), "HOME=");
+                                        env = buffer.append(h, env, home);
+                                        env = buffer.append(h, env, "\0PATH=/usr/bin:/bin:/opt/homebrew/bin\0");
+                                        var code = 255;
+                                        borrow list as &lb in {
+                                            borrow env as &eb in {
+                                                borrow exec as &xe in {
+                                                    code = run(xe, script, buffer.bytes(lb), buffer.bytes(eb), log);
+                                                }
+                                            }
+                                        }
+                                        buffer.drop(h, env);
+                                        var line = buffer.empty(h, 32);
+                                        if code == 0 {
+                                            line = buffer.append(h, line, "done\n");
+                                        } else {
+                                            line = buffer.append(h, line, "failed ");
+                                            line = buffer.push_nat(h, line, code);
+                                            line = buffer.push(h, line, byte_of(10));
+                                        }
+                                        borrow line as &ln in {
+                                            put(h, f, dir, "state", buffer.bytes(ln));
+                                        }
+                                        buffer.drop(h, line);
+                                        status = code;
+                                    }
+                                    Opened::Failed(er) => {
+                                        put(h, f, dir, "state", "failed 254\n");
+                                    }
+                                }
+                            }
+                        }
+                        buffer.drop(h, log_path);
+                    }
+                    buffer.drop(h, list);
+                }
+            }
+        } else {
+            borrow mut io as &!i in {
+                io.error_all(i, "usage: studio_worker <script> <home> <absolute job-dir>\n");
+            }
+        }
+    }
+    release(exec);
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}
