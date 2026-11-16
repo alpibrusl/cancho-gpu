@@ -1,0 +1,132 @@
+edition 9;
+
+module files;
+
+import std.buffer;
+
+// `files` -- whole-file reads and writes for the studio, after cancho-ota-ui's `eventlog_io` (the same path rules: an absolute path,
+// no NUL, one `fs_covers` says is inside the capability; the capability is `Fs("")` because a library cannot be generic in the prefix).
+
+pub fn path_ok[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [] bool {
+    if len(path) < 2 || len(path) > 512 || int_of(path[0]) != 47 {
+        return false;
+    }
+    var k = 0;
+    while k < len(path) {
+        if int_of(path[k]) == 0 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return fs_covers(fs, path);
+}
+
+fn drain[&h, &x](heap: &!h Heap, file: &!x File, all: buffer.Buffer) -> [heap, file_read] (buffer.Buffer, int) {
+    var out = all;
+    var errno = 0;
+    var more = true;
+    let scratch = box_slice(heap, 4096, byte_of(0));
+    borrow mut scratch as &!sw in {
+        while more {
+            match file_read(file, contents(sw)) {
+                Read::Got(n) => {
+                    out = buffer.append(heap, out, contents(sw)[0..n]);
+                }
+                Read::End => {
+                    more = false;
+                }
+                Read::Failed(e) => {
+                    errno = e;
+                    more = false;
+                }
+            }
+        }
+    }
+    unbox_slice(heap, scratch);
+    return (out, errno);
+}
+
+// The file's bytes and 0, or an errno (-2: path not ok; 2: no such file).
+pub fn read_all[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+    let all = buffer.empty(heap, 256);
+    if path_ok(fs, path) == false {
+        return (all, 0 - 2);
+    }
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return (all, e);
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var data = all;
+            var errno = 0;
+            borrow mut file as &!x in {
+                let (got, e) = drain(heap, x, data);
+                data = got;
+                errno = e;
+            }
+            file_close(file);
+            return (data, errno);
+        }
+    }
+}
+
+// Create or truncate `path` and write `text` with one write: 0, an errno, -1 for a short write, -2 for a path not ok.
+pub fn write_all[&f, &p, &t](fs: &f Fs(""), path: &p [byte], text: &t [byte]) -> [fs_write(""), file_write] int {
+    if path_ok(fs, path) == false {
+        return 0 - 2;
+    }
+    var status = 0;
+    match open_write(fs, path) {
+        Opened::Failed(e) => {
+            status = e;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            borrow mut file as &!x in {
+                match file_write(x, text) {
+                    Done::Ok(n) => {
+                        if n != len(text) {
+                            status = 0 - 1;
+                        }
+                    }
+                    Done::Failed(e) => {
+                        status = e;
+                    }
+                }
+            }
+            file_close(file);
+        }
+    }
+    return status;
+}
+
+// Append `text` to `path` (created if absent) with one write: 0, an errno, -1 for a short write, -2 for a path not ok.
+pub fn append_all[&f, &p, &t](fs: &f Fs(""), path: &p [byte], text: &t [byte]) -> [fs_write(""), file_write] int {
+    if path_ok(fs, path) == false {
+        return 0 - 2;
+    }
+    var status = 0;
+    match open_append(fs, path) {
+        Opened::Failed(e) => {
+            status = e;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            borrow mut file as &!x in {
+                match file_write(x, text) {
+                    Done::Ok(n) => {
+                        if n != len(text) {
+                            status = 0 - 1;
+                        }
+                    }
+                    Done::Failed(e) => {
+                        status = e;
+                    }
+                }
+            }
+            file_close(file);
+        }
+    }
+    return status;
+}
