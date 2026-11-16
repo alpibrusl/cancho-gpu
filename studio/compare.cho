@@ -90,19 +90,6 @@ fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir:
     return p;
 }
 
-// The last entry of a job's argument list: the prompt as written.
-fn last_entry[&l](list: &l [byte]) -> [] (int, int) {
-    var end = len(list);
-    if end > 0 && int_of(list[end - 1]) == 0 {
-        end = end - 1;
-    }
-    var start = end;
-    while start > 0 && int_of(list[start - 1]) != 0 {
-        start = start - 1;
-    }
-    return (start, end);
-}
-
 fn id_text[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
     return digits(heap, n);
 }
@@ -203,7 +190,7 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         page = buffer.append(heap, page, ".</p>");
         if has_argv {
             borrow ag as &agr in {
-                let (a, b) = last_entry(buffer.bytes(agr));
+                let (a, b) = results.last_entry(buffer.bytes(agr));
                 page = buffer.append(heap, page, "<p>as written: ");
                 page = results.escape(heap, page, buffer.bytes(agr)[a..b]);
                 page = buffer.append(heap, page, "</p>");

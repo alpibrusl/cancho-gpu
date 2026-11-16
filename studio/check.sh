@@ -528,4 +528,27 @@ check "style: ...and needs the token: 401" "$(curl -s -o /dev/null -w '%{http_co
 check "style: the set page links it and is mobile-ready" "$(cget /sets/$VF | grep -c 'href=/style.css') $(cget /sets/$VF | grep -c 'name=viewport')" "1 1"
 check "style: every page the server writes links it (jobs, a job, a set, compare index, the edit form)" "$(for u in /jobs /jobs/$VF /sets/$VF /compare /edit; do cget $u | grep -c 'href=/style.css'; done | tr '\n' ' ')" "1 1 1 1 1 "
 check "variations: /sets with no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/sets/$VF)" 401
+# The CLI's parameters in the API (steps, fps, model), the prompt on the pages, and the /edit form's variations (docs/studio-variations.md, section 8).
+argv_of() { tr '\0' ' ' < "$R/off/$1.argv" | sed 's#out/[0-9]*#out/X#'; }
+Pq=$(wc -l < "$R/off/queue" | tr -d ' ')
+PE=$(pj '{"kind":"edit","prompt":"param edit","image":"/tmp/p.png","seed":2,"steps":4,"model":"qwen-image-2.1-turbo"}'); PEI=$(echo "$PE" | jq -r .id)
+check "params: an edit with steps and model reaches media as --model and --steps" "$(argv_of $PEI)" "edit -o $R/off/out/X --seed 2 --model qwen-image-2.1-turbo --steps 4 -- /tmp/p.png param edit "
+PV=$(pj '{"kind":"video","prompt":"param video","fps":24,"model":"fastwan2.2-ti2v-5b"}'); PVI=$(echo "$PV" | jq -r .id)
+check "params: a video with fps and model reaches media as --model and --fps" "$(argv_of $PVI)" "video -o $R/off/out/X --model fastwan2.2-ti2v-5b --fps 24 -- param video "
+Pq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"kind":"video","prompt":"x","steps":4' '"kind":"edit","prompt":"x","image":"/tmp/p.png","fps":24' '"kind":"edit","prompt":"x","image":"/tmp/p.png","steps":0' '"kind":"edit","prompt":"x","image":"/tmp/p.png","steps":51' '"kind":"edit","prompt":"x","image":"/tmp/p.png","steps":"4"' '"kind":"video","prompt":"x","fps":61' '"kind":"video","prompt":"x","fps":0' '"kind":"video","prompt":"x","model":"../x"' '"kind":"video","prompt":"x","model":"Fast Wan"' '"kind":"video","prompt":"x","model":""' '"kind":"video","prompt":"x","model":5'; do
+  check "params: refused 422: $bad" "$(po "{$bad}" | tail -c 4)" " 422"
+done
+check "params: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Pq2"
+PH=$(pj '{"kind":"video","prompt":"a <b>fox</b> & \"snow\""}'); PHI=$(echo "$PH" | jq -r .id)
+check "prompt: a job page shows the prompt, escaped, even with no rewrite" "$(cget /jobs/$PHI | grep -c 'prompt: a &lt;b&gt;fox&lt;/b&gt; &amp; &quot;snow&quot;')" 1
+check "prompt: a set page shows it once" "$(cget /sets/$VF | grep -o 'prompt: fox' | wc -l | tr -d ' ')" 1
+check "prompt: a rewritten job still shows its prompt once (the pair's first job)" "$(cget /jobs/$A1 | grep -o 'prompt: ' | wc -l | tr -d ' ')" 1
+check "edit form: it offers variations, steps and model" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=variations\|name=steps\|name=model' | sort | tr '\n' ' ')" "name=model name=steps name=variations "
+EV=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=vary -F variations=3 -F steps=4 -F model=qwen-image-2.1-turbo -F "image=@$R/pic.png" localhost:18097/edit); EVI=${EV##*/}
+check "edit form: variations=3 goes to /sets/N" "$(echo "$EV" | sed 's#.*/sets/[0-9]*#ok#')" ok
+check "edit form: ...three jobs with the seeds 1, 2, 3 and the steps and model in each" "$(for k in 0 1 2; do argv_of $((EVI + k)) | sed 's#.*--seed \([0-9]*\) --model \([^ ]*\) --steps \([0-9]*\) .*#\1/\2/\3#'; echo; done | tr '\n' ' ')" "1/qwen-image-2.1-turbo/4 2/qwen-image-2.1-turbo/4 3/qwen-image-2.1-turbo/4 "
+check "edit form: variations=1 is one job and goes to /jobs/N" "$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=one -F variations=1 -F "image=@$R/pic.png" localhost:18097/edit | sed 's#.*/jobs/[0-9]*#ok#')" ok
+check "edit form: variations=9 is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=nine -F variations=9 -F "image=@$R/pic.png" localhost:18097/edit)" 422
+check "edit form: steps that are not digits are refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=s -F steps=4x -F "image=@$R/pic.png" localhost:18097/edit)" 422
 exit $fail

@@ -123,7 +123,18 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
     }
     page = buffer.append(heap, page, "<title>cancho-studio: variations</title><h1>variations</h1><p>");
     page = buffer.push_nat(heap, page, count);
-    page = buffer.append(heap, page, " jobs of one request, one seed each. They run one after another: the time is that many times one job's.</p><div class=grid>");
+    page = buffer.append(heap, page, " jobs of one request, one seed each. They run one after another: the time is that many times one job's.</p>");
+    let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
+    if has_av {
+        borrow av as &avr in {
+            let (ps, pe) = results.last_entry(buffer.bytes(avr));
+            page = buffer.append(heap, page, "<p>prompt: ");
+            page = results.escape(heap, page, buffer.bytes(avr)[ps..pe]);
+            page = buffer.append(heap, page, "</p>");
+        }
+    }
+    buffer.drop(heap, av);
+    page = buffer.append(heap, page, "<div class=grid>");
     borrow body as &br in {
         page = buffer.append(heap, page, buffer.bytes(br));
     }

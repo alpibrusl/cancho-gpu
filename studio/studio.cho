@@ -246,13 +246,19 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 let (ust, utext, uid) = upload.handle(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr), rewrite_on);
                                 if ust == 302 {
                                     var to_pair = false;
+                                    var to_set = false;
                                     borrow utext as &utp in {
-                                        to_pair = len(buffer.bytes(utp)) > 0;
+                                        to_pair = bytes.equal(buffer.bytes(utp), "pair");
+                                        to_set = bytes.equal(buffer.bytes(utp), "set");
                                     }
                                     var extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /jobs/");
                                     if to_pair {
                                         buffer.drop(heap, extra);
                                         extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /compare/");
+                                    }
+                                    if to_set {
+                                        buffer.drop(heap, extra);
+                                        extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /sets/");
                                     }
                                     extra = buffer.push_nat(heap, extra, uid);
                                     extra = buffer.append(heap, extra, "\r\n");

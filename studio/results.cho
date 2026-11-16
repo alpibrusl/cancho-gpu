@@ -135,6 +135,19 @@ pub fn job_file[&h, &f, &d, &i, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte
 }
 
 // The page of job `id` (the text after `/jobs/`): 200, 404 for an id with no argument file, 422 for one that is not 1 to 9 digits.
+// The last entry of a job's argument list (`<id>.argv`, entries ended by a NUL): the prompt as written. (start, end) of it in the list.
+pub fn last_entry[&l](list: &l [byte]) -> [] (int, int) {
+    var end = len(list);
+    if end > 0 && int_of(list[end - 1]) == 0 {
+        end = end - 1;
+    }
+    var start = end;
+    while start > 0 && int_of(list[start - 1]) != 0 {
+        start = start - 1;
+    }
+    return (start, end);
+}
+
 pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     if id_ok(id) == false {
         return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
@@ -166,6 +179,19 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     let (orig, has_orig) = job_file(heap, fs, dir, id, ".prompt.orig");
     let (fresh, has_fresh) = job_file(heap, fs, dir, id, ".prompt.new");
     let (flag, has_flag) = job_file(heap, fs, dir, id, ".rewrite");
+    if has_orig == false {
+        // a job that was not rewritten has no `.prompt.orig`: its prompt is the last entry of its argument list
+        let (av, has_av) = job_file(heap, fs, dir, id, ".argv");
+        if has_av {
+            borrow av as &avr in {
+                let (ps, pe) = last_entry(buffer.bytes(avr));
+                page = buffer.append(heap, page, "<p>prompt: ");
+                page = escape(heap, page, buffer.bytes(avr)[ps..pe]);
+                page = buffer.append(heap, page, "</p>");
+            }
+        }
+        buffer.drop(heap, av);
+    }
     if has_orig {
         page = buffer.append(heap, page, "<p>prompt: ");
         borrow orig as &obr in {

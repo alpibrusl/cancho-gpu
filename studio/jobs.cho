@@ -32,6 +32,22 @@ fn size_ok[&t](text: &t [byte]) -> [] bool {
     return x >= 2 && x <= 4 && len(text) - x - 1 >= 2 && len(text) - x - 1 <= 4;
 }
 
+// A model name as `media models` lists them: 1 to 40 of a-z, 0-9, `.`, `-`, `_` (media refuses a name it does not know; this keeps the argument a plain word).
+fn model_ok[&t](text: &t [byte]) -> [] bool {
+    if len(text) < 1 || len(text) > 40 {
+        return false;
+    }
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if (c >= 97 && c <= 122) == false && (c >= 48 && c <= 57) == false && c != 46 && c != 45 && c != 95 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
 fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
     return buffer.push_nat(heap, buffer.empty(heap, 12), n);
 }
@@ -80,6 +96,9 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
             let size_n = json.get(body, tp, 0, "size");
             let seed_n = json.get(body, tp, 0, "seed");
             let rewrite_n = json.get(body, tp, 0, "rewrite");
+            let steps_n = json.get(body, tp, 0, "steps");
+            let fps_n = json.get(body, tp, 0, "fps");
+            let model_n = json.get(body, tp, 0, "model");
             var why = "";
             if is_video == false && is_edit == false {
                 why = "kind is video or edit";
@@ -91,6 +110,12 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                 why = "frames is an integer from 1 to 129";
             } else if seed_n >= 0 && (json.to_int(body, tp, seed_n) < 0 || json.to_int(body, tp, seed_n) > 2147483647) {
                 why = "seed is an integer from 0 to 2147483647";
+            } else if steps_n >= 0 && (is_edit == false || json.is_int(tp, steps_n) == false || json.to_int(body, tp, steps_n) < 1 || json.to_int(body, tp, steps_n) > 50) {
+                why = "steps is an integer from 1 to 50, for an edit";
+            } else if fps_n >= 0 && (is_video == false || json.is_int(tp, fps_n) == false || json.to_int(body, tp, fps_n) < 1 || json.to_int(body, tp, fps_n) > 60) {
+                why = "fps is an integer from 1 to 60, for a video";
+            } else if model_n >= 0 && (json.is_string(tp, model_n) == false || json.string_plain(tp, model_n) == false || model_ok(json.string_view(body, tp, model_n)) == false) {
+                why = "model is a name from /api/models: 1 to 40 of a-z, 0-9, dot, dash, underscore";
             } else if size_n >= 0 && (json.string_plain(tp, size_n) == false || size_ok(json.string_view(body, tp, size_n)) == false) {
                 why = "size is WxH, for example 640x352";
             } else if rewrite_n >= 0 && (json.is_string(tp, rewrite_n) == false || (json.string_equals(body, tp, rewrite_n, "on") == false && json.string_equals(body, tp, rewrite_n, "off") == false && json.string_equals(body, tp, rewrite_n, "ab") == false)) {
@@ -163,6 +188,38 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             bad = bad + e9;
                         }
                         buffer.drop(heap, sb);
+                    }
+                    if model_n >= 0 {
+                        let (la, ea) = process.add(heap, list, "--model");
+                        list = la;
+                        bad = bad + ea;
+                        let (lb, eb) = process.add(heap, list, json.string_view(body, tp, model_n));
+                        list = lb;
+                        bad = bad + eb;
+                    }
+                    if is_edit && steps_n >= 0 {
+                        let (lc, ec) = process.add(heap, list, "--steps");
+                        list = lc;
+                        bad = bad + ec;
+                        let stb = digits(heap, json.to_int(body, tp, steps_n));
+                        borrow stb as &stbb in {
+                            let (ld, ed) = process.add(heap, list, buffer.bytes(stbb));
+                            list = ld;
+                            bad = bad + ed;
+                        }
+                        buffer.drop(heap, stb);
+                    }
+                    if is_video && fps_n >= 0 {
+                        let (le, ee) = process.add(heap, list, "--fps");
+                        list = le;
+                        bad = bad + ee;
+                        let fpb = digits(heap, json.to_int(body, tp, fps_n));
+                        borrow fpb as &fpbb in {
+                            let (lf, ef) = process.add(heap, list, buffer.bytes(fpbb));
+                            list = lf;
+                            bad = bad + ef;
+                        }
+                        buffer.drop(heap, fpb);
                     }
                     // `--` so that a prompt that starts with `-` is a prompt, not an option.
                     let (l10, e10) = process.add(heap, list, "--");

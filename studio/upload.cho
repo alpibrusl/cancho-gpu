@@ -18,7 +18,7 @@ import jobs;
 // by the picture's first bytes (JPEG, PNG or WebP; anything else is refused, whatever its name or `Content-Type` says).
 
 pub fn form_page() -> [] &static [byte] {
-    return "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md) <select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
+    return "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit) <select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label></p><p><label>Steps (optional; the model's default is 8) <input name=steps type=number min=1 max=50></label></p><p><label>Model (optional; see /api/models) <input name=model maxlength=40></label></p><p><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md) <select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
 }
 
 // (from, to) of the boundary in a `Content-Type` value, or (-1, -1) for none, an empty one or one over 70 bytes.
@@ -184,6 +184,9 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             let (pf, pt) = part(body, dl, "prompt");
             let (sf, st) = part(body, dl, "seed");
             let (rwf, rwt) = part(body, dl, "rewrite");
+            let (vf, vt) = part(body, dl, "variations");
+            let (stpf, stpt) = part(body, dl, "steps");
+            let (mf, mt) = part(body, dl, "model");
             let (imf, imt) = part(body, dl, "image");
             var kind = 0;
             if imf >= 0 && imt - imf >= 16 {
@@ -199,6 +202,12 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "the picture is not a JPEG, PNG or WebP file";
             } else if sf >= 0 && st > sf && all_digits(body[sf..st]) == false {
                 why = "seed is an integer from 0 to 2147483647";
+            } else if vf >= 0 && vt > vf && (all_digits(body[vf..vt]) == false || vt - vf > 2) {
+                why = "variations is a whole number from 1 to 8";
+            } else if stpf >= 0 && stpt > stpf && (all_digits(body[stpf..stpt]) == false || stpt - stpf > 3) {
+                why = "steps is a whole number from 1 to 50";
+            } else if mf >= 0 && mt > mf && no_controls(body[mf..mt]) == false {
+                why = "the model name has no control characters";
             } else if rwf >= 0 && rwt > rwf && bytes.equal(body[rwf..rwt], "on") == false && bytes.equal(body[rwf..rwt], "off") == false && bytes.equal(body[rwf..rwt], "ab") == false {
                 why = "rewrite is on, off or ab";
             } else {
@@ -242,6 +251,19 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             json = buffer.append(heap, json, body[rwf..rwt]);
                             json = buffer.push(heap, json, byte_of(34));
                         }
+                        if vf >= 0 && vt > vf && bytes.equal(body[vf..vt], "1") == false {
+                            json = buffer.append(heap, json, ",\"variations\":");
+                            json = buffer.append(heap, json, body[vf..vt]);
+                        }
+                        if stpf >= 0 && stpt > stpf {
+                            json = buffer.append(heap, json, ",\"steps\":");
+                            json = buffer.append(heap, json, body[stpf..stpt]);
+                        }
+                        if mf >= 0 && mt > mf {
+                            json = buffer.append(heap, json, ",\"model\":\"");
+                            json = quoted(heap, json, body[mf..mt]);
+                            json = buffer.push(heap, json, byte_of(34));
+                        }
                         json = buffer.append(heap, json, "}");
                         borrow json as &jb in {
                             let (cst, reply) = jobs.create(heap, fs, dir, buffer.bytes(jb), rewrite_default);
@@ -253,14 +275,19 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                         buffer.drop(heap, json);
                         if status == 202 {
                             var paired = false;
+                            var made_set = false;
                             borrow answer as &ab in {
                                 made = id_in(buffer.bytes(ab));
                                 paired = bytes.find(buffer.bytes(ab), "pair") >= 0;
+                                made_set = bytes.find(buffer.bytes(ab), "\"set\"") >= 0;
                             }
                             buffer.drop(heap, answer);
                             answer = buffer.empty(heap, 8);
                             if paired {
                                 answer = buffer.append(heap, answer, "pair");
+                            }
+                            if made_set {
+                                answer = buffer.append(heap, answer, "set");
                             }
                             status = 302;
                         }

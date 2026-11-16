@@ -16,6 +16,10 @@ component Studio {
     state size: String = "640x352";
     state seed: String = "0";
     state rewrite: String = "off";
+    state steps: String = "8";
+    state fps: String = "16";
+    state variations: String = "1";
+    state model: String = "";
     state job: String = "";
     state job_state: String = "";
     state note: String = "Nothing started yet.";
@@ -53,12 +57,22 @@ component Studio {
     on Size(v) { size = v; }
     on Seed(v) { seed = v; }
     on Rewrite(v) { rewrite = v; }
+    on Steps(v) { steps = v; }
+    on Fps(v) { fps = v; }
+    on Variations(v) { variations = v; }
+    on Model(v) { model = v; }
 
     on Start {
         busy = true;
         blocked = true;
         note = "Sending ...";
-        extra = if kind == "edit" { ",\"image\":" + json.quote(image) } else { "" };
+        extra = if kind == "edit" { ",\"image\":" + json.quote(image) + ",\"steps\":" + steps } else { ",\"fps\":" + fps };
+        if variations != "1" {
+            extra = extra + ",\"variations\":" + variations;
+        }
+        if len(model) > 0 {
+            extra = extra + ",\"model\":" + json.quote(model);
+        }
         extra = extra + ",\"rewrite\":" + json.quote(rewrite);
         sent = await(net.post("api/jobs", "\{\"kind\":" + json.quote(kind) + ",\"prompt\":" + json.quote(prompt) + ",\"frames\":" + frames + ",\"size\":" + json.quote(size) + ",\"seed\":" + seed + extra + "\}"));
         accepted = match sent {
@@ -69,7 +83,11 @@ component Studio {
         note = match sent {
             Ok(reply) => {
                 if accepted {
-                    "Job " + json.get(json.get(reply, "body", ""), "id", "?") + " is queued."
+                    if len(json.get(json.get(reply, "body", ""), "set", "")) > 0 {
+                        "Variations queued: open " + json.get(json.get(reply, "body", ""), "set", "") + " on this server."
+                    } else {
+                        "Job " + json.get(json.get(reply, "body", ""), "id", "?") + " is queued."
+                    }
                 } else {
                     "The server refused it: " + json.get(json.get(reply, "body", ""), "error", "status " + json.get(reply, "status", "?")) + "."
                 }
@@ -107,7 +125,11 @@ component Studio {
             TextField { label: "Picture to edit (a path on the server's machine)" value: image on: Image disabled: is_video }
             Select { label: "Frames (a video)" options: ["17", "9", "25", "33"] value: frames on: Frames disabled: is_edit }
             Select { label: "Size (a video)" options: ["640x352", "512x288", "1024x576"] value: size on: Size disabled: is_edit }
-            Select { label: "Seed" options: ["0", "1", "2", "3", "4"] value: seed on: Seed }
+            Select { label: "Steps (an edit; the model's default is 8)" options: ["8", "4", "6", "12", "20", "30", "50"] value: steps on: Steps disabled: is_video }
+            Select { label: "Frames a second (a video)" options: ["16", "8", "12", "24", "30"] value: fps on: Fps disabled: is_edit }
+            Select { label: "Seed" options: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "42", "123", "1234"] value: seed on: Seed }
+            Select { label: "Variations (the same request with this many seeds, shown together; each takes as long as one job)" options: ["1", "2", "3", "4", "5", "6", "7", "8"] value: variations on: Variations }
+            TextField { label: "Model (empty: the default; the names are at /api/models)" value: model on: Model }
             Select { label: "Rewrite the prompt first (a local model; off until it is measured to help)" options: ["off", "on", "ab"] value: rewrite on: Rewrite }
             Button { label: "Start" on: Start disabled: blocked }
             Text { role: status "{note}" }
