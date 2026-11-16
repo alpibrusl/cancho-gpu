@@ -1,0 +1,316 @@
+edition 9;
+
+module jobs;
+
+import std.buffer;
+import std.json;
+import std.process;
+import files;
+
+// `jobs` -- the server's half of the queue (docs/studio.md, slice 2). `create` turns a request body into `<data>/<id>.argv` (the argument
+// list `media` will be started on, written with `std.process.add`, which refuses a NUL) and one line in `<data>/queue`; the worker does the rest.
+// This process is the only writer of both. It checks the shape of the request, not the model's limits: `media` refuses what is over them, and
+// that refusal is the job's `failed 1` and its log.
+
+// 0 when `text` is `W x H`: two decimal numbers of 2 to 4 digits.
+fn size_ok[&t](text: &t [byte]) -> [] bool {
+    var x = 0 - 1;
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c == 120 {
+            if x >= 0 {
+                return false;
+            }
+            x = k;
+        } else if c < 48 || c > 57 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return x >= 2 && x <= 4 && len(text) - x - 1 >= 2 && len(text) - x - 1 <= 4;
+}
+
+fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
+    return buffer.push_nat(heap, buffer.empty(heap, 12), n);
+}
+
+// The number of lines in the queue file, plus one: the next id. 0 on a read error.
+fn next_id[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] int {
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    var n = 1;
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        if e != 0 && e != 2 {
+            n = 0;
+        } else {
+            borrow b as &bb in {
+                let all = buffer.bytes(bb);
+                var k = 0;
+                while k < len(all) {
+                    if int_of(all[k]) == 10 {
+                        n = n + 1;
+                    }
+                    k = k + 1;
+                }
+            }
+        }
+        buffer.drop(heap, b);
+    }
+    buffer.drop(heap, qp);
+    return n;
+}
+
+// Make a job from `body`. (status, JSON answer): 202 {"id":N}, or 422 / 500 with a one-line reason.
+pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+    let tape = box_slice(heap, json.tape_len(body), 0);
+    var status = 422;
+    var answer = buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"the body is not a JSON object\"}");
+    borrow mut tape as &!tw in {
+        let nodes = json.parse(body, contents(tw));
+        if nodes > 0 && json.is_object(contents(tw), 0) {
+            let tp = contents(tw);
+            let kind_n = json.get(body, tp, 0, "kind");
+            let prompt_n = json.get(body, tp, 0, "prompt");
+            let is_video = kind_n >= 0 && json.string_equals(body, tp, kind_n, "video");
+            let is_edit = kind_n >= 0 && json.string_equals(body, tp, kind_n, "edit");
+            let image_n = json.get(body, tp, 0, "image");
+            let frames_n = json.get(body, tp, 0, "frames");
+            let size_n = json.get(body, tp, 0, "size");
+            let seed_n = json.get(body, tp, 0, "seed");
+            var why = "";
+            if is_video == false && is_edit == false {
+                why = "kind is video or edit";
+            } else if prompt_n < 0 || json.string_length(body, tp, prompt_n) < 1 || json.string_length(body, tp, prompt_n) > 1000 {
+                why = "prompt is a string of 1 to 1000 bytes";
+            } else if is_edit && (image_n < 0 || json.string_length(body, tp, image_n) < 2 || json.string_length(body, tp, image_n) > 400) {
+                why = "an edit needs image: the absolute path of a file on the server's machine";
+            } else if frames_n >= 0 && (json.to_int(body, tp, frames_n) < 1 || json.to_int(body, tp, frames_n) > 129) {
+                why = "frames is an integer from 1 to 129";
+            } else if seed_n >= 0 && (json.to_int(body, tp, seed_n) < 0 || json.to_int(body, tp, seed_n) > 2147483647) {
+                why = "seed is an integer from 0 to 2147483647";
+            } else if size_n >= 0 && (json.string_plain(tp, size_n) == false || size_ok(json.string_view(body, tp, size_n)) == false) {
+                why = "size is WxH, for example 640x352";
+            }
+            if len(why) == 0 {
+                let id = next_id(heap, fs, dir);
+                if id == 0 {
+                    status = 500;
+                    why = "the queue could not be read";
+                } else {
+                    var list = process.argv(heap, 512);
+                    let idt = digits(heap, id);
+                    var out = buffer.append(heap, buffer.empty(heap, 128), dir);
+                    out = buffer.append(heap, out, "/out/");
+                    borrow idt as &ib in {
+                        out = buffer.append(heap, out, buffer.bytes(ib));
+                    }
+                    var bad = 0;
+                    var e = 0;
+                    if is_video {
+                        let (l1, e1) = process.add(heap, list, "video");
+                        list = l1;
+                        bad = bad + e1;
+                    } else {
+                        let (l1, e1) = process.add(heap, list, "edit");
+                        list = l1;
+                        bad = bad + e1;
+                    }
+                    let (l2, e2) = process.add(heap, list, "-o");
+                    list = l2;
+                    bad = bad + e2;
+                    borrow out as &ob in {
+                        let (l3, e3) = process.add(heap, list, buffer.bytes(ob));
+                        list = l3;
+                        bad = bad + e3;
+                    }
+                    if is_video && frames_n >= 0 {
+                        let (l4, e4) = process.add(heap, list, "--frames");
+                        list = l4;
+                        bad = bad + e4;
+                        let fb = digits(heap, json.to_int(body, tp, frames_n));
+                        borrow fb as &fbb in {
+                            let (l5, e5) = process.add(heap, list, buffer.bytes(fbb));
+                            list = l5;
+                            bad = bad + e5;
+                        }
+                        buffer.drop(heap, fb);
+                    }
+                    if is_video && size_n >= 0 {
+                        let (l6, e6) = process.add(heap, list, "--size");
+                        list = l6;
+                        bad = bad + e6;
+                        let (l7, e7) = process.add(heap, list, json.string_view(body, tp, size_n));
+                        list = l7;
+                        bad = bad + e7;
+                    }
+                    if seed_n >= 0 {
+                        let (l8, e8) = process.add(heap, list, "--seed");
+                        list = l8;
+                        bad = bad + e8;
+                        let sb = digits(heap, json.to_int(body, tp, seed_n));
+                        borrow sb as &sbb in {
+                            let (l9, e9) = process.add(heap, list, buffer.bytes(sbb));
+                            list = l9;
+                            bad = bad + e9;
+                        }
+                        buffer.drop(heap, sb);
+                    }
+                    // `--` so that a prompt that starts with `-` is a prompt, not an option.
+                    let (l10, e10) = process.add(heap, list, "--");
+                    list = l10;
+                    bad = bad + e10;
+                    if is_edit {
+                        let ib2 = box_slice(heap, json.string_length(body, tp, image_n), byte_of(0));
+                        var im = ib2;
+                        borrow mut im as &!iw in {
+                            json.string_into(body, tp, image_n, contents(iw));
+                        }
+                        borrow im as &ir in {
+                            let (l11, e11) = process.add(heap, list, contents(ir));
+                            list = l11;
+                            bad = bad + e11;
+                        }
+                        unbox_slice(heap, im);
+                    }
+                    let pb = box_slice(heap, json.string_length(body, tp, prompt_n), byte_of(0));
+                    var pm = pb;
+                    borrow mut pm as &!pw in {
+                        json.string_into(body, tp, prompt_n, contents(pw));
+                    }
+                    borrow pm as &pr in {
+                        let (l12, e12) = process.add(heap, list, contents(pr));
+                        list = l12;
+                        bad = bad + e12;
+                    }
+                    unbox_slice(heap, pm);
+                    if bad != 0 {
+                        why = "an argument holds a NUL byte";
+                    } else {
+                        let ap = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/"), "");
+                        var apath = ap;
+                        borrow idt as &ib3 in {
+                            apath = buffer.append(heap, apath, buffer.bytes(ib3));
+                        }
+                        apath = buffer.append(heap, apath, ".argv");
+                        var wrote = 0 - 1;
+                        borrow apath as &apb in {
+                            borrow list as &lr in {
+                                wrote = files.write_all(fs, buffer.bytes(apb), process.list(lr));
+                            }
+                        }
+                        buffer.drop(heap, apath);
+                        if wrote == 0 {
+                            let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+                            var line = buffer.empty(heap, 16);
+                            borrow idt as &ib4 in {
+                                line = buffer.append(heap, line, buffer.bytes(ib4));
+                            }
+                            line = buffer.push(heap, line, byte_of(10));
+                            var appended = 0 - 1;
+                            borrow qp as &qb in {
+                                borrow line as &lb in {
+                                    appended = files.append_all(fs, buffer.bytes(qb), buffer.bytes(lb));
+                                }
+                            }
+                            buffer.drop(heap, line);
+                            buffer.drop(heap, qp);
+                            if appended == 0 {
+                                status = 202;
+                                buffer.drop(heap, answer);
+                                answer = buffer.append(heap, buffer.empty(heap, 32), "{\"id\":");
+                                borrow idt as &ib5 in {
+                                    answer = buffer.append(heap, answer, buffer.bytes(ib5));
+                                }
+                                answer = buffer.push(heap, answer, byte_of(125));
+                            } else {
+                                status = 500;
+                                why = "the queue could not be written";
+                            }
+                        } else {
+                            status = 500;
+                            why = "the job could not be written";
+                        }
+                    }
+                    process.drop(heap, list);
+                    buffer.drop(heap, out);
+                    buffer.drop(heap, idt);
+                }
+            }
+            if len(why) > 0 {
+                buffer.drop(heap, answer);
+                answer = buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"");
+                answer = buffer.append(heap, answer, why);
+                answer = buffer.append(heap, answer, "\"}");
+            }
+        }
+    }
+    unbox_slice(heap, tape);
+    return (status, answer);
+}
+
+// The state of job `id` (the text after `/api/jobs/`): 200 {"id":N,"state":"queued|running|done|failed C"}, 404 for an id with no argument file, 422 for one that is not digits.
+pub fn state_of[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    if len(id) == 0 || len(id) > 9 {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "{\"error\":\"the id is 1 to 9 digits\"}"));
+    }
+    var k = 0;
+    while k < len(id) {
+        let c = int_of(id[k]);
+        if c < 48 || c > 57 {
+            return (422, buffer.append(heap, buffer.empty(heap, 48), "{\"error\":\"the id is 1 to 9 digits\"}"));
+        }
+        k = k + 1;
+    }
+    var word = "queued";
+    var found = false;
+    var text = buffer.empty(heap, 16);
+    let sp = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/"), id), ".state");
+    borrow sp as &sb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(sb));
+        var sz = 0;
+        borrow b as &bsz in {
+            sz = buffer.size(bsz);
+        }
+        buffer.drop(heap, text);
+        text = b;
+        found = e == 0 && sz > 0;
+    }
+    buffer.drop(heap, sp);
+    var known = found;
+    if found == false {
+        let ap = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/"), id), ".argv");
+        borrow ap as &ab in {
+            let (b2, e2) = files.read_all(heap, fs, buffer.bytes(ab));
+            var sz2 = 0;
+            borrow b2 as &b2r in {
+                sz2 = buffer.size(b2r);
+            }
+            known = e2 == 0 && sz2 > 0;
+            buffer.drop(heap, b2);
+        }
+        buffer.drop(heap, ap);
+    }
+    if known == false {
+        buffer.drop(heap, text);
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "{\"error\":\"no such job\"}"));
+    }
+    var answer = buffer.append(heap, buffer.empty(heap, 64), "{\"id\":");
+    answer = buffer.append(heap, answer, id);
+    answer = buffer.append(heap, answer, ",\"state\":\"");
+    if found {
+        borrow text as &tb in {
+            let all = buffer.bytes(tb);
+            var stop = 0;
+            while stop < len(all) && int_of(all[stop]) >= 32 && int_of(all[stop]) != 34 && int_of(all[stop]) != 92 {
+                stop = stop + 1;
+            }
+            answer = buffer.append(heap, answer, all[0..stop]);
+        }
+    } else {
+        answer = buffer.append(heap, answer, word);
+    }
+    buffer.drop(heap, text);
+    answer = buffer.append(heap, answer, "\"}");
+    return (200, answer);
+}

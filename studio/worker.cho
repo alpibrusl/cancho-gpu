@@ -6,28 +6,47 @@ import files;
 
 // studio_worker -- runs one job: docs/studio.md, slice 2.
 //
-//   studio_worker <script> <home> <job-dir>
+//   studio_worker <script> <home> <data-dir>
 //
-// `<job-dir>/argv` holds the argument list of `<script>` (the studio's `media`), each entry followed by a NUL, as the server wrote it after
+// Drains the queue once and exits (run it in a loop, as cancho-ota's worker is: `while :; do studio_worker ...; sleep 2; done`). `<data-dir>/queue`
+// is written by the server alone, one job id (decimal digits, at most 9) a line; a job is pending when `<data-dir>/<id>.state` does not exist.
+// Jobs run one after another: the GPU takes one. For each pending job, `<data-dir>/<id>.argv` holds the argument list of `<script>` (the studio's `media`), each entry followed by a NUL, as the server wrote it after
 // `std.process.add` had refused any entry with a NUL in it. The worker starts `<script>` on that list, its output and errors written to
-// `<job-dir>/log`, waits for it, and writes `<job-dir>/state`: `running` first, then `done` or `failed <code>`. It reads no prompt and
+// `<data-dir>/<id>.log`, waits for it, and writes `<data-dir>/<id>.state`: `running` first, then `done` or `failed <code>`. It reads no prompt and
 // interprets nothing: the list is the server's, the process is the script's.
 
-// `<dir>/<name>` as bytes.
-fn under[&h, &d, &n](heap: &!h Heap, dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+// `<dir>/<id>.<ext>` as bytes.
+fn named[&h, &d, &i, &e](heap: &!h Heap, dir: &d [byte], id: &i [byte], ext: &e [byte]) -> [heap] buffer.Buffer {
     var b = buffer.append(heap, buffer.empty(heap, 128), dir);
     b = buffer.push(heap, b, byte_of(47));
-    return buffer.append(heap, b, name);
+    b = buffer.append(heap, b, id);
+    b = buffer.push(heap, b, byte_of(46));
+    return buffer.append(heap, b, ext);
 }
 
-fn put[&h, &f, &d, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], name: &static [byte], text: &t [byte]) -> [heap, fs_write(""), file_write] int {
-    let p = under(heap, dir, name);
+fn put[&h, &f, &d, &i, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], ext: &static [byte], text: &t [byte]) -> [heap, fs_write(""), file_write] int {
+    let p = named(heap, dir, id, ext);
     var code = 0;
     borrow p as &pb in {
         code = files.write_all(fs, buffer.bytes(pb), text);
     }
     buffer.drop(heap, p);
     return code;
+}
+
+fn id_ok[&t](id: &t [byte]) -> [] bool {
+    if len(id) == 0 || len(id) > 9 {
+        return false;
+    }
+    var k = 0;
+    while k < len(id) {
+        let c = int_of(id[k]);
+        if c < 48 || c > 57 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
 }
 
 // Start `script` on `list` with the output in `log`, and wait: the exit status, 128 + the signal, 255 if it did not run.
@@ -52,6 +71,115 @@ fn run[&x, &s, &l, &e](exec: &x Exec(""), script: &s [byte], list: &l [byte], en
     }
 }
 
+// Is `<dir>/<id>.state` there?
+fn started[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read("")] bool {
+    let p = named(heap, dir, id, "state");
+    var yes = false;
+    borrow p as &pb in {
+        if files.path_ok(fs, buffer.bytes(pb)) {
+            match open_read(fs, buffer.bytes(pb)) {
+                Opened::Failed(e) => {
+                    yes = e != 2;
+                }
+                Opened::Ok(o) => {
+                    file_close(o);
+                    yes = true;
+                }
+            }
+        }
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
+// One pending job: 0 when it ran to the end and exited 0, else the code (3: no argument file, 4: the log could not be opened).
+fn job[&h, &f, &x, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec("")] int {
+    var status = 3;
+    let argv_path = named(heap, dir, id, "argv");
+    var list = buffer.empty(heap, 8);
+    var errno = 0 - 1;
+    borrow argv_path as &ap in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(ap));
+        buffer.drop(heap, list);
+        list = b;
+        errno = e;
+    }
+    buffer.drop(heap, argv_path);
+    if errno == 0 && files.path_ok(fs, script) {
+        status = 4;
+        put(heap, fs, dir, id, "state", "running\n");
+        let log_path = named(heap, dir, id, "log");
+        borrow log_path as &lp in {
+            if files.path_ok(fs, buffer.bytes(lp)) {
+                match open_write(fs, buffer.bytes(lp)) {
+                    Opened::Ok(log) => {
+                        var env = buffer.append(heap, buffer.empty(heap, 128), "HOME=");
+                        env = buffer.append(heap, env, home);
+                        env = buffer.append(heap, env, "\0PATH=/usr/bin:/bin:/opt/homebrew/bin\0");
+                        var code = 255;
+                        borrow list as &lb in {
+                            borrow env as &eb in {
+                                code = run(exec, script, buffer.bytes(lb), buffer.bytes(eb), log);
+                            }
+                        }
+                        buffer.drop(heap, env);
+                        var line = buffer.empty(heap, 32);
+                        if code == 0 {
+                            line = buffer.append(heap, line, "done\n");
+                        } else {
+                            line = buffer.append(heap, line, "failed ");
+                            line = buffer.push_nat(heap, line, code);
+                            line = buffer.push(heap, line, byte_of(10));
+                        }
+                        borrow line as &ln in {
+                            put(heap, fs, dir, id, "state", buffer.bytes(ln));
+                        }
+                        buffer.drop(heap, line);
+                        status = code;
+                    }
+                    Opened::Failed(er) => {
+                        put(heap, fs, dir, id, "state", "failed 254\n");
+                    }
+                }
+            }
+        }
+        buffer.drop(heap, log_path);
+    }
+    buffer.drop(heap, list);
+    return status;
+}
+
+// The queue, once: every id in it that has no state yet is run. The number of jobs run.
+fn drain[&h, &f, &x, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec("")] int {
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    var text = buffer.empty(heap, 8);
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var ran = 0;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var at = 0;
+        while at < len(all) {
+            var stop = at;
+            while stop < len(all) && int_of(all[stop]) != 10 {
+                stop = stop + 1;
+            }
+            let id = all[at..stop];
+            if id_ok(id) && started(heap, fs, dir, id) == false {
+                job(heap, fs, exec, script, home, dir, id);
+                ran = ran + 1;
+            }
+            at = stop + 1;
+        }
+    }
+    buffer.drop(heap, text);
+    return ran;
+}
+
 fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
     release(ffi);
@@ -62,70 +190,21 @@ fn main(world: World) -> [] int {
     var status = 2;
     borrow args as &g in {
         if arg_count(g) == 4 {
-            let script = arg(g, 1);
-            let home = arg(g, 2);
-            let dir = arg(g, 3);
             borrow fs as &f in {
                 borrow mut heap as &!h in {
-                    let argv_path = under(h, dir, "argv");
-                    var list = buffer.empty(h, 8);
-                    var errno = 0 - 1;
-                    borrow argv_path as &ap in {
-                        let (b, e) = files.read_all(h, f, buffer.bytes(ap));
-                        buffer.drop(h, list);
-                        list = b;
-                        errno = e;
-                    }
-                    buffer.drop(h, argv_path);
-                    status = 3;
-                    if errno == 0 && files.path_ok(f, script) {
-                        status = 4;
-                        put(h, f, dir, "state", "running\n");
-                        let log_path = under(h, dir, "log");
-                        borrow log_path as &lp in {
-                            if files.path_ok(f, buffer.bytes(lp)) {
-                                match open_write(f, buffer.bytes(lp)) {
-                                    Opened::Ok(log) => {
-                                        var env = buffer.append(h, buffer.empty(h, 128), "HOME=");
-                                        env = buffer.append(h, env, home);
-                                        env = buffer.append(h, env, "\0PATH=/usr/bin:/bin:/opt/homebrew/bin\0");
-                                        var code = 255;
-                                        borrow list as &lb in {
-                                            borrow env as &eb in {
-                                                borrow exec as &xe in {
-                                                    code = run(xe, script, buffer.bytes(lb), buffer.bytes(eb), log);
-                                                }
-                                            }
-                                        }
-                                        buffer.drop(h, env);
-                                        var line = buffer.empty(h, 32);
-                                        if code == 0 {
-                                            line = buffer.append(h, line, "done\n");
-                                        } else {
-                                            line = buffer.append(h, line, "failed ");
-                                            line = buffer.push_nat(h, line, code);
-                                            line = buffer.push(h, line, byte_of(10));
-                                        }
-                                        borrow line as &ln in {
-                                            put(h, f, dir, "state", buffer.bytes(ln));
-                                        }
-                                        buffer.drop(h, line);
-                                        status = code;
-                                    }
-                                    Opened::Failed(er) => {
-                                        put(h, f, dir, "state", "failed 254\n");
-                                    }
-                                }
-                            }
+                    borrow exec as &xe in {
+                        status = 0;
+                        if files.path_ok(f, arg(g, 3)) {
+                            drain(h, f, xe, arg(g, 1), arg(g, 2), arg(g, 3));
+                        } else {
+                            status = 3;
                         }
-                        buffer.drop(h, log_path);
                     }
-                    buffer.drop(h, list);
                 }
             }
         } else {
             borrow mut io as &!i in {
-                io.error_all(i, "usage: studio_worker <script> <home> <absolute job-dir>\n");
+                io.error_all(i, "usage: studio_worker <script> <home> <absolute data-dir>\n");
             }
         }
     }
