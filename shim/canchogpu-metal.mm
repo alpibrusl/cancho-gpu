@@ -56,6 +56,18 @@ static int64_t fail(const char *what, const char *detail) {
     return -1;
 }
 
+/* A command buffer that Metal aborted (a GPU timeout on a buffer that ran too long, an out-of-memory, a page fault) leaves its outputs unwritten and says so only here: without this check a session
+ * went on and answered zeros. -1 and `g.error` when `c` failed. */
+static int64_t check_cmd(id<MTLCommandBuffer> c, const char *where) {
+    if (c && [c status] == MTLCommandBufferStatusError) {
+        NSError *e = [c error];
+        char detail[1024];
+        snprintf(detail, sizeof detail, "the command buffer failed (code %ld): %s", (long)(e ? [e code] : 0), e ? [[e localizedDescription] UTF8String] : "no description");
+        return fail(where, detail);
+    }
+    return 0;
+}
+
 /* A NUL-terminated copy of a cancho byte slice. */
 static char *cstr(const char *p, int64_t n) {
     char *s = (char *)malloc((size_t)n + 1);
@@ -378,6 +390,7 @@ int64_t cgpu_launch_async(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
             [g.enc endEncoding];
             [g.cmd commit];
             [g.cmd waitUntilCompleted];
+            if (check_cmd(g.cmd, "cgpu_launch_async") < 0) { g.cmd = nil; g.enc = nil; return -1; }
             prof_ns[fn] += ([g.cmd GPUEndTime] - [g.cmd GPUStartTime]) * 1e9;
             prof_n[fn] += 1;
             g.cmd = nil;
@@ -437,6 +450,10 @@ int64_t cgpu_sync(void) {
         clock_gettime(CLOCK_MONOTONIC, &t0);
         [g.last waitUntilCompleted];
         clock_gettime(CLOCK_MONOTONIC, &t1);
+        if (check_cmd(g.last, "cgpu_sync") < 0) {
+            g.last = nil;
+            return -1;
+        }
         int64_t ns = (int64_t)(([g.last GPUEndTime] - [g.last GPUStartTime]) * 1e9);
         if (getenv("CANCHOGPU_PROFILE")) {
             double wall = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
@@ -494,6 +511,10 @@ int64_t cgpu_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
         // Commit and wait for completion
         [commandBuffer commit];
         [commandBuffer waitUntilCompleted];
+        if (check_cmd(commandBuffer, "cgpu_launch") < 0) {
+            g.n_args = 0;
+            return -1;
+        }
     
         g.n_args = 0;
         return 0;
