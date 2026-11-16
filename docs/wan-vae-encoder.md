@@ -70,5 +70,20 @@ Small shapes, as for the decoder: 1, 5 and 9 frames at 32 x 32 and 32 x 64 pixel
 
 ## 7. Not decided
 
-* Whether the comparison with torch (section 3, option (a)) is accepted: it needs one hand-run of `AutoencoderKLWan.encode` whose outputs are committed as data.
+* ~~Whether the comparison with torch is accepted~~: decided (a), done once; see "The torch reference data".
 * Whether the encoder is built for whole clips (video to video, not asked for) or **only for one frame** (all #174 needs). Proposed: build it for the clip layout the decoder uses, test at 1, 5 and 9 frames, and use it at one; the `time_conv` kernel is not needed for a chunk of one frame, so E2 can defer it (the first frame passes through both `downsample3d` blocks without it). That makes the encoder for one frame nearly spatial-only: strided spatial convolutions, the same residual blocks, the same attention, and `AvgDown3D` with its time pad (the zero slot), but no `time_conv`: **[read]** the first frame is passed through, not convolved in time. This is the smallest thing that unblocks #174 and is the proposal for E2/E3's first target; the temporal kernels follow when a video encoder is wanted.
+
+## 8. The torch reference data (measured, 2026-11-16)
+
+One run, by hand, of `AutoencoderKLWan.encode` (torch 2.15.0, diffusers 0.44.0.dev0, float32, CPU, the checkpoint of `Wan-AI/Wan2.2-TI2V-5B-Diffusers` from the local cache, offline). **No script is committed**: the program was given on the standard input of the venv's Python and its only product is the data in `tests/data/wan_vae_enc/` (30 raw little-endian float32 files, 5.6 MB, and `manifest.json` with each shape). It did, for each case: draw an input with `torch.randn` from a seeded generator (seeds 1, 2, 3) clamped to [-1, 1] (**synthetic noise, not a photograph**); call `vae.encode(x).latent_dist` (the model's own chunked loop with its feature cache); keep the outputs of `conv_in`, of each of the four down blocks, of the mid block and of `quant_conv` through forward hooks (the chunks' outputs concatenated in time), and the posterior's `mean` and `logvar`.
+
+| case | input `[1, 3, T, H, W]` | after `conv_in` | `down0` | `down1` | `down2` | `down3` = `mid` | `mean` (and `logvar`) |
+|---|---|---|---|---|---|---|---|
+| a | 1 x 32 x 32 | 160 x 1 x 16 x 16 | 160 x 1 x 8 x 8 | 320 x 1 x 4 x 4 | 640 x 1 x 2 x 2 | 640 x 1 x 2 x 2 | 48 x 1 x 2 x 2 |
+| b | 5 x 32 x 32 | 160 x 5 x 16 x 16 | 160 x 5 x 8 x 8 | 320 x **3** x 4 x 4 | 640 x **2** x 2 x 2 | 640 x 2 x 2 x 2 | 48 x 2 x 2 x 2 |
+| c | 9 x 32 x 64 | 160 x 9 x 16 x 32 | 160 x 9 x 8 x 16 | 320 x **5** x 4 x 8 | 640 x **3** x 2 x 4 | 640 x 3 x 2 x 4 | 48 x 3 x 2 x 4 |
+
+* **[measured]** The time axis goes `1 + 4 k` to `1 + 2 k` at `down1` and to `1 + k` at `down2` (5 to 3 to 2; 9 to 5 to 3), as section 2 reads it; `down0` and `down3` leave it alone.
+* **[measured]** The rms of the mean is 0.446, 0.467 and 0.499 on the three cases (a check against a degenerate reference: none is zero or constant).
+* The intermediate tensors are in the data so that a mismatch can be located to a block, not only seen at the end. `quant` has 96 channels (mean then log-variance); `mean` is its first 48.
+* **Not measured:** that these are the *only* correct values (the same code that is the specification produced them); that the tensors have no hidden state across the three runs (a fresh `encode` each, cache cleared by the model).
