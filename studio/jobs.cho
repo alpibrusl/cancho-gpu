@@ -6,6 +6,7 @@ import std.buffer;
 import std.json;
 import std.process;
 import files;
+import auth;
 
 // `jobs` -- the server's half of the queue (docs/studio.md, slice 2). `create` turns a request body into `<data>/<id>.argv` (the argument
 // list `media` will be started on, written with `std.process.add`, which refuses a NUL) and one line in `<data>/queue`; the worker does the rest.
@@ -62,7 +63,7 @@ pub fn next_id[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [he
 }
 
 // Make a job from `body`. (status, JSON answer): 202 {"id":N}, or 422 / 500 with a one-line reason.
-pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte], rewrite_default: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte], rewrite_default: bool, force: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
     let tape = box_slice(heap, json.tape_len(body), 0);
     var status = 422;
     var answer = buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"the body is not a JSON object\"}");
@@ -92,8 +93,8 @@ pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                 why = "seed is an integer from 0 to 2147483647";
             } else if size_n >= 0 && (json.string_plain(tp, size_n) == false || size_ok(json.string_view(body, tp, size_n)) == false) {
                 why = "size is WxH, for example 640x352";
-            } else if rewrite_n >= 0 && (json.is_string(tp, rewrite_n) == false || (json.string_equals(body, tp, rewrite_n, "on") == false && json.string_equals(body, tp, rewrite_n, "off") == false)) {
-                why = "rewrite is on or off";
+            } else if rewrite_n >= 0 && (json.is_string(tp, rewrite_n) == false || (json.string_equals(body, tp, rewrite_n, "on") == false && json.string_equals(body, tp, rewrite_n, "off") == false && json.string_equals(body, tp, rewrite_n, "ab") == false)) {
+                why = "rewrite is on, off or ab";
             }
             if len(why) == 0 {
                 let id = next_id(heap, fs, dir);
@@ -207,6 +208,12 @@ pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             var rewrite_on = rewrite_default;
                             if rewrite_n >= 0 {
                                 rewrite_on = json.string_equals(body, tp, rewrite_n, "on");
+                            }
+                            if force == 1 {
+                                rewrite_on = false;
+                            }
+                            if force == 2 {
+                                rewrite_on = true;
                             }
                             var rpath = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/");
                             borrow idt as &ib6 in {
@@ -339,4 +346,101 @@ pub fn state_of[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     buffer.drop(heap, text);
     answer = buffer.append(heap, answer, "\"}");
     return (200, answer);
+}
+
+// The id in `{"id":N...`, or 0.
+fn id_of[&t](answer: &t [byte]) -> [] int {
+    var n = 0;
+    var i = 6;
+    while i < len(answer) && int_of(answer[i]) >= 48 && int_of(answer[i]) <= 57 {
+        n = n * 10 + (int_of(answer[i]) - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// Is `rewrite` in this body the string `ab`?
+fn asks_pair[&h, &b](heap: &!h Heap, body: &b [byte]) -> [heap] bool {
+    var yes = false;
+    let tape = box_slice(heap, json.tape_len(body), 0);
+    borrow mut tape as &!tw in {
+        let nodes = json.parse(body, contents(tw));
+        if nodes > 0 && json.is_object(contents(tw), 0) {
+            let n = json.get(body, contents(tw), 0, "rewrite");
+            yes = n >= 0 && json.is_string(contents(tw), n) && json.string_equals(body, contents(tw), n, "ab");
+        }
+    }
+    unbox_slice(heap, tape);
+    return yes;
+}
+
+// Make a job from `body`, or, when its `rewrite` is `ab`, **a pair**: the same request twice, once with the rewrite off and once on (same seed, same everything else), for the blind comparison of docs/studio-rewrite.md
+// (R4). The pair is recorded in `<first id>.pair` as `<second id> <flip>`: `flip` 0 or 1 is a random bit made when the pair is, saying which of the two the comparison page shows on the left. (status, JSON answer):
+// 202 `{"id":N}` for one job, 202 `{"id":N,"pair":M}` for a pair, or what `create_one` refuses with; a pair is refused with a 500 if no random bit could be made, before any job exists.
+pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte], rewrite_default: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+    if asks_pair(heap, body) == false {
+        return create_one(heap, fs, dir, body, rewrite_default, 0);
+    }
+    let coin = auth.make(heap, fs);
+    var bit = 0 - 1;
+    borrow coin as &cb in {
+        let hex = buffer.bytes(cb);
+        if len(hex) == 32 {
+            var v = int_of(hex[0]);
+            if v >= 97 {
+                v = v - 87;
+            } else {
+                v = v - 48;
+            }
+            bit = v % 2;
+        }
+    }
+    buffer.drop(heap, coin);
+    if bit < 0 {
+        return (500, buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"no random bit could be made for the pair\"}"));
+    }
+    let (s1, a1) = create_one(heap, fs, dir, body, rewrite_default, 1);
+    if s1 != 202 {
+        return (s1, a1);
+    }
+    let (s2, a2) = create_one(heap, fs, dir, body, rewrite_default, 2);
+    if s2 != 202 {
+        buffer.drop(heap, a1);
+        return (s2, a2);
+    }
+    var first = 0;
+    var second = 0;
+    borrow a1 as &r1 in {
+        first = id_of(buffer.bytes(r1));
+    }
+    borrow a2 as &r2 in {
+        second = id_of(buffer.bytes(r2));
+    }
+    buffer.drop(heap, a1);
+    buffer.drop(heap, a2);
+    var path = buffer.append(heap, buffer.empty(heap, 64), dir);
+    path = buffer.push(heap, path, byte_of(47));
+    path = buffer.push_nat(heap, path, first);
+    path = buffer.append(heap, path, ".pair");
+    var line = buffer.push_nat(heap, buffer.empty(heap, 16), second);
+    line = buffer.push(heap, line, byte_of(32));
+    line = buffer.push_nat(heap, line, bit);
+    line = buffer.push(heap, line, byte_of(10));
+    var wrote = 0 - 1;
+    borrow path as &pb in {
+        borrow line as &lb in {
+            wrote = files.write_all(fs, buffer.bytes(pb), buffer.bytes(lb));
+        }
+    }
+    buffer.drop(heap, path);
+    buffer.drop(heap, line);
+    if wrote != 0 {
+        return (500, buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"the pair could not be recorded\"}"));
+    }
+    var answer = buffer.append(heap, buffer.empty(heap, 48), "{\"id\":");
+    answer = buffer.push_nat(heap, answer, first);
+    answer = buffer.append(heap, answer, ",\"pair\":");
+    answer = buffer.push_nat(heap, answer, second);
+    answer = buffer.push(heap, answer, byte_of(125));
+    return (202, answer);
 }

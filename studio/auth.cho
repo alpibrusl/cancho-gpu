@@ -189,3 +189,9 @@ pub fn login_ok[&s, &t, &k](head: &s [byte], table: &t [int], token: &k [byte]) 
 pub fn multipart_ok[&s, &t](head: &s [byte], table: &t [int]) -> [] bool {
     return bytes.starts_with(http.header(head, table, "content-type"), "multipart/form-data; boundary=");
 }
+
+// A form post of `/compare/N`: the browser's own `application/x-www-form-urlencoded` (a button of a form without JavaScript). Like `/edit`'s multipart it still needs the token, the Host and Origin checks first, and the
+// cookie is `SameSite=Strict`; the body it can carry is one of three words.
+pub fn form_ok[&s, &t](head: &s [byte], table: &t [int]) -> [] bool {
+    return bytes.starts_with(http.header(head, table, "content-type"), "application/x-www-form-urlencoded");
+}

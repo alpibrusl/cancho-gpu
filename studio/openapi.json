@@ -45,7 +45,7 @@
         "summary": "Queue an edit of an uploaded picture: the picture is kept as <data>/upload-N.jpg, .png or .webp (by its first bytes) and a job is made as POST /api/jobs makes it. The one POST that is not JSON.",
         "requestBody": {
           "required": true,
-          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off"] }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
+          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off", "ab"] }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
         },
         "responses": {
           "302": { "description": "Queued: Location /jobs/N." },
@@ -55,6 +55,44 @@
           "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
           "422": { "$ref": "#/components/responses/Refused" },
           "500": { "description": "The queue could not be read or the picture could not be saved.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/compare": {
+      "get": {
+        "summary": "The comparisons: the tally per kind of the choices that count (the rewritten prompt won, the prompt as written won, ties) and a link to each pair.",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/compare/{id}": {
+      "get": {
+        "summary": "A pair (made by `rewrite: ab`): the two results as left and right, without saying which used the rewritten prompt; a form to choose once both have finished; after the choice, which was which and both prompts. Blind by convention: the job ids are in the page source.",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such pair (plain text).", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "422": { "description": "The id is not 1 to 9 digits (plain text).", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      },
+      "post": {
+        "summary": "Record the choice, once: `choice=left`, `choice=right` or `choice=tie` (an HTML form, `application/x-www-form-urlencoded`: the one POST besides /edit that is not JSON).",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "requestBody": { "required": true, "content": { "application/x-www-form-urlencoded": { "schema": { "type": "object", "required": ["choice"], "properties": { "choice": { "type": "string", "enum": ["left", "right", "tie"] } } } } } },
+        "responses": {
+          "302": { "description": "Recorded: Location /compare/{id}." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such pair.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "409": { "description": "A choice was already made, or the two jobs have not both finished.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "description": "The body is not one of the three choices.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "500": { "description": "The choice could not be written.", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
     },
@@ -198,7 +236,7 @@
           "frames": { "type": "integer", "minimum": 1, "maximum": 129 },
           "size": { "type": "string", "description": "WxH, for example 640x352.", "example": "640x352" },
           "seed": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
-          "rewrite": { "type": "string", "enum": ["on", "off"], "description": "Rewrite the prompt first with a local model. The worker must have been started with --rewriter. Absent: the server's default, which is off unless it was started with --rewrite on." }
+          "rewrite": { "type": "string", "enum": ["on", "off", "ab"], "description": "Rewrite the prompt first with a local model. The worker must have been started with --rewriter. Absent: the server's default, which is off unless it was started with --rewrite on. `ab` makes a pair of jobs (the same request with the rewrite off and on) for the blind comparison at /compare/{id}; the answer is {\"id\":N,\"pair\":M}." }
         }
       },
       "Queued": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "minimum": 1 } } },

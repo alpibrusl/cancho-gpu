@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -298,7 +298,7 @@ check "openapi: 500 on POST /api/jobs is listed (not reached by a request here)"
 for p in $(grep -o 'equal(path, "/[a-z./]*")' studio/studio.cho | grep -o '"/[a-z./]*"' | tr -d '"' | grep -v '^/$' | sort -u); do
   check "openapi: the server's route $p is in the document" "$(grep -c "^    \"$p\": {" studio/openapi.json)" 1
 done
-for p in /api/jobs/ /jobs/ /files/; do
+for p in /api/jobs/ /jobs/ /files/ /compare/; do
   check "openapi: the server's prefix route $p is in the document" "$(grep -c "^    \"$p" studio/openapi.json)" 1
 done
 if command -v jq >/dev/null 2>&1; then
@@ -403,13 +403,13 @@ check "rewrite: a job can ask off" "$(po '{"kind":"video","prompt":"c","rewrite"
 check "rewrite: with --rewrite on the default is on" "$(pn '{"kind":"video","prompt":"a"}' >/dev/null; cat "$R/on/1.rewrite")" on
 check "rewrite: ...and a job can still say off" "$(pn '{"kind":"video","prompt":"b","rewrite":"off"}' >/dev/null; cat "$R/on/2.rewrite")" off
 check "rewrite: every queued job has its .rewrite file (two jobs, two lines, two files)" "$(wc -l < "$R/on/queue" | tr -d ' ') $(ls "$R/on"/*.rewrite | wc -l | tr -d ' ')" "2 2"
-check "rewrite: a value that is not on or off: 422" "$(po '{"kind":"video","prompt":"d","rewrite":"maybe"}')" '{"error":"rewrite is on or off"} 422'
+check "rewrite: a value that is not on or off: 422" "$(po '{"kind":"video","prompt":"d","rewrite":"maybe"}')" '{"error":"rewrite is on, off or ab"} 422'
 check "rewrite: a value that is not a string: 422" "$(po '{"kind":"video","prompt":"d","rewrite":true}' | tail -c 4)" ' 422'
 check "rewrite: a refused job leaves no file and no queue line" "$(ls "$R/off"/*.rewrite | wc -l | tr -d ' ') $(wc -l < "$R/off/queue" | tr -d ' ')" "3 3"
 e2() { curl -s -w ' %{http_code}' -H "Authorization: Bearer $TOKOFF" "$@" localhost:18097/edit; }
 check "rewrite: /edit takes the field (on)" "$(e2 -F prompt=x -F rewrite=on -F "image=@$R/pic.png" >/dev/null; cat "$R/off/4.rewrite")" on
 check "rewrite: /edit without the field takes the server's default" "$(e2 -F prompt=x -F "image=@$R/pic.png" >/dev/null; cat "$R/off/5.rewrite")" off
-check "rewrite: /edit with a value that is not on or off: 422" "$(e2 -F prompt=x -F rewrite=perhaps -F "image=@$R/pic.png")" '{"error":"rewrite is on or off"} 422'
+check "rewrite: /edit with a value that is not on or off: 422" "$(e2 -F prompt=x -F rewrite=perhaps -F "image=@$R/pic.png")" '{"error":"rewrite is on, off or ab"} 422'
 check "rewrite: the /edit form offers it" "$(curl -s -H "Authorization: Bearer $TOKOFF" localhost:18097/edit | grep -c 'name=rewrite')" 1
 rc=0; build/studio 18099 "$R/off" --rewrite maybe 2>/dev/null || rc=$?; check "rewrite: a flag value that is not on or off refuses to start" "$rc" 2
 rc=0; build/studio 18099 "$R/off" --rewrite 2>/dev/null || rc=$?; check "rewrite: a flag with no value is not a site directory" "$rc" 2
@@ -423,4 +423,73 @@ printf 'done\n' > "$R/off/2.state"; printf 'failed 1\n' > "$R/off/3.state"; prin
 check "page: a job that asked and finished with no rewritten prompt says so" "$(pg 3 | grep -c 'the prompt was not rewritten (see the log)')" 1
 check "page: a job that did not ask says nothing of it" "$(pg 1 | grep -c 'rewritten')" 0
 check "page: a queued job that asked does not say it was not rewritten yet" "$(printf 'on\n' > "$R/off/1.rewrite"; pg 1 | grep -c 'was not rewritten')" 0
+
+# The blind comparison (docs/studio-rewrite.md, R4), on the server of 18097 (default off). A pair is two jobs of one request, with the rewrite off and on, and `<first>.pair` = `<second> <flip>`.
+pj() { po "$1" | sed 's/ [0-9][0-9][0-9]$//'; }
+hdr() { echo "Authorization: Bearer $TOKOFF"; }
+cget() { curl -s -w ' %{http_code}' -H "$(hdr)" "localhost:18097$1"; }
+cpost() { curl -s -w ' %{http_code}' -H "$(hdr)" -XPOST -H 'Content-Type: application/x-www-form-urlencoded' -d "$2" "localhost:18097$1"; }
+finish() { for j in "$@"; do mkdir -p "$R/off/out/$j"; printf 'fake' > "$R/off/out/$j/video.mp4"; echo done > "$R/off/$j.state"; done; }
+A=$(pj '{"kind":"video","prompt":"a pair","seed":3,"rewrite":"ab"}'); A1=$(echo "$A" | jq -r .id); A2=$(echo "$A" | jq -r .pair)
+check "pair: the answer holds both ids, consecutive" "$A2" "$((A1 + 1))"
+check "pair: the first has the rewrite off, the second on" "$(cat "$R/off/$A1.rewrite") $(cat "$R/off/$A2.rewrite")" "off on"
+check "pair: the two argument lists differ only in their output directory" "$(tr '\0' '|' < "$R/off/$A1.argv" | sed 's#out/[0-9]*#out/X#') = $(tr '\0' '|' < "$R/off/$A2.argv" | sed 's#out/[0-9]*#out/X#')" "$(tr '\0' '|' < "$R/off/$A1.argv" | sed 's#out/[0-9]*#out/X#') = $(tr '\0' '|' < "$R/off/$A1.argv" | sed 's#out/[0-9]*#out/X#')"
+check "pair: ...and the seed and the prompt are in both" "$(tr '\0' ' ' < "$R/off/$A2.argv" | sed 's#out/[0-9]*#out/X#')" "video -o $R/off/out/X --seed 3 -- a pair "
+check "pair: the record is the second id and a bit" "$(cat "$R/off/$A1.pair" | tr -d '\n' | grep -c "^$A2 [01]\$")" 1
+check "pair: both ids are in the queue" "$(tail -2 "$R/off/queue" | tr '\n' ' ')" "$A1 $A2 "
+flips=""; for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do r=$(pj '{"kind":"video","prompt":"coin","rewrite":"ab"}'); flips="$flips$(cut -d' ' -f2 "$R/off/$(echo "$r" | jq -r .id).pair")"; done
+check "pair: the order is random (both values in 30 pairs)" "$(echo "$flips" | grep -c 0) $(echo "$flips" | grep -c 1)" "1 1"
+check "pair: a refused pair makes no job and no pair file" "$(Q=$(wc -l < "$R/off/queue"); po '{"kind":"video","prompt":"","rewrite":"ab"}' >/dev/null; echo "$(wc -l < "$R/off/queue" | tr -d ' ') $Q" | awk '{print ($1==$2)?"same":"changed"}')" same
+check "pair: /compare of a job that is not a pair: 404" "$(cget /compare/$((A2 + 100)) | tail -c 4)" " 404"
+check "pair: ...and of an id that is not digits: 422" "$(cget /compare/x1 | tail -c 4)" " 422"
+# before the jobs finish
+check "wait: the page says the jobs are not done and offers no choice" "$(cget /compare/$A1 | grep -c 'name=choice')" 0
+check "wait: ...and a choice is refused: 409" "$(cpost /compare/$A1 choice=left | tail -c 4)" " 409"
+# when both are done: still blind
+finish $A1 $A2
+P=$(cget /compare/$A1)
+check "blind: once both are done the page offers the three choices" "$(echo "$P" | grep -o 'name=choice value=[a-z]*' | tr '\n' ' ')" "name=choice value=left name=choice value=right name=choice value=tie "
+check "blind: ...and says neither the prompts nor which result is which" "$(echo "$P" | grep -ci 'as written:\|rewritten:\|result used\|does not count')" 0
+check "blind: ...the results are the two videos, one on each side" "$(echo "$P" | grep -o '<h2>[a-z]*</h2>' | tr '\n' ' ')" "<h2>left</h2> <h2>right</h2> "
+# the choice
+check "choice: a word that is not one of the three: 422" "$(cpost /compare/$A1 choice=best | tail -c 4)" " 422"
+check "choice: ...and an empty body: 422" "$(cpost /compare/$A1 '' | tail -c 4)" " 422"
+check "choice: left is recorded and the person is sent back to the page" "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H "$(hdr)" -XPOST -H 'Content-Type: application/x-www-form-urlencoded' -d choice=left localhost:18097/compare/$A1)" "302 http://localhost:18097/compare/$A1"
+check "choice: the file says left" "$(cat "$R/off/$A1.verdict")" left
+check "choice: a second choice is refused and changes nothing: 409" "$(cpost /compare/$A1 choice=right | tail -c 4) $(cat "$R/off/$A1.verdict")" " 409 left"
+FLIP=$(cut -d' ' -f2 "$R/off/$A1.pair")
+check "reveal: the page says which side had the prompt as written" "$(cget /compare/$A1 | grep -c "The left result used $([ $FLIP = 0 ] && echo 'the prompt as written' || echo 'the rewritten prompt')")" 1
+check "reveal: a pair whose second job was not really rewritten says it does not count" "$(cget /compare/$A1 | grep -c 'This pair does not count')" 1
+check "reveal: the prompt as written is shown" "$(cget /compare/$A1 | grep -c 'as written: a pair')" 1
+# a form from another site, no token, a JSON post
+check "gate: another site's form (Origin): 403" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -H 'Origin: http://evil.example' -XPOST -H 'Content-Type: application/x-www-form-urlencoded' -d choice=tie localhost:18097/compare/$A1)" 403
+check "gate: no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' -XPOST -H 'Content-Type: application/x-www-form-urlencoded' -d choice=tie localhost:18097/compare/$A1)" 401
+check "gate: JSON to /compare/N passes the gate and the handler refuses the body: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -XPOST -H 'Content-Type: application/json' -d '{}' localhost:18097/compare/$A1)" 422
+check "gate: a form is not taken on another route (POST /api/jobs): 415" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -XPOST -H 'Content-Type: application/x-www-form-urlencoded' -d choice=tie localhost:18097/api/jobs)" 415
+# the tally, from pairs whose outcomes are known: four video pairs and one edit pair
+mk() { # kind prompt -> first id (prints "first second")
+  if [ "$1" = edit ]; then r=$(pj "{\"kind\":\"edit\",\"prompt\":\"$2\",\"image\":\"/tmp/p.png\",\"rewrite\":\"ab\"}"); else r=$(pj "{\"kind\":\"video\",\"prompt\":\"$2\",\"rewrite\":\"ab\"}"); fi
+  echo "$(echo "$r" | jq -r .id) $(echo "$r" | jq -r .pair)"
+}
+rewritten_side() { f=$(cut -d' ' -f2 "$R/off/$1.pair"); [ "$f" = 1 ] && echo left || echo right; }
+original_side() { f=$(cut -d' ' -f2 "$R/off/$1.pair"); [ "$f" = 1 ] && echo right || echo left; }
+set -- $(mk video w1); W1=$1; W1B=$2; finish $W1 $W1B; echo "a rewritten one" > "$R/off/$W1B.prompt.new"; cpost /compare/$W1 "choice=$(rewritten_side $W1)" >/dev/null
+set -- $(mk video w2); W2=$1; W2B=$2; finish $W2 $W2B; echo "another rewritten" > "$R/off/$W2B.prompt.new"; cpost /compare/$W2 "choice=$(rewritten_side $W2)" >/dev/null
+set -- $(mk video l1); L1=$1; L1B=$2; finish $L1 $L1B; echo "rewritten again" > "$R/off/$L1B.prompt.new"; cpost /compare/$L1 "choice=$(original_side $L1)" >/dev/null
+set -- $(mk video t1); T1=$1; T1B=$2; finish $T1 $T1B; echo "rewritten tie" > "$R/off/$T1B.prompt.new"; cpost /compare/$T1 choice=tie >/dev/null
+set -- $(mk video v1); V1=$1; V1B=$2; finish $V1 $V1B; cpost /compare/$V1 choice=left >/dev/null
+set -- $(mk edit e1); E1=$1; E1B=$2; finish $E1 $E1B; echo "edit rewritten" > "$R/off/$E1B.prompt.new"; cpost /compare/$E1 "choice=$(rewritten_side $E1)" >/dev/null
+IDX=$(cget /compare)
+check "tally: video, counted by who won (2 for the rewritten, 1 for the prompt as written, 1 tie; the 1 earlier pair did not count)" "$(echo "$IDX" | sed 's/<[^>]*>/ /g' | grep -o 'video: the rewritten prompt won [0-9]*, the prompt as written won [0-9]*, ties [0-9]*')" "video: the rewritten prompt won 2, the prompt as written won 1, ties 1"
+check "tally: edit" "$(echo "$IDX" | sed 's/<[^>]*>/ /g' | grep -o 'edit: the rewritten prompt won [0-9]*, the prompt as written won [0-9]*, ties [0-9]*')" "edit: the rewritten prompt won 1, the prompt as written won 0, ties 0"
+check "tally: pairs chosen without a rewritten prompt are not counted (the first pair and v1)" "$(echo "$IDX" | grep -o 'not counted: [0-9]*')" "not counted: 2"
+check "tally: every pair is a link" "$(echo "$IDX" | grep -c "href=/compare/$W1>")" 1
+check "tally: the page of one of the rewritten wins reveals it" "$(cget /compare/$W1 | grep -c 'rewritten: a rewritten one')" 1
+# the /edit form makes a pair too, and sends the person to the pair
+EP=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=x -F rewrite=ab -F "image=@$R/pic.png" localhost:18097/edit); EID=${EP##*/}
+check "edit: rewrite=ab makes a pair and goes to /compare/N" "$(echo "$EP" | sed 's#.*/compare/[0-9]*#ok#')" ok
+PIC1=$(tr '\0' '\n' < "$R/off/$EID.argv" | grep '/upload-'); PIC2=$(tr '\0' '\n' < "$R/off/$((EID + 1)).argv" | grep '/upload-')
+check "edit: ...and both jobs of the pair name the same uploaded picture" "$([ -n "$PIC1" ] && [ "$PIC1" = "$PIC2" ] && echo same)" same
+check "edit: ...with the rewrite off on the first and on on the second" "$(cat "$R/off/$EID.rewrite") $(cat "$R/off/$((EID + 1)).rewrite")" "off on"
+check "edit: the form offers ab" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'value=ab')" 1
 exit $fail

@@ -108,10 +108,11 @@ component Studio {
             Select { label: "Frames (a video)" options: ["17", "9", "25", "33"] value: frames on: Frames disabled: is_edit }
             Select { label: "Size (a video)" options: ["640x352", "512x288", "1024x576"] value: size on: Size disabled: is_edit }
             Select { label: "Seed" options: ["0", "1", "2", "3", "4"] value: seed on: Seed }
-            Select { label: "Rewrite the prompt first (a local model; off until it is measured to help)" options: ["off", "on"] value: rewrite on: Rewrite }
+            Select { label: "Rewrite the prompt first (a local model; off until it is measured to help)" options: ["off", "on", "ab"] value: rewrite on: Rewrite }
             Button { label: "Start" on: Start disabled: blocked }
             Text { role: status "{note}" }
             Text { "job {job}: {job_state}" }
+            Text { "With the rewrite set to ab the server runs the job twice, with your prompt and with a rewritten one, and a page at /compare/N asks which result is better without saying which is which." }
             Text { "To edit a picture from this computer instead of naming a path, open /edit on this server." }
             Text { "Result of job {job}: open /jobs/{job} on this server. All jobs: /jobs." }
         }
