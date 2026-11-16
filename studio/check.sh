@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -305,6 +305,49 @@ if command -v jq >/dev/null 2>&1; then
   check "openapi: the file is JSON" "$(jq -e .openapi studio/openapi.json)" '"3.1.0"'
   check "openapi: every \$ref has a target" "$(jq -r '[.. | .["$ref"]? | select(.)] | unique[]' studio/openapi.json | sed 's|^#/||; s|/|.|g' | while read -r r; do jq -e ".$r" studio/openapi.json >/dev/null || echo "missing $r"; done | wc -l | tr -d ' ')" 0
 fi
+
+# Editing a picture chosen in the browser: GET/POST /edit (studio/upload.cho), a server of its own (port 18096) so the other tests' queue is not changed. The picture is made here (a JPEG's first bytes, then random ones): no photo of anyone.
+U=$(mktemp -d)
+(printf '\377\330\377\340'; head -c 3000000 /dev/urandom) > "$U/pic.jpg"
+(printf '\211PNG\r\n\032\n'; head -c 2000 /dev/urandom) > "$U/pic.png"
+(printf 'RIFF\0\0\0\0WEBPVP8 '; head -c 2000 /dev/urandom) > "$U/pic.webp"
+printf 'a text file named as a picture' > "$U/fake.jpg"
+mkdir "$U/data"
+build/studio 18096 "$U/data" >"$U/s.log" 2>&1 &
+SP3=$!
+trap 'kill $SP $SP2 $SP3 2>/dev/null; rm -rf "$T" "$U"' EXIT
+sleep 1
+TOK3=$(grep -o 'token=[0-9a-f]*' "$U/s.log" | cut -d= -f2)
+e() { curl -s -H "Authorization: Bearer $TOK3" "$@"; }
+check "edit: the form" "$(e localhost:18096/edit | grep -c 'enctype=multipart/form-data')" 1
+check "edit: the form takes a picture and has no script" "$(e localhost:18096/edit | grep -ci '<script')" 0
+check "edit: a JPEG of 3 MB: 302 to the job" "$(e -o /dev/null -w '%{http_code} %{redirect_url}' --form-string 'prompt=sunny; "quoted" \back é' -F seed=7 -F "image=@$U/pic.jpg" localhost:18096/edit)" "302 http://localhost:18096/jobs/1"
+check "edit: the picture is kept byte for byte" "$(cmp "$U/data/upload-1.jpg" "$U/pic.jpg" && echo same)" same
+check "edit: the job's arguments (prompt as data, seed, the kept picture after --)" "$(tr '\0' '|' < "$U/data/1.argv" | sed "s|$U/data|D|g")" 'edit|-o|D/out/1|--seed|7|--|D/upload-1.jpg|sunny; "quoted" \back é|'
+check "edit: the job is in the queue" "$(cat "$U/data/queue")" 1
+check "edit: its page" "$(e -o /dev/null -w '%{http_code}' localhost:18096/jobs/1)" 200
+check "edit: a PNG" "$(e -o /dev/null -w '%{http_code}' -F prompt=x -F "image=@$U/pic.png" localhost:18096/edit)" 302
+check "edit: ...kept as .png" "$(ls "$U/data" | grep -c '^upload-2.png$')" 1
+check "edit: a WebP" "$(e -o /dev/null -w '%{http_code}' -F prompt=x -F "image=@$U/pic.webp;type=image/webp" localhost:18096/edit)" 302
+check "edit: ...kept as .webp" "$(ls "$U/data" | grep -c '^upload-3.webp$')" 1
+check "edit: no seed is fine, the argument list has none" "$(tr '\0' ' ' < "$U/data/2.argv" | grep -c -- '--seed')" 0
+N=$(wc -l < "$U/data/queue" | tr -d ' ')
+check "edit: a text file named .jpg: 422" "$(e -w ' %{http_code}' -F prompt=x -F "image=@$U/fake.jpg;type=image/jpeg" localhost:18096/edit)" '{"error":"the picture is not a JPEG, PNG or WebP file"} 422'
+check "edit: no prompt: 422" "$(e -o /dev/null -w '%{http_code}' -F "image=@$U/pic.jpg" localhost:18096/edit)" 422
+check "edit: no picture: 422" "$(e -o /dev/null -w '%{http_code}' -F prompt=x localhost:18096/edit)" 422
+check "edit: a bad seed: 422" "$(e -o /dev/null -w '%{http_code}' -F prompt=x -F seed=12ab -F "image=@$U/pic.jpg" localhost:18096/edit)" 422
+check "edit: a prompt of 1001 bytes: 422" "$(e -o /dev/null -w '%{http_code}' --form-string "prompt=$(head -c 1001 /dev/zero | tr '\0' a)" -F "image=@$U/pic.jpg" localhost:18096/edit)" 422
+check "edit: a prompt with a control character: 422" "$(e -o /dev/null -w '%{http_code}' --form-string "prompt=$(printf 'a\001b')" -F "image=@$U/pic.jpg" localhost:18096/edit)" 422
+check "edit: JSON to /edit: 422" "$(e -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{}' localhost:18096/edit)" 422
+check "edit: ...and none of those queued a job or kept a picture" "$(wc -l < "$U/data/queue" | tr -d ' ') $(ls "$U/data" | grep -c '^upload-')" "$N 3"
+head -c 17000000 /dev/zero > "$U/huge.bin"
+check "edit: over 16 MiB: 413" "$(e -o /dev/null -w '%{http_code}' -F prompt=x -F "image=@$U/huge.bin" localhost:18096/edit)" 413
+check "edit: no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' -F prompt=x -F "image=@$U/pic.jpg" localhost:18096/edit)" 401
+check "edit: another site's form (Origin): 403" "$(e -o /dev/null -w '%{http_code}' -H 'Origin: http://evil.example' -F prompt=x -F "image=@$U/pic.jpg" localhost:18096/edit)" 403
+check "edit: a rebinding Host: 403" "$(e -o /dev/null -w '%{http_code}' -H 'Host: rebinding.example:18096' -F prompt=x -F "image=@$U/pic.jpg" localhost:18096/edit)" 403
+check "edit: multipart is not taken anywhere else (POST /api/jobs): 415" "$(e -o /dev/null -w '%{http_code}' -F prompt=x localhost:18096/api/jobs)" 415
+check "edit: the server still answers after the uploads" "$(e -o /dev/null -w '%{http_code}' localhost:18096/api/models)" 200
+kill $SP3 2>/dev/null; rm -rf "$U"
 rc=0; build/studio 18095 "$T/data" relative 2>/dev/null || rc=$?; check "relative site dir refused" "$rc" 2
 # Who may talk to the server (studio/auth.cho): the token, the host, the origin, the content type. Server 1, port 18091. `u` is a request without the token.
 u() { curl -s -o /dev/null -w '%{http_code}' "$@"; }

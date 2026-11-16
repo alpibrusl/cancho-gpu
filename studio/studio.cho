@@ -10,6 +10,7 @@ import jobs;
 import results;
 import auth;
 import range;
+import upload;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -59,7 +60,7 @@ fn number_of[&t](text: &t [byte]) -> [] int {
 fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], site: &y [byte], token: &z [byte], port: int) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
     match poller_new() {
         Polling::Ok(p) => {
-            var srv = server.open(heap, p, listener, 65536, 0, 30);
+            var srv = server.open(heap, p, listener, 16777216, 0, 30);
             var line = buffer.append(heap, buffer.empty(heap, 128), "listening on ");
             line = buffer.push_nat(heap, line, port);
             line = buffer.append(heap, line, "\nopen http://127.0.0.1:");
@@ -183,7 +184,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 gate = 302;
                             } else if auth.token_ok(head, table, token) == false {
                                 gate = 401;
-                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false {
+                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && (bytes.equal(path, "/edit") == false || auth.multipart_ok(head, table) == false) {
                                 gate = 415;
                             }
                             if gate == 403 {
@@ -235,6 +236,24 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     out = server.failure(heap, out, 404, "not found", keep);
                                 }
                                 buffer.drop(heap, sdata);
+                            } else if bytes.equal(path, "/edit") && bytes.equal(method, "GET") {
+                                out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", upload.form_page(), keep, "");
+                            } else if bytes.equal(path, "/edit") && bytes.equal(method, "POST") {
+                                let (ust, utext, uid) = upload.handle(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr));
+                                if ust == 302 {
+                                    var extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /jobs/");
+                                    extra = buffer.push_nat(heap, extra, uid);
+                                    extra = buffer.append(heap, extra, "\r\n");
+                                    borrow extra as &eb in {
+                                        out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, buffer.bytes(eb));
+                                    }
+                                    buffer.drop(heap, extra);
+                                } else {
+                                    borrow utext as &ub in {
+                                        out = server.reply_as(heap, out, ust, "application/json", buffer.bytes(ub), keep, "");
+                                    }
+                                }
+                                buffer.drop(heap, utext);
                             } else if bytes.equal(path, "/jobs") && bytes.equal(method, "GET") {
                                 let list = results.job_list(heap, fs, dir);
                                 borrow list as &lb in {

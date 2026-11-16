@@ -183,3 +183,9 @@ pub fn login_ok[&s, &t, &k](head: &s [byte], table: &t [int], token: &k [byte]) 
     }
     return same(q[from..to], token);
 }
+
+// A form post of `/edit`: `multipart/form-data` with a boundary. It is the one POST that is not JSON (a browser form cannot send JSON without JavaScript); it still needs the token, and the Host and Origin checks
+// come first, so a form on another site is refused (`Origin`) and, were it not, would carry no cookie (`SameSite=Strict`).
+pub fn multipart_ok[&s, &t](head: &s [byte], table: &t [int]) -> [] bool {
+    return bytes.starts_with(http.header(head, table, "content-type"), "multipart/form-data; boundary=");
+}

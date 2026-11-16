@@ -36,7 +36,7 @@ fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
 }
 
 // The number of lines in the queue file, plus one: the next id. 0 on a read error.
-fn next_id[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] int {
+pub fn next_id[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] int {
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     var n = 1;
     borrow qp as &q in {
