@@ -1,0 +1,192 @@
+edition 9;
+
+module wenc_st;
+
+import std.buffer;
+import std.json;
+
+// `wenc_st` -- tensors of a safetensors file as binary64, for the float64 reference of the Wan VAE encoder (docs/wan-vae-encoder.md, slice E1).
+//
+// A safetensors file is 8 bytes (the header's length, little endian), that many bytes of JSON (each tensor: `dtype`, `shape`, `data_offsets` [begin, end) in the bytes after the header) and the data.
+// Only F32 is read (the VAE's checkpoint is F32); a tensor of another dtype, one that is not there or one whose bytes do not fit the file is an error, never a guess. Nothing here traps on a file's
+// content: the header's length, the offsets and the sizes are checked against each other and against the file before a byte is asked for.
+
+// `n` bytes of the file at `path` from byte `at`, into `into` (which must hold `n`): `n` when all of them were read, else -1.
+fn read_at[&f, &p, &b](fs: &f Fs(""), path: &p [byte], at: int, n: int, into: &!b [byte]) -> [fs_read(""), file_read] int {
+    if at < 0 || n < 0 || n > len(into) {
+        return 0 - 1;
+    }
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return 0 - 1;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var done = 0;
+            var bad = false;
+            borrow mut file as &!x in {
+                while done < n && bad == false {
+                    match file_pread(x, at + done, into[done..n]) {
+                        Read::Got(k) => {
+                            if k <= 0 {
+                                bad = true;
+                            } else {
+                                done = done + k;
+                            }
+                        }
+                        Read::End => {
+                            bad = true;
+                        }
+                        Read::Failed(e) => {
+                            bad = true;
+                        }
+                    }
+                }
+            }
+            file_close(file);
+            if bad {
+                return 0 - 1;
+            }
+            return n;
+        }
+    }
+}
+
+fn le32[&b](bytes: &b [byte], at: int) -> [] int {
+    return int_of(bytes[at]) | int_of(bytes[at + 1]) << 8 | int_of(bytes[at + 2]) << 16 | int_of(bytes[at + 3]) << 24;
+}
+
+// The tensor `name` of the file at `path` as binary64 (every F32 is exact in binary64): the values, how many of them, and `ok` (0, or an error: 1 the file or its header cannot be read, 2 no such tensor,
+// 3 not F32, 4 the offsets do not fit). The shape is not returned: the caller knows it and checks `count`.
+pub fn load[&h, &f, &p, &n](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], name: &n [byte]) -> [heap, fs_read(""), file_read] (Box[[float]], int, int) {
+    var values = box_slice(heap, 1, 0.0);
+    var count = 0;
+    var ok = 1;
+    let eight = box_slice(heap, 8, byte_of(0));
+    var hlen = 0 - 1;
+    borrow mut eight as &!ew in {
+        if read_at(fs, path, 0, 8, contents(ew)) == 8 {
+            hlen = le32(contents(ew), 0);
+            if le32(contents(ew), 4) != 0 || hlen < 2 || hlen > 16777216 {
+                hlen = 0 - 1;
+            }
+        }
+    }
+    unbox_slice(heap, eight);
+    if hlen > 0 {
+        let head = box_slice(heap, hlen, byte_of(0));
+        var got = 0 - 1;
+        borrow mut head as &!hw in {
+            got = read_at(fs, path, 8, hlen, contents(hw));
+        }
+        if got == hlen {
+            var tl = 1;
+            borrow head as &hq in {
+                tl = json.tape_len(contents(hq));
+            }
+            let tape = box_slice(heap, tl, 0);
+            ok = 2;
+            borrow head as &hr in {
+                borrow mut tape as &!tw in {
+                    let nodes = json.parse(contents(hr), contents(tw));
+                    if nodes > 0 {
+                        let node = json.get(contents(hr), contents(tw), 0, name);
+                        if node >= 0 {
+                            let dt = json.get(contents(hr), contents(tw), node, "dtype");
+                            let off = json.get(contents(hr), contents(tw), node, "data_offsets");
+                            if dt >= 0 && json.string_equals(contents(hr), contents(tw), dt, "F32") == false {
+                                ok = 3;
+                            } else if dt >= 0 && off >= 0 && json.count(contents(tw), off) == 2 {
+                                let b = json.to_int(contents(hr), contents(tw), json.at(contents(tw), off, 0));
+                                let e = json.to_int(contents(hr), contents(tw), json.at(contents(tw), off, 1));
+                                ok = 4;
+                                if b >= 0 && e > b && (e - b) % 4 == 0 && e - b <= 2147483648 {
+                                    let raw = box_slice(heap, e - b, byte_of(0));
+                                    var read = 0 - 1;
+                                    borrow mut raw as &!rw in {
+                                        read = read_at(fs, path, 8 + hlen + b, e - b, contents(rw));
+                                    }
+                                    if read == e - b {
+                                        let vals = box_slice(heap, (e - b) / 4, 0.0);
+                                        borrow raw as &rr in {
+                                            borrow mut vals as &!vw in {
+                                                var i = 0;
+                                                while i < (e - b) / 4 {
+                                                    contents(vw)[i] = float_of32(f32_of_bits(le32(contents(rr), i * 4)));
+                                                    i = i + 1;
+                                                }
+                                            }
+                                        }
+                                        unbox_slice(heap, values);
+                                        values = vals;
+                                        count = (e - b) / 4;
+                                        ok = 0;
+                                    }
+                                    unbox_slice(heap, raw);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, tape);
+        }
+        unbox_slice(heap, head);
+    }
+    return (values, count, ok);
+}
+
+// A raw little-endian float32 file (the torch reference data) as binary64: the values and how many (or -1).
+pub fn load_raw[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte]) -> [heap, fs_read(""), file_read] (Box[[float]], int) {
+    var values = box_slice(heap, 1, 0.0);
+    var count = 0 - 1;
+    let size = size_of(fs, path);
+    if size > 0 && size % 4 == 0 {
+        let raw = box_slice(heap, size, byte_of(0));
+        var read = 0 - 1;
+        borrow mut raw as &!rw in {
+            read = read_at(fs, path, 0, size, contents(rw));
+        }
+        if read == size {
+            let vals = box_slice(heap, size / 4, 0.0);
+            borrow raw as &rr in {
+                borrow mut vals as &!vw in {
+                    var i = 0;
+                    while i < size / 4 {
+                        contents(vw)[i] = float_of32(f32_of_bits(le32(contents(rr), i * 4)));
+                        i = i + 1;
+                    }
+                }
+            }
+            unbox_slice(heap, values);
+            values = vals;
+            count = size / 4;
+        }
+        unbox_slice(heap, raw);
+    }
+    return (values, count);
+}
+
+// The size of the file at `path`, or -1.
+fn size_of[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] int {
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return 0 - 1;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var size = 0 - 1;
+            borrow mut file as &!x in {
+                match file_size(x) {
+                    Done::Ok(k) => {
+                        size = k;
+                    }
+                    Done::Failed(e) => {
+                    }
+                }
+            }
+            file_close(file);
+            return size;
+        }
+    }
+}

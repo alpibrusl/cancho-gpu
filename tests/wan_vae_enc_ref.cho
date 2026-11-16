@@ -1,0 +1,687 @@
+edition 9;
+
+import std.buffer;
+import std.fmt;
+import std.io;
+import wenc_st;
+import wenc_ops;
+
+// wan_vae_enc_ref -- slice E1 of docs/wan-vae-encoder.md: the VAE encoder of Wan2.2-TI2V-5B in binary64, from the checkpoint's weights, held to torch's float32 outputs (tests/data/wan_vae_enc/).
+//
+//   wan_vae_enc_ref <vae.safetensors> <data dir> <case a|b|c> <T> <H> <W> [<mutant 1-5>]
+//
+// The optional last argument makes one deliberate error that the comparison must refuse: 1 the spatial downsample's zero pad on the left and top, 2 `time_conv` also applied to the first frame (a plain
+// causal stride-2 convolution), 3 `AvgDown3D` grouping channels in the order (c, row, column, time slot), 4 the log-variance half taken as the mean, 5 patchify with row and column offsets exchanged.
+//
+//   cancho build tests/wan_vae_enc_ref.cho tests/wan_enc/st.cho tests/wan_enc/ops.cho --std -o build/wan_vae_enc_ref
+//
+// Reads `<data>/<case>_input.f32` (`[3, T, H, W]`), runs the encoder over the whole clip (the model's chunked loop with its feature cache is the same function: this is what the comparison checks), and for
+// each stage prints `<stage> values <n> rel <rms(diff) / rms(torch)> max <largest |diff|>`. The stages are torch's hooks: `conv_in`, `down0` to `down3`, `mid`, `quant`, and `mean`. The exit status is the
+// number of stages whose `rel` is over `tol()` (1e-5 of the rms, written before the first run: about 7 times the worst the decoder's float64 reference was from torch float32, 1.5e-6, docs/diffusion.md V2),
+// or 100 + the number of an error. A tensor is a `Box[[float]]`, channel first (`[c, t, h, w]`), its sizes in ints beside it. Not in `scripts/gate.sh`: it needs the checkpoint in the Hugging Face cache.
+
+fn tol() -> [] float {
+    return 0.00001;
+}
+
+fn dim(n: int, p0: int, p1: int, k: int, s: int) -> [] int {
+    return (n + p0 + p1 - k) / s + 1;
+}
+
+fn nm[&h, &a, &b, &c](heap: &!h Heap, first: &a [byte], second: &b [byte], third: &c [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 96), first);
+    out = buffer.append(heap, out, second);
+    out = buffer.append(heap, out, third);
+    return out;
+}
+
+// A tensor of the checkpoint by the name `first + second + third`; a failure adds 1 to `bad[0]`.
+fn weights[&h, &f, &p, &a, &b, &c, &q](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], first: &a [byte], second: &b [byte], third: &c [byte], bad: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let name = nm(heap, first, second, third);
+    var out = box_slice(heap, 1, 0.0);
+    borrow name as &nb in {
+        let (v, n, ok) = wenc_st.load(heap, fs, path, buffer.bytes(nb));
+        unbox_slice(heap, out);
+        out = v;
+        if ok != 0 {
+            bad[0] = bad[0] + 1;
+        }
+    }
+    buffer.drop(heap, name);
+    return out;
+}
+
+// `conv(x)` with the weights `<prefix><part>.weight` and `.bias`; `x` is `[c, t, h, w]`.
+fn conv_t[&h, &f, &p, &a, &b, &x, &q](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], prefix: &a [byte], part: &b [byte], x: &x [float], c: int, t: int, hh: int, w: int, o: int, kt: int, kh: int, kw: int, st: int, ss: int, pt: int, ph0: int, ph1: int, pw0: int, pw1: int, bad: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let wt = weights(heap, fs, path, prefix, part, ".weight", bad);
+    let bs = weights(heap, fs, path, prefix, part, ".bias", bad);
+    let to = dim(t, pt, 0, kt, st);
+    let ho = dim(hh, ph0, ph1, kh, ss);
+    let wo = dim(w, pw0, pw1, kw, ss);
+    let out = box_slice(heap, o * to * ho * wo, 0.0);
+    borrow wt as &wr in {
+        borrow bs as &br in {
+            borrow mut out as &!ow in {
+                if wenc_ops.conv(x, c, t, hh, w, contents(wr), contents(br), o, kt, kh, kw, st, ss, pt, ph0, ph1, pw0, pw1, contents(ow)) == 0 {
+                    bad[0] = bad[0] + 1;
+                }
+            }
+        }
+    }
+    unbox_slice(heap, wt);
+    unbox_slice(heap, bs);
+    return out;
+}
+
+// RMS norm over the channels with `<prefix><part>` (a gamma tensor), then SiLU if asked; `x` is `[c, n]`.
+fn norm_t[&h, &f, &p, &a, &b, &x, &q](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], prefix: &a [byte], part: &b [byte], x: &x [float], c: int, n: int, with_silu: bool, bad: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let g = weights(heap, fs, path, prefix, part, "", bad);
+    let out = box_slice(heap, c * n, 0.0);
+    borrow g as &gr in {
+        borrow mut out as &!ow in {
+            if wenc_ops.rms_norm(x, c, n, contents(gr), contents(ow)) == 0 {
+                bad[0] = bad[0] + 1;
+            }
+            if with_silu {
+                wenc_ops.silu(contents(ow));
+            }
+        }
+    }
+    unbox_slice(heap, g);
+    return out;
+}
+
+fn copy_of[&h, &x](heap: &!h Heap, x: &x [float]) -> [heap] Box[[float]] {
+    let out = box_slice(heap, len(x), 0.0);
+    borrow mut out as &!ow in {
+        var i = 0;
+        while i < len(x) {
+            contents(ow)[i] = x[i];
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+// `WanResidualBlock`: `conv2(silu(norm2(conv1(silu(norm1(x)))))) + shortcut(x)`; the shortcut is a 1 x 1 x 1 convolution when the widths differ (`ci != co`), the identity otherwise.
+fn resnet[&h, &f, &p, &a, &b, &x, &q](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], prefix: &a [byte], part: &b [byte], x: &x [float], ci: int, co: int, t: int, hh: int, w: int, bad: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let base = nm(heap, prefix, part, "");
+    var result = box_slice(heap, 1, 0.0);
+    borrow base as &bb in {
+        let pre = buffer.bytes(bb);
+        let n = t * hh * w;
+        var shortcut = copy_of(heap, x);
+        if ci != co {
+            unbox_slice(heap, shortcut);
+            shortcut = conv_t(heap, fs, path, pre, ".conv_shortcut", x, ci, t, hh, w, co, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, bad);
+        }
+        let a = norm_t(heap, fs, path, pre, ".norm1.gamma", x, ci, n, true, bad);
+        var b = box_slice(heap, 1, 0.0);
+        borrow a as &ar in {
+            unbox_slice(heap, b);
+            b = conv_t(heap, fs, path, pre, ".conv1", contents(ar), ci, t, hh, w, co, 3, 3, 3, 1, 1, 2, 1, 1, 1, 1, bad);
+        }
+        unbox_slice(heap, a);
+        var d = box_slice(heap, 1, 0.0);
+        borrow b as &br in {
+            unbox_slice(heap, d);
+            d = norm_t(heap, fs, path, pre, ".norm2.gamma", contents(br), co, n, true, bad);
+        }
+        unbox_slice(heap, b);
+        var e = box_slice(heap, 1, 0.0);
+        borrow d as &dr in {
+            unbox_slice(heap, e);
+            e = conv_t(heap, fs, path, pre, ".conv2", contents(dr), co, t, hh, w, co, 3, 3, 3, 1, 1, 2, 1, 1, 1, 1, bad);
+        }
+        unbox_slice(heap, d);
+        borrow shortcut as &sr in {
+            borrow mut e as &!ew in {
+                if wenc_ops.add(contents(ew), contents(sr)) == 0 {
+                    bad[0] = bad[0] + 1;
+                }
+            }
+        }
+        unbox_slice(heap, shortcut);
+        unbox_slice(heap, result);
+        result = e;
+    }
+    buffer.drop(heap, base);
+    return result;
+}
+
+// `WanAttentionBlock`, frame by frame: `x + proj(attention(to_qkv(norm(x))))`; `x` is `[c, t, h, w]`.
+fn attention[&h, &f, &p, &a, &b, &x, &q](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], prefix: &a [byte], part: &b [byte], x: &x [float], c: int, t: int, hh: int, w: int, bad: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let base = nm(heap, prefix, part, "");
+    let out = copy_of(heap, x);
+    let n = hh * w;
+    borrow base as &bb in {
+        let pre = buffer.bytes(bb);
+        let g = weights(heap, fs, path, pre, ".norm.gamma", "", bad);
+        let row = box_slice(heap, n, 0.0);
+        var tt = 0;
+        while tt < t {
+            let frame = box_slice(heap, c * n, 0.0);
+            borrow mut frame as &!fw in {
+                var ic = 0;
+                while ic < c {
+                    var q = 0;
+                    while q < n {
+                        contents(fw)[ic * n + q] = x[(ic * t + tt) * n + q];
+                        q = q + 1;
+                    }
+                    ic = ic + 1;
+                }
+            }
+            let nrm = box_slice(heap, c * n, 0.0);
+            borrow g as &gr in {
+                borrow frame as &fr in {
+                    borrow mut nrm as &!nw in {
+                        if wenc_ops.rms_norm(contents(fr), c, n, contents(gr), contents(nw)) == 0 {
+                            bad[0] = bad[0] + 1;
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, frame);
+            var qkv = box_slice(heap, 1, 0.0);
+            borrow nrm as &nr in {
+                unbox_slice(heap, qkv);
+                qkv = conv_t(heap, fs, path, pre, ".to_qkv", contents(nr), c, 1, hh, w, 3 * c, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, bad);
+            }
+            unbox_slice(heap, nrm);
+            let att = box_slice(heap, c * n, 0.0);
+            borrow qkv as &qr in {
+                borrow mut row as &!rw in {
+                    borrow mut att as &!aw in {
+                        if wenc_ops.attend(contents(qr), c, n, contents(rw), contents(aw)) == 0 {
+                            bad[0] = bad[0] + 1;
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, qkv);
+            var pr = box_slice(heap, 1, 0.0);
+            borrow att as &atr in {
+                unbox_slice(heap, pr);
+                pr = conv_t(heap, fs, path, pre, ".proj", contents(atr), c, 1, hh, w, c, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, bad);
+            }
+            unbox_slice(heap, att);
+            borrow pr as &prr in {
+                borrow mut out as &!ow in {
+                    var ic = 0;
+                    while ic < c {
+                        var q = 0;
+                        while q < n {
+                            contents(ow)[(ic * t + tt) * n + q] = contents(ow)[(ic * t + tt) * n + q] + contents(prr)[ic * n + q];
+                            q = q + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                }
+            }
+            unbox_slice(heap, pr);
+            tt = tt + 1;
+        }
+        unbox_slice(heap, row);
+        unbox_slice(heap, g);
+    }
+    buffer.drop(heap, base);
+    return out;
+}
+
+// frame 0 of `a` (`[c, ta, n]`), then all the `tb` frames of `b` (`[c, tb, n]`).
+fn first_then[&h, &a, &b](heap: &!h Heap, a: &a [float], ta: int, b: &b [float], tb: int, c: int, n: int) -> [heap] Box[[float]] {
+    let out = box_slice(heap, c * (1 + tb) * n, 0.0);
+    borrow mut out as &!ow in {
+        var ic = 0;
+        while ic < c {
+            var q = 0;
+            while q < n {
+                contents(ow)[ic * (1 + tb) * n + q] = a[ic * ta * n + q];
+                q = q + 1;
+            }
+            var tt = 0;
+            while tt < tb {
+                q = 0;
+                while q < n {
+                    contents(ow)[(ic * (1 + tb) + 1 + tt) * n + q] = b[(ic * tb + tt) * n + q];
+                    q = q + 1;
+                }
+                tt = tt + 1;
+            }
+            ic = ic + 1;
+        }
+    }
+    return out;
+}
+
+// One down block of `WanEncoder3d` (`is_residual`): two residual blocks `ci -> co -> co`, the spatial downsample (a 3 x 3 convolution of stride 2 after a zero column on the right and a zero row at the
+// bottom) and, when `temporal`, the `time_conv` of stride 2 whose first output frame is the input's first frame untouched; plus the shortcut `AvgDown3D` of the block's input. The result is
+// `[co, t2, h2, w2]` with `t2 = 1 + (t - 1) / 2` if temporal else `t`, `h2 = h / 2` and `w2 = w / 2` if spatial.
+fn down_block[&h, &f, &p, &x, &q](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], i: int, x: &x [float], ci: int, co: int, t: int, hh: int, w: int, spatial: bool, temporal: bool, bad: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    var pre = buffer.append(heap, buffer.empty(heap, 64), "encoder.down_blocks.");
+    pre = buffer.push_nat(heap, pre, i);
+    var result = box_slice(heap, 1, 0.0);
+    borrow pre as &pb in {
+        let p0 = buffer.bytes(pb);
+        let r1 = resnet(heap, fs, path, p0, ".resnets.0", x, ci, co, t, hh, w, bad);
+        var y = box_slice(heap, 1, 0.0);
+        borrow r1 as &r1r in {
+            unbox_slice(heap, y);
+            y = resnet(heap, fs, path, p0, ".resnets.1", contents(r1r), co, co, t, hh, w, bad);
+        }
+        unbox_slice(heap, r1);
+        var h2 = hh;
+        var w2 = w;
+        var t2 = t;
+        if spatial {
+            var s = box_slice(heap, 1, 0.0);
+            borrow y as &yr in {
+                unbox_slice(heap, s);
+                var pa = 0;
+                var pb = 1;
+                if bad[1] == 1 {
+                    pa = 1;
+                    pb = 0;
+                }
+                s = conv_t(heap, fs, path, p0, ".downsampler.resample.1", contents(yr), co, t, hh, w, co, 1, 3, 3, 1, 2, 0, pa, pb, pa, pb, bad);
+            }
+            unbox_slice(heap, y);
+            y = s;
+            h2 = hh / 2;
+            w2 = w / 2;
+        }
+        if temporal && t > 1 && bad[1] == 2 {
+            var plain = box_slice(heap, 1, 0.0);
+            borrow y as &yq in {
+                unbox_slice(heap, plain);
+                plain = conv_t(heap, fs, path, p0, ".downsampler.time_conv", contents(yq), co, t, h2, w2, co, 3, 1, 1, 2, 1, 2, 0, 0, 0, 0, bad);
+            }
+            unbox_slice(heap, y);
+            y = plain;
+            t2 = dim(t, 2, 0, 3, 2);
+        }
+        if temporal && t > 1 && bad[1] != 2 {
+            var both = box_slice(heap, 1, 0.0);
+            borrow y as &yr2 in {
+                let rest = conv_t(heap, fs, path, p0, ".downsampler.time_conv", contents(yr2), co, t, h2, w2, co, 3, 1, 1, 2, 1, 0, 0, 0, 0, 0, bad);
+                let tr = dim(t, 0, 0, 3, 2);
+                borrow rest as &rr in {
+                    unbox_slice(heap, both);
+                    both = first_then(heap, contents(yr2), t, contents(rr), tr, co, h2 * w2);
+                }
+                unbox_slice(heap, rest);
+                t2 = 1 + tr;
+            }
+            unbox_slice(heap, y);
+            y = both;
+        }
+        var ft = 1;
+        if temporal {
+            ft = 2;
+        }
+        var fsp = 1;
+        if spatial {
+            fsp = 2;
+        }
+        let shortcut = box_slice(heap, co * t2 * h2 * w2, 0.0);
+        borrow mut shortcut as &!sw in {
+            if wenc_ops.avg_down(x, ci, t, hh, w, co, ft, fsp, bad[1], contents(sw)) == 0 {
+                bad[0] = bad[0] + 1;
+            }
+        }
+        borrow shortcut as &scr in {
+            borrow mut y as &!yw in {
+                if wenc_ops.add(contents(yw), contents(scr)) == 0 {
+                    bad[0] = bad[0] + 1;
+                }
+            }
+        }
+        unbox_slice(heap, shortcut);
+        unbox_slice(heap, result);
+        result = y;
+    }
+    buffer.drop(heap, pre);
+    return result;
+}
+
+fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+fn show[&i](io: &!i Io, x: float) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](32, byte_of(0));
+        let n = fmt.float_into(out, x);
+        io.write_all(io, out[0..n]);
+    }
+    return 0;
+}
+
+fn shown[&i](io: &!i Io, n: int) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](24, byte_of(0));
+        var k = 0;
+        var v = n;
+        if v == 0 {
+            out[0] = byte_of(48);
+            k = 1;
+        }
+        while v > 0 {
+            out[k] = byte_of(48 + v % 10);
+            v = v / 10;
+            k = k + 1;
+        }
+        var l = 0;
+        var r = k - 1;
+        while l < r {
+            let tmp = out[l];
+            out[l] = out[r];
+            out[r] = tmp;
+            l = l + 1;
+            r = r - 1;
+        }
+        io.write_all(io, out[0..k]);
+    }
+    return 0;
+}
+
+// Compare `got` with torch's values of the stage `stage` (the file `<dir>/<case>_<stage>.f32`): print a line, answer 1 if it is over `tol()` or could not be compared.
+fn compare[&i, &h, &f, &g, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], case: &static [byte], stage: &static [byte], got: &g [float]) -> [args, io_write, heap, fs_read(""), file_read] int {
+    var path = buffer.append(heap, buffer.empty(heap, 96), dir);
+    path = buffer.append(heap, path, "/");
+    path = buffer.append(heap, path, case);
+    path = buffer.append(heap, path, "_");
+    path = buffer.append(heap, path, stage);
+    path = buffer.append(heap, path, ".f32");
+    var bad = 1;
+    put(io, stage);
+    borrow path as &pb in {
+        let (r, n) = wenc_st.load_raw(heap, fs, buffer.bytes(pb));
+        if n == len(got) {
+            var ss = 0.0;
+            var dd = 0.0;
+            var mx = 0.0;
+            borrow r as &rr in {
+                var k = 0;
+                while k < n {
+                    let diff = contents(rr)[k] - got[k];
+                    ss = ss + contents(rr)[k] * contents(rr)[k];
+                    dd = dd + diff * diff;
+                    var a = diff;
+                    if a < 0.0 {
+                        a = 0.0 - a;
+                    }
+                    if a > mx {
+                        mx = a;
+                    }
+                    k = k + 1;
+                }
+            }
+            let rel = sqrt(dd / float_of(n)) / sqrt(ss / float_of(n));
+            put(io, " values ");
+            shown(io, n);
+            put(io, " rel ");
+            show(io, rel);
+            put(io, " max ");
+            show(io, mx);
+            put(io, "\n");
+            if rel <= tol() {
+                bad = 0;
+            }
+        } else {
+            put(io, " cannot compare: the file has ");
+            shown(io, n);
+            put(io, " values, the encoder made ");
+            shown(io, len(got));
+            put(io, "\n");
+        }
+        unbox_slice(heap, r);
+    }
+    buffer.drop(heap, path);
+    return bad;
+}
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 6 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 7 && arg_count(args) != 8 {
+        put(io, "usage: wan_vae_enc_ref <vae.safetensors> <data dir> <case a|b|c> <T> <H> <W>\n");
+        return 100;
+    }
+    let path = arg(args, 1);
+    let dir = arg(args, 2);
+    var case = "a";
+    if is_text(arg(args, 3), "b") {
+        case = "b";
+    }
+    if is_text(arg(args, 3), "c") {
+        case = "c";
+    }
+    let t0 = num(arg(args, 4));
+    let h0 = num(arg(args, 5));
+    let w0 = num(arg(args, 6));
+    if t0 < 1 || h0 < 16 || w0 < 16 || (t0 - 1) % 4 != 0 || h0 % 16 != 0 || w0 % 16 != 0 {
+        put(io, "T is 1 + 4k, H and W multiples of 16\n");
+        return 101;
+    }
+    let bad = box_slice(heap, 2, 0);
+    if arg_count(args) == 8 {
+        borrow mut bad as &!mw in {
+            contents(mw)[1] = num(arg(args, 7));
+        }
+    }
+    var failures = 0;
+    // the input, from torch's data
+    let video = box_slice(heap, 3 * t0 * h0 * w0, 0.0);
+    var ipath = buffer.append(heap, buffer.empty(heap, 96), dir);
+    ipath = buffer.append(heap, ipath, "/");
+    ipath = buffer.append(heap, ipath, case);
+    ipath = buffer.append(heap, ipath, "_input.f32");
+    var loaded = false;
+    borrow ipath as &ip in {
+        let (v, n) = wenc_st.load_raw(heap, fs, buffer.bytes(ip));
+        if n == 3 * t0 * h0 * w0 {
+            loaded = true;
+            borrow v as &vr in {
+                borrow mut video as &!dw in {
+                    var k = 0;
+                    while k < n {
+                        contents(dw)[k] = contents(vr)[k];
+                        k = k + 1;
+                    }
+                }
+            }
+        }
+        unbox_slice(heap, v);
+    }
+    buffer.drop(heap, ipath);
+    if loaded == false {
+        put(io, "the input file does not have 3 x T x H x W values\n");
+        unbox_slice(heap, video);
+        unbox_slice(heap, bad);
+        return 102;
+    }
+    borrow mut bad as &!bw in {
+        // patchify (2), conv_in
+        var h = h0 / 2;
+        var w = w0 / 2;
+        let px = box_slice(heap, 12 * t0 * h * w, 0.0);
+        borrow video as &vr in {
+            borrow mut px as &!pw in {
+                wenc_ops.patchify2(contents(vr), 3, t0, h0, w0, contents(bw)[1], contents(pw));
+            }
+        }
+        unbox_slice(heap, video);
+        var x = box_slice(heap, 1, 0.0);
+        borrow px as &pr in {
+            unbox_slice(heap, x);
+            x = conv_t(heap, fs, path, "encoder.conv_in", "", contents(pr), 12, t0, h, w, 160, 3, 3, 3, 1, 1, 2, 1, 1, 1, 1, contents(bw));
+        }
+        unbox_slice(heap, px);
+        var t = t0;
+        borrow x as &xr in {
+            failures = failures + compare(io, heap, fs, dir, case, "conv_in", contents(xr));
+        }
+        var ci = 160;
+        var i = 0;
+        while i < 4 {
+            var co = 160;
+            if i == 1 {
+                co = 320;
+            }
+            if i >= 2 {
+                co = 640;
+            }
+            let spatial = i < 3;
+            let temporal = i == 1 || i == 2;
+            var y = box_slice(heap, 1, 0.0);
+            borrow x as &xr2 in {
+                unbox_slice(heap, y);
+                y = down_block(heap, fs, path, i, contents(xr2), ci, co, t, h, w, spatial, temporal, contents(bw));
+            }
+            unbox_slice(heap, x);
+            x = y;
+            if spatial {
+                h = h / 2;
+                w = w / 2;
+            }
+            if temporal && t > 1 {
+                t = 1 + (t - 1) / 2;
+            }
+            ci = co;
+            borrow x as &xr3 in {
+                if i == 0 {
+                    failures = failures + compare(io, heap, fs, dir, case, "down0", contents(xr3));
+                }
+                if i == 1 {
+                    failures = failures + compare(io, heap, fs, dir, case, "down1", contents(xr3));
+                }
+                if i == 2 {
+                    failures = failures + compare(io, heap, fs, dir, case, "down2", contents(xr3));
+                }
+                if i == 3 {
+                    failures = failures + compare(io, heap, fs, dir, case, "down3", contents(xr3));
+                }
+            }
+            i = i + 1;
+        }
+        // the middle block: residual, attention, residual
+        var m0 = box_slice(heap, 1, 0.0);
+        borrow x as &xr4 in {
+            unbox_slice(heap, m0);
+            m0 = resnet(heap, fs, path, "encoder.mid_block", ".resnets.0", contents(xr4), 640, 640, t, h, w, contents(bw));
+        }
+        unbox_slice(heap, x);
+        var m1 = box_slice(heap, 1, 0.0);
+        borrow m0 as &m0r in {
+            unbox_slice(heap, m1);
+            m1 = attention(heap, fs, path, "encoder.mid_block", ".attentions.0", contents(m0r), 640, t, h, w, contents(bw));
+        }
+        unbox_slice(heap, m0);
+        var m2 = box_slice(heap, 1, 0.0);
+        borrow m1 as &m1r in {
+            unbox_slice(heap, m2);
+            m2 = resnet(heap, fs, path, "encoder.mid_block", ".resnets.1", contents(m1r), 640, 640, t, h, w, contents(bw));
+        }
+        unbox_slice(heap, m1);
+        borrow m2 as &m2r in {
+            failures = failures + compare(io, heap, fs, dir, case, "mid", contents(m2r));
+        }
+        // the head: norm, SiLU, conv_out, quant_conv
+        var hn = box_slice(heap, 1, 0.0);
+        borrow m2 as &m2s in {
+            unbox_slice(heap, hn);
+            hn = norm_t(heap, fs, path, "encoder.norm_out", ".gamma", contents(m2s), 640, t * h * w, true, contents(bw));
+        }
+        unbox_slice(heap, m2);
+        var ho = box_slice(heap, 1, 0.0);
+        borrow hn as &hnr in {
+            unbox_slice(heap, ho);
+            ho = conv_t(heap, fs, path, "encoder.conv_out", "", contents(hnr), 640, t, h, w, 96, 3, 3, 3, 1, 1, 2, 1, 1, 1, 1, contents(bw));
+        }
+        unbox_slice(heap, hn);
+        var qc = box_slice(heap, 1, 0.0);
+        borrow ho as &hor in {
+            unbox_slice(heap, qc);
+            qc = conv_t(heap, fs, path, "quant_conv", "", contents(hor), 96, t, h, w, 96, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, contents(bw));
+        }
+        unbox_slice(heap, ho);
+        borrow qc as &qr in {
+            failures = failures + compare(io, heap, fs, dir, case, "quant", contents(qr));
+            if contents(bw)[1] == 4 {
+                failures = failures + compare(io, heap, fs, dir, case, "mean", contents(qr)[len(contents(qr)) / 2..len(contents(qr))]);
+            } else {
+                failures = failures + compare(io, heap, fs, dir, case, "mean", contents(qr)[0..len(contents(qr)) / 2]);
+            }
+        }
+        unbox_slice(heap, qc);
+    }
+    var problems = 0;
+    borrow bad as &br in {
+        problems = contents(br)[0];
+    }
+    unbox_slice(heap, bad);
+    if problems != 0 {
+        put(io, "an operation refused its sizes or a weight was missing: ");
+        shown(io, problems);
+        put(io, "\n");
+        return 103;
+    }
+    return failures;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

@@ -1,0 +1,264 @@
+edition 9;
+
+module wenc_ops;
+
+import std.math;
+
+// `wenc_ops` -- the operations of the Wan VAE encoder in binary64 (docs/wan-vae-encoder.md, slice E1). A tensor is a flat `[float]`, channel first: `x[((c * T + t) * H + y) * W + x]`. Written from the
+// mathematics of diffusers' `autoencoder_kl_wan.py` over the whole clip at once. Plain loops: no vectorised sum, so the same inputs give the same bits.
+
+// Convolution. `x` is `[c, T, H, W]`, `w` is `[o, c, kt, kh, kw]` (row major, the checkpoint's layout; a 2-D weight `[o, c, kh, kw]` is the same bytes with `kt` 1), `b` is the bias `[o]` (or empty: none).
+// Zeros are added in front of the time axis (`pt`), above and below (`ph0`, `ph1`), left and right (`pw0`, `pw1`); the time stride is `st`, the spatial one `ss`. `out` is `[o, To, Ho, Wo]` with
+// `To = (T + pt - kt) / st + 1`, `Ho = (H + ph0 + ph1 - kh) / ss + 1`, `Wo = (W + pw0 + pw1 - kw) / ss + 1`; the caller sizes it. Returns To * Ho * Wo (per channel), or 0 if a size is wrong.
+pub fn conv[&a, &b, &c, &d](x: &a [float], c: int, t: int, h: int, wd: int, w: &b [float], bias: &c [float], o: int, kt: int, kh: int, kw: int, st: int, ss: int, pt: int, ph0: int, ph1: int, pw0: int, pw1: int, out: &!d [float]) -> [] int {
+    let to = (t + pt - kt) / st + 1;
+    let ho = (h + ph0 + ph1 - kh) / ss + 1;
+    let wo = (wd + pw0 + pw1 - kw) / ss + 1;
+    if to < 1 || ho < 1 || wo < 1 || len(x) != c * t * h * wd || len(w) != o * c * kt * kh * kw || len(out) != o * to * ho * wo {
+        return 0;
+    }
+    if len(bias) != 0 && len(bias) != o {
+        return 0;
+    }
+    var oc = 0;
+    while oc < o {
+        var base = 0.0;
+        if len(bias) != 0 {
+            base = bias[oc];
+        }
+        var q = 0;
+        while q < to * ho * wo {
+            out[oc * to * ho * wo + q] = base;
+            q = q + 1;
+        }
+        var ic = 0;
+        while ic < c {
+            var dt = 0;
+            while dt < kt {
+                var dy = 0;
+                while dy < kh {
+                    var dx = 0;
+                    while dx < kw {
+                        let wt = w[(((oc * c + ic) * kt + dt) * kh + dy) * kw + dx];
+                        if wt != 0.0 {
+                            var ot = 0;
+                            while ot < to {
+                                let ti = ot * st + dt - pt;
+                                if ti >= 0 && ti < t {
+                                    var oy = 0;
+                                    while oy < ho {
+                                        let yi = oy * ss + dy - ph0;
+                                        if yi >= 0 && yi < h {
+                                            let src = ((ic * t + ti) * h + yi) * wd;
+                                            let dst = ((oc * to + ot) * ho + oy) * wo;
+                                            var ox = 0;
+                                            while ox < wo {
+                                                let xi = ox * ss + dx - pw0;
+                                                if xi >= 0 && xi < wd {
+                                                    out[dst + ox] = out[dst + ox] + wt * x[src + xi];
+                                                }
+                                                ox = ox + 1;
+                                            }
+                                        }
+                                        oy = oy + 1;
+                                    }
+                                }
+                                ot = ot + 1;
+                            }
+                        }
+                        dx = dx + 1;
+                    }
+                    dy = dy + 1;
+                }
+                dt = dt + 1;
+            }
+            ic = ic + 1;
+        }
+        oc = oc + 1;
+    }
+    return to * ho * wo;
+}
+
+// `WanRMS_norm`: `x / max(|x|, 1e-12) * sqrt(c) * gamma`, the norm taken over the channels at each position (`F.normalize`, dim 1). `n` is the number of positions, `x` is `[c, n]`.
+pub fn rms_norm[&a, &g, &o](x: &a [float], c: int, n: int, gamma: &g [float], out: &!o [float]) -> [] int {
+    if len(x) != c * n || len(out) != c * n || len(gamma) != c {
+        return 0;
+    }
+    let scale = sqrt(float_of(c));
+    var p = 0;
+    while p < n {
+        var s = 0.0;
+        var k = 0;
+        while k < c {
+            s = s + x[k * n + p] * x[k * n + p];
+            k = k + 1;
+        }
+        var nrm = sqrt(s);
+        if nrm < 0.000000000001 {
+            nrm = 0.000000000001;
+        }
+        k = 0;
+        while k < c {
+            out[k * n + p] = x[k * n + p] / nrm * scale * gamma[k];
+            k = k + 1;
+        }
+        p = p + 1;
+    }
+    return 1;
+}
+
+// SiLU in place: `x / (1 + math.exp(-x))`.
+pub fn silu[&a](x: &!a [float]) -> [] int {
+    var i = 0;
+    while i < len(x) {
+        x[i] = x[i] / (1.0 + math.exp(0.0 - x[i]));
+        i = i + 1;
+    }
+    return 1;
+}
+
+// `y = y + x`.
+pub fn add[&a, &b](y: &!a [float], x: &b [float]) -> [] int {
+    if len(x) != len(y) {
+        return 0;
+    }
+    var i = 0;
+    while i < len(x) {
+        y[i] = y[i] + x[i];
+        i = i + 1;
+    }
+    return 1;
+}
+
+// `AvgDown3D(in, out, factor_t, factor_s)` of the shortcut: zeros in front of time until `T` is a multiple of `ft`; the `ft x fs x fs` neighbours become channels in the order `(c, a, b, d)` (time slot,
+// row, column); consecutive groups of `gs = c * ft * fs * fs / o` of those are averaged. `out` is `[o, T2 / ft, H / fs, W / fs]` with `T2 = T` rounded up to a multiple of `ft`. 0 if a size is wrong.
+pub fn avg_down[&a, &d](x: &a [float], c: int, t: int, h: int, wd: int, o: int, ft: int, fs: int, variant: int, out: &!d [float]) -> [] int {
+    if ft < 1 || fs < 1 || c * ft * fs * fs % o != 0 || h % fs != 0 || wd % fs != 0 {
+        return 0;
+    }
+    let pad = (ft - t % ft) % ft;
+    let t2 = (t + pad) / ft;
+    let h2 = h / fs;
+    let w2 = wd / fs;
+    let gs = c * ft * fs * fs / o;
+    if len(x) != c * t * h * wd || len(out) != o * t2 * h2 * w2 {
+        return 0;
+    }
+    var oc = 0;
+    while oc < o {
+        var pos = 0;
+        while pos < t2 * h2 * w2 {
+            let tt = pos / (h2 * w2);
+            let yy = pos / w2 % h2;
+            let xx = pos % w2;
+            var s = 0.0;
+            var gi = 0;
+            while gi < gs {
+                let ch = oc * gs + gi;
+                let ic = ch / (ft * fs * fs);
+                let rest = ch % (ft * fs * fs);
+                var ta = rest / (fs * fs);
+                var ya = rest / fs % fs;
+                var xa = rest % fs;
+                if variant == 3 {
+                    ya = rest / ft / fs;
+                    xa = rest / ft % fs;
+                    ta = rest % ft;
+                }
+                let ti = tt * ft + ta - pad;
+                if ti >= 0 {
+                    s = s + x[((ic * t + ti) * h + yy * fs + ya) * wd + xx * fs + xa];
+                }
+                gi = gi + 1;
+            }
+            out[oc * t2 * h2 * w2 + pos] = s / float_of(gs);
+            pos = pos + 1;
+        }
+        oc = oc + 1;
+    }
+    return 1;
+}
+
+// `WanAttentionBlock`'s attention, one frame: `qkv` is `[3 c, n]` (the channels of `q`, then `k`, then `v`, `n` positions); one head of `c` channels over the `n` positions, scaled by `1 / sqrt(c)`;
+// `row` is scratch of `n` floats; `out` is `[c, n]`.
+pub fn attend[&a, &r, &o](qkv: &a [float], c: int, n: int, row: &!r [float], out: &!o [float]) -> [] int {
+    if len(qkv) != 3 * c * n || len(out) != c * n || len(row) != n {
+        return 0;
+    }
+    let scale = 1.0 / sqrt(float_of(c));
+    var i = 0;
+    while i < n {
+        var best = 0.0 - 1.0e300;
+        var j = 0;
+        while j < n {
+            var s = 0.0;
+            var k = 0;
+            while k < c {
+                s = s + qkv[k * n + i] * qkv[(c + k) * n + j];
+                k = k + 1;
+            }
+            row[j] = s * scale;
+            if row[j] > best {
+                best = row[j];
+            }
+            j = j + 1;
+        }
+        var total = 0.0;
+        j = 0;
+        while j < n {
+            row[j] = math.exp(row[j] - best);
+            total = total + row[j];
+            j = j + 1;
+        }
+        var k = 0;
+        while k < c {
+            var acc = 0.0;
+            j = 0;
+            while j < n {
+                acc = acc + row[j] / total * qkv[(2 * c + k) * n + j];
+                j = j + 1;
+            }
+            out[k * n + i] = acc;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// `patchify(x, 2)`: `[3, T, H, W]` to `[12, T, H / 2, W / 2]`, channel `4 c + 2 q + p` for the row offset `p` and the column offset `q`. `H` and `W` are even.
+pub fn patchify2[&a, &o](x: &a [float], c: int, t: int, h: int, wd: int, variant: int, out: &!o [float]) -> [] int {
+    if h % 2 != 0 || wd % 2 != 0 || len(x) != c * t * h * wd || len(out) != c * 4 * t * (h / 2) * (wd / 2) {
+        return 0;
+    }
+    var ic = 0;
+    while ic < c {
+        var q = 0;
+        while q < 2 {
+            var p = 0;
+            while p < 2 {
+                var tt = 0;
+                while tt < t {
+                    var y = 0;
+                    while y < h / 2 {
+                        var xx = 0;
+                        while xx < wd / 2 {
+                            var chan = ic * 4 + q * 2 + p;
+                            if variant == 5 {
+                                chan = ic * 4 + p * 2 + q;
+                            }
+                            out[((chan * t + tt) * (h / 2) + y) * (wd / 2) + xx] = x[((ic * t + tt) * h + 2 * y + p) * wd + 2 * xx + q];
+                            xx = xx + 1;
+                        }
+                        y = y + 1;
+                    }
+                    tt = tt + 1;
+                }
+                p = p + 1;
+            }
+            q = q + 1;
+        }
+        ic = ic + 1;
+    }
+    return 1;
+}
