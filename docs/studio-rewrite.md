@@ -113,3 +113,17 @@ Three requests, **one run each**, to Ollama's `/api/chat` with `qwen3.8:27b-mlx`
 3. **"Keep every fact ... and add no new subject"** is in tension with what a vague request needs; whether to allow invention for a vague prompt is a decision (section 9), not something the draft settles by accident.
 
 **Not shown:** whether any of these three, run through the generator, is better than the original prompt; the cold start from disk; the behaviour with a real photograph or a long prompt; the variation between runs (one run each at temperature 0.3).
+
+## 11. Round 2: drafts v2, two pictures, and the development set (written before the run)
+
+**The drafts of section 5 are version 1.** Version 2 is in `studio/rewrite/video.txt`, `edit.txt` and `edit2.txt` (the last for two pictures), written to answer the three faults of section 10: the video draft now asks for **an action and how it moves**; the sentence that was echoed ("add no new subject") is gone, replaced by "no sentences about what is absent"; and for a vague request all three say to **pick one concrete reading**, which makes the invention a stated policy and not an accident.
+
+**Two pictures.** The torch pipeline of the edit model accepts a list of condition pictures: **[read]** `pipeline_qwenimage21.py` puts `<image1>` ... `<imageN>` placeholders in its template (lines 250-290), resizes each picture, encodes each with the VAE and concatenates the latents along the sequence (line 482), and gives the transformer a shape for each (`img_shapes`). `tools/edit_torch.py` calls it with a one-element list. **`tests/edit_pipeline_gpu.py`, the cancho-gpu path, is single-picture** (one vision-tower pass, one VAE encoding, one prefix of one picture's tokens): taking two would change four of its five stages and is a project of its own, **not part of this round**. What this round can test is the *rewriter's* side: Ollama's `/api/chat` takes several `images` in one message, so the layer can read two pictures and write one instruction that names which is which (`edit2.txt`).
+
+**The development set** (made before any v2 result; **separate from the 20 cases of section 8**, which are not written yet; the pictures are synthetic: A, a green-to-orange gradient with a white rectangle; B, a blue sky gradient above a dark green band with a red disc at the upper right):
+
+* video (5): "a car", "something scary in the woods", "kids playing", "the ocean", "a cool ad for coffee";
+* one picture (4): A "make it look nicer", A "change the colours", B "remove the thing", B "make it dramatic";
+* two pictures (3): (A, B) "put the red thing in the other one", (A, B) "combine them", (B, A) "use the look of the second on the first".
+
+**The checks, written before the run.** For every answer: it is 1 to 1,000 bytes with no control character (the rule of D3); it contains **none of** "No other", "no new", "not ", "without" (a crude detector of the echo and of sentences about what is absent: **a heuristic, it will have false positives**); for a video, it contains **at least one** motion word from a fixed list (walk, run, move, pan, flow, drift, sway, swirl, splash, ripple, roll, fly, jump, play, danc, glid, rush, crash, spin, turn, rise, fall, wave, trac, push, orbit: **a heuristic, a word is not an action**); the time of the call. The answers are also **read by a person** (here: the author), and what that reading found is written next to the numbers. Version 1 is run on the same set (the two-picture prompts only with version 2: version 1 has no draft for them).
