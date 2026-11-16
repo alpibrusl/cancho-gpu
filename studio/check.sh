@@ -31,6 +31,26 @@ check "job 1 not run twice (log unchanged)" "$(wc -l < "$T/1.log" | tr -d ' ')" 
 rc=0; build/studio_worker 2>/dev/null || rc=$?; check "usage: exit 2" "$rc" 2
 rc=0; build/studio_worker "$T/fake.sh" /Users/test relative/dir 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 3
 
+# Tidying `out/<id>` after a job that is done: work files go, results, prompt and frames/ stay; a failed job keeps everything; a link is left alone.
+M=$(mktemp -d)
+printf '#!/bin/sh\n[ "$1" = fail ] && exit 7\nexit 0\n' > "$M/fake.sh"; chmod +x "$M/fake.sh"
+for id in 7 8; do
+  mkdir -p "$M/out/$id/frames"
+  for f in video.mp4 video.gif edited.png prompt.txt ci_s.f32 ctx.f16 text.npy video.npy; do printf 'x' > "$M/out/$id/$f"; done
+  printf 'x' > "$M/out/$id/frames/f000.png"
+  mkdir "$M/out/$id/vae"; printf 'x' > "$M/out/$id/vae/cv1.f16"; printf 'x' > "$M/out/$id/vae/bi2.f32"
+done
+printf 'secret' > "$M/secret.txt"; ln -s "$M/secret.txt" "$M/out/7/link"
+printf 'video\0ok\0' > "$M/7.argv"; printf 'fail\0x\0' > "$M/8.argv"; printf '7\n8\n' > "$M/queue"
+build/studio_worker "$M/fake.sh" /Users/test "$M"
+check "tidy: work files removed" "$(ls "$M/out/7" | tr '\n' ' ')" 'edited.png frames link prompt.txt vae video.gif video.mp4 '
+check "tidy: frames/ untouched" "$(ls "$M/out/7/frames")" f000.png
+check "tidy: a subdirectory of work files is emptied" "$(ls "$M/out/7/vae" | wc -l | tr -d ' ')" 0
+check "tidy: a link is not followed or removed" "$(cat "$M/secret.txt")" secret
+check "tidy: the log says how many" "$(tail -1 "$M/7.log")" "studio: removed 6 work files from out/7"
+check "tidy: a failed job keeps everything" "$(ls "$M/out/8" | wc -l | tr -d ' ')" 10
+rm -rf "$M"
+
 # The worker in a loop (`--every`): a job that arrives later is run; TERM while it waits stops it at once (exit 0); TERM during a job lets that job end first.
 L=$(mktemp -d)
 printf '#!/bin/sh\nif [ "$1" = slow ]; then sleep 2; fi\necho "ran $1"\nexit 0\n' > "$L/fake.sh"
