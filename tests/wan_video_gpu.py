@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V4a of docs/diffusion.md section 6: a video from a prompt, the denoiser and the decoder of FastWan2.2-TI2V-5B on a Metal GPU.
 
-    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32]
+    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32] [--base [--steps N] [--guidance G] [--neg NEG.npy]] [--noise N.npy]
 
 F is the number of latent frames (the video has 1 + 4 (F - 1)), HxW the latent's size in pixels / 16 (22x40 is 640 x 352); `--text` is tools/wan_text.py's output (the umT5 encoder runs on the HOST, in torch: the one stage that
 does not run on the GPU); `--wdir` holds the f16 weight files of tests/wan_gpu.py's layout (written on first use, 10 GB); the output is WORK_DIR/video.gif and WORK_DIR/frames/.
@@ -16,6 +16,11 @@ On the host: the noise, the sampler's arithmetic, the patch embedding, the condi
 `WanImageToVideoPipeline` does in the `expand_timesteps` branch (read, `pipeline_wan_i2v.py`): the tokens of frame 0 are given the timestep 0 (the session's per-token selector: the second row of every modulation table), and the latents
 are mixed `(1 - mask) * cond + mask * latents` (mask 0 on frame 0, 1 elsewhere) before every call of the transformer and after the last. FastVideo's `DmdDenoisingStage` has no such code (it concatenates the image latent on the
 channels, which this 48-channel model cannot take): that this mixing is right for the DISTILLED weights is not read from FastVideo and is not measured.
+
+`--base` is the BASE model's sampler (docs/wan-vae-encoder.md section 12): `--weights` names the base model's transformer directory (`Wan-AI/Wan2.2-TI2V-5B-Diffusers`, five float32 shards) and `--wdir` a directory of its own for the f16 files; flow matching with Euler steps
+(`--steps`, default 30) over the sigmas of diffusers' `FlowMatchEulerDiscreteScheduler(shift=5)` (checked to 3e-8), and classifier-free guidance `--guidance` (default 5; 1 turns it off, and then `--neg` is not needed): `v = v_uncond + G (v_text - v_uncond)`, the unconditional
+text being `--neg`, the empty prompt's umT5 states (`tools/wan_text.py "" NEG.npy`). Two calls of the transformer a step: the text enters the session as the 60 buffers `b*_yg.a`, `b*_zg.a`, reloaded when the context changes. `--noise` is the starting noise, `[48, F, H, W]`
+(`.npy`), so that a run can be compared with another implementation's from the same noise.
 """
 import json
 import os
@@ -37,6 +42,7 @@ SEED = int(arg("--seed", 0))
 WDIR = arg("--wdir", os.path.join(work, "w"))
 FPS = int(arg("--fps", 16))
 STEPS = [1000, 757, 522]
+BASE = "--base" in sys.argv
 D, NH, HD = wr.D, wr.NH, wr.HD
 T = 512
 os.makedirs(work, exist_ok=True)
@@ -159,7 +165,7 @@ def write_step_inputs(lat, t):
 
 RELOAD = ["b0_lnm1.x", "hd_ln.sh", "hd_ln.sc"] + ["b%d_%s" % (b, n) for b in range(NB) for n in ("lnm1.sh", "lnm1.sc", "gr1.g", "lnm2.sh", "lnm2.sc", "gr2.g")]
 rng = np.random.default_rng(SEED)
-lat = mix(rng.standard_normal((48, F, H, Wd)))
+lat = mix(np.load(arg("--noise")).astype(np.float64) if arg("--noise") else rng.standard_normal((48, F, H, Wd)))
 write_step_inputs(lat, STEPS[0])
 defs = ["CHX=" + os.path.join(ROOT, "tests/chx"), "WORK=" + work, "WDIR=" + WDIR, "S=%d" % SP, "T=%d" % T, "NB=%d" % NB, "HEAD=1"]
 print("latent [48, %d, %d, %d]: %d tokens (padded to %d), text %d tokens (padded to %d); video %d frames of %d x %d" % (F, H, Wd, S, SP, text.shape[0], T, 1 + 4 * (F - 1), 16 * H, 16 * Wd), flush=True)
@@ -176,8 +182,51 @@ def ask(line):
     return out
 
 
-x0 = None
-for i, t in enumerate(STEPS):
+base_x0 = None
+if BASE:
+    NSTEP, GS, SHIFT = int(arg("--steps", 30)), float(arg("--guidance", 5.0)), 5.0
+    shf = lambda x: SHIFT * x / (1 + (SHIFT - 1) * x)
+    sig_all = np.append(shf(np.linspace(1.0, shf(1.0 / 1000), NSTEP)), 0.0)  # diffusers' FlowMatchEulerDiscreteScheduler(shift=5).set_timesteps(NSTEP).sigmas: the shift is applied twice, as there
+    ctx_text = ctx
+    ctx_neg = None
+    if GS != 1.0:
+        assert arg("--neg"), "--guidance other than 1 needs --neg: the empty prompt's text (tools/wan_text.py \"\" NEG.npy)"
+        nt = np.load(arg("--neg"))
+        ntx = np.zeros((T, nt.shape[1]))
+        ntx[: nt.shape[0]] = nt
+        ctx_neg = wr.text_embed(ntx)
+    CTXN = ["b%d_%s.a" % (b, n) for b in range(NB) for n in ("yg", "zg")]
+    state = {"first": True, "ctx": "text"}
+
+    def velocity(latn, t, which):
+        """The transformer's velocity for `latn` at timestep t with the text `which` ("text" or "neg")."""
+        write_step_inputs(latn, t)
+        names = list(RELOAD) if not state["first"] else []
+        if which != state["ctx"]:
+            f16(P("ctx.f16"), ctx_text if which == "text" else ctx_neg)
+            names += CTXN
+            state["ctx"] = which
+        if names:
+            ask("reload " + " ".join(names))
+        state["first"] = False
+        ask("1")
+        ask("checkpoint")
+        y = np.fromfile(P("head_out.f32"), dtype="<f4").reshape(SP, 192)[:S].astype(np.float64)
+        return y.reshape(F, H // 2, Wd // 2, 1, 2, 2, 48).transpose(6, 0, 3, 1, 4, 2, 5).reshape(48, F, H, Wd)
+
+    for i in range(NSTEP):
+        t0 = time.time()
+        tt = sig_all[i] * 1000.0
+        vc = velocity(lat, tt, "text")
+        v = vc
+        if GS != 1.0:
+            vu = velocity(lat, tt, "neg")
+            v = vu + GS * (vc - vu)
+        lat = mix(lat + (sig_all[i + 1] - sig_all[i]) * v)
+        print("step %d of %d: sigma %.4f -> %.4f, velocity rms %.4g, latent rms %.4g, %.1f s%s" % (i + 1, NSTEP, sig_all[i], sig_all[i + 1], np.sqrt((v ** 2).mean()), np.sqrt((lat ** 2).mean()), time.time() - t0, " (includes the upload of the weights)" if i == 0 else ""), flush=True)
+    base_x0 = lat
+x0 = base_x0
+for i, t in enumerate([] if BASE else STEPS):
     t0 = time.time()
     if i > 0:
         write_step_inputs(lat, t)
