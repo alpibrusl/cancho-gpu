@@ -1,0 +1,145 @@
+edition 9;
+
+module sets;
+
+import std.buffer;
+import std.bytes;
+import files;
+import results;
+
+// `sets` -- the page of a set of variations (docs/studio-variations.md, V1). `jobs.create` records a set in `<first id>.set`: line 1 the job ids in order, separated by a space, line 2 the first seed (job k ran with seed + k).
+// `GET /sets/FIRST` is a grid of the results, each with its seed and state, each a link to `/jobs/ID`; it refreshes every 5 s while any job is queued or running.
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// One result: its label, its state while it is not done, its picture or video when it is.
+fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], jid: &j [byte], k: int, seed: int) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = buffer.append(heap, page, "<div class=cell><h2><a href=/jobs/");
+    p = buffer.append(heap, p, jid);
+    p = buffer.append(heap, p, ">variation ");
+    p = buffer.push_nat(heap, p, k + 1);
+    p = buffer.append(heap, p, ", seed ");
+    p = buffer.push_nat(heap, p, seed);
+    p = buffer.append(heap, p, "</a></h2>");
+    let (known, state) = results.state_word(heap, fs, dir, jid);
+    var done = false;
+    borrow state as &sb in {
+        done = bytes.equal(buffer.bytes(sb), "done");
+        if done == false {
+            p = buffer.append(heap, p, "<p>");
+            p = buffer.append(heap, p, buffer.bytes(sb));
+            p = buffer.append(heap, p, "</p>");
+        }
+    }
+    buffer.drop(heap, state);
+    if done {
+        if results.has_out(heap, fs, dir, jid, "edited.png") {
+            p = buffer.append(heap, p, "<img alt=\"variation\" src=/files/");
+            p = buffer.append(heap, p, jid);
+            p = buffer.append(heap, p, "/edited.png>");
+        }
+        if results.has_out(heap, fs, dir, jid, "video.mp4") {
+            p = buffer.append(heap, p, "<video controls loop src=/files/");
+            p = buffer.append(heap, p, jid);
+            p = buffer.append(heap, p, "/video.mp4></video>");
+        }
+    }
+    p = buffer.append(heap, p, "</div>");
+    return p;
+}
+
+fn open_page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], active: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    return results.open(heap, fs, dir, "variations", "jobs", active);
+}
+
+// `GET /sets/<id>`: (200, the page), 404 for an id that is not the first job of a set, 422 for one that is not 1 to 9 digits.
+pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    if results.id_ok(id) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
+    }
+    let (rec, found) = results.job_file(heap, fs, dir, id, ".set");
+    if found == false {
+        buffer.drop(heap, rec);
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "no such set"));
+    }
+    var body = buffer.empty(heap, 1024);
+    var active = false;
+    var count = 0;
+    borrow rec as &rr in {
+        let t = buffer.bytes(rr);
+        var nl = 0;
+        while nl < len(t) && int_of(t[nl]) != 10 {
+            nl = nl + 1;
+        }
+        var e = nl + 1;
+        while e < len(t) && int_of(t[e]) != 10 {
+            e = e + 1;
+        }
+        var seed0 = 0;
+        if nl + 1 < len(t) {
+            seed0 = num(t[nl + 1..e]);
+        }
+        if seed0 < 0 {
+            seed0 = 0;
+        }
+        var a = 0;
+        var k = 0;
+        while a < nl {
+            var b = a;
+            while b < nl && int_of(t[b]) != 32 {
+                b = b + 1;
+            }
+            let jid = t[a..b];
+            if results.id_ok(jid) {
+                let (kn, st) = results.state_word(heap, fs, dir, jid);
+                borrow st as &sr in {
+                    if bytes.equal(buffer.bytes(sr), "queued") || bytes.equal(buffer.bytes(sr), "running") {
+                        active = true;
+                    }
+                }
+                buffer.drop(heap, st);
+                body = cell(heap, body, fs, dir, jid, k, seed0 + k);
+                count = count + 1;
+            }
+            k = k + 1;
+            a = b + 1;
+        }
+    }
+    buffer.drop(heap, rec);
+    var page = open_page(heap, fs, dir, active);
+    page = buffer.append(heap, page, "<div class=row><h1>Variations</h1></div><p>");
+    page = buffer.push_nat(heap, page, count);
+    page = buffer.append(heap, page, " jobs of one request, one seed each. They run one after another: the time is that many times one job's.</p>");
+    let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
+    if has_av {
+        borrow av as &avr in {
+            let (ps, pe) = results.last_entry(buffer.bytes(avr));
+            page = buffer.append(heap, page, "<p>prompt: ");
+            page = results.escape(heap, page, buffer.bytes(avr)[ps..pe]);
+            page = buffer.append(heap, page, "</p>");
+        }
+    }
+    buffer.drop(heap, av);
+    page = buffer.append(heap, page, "<div class=grid>");
+    borrow body as &br in {
+        page = buffer.append(heap, page, buffer.bytes(br));
+    }
+    buffer.drop(heap, body);
+    page = buffer.append(heap, page, "</div>");
+    return (200, results.close(heap, page));
+}

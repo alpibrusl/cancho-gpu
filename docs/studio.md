@@ -2,6 +2,8 @@
 
 > **Status: design; slice 1, the queue and the results page are built (see "Built so far").** Written from reading `cancho-web`, `cancho-ui` and `cancho`'s `std.process`; the claims below say what was read and what was not run.
 
+> Later notes: `docs/studio-variations.md` (variations of one request, the CLI's parameters, the pages' style) and `docs/studio-design.md` (a visual design to apply, and what islands can and cannot do here).
+
 ## Goal
 
 A page on `localhost` where one types a prompt (and, for an edit, names a photo), starts a job, sees it progress, and opens the result. It is the `media` command line (`docs/cli.md`) with a browser in front: the models, the limits and the one-GPU-job lock are the CLI's, unchanged.

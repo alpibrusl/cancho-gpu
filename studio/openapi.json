@@ -45,10 +45,10 @@
         "summary": "Queue an edit of an uploaded picture: the picture is kept as <data>/upload-N.jpg, .png or .webp (by its first bytes) and a job is made as POST /api/jobs makes it. The one POST that is not JSON.",
         "requestBody": {
           "required": true,
-          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off", "ab"] }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
+          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off", "ab"] }, "variations": { "type": "string", "description": "1 to 8; more than 1 makes a set and goes to /sets/{id}." }, "steps": { "type": "string", "description": "1 to 50, or empty." }, "model": { "type": "string", "description": "A name from /api/models, or empty." }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
         },
         "responses": {
-          "302": { "description": "Queued: Location /jobs/N." },
+          "302": { "description": "Queued: Location /jobs/N; /compare/N for a pair (rewrite ab); /sets/N for variations." },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "413": { "description": "The request is over 16 MiB.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
@@ -156,6 +156,29 @@
         }
       }
     },
+    "/style.css": {
+      "get": {
+        "summary": "The stylesheet of the pages the server writes (/jobs, /jobs/{id}, /sets/{id}, /compare, /edit): light and dark by the browser's setting, no script.",
+        "responses": {
+          "200": { "description": "CSS", "content": { "text/css": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/sets/{id}": {
+      "get": {
+        "summary": "A set of variations (made by `variations`): the results of its jobs side by side, each with its seed and state; refreshes every 5 s while a job is queued or running. The id is the set's first job.",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such set (plain text).", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "422": { "description": "The id is not 1 to 9 digits (plain text).", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
     "/jobs": {
       "get": {
         "summary": "The jobs, newest first (200 at most), as an HTML list.",
@@ -236,10 +259,14 @@
           "frames": { "type": "integer", "minimum": 1, "maximum": 129 },
           "size": { "type": "string", "description": "WxH, for example 640x352.", "example": "640x352" },
           "seed": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
-          "rewrite": { "type": "string", "enum": ["on", "off", "ab"], "description": "Rewrite the prompt first with a local model. The worker must have been started with --rewriter. Absent: the server's default, which is off unless it was started with --rewrite on. `ab` makes a pair of jobs (the same request with the rewrite off and on) for the blind comparison at /compare/{id}; the answer is {\"id\":N,\"pair\":M}." }
+          "rewrite": { "type": "string", "enum": ["on", "off", "ab"], "description": "Rewrite the prompt first with a local model. The worker must have been started with --rewriter. Absent: the server's default, which is off unless it was started with --rewrite on. `ab` makes a pair of jobs (the same request with the rewrite off and on) for the blind comparison at /compare/{id}; the answer is {\"id\":N,\"pair\":M}." },
+          "steps": { "type": "integer", "minimum": 1, "maximum": 50, "description": "An edit only (422 for a video): the denoising steps, `media edit --steps` (the model's default is 8)." },
+          "fps": { "type": "integer", "minimum": 1, "maximum": 60, "description": "A video only (422 for an edit): frames a second of the file, `media video --fps` (default 16)." },
+          "model": { "type": "string", "pattern": "^[a-z0-9._-]{1,40}$", "description": "A model name from /api/models, `media --model`; media refuses one it does not know (the job fails with its log)." },
+          "variations": { "type": "integer", "minimum": 2, "maximum": 8, "description": "Make this many jobs of the same request, with the seeds seed, seed+1, ... (seed defaults to 1 here), shown together at /sets/{id}; the answer is {\"id\":F,\"ids\":[...],\"set\":\"/sets/F\"}. Exclusive with rewrite ab. Absent: one job. The jobs run one after another, so the time is that many times one job's." }
         }
       },
-      "Queued": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "minimum": 1 } } },
+      "Queued": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "minimum": 1 }, "pair": { "type": "integer", "minimum": 1 }, "ids": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "With variations: every job of the set, in order." }, "set": { "type": "string", "description": "With variations: the path of the set's page." } } },
       "JobState": {
         "type": "object",
         "required": ["id", "state"],

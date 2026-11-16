@@ -135,6 +135,172 @@ pub fn job_file[&h, &f, &d, &i, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte
 }
 
 // The page of job `id` (the text after `/jobs/`): 200, 404 for an id with no argument file, 422 for one that is not 1 to 9 digits.
+// The last entry of a job's argument list (`<id>.argv`, entries ended by a NUL): the prompt as written. (start, end) of it in the list.
+pub fn last_entry[&l](list: &l [byte]) -> [] (int, int) {
+    var end = len(list);
+    if end > 0 && int_of(list[end - 1]) == 0 {
+        end = end - 1;
+    }
+    var start = end;
+    while start > 0 && int_of(list[start - 1]) != 0 {
+        start = start - 1;
+    }
+    return (start, end);
+}
+
+// (running, queued) among the 200 newest jobs of `queue`, for the header's status.
+pub fn counts[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] (int, int) {
+    var running = 0;
+    var queued = 0;
+    var text = buffer.empty(heap, 8);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var seen = 0;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 && seen < 200 {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                let id = all[start..stop];
+                if id_ok(id) {
+                    let (known, word) = state_word(heap, fs, dir, id);
+                    if known {
+                        borrow word as &wb in {
+                            if bytes.equal(buffer.bytes(wb), "running") {
+                                running = running + 1;
+                            }
+                            if bytes.equal(buffer.bytes(wb), "queued") {
+                                queued = queued + 1;
+                            }
+                        }
+                    }
+                    buffer.drop(heap, word);
+                    seen = seen + 1;
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    return (running, queued);
+}
+
+fn nav_link[&h](heap: &!h Heap, page: buffer.Buffer, href: &static [byte], label: &static [byte], key: &static [byte], current: &static [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<a href=");
+    p = buffer.append(heap, p, href);
+    if bytes.equal(current, key) {
+        p = buffer.append(heap, p, " aria-current=page");
+    }
+    p = buffer.append(heap, p, ">");
+    p = buffer.append(heap, p, label);
+    return buffer.append(heap, p, "</a>");
+}
+
+// The start of every page the server writes (docs/studio-design.md): the document head with the stylesheet, a refresh when `refresh`, the title, and the header (the brand, the four places, and the queue's status), then `<main>`.
+// `current` is the place that is open: `studio`, `edit`, `compare` or `jobs`. `close` ends it.
+pub fn open[&h, &f, &d, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], title: &t [byte], current: &static [byte], refresh: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css>");
+    if refresh {
+        page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
+    }
+    page = buffer.append(heap, page, "<title>cancho-studio: ");
+    page = buffer.append(heap, page, title);
+    page = buffer.append(heap, page, "</title><header class=top><a class=brand href=/>cancho-studio</a><nav>");
+    page = nav_link(heap, page, "/", "Studio", "studio", current);
+    page = nav_link(heap, page, "/edit", "Edit a picture", "edit", current);
+    page = nav_link(heap, page, "/compare", "Comparisons", "compare", current);
+    page = nav_link(heap, page, "/jobs", "Jobs", "jobs", current);
+    let (running, queued) = counts(heap, fs, dir);
+    if running > 0 {
+        page = buffer.append(heap, page, "</nav><div class=\"status busy\"><span class=dot></span><span>GPU busy &middot; ");
+        page = buffer.push_nat(heap, page, running);
+        page = buffer.append(heap, page, " running &middot; ");
+        page = buffer.push_nat(heap, page, queued);
+        page = buffer.append(heap, page, " queued</span></div></header><main>");
+    } else {
+        page = buffer.append(heap, page, "</nav><div class=status><span class=dot></span><span>GPU idle");
+        if queued > 0 {
+            page = buffer.append(heap, page, " &middot; ");
+            page = buffer.push_nat(heap, page, queued);
+            page = buffer.append(heap, page, " queued");
+        }
+        page = buffer.append(heap, page, "</span></div></header><main>");
+    }
+    return page;
+}
+
+pub fn close[&h](heap: &!h Heap, page: buffer.Buffer) -> [heap] buffer.Buffer {
+    return buffer.append(heap, page, "</main>");
+}
+
+// A job's parameters from its argument list (`<id>.argv`, entries ended by a NUL), as `<dt>`/`<dd>` pairs: the kind, then every `--name value` before the `--` that ends the options (`-o` and its value are the server's, not shown).
+fn param_rows[&h, &a](heap: &!h Heap, page: buffer.Buffer, argv: &a [byte]) -> [heap] buffer.Buffer {
+    var p = page;
+    var i = 0;
+    var first = true;
+    while i < len(argv) {
+        var j = i;
+        while j < len(argv) && int_of(argv[j]) != 0 {
+            j = j + 1;
+        }
+        let entry = argv[i..j];
+        if first {
+            p = buffer.append(heap, p, "<dt>kind</dt><dd>");
+            p = escape(heap, p, entry);
+            p = buffer.append(heap, p, "</dd>");
+            first = false;
+            i = j + 1;
+        } else if bytes.equal(entry, "--") {
+            i = len(argv) + 1;
+        } else if bytes.equal(entry, "-o") || (len(entry) > 2 && bytes.starts_with(entry, "--")) {
+            var k = j + 1;
+            while k < len(argv) && int_of(argv[k]) != 0 {
+                k = k + 1;
+            }
+            if bytes.equal(entry, "-o") == false && j + 1 < len(argv) {
+                p = buffer.append(heap, p, "<dt>");
+                p = escape(heap, p, entry[2..len(entry)]);
+                p = buffer.append(heap, p, "</dt><dd>");
+                p = escape(heap, p, argv[j + 1..k]);
+                p = buffer.append(heap, p, "</dd>");
+            }
+            i = k + 1;
+        } else {
+            i = j + 1;
+        }
+    }
+    return p;
+}
+
+fn file_item[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte]) -> [heap, fs_read("")] buffer.Buffer {
+    if has_out(heap, fs, dir, id, name) == false {
+        return page;
+    }
+    var p = buffer.append(heap, page, "<li><a href=/files/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    p = buffer.append(heap, p, ">");
+    p = buffer.append(heap, p, name);
+    return buffer.append(heap, p, "</a></li>");
+}
+
+// `GET /jobs/N`: (200, HTML), 404 for an id with no argument file, 422 for one that is not digits. The result beside the details (docs/studio-design.md, section 1): the prompt as written and, when there is one, the rewritten prompt; the parameters; the files.
 pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     if id_ok(id) == false {
         return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
@@ -146,35 +312,64 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     }
     var active = false;
     var done = false;
+    var failed = false;
     borrow state as &sb in {
         active = bytes.equal(buffer.bytes(sb), "queued") || bytes.equal(buffer.bytes(sb), "running");
         done = bytes.equal(buffer.bytes(sb), "done");
+        failed = bytes.starts_with(buffer.bytes(sb), "failed");
     }
-    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8>");
-    if active {
-        page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
+    let title = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 16), "job "), id);
+    var page = buffer.empty(heap, 8);
+    borrow title as &tr in {
+        buffer.drop(heap, page);
+        page = open(heap, fs, dir, buffer.bytes(tr), "jobs", active);
     }
-    page = buffer.append(heap, page, "<title>cancho-studio job ");
+    buffer.drop(heap, title);
+    page = buffer.append(heap, page, "<div class=row><a href=/jobs>&larr; All jobs</a><h1>Job ");
     page = buffer.append(heap, page, id);
-    page = buffer.append(heap, page, "</title><h1>job ");
-    page = buffer.append(heap, page, id);
-    page = buffer.append(heap, page, "</h1><p>state: ");
+    page = buffer.append(heap, page, "</h1><span class=pill>state: ");
     borrow state as &sb2 in {
         page = buffer.append(heap, page, buffer.bytes(sb2));
     }
-    page = buffer.append(heap, page, "</p>");
+    page = buffer.append(heap, page, "</span></div><div class=split><section class=main>");
+    if done {
+        if has_out(heap, fs, dir, id, "edited.png") {
+            page = buffer.append(heap, page, "<img alt=\"the edited picture\" src=/files/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "/edited.png>");
+        }
+        if has_out(heap, fs, dir, id, "video.mp4") {
+            page = buffer.append(heap, page, "<video controls loop src=/files/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "/video.mp4></video>");
+        }
+    } else if failed {
+        page = buffer.append(heap, page, "<div class=alert role=alert>The job did not finish. The log says why.</div>");
+    } else {
+        page = buffer.append(heap, page, "<p>Waiting for the result. This page refreshes by itself.</p>");
+    }
+    page = buffer.append(heap, page, "<div class=acts><a class=btn href=/files/");
+    page = buffer.append(heap, page, id);
+    page = buffer.append(heap, page, "/log>Open the log</a></div></section><aside class=side>");
     let (orig, has_orig) = job_file(heap, fs, dir, id, ".prompt.orig");
     let (fresh, has_fresh) = job_file(heap, fs, dir, id, ".prompt.new");
     let (flag, has_flag) = job_file(heap, fs, dir, id, ".rewrite");
+    let (av, has_av) = job_file(heap, fs, dir, id, ".argv");
+    page = buffer.append(heap, page, "<section class=card><h2>Prompt as written</h2><p>");
     if has_orig {
-        page = buffer.append(heap, page, "<p>prompt: ");
         borrow orig as &obr in {
             page = escape(heap, page, buffer.bytes(obr));
         }
-        page = buffer.append(heap, page, "</p>");
+    } else if has_av {
+        // a job that was not rewritten has no `.prompt.orig`: its prompt is the last entry of its argument list
+        borrow av as &avr in {
+            let (ps, pe) = last_entry(buffer.bytes(avr));
+            page = escape(heap, page, buffer.bytes(avr)[ps..pe]);
+        }
     }
+    page = buffer.append(heap, page, "</p>");
     if has_fresh {
-        page = buffer.append(heap, page, "<p>rewritten by the local model: ");
+        page = buffer.append(heap, page, "<h2 style=\"margin-top:14px\">Rewritten by the local model</h2><p>");
         borrow fresh as &fbr in {
             page = escape(heap, page, buffer.bytes(fbr));
         }
@@ -182,40 +377,45 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     } else if has_flag && active == false {
         borrow flag as &flr in {
             if bytes.starts_with(buffer.bytes(flr), "on") {
-                page = buffer.append(heap, page, "<p>the prompt was not rewritten (see the log)</p>");
+                page = buffer.append(heap, page, "<p style=\"margin-top:14px\">the prompt was not rewritten (see the log)</p>");
             }
         }
     }
+    page = buffer.append(heap, page, "</section><section class=card><h2>Parameters</h2><dl>");
+    if has_av {
+        borrow av as &avr2 in {
+            page = param_rows(heap, page, buffer.bytes(avr2));
+        }
+    }
+    if has_flag {
+        borrow flag as &flr2 in {
+            page = buffer.append(heap, page, "<dt>rewrite</dt><dd>");
+            page = escape(heap, page, buffer.bytes(flr2)[0..bytes.find(buffer.bytes(flr2), "\n")]);
+            page = buffer.append(heap, page, "</dd>");
+        }
+    }
+    page = buffer.append(heap, page, "</dl></section><section class=card><h2>Files</h2><ul>");
+    page = file_item(heap, page, fs, dir, id, "video.mp4");
+    page = file_item(heap, page, fs, dir, id, "video.gif");
+    page = file_item(heap, page, fs, dir, id, "edited.png");
+    page = buffer.append(heap, page, "<li><a href=/files/");
+    page = buffer.append(heap, page, id);
+    page = buffer.append(heap, page, "/log>log</a></li></ul></section></aside></div>");
     buffer.drop(heap, orig);
     buffer.drop(heap, fresh);
     buffer.drop(heap, flag);
-    if done {
-        if has_out(heap, fs, dir, id, "edited.png") {
-            page = buffer.append(heap, page, "<p><img alt=\"the edited picture\" style=\"max-width:100%\" src=/files/");
-            page = buffer.append(heap, page, id);
-            page = buffer.append(heap, page, "/edited.png></p>");
-        }
-        if has_out(heap, fs, dir, id, "video.mp4") {
-            page = buffer.append(heap, page, "<p><video controls loop style=\"max-width:100%\" src=/files/");
-            page = buffer.append(heap, page, id);
-            page = buffer.append(heap, page, "/video.mp4></video></p>");
-        }
-        if has_out(heap, fs, dir, id, "video.gif") {
-            page = buffer.append(heap, page, "<p><a href=/files/");
-            page = buffer.append(heap, page, id);
-            page = buffer.append(heap, page, "/video.gif>video.gif</a></p>");
-        }
-    }
-    page = buffer.append(heap, page, "<p><a href=/files/");
-    page = buffer.append(heap, page, id);
-    page = buffer.append(heap, page, "/log>log</a> | <a href=/>studio</a></p>");
+    buffer.drop(heap, av);
     buffer.drop(heap, state);
-    return (200, page);
+    return (200, close(heap, page));
 }
 
 // `GET /jobs`: the jobs in `queue`, newest first (the 200 last), each a link to its page and its state.
 pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><title>cancho-studio jobs</title><h1>jobs</h1><ul>");
+    var running_any = false;
+    let (nrun, nq) = counts(heap, fs, dir);
+    running_any = nrun + nq > 0;
+    var page = open(heap, fs, dir, "jobs", "jobs", running_any);
+    page = buffer.append(heap, page, "<div class=row><h1>Jobs</h1><span class=meta>Newest first &middot; refreshes while a job is queued or running</span></div><div class=grid>");
     var text = buffer.empty(heap, 8);
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     borrow qp as &q in {
@@ -244,15 +444,76 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
                 if id_ok(id) {
                     let (known, word) = state_word(heap, fs, dir, id);
                     if known {
-                        page = buffer.append(heap, page, "<li><a href=/jobs/");
-                        page = buffer.append(heap, page, id);
-                        page = buffer.append(heap, page, ">job ");
-                        page = buffer.append(heap, page, id);
-                        page = buffer.append(heap, page, "</a>: ");
+                        // the state's first word is the badge's class
+                        var cls = "";
+                        var is_done = false;
+                        var is_failed = false;
+                        var is_running = false;
                         borrow word as &wb in {
-                            page = buffer.append(heap, page, buffer.bytes(wb));
+                            if bytes.starts_with(buffer.bytes(wb), "running") {
+                                cls = "running";
+                                is_running = true;
+                            } else if bytes.starts_with(buffer.bytes(wb), "queued") {
+                                cls = "queued";
+                            } else if bytes.starts_with(buffer.bytes(wb), "done") {
+                                cls = "done";
+                                is_done = true;
+                            } else {
+                                cls = "failed";
+                                is_failed = true;
+                            }
                         }
-                        page = buffer.append(heap, page, "</li>");
+                        page = buffer.append(heap, page, "<a class=\"job ");
+                        page = buffer.append(heap, page, cls);
+                        page = buffer.append(heap, page, "\" href=/jobs/");
+                        page = buffer.append(heap, page, id);
+                        page = buffer.append(heap, page, "><div class=thumb>");
+                        // a picture of a finished edit is its own thumbnail (the server cannot shrink one), for the newest 24 only; a video has none
+                        if is_done && shown < 24 && has_out(heap, fs, dir, id, "edited.png") {
+                            page = buffer.append(heap, page, "<img alt=\"\" loading=lazy src=/files/");
+                            page = buffer.append(heap, page, id);
+                            page = buffer.append(heap, page, "/edited.png>");
+                        } else if is_done {
+                            page = buffer.append(heap, page, "result");
+                        } else if is_failed {
+                            page = buffer.append(heap, page, "no result");
+                        } else if is_running {
+                            page = buffer.append(heap, page, "working");
+                        } else {
+                            page = buffer.append(heap, page, "in the queue");
+                        }
+                        page = buffer.append(heap, page, "<span class=\"badge ");
+                        page = buffer.append(heap, page, cls);
+                        page = buffer.append(heap, page, "\">");
+                        borrow word as &wb2 in {
+                            page = escape(heap, page, buffer.bytes(wb2));
+                        }
+                        page = buffer.append(heap, page, "</span><span class=idn>#");
+                        page = buffer.append(heap, page, id);
+                        page = buffer.append(heap, page, "</span></div>");
+                        if is_running {
+                            page = buffer.append(heap, page, "<div class=bar><i></i></div>");
+                        }
+                        page = buffer.append(heap, page, "<div class=body><span class=prompt>");
+                        let (av, has_av) = job_file(heap, fs, dir, id, ".argv");
+                        if has_av {
+                            borrow av as &avr in {
+                                let (ps, pe) = last_entry(buffer.bytes(avr));
+                                page = escape(heap, page, buffer.bytes(avr)[ps..pe]);
+                            }
+                        }
+                        page = buffer.append(heap, page, "</span><span class=meta>");
+                        if has_av {
+                            borrow av as &avr2 in {
+                                var e0 = 0;
+                                while e0 < len(buffer.bytes(avr2)) && int_of(buffer.bytes(avr2)[e0]) != 0 {
+                                    e0 = e0 + 1;
+                                }
+                                page = escape(heap, page, buffer.bytes(avr2)[0..e0]);
+                            }
+                        }
+                        buffer.drop(heap, av);
+                        page = buffer.append(heap, page, "</span></div></a>");
                         shown = shown + 1;
                     }
                     buffer.drop(heap, word);
@@ -262,8 +523,7 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
         }
     }
     buffer.drop(heap, text);
-    page = buffer.append(heap, page, "</ul><p><a href=/>studio</a></p>");
-    return page;
+    return close(heap, buffer.append(heap, page, "</div>"));
 }
 
 // A file of the site directory (the page `cancho-ui build --page` wrote): 200 and its bytes, or 404. `name` is one of the server's own literals, never the client's.
@@ -286,6 +546,11 @@ pub fn site_file[&h, &f, &s, &n](heap: &!h Heap, fs: &f Fs(""), site: &s [byte],
 }
 
 // The media type for a name of the closed list, or "" for a name that is not on it.
+// The one stylesheet of the pages the server writes (`GET /style.css`): a system font, a card for each result, light and dark by the browser's setting, no script, no outside file.
+pub fn css() -> [] &static [byte] {
+    return ":root{color-scheme:dark;--bg:#121314;--surface:#1B1D1F;--raised:#24272A;--line:#2A2D30;--line2:#3A3E42;--line3:#4A4F54;--fg:#ECEAE4;--muted:#B5B2A9;--accent:#F2B544;--accent2:#FFD27A;--err:#FFB4A0;--ink:#141413;--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent2)}header.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 32px;padding:14px 32px;border-bottom:1px solid var(--line)}.brand{font:500 16px var(--mono);color:var(--fg)}.brand:hover{color:var(--fg)}nav{display:flex;flex-wrap:wrap;gap:4px;flex-grow:1}nav a{padding:12px 14px;border-radius:8px;color:var(--muted)}nav a[aria-current=page]{background:var(--raised);color:var(--fg);font-weight:500}.status{display:flex;align-items:center;gap:8px;font:13px var(--mono);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--line3)}.busy .dot{background:var(--accent)}main{max-width:1216px;margin:0 auto;padding:28px 32px 48px;display:flex;flex-direction:column;gap:20px}h1{margin:0;font-size:22px;font-weight:600}h2{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--muted)}p{margin:0;color:var(--muted)}b{color:var(--fg)}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.row h1{flex-grow:1}.pill{padding:4px 12px;border-radius:999px;border:1px solid var(--line2);font:13px var(--mono);color:var(--fg)}img,video{display:block;max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line)}.card,form,.cell{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px}.cell{padding:16px}.cell h2 a{color:var(--fg)}.cell h2{font-size:15px;color:var(--fg)}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}.job{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--fg)}.job:hover{color:var(--fg);border-color:var(--line3)}.job.running{border-color:var(--accent)}.thumb{position:relative;aspect-ratio:16/9;background:#202326;display:flex;align-items:center;justify-content:center;font:12px var(--mono);color:var(--muted)}.thumb img{width:100%;height:100%;object-fit:cover;border:0;border-radius:0}.badge{position:absolute;top:10px;left:10px;padding:3px 9px;border-radius:999px;font:500 12px var(--mono);background:var(--line2);color:var(--fg)}.badge.running{background:var(--accent);color:var(--ink)}.badge.failed{background:var(--err);color:var(--ink)}.badge.done{background:var(--bg)}.idn{position:absolute;top:10px;right:10px;font:12px var(--mono);color:var(--muted)}.bar{height:4px;background:var(--line);overflow:hidden}.bar i{display:block;height:4px;width:40%;background:var(--accent);animation:slide 1.6s ease-in-out infinite}@keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}@media(prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}.body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px}.prompt{font-weight:500;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.meta{font:12px var(--mono);color:var(--muted)}.split{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}.split>.main{flex:999 1 560px;min-width:0;padding:0;display:flex;flex-direction:column;gap:12px}.side{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}.card p{color:var(--fg);font-size:16px}.acts{display:flex;flex-wrap:wrap;gap:8px}.btn{min-height:44px;padding:0 16px;border:1px solid var(--line2);border-radius:8px;color:var(--fg);display:inline-flex;align-items:center}.btn:hover{color:var(--fg);border-color:var(--line3)}dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font:13px var(--mono)}dt{color:var(--muted)}dd{margin:0}ul{margin:0;padding:0;list-style:none;font:13px var(--mono)}li{padding:12px 0;border-bottom:1px solid var(--line)}li:last-child{border:0}.alert{border:1px solid var(--err);color:var(--err);border-radius:10px;padding:12px 14px}form{display:flex;flex-direction:column;gap:16px;max-width:44rem}label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}input,select,textarea,button{font:inherit;color:inherit}input:not([type=file]),select,textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);width:100%}input[type=file]{padding:24px;border:2px dashed var(--line3);border-radius:14px;background:var(--surface);width:100%;color:var(--muted)}button{min-height:48px;padding:0 28px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font-weight:600;cursor:pointer}button:hover{background:var(--accent2)}.choices{display:flex;flex-wrap:wrap;justify-content:center;gap:12px}.choices button{min-width:180px;background:var(--surface);color:var(--fg);border:1px solid var(--line2)}.choices button:hover{border-color:var(--accent);background:var(--surface)}form.choices{background:none;border:0;padding:0;max-width:none;flex-direction:row;align-items:center;justify-content:center}code{font-family:var(--mono)}";
+}
+
 pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
     if bytes.equal(name, "edited.png") {
         return "image/png";

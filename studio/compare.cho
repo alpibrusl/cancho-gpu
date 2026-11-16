@@ -60,7 +60,7 @@ fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
 
 // One side: its label and the result, or the state it is in. `jid` is the job's id as text.
 fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], jid: &j [byte], label: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var p = buffer.append(heap, page, "<div style=\"flex:1;min-width:0\"><h2>");
+    var p = buffer.append(heap, page, "<div class=cell><h2>");
     p = buffer.append(heap, p, label);
     p = buffer.append(heap, p, "</h2>");
     let (known, state) = results.state_word(heap, fs, dir, jid);
@@ -76,31 +76,18 @@ fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir:
     buffer.drop(heap, state);
     if done {
         if results.has_out(heap, fs, dir, jid, "edited.png") {
-            p = buffer.append(heap, p, "<img alt=\"the result\" style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, "<img alt=\"the result\" src=/files/");
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/edited.png>");
         }
         if results.has_out(heap, fs, dir, jid, "video.mp4") {
-            p = buffer.append(heap, p, "<video controls loop style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, "<video controls loop src=/files/");
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/video.mp4></video>");
         }
     }
     p = buffer.append(heap, p, "</div>");
     return p;
-}
-
-// The last entry of a job's argument list: the prompt as written.
-fn last_entry[&l](list: &l [byte]) -> [] (int, int) {
-    var end = len(list);
-    if end > 0 && int_of(list[end - 1]) == 0 {
-        end = end - 1;
-    }
-    var start = end;
-    while start > 0 && int_of(list[start - 1]) != 0 {
-        start = start - 1;
-    }
-    return (start, end);
 }
 
 fn id_text[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
@@ -142,11 +129,8 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
             buffer.drop(heap, s2);
         }
     }
-    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8>");
-    if active {
-        page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
-    }
-    page = buffer.append(heap, page, "<title>cancho-studio: compare</title><h1>left or right</h1><p>Two jobs ran the same request with the same seed. One used the prompt as it was written, the other a rewritten one. Which is which is hidden until you choose.</p><div style=\"display:flex;gap:1rem\">");
+    var page = results.open(heap, fs, dir, "compare", "compare", active);
+    page = buffer.append(heap, page, "<div class=row><h1>Which result is better?</h1></div><p>Two jobs ran the same request with the same seed. One used the prompt as it was written, the other a rewritten one. Which is which is hidden until you choose.</p><div class=grid>");
     borrow left as &lb2 in {
         page = cell(heap, page, fs, dir, buffer.bytes(lb2), "left");
     }
@@ -156,9 +140,9 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
     page = buffer.append(heap, page, "</div>");
     if has_v == false {
         if both_done {
-            page = buffer.append(heap, page, "<form method=post action=/compare/");
+            page = buffer.append(heap, page, "<form class=choices method=post action=/compare/");
             page = buffer.append(heap, page, id);
-            page = buffer.append(heap, page, "><p>Which result is better?</p><button name=choice value=left>left</button> <button name=choice value=right>right</button> <button name=choice value=tie>no difference</button></form>");
+            page = buffer.append(heap, page, "><button name=choice value=left>Left is better</button><button name=choice value=tie>No difference</button><button name=choice value=right>Right is better</button></form>");
         } else {
             page = buffer.append(heap, page, "<p>You can choose when both have finished.</p>");
         }
@@ -203,7 +187,7 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         page = buffer.append(heap, page, ".</p>");
         if has_argv {
             borrow ag as &agr in {
-                let (a, b) = last_entry(buffer.bytes(agr));
+                let (a, b) = results.last_entry(buffer.bytes(agr));
                 page = buffer.append(heap, page, "<p>as written: ");
                 page = results.escape(heap, page, buffer.bytes(agr)[a..b]);
                 page = buffer.append(heap, page, "</p>");
@@ -223,11 +207,11 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         buffer.drop(heap, nw);
         buffer.drop(heap, ag);
     }
-    page = buffer.append(heap, page, "<p><a href=/compare>all comparisons</a> | <a href=/>studio</a></p>");
+    page = buffer.append(heap, page, "<p><a href=/compare>All comparisons</a></p>");
     buffer.drop(heap, left);
     buffer.drop(heap, right);
     buffer.drop(heap, v);
-    return (200, page);
+    return (200, results.close(heap, page));
 }
 
 // `POST /compare/N` with the form's body `choice=left|right|tie`: (status, text). 302 is the caller's to send (to `/compare/N`); 404 no pair, 409 already chosen, 422 a body that is not one of the three,
@@ -415,7 +399,8 @@ pub fn index[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap
         }
     }
     buffer.drop(heap, text);
-    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><title>cancho-studio: comparisons</title><h1>comparisons</h1><p>video: the rewritten prompt won ");
+    var page = results.open(heap, fs, dir, "comparisons", "compare", false);
+    page = buffer.append(heap, page, "<div class=row><h1>Comparisons</h1></div><section class=card><h2>So far</h2><p>video: the rewritten prompt won ");
     page = buffer.push_nat(heap, page, won);
     page = buffer.append(heap, page, ", the prompt as written won ");
     page = buffer.push_nat(heap, page, lost);
@@ -431,11 +416,11 @@ pub fn index[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap
     page = buffer.push_nat(heap, page, open_pairs);
     page = buffer.append(heap, page, "; not counted: ");
     page = buffer.push_nat(heap, page, void_pairs);
-    page = buffer.append(heap, page, ".</p><ul>");
+    page = buffer.append(heap, page, ".</p></section><section class=card><ul>");
     borrow list as &lstr in {
         page = buffer.append(heap, page, buffer.bytes(lstr));
     }
     buffer.drop(heap, list);
-    page = buffer.append(heap, page, "</ul><p><a href=/>studio</a></p>");
-    return page;
+    page = buffer.append(heap, page, "</ul></section>");
+    return results.close(heap, page);
 }

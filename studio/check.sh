@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -18,6 +18,9 @@ printf 'video\0again\0' > "$T/4.argv"
 printf 'old\n' > "$T/4.state"
 printf '1\n2\n3\n../etc\n4\n1234567890\n' > "$T/queue"
 fail=0
+# a server is up when its log says so (a fixed sleep failed when the machine was busy: a compile elsewhere took the CPU for seconds)
+waitfor() { n=0; until [ "$(cat "$1" 2>/dev/null)" = "$2" ] || [ $n -ge 100 ]; do sleep 0.2; n=$((n + 1)); done; }
+waitup() { for f in "$@"; do n=0; until grep -q listening "$f" 2>/dev/null || [ $n -ge 150 ]; do sleep 0.2; n=$((n + 1)); done; done; }
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fail=1; fi; }
 build/studio_worker "$T/fake.sh" /Users/test "$T"; check "exit 0" "$?" 0
 check "job 1 done" "$(cat "$T/1.state")" done
@@ -77,7 +80,7 @@ chmod +x "$L/fake.sh"
 printf 'video\0one\0' > "$L/1.argv"; printf '1\n' > "$L/queue"
 build/studio_worker "$L/fake.sh" /Users/test "$L" --every 30 &
 WP=$!
-sleep 1
+waitfor "$L/1.state" done
 check "loop: the job in the queue ran" "$(cat "$L/1.state")" done
 printf 'video\0two\0' > "$L/2.argv"; printf '1\n2\n' > "$L/queue"
 sleep 0.5
@@ -87,10 +90,10 @@ rc=0; wait $WP || rc=$?
 check "loop: TERM while waiting: exit 0" "$rc" 0
 build/studio_worker "$L/fake.sh" /Users/test "$L" --every 1 &
 WP=$!
-sleep 1.5
+waitfor "$L/2.state" done
 check "loop: a job that arrived while it was stopped runs on the next drain" "$(cat "$L/2.state")" done
 printf 'slow\0three\0' > "$L/3.argv"; printf '1\n2\n3\n' > "$L/queue"
-sleep 1.2
+waitfor "$L/3.state" running
 check "loop: slow job started" "$(cat "$L/3.state")" running
 kill -TERM $WP
 rc=0; wait $WP || rc=$?
@@ -119,14 +122,14 @@ printf '#!/bin/sh\nif [ "$1" = slow ]; then sleep 2; fi\necho "ran $1"\nexit 0\n
 printf 'slow\0a\0' > "$K/1.argv"; printf 'video\0b\0' > "$K/2.argv"; printf '1\n2\n' > "$K/queue"
 build/studio_worker "$K/fake.sh" /Users/test "$K" --every 30 &
 WA=$!
-sleep 1
+waitfor "$K/1.state" running
 check "lock: the first worker is in job 1" "$(cat "$K/1.state")" running
 rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" 2>"$K/err" || rc=$?
 check "lock: a second worker, once, during a job: exit 4" "$rc" 4
 check "lock: ...and says why" "$(grep -c 'another worker holds worker.lock' "$K/err")" 1
 rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" --every 5 2>/dev/null || rc=$?
 check "lock: a second worker, looping: exit 4" "$rc" 4
-sleep 2
+waitfor "$K/2.state" done
 check "lock: the first worker finished jobs 1 and 2 alone" "$(cat "$K/1.state") $(cat "$K/2.state")" "done done"
 check "lock: job 1 ran once (one line in its log)" "$(grep -c 'ran slow' "$K/1.log")" 1
 rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" 2>/dev/null || rc=$?
@@ -138,7 +141,7 @@ check "lock: once it is gone the lock is free: exit 0" "$rc" 0
 printf 'slow\0c\0' > "$K/3.argv"; printf 'video\0d\0' > "$K/4.argv"; printf '1\n2\n3\n4\n' > "$K/queue"
 build/studio_worker "$K/fake.sh" /Users/test "$K" --every 30 &
 WB=$!
-sleep 1
+waitfor "$K/3.state" running
 check "lock: a worker in job 3" "$(cat "$K/3.state")" running
 kill -KILL $WB; wait $WB 2>/dev/null || true
 sleep 3
@@ -156,7 +159,7 @@ mkdir "$T/data"
 build/studio 18091 "$T/data" >"$T/s1.log" 2>&1 &
 SP=$!
 trap 'kill $SP 2>/dev/null; rm -rf "$T"' EXIT
-sleep 1
+waitup "$T/s1.log"
 TOK1=$(grep -o 'token=[0-9a-f]*' "$T/s1.log" | cut -d= -f2); TOK=$TOK1
 # every request carries the token (the way a script would: a bearer header); a POST says it is JSON
 c() { curl -s -H "Authorization: Bearer $TOK" "$@"; }
@@ -248,7 +251,7 @@ check "file: bad id" "$(c -o /dev/null -w '%{http_code}' localhost:18091/files/1
 build/studio 18094 "$T/data" "$T/site" >"$T/s2.log" 2>&1 &
 SP2=$!
 trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
-sleep 1
+waitup "$T/s2.log"
 TOK2=$(grep -o 'token=[0-9a-f]*' "$T/s2.log" | cut -d= -f2); TOK=$TOK2
 check "site: / is index.html" "$(c localhost:18094/ | cmp - "$T/site/index.html" && echo same)" same
 check "site: /app.js is app.js, a script" "$(c -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
@@ -256,8 +259,8 @@ check "site: app.js bytes unchanged" "$(c localhost:18094/app.js | cmp - "$T/sit
 TOK=$TOK1
 check "site: no site, / is the stub" "$(c localhost:18091/ | grep -c 'Slice 1')" 1
 TOK=$TOK1 post '{"kind":"video","prompt":"third"}' >/dev/null
-check "jobs: newest first" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'job [0-9]*' | tr '\n' ' ')" 'job 3 job 2 job 1 '
-check "jobs: states" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o '</a>: [a-z0-9 ]*' | tr '\n' ' ')" '</a>: queued </a>: failed 3 </a>: done '
+check "jobs: newest first" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'class=idn>#[0-9]*' | tr '\n' ' ')" 'class=idn>#3 class=idn>#2 class=idn>#1 '
+check "jobs: states" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'class=\"badge [a-z]*\"' | tr '\n' ' ')" 'class="badge queued" class="badge failed" class="badge done" '
 # The OpenAPI document (studio/openapi.json): served as it is, and held to what the server answers. Each row is a request and the status measured; the document must list that status for that path.
 cp studio/openapi.json "$T/site/openapi.json"; TOK=$TOK2
 check "openapi: served as the file, as JSON" "$(c localhost:18094/openapi.json | cmp - studio/openapi.json && echo same)" same
@@ -287,7 +290,10 @@ row '/files/{id}/{name}' GET /files/1/log -H 'Range: bytes=0-3'
 row '/files/{id}/{name}' GET /files/1/log -H 'Range: bytes=99999-'
 row '/files/{id}/{name}' GET /files/1/nothing
 row '/files/{id}/{name}' GET /files/x/log
+row '/sets/{id}' GET /sets/1
+row '/sets/{id}' GET /sets/x
 row /app.js GET /app.js
+row /style.css GET /style.css
 row / GET /
 row /openapi.json GET /openapi.json
 row / GET / -H 'Host: rebinding.example:18094'
@@ -298,7 +304,7 @@ check "openapi: 500 on POST /api/jobs is listed (not reached by a request here)"
 for p in $(grep -o 'equal(path, "/[a-z./]*")' studio/studio.cho | grep -o '"/[a-z./]*"' | tr -d '"' | grep -v '^/$' | sort -u); do
   check "openapi: the server's route $p is in the document" "$(grep -c "^    \"$p\": {" studio/openapi.json)" 1
 done
-for p in /api/jobs/ /jobs/ /files/ /compare/; do
+for p in /api/jobs/ /jobs/ /files/ /compare/ /sets/; do
   check "openapi: the server's prefix route $p is in the document" "$(grep -c "^    \"$p" studio/openapi.json)" 1
 done
 if command -v jq >/dev/null 2>&1; then
@@ -316,7 +322,7 @@ mkdir "$U/data"
 build/studio 18096 "$U/data" >"$U/s.log" 2>&1 &
 SP3=$!
 trap 'kill $SP $SP2 $SP3 2>/dev/null; rm -rf "$T" "$U"' EXIT
-sleep 1
+waitup "$U/s.log"
 TOK3=$(grep -o 'token=[0-9a-f]*' "$U/s.log" | cut -d= -f2)
 e() { curl -s -H "Authorization: Bearer $TOK3" "$@"; }
 check "edit: the form" "$(e localhost:18096/edit | grep -c 'enctype=multipart/form-data')" 1
@@ -393,7 +399,7 @@ SP4=$!
 build/studio 18098 "$R/on" --rewrite on >"$R/on.log" 2>&1 &
 SP5=$!
 trap 'kill $SP $SP2 $SP3 $SP4 $SP5 2>/dev/null; rm -rf "$T" "$U" "$R"' EXIT
-sleep 1
+waitup "$R/off.log" "$R/on.log"
 TOKOFF=$(grep -o 'token=[0-9a-f]*' "$R/off.log" | cut -d= -f2); TOKON=$(grep -o 'token=[0-9a-f]*' "$R/on.log" | cut -d= -f2)
 po() { curl -s -w ' %{http_code}' -H "Authorization: Bearer $TOKOFF" -XPOST -H 'Content-Type: application/json' localhost:18097/api/jobs -d "$1"; }
 pn() { curl -s -w ' %{http_code}' -H "Authorization: Bearer $TOKON" -XPOST -H 'Content-Type: application/json' localhost:18098/api/jobs -d "$1"; }
@@ -416,9 +422,9 @@ rc=0; build/studio 18099 "$R/off" --rewrite 2>/dev/null || rc=$?; check "rewrite
 # the job's page: what a model wrote is shown escaped
 printf '%s' '<script>alert(1)</script> & "q" '"'"'s'"'" > "$R/off/2.prompt.orig"; printf '%s' '<b>new</b> & more' > "$R/off/2.prompt.new"; printf 'done\n' > "$R/off/2.state"
 pg() { curl -s -H "Authorization: Bearer $TOKOFF" localhost:18097/jobs/$1; }
-check "page: the original prompt is shown, escaped" "$(pg 2 | grep -c 'prompt: &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;s')" 1
+check "page: the original prompt is shown, escaped" "$(pg 2 | grep -c 'Prompt as written</h2><p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;s')" 1
 check "page: ...no raw tag from the model is in the page" "$(pg 2 | grep -c '<script>\|<b>new')" 0
-check "page: the rewritten prompt is shown, escaped" "$(pg 2 | grep -c 'rewritten by the local model: &lt;b&gt;new&lt;/b&gt; &amp; more')" 1
+check "page: the rewritten prompt is shown, escaped" "$(pg 2 | grep -c 'Rewritten by the local model</h2><p>&lt;b&gt;new&lt;/b&gt; &amp; more')" 1
 printf 'done\n' > "$R/off/2.state"; printf 'failed 1\n' > "$R/off/3.state"; printf 'on\n' > "$R/off/3.rewrite"
 check "page: a job that asked and finished with no rewritten prompt says so" "$(pg 3 | grep -c 'the prompt was not rewritten (see the log)')" 1
 check "page: a job that did not ask says nothing of it" "$(pg 1 | grep -c 'rewritten')" 0
@@ -448,7 +454,7 @@ check "wait: ...and a choice is refused: 409" "$(cpost /compare/$A1 choice=left 
 # when both are done: still blind
 finish $A1 $A2
 P=$(cget /compare/$A1)
-check "blind: once both are done the page offers the three choices" "$(echo "$P" | grep -o 'name=choice value=[a-z]*' | tr '\n' ' ')" "name=choice value=left name=choice value=right name=choice value=tie "
+check "blind: once both are done the page offers the three choices" "$(echo "$P" | grep -o 'name=choice value=[a-z]*' | tr '\n' ' ')" "name=choice value=left name=choice value=tie name=choice value=right "
 check "blind: ...and says neither the prompts nor which result is which" "$(echo "$P" | grep -ci 'as written:\|rewritten:\|result used\|does not count')" 0
 check "blind: ...the results are the two videos, one on each side" "$(echo "$P" | grep -o '<h2>[a-z]*</h2>' | tr '\n' ' ')" "<h2>left</h2> <h2>right</h2> "
 # the choice
@@ -492,4 +498,77 @@ PIC1=$(tr '\0' '\n' < "$R/off/$EID.argv" | grep '/upload-'); PIC2=$(tr '\0' '\n'
 check "edit: ...and both jobs of the pair name the same uploaded picture" "$([ -n "$PIC1" ] && [ "$PIC1" = "$PIC2" ] && echo same)" same
 check "edit: ...with the rewrite off on the first and on on the second" "$(cat "$R/off/$EID.rewrite") $(cat "$R/off/$((EID + 1)).rewrite")" "off on"
 check "edit: the form offers ab" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'value=ab')" 1
+# Variations (docs/studio-variations.md, V1): one request, N jobs, the seeds s .. s+N-1, a set file written after the jobs, a page of the set.
+Vq=$(wc -l < "$R/off/queue" | tr -d ' ')
+VR=$(pj '{"kind":"video","prompt":"fox","seed":5,"variations":3}'); VF=$(echo "$VR" | jq -r .id)
+check "variations: the answer holds the three ids, consecutive, and the set's address" "$(echo "$VR" | jq -c '[.ids, .set]')" "[[$VF,$((VF + 1)),$((VF + 2))],\"/sets/$VF\"]"
+check "variations: the seeds are 5, 6 and 7, one in each argument list" "$(for k in 0 1 2; do tr '\0' ' ' < "$R/off/$((VF + k)).argv" | sed 's#.*--seed \([0-9]*\) .*#\1#'; echo; done | tr '\n' ' ')" "5 6 7 "
+check "variations: ...and nothing else differs (prompt, kind)" "$(for k in 0 1 2; do tr '\0' ' ' < "$R/off/$((VF + k)).argv" | sed 's#out/[0-9]*#out/X#; s#--seed [0-9]*#--seed S#'; done | sort -u | wc -l | tr -d ' ')" 1
+check "variations: the set file is the ids, then the first seed" "$(tr '\n' '|' < "$R/off/$VF.set")" "$VF $((VF + 1)) $((VF + 2))|5|"
+check "variations: all three are in the queue, in order" "$(tail -3 "$R/off/queue" | tr '\n' ' ')" "$VF $((VF + 1)) $((VF + 2)) "
+VD=$(pj '{"kind":"video","prompt":"no seed","variations":2}'); VDF=$(echo "$VD" | jq -r .id)
+check "variations: with no seed they start at 1" "$(for k in 0 1; do tr '\0' ' ' < "$R/off/$((VDF + k)).argv" | sed 's#.*--seed \([0-9]*\) .*#\1#'; echo; done | tr '\n' ' ')" "1 2 "
+Vq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"variations":1' '"variations":9' '"variations":"3"' '"variations":2.5' '"variations":0' '"variations":-2'; do
+  check "variations: $bad is refused: 422" "$(po "{\"kind\":\"video\",\"prompt\":\"x\",$bad}" | tail -c 4)" " 422"
+done
+check "variations: with rewrite ab is refused: 422" "$(po '{"kind":"video","prompt":"x","variations":2,"rewrite":"ab"}' | tail -c 4)" " 422"
+check "variations: a seed whose last variation would pass 2147483647 is refused: 422" "$(po '{"kind":"video","prompt":"x","variations":3,"seed":2147483646}' | tail -c 4)" " 422"
+check "variations: ...and the largest that fits is accepted" "$(po '{"kind":"video","prompt":"x","variations":3,"seed":2147483645}' | tail -c 4)" " 202"
+check "variations: a bad request makes no job (the prompt is empty)" "$(po '{"kind":"video","prompt":"","variations":4}' | tail -c 4) $(wc -l < "$R/off/queue" | tr -d ' ')" " 422 $((Vq2 + 3))"
+check "variations: the refusals above queued nothing (6 + 3 + the accepted three)" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$((Vq2 + 3))"
+check "variations: the page shows each variation with its seed" "$(cget /sets/$VF | grep -o 'variation [0-9], seed [0-9]*' | tr '\n' ';')" "variation 1, seed 5;variation 2, seed 6;variation 3, seed 7;"
+check "variations: while the jobs wait the page refreshes and says so" "$(cget /sets/$VF | grep -c 'http-equiv=refresh') $(cget /sets/$VF | grep -o '<p>queued</p>' | wc -l | tr -d ' ')" "1 3"
+finish $VF $((VF + 1)) $((VF + 2))
+check "variations: when all are done, three videos and no refresh" "$(cget /sets/$VF | grep -o '<video' | wc -l | tr -d ' ') $(cget /sets/$VF | grep -c 'http-equiv=refresh')" "3 0"
+echo failed 3 > "$R/off/$((VF + 1)).state"; rm -f "$R/off/out/$((VF + 1))/video.mp4"
+check "variations: one failed shows as it is and the others stay" "$(cget /sets/$VF | grep -o '<p>failed 3</p>' | wc -l | tr -d ' ') $(cget /sets/$VF | grep -o '<video' | wc -l | tr -d ' ')" "1 2"
+check "variations: /sets of a job that is not the first of a set: 404" "$(cget /sets/$((VF + 1)) | tail -c 4)" " 404"
+check "variations: /sets of an id that is not digits: 422" "$(cget /sets/x1 | tail -c 4)" " 422"
+
+check "style: /style.css is served as CSS" "$(curl -s -D - -o /dev/null -H "$(hdr)" localhost:18097/style.css | tr -d '\r' | grep -i '^content-type' | tr 'A-Z' 'a-z')" "content-type: text/css; charset=utf-8"
+check "style: ...and holds the card and the grid the pages use" "$(curl -s -H "$(hdr)" localhost:18097/style.css | grep -o '\.cell{\|\.grid{\|color-scheme:dark\|--accent:#F2B544' | sort -u | tr '\n' ' ')" "--accent:#F2B544 .cell{ .grid{ color-scheme:dark "
+check "style: ...and needs the token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/style.css)" 401
+check "style: the set page links it and is mobile-ready" "$(cget /sets/$VF | grep -c 'href=/style.css') $(cget /sets/$VF | grep -c 'name=viewport')" "1 1"
+check "style: every page the server writes links it (jobs, a job, a set, compare index, the edit form)" "$(for u in /jobs /jobs/$VF /sets/$VF /compare /edit; do cget $u | grep -c 'href=/style.css'; done | tr '\n' ' ')" "1 1 1 1 1 "
+check "variations: /sets with no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/sets/$VF)" 401
+# The CLI's parameters in the API (steps, fps, model), the prompt on the pages, and the /edit form's variations (docs/studio-variations.md, section 8).
+argv_of() { tr '\0' ' ' < "$R/off/$1.argv" | sed 's#out/[0-9]*#out/X#'; }
+Pq=$(wc -l < "$R/off/queue" | tr -d ' ')
+PE=$(pj '{"kind":"edit","prompt":"param edit","image":"/tmp/p.png","seed":2,"steps":4,"model":"qwen-image-2.1-turbo"}'); PEI=$(echo "$PE" | jq -r .id)
+check "params: an edit with steps and model reaches media as --model and --steps" "$(argv_of $PEI)" "edit -o $R/off/out/X --seed 2 --model qwen-image-2.1-turbo --steps 4 -- /tmp/p.png param edit "
+PV=$(pj '{"kind":"video","prompt":"param video","fps":24,"model":"fastwan2.2-ti2v-5b"}'); PVI=$(echo "$PV" | jq -r .id)
+check "params: a video with fps and model reaches media as --model and --fps" "$(argv_of $PVI)" "video -o $R/off/out/X --model fastwan2.2-ti2v-5b --fps 24 -- param video "
+Pq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"kind":"video","prompt":"x","steps":4' '"kind":"edit","prompt":"x","image":"/tmp/p.png","fps":24' '"kind":"edit","prompt":"x","image":"/tmp/p.png","steps":0' '"kind":"edit","prompt":"x","image":"/tmp/p.png","steps":51' '"kind":"edit","prompt":"x","image":"/tmp/p.png","steps":"4"' '"kind":"video","prompt":"x","fps":61' '"kind":"video","prompt":"x","fps":0' '"kind":"video","prompt":"x","model":"../x"' '"kind":"video","prompt":"x","model":"Fast Wan"' '"kind":"video","prompt":"x","model":""' '"kind":"video","prompt":"x","model":5'; do
+  check "params: refused 422: $bad" "$(po "{$bad}" | tail -c 4)" " 422"
+done
+check "params: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Pq2"
+PH=$(pj '{"kind":"video","prompt":"a <b>fox</b> & \"snow\""}'); PHI=$(echo "$PH" | jq -r .id)
+check "prompt: a job page shows the prompt, escaped, even with no rewrite" "$(cget /jobs/$PHI | grep -c 'Prompt as written</h2><p>a &lt;b&gt;fox&lt;/b&gt; &amp; &quot;snow&quot;')" 1
+check "prompt: a set page shows it once" "$(cget /sets/$VF | grep -o 'prompt: fox' | wc -l | tr -d ' ')" 1
+check "prompt: a rewritten job still shows its prompt once (the pair's first job)" "$(cget /jobs/$A1 | grep -o 'Prompt as written' | wc -l | tr -d ' ')" 1
+check "edit form: it offers variations, steps and model" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=variations\|name=steps\|name=model' | sort | tr '\n' ' ')" "name=model name=steps name=variations "
+EV=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=vary -F variations=3 -F steps=4 -F model=qwen-image-2.1-turbo -F "image=@$R/pic.png" localhost:18097/edit); EVI=${EV##*/}
+check "edit form: variations=3 goes to /sets/N" "$(echo "$EV" | sed 's#.*/sets/[0-9]*#ok#')" ok
+check "edit form: ...three jobs with the seeds 1, 2, 3 and the steps and model in each" "$(for k in 0 1 2; do argv_of $((EVI + k)) | sed 's#.*--seed \([0-9]*\) --model \([^ ]*\) --steps \([0-9]*\) .*#\1/\2/\3#'; echo; done | tr '\n' ' ')" "1/qwen-image-2.1-turbo/4 2/qwen-image-2.1-turbo/4 3/qwen-image-2.1-turbo/4 "
+check "edit form: variations=1 is one job and goes to /jobs/N" "$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=one -F variations=1 -F "image=@$R/pic.png" localhost:18097/edit | sed 's#.*/jobs/[0-9]*#ok#')" ok
+check "edit form: variations=9 is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=nine -F variations=9 -F "image=@$R/pic.png" localhost:18097/edit)" 422
+check "edit form: steps that are not digits are refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=s -F steps=4x -F "image=@$R/pic.png" localhost:18097/edit)" 422
+# The design applied (docs/studio-design.md): one header on every page, the queue's status in it, the job page's parameters, the cards of /jobs.
+for pair in "/jobs:jobs" "/edit:edit" "/compare:compare" "/sets/$VF:jobs" "/jobs/$PEI:jobs"; do
+  u=${pair%%:*}; k=${pair##*:}; case $k in jobs) href=/jobs;; edit) href=/edit;; compare) href=/compare;; esac
+  check "design: $u has the header and marks $k as the open place" "$(cget $u | grep -c "class=brand") $(cget $u | grep -o '<a href=[^>]*aria-current=page>' | tr '\n' ' ')" "1 <a href=$href aria-current=page> "
+done
+check "design: the status of an idle GPU with one waiting job" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'GPU idle[^<]*')" "GPU idle &middot; 1 queued"
+mkdir -p "$R/off/out/$PEI"; printf 'x' > "$R/off/out/$PEI/edited.png"; echo running > "$R/off/$PEI.state"
+check "design: with a job running the status says busy and counts it" "$(cget /jobs | grep -o 'GPU busy &middot; 1 running &middot; [0-9]* queued' | sed 's/[0-9]* queued/N queued/')" "GPU busy &middot; 1 running &middot; N queued"
+check "design: a running job's card has the moving bar and the running badge" "$(cget /jobs | grep -o 'class=\"badge running\"\|class=bar' | tr '\n' ' ')" 'class="badge running" class=bar '
+check "design: the job page's parameters are its kind and its options, in order" "$(cget /jobs/$PEI | grep -o '<dt>[a-z]*</dt><dd>[^<]*</dd>' | sed 's/<dt>//; s#</dt><dd># #; s#</dd>##' | tr '\n' ';')" "kind edit;seed 2;model qwen-image-2.1-turbo;steps 4;rewrite off;"
+echo done > "$R/off/$PEI.state"
+check "design: a finished edit is its own thumbnail on /jobs" "$(cget /jobs | grep -c "loading=lazy src=/files/$PEI/edited.png")" 1
+check "design: a job page names its files that exist, and the log" "$(cget /jobs/$PEI | grep -o '<li><a href=/files/[0-9]*/[a-z.]*' | sed 's#.*/files/[0-9]*/##' | tr '\n' ' ')" "edited.png log "
+check "design: a failed job's page says so instead of a result" "$(cget /jobs/$((VF + 1)) | grep -c 'class=alert role=alert')" 1
+check "design: the edit form has the drop zone and the instruction as a text area" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'type=file accept=image/jpeg,image/png,image/webp required.*<textarea name=prompt')" 1
+check "design: the stylesheet names the font stack with the system font as fallback and loads nothing" "$(curl -s -H "$(hdr)" localhost:18097/style.css | grep -c "IBM Plex Sans',system-ui") $(curl -s -H "$(hdr)" localhost:18097/style.css | grep -c '@import\|url(')" "1 0"
 exit $fail
