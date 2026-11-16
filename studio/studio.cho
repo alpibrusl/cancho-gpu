@@ -57,7 +57,7 @@ fn number_of[&t](text: &t [byte]) -> [] int {
     return n;
 }
 
-fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], site: &y [byte], token: &z [byte], port: int) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
+fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, fs: &f Fs(""), dir: &d [byte], site: &y [byte], token: &z [byte], port: int, rewrite_on: bool) -> [heap, conn_accept, conn_read, conn_write, poll, clock, err_write, fs_read(""), fs_write(""), file_read, file_write] int {
     match poller_new() {
         Polling::Ok(p) => {
             var srv = server.open(heap, p, listener, 16777216, 0, 30);
@@ -239,7 +239,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                             } else if bytes.equal(path, "/edit") && bytes.equal(method, "GET") {
                                 out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", upload.form_page(), keep, "");
                             } else if bytes.equal(path, "/edit") && bytes.equal(method, "POST") {
-                                let (ust, utext, uid) = upload.handle(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr));
+                                let (ust, utext, uid) = upload.handle(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr), rewrite_on);
                                 if ust == 302 {
                                     var extra = buffer.append(heap, buffer.empty(heap, 64), "Location: /jobs/");
                                     extra = buffer.push_nat(heap, extra, uid);
@@ -263,7 +263,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                             } else if bytes.equal(path, "/api/models") {
                                 out = server.reply_as(heap, out, 200, "application/json", models(), keep, "");
                             } else if bytes.equal(path, "/api/jobs") && bytes.equal(method, "POST") {
-                                let (st, answer) = jobs.create(heap, fs, dir, server.body(sr));
+                                let (st, answer) = jobs.create(heap, fs, dir, server.body(sr), rewrite_on);
                                 borrow answer as &ab in {
                                     out = server.reply_as(heap, out, st, "application/json", buffer.bytes(ab), keep, "");
                                 }
@@ -402,11 +402,19 @@ fn main(world: World) -> [] int {
     release(tty);
     var status = 2;
     borrow args as &g in {
-        if arg_count(g) == 3 || arg_count(g) == 4 {
+        let n = arg_count(g);
+        var flag_ok = true;
+        var rewrite_on = false;
+        if n == 5 || n == 6 {
+            flag_ok = bytes.equal(arg(g, n - 2), "--rewrite") && (bytes.equal(arg(g, n - 1), "on") || bytes.equal(arg(g, n - 1), "off"));
+            rewrite_on = bytes.equal(arg(g, n - 1), "on");
+        }
+        let has_site = n == 4 || n == 6;
+        if (n == 3 || n == 4 || n == 5 || n == 6) && flag_ok {
             let port = number_of(arg(g, 1));
             borrow fs as &fr in {
             borrow mut heap as &!h in {
-                if port > 0 && port < 65536 && files.path_ok(fr, arg(g, 2)) && (arg_count(g) == 3 || files.path_ok(fr, arg(g, 3))) {
+                if port > 0 && port < 65536 && files.path_ok(fr, arg(g, 2)) && (has_site == false || files.path_ok(fr, arg(g, 3))) {
                     status = 3;
                     borrow net as &nn in {
                         let token = auth.make(h, fr);
@@ -419,10 +427,10 @@ fn main(world: World) -> [] int {
                                     listener_nonblocking(lh);
                                     borrow mut io as &!i in {
                                         borrow clock as &c in {
-                                            if arg_count(g) == 4 {
-                                                status = serve(h, c, lh, i, fr, arg(g, 2), arg(g, 3), buffer.bytes(tk), port);
+                                            if has_site {
+                                                status = serve(h, c, lh, i, fr, arg(g, 2), arg(g, 3), buffer.bytes(tk), port, rewrite_on);
                                             } else {
-                                                status = serve(h, c, lh, i, fr, arg(g, 2), "", buffer.bytes(tk), port);
+                                                status = serve(h, c, lh, i, fr, arg(g, 2), "", buffer.bytes(tk), port, rewrite_on);
                                             }
                                         }
                                     }
@@ -440,7 +448,7 @@ fn main(world: World) -> [] int {
                     }
                 } else {
                     borrow mut io as &!i in {
-                        io.error_all(i, "usage: studio <port> <absolute data-dir> [<absolute site-dir>]\n");
+                        io.error_all(i, "usage: studio <port> <absolute data-dir> [<absolute site-dir>] [--rewrite on|off]\n");
                     }
                 }
             }

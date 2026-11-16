@@ -384,4 +384,43 @@ check "auth: same origin, text/plain: 415" "$(u -XPOST -H 'Content-Type: text/pl
 check "auth: no Content-Type on a POST: 415" "$(u -XPOST -H 'Content-Type:' -H "Cookie: studio=$TOK1" localhost:18091/api/jobs -d '{"kind":"video","prompt":"x"}')" 415
 check "auth: two servers, two tokens" "$([ "$TOK1" != "$TOK2" ] && echo different)" different
 rc=0; build/studio 18092 relative 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 2
+
+# The rewrite option (docs/studio-rewrite.md, R3): the server writes `<id>.rewrite` (on or off) before the job is queued; the worker reads it. Servers on 18097 (default off) and 18098 (`--rewrite on`).
+R=$(mktemp -d); mkdir "$R/off" "$R/on"
+(printf '\211PNG\r\n\032\n'; head -c 2000 /dev/urandom) > "$R/pic.png"
+build/studio 18097 "$R/off" >"$R/off.log" 2>&1 &
+SP4=$!
+build/studio 18098 "$R/on" --rewrite on >"$R/on.log" 2>&1 &
+SP5=$!
+trap 'kill $SP $SP2 $SP3 $SP4 $SP5 2>/dev/null; rm -rf "$T" "$U" "$R"' EXIT
+sleep 1
+TOKOFF=$(grep -o 'token=[0-9a-f]*' "$R/off.log" | cut -d= -f2); TOKON=$(grep -o 'token=[0-9a-f]*' "$R/on.log" | cut -d= -f2)
+po() { curl -s -w ' %{http_code}' -H "Authorization: Bearer $TOKOFF" -XPOST -H 'Content-Type: application/json' localhost:18097/api/jobs -d "$1"; }
+pn() { curl -s -w ' %{http_code}' -H "Authorization: Bearer $TOKON" -XPOST -H 'Content-Type: application/json' localhost:18098/api/jobs -d "$1"; }
+check "rewrite: a server that starts with no flag writes off" "$(po '{"kind":"video","prompt":"a"}' >/dev/null; cat "$R/off/1.rewrite")" off
+check "rewrite: ...and the job says on when it asks" "$(po '{"kind":"video","prompt":"b","rewrite":"on"}' >/dev/null; cat "$R/off/2.rewrite")" on
+check "rewrite: a job can ask off" "$(po '{"kind":"video","prompt":"c","rewrite":"off"}' >/dev/null; cat "$R/off/3.rewrite")" off
+check "rewrite: with --rewrite on the default is on" "$(pn '{"kind":"video","prompt":"a"}' >/dev/null; cat "$R/on/1.rewrite")" on
+check "rewrite: ...and a job can still say off" "$(pn '{"kind":"video","prompt":"b","rewrite":"off"}' >/dev/null; cat "$R/on/2.rewrite")" off
+check "rewrite: every queued job has its .rewrite file (two jobs, two lines, two files)" "$(wc -l < "$R/on/queue" | tr -d ' ') $(ls "$R/on"/*.rewrite | wc -l | tr -d ' ')" "2 2"
+check "rewrite: a value that is not on or off: 422" "$(po '{"kind":"video","prompt":"d","rewrite":"maybe"}')" '{"error":"rewrite is on or off"} 422'
+check "rewrite: a value that is not a string: 422" "$(po '{"kind":"video","prompt":"d","rewrite":true}' | tail -c 4)" ' 422'
+check "rewrite: a refused job leaves no file and no queue line" "$(ls "$R/off"/*.rewrite | wc -l | tr -d ' ') $(wc -l < "$R/off/queue" | tr -d ' ')" "3 3"
+e2() { curl -s -w ' %{http_code}' -H "Authorization: Bearer $TOKOFF" "$@" localhost:18097/edit; }
+check "rewrite: /edit takes the field (on)" "$(e2 -F prompt=x -F rewrite=on -F "image=@$R/pic.png" >/dev/null; cat "$R/off/4.rewrite")" on
+check "rewrite: /edit without the field takes the server's default" "$(e2 -F prompt=x -F "image=@$R/pic.png" >/dev/null; cat "$R/off/5.rewrite")" off
+check "rewrite: /edit with a value that is not on or off: 422" "$(e2 -F prompt=x -F rewrite=perhaps -F "image=@$R/pic.png")" '{"error":"rewrite is on or off"} 422'
+check "rewrite: the /edit form offers it" "$(curl -s -H "Authorization: Bearer $TOKOFF" localhost:18097/edit | grep -c 'name=rewrite')" 1
+rc=0; build/studio 18099 "$R/off" --rewrite maybe 2>/dev/null || rc=$?; check "rewrite: a flag value that is not on or off refuses to start" "$rc" 2
+rc=0; build/studio 18099 "$R/off" --rewrite 2>/dev/null || rc=$?; check "rewrite: a flag with no value is not a site directory" "$rc" 2
+# the job's page: what a model wrote is shown escaped
+printf '%s' '<script>alert(1)</script> & "q" '"'"'s'"'" > "$R/off/2.prompt.orig"; printf '%s' '<b>new</b> & more' > "$R/off/2.prompt.new"; printf 'done\n' > "$R/off/2.state"
+pg() { curl -s -H "Authorization: Bearer $TOKOFF" localhost:18097/jobs/$1; }
+check "page: the original prompt is shown, escaped" "$(pg 2 | grep -c 'prompt: &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;s')" 1
+check "page: ...no raw tag from the model is in the page" "$(pg 2 | grep -c '<script>\|<b>new')" 0
+check "page: the rewritten prompt is shown, escaped" "$(pg 2 | grep -c 'rewritten by the local model: &lt;b&gt;new&lt;/b&gt; &amp; more')" 1
+printf 'done\n' > "$R/off/2.state"; printf 'failed 1\n' > "$R/off/3.state"; printf 'on\n' > "$R/off/3.rewrite"
+check "page: a job that asked and finished with no rewritten prompt says so" "$(pg 3 | grep -c 'the prompt was not rewritten (see the log)')" 1
+check "page: a job that did not ask says nothing of it" "$(pg 1 | grep -c 'rewritten')" 0
+check "page: a queued job that asked does not say it was not rewritten yet" "$(printf 'on\n' > "$R/off/1.rewrite"; pg 1 | grep -c 'was not rewritten')" 0
 exit $fail
