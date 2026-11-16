@@ -8,12 +8,16 @@ import files;
 
 // studio_worker -- runs one job: docs/studio.md, slice 2.
 //
-//   studio_worker <script> <home> <data-dir>                 drain the queue once and exit
+//   studio_worker <script> <home> <data-dir>                 drain the queue once and exit (exit 4: another worker holds the lock)
 //   studio_worker <script> <home> <data-dir> --every <s>     drain it, wait up to <s> seconds (1-3600), drain again, until INT or TERM
 //
 // With `--every` the worker holds INT and TERM (`Signals("INT,TERM")`: the authority report names them): a signal that arrives while a job runs does not
 // kill it, the worker stops once that job has ended, and one that arrives while it waits stops it at once (the signal wakes the `Poller` it waits on).
-// `<data-dir>/queue` is read again at every drain. `<data-dir>/queue`
+// `<data-dir>/queue` is read again at every drain.
+//
+// One worker at a time: before it reads the queue a worker takes an exclusive `flock` on `<data-dir>/worker.lock` (`file_lock`: not waiting, held while the process lives, dropped by the kernel when it ends, even
+// by SIGKILL, so no stale lock file is left to remove) and keeps it until it exits. A second worker on the same directory gets exit 4 and touches nothing. With the lock held no other worker is running,
+// so a job whose state is still `running` was left by one that died: it is marked `failed 255` before the queue is read, and is not run again. `<data-dir>/queue`
 // is written by the server alone, one job id (decimal digits, at most 9) a line; a job is pending when `<data-dir>/<id>.state` does not exist.
 // Jobs run one after another: the GPU takes one. For each pending job, `<data-dir>/<id>.argv` holds the argument list of `<script>` (the studio's `media`), each entry followed by a NUL, as the server wrote it after
 // `std.process.add` had refused any entry with a NUL in it. The worker starts `<script>` on that list, its output and errors written to
@@ -281,6 +285,95 @@ fn drain[&h, &f, &x, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""
     return ran;
 }
 
+// `<dir>/worker.lock`
+fn lock_path[&h, &d](heap: &!h Heap, dir: &d [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/worker.lock");
+}
+
+// Try the lock on the open file `x`: true if this process now holds it.
+fn lock_it[&x](file: &!x File) -> [file_write] bool {
+    match file_lock(file) {
+        Done::Ok(n) => {
+            return true;
+        }
+        Done::Failed(e) => {
+            return false;
+        }
+    }
+}
+
+// With the lock held: every job in the queue whose state says `running` was left by a worker that died; it becomes `failed 255`. The number marked.
+fn recover[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    var text = buffer.empty(heap, 8);
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var marked = 0;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var at = 0;
+        while at < len(all) {
+            var stop = at;
+            while stop < len(all) && int_of(all[stop]) != 10 {
+                stop = stop + 1;
+            }
+            let id = all[at..stop];
+            if id_ok(id) {
+                let sp = named(heap, dir, id, "state");
+                var left_running = false;
+                borrow sp as &sb in {
+                    let (b, e) = files.read_all(heap, fs, buffer.bytes(sb));
+                    borrow b as &br in {
+                        left_running = e == 0 && bytes.starts_with(buffer.bytes(br), "running");
+                    }
+                    buffer.drop(heap, b);
+                }
+                buffer.drop(heap, sp);
+                if left_running {
+                    put(heap, fs, dir, id, "state", "failed 255\n");
+                    marked = marked + 1;
+                }
+            }
+            at = stop + 1;
+        }
+    }
+    buffer.drop(heap, text);
+    return marked;
+}
+
+// Once, under the lock: 0, or 4 if another worker holds it (or the lock file cannot be opened).
+fn once[&h, &f, &x, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), dir_read, dir_write] int {
+    var status = 4;
+    let lp = lock_path(heap, dir);
+    borrow lp as &lb in {
+        if files.path_ok(fs, buffer.bytes(lb)) {
+            match open_append(fs, buffer.bytes(lb)) {
+                Opened::Failed(e) => {
+                }
+                Opened::Ok(o) => {
+                    var lock = o;
+                    var held = false;
+                    borrow mut lock as &!lx in {
+                        held = lock_it(lx);
+                    }
+                    if held {
+                        recover(heap, fs, dir);
+                        drain(heap, fs, exec, script, home, dir);
+                        status = 0;
+                    }
+                    file_close(lock);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, lp);
+    return status;
+}
+
 fn seconds_of[&t](text: &t [byte]) -> [] int {
     if len(text) == 0 || len(text) > 4 {
         return 0 - 1;
@@ -301,30 +394,52 @@ fn seconds_of[&t](text: &t [byte]) -> [] int {
     return n;
 }
 
-// Drain, wait, drain, until a signal: 0 when stopped by one, 5 if the wait failed.
+// Under the lock: drain, wait, drain, until a signal. 0 when stopped by one, 4 if another worker holds the lock, 5 if the wait failed.
 fn keep_going[&h, &f, &x, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], poller: &!p Poller, watch: &!w SignalWatch, seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), dir_read, dir_write, signals_read, poll] int {
-    var status = 0;
-    var stop = false;
+    var status = 4;
     let events = box_slice(heap, 8, 0);
     var spare = events;
-    while stop == false {
-        drain(heap, fs, exec, script, home, dir);
-        if signals_pending(watch) != 0 {
-            stop = true;
-        } else {
-            var n = 0;
-            borrow mut spare as &!eb in {
-                n = poller_wait(poller, contents(eb), seconds * 1000);
-            }
-            if n < 0 {
-                status = 5;
-                stop = true;
-            }
-            if signals_pending(watch) != 0 {
-                stop = true;
+    let lp = lock_path(heap, dir);
+    borrow lp as &lb in {
+        if files.path_ok(fs, buffer.bytes(lb)) {
+            match open_append(fs, buffer.bytes(lb)) {
+                Opened::Failed(e) => {
+                }
+                Opened::Ok(o) => {
+                    var lock = o;
+                    var held = false;
+                    borrow mut lock as &!lx in {
+                        held = lock_it(lx);
+                    }
+                    if held {
+                        status = 0;
+                        recover(heap, fs, dir);
+                        var stop = false;
+                        while stop == false {
+                            drain(heap, fs, exec, script, home, dir);
+                            if signals_pending(watch) != 0 {
+                                stop = true;
+                            } else {
+                                var n = 0;
+                                borrow mut spare as &!eb in {
+                                    n = poller_wait(poller, contents(eb), seconds * 1000);
+                                }
+                                if n < 0 {
+                                    status = 5;
+                                    stop = true;
+                                }
+                                if signals_pending(watch) != 0 {
+                                    stop = true;
+                                }
+                            }
+                        }
+                    }
+                    file_close(lock);
+                }
             }
         }
     }
+    buffer.drop(heap, lp);
     unbox_slice(heap, spare);
     return status;
 }
@@ -397,7 +512,7 @@ fn main(world: World) -> [] int {
                         borrow exec as &xe in {
                             status = 0;
                             if files.path_ok(f, arg(g, 3)) {
-                                drain(h, f, xe, arg(g, 1), arg(g, 2), arg(g, 3));
+                                status = once(h, f, xe, arg(g, 1), arg(g, 2), arg(g, 3));
                             } else {
                                 status = 3;
                             }
@@ -409,6 +524,11 @@ fn main(world: World) -> [] int {
                     io.error_all(i, "usage: studio_worker <script> <home> <absolute data-dir> [--every <seconds 1-3600>]\n");
                 }
             }
+        }
+    }
+    if status == 4 {
+        borrow mut io as &!i4 in {
+            io.error_all(i4, "studio_worker: another worker holds worker.lock in the data directory (or it cannot be opened); nothing was run\n");
         }
     }
     release(exec);
