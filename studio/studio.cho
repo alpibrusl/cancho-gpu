@@ -25,6 +25,7 @@ import range;
 //
 //     GET /jobs          the jobs, newest first, each a link to its page
 //     GET /app.js        <site-dir>/app.js
+//     GET /openapi.json  <site-dir>/openapi.json (studio/openapi.json, copied there; check.sh holds it to what the server answers)
 //     GET /              <site-dir>/index.html, or the stub (HTML the server writes)
 //     GET /api/models    the registry of tools/media.py, as JSON
 //
@@ -219,6 +220,16 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 if sst == 200 {
                                     borrow sdata as &sb in {
                                         out = server.reply_as(heap, out, 200, "text/javascript; charset=utf-8", buffer.bytes(sb), keep, "");
+                                    }
+                                } else {
+                                    out = server.failure(heap, out, 404, "not found", keep);
+                                }
+                                buffer.drop(heap, sdata);
+                            } else if bytes.equal(path, "/openapi.json") && bytes.equal(method, "GET") && len(site) > 0 {
+                                let (sst, sdata) = results.site_file(heap, fs, site, "openapi.json");
+                                if sst == 200 {
+                                    borrow sdata as &sb in {
+                                        out = server.reply_as(heap, out, 200, "application/json", buffer.bytes(sb), keep, "");
                                     }
                                 } else {
                                     out = server.failure(heap, out, 404, "not found", keep);

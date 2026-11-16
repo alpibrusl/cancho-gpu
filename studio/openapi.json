@@ -1,0 +1,188 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "cancho-studio",
+    "version": "0.1.0",
+    "description": "A local web app for image-edit and video jobs (docs/studio.md). It listens on 127.0.0.1 only. Every request needs the token the server prints at start, as `Authorization: Bearer <token>` or the cookie `studio`, a `Host` of 127.0.0.1:<port> or localhost:<port>, and, when there is an `Origin`, the same host with `http://`. A POST must be application/json."
+  },
+  "servers": [{ "url": "http://127.0.0.1:{port}", "variables": { "port": { "default": "8080" } } }],
+  "security": [{ "bearer": [] }, { "cookie": [] }],
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "The page (the cancho-ui build), or a stub without a site directory. With a valid `?token=` it answers 302 / and sets the cookie.",
+        "security": [],
+        "parameters": [{ "name": "token", "in": "query", "required": false, "schema": { "type": "string", "pattern": "^[0-9a-f]{32}$" } }],
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "302": { "description": "Token accepted: Location / and Set-Cookie studio=<token>; HttpOnly; SameSite=Strict; Path=/" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/app.js": {
+      "get": {
+        "summary": "The page's script, from the site directory.",
+        "responses": {
+          "200": { "description": "JavaScript", "content": { "text/javascript": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "This document, from the site directory.",
+        "responses": {
+          "200": { "description": "OpenAPI 3.1", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/models": {
+      "get": {
+        "summary": "The models each kind of job can use.",
+        "responses": {
+          "200": {
+            "description": "A list per kind; `image` is empty (text to image is not wired).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Models" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/api/jobs": {
+      "post": {
+        "summary": "Queue a job: writes <data>/N.argv and a line in <data>/queue; the worker runs it.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NewJob" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Queued" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "500": { "description": "The queue could not be read.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/jobs/{id}": {
+      "get": {
+        "summary": "The state of a job.",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": {
+            "description": "`state` is queued, running, done, or `failed C` (C the exit code; 255 for a job a dead worker left running).",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobState" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such job.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "422": { "description": "The id is not 1 to 9 digits.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "summary": "The jobs, newest first (200 at most), as an HTML list.",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/jobs/{id}": {
+      "get": {
+        "summary": "A job's page: state, the result when done, the log. Refreshes itself while queued or running.",
+        "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such job (plain text in an HTML answer).", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "422": { "description": "The id is not 1 to 9 digits.", "content": { "text/html": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/files/{id}/{name}": {
+      "get": {
+        "summary": "A file of a job, from a closed list of names, streamed in pieces. `Range: bytes=a-b`, `a-` and `-n` are answered 206; several ranges, another unit or a malformed value are ignored (200, the whole file).",
+        "parameters": [
+          { "$ref": "#/components/parameters/JobId" },
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "video.mp4", "video.gif", "log"] } },
+          { "name": "Range", "in": "header", "required": false, "schema": { "type": "string", "example": "bytes=0-1023" } }
+        ],
+        "responses": {
+          "200": { "description": "The whole file; `Accept-Ranges: bytes`.", "content": { "image/png": { "schema": { "type": "string", "format": "binary" } }, "video/mp4": { "schema": { "type": "string", "format": "binary" } }, "image/gif": { "schema": { "type": "string", "format": "binary" } }, "text/plain": { "schema": { "type": "string" } } } },
+          "206": { "description": "The bytes asked for; `Content-Range: bytes a-b/size`." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "A name not on the list, or the file is not there (plain text).", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "416": { "description": "The range starts past the end; `Content-Range: bytes */size`.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "422": { "description": "The id is not 1 to 9 digits (plain text).", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "503": { "description": "Eight files are already being sent; `Retry-After: 1`.", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer" },
+      "cookie": { "type": "apiKey", "in": "cookie", "name": "studio" }
+    },
+    "parameters": {
+      "JobId": { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9]{1,9}$" } }
+    },
+    "responses": {
+      "Unauthorized": { "description": "No token, or a wrong one.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Forbidden": { "description": "A Host or Origin that is not this server's own.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "UnsupportedMediaType": { "description": "A POST that is not application/json.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "Not found.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Refused": { "description": "What the server refuses to queue; `error` says which field.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Error": { "type": "object", "required": ["error"], "properties": { "error": { "type": "string" } } },
+      "Models": {
+        "type": "object",
+        "required": ["video", "edit", "image"],
+        "properties": {
+          "video": { "type": "array", "items": { "type": "string" } },
+          "edit": { "type": "array", "items": { "type": "string" } },
+          "image": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "NewJob": {
+        "type": "object",
+        "required": ["kind", "prompt"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["video", "edit"] },
+          "prompt": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "1 to 1000 bytes; a NUL is refused." },
+          "image": { "type": "string", "description": "Required for an edit: the absolute path of a file on the server's machine, 2 to 400 bytes." },
+          "frames": { "type": "integer", "minimum": 1, "maximum": 129 },
+          "size": { "type": "string", "description": "WxH, for example 640x352.", "example": "640x352" },
+          "seed": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+        }
+      },
+      "Queued": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "minimum": 1 } } },
+      "JobState": {
+        "type": "object",
+        "required": ["id", "state"],
+        "properties": {
+          "id": { "type": "integer" },
+          "state": { "type": "string", "pattern": "^(queued|running|done|failed [0-9]+)$" }
+        }
+      }
+    }
+  }
+}
