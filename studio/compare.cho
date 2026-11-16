@@ -80,6 +80,11 @@ fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir:
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/edited.png>");
         }
+        if results.has_out(heap, fs, dir, jid, "image.png") {
+            p = buffer.append(heap, p, "<img alt=\"the result\" src=/files/");
+            p = buffer.append(heap, p, jid);
+            p = buffer.append(heap, p, "/image.png>");
+        }
         if results.has_out(heap, fs, dir, jid, "video.mp4") {
             p = buffer.append(heap, p, "<video controls loop src=/files/");
             p = buffer.append(heap, p, jid);

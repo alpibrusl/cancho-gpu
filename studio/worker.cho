@@ -104,7 +104,7 @@ fn started[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i
 
 // What stays of a job's `out/<id>/`: the results the page shows and the prompt. `frames/` is a directory and is not touched here.
 fn keep[&n](name: &n [byte]) -> [] bool {
-    return bytes.equal(name, "edited.png") || bytes.equal(name, "video.mp4") || bytes.equal(name, "video.gif") || bytes.equal(name, "prompt.txt");
+    return bytes.equal(name, "edited.png") || bytes.equal(name, "image.png") || bytes.equal(name, "video.mp4") || bytes.equal(name, "video.gif") || bytes.equal(name, "prompt.txt");
 }
 
 // Remove the regular files of `dir` that are not kept (`all`: every one); the number removed. A link is not a regular file: it is left, and never followed.

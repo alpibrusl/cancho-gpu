@@ -2,7 +2,7 @@
   "schema": "cancho-ui-trace",
   "version": "0.1.0",
   "component": "Studio",
-  "note": "A video job: refused while the prompt is empty, started, queued, running, done, and no more polling after it. Then an edit (with its steps): refused without a picture, started, and the server's refusal shown. Then a video with fps, three variations and a model, and the set's address shown. net.post and net.get answers are scripted.",
+  "note": "A video job: refused while the prompt is empty, started, queued, running, done, and no more polling after it. Then an edit (with its steps): refused without a picture, started, and the server's refusal shown. Then a video with fps, three variations and a model, and the set's address shown. Then a text-to-image job (a size and steps of its own, no frames, the rewrite sent off whatever is chosen). net.post and net.get answers are scripted.",
   "steps": [
     { "event": "Start", "expect": { "outcome": "disabled" } },
     { "event": "Prompt", "params": ["a fox"], "state": { "prompt": "a fox", "blocked": false } },
@@ -45,6 +45,18 @@
                   "issued": [ { "request": 6, "effect": "net.post",
                                 "args": ["api/jobs", "{\"kind\":\"video\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"fps\":24,\"variations\":3,\"model\":\"fastwan2.2-ti2v-5b\",\"rewrite\":\"off\"}"] } ] } },
     { "resolve": 6, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":7,\\\"ids\\\":[7,8,9],\\\"set\\\":\\\"/sets/7\\\"}\"}" },
-      "state": { "job": "7", "job_state": "queued", "note": "Variations queued: open /sets/7 on this server.", "busy": false } }
+      "state": { "job": "7", "job_state": "queued", "note": "Variations queued: open /sets/7 on this server.", "busy": false } },
+    { "event": "Kind", "params": ["image"], "state": { "kind": "image", "is_image": true, "is_video": false, "is_edit": false } },
+    { "event": "Variations", "params": ["1"], "state": { "variations": "1" } },
+    { "event": "Model", "params": ["qwen-image-2.1-turbo"], "state": { "model": "qwen-image-2.1-turbo" } },
+    { "event": "ISize", "params": ["512x512"], "state": { "isize": "512x512" } },
+    { "event": "Steps", "params": ["4"], "state": { "steps": "4" } },
+    { "event": "Rewrite", "params": ["on"], "state": { "rewrite": "on" } },
+    { "event": "Start",
+      "expect": { "outcome": "suspended",
+                  "issued": [ { "request": 7, "effect": "net.post",
+                                "args": ["api/jobs", "{\"kind\":\"image\",\"prompt\":\"a fox\",\"size\":\"512x512\",\"seed\":0,\"steps\":4,\"model\":\"qwen-image-2.1-turbo\",\"rewrite\":\"off\"}"] } ] } },
+    { "resolve": 7, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":10}\"}" },
+      "state": { "job": "10", "job_state": "queued", "note": "Job 10 is queued.", "busy": false } }
   ]
 }

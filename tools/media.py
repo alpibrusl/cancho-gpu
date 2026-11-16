@@ -3,7 +3,7 @@
 
     scripts/media video "PROMPT" -o DIR [--frames N] [--size WxH] [--seed S] [--fps N]
     scripts/media edit  IMAGE "INSTRUCTION" -o DIR [--seed S] [--steps N]
-    scripts/media image "PROMPT" -o DIR        (not wired: see `media image --help`)
+    scripts/media image "PROMPT" -o DIR [--size WxH] [--seed N] [--steps N]
     scripts/media models                       (the supported models per task; `--model NAME` on each task)
     scripts/media doctor                       (what is installed and what is missing)
 
@@ -30,9 +30,9 @@ MAX_PIXEL_FRAMES = 17 * 1024 * 576  # the decoder runs out of GPU memory above a
 MODELS = {
     "video": {"fastwan2.2-ti2v-5b": {"repo": "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", "also": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "note": "3 DMD steps, 640x352 to 1280x704, up to 33 frames measured"}},
     "edit": {"qwen-image-2.1-turbo": {"repo": "Qwen/Qwen-Image-2.1-Turbo", "also": None, "note": "8 steps, image + instruction"}},
-    "image": {},  # no text-to-image driver for a free prompt yet
+    "image": {"qwen-image-2.1-turbo": {"repo": "Qwen/Qwen-Image-2.1-Turbo", "also": None, "note": "8 steps, a prompt, 512x512 to 1024x1024 measured"}},
 }
-DEFAULT = {"video": "fastwan2.2-ti2v-5b", "edit": "qwen-image-2.1-turbo"}
+DEFAULT = {"video": "fastwan2.2-ti2v-5b", "edit": "qwen-image-2.1-turbo", "image": "qwen-image-2.1-turbo"}
 
 
 def pick(task, name):
@@ -159,9 +159,31 @@ def cmd_models(a):
 
 
 def cmd_image(a):
-    pick("image", a.model)
-    die("text to image from a free prompt is not wired. The generator of docs/diffusion.md D6 (tests/pipeline_gpu.py) runs the prompt of D0's golden (its token ids and noise are files), and the "
-        "tokeniser, the noise and the text encoder for a prompt of your own were built only for the edit pipeline. Meanwhile `media edit` takes an image and an instruction", 3)
+    need_gpu()
+    model, info = pick("image", a.model)
+    try:
+        w, h = (int(v) for v in a.size.lower().split("x"))
+    except ValueError:
+        die("--size is WxH in pixels, for example 1024x1024")
+    if w % 32 or h % 32 or w < 64 or h < 64:
+        die("--size must be multiples of 32, at least 64: got %dx%d" % (w, h))
+    if w * h > 1024 * 1024:
+        die("%dx%d is more than 1024 x 1024 pixels, the largest size measured (docs/text-to-image.md)" % (w, h))
+    if not a.prompt.strip():
+        die("the prompt is empty")
+    wd = a.weights or os.environ.get("CANCHO_MEDIA_EDIT_WEIGHTS") or os.path.join(CACHE, "qwen-edit-dit")
+    tw = a.text_weights or os.environ.get("CANCHO_MEDIA_EDIT_TEXT_WEIGHTS") or os.path.join(CACHE, "qwen-edit-text")
+    if not snapshot(info["repo"], "transformer"):
+        die("Qwen-Image-2.1-Turbo is not in the Hugging Face cache (the repository's directory is empty): `hf download Qwen/Qwen-Image-2.1-Turbo` (about 50 GB)")
+    if not os.path.isdir(wd):
+        die("the transformer's f16 block weights (head-permuted, 14 GB, written by tests/dit_big.py: docs/diffusion.md D7) are not at %s: pass --weights DIR or set CANCHO_MEDIA_EDIT_WEIGHTS" % wd)
+    out = os.path.abspath(a.output)
+    os.makedirs(out, exist_ok=True)
+    with Lock():
+        run([sys.executable, "tests/t2i_pipeline_gpu.py", os.path.join(out, "work"), "--prompt", a.prompt, "--seed", str(a.seed), "--steps", str(a.steps), "--size", "%dx%d" % (w, h),
+             "--weights", wd, "--text-weights", tw, "--out", os.path.join(out, "image.png"), "--resident"], "text to image (GPU, three stages)")
+    open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
+    print("done: " + os.path.join(out, "image.png"))
 
 
 def cmd_doctor(a):
@@ -215,10 +237,15 @@ def main():
     e.add_argument("--weights", help="head-permuted f16 transformer blocks (env CANCHO_MEDIA_EDIT_WEIGHTS)")
     e.add_argument("--text-weights", help="f16 text-encoder weights, written on first use (env CANCHO_MEDIA_EDIT_TEXT_WEIGHTS)")
     e.set_defaults(f=cmd_edit)
-    i = sub.add_parser("image", help="text to image (not wired: says why)")
+    i = sub.add_parser("image", help="text to image from a prompt (Qwen-Image-2.1-Turbo)")
     i.add_argument("prompt")
-    i.add_argument("-o", "--output")
-    i.add_argument("--model", help="model name (`media models`)")
+    i.add_argument("-o", "--output", required=True, help="directory for image.png")
+    i.add_argument("--model", help="model name (`media models`; default %s)" % DEFAULT["image"])
+    i.add_argument("--size", default="1024x1024", help="WxH pixels, multiples of 32, at most 1024 x 1024 (default 1024x1024)")
+    i.add_argument("--seed", type=int, default=0)
+    i.add_argument("--steps", type=int, default=8)
+    i.add_argument("--weights", help="head-permuted f16 transformer blocks (env CANCHO_MEDIA_EDIT_WEIGHTS)")
+    i.add_argument("--text-weights", help="f16 text-encoder weights (env CANCHO_MEDIA_EDIT_TEXT_WEIGHTS)")
     i.set_defaults(f=cmd_image)
     sub.add_parser("models", help="list the supported models per task").set_defaults(f=cmd_models)
     d = sub.add_parser("doctor", help="check what is installed")

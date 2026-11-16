@@ -207,7 +207,7 @@
         "summary": "A file of a job, from a closed list of names, streamed in pieces. `Range: bytes=a-b`, `a-` and `-n` are answered 206; several ranges, another unit or a malformed value are ignored (200, the whole file).",
         "parameters": [
           { "$ref": "#/components/parameters/JobId" },
-          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "video.mp4", "video.gif", "log"] } },
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "image.png", "video.mp4", "video.gif", "log"] } },
           { "name": "Range", "in": "header", "required": false, "schema": { "type": "string", "example": "bytes=0-1023" } }
         ],
         "responses": {
@@ -253,7 +253,7 @@
         "type": "object",
         "required": ["kind", "prompt"],
         "properties": {
-          "kind": { "type": "string", "enum": ["video", "edit"] },
+          "kind": { "type": "string", "enum": ["video", "edit", "image"], "description": "`image` is text to image from a prompt (`media image`): `size` WxH up to 1024 x 1024 (a multiple of 32), `seed`, `steps`, `model`; no `image` path, no `frames`, no `fps`. The result is `image.png`." },
           "prompt": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "1 to 1000 bytes; a NUL is refused." },
           "image": { "type": "string", "description": "Required for an edit: the absolute path of a file on the server's machine, 2 to 400 bytes." },
           "frames": { "type": "integer", "minimum": 1, "maximum": 129 },

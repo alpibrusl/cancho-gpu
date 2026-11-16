@@ -9,9 +9,9 @@ import files;
 // `results` -- what the browser sees of a job (docs/studio.md, route 3): a page the server writes, and the job's files by a closed list of names.
 //
 //   GET /jobs/N          HTML: the state, the result (an <img> or a <video>) when it is done, the log; refreshes itself while queued or running
-//   GET /files/N/NAME    NAME is one of edited.png, video.mp4, video.gif, log; never a path from the client
+//   GET /files/N/NAME    NAME is one of edited.png, image.png, video.mp4, video.gif, log; never a path from the client
 //
-// `media` writes `<data>/out/N/{edited.png,video.mp4,video.gif}`; the worker writes `<data>/N.log`.
+// `media` writes `<data>/out/N/{edited.png,image.png,video.mp4,video.gif}`; the worker writes `<data>/N.log`.
 
 pub fn id_ok[&i](id: &i [byte]) -> [] bool {
     if len(id) == 0 || len(id) > 9 {
@@ -338,6 +338,11 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
             page = buffer.append(heap, page, id);
             page = buffer.append(heap, page, "/edited.png>");
         }
+        if has_out(heap, fs, dir, id, "image.png") {
+            page = buffer.append(heap, page, "<img alt=\"the generated picture\" src=/files/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "/image.png>");
+        }
         if has_out(heap, fs, dir, id, "video.mp4") {
             page = buffer.append(heap, page, "<video controls loop src=/files/");
             page = buffer.append(heap, page, id);
@@ -398,6 +403,7 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     page = file_item(heap, page, fs, dir, id, "video.mp4");
     page = file_item(heap, page, fs, dir, id, "video.gif");
     page = file_item(heap, page, fs, dir, id, "edited.png");
+    page = file_item(heap, page, fs, dir, id, "image.png");
     page = buffer.append(heap, page, "<li><a href=/files/");
     page = buffer.append(heap, page, id);
     page = buffer.append(heap, page, "/log>log</a></li></ul></section></aside></div>");
@@ -473,6 +479,10 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
                             page = buffer.append(heap, page, "<img alt=\"\" loading=lazy src=/files/");
                             page = buffer.append(heap, page, id);
                             page = buffer.append(heap, page, "/edited.png>");
+                        } else if is_done && shown < 24 && has_out(heap, fs, dir, id, "image.png") {
+                            page = buffer.append(heap, page, "<img alt=\"\" loading=lazy src=/files/");
+                            page = buffer.append(heap, page, id);
+                            page = buffer.append(heap, page, "/image.png>");
                         } else if is_done {
                             page = buffer.append(heap, page, "result");
                         } else if is_failed {
@@ -552,7 +562,7 @@ pub fn css() -> [] &static [byte] {
 }
 
 pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
-    if bytes.equal(name, "edited.png") {
+    if bytes.equal(name, "edited.png") || bytes.equal(name, "image.png") {
         return "image/png";
     }
     if bytes.equal(name, "video.mp4") {
