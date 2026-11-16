@@ -127,3 +127,26 @@ Three requests, **one run each**, to Ollama's `/api/chat` with `qwen3.8:27b-mlx`
 * two pictures (3): (A, B) "put the red thing in the other one", (A, B) "combine them", (B, A) "use the look of the second on the first".
 
 **The checks, written before the run.** For every answer: it is 1 to 1,000 bytes with no control character (the rule of D3); it contains **none of** "No other", "no new", "not ", "without" (a crude detector of the echo and of sentences about what is absent: **a heuristic, it will have false positives**); for a video, it contains **at least one** motion word from a fixed list (walk, run, move, pan, flow, drift, sway, swirl, splash, ripple, roll, fly, jump, play, danc, glid, rush, crash, spin, turn, rise, fall, wave, trac, push, orbit: **a heuristic, a word is not an action**); the time of the call. The answers are also **read by a person** (here: the author), and what that reading found is written next to the numbers. Version 1 is run on the same set (the two-picture prompts only with version 2: version 1 has no draft for them).
+
+### 11.1 Results (measured, 2026-11-16, one run of each, `qwen3.8:27b-mlx`, temperature 0.3, `think: false`)
+
+19 calls: 5 video prompts with each version (10), 4 one-picture prompts with each version (8), 3 two-picture prompts with `edit2.txt` (3). **3 to 4 s a call** for video, **2 to 3 s** for a picture, **3 to 4 s** for two; `/api/ps` was empty before and after. Every answer was 1 to 1,000 bytes with no control character, and **within its word limit** (version 2 video 66 to 94 words of 100; edit 19 to 35 of 50; two pictures 25 to 46 of 60; checked by counting, not by the model's word).
+
+**What the automatic checks said, and where they were wrong.** The movement check found a word in all ten video answers, **including version 1's stationary car**: "pans" (the camera) counts. It cannot tell the subject's action from the camera's, so it is **not evidence of anything** and is withdrawn as a check; the reading below replaces it. The check for sentences about what is absent found one in version 1 ("a car": "No other subjects are present") and **missed another**: version 2's "the ocean" ends "with no visible land or objects other than the natural elements" (the pattern did not contain "no visible"), which also contradicts its own "the sandy beach".
+
+**What the reading found (by the author; a person, not a measurement of quality)**
+
+| | version 1 | version 2 |
+|---|---|---|
+| video, the subject acts | the car "sits stationary" (**fault of section 10**); the others act or the scene moves (waves, children, a figure "moves slowly", a bean that falls) | **5 of 5** act (the car accelerates; a figure takes a "jerky, lurching step"; children chase; waves roll; coffee pours, steam rises) |
+| video, a sentence about what is absent | **2 of 5** ("No other subjects are present"; "No sudden movements") | **1 of 5** ("the ocean": "no visible land or objects ...") |
+| video, the request kept | yes | yes; but "a cool ad for coffee" came out as a plainer mug-and-pour scene than version 1's shattering bean (**a matter of taste, not scored**) |
+| one picture | each names things that are in the picture (the white rectangle, the gradient, the red circle) and keeps the rest | **no clear difference**: the same changes chosen; "make it dramatic" asked for three changes (storm clouds, a twilight purple sky, a darker ground) and called the red disc "a red sun" (a guess); the white rectangle became "square" (it is 30 x 36 pixels) |
+| two pictures | n/a | **3 of 3 correct about which is which**, including when the pictures are swapped (B first, A second: "image1" was B, "image2" was A, as given) |
+
+**Conclusions, and their limits**
+
+1. **The faults of section 10 are mostly gone in version 2**: a still subject (1 of 5 before, 0 of 5 now) and the echoed rule ("No other subjects", 1 before, 0 now). **A new instance of a sentence about absence appeared** in one answer (the ocean), so "no sentences about what is absent" is **not obeyed every time**, with 5 video prompts; one run each at one temperature says nothing of how often.
+2. **For an edit, version 2 is not shown to be better than version 1**; they look alike. The second draft's changes may simply not matter for an edit (the generator's encoder already sees the picture).
+3. **Two pictures: the rewriter reads both and keeps them apart** (3 of 3, on synthetic pictures with obvious content: a gradient with a rectangle, a sky with a disc; it would be harder with two photographs, **not tried**). **That the rewritten instruction would make the generator do the right thing is untested**, and the generator path of cancho-gpu takes one picture (section 11).
+4. **Nothing here shows the rewritten prompts give better pictures or videos.** That is still section 8's question, for the 20 cases not yet written.
