@@ -93,6 +93,43 @@ else
   printf '<!doctype html><title>fake page</title>' > "$T/site/index.html"; printf 'console.log(1)' > "$T/site/app.js"
 fi
 
+# One worker at a time (`worker.lock`): a second is refused with exit 4 and runs nothing, while the first is in a job and while it waits; SIGTERM frees the lock; SIGKILL does too, and the job it left `running`
+# becomes `failed 255` and is not run again.
+K=$(mktemp -d)
+printf '#!/bin/sh\nif [ "$1" = slow ]; then sleep 2; fi\necho "ran $1"\nexit 0\n' > "$K/fake.sh"; chmod +x "$K/fake.sh"
+printf 'slow\0a\0' > "$K/1.argv"; printf 'video\0b\0' > "$K/2.argv"; printf '1\n2\n' > "$K/queue"
+build/studio_worker "$K/fake.sh" /Users/test "$K" --every 30 &
+WA=$!
+sleep 1
+check "lock: the first worker is in job 1" "$(cat "$K/1.state")" running
+rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" 2>"$K/err" || rc=$?
+check "lock: a second worker, once, during a job: exit 4" "$rc" 4
+check "lock: ...and says why" "$(grep -c 'another worker holds worker.lock' "$K/err")" 1
+rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" --every 5 2>/dev/null || rc=$?
+check "lock: a second worker, looping: exit 4" "$rc" 4
+sleep 2
+check "lock: the first worker finished jobs 1 and 2 alone" "$(cat "$K/1.state") $(cat "$K/2.state")" "done done"
+check "lock: job 1 ran once (one line in its log)" "$(grep -c 'ran slow' "$K/1.log")" 1
+rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" 2>/dev/null || rc=$?
+check "lock: a second worker while the first waits: exit 4" "$rc" 4
+kill -TERM $WA; rc=0; wait $WA || rc=$?
+check "lock: SIGTERM ends the first worker, exit 0" "$rc" 0
+rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" 2>/dev/null || rc=$?
+check "lock: once it is gone the lock is free: exit 0" "$rc" 0
+printf 'slow\0c\0' > "$K/3.argv"; printf 'video\0d\0' > "$K/4.argv"; printf '1\n2\n3\n4\n' > "$K/queue"
+build/studio_worker "$K/fake.sh" /Users/test "$K" --every 30 &
+WB=$!
+sleep 1
+check "lock: a worker in job 3" "$(cat "$K/3.state")" running
+kill -KILL $WB; wait $WB 2>/dev/null || true
+sleep 3
+rc=0; build/studio_worker "$K/fake.sh" /Users/test "$K" 2>/dev/null || rc=$?
+check "lock: SIGKILL freed the lock: exit 0" "$rc" 0
+check "lock: the job it left running is failed 255" "$(cat "$K/3.state")" "failed 255"
+check "lock: ...and was not run again" "$(grep -c 'ran slow' "$K/3.log")" 1
+check "lock: the job it had not started ran" "$(cat "$K/4.state")" done
+rm -rf "$K"
+
 # The server, the queue and the worker together, with a fake `media` that prints its arguments (port 18091).
 printf '#!/bin/sh\nfor a in "$@"; do echo "[$a]"; done\n[ "$1" = edit ] && exit 3\nexit 0\n' > "$T/media"
 chmod +x "$T/media"
