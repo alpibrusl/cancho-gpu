@@ -35,7 +35,7 @@ import sets;
 // Listens on 127.0.0.1 only (`tcp_listen_on`). `cancho authority` reports `net_in("")`, UNBOUNDED: the host is a run-time argument and `narrow` takes a literal, so the bind is the code's, held by the Host/Origin/token checks and checked with lsof, not by the report (docs/studio-fetch.md section 2).
 
 fn page() -> [] &static [byte] {
-    return "<!doctype html><meta charset=utf-8><title>cancho-studio</title><h1>cancho-studio</h1><p>Slice 1: no job runs yet.</p><p><a href=/api/models>/api/models</a></p>";
+    return "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><title>cancho-studio</title><h1>cancho-studio</h1><p>Slice 1: no job runs yet.</p><p><a href=/api/models>/api/models</a></p>";
 }
 
 fn models() -> [] &static [byte] {
@@ -238,6 +238,8 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     out = server.failure(heap, out, 404, "not found", keep);
                                 }
                                 buffer.drop(heap, sdata);
+                            } else if bytes.equal(path, "/style.css") && bytes.equal(method, "GET") {
+                                out = server.reply_as(heap, out, 200, "text/css; charset=utf-8", results.css(), keep, "");
                             } else if bytes.equal(path, "/edit") && bytes.equal(method, "GET") {
                                 out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", upload.form_page(), keep, "");
                             } else if bytes.equal(path, "/edit") && bytes.equal(method, "POST") {

@@ -29,7 +29,7 @@ fn num[&t](text: &t [byte]) -> [] int {
 
 // One result: its label, its state while it is not done, its picture or video when it is.
 fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], jid: &j [byte], k: int, seed: int) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var p = buffer.append(heap, page, "<div style=\"flex:1 1 240px;min-width:0\"><h2><a href=/jobs/");
+    var p = buffer.append(heap, page, "<div class=cell><h2><a href=/jobs/");
     p = buffer.append(heap, p, jid);
     p = buffer.append(heap, p, ">variation ");
     p = buffer.push_nat(heap, p, k + 1);
@@ -49,12 +49,12 @@ fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir:
     buffer.drop(heap, state);
     if done {
         if results.has_out(heap, fs, dir, jid, "edited.png") {
-            p = buffer.append(heap, p, "<img alt=\"variation\" style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, "<img alt=\"variation\" src=/files/");
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/edited.png>");
         }
         if results.has_out(heap, fs, dir, jid, "video.mp4") {
-            p = buffer.append(heap, p, "<video controls loop style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, "<video controls loop src=/files/");
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/video.mp4></video>");
         }
@@ -73,7 +73,7 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         buffer.drop(heap, rec);
         return (404, buffer.append(heap, buffer.empty(heap, 32), "no such set"));
     }
-    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8>");
+    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css>");
     var body = buffer.empty(heap, 1024);
     var active = false;
     var count = 0;
@@ -123,7 +123,7 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
     }
     page = buffer.append(heap, page, "<title>cancho-studio: variations</title><h1>variations</h1><p>");
     page = buffer.push_nat(heap, page, count);
-    page = buffer.append(heap, page, " jobs of one request, one seed each. They run one after another: the time is that many times one job's.</p><div style=\"display:flex;flex-wrap:wrap;gap:1em\">");
+    page = buffer.append(heap, page, " jobs of one request, one seed each. They run one after another: the time is that many times one job's.</p><div class=grid>");
     borrow body as &br in {
         page = buffer.append(heap, page, buffer.bytes(br));
     }

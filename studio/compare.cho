@@ -60,7 +60,7 @@ fn digits[&h](heap: &!h Heap, n: int) -> [heap] buffer.Buffer {
 
 // One side: its label and the result, or the state it is in. `jid` is the job's id as text.
 fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], jid: &j [byte], label: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var p = buffer.append(heap, page, "<div style=\"flex:1;min-width:0\"><h2>");
+    var p = buffer.append(heap, page, "<div class=cell><h2>");
     p = buffer.append(heap, p, label);
     p = buffer.append(heap, p, "</h2>");
     let (known, state) = results.state_word(heap, fs, dir, jid);
@@ -76,12 +76,12 @@ fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir:
     buffer.drop(heap, state);
     if done {
         if results.has_out(heap, fs, dir, jid, "edited.png") {
-            p = buffer.append(heap, p, "<img alt=\"the result\" style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, "<img alt=\"the result\" src=/files/");
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/edited.png>");
         }
         if results.has_out(heap, fs, dir, jid, "video.mp4") {
-            p = buffer.append(heap, p, "<video controls loop style=\"max-width:100%\" src=/files/");
+            p = buffer.append(heap, p, "<video controls loop src=/files/");
             p = buffer.append(heap, p, jid);
             p = buffer.append(heap, p, "/video.mp4></video>");
         }
@@ -142,11 +142,11 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
             buffer.drop(heap, s2);
         }
     }
-    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8>");
+    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css>");
     if active {
         page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
     }
-    page = buffer.append(heap, page, "<title>cancho-studio: compare</title><h1>left or right</h1><p>Two jobs ran the same request with the same seed. One used the prompt as it was written, the other a rewritten one. Which is which is hidden until you choose.</p><div style=\"display:flex;gap:1rem\">");
+    page = buffer.append(heap, page, "<title>cancho-studio: compare</title><h1>left or right</h1><p>Two jobs ran the same request with the same seed. One used the prompt as it was written, the other a rewritten one. Which is which is hidden until you choose.</p><div class=grid>");
     borrow left as &lb2 in {
         page = cell(heap, page, fs, dir, buffer.bytes(lb2), "left");
     }
@@ -415,7 +415,7 @@ pub fn index[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap
         }
     }
     buffer.drop(heap, text);
-    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><title>cancho-studio: comparisons</title><h1>comparisons</h1><p>video: the rewritten prompt won ");
+    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><title>cancho-studio: comparisons</title><h1>comparisons</h1><p>video: the rewritten prompt won ");
     page = buffer.push_nat(heap, page, won);
     page = buffer.append(heap, page, ", the prompt as written won ");
     page = buffer.push_nat(heap, page, lost);

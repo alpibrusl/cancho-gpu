@@ -290,6 +290,7 @@ row '/files/{id}/{name}' GET /files/x/log
 row '/sets/{id}' GET /sets/1
 row '/sets/{id}' GET /sets/x
 row /app.js GET /app.js
+row /style.css GET /style.css
 row / GET /
 row /openapi.json GET /openapi.json
 row / GET / -H 'Host: rebinding.example:18094'
@@ -521,5 +522,10 @@ echo failed 3 > "$R/off/$((VF + 1)).state"; rm -f "$R/off/out/$((VF + 1))/video.
 check "variations: one failed shows as it is and the others stay" "$(cget /sets/$VF | grep -o '<p>failed 3</p>' | wc -l | tr -d ' ') $(cget /sets/$VF | grep -o '<video' | wc -l | tr -d ' ')" "1 2"
 check "variations: /sets of a job that is not the first of a set: 404" "$(cget /sets/$((VF + 1)) | tail -c 4)" " 404"
 check "variations: /sets of an id that is not digits: 422" "$(cget /sets/x1 | tail -c 4)" " 422"
+check "style: /style.css is served as CSS" "$(curl -s -D - -o /dev/null -H "$(hdr)" localhost:18097/style.css | tr -d '\r' | grep -i '^content-type' | tr 'A-Z' 'a-z')" "content-type: text/css; charset=utf-8"
+check "style: ...and holds the card and the grid the pages use" "$(curl -s -H "$(hdr)" localhost:18097/style.css | grep -o '\.cell{\|\.grid{\|prefers-color-scheme:dark' | sort -u | tr '\n' ' ')" ".cell{ .grid{ prefers-color-scheme:dark "
+check "style: ...and needs the token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/style.css)" 401
+check "style: the set page links it and is mobile-ready" "$(cget /sets/$VF | grep -c 'href=/style.css') $(cget /sets/$VF | grep -c 'name=viewport')" "1 1"
+check "style: every page the server writes links it (jobs, a job, a set, compare index, the edit form)" "$(for u in /jobs /jobs/$VF /sets/$VF /compare /edit; do cget $u | grep -c 'href=/style.css'; done | tr '\n' ' ')" "1 1 1 1 1 "
 check "variations: /sets with no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/sets/$VF)" 401
 exit $fail

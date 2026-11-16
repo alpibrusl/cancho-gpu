@@ -150,7 +150,7 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
         active = bytes.equal(buffer.bytes(sb), "queued") || bytes.equal(buffer.bytes(sb), "running");
         done = bytes.equal(buffer.bytes(sb), "done");
     }
-    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8>");
+    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css>");
     if active {
         page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
     }
@@ -191,12 +191,12 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     buffer.drop(heap, flag);
     if done {
         if has_out(heap, fs, dir, id, "edited.png") {
-            page = buffer.append(heap, page, "<p><img alt=\"the edited picture\" style=\"max-width:100%\" src=/files/");
+            page = buffer.append(heap, page, "<p><img alt=\"the edited picture\" src=/files/");
             page = buffer.append(heap, page, id);
             page = buffer.append(heap, page, "/edited.png></p>");
         }
         if has_out(heap, fs, dir, id, "video.mp4") {
-            page = buffer.append(heap, page, "<p><video controls loop style=\"max-width:100%\" src=/files/");
+            page = buffer.append(heap, page, "<p><video controls loop src=/files/");
             page = buffer.append(heap, page, id);
             page = buffer.append(heap, page, "/video.mp4></video></p>");
         }
@@ -215,7 +215,7 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
 
 // `GET /jobs`: the jobs in `queue`, newest first (the 200 last), each a link to its page and its state.
 pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><title>cancho-studio jobs</title><h1>jobs</h1><ul>");
+    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><title>cancho-studio jobs</title><h1>jobs</h1><ul>");
     var text = buffer.empty(heap, 8);
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     borrow qp as &q in {
@@ -286,6 +286,11 @@ pub fn site_file[&h, &f, &s, &n](heap: &!h Heap, fs: &f Fs(""), site: &s [byte],
 }
 
 // The media type for a name of the closed list, or "" for a name that is not on it.
+// The one stylesheet of the pages the server writes (`GET /style.css`): a system font, a card for each result, light and dark by the browser's setting, no script, no outside file.
+pub fn css() -> [] &static [byte] {
+    return ":root{--bg:#f6f7f9;--fg:#1c2330;--muted:#5b6678;--card:#fff;--line:#e2e6ec;--accent:#4f46e5;--accent-fg:#fff}@media(prefers-color-scheme:dark){:root{--bg:#0f1218;--fg:#e6e9ef;--muted:#9aa4b5;--card:#171b24;--line:#272d3a;--accent:#8b83ff;--accent-fg:#10121a}}*{box-sizing:border-box}body{margin:0 auto;max-width:64rem;padding:2rem 1rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}h1{font-size:1.7rem;margin:0 0 .6rem;letter-spacing:-.02em}h2{font-size:1rem;margin:0 0 .7rem}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}p{margin:.5rem 0;color:var(--muted)}b{color:var(--fg)}img,video{display:block;max-width:100%;height:auto;border-radius:10px;border:1px solid var(--line)}ul{list-style:none;padding:0;margin:1rem 0;display:grid;gap:.5rem}li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.65rem .9rem}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem;margin:1.25rem 0}.cell{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1rem;box-shadow:0 1px 2px rgba(0,0,0,.05)}.cell h2 a{color:var(--fg)}form{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1rem 1.25rem;margin:1rem 0;max-width:40rem}label{display:grid;gap:.3rem;font-size:.9rem;color:var(--muted)}input,select,textarea,button{font:inherit;color:inherit}input:not([type=file]),select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.5rem .7rem;width:100%}button{background:var(--accent);color:var(--accent-fg);border:0;border-radius:8px;padding:.55rem 1.1rem;cursor:pointer;font-weight:600}button:hover{filter:brightness(1.1)}code{background:var(--card);border:1px solid var(--line);border-radius:5px;padding:.05rem .3rem}";
+}
+
 pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
     if bytes.equal(name, "edited.png") {
         return "image/png";

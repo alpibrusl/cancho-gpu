@@ -156,6 +156,16 @@
         }
       }
     },
+    "/style.css": {
+      "get": {
+        "summary": "The stylesheet of the pages the server writes (/jobs, /jobs/{id}, /sets/{id}, /compare, /edit): light and dark by the browser's setting, no script.",
+        "responses": {
+          "200": { "description": "CSS", "content": { "text/css": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
     "/sets/{id}": {
       "get": {
         "summary": "A set of variations (made by `variations`): the results of its jobs side by side, each with its seed and state; refreshes every 5 s while a job is queued or running. The id is the set's first job.",
