@@ -69,7 +69,7 @@ Whether to keep the person's language or write English, and whether `think: true
 
 ## 7. What it costs (to be measured, not guessed)
 
-Each rewritten job pays the model's load and generation: **[estimate]** from tens of seconds to minutes for a 16 GiB model from disk, before the job's own 44 s (video) or 90 s (edit) (`docs/cli.md`, `docs/diffusion.md`). Nothing here has been timed. R2 measures it, cold and warm, and the number goes in this section.
+Each rewritten job pays the model's load and generation, before the job's own 44 s (video) or 90 s (edit) (`docs/cli.md`, `docs/diffusion.md`). **Corrected in place:** an earlier version of this section estimated "tens of seconds to minutes". **[measured]** (section 10, once each, 2026-11-16) a call took **3 to 7 s** in all, of which the model's load was 3.4 s, 1.1 s and 1.1 s and the generation 33 to 100 tokens. That was with the model's files very probably in the operating system's cache (they had been read before; not checked), so **the cold start from disk is still unmeasured** and the estimate stands for it.
 
 ## 8. How "improves" will be decided
 
@@ -87,3 +87,29 @@ Written before any rewritten result exists. **Null hypothesis: rewriting does no
 * **Language.** Keep the person's language or always write English.
 * **A large picture.** The picture is sent as it is (up to 16 MiB, so about 21 MB of base64 in the JSON); there is no image decoder in cancho to shrink it, and Ollama resizes on its side. R2 measures whether that is a problem.
 * **Whether Ollama should be bound to the loopback** (section 2).
+
+## 10. An exploratory run with imprecise prompts (measured, 2026-11-16; not the evaluation)
+
+Three requests, **one run each**, to Ollama's `/api/chat` with `qwen3.8:27b-mlx`, the two draft system prompts of section 5 exactly as written, `think: false`, `keep_alive: 0`, temperature 0.3, at most 400 tokens. The picture of the edit is **synthetic** (128 x 96: a green-to-orange gradient with a white rectangle, made for this), not anyone's photograph. This is an anecdote of three: it shows what the layer does and what its drafts get wrong; it says nothing about whether the results are better (section 8 is how that is decided).
+
+| kind | the person's prompt | model's load | answer in all | tokens | what it wrote |
+|---|---|---|---|---|---|
+| video | "something nice with water" | 3.4 s | 7.3 s | 88 | a clear stream over smooth stones in a sunlit forest, a slow pan across the surface, ripples, dappled light, a peaceful, meditative style |
+| video | "a dog" | 1.1 s | 3.5 s | 100 | a golden retriever on a sun-dappled park bench, tail wagging, a steady medium shot, warm afternoon light, shallow depth of field, "No other subjects appear.", the dog "remains still, gazing directly into the lens" |
+| edit | "make it better" | 1.1 s | 3.2 s | 33 | "Replace the plain white rectangle with a soft, semi-transparent frosted-glass panel featuring a subtle drop shadow. Keep the existing green-to-orange gradient background completely unchanged." |
+
+`/api/ps` was empty before and after: `keep_alive: 0` unloaded the model (D6's "[to measure]", measured for this model).
+
+**What it shows**
+
+* **The model sees the picture.** The edit's answer names the white rectangle and the green-to-orange gradient, both true of the synthetic image: the vision path works through `images`.
+* **It is fast** when warm (3 to 7 s a call; section 7).
+* **For a vague request it invents, and commits.** "Something nice with water" became a forest stream; "a dog" became a golden retriever on a bench; "make it better" became one specific change (frosted glass), chosen by the model, not asked for. That is the layer's purpose for a vague prompt, and also its risk: the person did not choose any of it. The page must show the rewritten prompt (D5) so that it can be seen.
+
+**What the drafts get wrong, to fix in R2 on the development set (nothing has been changed yet)**
+
+1. **The video draft asks for no motion**, and "a dog" came out as a dog that "remains still". A text-to-video model needs the action; the draft must ask for what moves.
+2. **A rule of the system prompt leaked into the answer** ("No other subjects appear."): the model repeated the instruction "add no new subject" as content. The rule should be stated so that it cannot be echoed, or removed if it does not help.
+3. **"Keep every fact ... and add no new subject"** is in tension with what a vague request needs; whether to allow invention for a vague prompt is a decision (section 9), not something the draft settles by accident.
+
+**Not shown:** whether any of these three, run through the generator, is better than the original prompt; the cold start from disk; the behaviour with a real photograph or a long prompt; the variation between runs (one run each at temperature 0.3).
