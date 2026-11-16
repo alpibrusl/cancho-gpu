@@ -2,6 +2,7 @@ edition 9;
 
 import std.buffer;
 import std.bytes;
+import std.dirs;
 import std.io;
 import files;
 
@@ -96,8 +97,86 @@ fn started[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i
     return yes;
 }
 
+// What stays of a job's `out/<id>/`: the results the page shows and the prompt. `frames/` is a directory and is not touched here.
+fn keep[&n](name: &n [byte]) -> [] bool {
+    return bytes.equal(name, "edited.png") || bytes.equal(name, "video.mp4") || bytes.equal(name, "video.gif") || bytes.equal(name, "prompt.txt");
+}
+
+// Remove the regular files of `dir` that are not kept (`all`: every one); the number removed. A link is not a regular file: it is left, and never followed.
+fn clear[&h, &d](heap: &!h Heap, dir: &d Dir, all: bool) -> [heap, dir_read, dir_write] int {
+    var removed = 0;
+    let names = dirs.list(heap, dir, 10000);
+    borrow names as &nr in {
+        var k = 0;
+        while k < dirs.count(nr) {
+            let nm = dirs.name(nr, k);
+            if dirs.kind(nr, k) == dirs.kind_file() && (all || keep(nm) == false) {
+                match dir_remove(dir, nm) {
+                    Done::Ok(n) => {
+                        removed = removed + 1;
+                    }
+                    Done::Failed(e) => {
+                    }
+                }
+            }
+            k = k + 1;
+        }
+    }
+    dirs.drop(heap, names);
+    return removed;
+}
+
+// After a job that is `done`: what `media` left in `<data>/out/<id>` that is not a result is removed (its session's work files: 1.1 GB in `vae/` and 0.2 GB beside the results for a 17-frame video,
+// measured on a real job). The results stay (`keep`), `frames/` stays, and every other subdirectory is emptied of its files (one level; a directory cannot be removed with `unlinkat` as it is
+// called here, so the empty one stays). Answers how many files were removed, -1 if the directory could not be opened. Beneath a `Dir` handle: a name is one component and a link is removed, never followed.
+fn tidy[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), dir_read, dir_write] int {
+    var removed = 0 - 1;
+    var p = buffer.append(heap, buffer.empty(heap, 64), dir);
+    p = buffer.append(heap, p, "/out/");
+    p = buffer.append(heap, p, id);
+    borrow p as &pb in {
+        if files.path_ok(fs, buffer.bytes(pb)) {
+            match open_dir(fs, buffer.bytes(pb)) {
+                DirOpened::Ok(o) => {
+                    var handle = o;
+                    borrow handle as &dr in {
+                        removed = clear(heap, dr, false);
+                        let names = dirs.list(heap, dr, 10000);
+                        borrow names as &nr in {
+                            var k = 0;
+                            while k < dirs.count(nr) {
+                                let nm = dirs.name(nr, k);
+                                if dirs.kind(nr, k) == dirs.kind_directory() && bytes.equal(nm, "frames") == false {
+                                    match dir_enter(dr, nm) {
+                                        DirOpened::Ok(so) => {
+                                            var sub = so;
+                                            borrow sub as &sr in {
+                                                removed = removed + clear(heap, sr, true);
+                                            }
+                                            dir_close(sub);
+                                        }
+                                        DirOpened::Failed(e) => {
+                                        }
+                                    }
+                                }
+                                k = k + 1;
+                            }
+                        }
+                        dirs.drop(heap, names);
+                    }
+                    dir_close(handle);
+                }
+                DirOpened::Failed(e) => {
+                }
+            }
+        }
+    }
+    buffer.drop(heap, p);
+    return removed;
+}
+
 // One pending job: 0 when it ran to the end and exited 0, else the code (3: no argument file, 4: the log could not be opened).
-fn job[&h, &f, &x, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec("")] int {
+fn job[&h, &f, &x, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), dir_read, dir_write] int {
     var status = 3;
     let argv_path = named(heap, dir, id, "argv");
     var list = buffer.empty(heap, 8);
@@ -140,6 +219,24 @@ fn job[&h, &f, &x, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(
                         }
                         buffer.drop(heap, line);
                         status = code;
+                        if code == 0 {
+                            let gone = tidy(heap, fs, dir, id);
+                            var note = buffer.append(heap, buffer.empty(heap, 48), "studio: removed ");
+                            var shown = gone;
+                            if shown < 0 {
+                                shown = 0;
+                            }
+                            note = buffer.push_nat(heap, note, shown);
+                            note = buffer.append(heap, note, " work files from out/");
+                            note = buffer.append(heap, note, id);
+                            note = buffer.push(heap, note, byte_of(10));
+                            if gone >= 0 {
+                                borrow note as &nb in {
+                                    files.append_all(fs, buffer.bytes(lp), buffer.bytes(nb));
+                                }
+                            }
+                            buffer.drop(heap, note);
+                        }
                     }
                     Opened::Failed(er) => {
                         put(heap, fs, dir, id, "state", "failed 254\n");
@@ -154,7 +251,7 @@ fn job[&h, &f, &x, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(
 }
 
 // The queue, once: every id in it that has no state yet is run. The number of jobs run.
-fn drain[&h, &f, &x, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec("")] int {
+fn drain[&h, &f, &x, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), dir_read, dir_write] int {
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     var text = buffer.empty(heap, 8);
     borrow qp as &q in {
@@ -205,7 +302,7 @@ fn seconds_of[&t](text: &t [byte]) -> [] int {
 }
 
 // Drain, wait, drain, until a signal: 0 when stopped by one, 5 if the wait failed.
-fn keep_going[&h, &f, &x, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], poller: &!p Poller, watch: &!w SignalWatch, seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), signals_read, poll] int {
+fn keep_going[&h, &f, &x, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], poller: &!p Poller, watch: &!w SignalWatch, seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), dir_read, dir_write, signals_read, poll] int {
     var status = 0;
     var stop = false;
     let events = box_slice(heap, 8, 0);
