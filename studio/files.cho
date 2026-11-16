@@ -204,3 +204,38 @@ pub fn append_all[&f, &p, &t](fs: &f Fs(""), path: &p [byte], text: &t [byte]) -
     }
     return status;
 }
+
+// Write `text` to `path` (made or emptied), as many writes as it takes: 0, an errno, -1 for a write that made no progress, -2 for a path not ok. For a picture of megabytes, where `write_all`'s one write may be short.
+pub fn write_big[&f, &p, &t](fs: &f Fs(""), path: &p [byte], text: &t [byte]) -> [fs_write(""), file_write] int {
+    if path_ok(fs, path) == false {
+        return 0 - 2;
+    }
+    var status = 0;
+    match open_write(fs, path) {
+        Opened::Failed(e) => {
+            status = e;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var at = 0;
+            borrow mut file as &!x in {
+                while at < len(text) && status == 0 {
+                    match file_write(x, text[at..len(text)]) {
+                        Done::Ok(n) => {
+                            if n <= 0 {
+                                status = 0 - 1;
+                            } else {
+                                at = at + n;
+                            }
+                        }
+                        Done::Failed(e) => {
+                            status = e;
+                        }
+                    }
+                }
+            }
+            file_close(file);
+        }
+    }
+    return status;
+}

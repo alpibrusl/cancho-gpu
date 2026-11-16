@@ -32,6 +32,32 @@
         }
       }
     },
+    "/edit": {
+      "get": {
+        "summary": "A form (HTML, no JavaScript) to edit a picture chosen in the browser.",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "post": {
+        "summary": "Queue an edit of an uploaded picture: the picture is kept as <data>/upload-N.jpg, .png or .webp (by its first bytes) and a job is made as POST /api/jobs makes it. The one POST that is not JSON.",
+        "requestBody": {
+          "required": true,
+          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
+        },
+        "responses": {
+          "302": { "description": "Queued: Location /jobs/N." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "413": { "description": "The request is over 16 MiB.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "500": { "description": "The queue could not be read or the picture could not be saved.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/openapi.json": {
       "get": {
         "summary": "This document, from the site directory.",

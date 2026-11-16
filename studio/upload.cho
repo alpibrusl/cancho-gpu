@@ -1,0 +1,268 @@
+edition 9;
+
+module upload;
+
+import std.buffer;
+import std.bytes;
+import files;
+import jobs;
+
+// `upload` -- a picture chosen in the browser, for an edit (docs/studio.md, "Editing a picture chosen in the page").
+//
+//   GET  /edit    a form the server writes: the instruction, a seed, a file; no JavaScript
+//   POST /edit    `multipart/form-data` with the parts `prompt`, `seed` (optional) and `image`; the picture is kept as `<data>/upload-N.<jpg|png|webp>`, a job is made as `POST /api/jobs` would
+//                 make it (`jobs.create`, so the same refusals) and the answer is `302 /jobs/N`
+//
+// The whole body is in memory: the server's input buffer is 16 MiB (`server.open`), a bigger request is a 413 from the package. A part is found by its header (`name="..."`), never by position, and its
+// content ends at the next delimiter. Nothing from the client is a path: the file name the browser sends is not read, and the name kept is built from a number the server made and an extension chosen
+// by the picture's first bytes (JPEG, PNG or WebP; anything else is refused, whatever its name or `Content-Type` says).
+
+pub fn form_page() -> [] &static [byte] {
+    return "<!doctype html><meta charset=utf-8><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
+}
+
+// (from, to) of the boundary in a `Content-Type` value, or (-1, -1) for none, an empty one or one over 70 bytes.
+fn boundary_of[&t](ctype: &t [byte]) -> [] (int, int) {
+    let at = bytes.find(ctype, "boundary=");
+    if at < 0 {
+        return (0 - 1, 0 - 1);
+    }
+    var from = at + 9;
+    var stop = 59;
+    if from < len(ctype) && int_of(ctype[from]) == 34 {
+        from = from + 1;
+        stop = 34;
+    }
+    var to = from;
+    while to < len(ctype) && int_of(ctype[to]) != stop {
+        to = to + 1;
+    }
+    if to - from < 1 || to - from > 70 {
+        return (0 - 1, 0 - 1);
+    }
+    return (from, to);
+}
+
+// Is `name="<want>"` the field name in this part header? (`filename="..."` also contains `name="`: it counts only after a space or a semicolon.)
+fn named[&t, &w](header: &t [byte], want: &w [byte]) -> [] bool {
+    var at = 0;
+    while at < len(header) {
+        let k = bytes.find(header[at..len(header)], "name=\"");
+        if k < 0 {
+            return false;
+        }
+        let pos = at + k;
+        if pos > 0 && (int_of(header[pos - 1]) == 32 || int_of(header[pos - 1]) == 59) {
+            var end = pos + 6;
+            while end < len(header) && int_of(header[end]) != 34 {
+                end = end + 1;
+            }
+            if end < len(header) && bytes.equal(header[pos + 6..end], want) {
+                return true;
+            }
+        }
+        at = pos + 6;
+    }
+    return false;
+}
+
+// The content of the part named `want`: (from, to), or (-1, -1) if there is none or the body is not well formed. `delim` is `--<boundary>`.
+fn part[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte]) -> [] (int, int) {
+    var at = 0;
+    while at < len(body) {
+        let p = bytes.find(body[at..len(body)], delim);
+        if p < 0 {
+            return (0 - 1, 0 - 1);
+        }
+        let start = at + p + len(delim);
+        if start + 2 > len(body) {
+            return (0 - 1, 0 - 1);
+        }
+        if int_of(body[start]) == 45 && int_of(body[start + 1]) == 45 {
+            return (0 - 1, 0 - 1);
+        }
+        let hs = start + 2;
+        let he = bytes.find(body[hs..len(body)], "\r\n\r\n");
+        if he < 0 {
+            return (0 - 1, 0 - 1);
+        }
+        let cs = hs + he + 4;
+        let nx = bytes.find(body[cs..len(body)], delim);
+        if nx < 2 {
+            return (0 - 1, 0 - 1);
+        }
+        let ce = cs + nx - 2;
+        if named(body[hs..hs + he], want) {
+            return (cs, ce);
+        }
+        at = cs + nx;
+    }
+    return (0 - 1, 0 - 1);
+}
+
+// 1 JPEG, 2 PNG, 3 WebP, 0 neither: by the first bytes.
+fn kind_of[&t](head: &t [byte]) -> [] int {
+    if len(head) >= 3 && int_of(head[0]) == 255 && int_of(head[1]) == 216 && int_of(head[2]) == 255 {
+        return 1;
+    }
+    if len(head) >= 4 && int_of(head[0]) == 137 && int_of(head[1]) == 80 && int_of(head[2]) == 78 && int_of(head[3]) == 71 {
+        return 2;
+    }
+    if len(head) >= 12 && bytes.equal(head[0..4], "RIFF") && bytes.equal(head[8..12], "WEBP") {
+        return 3;
+    }
+    return 0;
+}
+
+// `text` as the inside of a JSON string: a quote or a backslash is escaped, nothing else changes (control characters were refused before).
+fn quoted[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    var out = b;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 34 || c == 92 {
+            out = buffer.push(heap, out, byte_of(92));
+        }
+        out = buffer.push(heap, out, byte_of(c));
+        i = i + 1;
+    }
+    return out;
+}
+
+fn no_controls[&t](text: &t [byte]) -> [] bool {
+    var i = 0;
+    while i < len(text) {
+        if int_of(text[i]) < 32 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn all_digits[&t](text: &t [byte]) -> [] bool {
+    if len(text) == 0 || len(text) > 10 {
+        return false;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return false;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n <= 2147483647;
+}
+
+// The id in `{"id":N}`, or 0.
+fn id_in[&t](answer: &t [byte]) -> [] int {
+    var n = 0;
+    var i = 6;
+    while i < len(answer) && int_of(answer[i]) >= 48 && int_of(answer[i]) <= 57 {
+        n = n * 10 + (int_of(answer[i]) - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// Handle a POST /edit. (status, text, id): 302 with the job's id and an empty text, or the status `jobs.create` or this function refuses with and a one-line JSON `{"error": ..}`.
+pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer, int) {
+    var status = 422;
+    var why = "a multipart/form-data body with a boundary is needed";
+    var answer = buffer.empty(heap, 8);
+    var made = 0;
+    let (bf, bt) = boundary_of(ctype);
+    if bf >= 0 {
+        why = "the form is not well formed";
+        var delim = buffer.append(heap, buffer.empty(heap, 80), "--");
+        delim = buffer.append(heap, delim, ctype[bf..bt]);
+        borrow delim as &db in {
+            let dl = buffer.bytes(db);
+            let (pf, pt) = part(body, dl, "prompt");
+            let (sf, st) = part(body, dl, "seed");
+            let (imf, imt) = part(body, dl, "image");
+            var kind = 0;
+            if imf >= 0 && imt - imf >= 16 {
+                kind = kind_of(body[imf..imt]);
+            }
+            if pf < 0 || pt - pf < 1 || pt - pf > 1000 {
+                why = "prompt is a text of 1 to 1000 bytes";
+            } else if no_controls(body[pf..pt]) == false {
+                why = "the prompt has no control characters";
+            } else if imf < 0 || imt - imf < 16 {
+                why = "a picture is needed";
+            } else if kind == 0 {
+                why = "the picture is not a JPEG, PNG or WebP file";
+            } else if sf >= 0 && st > sf && all_digits(body[sf..st]) == false {
+                why = "seed is an integer from 0 to 2147483647";
+            } else {
+                let id = jobs.next_id(heap, fs, dir);
+                status = 500;
+                if id == 0 {
+                    why = "the queue could not be read";
+                } else {
+                    var path = buffer.append(heap, buffer.empty(heap, 96), dir);
+                    path = buffer.append(heap, path, "/upload-");
+                    path = buffer.push_nat(heap, path, id);
+                    if kind == 1 {
+                        path = buffer.append(heap, path, ".jpg");
+                    } else if kind == 2 {
+                        path = buffer.append(heap, path, ".png");
+                    } else {
+                        path = buffer.append(heap, path, ".webp");
+                    }
+                    var saved = 0 - 1;
+                    borrow path as &pb in {
+                        if len(buffer.bytes(pb)) <= 390 {
+                            saved = files.write_big(fs, buffer.bytes(pb), body[imf..imt]);
+                        }
+                    }
+                    if saved != 0 {
+                        why = "the picture could not be saved";
+                    } else {
+                        var json = buffer.append(heap, buffer.empty(heap, 256), "{\"kind\":\"edit\",\"prompt\":\"");
+                        json = quoted(heap, json, body[pf..pt]);
+                        json = buffer.append(heap, json, "\",\"image\":\"");
+                        borrow path as &pb2 in {
+                            json = quoted(heap, json, buffer.bytes(pb2));
+                        }
+                        json = buffer.append(heap, json, "\"");
+                        if sf >= 0 && st > sf {
+                            json = buffer.append(heap, json, ",\"seed\":");
+                            json = buffer.append(heap, json, body[sf..st]);
+                        }
+                        json = buffer.append(heap, json, "}");
+                        borrow json as &jb in {
+                            let (cst, reply) = jobs.create(heap, fs, dir, buffer.bytes(jb));
+                            buffer.drop(heap, answer);
+                            answer = reply;
+                            status = cst;
+                            why = "";
+                        }
+                        buffer.drop(heap, json);
+                        if status == 202 {
+                            borrow answer as &ab in {
+                                made = id_in(buffer.bytes(ab));
+                            }
+                            buffer.drop(heap, answer);
+                            answer = buffer.empty(heap, 8);
+                            status = 302;
+                        }
+                    }
+                    buffer.drop(heap, path);
+                }
+            }
+        }
+        buffer.drop(heap, delim);
+    }
+    if len(why) > 0 {
+        buffer.drop(heap, answer);
+        answer = buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"");
+        answer = buffer.append(heap, answer, why);
+        answer = buffer.append(heap, answer, "\"}");
+    }
+    return (status, answer, made);
+}

@@ -108,6 +108,7 @@ component Studio {
             Button { label: "Start" on: Start disabled: blocked }
             Text { role: status "{note}" }
             Text { "job {job}: {job_state}" }
+            Text { "To edit a picture from this computer instead of naming a path, open /edit on this server." }
             Text { "Result of job {job}: open /jobs/{job} on this server. All jobs: /jobs." }
         }
     }
