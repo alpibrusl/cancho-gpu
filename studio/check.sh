@@ -31,6 +31,37 @@ check "job 1 not run twice (log unchanged)" "$(wc -l < "$T/1.log" | tr -d ' ')" 
 rc=0; build/studio_worker 2>/dev/null || rc=$?; check "usage: exit 2" "$rc" 2
 rc=0; build/studio_worker "$T/fake.sh" /Users/test relative/dir 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 3
 
+# The worker in a loop (`--every`): a job that arrives later is run; TERM while it waits stops it at once (exit 0); TERM during a job lets that job end first.
+L=$(mktemp -d)
+printf '#!/bin/sh\nif [ "$1" = slow ]; then sleep 2; fi\necho "ran $1"\nexit 0\n' > "$L/fake.sh"
+chmod +x "$L/fake.sh"
+printf 'video\0one\0' > "$L/1.argv"; printf '1\n' > "$L/queue"
+build/studio_worker "$L/fake.sh" /Users/test "$L" --every 30 &
+WP=$!
+sleep 1
+check "loop: the job in the queue ran" "$(cat "$L/1.state")" done
+printf 'video\0two\0' > "$L/2.argv"; printf '1\n2\n' > "$L/queue"
+sleep 0.5
+check "loop: waiting (30 s), a later job is not run yet" "$(ls "$L/2.state" 2>/dev/null | wc -l | tr -d ' ')" 0
+kill -TERM $WP
+rc=0; wait $WP || rc=$?
+check "loop: TERM while waiting: exit 0" "$rc" 0
+build/studio_worker "$L/fake.sh" /Users/test "$L" --every 1 &
+WP=$!
+sleep 1.5
+check "loop: a job that arrived while it was stopped runs on the next drain" "$(cat "$L/2.state")" done
+printf 'slow\0three\0' > "$L/3.argv"; printf '1\n2\n3\n' > "$L/queue"
+sleep 1.2
+check "loop: slow job started" "$(cat "$L/3.state")" running
+kill -TERM $WP
+rc=0; wait $WP || rc=$?
+check "loop: TERM during a job: exit 0" "$rc" 0
+check "loop: ...and the job ended first" "$(cat "$L/3.state")" done
+check "loop: its output was kept" "$(cat "$L/3.log")" "ran slow"
+rc=0; build/studio_worker "$L/fake.sh" /Users/test "$L" --every 0 2>/dev/null || rc=$?; check "loop: --every 0 is usage (exit 2)" "$rc" 2
+rc=0; build/studio_worker "$L/fake.sh" /Users/test "$L" --every abc 2>/dev/null || rc=$?; check "loop: --every abc is usage (exit 2)" "$rc" 2
+rm -rf "$L"
+
 # The server, the queue and the worker together, with a fake `media` that prints its arguments (port 18091).
 printf '#!/bin/sh\nfor a in "$@"; do echo "[$a]"; done\n[ "$1" = edit ] && exit 3\nexit 0\n' > "$T/media"
 chmod +x "$T/media"

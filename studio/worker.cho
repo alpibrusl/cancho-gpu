@@ -1,14 +1,18 @@
 edition 9;
 
 import std.buffer;
+import std.bytes;
 import std.io;
 import files;
 
 // studio_worker -- runs one job: docs/studio.md, slice 2.
 //
-//   studio_worker <script> <home> <data-dir>
+//   studio_worker <script> <home> <data-dir>                 drain the queue once and exit
+//   studio_worker <script> <home> <data-dir> --every <s>     drain it, wait up to <s> seconds (1-3600), drain again, until INT or TERM
 //
-// Drains the queue once and exits (run it in a loop, as cancho-ota's worker is: `while :; do studio_worker ...; sleep 2; done`). `<data-dir>/queue`
+// With `--every` the worker holds INT and TERM (`Signals("INT,TERM")`: the authority report names them): a signal that arrives while a job runs does not
+// kill it, the worker stops once that job has ended, and one that arrives while it waits stops it at once (the signal wakes the `Poller` it waits on).
+// `<data-dir>/queue` is read again at every drain. `<data-dir>/queue`
 // is written by the server alone, one job id (decimal digits, at most 9) a line; a job is pending when `<data-dir>/<id>.state` does not exist.
 // Jobs run one after another: the GPU takes one. For each pending job, `<data-dir>/<id>.argv` holds the argument list of `<script>` (the studio's `media`), each entry followed by a NUL, as the server wrote it after
 // `std.process.add` had refused any entry with a NUL in it. The worker starts `<script>` on that list, its output and errors written to
@@ -180,31 +184,133 @@ fn drain[&h, &f, &x, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""
     return ran;
 }
 
+fn seconds_of[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 4 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    if n < 1 || n > 3600 {
+        return 0 - 1;
+    }
+    return n;
+}
+
+// Drain, wait, drain, until a signal: 0 when stopped by one, 5 if the wait failed.
+fn keep_going[&h, &f, &x, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), script: &s [byte], home: &m [byte], dir: &d [byte], poller: &!p Poller, watch: &!w SignalWatch, seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec(""), signals_read, poll] int {
+    var status = 0;
+    var stop = false;
+    let events = box_slice(heap, 8, 0);
+    var spare = events;
+    while stop == false {
+        drain(heap, fs, exec, script, home, dir);
+        if signals_pending(watch) != 0 {
+            stop = true;
+        } else {
+            var n = 0;
+            borrow mut spare as &!eb in {
+                n = poller_wait(poller, contents(eb), seconds * 1000);
+            }
+            if n < 0 {
+                status = 5;
+                stop = true;
+            }
+            if signals_pending(watch) != 0 {
+                stop = true;
+            }
+        }
+    }
+    unbox_slice(heap, spare);
+    return status;
+}
+
 fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
     release(ffi);
-    release(signals);
     release(tty);
     release(net);
     release(clock);
     var status = 2;
-    borrow args as &g in {
-        if arg_count(g) == 4 {
-            borrow fs as &f in {
-                borrow mut heap as &!h in {
-                    borrow exec as &xe in {
-                        status = 0;
-                        if files.path_ok(f, arg(g, 3)) {
-                            drain(h, f, xe, arg(g, 1), arg(g, 2), arg(g, 3));
-                        } else {
-                            status = 3;
+    var every = 0 - 1;
+    var looping = false;
+    borrow args as &g0 in {
+        if arg_count(g0) == 6 && bytes.equal(arg(g0, 4), "--every") {
+            looping = true;
+            every = seconds_of(arg(g0, 5));
+        }
+    }
+    if looping && every > 0 {
+        let hold = narrow(signals, "INT,TERM");
+        borrow hold as &hs in {
+            match signals_watch(hs) {
+                Watching::Ok(w) => {
+                    var watch = w;
+                    match poller_new() {
+                        Polling::Ok(pl) => {
+                            var poller = pl;
+                            borrow mut poller as &!pw in {
+                                borrow watch as &wr in {
+                                    poller_add_signals(pw, wr, 1);
+                                }
+                            }
+                            borrow args as &g in {
+                                borrow fs as &f in {
+                                    borrow mut heap as &!h in {
+                                        borrow exec as &xe in {
+                                            status = 3;
+                                            if files.path_ok(f, arg(g, 3)) {
+                                                borrow mut poller as &!pw2 in {
+                                                    borrow mut watch as &!wh in {
+                                                        status = keep_going(h, f, xe, arg(g, 1), arg(g, 2), arg(g, 3), pw2, wh, every);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            poller_close(poller);
+                        }
+                        Polling::Failed(e) => {
+                            status = 5;
+                        }
+                    }
+                    signals_close(watch);
+                }
+                Watching::Failed(e) => {
+                    status = 5;
+                }
+            }
+        }
+        release(hold);
+    } else {
+        release(signals);
+        borrow args as &g in {
+            if arg_count(g) == 4 && looping == false {
+                borrow fs as &f in {
+                    borrow mut heap as &!h in {
+                        borrow exec as &xe in {
+                            status = 0;
+                            if files.path_ok(f, arg(g, 3)) {
+                                drain(h, f, xe, arg(g, 1), arg(g, 2), arg(g, 3));
+                            } else {
+                                status = 3;
+                            }
                         }
                     }
                 }
-            }
-        } else {
-            borrow mut io as &!i in {
-                io.error_all(i, "usage: studio_worker <script> <home> <absolute data-dir>\n");
+            } else {
+                borrow mut io as &!i in {
+                    io.error_all(i, "usage: studio_worker <script> <home> <absolute data-dir> [--every <seconds 1-3600>]\n");
+                }
             }
         }
     }
