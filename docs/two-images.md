@@ -1,6 +1,6 @@
 # Combining two (or more) pictures in one edit (design, 2026-11-17)
 
-> **Status: design; the plan of section 5 of `docs/text-to-image.md` made concrete after reading the transformer's code. Nothing here is built or measured yet.** Claims are **[read]** (from `diffusers`' `transformer_qwenimage21.py` and `pipeline_qwenimage21.py` in the venv, and this repository's files; not run), **[reasoned]** or **[estimate]**. The owner asked (2026-11-16) for "combining two images in the input request".
+> **Status: built and measured for two pictures with conditions up to 960 x 960; **1024 x 1024 conditions give a wrong picture and are refused** (section 7); `media edit --also` runs it.** Claims are **[read]** (from `diffusers`' `transformer_qwenimage21.py` and `pipeline_qwenimage21.py` in the venv, and this repository's files; not run), **[reasoned]** or **[estimate]**. The owner asked (2026-11-16) for "combining two images in the input request".
 
 ## 1. What was read: the model takes N pictures
 
@@ -43,3 +43,32 @@ One model, two pictures of 512^2 to 1024^2 and one prompt; no float64 run of the
 ## 6. Order
 
 (1) This document. (2) `assemble` generalised (3 lines) and check 1, with the two mutants. (3) `build` and `positions` for N pictures and check 3. (4) The driver as a loop over pictures, the regression gate (one picture = today's PNG), check 2 and the first two-picture run at 512^2 conditions. (5) 1024^2 conditions: memory and time, check 4. (6) Only then `media edit` with several `IMAGE`s and the studio.
+
+## 7. Results (measured, 2026-11-17)
+
+**Built.** `tools/dit_edit_ref.py` `assemble` for N pictures (`block_len` from `SHAPES`); `tools/text_img_ref.py` `template_n`, `build` and `positions` for a list; `tests/edit_pipeline_gpu.py IMAGE WORK --also IMAGE2 ... [--condition-area PIXELS]` (a loop over the pictures for the tower, the VAE encoder and the resize); `media edit IMAGE "instruction" --also IMAGE2 [--condition-area N]`.
+**The regression gate passes: with one picture the driver's PNG is byte for byte the one `tests/edit_pipeline_gpu.py` of main writes** (`cmp`, same photograph, prompt and seed).
+
+**Checks of section 4.**
+1. **The transformer, two pictures of different shapes** (8 x 6 and 6 x 10 latent tokens, a target of 8 x 8, random rows): float64 against `QwenImage21Transformer2DModel` float32: **5.3e-6 of the rms** (mean abs 6.3e-6, max 1.2e-4). **Mutants refused:** the conditions as one block **4.7e-2** (8,800 times the baseline), the second picture's frame position not advanced **0.19**.
+2. **The vision tower: one run per picture equals the batched run:** read in the library (`cu_seqlens`) and held in float64: the float64 language model over two pictures (a tower per picture, concatenated) against `Qwen3VLForConditionalGeneration` float32 with both pictures through the processor: **9.9e-5 of the rms** (192 image pads, 39 text rows). **Not measured on the GPU's f16 tower separately** (the run below measures the whole).
+3. **The language model on the GPU with two pictures**, against the float64 run: text rows **6.3e-4 of the rms** (bound 5%); mutants **`pos1d` 0.137 and `no-deepstack` 0.117: both FAIL as required.**
+4. **The whole run against torch's BF16 pipeline** (`image=[fox, lighthouse]`, the same prompt "Place the red fox sitting on the rocks in front of the lighthouse at dusk", seed and noise), the pictures the text-to-image driver made, a 1024 x 1024 target:
+| conditions | tokens each | prefix rows (NP) | GPU against torch | floor (torch with the noise perturbed by 1e-3) | a step |
+|---|---|---|---|---|---|
+| 512 x 512 | 1,024 | 2,084 (4,096 padded) | **35.3 dB** | 45.4 dB | 7 s |
+| 768 x 768 | 2,304 | 4,644 (4,672) | **31.1 dB** | not run | 9 s |
+| 960 x 960 | 3,600 | 7,236 (7,296) | **20.8 dB** | 26.3 dB | 21 s |
+| 1024 x 1024 | 4,096 | 8,228 (8,256) | **9.6 dB: wrong** | | 26 s |
+**Looked at:** in every run the fox of the first picture sits on the rocks before the lighthouse of the second, and torch's does too. **At 960 x 960 the GPU's and torch's pictures are two good pictures of the same scene with the fox at a different size (the PSNR falls because the trajectory differs, not because one is corrupted; the floor of 26.3 dB says a perturbation of 1e-3 in the noise alone does that); the GPU is 5.5 dB below that floor, as at 512 (10 dB below), so "within the floor" is not claimed at any size.** At 512 the difference is in the fox's texture.
+
+**A real limit, found by this work, and refused.** With conditions of **1024 x 1024 the GPU's picture has a dark green cast and no error is reported** (mean RGB 48, 48, 24 against torch's 90, 107, 116). It is **not** a quality problem of larger conditions (torch is right at that size; the GPU is right at 960). The step's attention keeps the scores of 32 heads for NP query rows over 2 NP keys (`dit_scores_mma`: `sc` is `f32[nh * nq, t]`): 64 NP^2 elements: **3.4e9 at NP 7,296 (right), 4.4e9 at NP 8,256 (wrong), against 2^32 = 4.29e9**. The reading is a 32-bit index in the kernels; **that is consistent with all four runs and was not proven** (no kernel was run on the matrix directly). The 768 and 512 runs have 1.4e9 and 0.3e9. The prefix pass has 32 NP^2 elements (2.2e9 at 8,256), under the limit. **Now refused before any GPU work:** the driver exits 2 when the estimate (conditions' tokens + 128 text rows, padded) or the real NP gives 64 NP^2 >= 2^32, and `media edit --also` refuses `--condition-area` over 921600. **The fix that would remove the limit, and halve the time (a step is 21 s at 960 where a step of 4,096 query rows over 11 k keys should be about 10 s): the step computes its queries for NP rows (the target's 4,096 padded up to the prefix's length) instead of the target's own 4,096, in `tests/dit_edit_lib.py`: not done.**
+
+**Time (`media edit` with two pictures at 768 x 768, the default): 111 s for the command** (vision towers 5 + 4 s, language model 6 s, encoders 1 + 1 s, 8 steps and the prefix about 90 s, decoder 4 s). The estimate of section 3 (12 to 15 s a step at 1024^2) was wrong in both ways: the real step is 26 s and the picture is wrong there; at 768 it is 9 s.
+
+**What this does not show:** one prompt, one seed, two generated pictures (never a user's photograph); more than two pictures is **not run**; the f16 tower per picture against the batched torch tower was not measured separately; the studio and its API take one picture (**not changed**); no float64 run of the whole pipeline.
+
+**Commands**
+```
+scripts/media edit FIRST.png "Place the red fox sitting on the rocks in front of the lighthouse at dusk" --also SECOND.png -o out/combined --seed 3
+```
