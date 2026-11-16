@@ -1,0 +1,220 @@
+edition 9;
+
+module results;
+
+import std.buffer;
+import std.bytes;
+import files;
+
+// `results` -- what the browser sees of a job (docs/studio.md, route 3): a page the server writes, and the job's files by a closed list of names.
+//
+//   GET /jobs/N          HTML: the state, the result (an <img> or a <video>) when it is done, the log; refreshes itself while queued or running
+//   GET /files/N/NAME    NAME is one of edited.png, video.mp4, video.gif, log; never a path from the client
+//
+// `media` writes `<data>/out/N/{edited.png,video.mp4,video.gif}`; the worker writes `<data>/N.log`.
+
+fn id_ok[&i](id: &i [byte]) -> [] bool {
+    if len(id) == 0 || len(id) > 9 {
+        return false;
+    }
+    var k = 0;
+    while k < len(id) {
+        let c = int_of(id[k]);
+        if c < 48 || c > 57 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
+fn word_char(c: int) -> [] bool {
+    return (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 32;
+}
+
+// `<data>/N<tail>`
+fn job_path[&h, &d, &i, &t](heap: &!h Heap, dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, buffer.empty(heap, 64), dir);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, tail);
+    return p;
+}
+
+// `<data>/out/N/NAME`
+fn out_path[&h, &d, &i, &n](heap: &!h Heap, dir: &d [byte], id: &i [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, buffer.empty(heap, 64), dir);
+    p = buffer.append(heap, p, "/out/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    return p;
+}
+
+fn has_out[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
+    let p = out_path(heap, dir, id, name);
+    var yes = false;
+    borrow p as &pb in {
+        yes = files.exists(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
+// (known, the state word): `queued` when there is an argument file but no state yet; letters, digits and spaces only, so it can go into HTML as it is.
+fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (bool, buffer.Buffer) {
+    var word = buffer.empty(heap, 16);
+    var known = false;
+    let sp = job_path(heap, dir, id, ".state");
+    borrow sp as &sb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(sb));
+        borrow b as &br in {
+            let all = buffer.bytes(br);
+            if e == 0 && len(all) > 0 {
+                var stop = 0;
+                while stop < len(all) && word_char(int_of(all[stop])) {
+                    stop = stop + 1;
+                }
+                word = buffer.append(heap, word, all[0..stop]);
+                known = stop > 0;
+            }
+        }
+        buffer.drop(heap, b);
+    }
+    buffer.drop(heap, sp);
+    if known == false {
+        let ap = job_path(heap, dir, id, ".argv");
+        borrow ap as &ab in {
+            known = files.exists(fs, buffer.bytes(ab));
+        }
+        buffer.drop(heap, ap);
+        if known {
+            word = buffer.append(heap, word, "queued");
+        }
+    }
+    return (known, word);
+}
+
+// The most one answer may carry. `http.server` queues 64 KiB per connection (`output_size`) and offers the rest to the kernel once; a bigger body is cut and
+// the connection closed (measured 2026-11-16: 6 MB arrived as 327119 bytes). 200000 is under that with room; a bigger file is refused with 413, not sent cut.
+fn serve_limit() -> [] int {
+    return 200000;
+}
+
+// The page of job `id` (the text after `/jobs/`): 200, 404 for an id with no argument file, 422 for one that is not 1 to 9 digits.
+pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    if id_ok(id) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
+    }
+    let (known, state) = state_word(heap, fs, dir, id);
+    if known == false {
+        buffer.drop(heap, state);
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "no such job"));
+    }
+    var active = false;
+    var done = false;
+    borrow state as &sb in {
+        active = bytes.equal(buffer.bytes(sb), "queued") || bytes.equal(buffer.bytes(sb), "running");
+        done = bytes.equal(buffer.bytes(sb), "done");
+    }
+    var page = buffer.append(heap, buffer.empty(heap, 1024), "<!doctype html><meta charset=utf-8>");
+    if active {
+        page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
+    }
+    page = buffer.append(heap, page, "<title>cancho-studio job ");
+    page = buffer.append(heap, page, id);
+    page = buffer.append(heap, page, "</title><h1>job ");
+    page = buffer.append(heap, page, id);
+    page = buffer.append(heap, page, "</h1><p>state: ");
+    borrow state as &sb2 in {
+        page = buffer.append(heap, page, buffer.bytes(sb2));
+    }
+    page = buffer.append(heap, page, "</p>");
+    if done {
+        if has_out(heap, fs, dir, id, "edited.png") {
+            page = buffer.append(heap, page, "<p><img alt=\"the edited picture\" style=\"max-width:100%\" src=/files/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "/edited.png></p>");
+        }
+        if has_out(heap, fs, dir, id, "video.mp4") {
+            page = buffer.append(heap, page, "<p><video controls loop style=\"max-width:100%\" src=/files/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "/video.mp4></video></p>");
+        }
+        if has_out(heap, fs, dir, id, "video.gif") {
+            page = buffer.append(heap, page, "<p><a href=/files/");
+            page = buffer.append(heap, page, id);
+            page = buffer.append(heap, page, "/video.gif>video.gif</a></p>");
+        }
+    }
+    page = buffer.append(heap, page, "<p><a href=/files/");
+    page = buffer.append(heap, page, id);
+    page = buffer.append(heap, page, "/log>log</a> | <a href=/>studio</a></p>");
+    buffer.drop(heap, state);
+    return (200, page);
+}
+
+// The media type for a name of the closed list, or "" for a name that is not on it.
+pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
+    if bytes.equal(name, "edited.png") {
+        return "image/png";
+    }
+    if bytes.equal(name, "video.mp4") {
+        return "video/mp4";
+    }
+    if bytes.equal(name, "video.gif") {
+        return "image/gif";
+    }
+    if bytes.equal(name, "log") {
+        return "text/plain; charset=utf-8";
+    }
+    return "";
+}
+
+// `rest` is the text after `/files/`: `N/NAME`. The file's bytes with 200; 404 if the job, the name or the file is not there (the body is then a line of text); 422 for an id that is not digits.
+pub fn file_of[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], rest: &r [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    var cut = 0;
+    while cut < len(rest) && int_of(rest[cut]) != 47 {
+        cut = cut + 1;
+    }
+    if cut >= len(rest) {
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "not found"));
+    }
+    let id = rest[0..cut];
+    let name = rest[cut + 1..len(rest)];
+    if id_ok(id) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
+    }
+    if len(content_type(name)) == 0 {
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "not found"));
+    }
+    var path = out_path(heap, dir, id, name);
+    if bytes.equal(name, "log") {
+        buffer.drop(heap, path);
+        path = job_path(heap, dir, id, ".log");
+    }
+    var status = 200;
+    var data = buffer.empty(heap, 16);
+    var big = false;
+    borrow path as &pb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+        buffer.drop(heap, data);
+        data = b;
+        if e != 0 {
+            status = 404;
+        }
+    }
+    buffer.drop(heap, path);
+    borrow data as &dr in {
+        big = buffer.size(dr) > serve_limit();
+    }
+    if big && status == 200 {
+        buffer.drop(heap, data);
+        return (413, buffer.append(heap, buffer.empty(heap, 96), "too big for this server: http.server keeps 64 KiB of output per connection (docs/studio.md)"));
+    }
+    if status != 200 {
+        buffer.drop(heap, data);
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "not found"));
+    }
+    return (200, data);
+}

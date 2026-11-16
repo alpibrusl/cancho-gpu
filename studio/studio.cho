@@ -7,6 +7,7 @@ import std.io;
 import http.server;
 import files;
 import jobs;
+import results;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -14,6 +15,9 @@ import jobs;
 //
 //     POST /api/jobs      {kind, prompt, ...} -> 202 {"id":N}: `<data>/N.argv` and a line in `<data>/queue` (docs/studio.md); `studio_worker` runs it
 //     GET  /api/jobs/N    {"id":N,"state":"queued|running|done|failed C"}
+//
+//     GET /jobs/N        the job's page: state, the result when done, the log (HTML the server writes)
+//     GET /files/N/NAME  edited.png, video.mp4, video.gif or log of job N (a closed list of names)
 //
 //     GET /              the page (HTML the server writes)
 //     GET /api/models    the registry of tools/media.py, as JSON
@@ -92,6 +96,27 @@ fn serve[&h, &k, &l, &i, &f, &d](heap: &!h Heap, clock: &k Clock, listener: &!l 
                                 let (st, answer) = jobs.state_of(heap, fs, dir, path[10..len(path)]);
                                 borrow answer as &ab in {
                                     out = server.reply_as(heap, out, st, "application/json", buffer.bytes(ab), keep, "");
+                                }
+                                buffer.drop(heap, answer);
+                            } else if bytes.starts_with(path, "/jobs/") && bytes.equal(method, "GET") {
+                                let (st, answer) = results.job_page(heap, fs, dir, path[6..len(path)]);
+                                borrow answer as &ab in {
+                                    out = server.reply_as(heap, out, st, "text/html; charset=utf-8", buffer.bytes(ab), keep, "");
+                                }
+                                buffer.drop(heap, answer);
+                            } else if bytes.starts_with(path, "/files/") && bytes.equal(method, "GET") {
+                                let rest = path[7..len(path)];
+                                let (st, answer) = results.file_of(heap, fs, dir, rest);
+                                var kind = "text/plain; charset=utf-8";
+                                if st == 200 {
+                                    var cut = 0;
+                                    while cut < len(rest) && int_of(rest[cut]) != 47 {
+                                        cut = cut + 1;
+                                    }
+                                    kind = results.content_type(rest[cut + 1..len(rest)]);
+                                }
+                                borrow answer as &ab in {
+                                    out = server.reply_as(heap, out, st, kind, buffer.bytes(ab), keep, "");
                                 }
                                 buffer.drop(heap, answer);
                             } else {

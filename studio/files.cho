@@ -21,6 +21,23 @@ pub fn path_ok[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [] bool {
     return fs_covers(fs, path);
 }
 
+// Whether `path` opens for reading; the file is not read.
+pub fn exists[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read("")] bool {
+    if path_ok(fs, path) == false {
+        return false;
+    }
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return false;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            file_close(file);
+            return true;
+        }
+    }
+}
+
 fn drain[&h, &x](heap: &!h Heap, file: &!x File, all: buffer.Buffer) -> [heap, file_read] (buffer.Buffer, int) {
     var out = all;
     var errno = 0;
