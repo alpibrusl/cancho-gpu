@@ -239,6 +239,53 @@ check "site: no site, / is the stub" "$(c localhost:18091/ | grep -c 'Slice 1')"
 TOK=$TOK1 post '{"kind":"video","prompt":"third"}' >/dev/null
 check "jobs: newest first" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'job [0-9]*' | tr '\n' ' ')" 'job 3 job 2 job 1 '
 check "jobs: states" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o '</a>: [a-z0-9 ]*' | tr '\n' ' ')" '</a>: queued </a>: failed 3 </a>: done '
+# The OpenAPI document (studio/openapi.json): served as it is, and held to what the server answers. Each row is a request and the status measured; the document must list that status for that path.
+cp studio/openapi.json "$T/site/openapi.json"; TOK=$TOK2
+check "openapi: served as the file, as JSON" "$(c localhost:18094/openapi.json | cmp - studio/openapi.json && echo same)" same
+check "openapi: without a site directory: 404" "$(TOK=$TOK1 c -o /dev/null -w '%{http_code}' localhost:18091/openapi.json)" 404
+check "openapi: needs the token like any route" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18094/openapi.json)" 401
+doc_lists() { awk -v p="    \"$1\": {" -v s="\"$2\":" 'index($0,p)==1{on=1;next} on&&/^    "\//{on=0} on&&index($0,s){found=1} END{exit !found}' studio/openapi.json && echo yes || echo no; }
+TOK=$TOK2
+[ -f "$T/data/1.log" ] || echo streamed-bytes > "$T/data/1.log"
+row() { # path-in-document, method, url, curl args...
+  d=$1; m=$2; url=$3; shift 3
+  got=$(c -o /dev/null -w '%{http_code}' -X "$m" "$@" "localhost:18094$url")
+  check "openapi: $m $url ($got) is listed under $d" "$(doc_lists "$d" "$got")" yes
+}
+row /api/models GET /api/models
+check "openapi: 202 on POST /api/jobs is listed (queued by the checks above)" "$(doc_lists /api/jobs 202)" yes
+row /api/jobs POST /api/jobs -H 'Content-Type: application/json' -d '{"kind":"nope"}'
+row /api/jobs POST /api/jobs -H 'Content-Type: text/plain' -d '{}'
+row '/api/jobs/{id}' GET /api/jobs/1
+row '/api/jobs/{id}' GET /api/jobs/99999
+row '/api/jobs/{id}' GET /api/jobs/x
+row /jobs GET /jobs
+row '/jobs/{id}' GET /jobs/1
+row '/jobs/{id}' GET /jobs/99999
+row '/jobs/{id}' GET /jobs/x
+row '/files/{id}/{name}' GET /files/1/log
+row '/files/{id}/{name}' GET /files/1/log -H 'Range: bytes=0-3'
+row '/files/{id}/{name}' GET /files/1/log -H 'Range: bytes=99999-'
+row '/files/{id}/{name}' GET /files/1/nothing
+row '/files/{id}/{name}' GET /files/x/log
+row /app.js GET /app.js
+row / GET /
+row /openapi.json GET /openapi.json
+row / GET / -H 'Host: rebinding.example:18094'
+row / GET '/?token=00000000000000000000000000000000'
+check "openapi: 302 on / is listed" "$(doc_lists / 302)" yes
+check "openapi: 500 on POST /api/jobs is listed (not reached by a request here)" "$(doc_lists /api/jobs 500)" yes
+# The other way: every path the server matches is in the document.
+for p in $(grep -o 'equal(path, "/[a-z./]*")' studio/studio.cho | grep -o '"/[a-z./]*"' | tr -d '"' | grep -v '^/$' | sort -u); do
+  check "openapi: the server's route $p is in the document" "$(grep -c "^    \"$p\": {" studio/openapi.json)" 1
+done
+for p in /api/jobs/ /jobs/ /files/; do
+  check "openapi: the server's prefix route $p is in the document" "$(grep -c "^    \"$p" studio/openapi.json)" 1
+done
+if command -v jq >/dev/null 2>&1; then
+  check "openapi: the file is JSON" "$(jq -e .openapi studio/openapi.json)" '"3.1.0"'
+  check "openapi: every \$ref has a target" "$(jq -r '[.. | .["$ref"]? | select(.)] | unique[]' studio/openapi.json | sed 's|^#/||; s|/|.|g' | while read -r r; do jq -e ".$r" studio/openapi.json >/dev/null || echo "missing $r"; done | wc -l | tr -d ' ')" 0
+fi
 rc=0; build/studio 18095 "$T/data" relative 2>/dev/null || rc=$?; check "relative site dir refused" "$rc" 2
 # Who may talk to the server (studio/auth.cho): the token, the host, the origin, the content type. Server 1, port 18091. `u` is a request without the token.
 u() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
