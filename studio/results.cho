@@ -95,6 +95,45 @@ fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id:
     return (known, word);
 }
 
+// `text` as HTML text: `& < > " '` become entities. A model's words are untrusted and are shown only through this.
+fn escape[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    var out = b;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 38 {
+            out = buffer.append(heap, out, "&amp;");
+        } else if c == 60 {
+            out = buffer.append(heap, out, "&lt;");
+        } else if c == 62 {
+            out = buffer.append(heap, out, "&gt;");
+        } else if c == 34 {
+            out = buffer.append(heap, out, "&quot;");
+        } else if c == 39 {
+            out = buffer.append(heap, out, "&#39;");
+        } else {
+            out = buffer.push(heap, out, byte_of(c));
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The contents of `<data>/<id><tail>` (empty if it is not there), and whether it was.
+fn job_file[&h, &f, &d, &i, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, bool) {
+    let p = job_path(heap, dir, id, tail);
+    var found = false;
+    var out = buffer.empty(heap, 8);
+    borrow p as &pb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+        buffer.drop(heap, out);
+        out = b;
+        found = e == 0;
+    }
+    buffer.drop(heap, p);
+    return (out, found);
+}
+
 // The page of job `id` (the text after `/jobs/`): 200, 404 for an id with no argument file, 422 for one that is not 1 to 9 digits.
 pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     if id_ok(id) == false {
@@ -124,6 +163,32 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
         page = buffer.append(heap, page, buffer.bytes(sb2));
     }
     page = buffer.append(heap, page, "</p>");
+    let (orig, has_orig) = job_file(heap, fs, dir, id, ".prompt.orig");
+    let (fresh, has_fresh) = job_file(heap, fs, dir, id, ".prompt.new");
+    let (flag, has_flag) = job_file(heap, fs, dir, id, ".rewrite");
+    if has_orig {
+        page = buffer.append(heap, page, "<p>prompt: ");
+        borrow orig as &obr in {
+            page = escape(heap, page, buffer.bytes(obr));
+        }
+        page = buffer.append(heap, page, "</p>");
+    }
+    if has_fresh {
+        page = buffer.append(heap, page, "<p>rewritten by the local model: ");
+        borrow fresh as &fbr in {
+            page = escape(heap, page, buffer.bytes(fbr));
+        }
+        page = buffer.append(heap, page, "</p>");
+    } else if has_flag && active == false {
+        borrow flag as &flr in {
+            if bytes.starts_with(buffer.bytes(flr), "on") {
+                page = buffer.append(heap, page, "<p>the prompt was not rewritten (see the log)</p>");
+            }
+        }
+    }
+    buffer.drop(heap, orig);
+    buffer.drop(heap, fresh);
+    buffer.drop(heap, flag);
     if done {
         if has_out(heap, fs, dir, id, "edited.png") {
             page = buffer.append(heap, page, "<p><img alt=\"the edited picture\" style=\"max-width:100%\" src=/files/");

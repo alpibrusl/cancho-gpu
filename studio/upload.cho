@@ -18,7 +18,7 @@ import jobs;
 // by the picture's first bytes (JPEG, PNG or WebP; anything else is refused, whatever its name or `Content-Type` says).
 
 pub fn form_page() -> [] &static [byte] {
-    return "<!doctype html><meta charset=utf-8><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
+    return "<!doctype html><meta charset=utf-8><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md) <select name=rewrite><option value=off>off<option value=on>on</select></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
 }
 
 // (from, to) of the boundary in a `Content-Type` value, or (-1, -1) for none, an empty one or one over 70 bytes.
@@ -169,7 +169,7 @@ fn id_in[&t](answer: &t [byte]) -> [] int {
 }
 
 // Handle a POST /edit. (status, text, id): 302 with the job's id and an empty text, or the status `jobs.create` or this function refuses with and a one-line JSON `{"error": ..}`.
-pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer, int) {
+pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte], rewrite_default: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer, int) {
     var status = 422;
     var why = "a multipart/form-data body with a boundary is needed";
     var answer = buffer.empty(heap, 8);
@@ -183,6 +183,7 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             let dl = buffer.bytes(db);
             let (pf, pt) = part(body, dl, "prompt");
             let (sf, st) = part(body, dl, "seed");
+            let (rwf, rwt) = part(body, dl, "rewrite");
             let (imf, imt) = part(body, dl, "image");
             var kind = 0;
             if imf >= 0 && imt - imf >= 16 {
@@ -198,6 +199,8 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "the picture is not a JPEG, PNG or WebP file";
             } else if sf >= 0 && st > sf && all_digits(body[sf..st]) == false {
                 why = "seed is an integer from 0 to 2147483647";
+            } else if rwf >= 0 && rwt > rwf && bytes.equal(body[rwf..rwt], "on") == false && bytes.equal(body[rwf..rwt], "off") == false {
+                why = "rewrite is on or off";
             } else {
                 let id = jobs.next_id(heap, fs, dir);
                 status = 500;
@@ -234,9 +237,14 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             json = buffer.append(heap, json, ",\"seed\":");
                             json = buffer.append(heap, json, body[sf..st]);
                         }
+                        if rwf >= 0 && rwt > rwf {
+                            json = buffer.append(heap, json, ",\"rewrite\":\"");
+                            json = buffer.append(heap, json, body[rwf..rwt]);
+                            json = buffer.push(heap, json, byte_of(34));
+                        }
                         json = buffer.append(heap, json, "}");
                         borrow json as &jb in {
-                            let (cst, reply) = jobs.create(heap, fs, dir, buffer.bytes(jb));
+                            let (cst, reply) = jobs.create(heap, fs, dir, buffer.bytes(jb), rewrite_default);
                             buffer.drop(heap, answer);
                             answer = reply;
                             status = cst;

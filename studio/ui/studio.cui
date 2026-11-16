@@ -15,6 +15,7 @@ component Studio {
     state frames: String = "17";
     state size: String = "640x352";
     state seed: String = "0";
+    state rewrite: String = "off";
     state job: String = "";
     state job_state: String = "";
     state note: String = "Nothing started yet.";
@@ -51,12 +52,14 @@ component Studio {
     on Frames(v) { frames = v; }
     on Size(v) { size = v; }
     on Seed(v) { seed = v; }
+    on Rewrite(v) { rewrite = v; }
 
     on Start {
         busy = true;
         blocked = true;
         note = "Sending ...";
         extra = if kind == "edit" { ",\"image\":" + json.quote(image) } else { "" };
+        extra = extra + ",\"rewrite\":" + json.quote(rewrite);
         sent = await(net.post("api/jobs", "\{\"kind\":" + json.quote(kind) + ",\"prompt\":" + json.quote(prompt) + ",\"frames\":" + frames + ",\"size\":" + json.quote(size) + ",\"seed\":" + seed + extra + "\}"));
         accepted = match sent {
             Ok(reply) => { json.get(reply, "status", "") == "202" }
@@ -105,6 +108,7 @@ component Studio {
             Select { label: "Frames (a video)" options: ["17", "9", "25", "33"] value: frames on: Frames disabled: is_edit }
             Select { label: "Size (a video)" options: ["640x352", "512x288", "1024x576"] value: size on: Size disabled: is_edit }
             Select { label: "Seed" options: ["0", "1", "2", "3", "4"] value: seed on: Seed }
+            Select { label: "Rewrite the prompt first (a local model; off until it is measured to help)" options: ["off", "on"] value: rewrite on: Rewrite }
             Button { label: "Start" on: Start disabled: blocked }
             Text { role: status "{note}" }
             Text { "job {job}: {job_state}" }

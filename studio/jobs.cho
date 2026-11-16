@@ -62,7 +62,7 @@ pub fn next_id[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [he
 }
 
 // Make a job from `body`. (status, JSON answer): 202 {"id":N}, or 422 / 500 with a one-line reason.
-pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte], rewrite_default: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
     let tape = box_slice(heap, json.tape_len(body), 0);
     var status = 422;
     var answer = buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\"the body is not a JSON object\"}");
@@ -78,6 +78,7 @@ pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
             let frames_n = json.get(body, tp, 0, "frames");
             let size_n = json.get(body, tp, 0, "size");
             let seed_n = json.get(body, tp, 0, "seed");
+            let rewrite_n = json.get(body, tp, 0, "rewrite");
             var why = "";
             if is_video == false && is_edit == false {
                 why = "kind is video or edit";
@@ -91,6 +92,8 @@ pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                 why = "seed is an integer from 0 to 2147483647";
             } else if size_n >= 0 && (json.string_plain(tp, size_n) == false || size_ok(json.string_view(body, tp, size_n)) == false) {
                 why = "size is WxH, for example 640x352";
+            } else if rewrite_n >= 0 && (json.is_string(tp, rewrite_n) == false || (json.string_equals(body, tp, rewrite_n, "on") == false && json.string_equals(body, tp, rewrite_n, "off") == false)) {
+                why = "rewrite is on or off";
             }
             if len(why) == 0 {
                 let id = next_id(heap, fs, dir);
@@ -200,6 +203,29 @@ pub fn create[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             }
                         }
                         buffer.drop(heap, apath);
+                        if wrote == 0 {
+                            var rewrite_on = rewrite_default;
+                            if rewrite_n >= 0 {
+                                rewrite_on = json.string_equals(body, tp, rewrite_n, "on");
+                            }
+                            var rpath = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/");
+                            borrow idt as &ib6 in {
+                                rpath = buffer.append(heap, rpath, buffer.bytes(ib6));
+                            }
+                            rpath = buffer.append(heap, rpath, ".rewrite");
+                            var rwrote = 0 - 1;
+                            borrow rpath as &rpb in {
+                                if rewrite_on {
+                                    rwrote = files.write_all(fs, buffer.bytes(rpb), "on\n");
+                                } else {
+                                    rwrote = files.write_all(fs, buffer.bytes(rpb), "off\n");
+                                }
+                            }
+                            buffer.drop(heap, rpath);
+                            if rwrote != 0 {
+                                wrote = rwrote;
+                            }
+                        }
                         if wrote == 0 {
                             let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
                             var line = buffer.empty(heap, 16);

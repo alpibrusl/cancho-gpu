@@ -9,7 +9,7 @@
     { "event": "Start",
       "expect": { "outcome": "suspended",
                   "issued": [ { "request": 1, "effect": "net.post",
-                                "args": ["api/jobs", "{\"kind\":\"video\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0}"] } ] },
+                                "args": ["api/jobs", "{\"kind\":\"video\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"rewrite\":\"off\"}"] } ] },
       "state": { "blocked": true, "note": "Sending ..." } },
     { "resolve": 1, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":5}\"}" },
       "state": { "job": "5", "job_state": "queued", "note": "Job 5 is queued.", "busy": false } },
@@ -25,8 +25,16 @@
     { "event": "Start",
       "expect": { "outcome": "suspended",
                   "issued": [ { "request": 4, "effect": "net.post",
-                                "args": ["api/jobs", "{\"kind\":\"edit\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"image\":\"/photos/a.jpg\"}"] } ] } },
+                                "args": ["api/jobs", "{\"kind\":\"edit\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"image\":\"/photos/a.jpg\",\"rewrite\":\"off\"}"] } ] } },
     { "resolve": 4, "with": { "Ok": "{\"status\":422,\"body\":\"{\\\"error\\\":\\\"no such image\\\"}\"}" },
-      "state": { "job": "5", "note": "The server refused it: no such image.", "busy": false } }
+      "state": { "job": "5", "note": "The server refused it: no such image.", "busy": false } },
+    { "event": "Kind", "params": ["video"], "state": { "kind": "video", "is_video": true } },
+    { "event": "Rewrite", "params": ["on"], "state": { "rewrite": "on" } },
+    { "event": "Start",
+      "expect": { "outcome": "suspended",
+                  "issued": [ { "request": 5, "effect": "net.post",
+                                "args": ["api/jobs", "{\"kind\":\"video\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"rewrite\":\"on\"}"] } ] } },
+    { "resolve": 5, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":6}\"}" },
+      "state": { "job": "6", "job_state": "queued", "note": "Job 6 is queued.", "busy": false } }
   ]
 }

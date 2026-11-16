@@ -45,7 +45,7 @@
         "summary": "Queue an edit of an uploaded picture: the picture is kept as <data>/upload-N.jpg, .png or .webp (by its first bytes) and a job is made as POST /api/jobs makes it. The one POST that is not JSON.",
         "requestBody": {
           "required": true,
-          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
+          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt", "image"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off"] }, "image": { "type": "string", "format": "binary", "description": "JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
         },
         "responses": {
           "302": { "description": "Queued: Location /jobs/N." },
@@ -197,7 +197,8 @@
           "image": { "type": "string", "description": "Required for an edit: the absolute path of a file on the server's machine, 2 to 400 bytes." },
           "frames": { "type": "integer", "minimum": 1, "maximum": 129 },
           "size": { "type": "string", "description": "WxH, for example 640x352.", "example": "640x352" },
-          "seed": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+          "seed": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+          "rewrite": { "type": "string", "enum": ["on", "off"], "description": "Rewrite the prompt first with a local model. The worker must have been started with --rewriter. Absent: the server's default, which is off unless it was started with --rewrite on." }
         }
       },
       "Queued": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "minimum": 1 } } },
