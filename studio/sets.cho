@@ -63,6 +63,10 @@ fn cell[&h, &f, &d, &j](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir:
     return p;
 }
 
+fn open_page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], active: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    return results.open(heap, fs, dir, "variations", "jobs", active);
+}
+
 // `GET /sets/<id>`: (200, the page), 404 for an id that is not the first job of a set, 422 for one that is not 1 to 9 digits.
 pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     if results.id_ok(id) == false {
@@ -73,7 +77,6 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         buffer.drop(heap, rec);
         return (404, buffer.append(heap, buffer.empty(heap, 32), "no such set"));
     }
-    var page = buffer.append(heap, buffer.empty(heap, 2048), "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css>");
     var body = buffer.empty(heap, 1024);
     var active = false;
     var count = 0;
@@ -118,10 +121,8 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         }
     }
     buffer.drop(heap, rec);
-    if active {
-        page = buffer.append(heap, page, "<meta http-equiv=refresh content=5>");
-    }
-    page = buffer.append(heap, page, "<title>cancho-studio: variations</title><h1>variations</h1><p>");
+    var page = open_page(heap, fs, dir, active);
+    page = buffer.append(heap, page, "<div class=row><h1>Variations</h1></div><p>");
     page = buffer.push_nat(heap, page, count);
     page = buffer.append(heap, page, " jobs of one request, one seed each. They run one after another: the time is that many times one job's.</p>");
     let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
@@ -139,6 +140,6 @@ pub fn page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &
         page = buffer.append(heap, page, buffer.bytes(br));
     }
     buffer.drop(heap, body);
-    page = buffer.append(heap, page, "</div><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>");
-    return (200, page);
+    page = buffer.append(heap, page, "</div>");
+    return (200, results.close(heap, page));
 }

@@ -6,6 +6,7 @@ import std.buffer;
 import std.bytes;
 import files;
 import jobs;
+import results;
 
 // `upload` -- a picture chosen in the browser, for an edit (docs/studio.md, "Editing a picture chosen in the page").
 //
@@ -17,8 +18,10 @@ import jobs;
 // content ends at the next delimiter. Nothing from the client is a path: the file name the browser sends is not read, and the name kept is built from a number the server made and an extension chosen
 // by the picture's first bytes (JPEG, PNG or WebP; anything else is refused, whatever its name or `Content-Type` says).
 
-pub fn form_page() -> [] &static [byte] {
-    return "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><title>cancho-studio: edit a picture</title><h1>edit a picture</h1><form method=post action=/edit enctype=multipart/form-data><p><label>What to change <input name=prompt required maxlength=1000 size=60></label></p><p><label>Seed (optional) <input name=seed type=number min=0 max=2147483647></label></p><p><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit) <select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label></p><p><label>Steps (optional; the model's default is 8) <input name=steps type=number min=1 max=50></label></p><p><label>Model (optional; see /api/models) <input name=model maxlength=40></label></p><p><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md) <select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label></p><p><label>Picture (JPEG, PNG or WebP, up to 15 MB) <input name=image type=file accept=image/jpeg,image/png,image/webp required></label></p><p><button>Edit</button></p></form><p><a href=/jobs>jobs</a> | <a href=/>studio</a></p>";
+pub fn form_page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var page = results.open(heap, fs, dir, "edit a picture", "edit", false);
+    page = buffer.append(heap, page, "<div class=row><h1>Edit a picture</h1></div><p>The picture stays on this machine. It is copied to the studio's data directory and nowhere else.</p><form method=post action=/edit enctype=multipart/form-data><label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit)<select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label><label>Steps (optional; the model's default is 8)<input name=steps type=number min=1 max=50></label><label>Model (optional; see /api/models)<input name=model maxlength=40></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label><div><button>Edit</button></div></form>");
+    return results.close(heap, page);
 }
 
 // (from, to) of the boundary in a `Content-Type` value, or (-1, -1) for none, an empty one or one over 70 bytes.

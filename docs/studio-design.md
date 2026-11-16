@@ -1,6 +1,6 @@
 # cancho-studio: the visual design, and whether islands help (2026-11-16)
 
-> **Status: a design to apply and a reading of islands; nothing here is built.** Claims are tagged **[read]** (from a file, not run) or **[not run]**. The owner supplied a design (section 1) and asked whether the page could use islands "as in cancho-ota" (section 3), and said to look at how they are used in code, not only in the docs; section 3 is from the code.
+> **Status: the design is applied to the pages the server writes (section 5); islands are read, not built.** Claims are tagged **[read]** (from a file, not run) or **[not run]**. The owner supplied a design (section 1) and asked whether the page could use islands "as in cancho-ota" (section 3), and said to look at how they are used in code, not only in the docs; section 3 is from the code.
 
 ## 1. The design given (read 2026-11-16)
 
@@ -66,3 +66,16 @@ Inside the frame the script gets `cancho.props`, `cancho.onprops(fn)` and `canch
 1. Dark only, as the design is, or dark and light by the browser's setting (the stylesheet of docs/studio-variations.md section 7 does both today).
 2. Whether the worker should write a stage (`N.stage`) and the server add a thumbnail name to the closed list, so that the cards can have thumbnails and progress.
 3. Whether `/` stays a cancho-ui page or is written by the server too, as the design proposes.
+
+## 5. Applied (2026-11-16)
+
+**What changed.** `results.css()` is the design's tokens (dark only: the design has no light scheme; the earlier light and dark stylesheet of docs/studio-variations.md section 7 is replaced). `results.open` / `results.close` write the start and end of every server-written page: the head with the stylesheet and the viewport, the optional refresh, the title, the header (brand, **Studio, Edit a picture, Comparisons, Jobs**, the open place marked `aria-current=page`) and the queue's status, `GPU busy &middot; R running &middot; Q queued` or `GPU idle` (`results.counts`, from the 200 newest jobs of `queue`).
+* **`/jobs`**: cards, newest first (a grid of 260 px or more): the state badge (`queued`, `running`, `done`, `failed 3`), `#id`, the prompt in two lines, the kind, a moving bar while it runs (still when the browser asks for reduced motion). **A finished edit is its own thumbnail** (the whole PNG, lazily loaded, for the 24 newest only: the server cannot shrink a picture); a video has none, only a label.
+* **`/jobs/N`**: the result beside the details: **Prompt as written**, **Rewritten by the local model** when there is one, **Parameters** (the kind and every `--name value` of the job's argument list, then the rewrite setting), **Files** (the ones that exist, and the log); a failed job shows an alert in place of a result.
+* **`/sets/N`, `/compare`, `/compare/N`, `/edit`**: the same header and classes; the comparison's three choices are buttons under the pair (`Left is better`, `No difference`, `Right is better`); the edit form has a dashed drop zone for the picture and the instruction as a text area.
+* **Fonts.** The stack is `'IBM Plex Sans', system-ui, ...` and `'IBM Plex Mono', ui-monospace, ...`: an installed IBM Plex is used, **nothing is loaded from Google Fonts** (the design links it; the studio is local and offline by default). `studio/check.sh` holds that the stylesheet has no `@import` and no `url(`.
+
+**Checked.** `studio/check.sh`: 341 ok, 0 failed (the `UI` page checks included): 12 new checks of the design (the header and the open place on five pages, the status idle with one waiting job and busy with one running, the running badge and bar, the parameters in order, the thumbnail, the file list, the failed alert, the drop zone and text area, the font stack and no outside file), and the older checks that read the old HTML moved to the new (the card's badge and `#id`, `Prompt as written`, the order of the three choices). **Seen in the browser pane** (dark, 800 px wide): `/jobs` with eight jobs (done edits with thumbnails, running, queued, failed), a done edit's page, a failed job's page, `/edit`, a set of three, a pair in `/compare/N`.
+**Two things that were not the design's fault and were fixed in the checks.** A fixed `sleep 1` after starting a server, and the worker tests' fixed sleeps, failed when the machine was busy (another session's compile took the load average to 17 and 22): they now wait for the server's `listening` line and for the state file.
+
+**Not done, as section 1 said:** thumbnails for videos, a stage line and a real progress bar (the worker writes none), the picture preview (script), **Run again** and **Reuse prompt**, and the Studio page `/` (still the cancho-ui page, with its own look: the design's composer and job grid are not built; the nav's "Studio" leads to it). Not seen in a browser: a phone width, the light scheme (there is none), and a job list of 200.
