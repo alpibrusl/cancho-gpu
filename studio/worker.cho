@@ -1,10 +1,11 @@
-edition 9;
+edition 10;
 
 import std.buffer;
 import std.bytes;
 import std.dirs;
 import std.io;
 import files;
+import rewrite_step;
 
 // studio_worker -- runs one job: docs/studio.md, slice 2.
 //
@@ -180,7 +181,7 @@ fn tidy[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [b
 }
 
 // One pending job: 0 when it ran to the end and exited 0, else the code (3: no argument file, 4: the log could not be opened).
-fn job[&h, &f, &x, &y, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, script: &s [byte], home: &m [byte], dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, dir_read, dir_write] int {
+fn job[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &md [byte], pdir: &pd [byte], script: &s [byte], home: &m [byte], dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock, dir_read, dir_write] int {
     var status = 3;
     let argv_path = named(heap, dir, id, "argv");
     var list = buffer.empty(heap, 8);
@@ -192,6 +193,16 @@ fn job[&h, &f, &x, &y, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x E
         errno = e;
     }
     buffer.drop(heap, argv_path);
+    var rcode = 0 - 1;
+    var fresh = buffer.empty(heap, 8);
+    if errno == 0 {
+        borrow list as &l0 in {
+            let (c, nl) = rewrite_step.apply(heap, fs, net, clock, buffer.bytes(l0), dir, id, model, pdir, 600);
+            rcode = c;
+            buffer.drop(heap, fresh);
+            fresh = nl;
+        }
+    }
     if errno == 0 {
         status = 4;
         put(heap, fs, dir, id, "state", "running\n");
@@ -205,9 +216,30 @@ fn job[&h, &f, &x, &y, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x E
                         env = buffer.append(heap, env, "\0PATH=/usr/bin:/bin:/opt/homebrew/bin\0");
                         var code = 255;
                         borrow list as &lb in {
-                            borrow env as &eb in {
-                                code = run(exec, sdir, script, buffer.bytes(lb), buffer.bytes(eb), log);
+                            borrow fresh as &fb in {
+                                borrow env as &eb in {
+                                    if rcode == 0 {
+                                        code = run(exec, sdir, script, buffer.bytes(fb), buffer.bytes(eb), log);
+                                    } else {
+                                        code = run(exec, sdir, script, buffer.bytes(lb), buffer.bytes(eb), log);
+                                    }
+                                }
                             }
+                        }
+                        if rcode >= 0 {
+                            var rnote = buffer.empty(heap, 128);
+                            if rcode == 0 {
+                                rnote = buffer.append(heap, rnote, "studio: prompt rewritten by ");
+                                rnote = buffer.append(heap, rnote, model);
+                            } else {
+                                rnote = buffer.append(heap, rnote, "studio: prompt not rewritten: ");
+                                rnote = buffer.append(heap, rnote, rewrite_step.reason(rcode));
+                            }
+                            rnote = buffer.push(heap, rnote, byte_of(10));
+                            borrow rnote as &rnb in {
+                                files.append_all(fs, buffer.bytes(lp), buffer.bytes(rnb));
+                            }
+                            buffer.drop(heap, rnote);
                         }
                         buffer.drop(heap, env);
                         var line = buffer.empty(heap, 32);
@@ -251,11 +283,12 @@ fn job[&h, &f, &x, &y, &s, &m, &d, &i](heap: &!h Heap, fs: &f Fs(""), exec: &x E
         buffer.drop(heap, log_path);
     }
     buffer.drop(heap, list);
+    buffer.drop(heap, fresh);
     return status;
 }
 
 // The queue, once: every id in it that has no state yet is run. The number of jobs run.
-fn drain[&h, &f, &x, &y, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, dir_read, dir_write] int {
+fn drain[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &md [byte], pdir: &pd [byte], script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock, dir_read, dir_write] int {
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     var text = buffer.empty(heap, 8);
     borrow qp as &q in {
@@ -275,7 +308,7 @@ fn drain[&h, &f, &x, &y, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exe
             }
             let id = all[at..stop];
             if id_ok(id) && started(heap, fs, dir, id) == false {
-                job(heap, fs, exec, sdir, script, home, dir, id);
+                job(heap, fs, exec, sdir, net, clock, model, pdir, script, home, dir, id);
                 ran = ran + 1;
             }
             at = stop + 1;
@@ -346,7 +379,7 @@ fn recover[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, 
 }
 
 // Once, under the lock: 0, or 4 if another worker holds it (or the lock file cannot be opened).
-fn once[&h, &f, &x, &y, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, dir_read, dir_write] int {
+fn once[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &md [byte], pdir: &pd [byte], script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock, dir_read, dir_write] int {
     var status = 4;
     let lp = lock_path(heap, dir);
     borrow lp as &lb in {
@@ -362,7 +395,7 @@ fn once[&h, &f, &x, &y, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec
                     }
                     if held {
                         recover(heap, fs, dir);
-                        drain(heap, fs, exec, sdir, script, home, dir);
+                        drain(heap, fs, exec, sdir, net, clock, model, pdir, script, home, dir);
                         status = 0;
                     }
                     file_close(lock);
@@ -423,7 +456,7 @@ fn seconds_of[&t](text: &t [byte]) -> [] int {
 }
 
 // Under the lock: drain, wait, drain, until a signal. 0 when stopped by one, 4 if another worker holds the lock, 5 if the wait failed.
-fn keep_going[&h, &f, &x, &y, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, script: &s [byte], home: &m [byte], dir: &d [byte], poller: &!p Poller, watch: &!w SignalWatch, seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, dir_read, dir_write, signals_read, poll] int {
+fn keep_going[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &md [byte], pdir: &pd [byte], script: &s [byte], home: &m [byte], dir: &d [byte], poller: &!p Poller, watch: &!w SignalWatch, seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock, dir_read, dir_write, signals_read, poll] int {
     var status = 4;
     let events = box_slice(heap, 8, 0);
     var spare = events;
@@ -444,7 +477,7 @@ fn keep_going[&h, &f, &x, &y, &s, &m, &d, &p, &w](heap: &!h Heap, fs: &f Fs(""),
                         recover(heap, fs, dir);
                         var stop = false;
                         while stop == false {
-                            drain(heap, fs, exec, sdir, script, home, dir);
+                            drain(heap, fs, exec, sdir, net, clock, model, pdir, script, home, dir);
                             if signals_pending(watch) != 0 {
                                 stop = true;
                             } else {
@@ -476,15 +509,20 @@ fn main(world: World) -> [] int {
     let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
     release(ffi);
     release(tty);
-    release(net);
-    release(clock);
+    let ollama = narrow(net, "127.0.0.1:11434");
     var status = 2;
     var every = 0 - 1;
     var looping = false;
+    var rewriting = false;
+    var n_args = 0;
     borrow args as &g0 in {
-        if arg_count(g0) == 6 && bytes.equal(arg(g0, 4), "--every") {
+        n_args = arg_count(g0);
+        if (n_args == 6 || n_args == 9) && bytes.equal(arg(g0, 4), "--every") {
             looping = true;
             every = seconds_of(arg(g0, 5));
+        }
+        if (n_args == 7 || n_args == 9) && bytes.equal(arg(g0, n_args - 3), "--rewriter") {
+            rewriting = true;
         }
     }
     if looping && every > 0 {
@@ -505,22 +543,30 @@ fn main(world: World) -> [] int {
                                 borrow fs as &f in {
                                     borrow mut heap as &!h in {
                                         borrow exec as &xe in {
-                                            status = 3;
-                                            let cut = last_slash(arg(g, 1));
-                                            if files.path_ok(f, arg(g, 3)) && cut > 0 && name_ok(arg(g, 1)[cut + 1..len(arg(g, 1))]) && files.path_ok(f, arg(g, 1)[0..cut]) {
-                                                match open_dir(f, arg(g, 1)[0..cut]) {
-                                                    DirOpened::Ok(so) => {
-                                                        var sd = so;
-                                                        borrow sd as &sdr in {
-                                                            borrow mut poller as &!pw2 in {
-                                                                borrow mut watch as &!wh in {
-                                                                    status = keep_going(h, f, xe, sdr, arg(g, 1)[cut + 1..len(arg(g, 1))], arg(g, 2), arg(g, 3), pw2, wh, every);
+                                            borrow ollama as &on in {
+                                                borrow clock as &ck in {
+                                                    status = 3;
+                                                    let cut = last_slash(arg(g, 1));
+                                                    if files.path_ok(f, arg(g, 3)) && cut > 0 && name_ok(arg(g, 1)[cut + 1..len(arg(g, 1))]) && files.path_ok(f, arg(g, 1)[0..cut]) {
+                                                        match open_dir(f, arg(g, 1)[0..cut]) {
+                                                            DirOpened::Ok(so) => {
+                                                                var sd = so;
+                                                                borrow sd as &sdr in {
+                                                                    borrow mut poller as &!pw2 in {
+                                                                        borrow mut watch as &!wh in {
+                                                                            if rewriting && files.path_ok(f, arg(g, n_args - 1)) {
+                                                                                status = keep_going(h, f, xe, sdr, on, ck, arg(g, n_args - 2), arg(g, n_args - 1), arg(g, 1)[cut + 1..len(arg(g, 1))], arg(g, 2), arg(g, 3), pw2, wh, every);
+                                                                            } else if rewriting == false {
+                                                                                status = keep_going(h, f, xe, sdr, on, ck, "", "", arg(g, 1)[cut + 1..len(arg(g, 1))], arg(g, 2), arg(g, 3), pw2, wh, every);
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
+                                                                dir_close(sd);
+                                                            }
+                                                            DirOpened::Failed(e) => {
                                                             }
                                                         }
-                                                        dir_close(sd);
-                                                    }
-                                                    DirOpened::Failed(e) => {
                                                     }
                                                 }
                                             }
@@ -545,22 +591,30 @@ fn main(world: World) -> [] int {
     } else {
         release(signals);
         borrow args as &g in {
-            if arg_count(g) == 4 && looping == false {
+            if looping == false && (n_args == 4 || (n_args == 7 && rewriting)) {
                 borrow fs as &f in {
                     borrow mut heap as &!h in {
                         borrow exec as &xe in {
-                            status = 3;
-                            let cut = last_slash(arg(g, 1));
-                            if files.path_ok(f, arg(g, 3)) && cut > 0 && name_ok(arg(g, 1)[cut + 1..len(arg(g, 1))]) && files.path_ok(f, arg(g, 1)[0..cut]) {
-                                match open_dir(f, arg(g, 1)[0..cut]) {
-                                    DirOpened::Ok(so) => {
-                                        var sd = so;
-                                        borrow sd as &sdr in {
-                                            status = once(h, f, xe, sdr, arg(g, 1)[cut + 1..len(arg(g, 1))], arg(g, 2), arg(g, 3));
+                            borrow ollama as &on in {
+                                borrow clock as &ck in {
+                                    status = 3;
+                                    let cut = last_slash(arg(g, 1));
+                                    if files.path_ok(f, arg(g, 3)) && cut > 0 && name_ok(arg(g, 1)[cut + 1..len(arg(g, 1))]) && files.path_ok(f, arg(g, 1)[0..cut]) {
+                                        match open_dir(f, arg(g, 1)[0..cut]) {
+                                            DirOpened::Ok(so) => {
+                                                var sd = so;
+                                                borrow sd as &sdr in {
+                                                    if rewriting && files.path_ok(f, arg(g, n_args - 1)) {
+                                                        status = once(h, f, xe, sdr, on, ck, arg(g, n_args - 2), arg(g, n_args - 1), arg(g, 1)[cut + 1..len(arg(g, 1))], arg(g, 2), arg(g, 3));
+                                                    } else if rewriting == false {
+                                                        status = once(h, f, xe, sdr, on, ck, "", "", arg(g, 1)[cut + 1..len(arg(g, 1))], arg(g, 2), arg(g, 3));
+                                                    }
+                                                }
+                                                dir_close(sd);
+                                            }
+                                            DirOpened::Failed(e) => {
+                                            }
                                         }
-                                        dir_close(sd);
-                                    }
-                                    DirOpened::Failed(e) => {
                                     }
                                 }
                             }
@@ -569,7 +623,7 @@ fn main(world: World) -> [] int {
                 }
             } else {
                 borrow mut io as &!i in {
-                    io.error_all(i, "usage: studio_worker <script> <home> <absolute data-dir> [--every <seconds 1-3600>]\n");
+                    io.error_all(i, "usage: studio_worker <script> <home> <absolute data-dir> [--every <seconds 1-3600>] [--rewriter <model> <absolute prompts dir>]\n");
                 }
             }
         }
@@ -579,6 +633,8 @@ fn main(world: World) -> [] int {
             io.error_all(i4, "studio_worker: another worker holds worker.lock in the data directory (or it cannot be opened); nothing was run\n");
         }
     }
+    release(ollama);
+    release(clock);
     release(exec);
     release(args);
     release(io);

@@ -1,0 +1,198 @@
+edition 10;
+
+module rewrite_step;
+
+import std.buffer;
+import std.bytes;
+import files;
+import rewrite;
+
+// `rewrite_step` -- what the worker does before it starts a job that asked for a rewritten prompt (docs/studio-rewrite.md, D3 and D4).
+//
+// `apply` takes the job's argument list (the NUL-separated entries of `<id>.argv`, as the server wrote them), and, if `<id>.rewrite` says `on`, asks the rewriter for a better prompt and answers the list with its
+// last entry (the prompt) replaced. The original list is never changed on disk. Every way it can fail answers a code and **no list**: the worker then runs the original, and says why in the job's log.
+//
+// The shape it expects (the server's, `studio/jobs.cho`): `edit -o <out> [--seed S] -- <picture path> <prompt>` or `video -o <out> [...] -- <prompt>`: after the `--` entry, exactly two entries for an edit
+// (a picture and a prompt) and exactly one for a video. Anything else is code 9.
+
+// What a code that is not the rewriter's own (`rewrite.reason`) means; these are this module's.
+pub fn r_asked() -> [] int {
+    return 0 - 1;
+}
+
+pub fn reason(code: int) -> [] &static [byte] {
+    if code == 9 {
+        return "the job's arguments are not the shape the rewriter expects";
+    }
+    if code == 10 {
+        return "no system prompt for this kind of job";
+    }
+    if code == 11 {
+        return "the picture could not be read or is over 16 MiB";
+    }
+    return rewrite.reason(code);
+}
+
+// The picture is read whole and sent as base64: the limit uploads already have.
+fn max_picture() -> [] int {
+    return 16777216;
+}
+
+// `<dir>/<id>.<ext>`
+fn named[&h, &d, &i, &e](heap: &!h Heap, dir: &d [byte], id: &i [byte], ext: &e [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 96), dir);
+    b = buffer.push(heap, b, byte_of(47));
+    b = buffer.append(heap, b, id);
+    b = buffer.push(heap, b, byte_of(46));
+    b = buffer.append(heap, b, ext);
+    return b;
+}
+
+// Did the server ask for a rewrite? `<dir>/<id>.rewrite` starts with `on`.
+fn asked[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] bool {
+    let p = named(heap, dir, id, "rewrite");
+    var yes = false;
+    borrow p as &pb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+        borrow b as &br in {
+            yes = e == 0 && bytes.starts_with(buffer.bytes(br), "on");
+        }
+        buffer.drop(heap, b);
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
+// (start, end) of entry `k` (0-based) of a NUL-terminated list, or (-1, -1); and the number of entries.
+fn entries[&l](list: &l [byte]) -> [] int {
+    var n = 0;
+    var i = 0;
+    while i < len(list) {
+        if int_of(list[i]) == 0 {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn entry_at[&l](list: &l [byte], k: int) -> [] (int, int) {
+    var n = 0;
+    var start = 0;
+    var i = 0;
+    while i < len(list) {
+        if int_of(list[i]) == 0 {
+            if n == k {
+                return (start, i);
+            }
+            n = n + 1;
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return (0 - 1, 0 - 1);
+}
+
+// (code, the new list). `code` is -1 when no rewrite was asked for (and the list is empty), 0 when the list is the new one, else a reason. `model` empty means the worker has no rewriter.
+pub fn apply[&h, &f, &n, &k, &l, &d, &i, &m, &p](heap: &!h Heap, fs: &f Fs(""), net: &n Net("127.0.0.1:11434"), clock: &k Clock, list: &l [byte], dir: &d [byte], id: &i [byte], model: &m [byte], pdir: &p [byte], seconds: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] (int, buffer.Buffer) {
+    if len(model) == 0 || asked(heap, fs, dir, id) == false {
+        return (0 - 1, buffer.empty(heap, 8));
+    }
+    let count = entries(list);
+    var dashes = 0 - 1;
+    var q = 0;
+    while q < count {
+        let (a, b) = entry_at(list, q);
+        if b - a == 2 && bytes.equal(list[a..b], "--") && dashes < 0 {
+            dashes = q;
+        }
+        q = q + 1;
+    }
+    let (k0a, k0b) = entry_at(list, 0);
+    var is_edit = false;
+    var is_video = false;
+    if k0a >= 0 {
+        is_edit = bytes.equal(list[k0a..k0b], "edit");
+        is_video = bytes.equal(list[k0a..k0b], "video");
+    }
+    if dashes < 0 || (is_edit == false && is_video == false) || (is_edit && count - dashes - 1 != 2) || (is_video && count - dashes - 1 != 1) {
+        return (9, buffer.empty(heap, 8));
+    }
+    let (pa, pb) = entry_at(list, count - 1);
+    var kind = "video";
+    if is_edit {
+        kind = "edit";
+    }
+    var sp = buffer.append(heap, buffer.empty(heap, 96), pdir);
+    sp = buffer.push(heap, sp, byte_of(47));
+    sp = buffer.append(heap, sp, kind);
+    sp = buffer.append(heap, sp, ".txt");
+    var system = buffer.empty(heap, 8);
+    var serr = 1;
+    var slen = 0;
+    borrow sp as &spb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(spb));
+        buffer.drop(heap, system);
+        system = b;
+        serr = e;
+        borrow system as &sq in {
+            slen = buffer.size(sq);
+        }
+    }
+    buffer.drop(heap, sp);
+    var picture = buffer.empty(heap, 8);
+    var perr = 0;
+    if is_edit {
+        let (ia, ib) = entry_at(list, count - 2);
+        let size = files.size_of(fs, list[ia..ib]);
+        if size < 1 || size > max_picture() {
+            perr = 1;
+        } else {
+            let (b, e) = files.read_all(heap, fs, list[ia..ib]);
+            buffer.drop(heap, picture);
+            picture = b;
+            perr = e;
+        }
+    }
+    var code = 0;
+    var fresh = buffer.empty(heap, 8);
+    if serr != 0 || slen < 1 {
+        code = 10;
+    } else if perr != 0 {
+        code = 11;
+    } else {
+        borrow system as &sb in {
+            borrow picture as &pcb in {
+                let (c, text) = rewrite.ask(heap, net, clock, model, buffer.bytes(sb), list[pa..pb], buffer.bytes(pcb), seconds);
+                code = c;
+                if c == 0 {
+                    borrow text as &tb in {
+                        var nl = buffer.append(heap, buffer.empty(heap, len(list) + 1100), list[0..pa]);
+                        nl = buffer.append(heap, nl, buffer.bytes(tb));
+                        nl = buffer.push(heap, nl, byte_of(0));
+                        buffer.drop(heap, fresh);
+                        fresh = nl;
+                        let op = named(heap, dir, id, "prompt.orig");
+                        let np = named(heap, dir, id, "prompt.new");
+                        borrow op as &opb in {
+                            files.write_all(fs, buffer.bytes(opb), list[pa..pb]);
+                        }
+                        borrow np as &npb in {
+                            files.write_all(fs, buffer.bytes(npb), buffer.bytes(tb));
+                        }
+                        buffer.drop(heap, op);
+                        buffer.drop(heap, np);
+                    }
+                }
+                buffer.drop(heap, text);
+            }
+        }
+    }
+    buffer.drop(heap, system);
+    buffer.drop(heap, picture);
+    if code != 0 {
+        buffer.drop(heap, fresh);
+        fresh = buffer.empty(heap, 8);
+    }
+    return (code, fresh);
+}

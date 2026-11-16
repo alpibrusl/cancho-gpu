@@ -1,0 +1,231 @@
+edition 9;
+
+import std.buffer;
+import std.bytes;
+import std.http;
+import std.io;
+import std.json;
+import http.server;
+import files;
+
+// rewrite_stub -- a stand-in for Ollama's `POST /api/chat`, for the checks of `studio/rewrite.cho` (docs/studio-rewrite.md, slice R1). It listens on 127.0.0.1 only and answers every request the same way
+// for the whole run, as its mode says. It also writes the request body it last received to a file, so a check can look at what was sent (the model, the picture, the absence of `tools`).
+//
+//   rewrite_stub <port> <absolute file for the last request> <mode>
+//
+//   ok        200, `message.content` is `A stub prompt.`
+//   echo      200, `message.content` is the content of the request's last message (the person's prompt), so a check sees what arrived as data
+//   quotes    200, content `"a quoted prompt"` (the model put quotes round it)
+//   fence     200, content a code fence around one line
+//   empty     200, content `""`
+//   long      200, content of 1,001 bytes
+//   control   200, content with a bell character in it
+//   badjson   200, a body that is not JSON
+//   nomessage 200, JSON without `message`
+//   err500    500
+//   slow      never answers (the client's deadline is what ends it)
+//
+// Built with  cancho build studio/rewrite_stub.cho studio/files.cho ../cancho/packages/http-server/server.cho --std -o build/rewrite_stub
+
+fn number_of[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 6 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn answer_json[&h](heap: &!h Heap, content_json: &static [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 256), "{\"model\":\"stub\",\"message\":{\"role\":\"assistant\",\"content\":");
+    b = buffer.append(heap, b, content_json);
+    b = buffer.append(heap, b, "},\"done\":true}");
+    return b;
+}
+
+// The `content` of the last message of the request, as a JSON string literal made by the writer (so any text the person sent is escaped as the real service would).
+fn echo_of[&h, &b](heap: &!h Heap, body: &b [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 64), "\"\"");
+    let tape = box_slice(heap, json.tape_len(body), 0);
+    borrow mut tape as &!tw in {
+        let nodes = json.parse(body, contents(tw));
+        if nodes > 0 && json.is_object(contents(tw), 0) {
+            let msgs = json.get(body, contents(tw), 0, "messages");
+            if msgs >= 0 && json.is_array(contents(tw), msgs) && json.count(contents(tw), msgs) > 0 {
+                let last = json.at(contents(tw), msgs, json.count(contents(tw), msgs) - 1);
+                let content = json.get(body, contents(tw), last, "content");
+                if content >= 0 && json.is_string(contents(tw), content) {
+                    let n = json.string_length(body, contents(tw), content);
+                    let raw = box_slice(heap, n + 1, byte_of(0));
+                    borrow mut raw as &!rw in {
+                        let got = json.string_into(body, contents(tw), content, contents(rw));
+                        if got >= 0 {
+                            var w = json.writer(heap, got + 16);
+                            w = json.put_string(heap, w, contents(rw)[0..got]);
+                            buffer.drop(heap, out);
+                            out = json.finish(w);
+                        }
+                    }
+                    unbox_slice(heap, raw);
+                }
+            }
+        }
+    }
+    unbox_slice(heap, tape);
+    return out;
+}
+
+fn serve[&h, &k, &l, &f, &r, &m](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, fs: &f Fs(""), record: &r [byte], mode: &m [byte]) -> [heap, conn_accept, conn_read, conn_write, poll, clock, fs_read(""), fs_write(""), file_read, file_write] int {
+    match poller_new() {
+        Polling::Ok(p) => {
+            var srv = server.open(heap, p, listener, 4194304, 0, 30);
+            while true {
+                srv = server.wait(heap, srv, clock, listener, 200);
+                var more = true;
+                while more {
+                    var slot = 0 - 1;
+                    borrow mut srv as &!sw in {
+                        slot = server.next(heap, sw);
+                    }
+                    if slot < 0 {
+                        more = false;
+                    } else {
+                        var out = buffer.empty(heap, 4096);
+                        var silent = false;
+                        borrow srv as &sr in {
+                            files.write_all(fs, record, server.body(sr));
+                            var status = 200;
+                            var content = buffer.empty(heap, 8);
+                            if bytes.equal(mode, "slow") {
+                                silent = true;
+                            } else if bytes.equal(mode, "err500") {
+                                status = 500;
+                                buffer.drop(heap, content);
+                                content = buffer.append(heap, buffer.empty(heap, 32), "{\"error\":\"boom\"}");
+                            } else if bytes.equal(mode, "badjson") {
+                                buffer.drop(heap, content);
+                                content = buffer.append(heap, buffer.empty(heap, 32), "this is not json");
+                            } else if bytes.equal(mode, "nomessage") {
+                                buffer.drop(heap, content);
+                                content = buffer.append(heap, buffer.empty(heap, 32), "{\"done\":true}");
+                            } else {
+                                var text = buffer.empty(heap, 8);
+                                if bytes.equal(mode, "echo") {
+                                    buffer.drop(heap, text);
+                                    text = echo_of(heap, server.body(sr));
+                                } else if bytes.equal(mode, "quotes") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 32), "\"\\\"a quoted prompt\\\"\"");
+                                } else if bytes.equal(mode, "fence") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 32), "\"```\\nfenced prompt\\n```\"");
+                                } else if bytes.equal(mode, "empty") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 8), "\"\"");
+                                } else if bytes.equal(mode, "long") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 1100), "\"");
+                                    var q = 0;
+                                    while q < 1001 {
+                                        text = buffer.push(heap, text, byte_of(97));
+                                        q = q + 1;
+                                    }
+                                    text = buffer.push(heap, text, byte_of(34));
+                                } else if bytes.equal(mode, "control") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 32), "\"bell\\u0007here\"");
+                                } else {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 32), "\"A stub prompt.\"");
+                                }
+                                borrow text as &tb in {
+                                    buffer.drop(heap, content);
+                                    var b = buffer.append(heap, buffer.empty(heap, 256), "{\"model\":\"stub\",\"message\":{\"role\":\"assistant\",\"content\":");
+                                    b = buffer.append(heap, b, buffer.bytes(tb));
+                                    b = buffer.append(heap, b, "},\"done\":true}");
+                                    content = b;
+                                }
+                                buffer.drop(heap, text);
+                            }
+                            if silent == false {
+                                borrow content as &cb in {
+                                    out = server.reply_as(heap, out, status, "application/json", buffer.bytes(cb), false, "");
+                                }
+                            }
+                            buffer.drop(heap, content);
+                        }
+                        if silent == false {
+                            borrow mut srv as &!sw2 in {
+                                borrow out as &ob in {
+                                    server.respond(sw2, buffer.bytes(ob));
+                                }
+                            }
+                        }
+                        buffer.drop(heap, out);
+                    }
+                }
+            }
+            server.close(heap, srv);
+            return 0;
+        }
+        Polling::Failed(e) => {
+            return 5;
+        }
+    }
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 2;
+    borrow args as &g in {
+        if arg_count(g) == 4 {
+            let port = number_of(arg(g, 1));
+            borrow fs as &fr in {
+                borrow mut heap as &!h in {
+                    if port > 0 && port < 65536 && files.path_ok(fr, arg(g, 2)) {
+                        status = 3;
+                        borrow net as &nn in {
+                            match tcp_listen_on(nn, "127.0.0.1", port, 64, 0) {
+                                Listening::Ok(l) => {
+                                    var listener = l;
+                                    borrow mut listener as &!lh in {
+                                        listener_nonblocking(lh);
+                                        borrow clock as &c in {
+                                            status = serve(h, c, lh, fr, arg(g, 2), arg(g, 3));
+                                        }
+                                    }
+                                    listener_close(listener);
+                                }
+                                Listening::Failed(e) => {
+                                }
+                            }
+                        }
+                    } else {
+                        borrow mut io as &!i in {
+                            io.error_all(i, "usage: rewrite_stub <port> <absolute file> <mode>\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    release(fs);
+    release(net);
+    release(clock);
+    release(args);
+    release(io);
+    release(heap);
+    return status;
+}

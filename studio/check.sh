@@ -7,7 +7,7 @@ PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
 $C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
-$C build studio/worker.cho studio/files.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
+$C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 printf '#!/bin/sh\necho "args: $1 | $2 | home=$HOME"\n[ "$1" = fail ] && exit 7\nexit 0\n' > "$T/fake.sh"
@@ -33,7 +33,7 @@ rc=0; build/studio_worker "$T/fake.sh" /Users/test relative/dir 2>/dev/null || r
 
 # The script is started beneath its directory (`exec_spawn_under`), so the report says `exec_under`, not `exec("")` (any program anywhere). Measured before: `exec("")`.
 if [ -n "${CANCHO_AUTH:-1}" ]; then
-  A=$($C authority studio/worker.cho studio/files.cho --std 2>&1)
+  A=$($C authority studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std 2>&1)
   check "exec: the report names exec_under" "$(echo "$A" | grep -c '^    exec_under$')" 1
   check "exec: ...and no longer exec(\"\")" "$(echo "$A" | grep -c 'exec("")')" 0
 fi
