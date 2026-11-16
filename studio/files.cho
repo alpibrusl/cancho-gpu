@@ -38,6 +38,63 @@ pub fn exists[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read("")] bool {
     }
 }
 
+// The size of the file at `path`, or -1.
+pub fn size_of[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] int {
+    if path_ok(fs, path) == false {
+        return 0 - 1;
+    }
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return 0 - 1;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var size = 0 - 1;
+            borrow mut file as &!x in {
+                match file_size(x) {
+                    Done::Ok(n) => {
+                        size = n;
+                    }
+                    Done::Failed(e) => {
+                    }
+                }
+            }
+            file_close(file);
+            return size;
+        }
+    }
+}
+
+// Up to `len(into)` bytes of the file at `path`, from byte `at`, into `into`: how many were read, 0 at the end, -1 for an error. The file is opened and closed here, so a stream holds a path and a number and no handle.
+pub fn read_at[&f, &p, &b](fs: &f Fs(""), path: &p [byte], at: int, into: &!b [byte]) -> [fs_read(""), file_read] int {
+    if path_ok(fs, path) == false || at < 0 {
+        return 0 - 1;
+    }
+    match open_read(fs, path) {
+        Opened::Failed(e) => {
+            return 0 - 1;
+        }
+        Opened::Ok(opened) => {
+            var file = opened;
+            var got = 0 - 1;
+            borrow mut file as &!x in {
+                match file_pread(x, at, into) {
+                    Read::Got(n) => {
+                        got = n;
+                    }
+                    Read::End => {
+                        got = 0;
+                    }
+                    Read::Failed(e) => {
+                    }
+                }
+            }
+            file_close(file);
+            return got;
+        }
+    }
+}
+
 fn drain[&h, &x](heap: &!h Heap, file: &!x File, all: buffer.Buffer) -> [heap, file_read] (buffer.Buffer, int) {
     var out = all;
     var errno = 0;

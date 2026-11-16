@@ -95,11 +95,6 @@ fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id:
     return (known, word);
 }
 
-// The most one file may be: the server holds it whole while it is sent (`studio` streams it with `hold`/`stream`, as the package's own `/big/<n>` does).
-fn serve_limit() -> [] int {
-    return 67108864;
-}
-
 // The page of job `id` (the text after `/jobs/`): 200, 404 for an id with no argument file, 422 for one that is not 1 to 9 digits.
 pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     if id_ok(id) == false {
@@ -242,50 +237,36 @@ pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
     return "";
 }
 
-// `rest` is the text after `/files/`: `N/NAME`. The file's bytes with 200; 404 if the job, the name or the file is not there (the body is then a line of text); 422 for an id that is not digits.
-pub fn file_of[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], rest: &r [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+// `rest` is the text after `/files/`: `N/NAME`. Answers (status, path, size): 200 with the file's path (to be read in pieces, never whole) and its size; 404 if the name is not on the list or the file is not
+// there; 422 for an id that is not digits. The path is empty unless the status is 200.
+pub fn file_info[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], rest: &r [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer, int) {
     var cut = 0;
     while cut < len(rest) && int_of(rest[cut]) != 47 {
         cut = cut + 1;
     }
     if cut >= len(rest) {
-        return (404, buffer.append(heap, buffer.empty(heap, 32), "not found"));
+        return (404, buffer.empty(heap, 8), 0 - 1);
     }
     let id = rest[0..cut];
     let name = rest[cut + 1..len(rest)];
     if id_ok(id) == false {
-        return (422, buffer.append(heap, buffer.empty(heap, 48), "the id is 1 to 9 digits"));
+        return (422, buffer.empty(heap, 8), 0 - 1);
     }
     if len(content_type(name)) == 0 {
-        return (404, buffer.append(heap, buffer.empty(heap, 32), "not found"));
+        return (404, buffer.empty(heap, 8), 0 - 1);
     }
     var path = out_path(heap, dir, id, name);
     if bytes.equal(name, "log") {
         buffer.drop(heap, path);
         path = job_path(heap, dir, id, ".log");
     }
-    var status = 200;
-    var data = buffer.empty(heap, 16);
-    var big = false;
+    var size = 0 - 1;
     borrow path as &pb in {
-        let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
-        buffer.drop(heap, data);
-        data = b;
-        if e != 0 {
-            status = 404;
-        }
+        size = files.size_of(fs, buffer.bytes(pb));
     }
-    buffer.drop(heap, path);
-    borrow data as &dr in {
-        big = buffer.size(dr) > serve_limit();
+    if size < 0 {
+        buffer.drop(heap, path);
+        return (404, buffer.empty(heap, 8), 0 - 1);
     }
-    if big && status == 200 {
-        buffer.drop(heap, data);
-        return (413, buffer.append(heap, buffer.empty(heap, 96), "the file is over 64 MiB"));
-    }
-    if status != 200 {
-        buffer.drop(heap, data);
-        return (404, buffer.append(heap, buffer.empty(heap, 32), "not found"));
-    }
-    return (200, data);
+    return (200, path, size);
 }
