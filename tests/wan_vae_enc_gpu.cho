@@ -1,0 +1,1381 @@
+edition 9;
+
+import std.buffer;
+import std.fmt;
+import std.io;
+import std.json;
+import std.math;
+import files;
+import wenc_st;
+import wenc_codec;
+
+// wan_vae_enc_gpu -- slices E2 and E3 of docs/wan-vae-encoder.md: the VAE encoder of Wan2.2-TI2V-5B for ONE frame, as one session of kernel programs on the Metal GPU, written in cancho.
+//
+//   wan_vae_enc_gpu prepare <vae.safetensors> <work dir> <repo dir> <input.f32 | -> <H> <W> [<mutant 1-3>]
+//   wan_vae_enc_gpu compare <work dir> <reference mean .f32> <H> <W>
+//
+// `prepare` writes `<work>/enc.session` and every file it names (weights as halves, norms and biases as singles, the masks, the input rows). Run the session with
+//   printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session <work>/enc.session
+// which saves `<work>/x.f32` (the rows of the last convolution, singles). `compare` reads the first 48 channels, the posterior's mean, and holds them to a reference of `[48, H/16, W/16]` singles: the relative
+// root-mean-square difference is printed and the exit status is 0 if it is within `bound()`.
+//
+// Why one frame is a 2-D network (docs/wan-vae-encoder.md section 9): a causal 3 x 3 x 3 convolution pads two zero frames in front of the clip, so on one frame only its last time tap sees the picture: every
+// 3 x 3 x 3 convolution is the 3 x 3 convolution of `w[:, :, 2]`; `time_conv` is not applied to the first frame; and `AvgDown3D`'s time pad makes output channel 2c zero and 2c + 1 the 2 x 2 mean of input channel
+// c for the two blocks that halve time. The layout and the kernels are those of the Qwen-Image VAE encoder (`tests/vae_enc_gpu.py`, the decoder's before it): a feature map is a matrix of rows, one a pixel of a
+// bordered image, f32 between blocks, f16 with guard rows into a convolution; a stride-2 convolution is `vae_s2d` and a stride-1 convolution of 4c channels; the shortcut is `vae_avg2` and a 0/1 matrix.
+//
+// A first draft of this program was a port of that Python; nothing in it is Python at run time. Built with
+//   cancho build tests/wan_vae_enc_gpu.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/wan_vae_enc_gpu
+
+fn bound() -> [] float {
+    return 0.005;
+}
+
+// ---- the session text and the counters: `iv[0]` bytes written, `iv[1]` the last counter, `iv[2]` errors
+
+fn emit[&s, &v, &t](sess: &!s [byte], iv: &!v [int], text: &t [byte]) -> [] int {
+    var i = 0;
+    while i < len(text) {
+        if iv[0] < len(sess) {
+            sess[iv[0]] = text[i];
+            iv[0] = iv[0] + 1;
+        } else {
+            iv[2] = iv[2] + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn emit_nat[&s, &v](sess: &!s [byte], iv: &!v [int], n: int) -> [] int {
+    region a {
+        let out = alloc_slice[a](24, byte_of(0));
+        var k = 0;
+        var x = n;
+        if x == 0 {
+            out[0] = byte_of(48);
+            k = 1;
+        }
+        while x > 0 {
+            out[k] = byte_of(48 + x % 10);
+            x = x / 10;
+            k = k + 1;
+        }
+        var l = 0;
+        var r = k - 1;
+        while l < r {
+            let tmp = out[l];
+            out[l] = out[r];
+            out[r] = tmp;
+            l = l + 1;
+            r = r - 1;
+        }
+        emit(sess, iv, out[0..k]);
+    }
+    return 0;
+}
+
+// `x` (0 to 1,000,000) as a decimal with 15 digits after the point, which is how the session writes a scale (`sc=12.649110640673518`).
+fn emit_float[&s, &v](sess: &!s [byte], iv: &!v [int], x: float) -> [] int {
+    let ip = truncate(x);
+    emit_nat(sess, iv, ip);
+    emit(sess, iv, ".");
+    var frac = x - float_of(ip);
+    var k = 0;
+    while k < 15 {
+        frac = frac * 10.0;
+        let d = truncate(frac);
+        emit_digit(sess, iv, d);
+        frac = frac - float_of(d);
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn emit_digit[&s, &v](sess: &!s [byte], iv: &!v [int], d: int) -> [] int {
+    emit(sess, iv, "0");
+    if iv[0] > 0 {
+        sess[iv[0] - 1] = byte_of(48 + d);
+    }
+    return 0;
+}
+
+fn fresh[&v](iv: &!v [int]) -> [] int {
+    iv[1] = iv[1] + 1;
+    return iv[1];
+}
+
+fn kv[&s, &v](sess: &!s [byte], iv: &!v [int], key: &static [byte], value: int) -> [] int {
+    emit(sess, iv, " ");
+    emit(sess, iv, key);
+    emit(sess, iv, "=");
+    emit_nat(sess, iv, value);
+    return 0;
+}
+
+// a value is `kind * 1000000 + n`: its program's name and output port
+fn kind_prefix(kind: int) -> [] &static [byte] {
+    if kind == 1 {
+        return "cv";
+    }
+    if kind == 2 {
+        return "c1";
+    }
+    if kind == 3 {
+        return "bi";
+    }
+    if kind == 4 {
+        return "nm";
+    }
+    if kind == 5 {
+        return "pd";
+    }
+    if kind == 6 {
+        return "br";
+    }
+    if kind == 7 {
+        return "sd";
+    }
+    if kind == 8 {
+        return "av";
+    }
+    if kind == 9 {
+        return "ad";
+    }
+    return "pv";
+}
+
+fn kind_port(kind: int) -> [] &static [byte] {
+    if kind == 3 || kind == 6 || kind == 9 {
+        return ".z";
+    }
+    if kind == 10 {
+        return ".o";
+    }
+    return ".y";
+}
+
+fn emit_ref[&s, &v](sess: &!s [byte], iv: &!v [int], r: int) -> [] int {
+    let kind = r / 1000000;
+    emit(sess, iv, kind_prefix(kind));
+    emit_nat(sess, iv, r - kind * 1000000);
+    emit(sess, iv, kind_port(kind));
+    return 0;
+}
+
+fn mk(kind: int, n: int) -> [] int {
+    return kind * 1000000 + n;
+}
+
+// `link <ref> -> <prefix><n>.<port>`
+fn link_to[&s, &v](sess: &!s [byte], iv: &!v [int], from: int, prefix: &static [byte], n: int, port: &static [byte]) -> [] int {
+    emit(sess, iv, "link ");
+    emit_ref(sess, iv, from);
+    emit(sess, iv, " -> ");
+    emit(sess, iv, prefix);
+    emit_nat(sess, iv, n);
+    emit(sess, iv, ".");
+    emit(sess, iv, port);
+    emit(sess, iv, "\n");
+    return 0;
+}
+
+// `link <p1><n1>.<port1> -> <p2><n2>.<port2>`
+fn link_names[&s, &v](sess: &!s [byte], iv: &!v [int], p1: &static [byte], n1: int, port1: &static [byte], p2: &static [byte], n2: int, port2: &static [byte]) -> [] int {
+    emit(sess, iv, "link ");
+    emit(sess, iv, p1);
+    emit_nat(sess, iv, n1);
+    emit(sess, iv, ".");
+    emit(sess, iv, port1);
+    emit(sess, iv, " -> ");
+    emit(sess, iv, p2);
+    emit_nat(sess, iv, n2);
+    emit(sess, iv, ".");
+    emit(sess, iv, port2);
+    emit(sess, iv, "\n");
+    return 0;
+}
+
+// `program <prefix><n> <chx dir>/<kernel>.chx` (the arguments follow, then a newline by `end`)
+fn program[&s, &v, &c, &k](sess: &!s [byte], iv: &!v [int], prefix: &static [byte], n: int, chx: &c [byte], kernel: &k [byte]) -> [] int {
+    emit(sess, iv, "program ");
+    emit(sess, iv, prefix);
+    emit_nat(sess, iv, n);
+    emit(sess, iv, " ");
+    emit(sess, iv, chx);
+    emit(sess, iv, "/");
+    emit(sess, iv, kernel);
+    emit(sess, iv, ".chx");
+    return 0;
+}
+
+fn end[&s, &v](sess: &!s [byte], iv: &!v [int]) -> [] int {
+    emit(sess, iv, "\n");
+    return 0;
+}
+
+// `resident <prefix><n>.<port> <work>/<prefix><n><file tail> <f16|f32>`
+fn resident[&s, &v, &w](sess: &!s [byte], iv: &!v [int], wd: &w [byte], prefix: &static [byte], n: int, port: &static [byte], tail: &static [byte], flag: &static [byte]) -> [] int {
+    emit(sess, iv, "resident ");
+    emit(sess, iv, prefix);
+    emit_nat(sess, iv, n);
+    emit(sess, iv, ".");
+    emit(sess, iv, port);
+    emit(sess, iv, " ");
+    emit(sess, iv, wd);
+    emit(sess, iv, "/");
+    emit(sess, iv, prefix);
+    emit_nat(sess, iv, n);
+    emit(sess, iv, tail);
+    emit(sess, iv, " ");
+    emit(sess, iv, flag);
+    emit(sess, iv, "\n");
+    return 0;
+}
+
+// ---- the layout of a feature map `h x w`: rows R, row length of the bordered image WP, guard rows G
+
+fn lwp(w: int) -> [] int {
+    return w + 2;
+}
+
+fn lg(w: int) -> [] int {
+    return w + 3;
+}
+
+fn lr(h: int, w: int) -> [] int {
+    return ((h + 2) * (w + 2) + 63) / 64 * 64;
+}
+
+// ---- files
+
+fn path_of[&h, &w, &p, &t](heap: &!h Heap, wd: &w [byte], prefix: &p [byte], n: int, tail: &t [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 96), wd);
+    b = buffer.push(heap, b, byte_of(47));
+    b = buffer.append(heap, b, prefix);
+    b = buffer.push_nat(heap, b, n);
+    b = buffer.append(heap, b, tail);
+    return b;
+}
+
+fn path_plain[&h, &w, &t](heap: &!h Heap, wd: &w [byte], name: &t [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 96), wd);
+    b = buffer.push(heap, b, byte_of(47));
+    b = buffer.append(heap, b, name);
+    return b;
+}
+
+fn put_f16[&h, &f, &w, &v, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], prefix: &static [byte], n: int, tail: &static [byte], values: &v [float], iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let p = path_of(heap, wd, prefix, n, tail);
+    borrow p as &pb in {
+        if wenc_codec.write_f16(heap, fs, buffer.bytes(pb), values) != 0 {
+            iv[2] = iv[2] + 1;
+        }
+    }
+    buffer.drop(heap, p);
+    return 0;
+}
+
+fn put_f32[&h, &f, &w, &v, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], prefix: &static [byte], n: int, tail: &static [byte], values: &v [float], iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let p = path_of(heap, wd, prefix, n, tail);
+    borrow p as &pb in {
+        if wenc_codec.write_f32(heap, fs, buffer.bytes(pb), values) != 0 {
+            iv[2] = iv[2] + 1;
+        }
+    }
+    buffer.drop(heap, p);
+    return 0;
+}
+
+// the mask of a level: 1 on the interior rows of the bordered image, 0 elsewhere (`mask<h>.f32`, a column of R singles)
+fn put_mask[&h, &f, &w, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], hh: int, ww: int, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let rr = lr(hh, ww);
+    let m = box_slice(heap, rr, 0.0);
+    borrow mut m as &!mw in {
+        var y = 0;
+        while y < hh {
+            var x = 0;
+            while x < ww {
+                contents(mw)[(y + 1) * lwp(ww) + 1 + x] = 1.0;
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+    borrow m as &mr in {
+        put_f32(heap, fs, wd, "mask", hh, ".f32", contents(mr), iv);
+    }
+    unbox_slice(heap, m);
+    return 0;
+}
+
+// ---- the checkpoint
+
+fn nm[&h, &a, &b, &c](heap: &!h Heap, first: &a [byte], second: &b [byte], third: &c [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 96), first);
+    out = buffer.append(heap, out, second);
+    out = buffer.append(heap, out, third);
+    return out;
+}
+
+// the tensor `first + second + third` as binary64, `expect` values or an error counted in `iv[2]`
+fn tensor[&h, &f, &p, &a, &b, &c, &q](heap: &!h Heap, fs: &f Fs(""), sp: &p [byte], first: &a [byte], second: &b [byte], third: &c [byte], expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let name = nm(heap, first, second, third);
+    var out = box_slice(heap, 1, 0.0);
+    borrow name as &nb in {
+        let (v, n, ok) = wenc_st.load(heap, fs, sp, buffer.bytes(nb));
+        unbox_slice(heap, out);
+        out = v;
+        if ok != 0 || n != expect {
+            iv[2] = iv[2] + 1;
+        }
+    }
+    buffer.drop(heap, name);
+    return out;
+}
+
+// a 3 x 3 x 3 causal convolution's weights `[o, c, 3, 3, 3]` for one frame: the last time tap, tap-major: `[o, 9 c]` (index `o * 9 c + (3 dy + dx) * c + ch`)
+fn conv_w3[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), sp: &p [byte], prefix: &a [byte], part: &b [byte], cin: int, cout: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let w = tensor(heap, fs, sp, prefix, part, ".weight", cout * cin * 27, iv);
+    let out = box_slice(heap, cout * 9 * cin, 0.0);
+    borrow w as &wr in {
+        borrow mut out as &!ow in {
+            var o = 0;
+            while o < cout {
+                var c = 0;
+                while c < cin {
+                    var t = 0;
+                    while t < 9 {
+                        contents(ow)[o * 9 * cin + t * cin + c] = contents(wr)[(((o * cin + c) * 3 + 2) * 3 + t / 3) * 3 + t % 3];
+                        t = t + 1;
+                    }
+                    c = c + 1;
+                }
+                o = o + 1;
+            }
+        }
+    }
+    unbox_slice(heap, w);
+    return out;
+}
+
+// `conv_in`: `[o, 12, 3, 3, 3]` as `[o, 9, 32]` (the 12 channels padded to 32 with zeros)
+fn conv_w3_in[&h, &f, &p, &q](heap: &!h Heap, fs: &f Fs(""), sp: &p [byte], cout: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let w = tensor(heap, fs, sp, "encoder.conv_in", "", ".weight", cout * 12 * 27, iv);
+    let out = box_slice(heap, cout * 9 * 32, 0.0);
+    borrow w as &wr in {
+        borrow mut out as &!ow in {
+            var o = 0;
+            while o < cout {
+                var c = 0;
+                while c < 12 {
+                    var t = 0;
+                    while t < 9 {
+                        contents(ow)[(o * 9 + t) * 32 + c] = contents(wr)[(((o * 12 + c) * 3 + 2) * 3 + t / 3) * 3 + t % 3];
+                        t = t + 1;
+                    }
+                    c = c + 1;
+                }
+                o = o + 1;
+            }
+        }
+    }
+    unbox_slice(heap, w);
+    return out;
+}
+
+// a 1 x 1 (x 1) convolution's weights `[o, c, ...]` as `[o, c]`: the same numbers
+fn conv_w1[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), sp: &p [byte], prefix: &a [byte], part: &b [byte], cin: int, cout: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    return tensor(heap, fs, sp, prefix, part, ".weight", cout * cin, iv);
+}
+
+// the stride-2 3 x 3 weights `[c, c, 3, 3]` as a stride-1 3 x 3 convolution over 4c channels (a, b, channel): tap `(di + 1, dj + 1)` holds the original tap `(2 di + a, 2 dj + b)` where it exists.
+// `mutant` 1 drops the last tap (2, 2).
+fn s2d_weights[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), sp: &p [byte], prefix: &a [byte], part: &b [byte], c: int, mutant: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let w = tensor(heap, fs, sp, prefix, part, ".weight", c * c * 9, iv);
+    let out = box_slice(heap, c * 9 * 4 * c, 0.0);
+    borrow w as &wr in {
+        borrow mut out as &!ow in {
+            var o = 0;
+            while o < c {
+                var di = 0;
+                while di < 2 {
+                    var dj = 0;
+                    while dj < 2 {
+                        var aa = 0;
+                        while aa < 2 {
+                            var bb = 0;
+                            while bb < 2 {
+                                let dy = 2 * di + aa;
+                                let dx = 2 * dj + bb;
+                                if dy <= 2 && dx <= 2 && (mutant != 1 || dy != 2 || dx != 2) {
+                                    var ch = 0;
+                                    while ch < c {
+                                        contents(ow)[((((o * 3 + di + 1) * 3 + dj + 1) * 2 + aa) * 2 + bb) * c + ch] = contents(wr)[((o * c + ch) * 3 + dy) * 3 + dx];
+                                        ch = ch + 1;
+                                    }
+                                }
+                                bb = bb + 1;
+                            }
+                            aa = aa + 1;
+                        }
+                        dj = dj + 1;
+                    }
+                    di = di + 1;
+                }
+                o = o + 1;
+            }
+        }
+    }
+    unbox_slice(heap, w);
+    return out;
+}
+
+// ---- the operations
+
+fn norm[&h, &f, &w, &s, &v, &p, &a, &b](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &p [byte], sess: &!s [byte], iv: &!v [int], sp: &a [byte], src: int, gname: &b [byte], c: int, hh: int, ww: int, silu: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let n = fresh(iv);
+    let g = tensor(heap, fs, sp, gname, "", ".gamma", c, iv);
+    if silu {
+        program(sess, iv, "nm", n, chx, "vae_norm_silu");
+    } else {
+        program(sess, iv, "nm", n, chx, "vae_norm");
+    }
+    kv(sess, iv, "r", lr(hh, ww));
+    kv(sess, iv, "c", c);
+    kv(sess, iv, "g", lg(ww));
+    emit(sess, iv, " sc=");
+    emit_float(sess, iv, sqrt(float_of(c)));
+    end(sess, iv);
+    link_to(sess, iv, src, "nm", n, "x");
+    borrow g as &gr in {
+        put_f32(heap, fs, wd, "nm", n, "g.f32", contents(gr), iv);
+    }
+    unbox_slice(heap, g);
+    resident(sess, iv, wd, "nm", n, "gamma", "g.f32", "f32");
+    put_mask(heap, fs, wd, hh, ww, iv);
+    emit(sess, iv, "resident nm");
+    emit_nat(sess, iv, n);
+    emit(sess, iv, ".mask ");
+    emit(sess, iv, wd);
+    emit(sess, iv, "/mask");
+    emit_nat(sess, iv, hh);
+    emit(sess, iv, ".f32 f32\n");
+    return mk(4, n);
+}
+
+fn program_path[&s, &v, &p](sess: &!s [byte], iv: &!v [int], prefix: &static [byte], n: int, path: &p [byte]) -> [] int {
+    emit(sess, iv, "program ");
+    emit(sess, iv, prefix);
+    emit_nat(sess, iv, n);
+    emit(sess, iv, " ");
+    emit(sess, iv, path);
+    return 0;
+}
+
+// `resident <prefix><n>.<port> <work>/mask<h>.f32 f32`
+fn res_mask[&s, &v, &w](sess: &!s [byte], iv: &!v [int], wd: &w [byte], prefix: &static [byte], n: int, port: &static [byte], hh: int) -> [] int {
+    emit(sess, iv, "resident ");
+    emit(sess, iv, prefix);
+    emit_nat(sess, iv, n);
+    emit(sess, iv, ".");
+    emit(sess, iv, port);
+    emit(sess, iv, " ");
+    emit(sess, iv, wd);
+    emit(sess, iv, "/mask");
+    emit_nat(sess, iv, hh);
+    emit(sess, iv, ".f32 f32\n");
+    return 0;
+}
+
+// a 3 x 3 convolution of a guarded f16 input: `weights` is `[cout, 9 cin]`
+fn conv3[&h, &f, &w, &c, &k, &s, &v, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], c3: &k [byte], sess: &!s [byte], iv: &!v [int], src: int, weights: &q [float], cin: int, cout: int, hh: int, ww: int) -> [heap, fs_write(""), file_write] int {
+    let n = fresh(iv);
+    put_f16(heap, fs, wd, "cv", n, ".f16", weights, iv);
+    if cin % 32 != 0 || cout % 32 != 0 {
+        program(sess, iv, "cv", n, chx, "conv3_k16");
+    } else {
+        program_path(sess, iv, "cv", n, c3);
+    }
+    kv(sess, iv, "rp", lr(hh, ww));
+    kv(sess, iv, "cin", cin);
+    kv(sess, iv, "cout", cout);
+    kv(sess, iv, "wp", lwp(ww));
+    kv(sess, iv, "g", lg(ww));
+    end(sess, iv);
+    link_to(sess, iv, src, "cv", n, "x");
+    resident(sess, iv, wd, "cv", n, "w", ".f16", "f16");
+    return mk(1, n);
+}
+
+// a 1 x 1 convolution: `weights` is `[cout, cin]`
+fn conv1[&h, &f, &w, &c, &s, &v, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], sess: &!s [byte], iv: &!v [int], src: int, weights: &q [float], cin: int, cout: int, hh: int, ww: int) -> [heap, fs_write(""), file_write] int {
+    let n = fresh(iv);
+    put_f16(heap, fs, wd, "c1", n, ".f16", weights, iv);
+    program(sess, iv, "c1", n, chx, "conv1");
+    kv(sess, iv, "r", lr(hh, ww));
+    kv(sess, iv, "cin", cin);
+    kv(sess, iv, "cout", cout);
+    kv(sess, iv, "g", lg(ww));
+    end(sess, iv);
+    link_to(sess, iv, src, "c1", n, "x");
+    resident(sess, iv, wd, "c1", n, "w", ".f16", "f16");
+    return mk(2, n);
+}
+
+// add a bias vector (the channels' `bias`, masked to the interior)
+fn bias[&h, &f, &w, &c, &s, &v, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], sess: &!s [byte], iv: &!v [int], src: int, vec: &q [float], cc: int, hh: int, ww: int) -> [heap, fs_write(""), file_write] int {
+    let n = fresh(iv);
+    program(sess, iv, "bi", n, chx, "vae_bias");
+    kv(sess, iv, "r", lr(hh, ww));
+    kv(sess, iv, "c", cc);
+    end(sess, iv);
+    link_to(sess, iv, src, "bi", n, "x");
+    put_f32(heap, fs, wd, "bi", n, "b.f32", vec, iv);
+    resident(sess, iv, wd, "bi", n, "b", "b.f32", "f32");
+    res_mask(sess, iv, wd, "bi", n, "m", hh);
+    put_mask(heap, fs, wd, hh, ww, iv);
+    return mk(3, n);
+}
+
+fn pad16[&s, &v, &c](sess: &!s [byte], iv: &!v [int], chx: &c [byte], src: int, cc: int, hh: int, ww: int) -> [] int {
+    let n = fresh(iv);
+    program(sess, iv, "pd", n, chx, "vae_pad16");
+    kv(sess, iv, "r", lr(hh, ww));
+    kv(sess, iv, "c", cc);
+    kv(sess, iv, "g", lg(ww));
+    end(sess, iv);
+    link_to(sess, iv, src, "pd", n, "x");
+    return mk(5, n);
+}
+
+// `src + bias + residual`
+fn bias_res[&h, &f, &w, &c, &s, &v, &q](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], sess: &!s [byte], iv: &!v [int], src: int, vec: &q [float], rsrc: int, cc: int, hh: int, ww: int) -> [heap, fs_write(""), file_write] int {
+    let n = fresh(iv);
+    program(sess, iv, "br", n, chx, "vae_bias_res");
+    kv(sess, iv, "r", lr(hh, ww));
+    kv(sess, iv, "c", cc);
+    end(sess, iv);
+    link_to(sess, iv, src, "br", n, "x");
+    link_to(sess, iv, rsrc, "br", n, "res");
+    put_f32(heap, fs, wd, "br", n, "b.f32", vec, iv);
+    resident(sess, iv, wd, "br", n, "b", "b.f32", "f32");
+    res_mask(sess, iv, wd, "br", n, "m", hh);
+    put_mask(heap, fs, wd, hh, ww, iv);
+    return mk(6, n);
+}
+
+// the `.bias` of a layer as a vector of `c`
+fn bias_vec[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), sp: &p [byte], prefix: &a [byte], part: &b [byte], cc: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    return tensor(heap, fs, sp, prefix, part, ".bias", cc, iv);
+}
+
+// `WanResidualBlock` for one frame. `prefix` is the block's checkpoint name.
+fn resnet[&h, &f, &w, &c, &k, &s, &v, &p, &a](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], c3: &k [byte], sess: &!s [byte], iv: &!v [int], sp: &p [byte], x: int, cin: int, cout: int, hh: int, ww: int, prefix: &a [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let n1 = nm(heap, prefix, ".norm1", "");
+    var r = 0;
+    borrow n1 as &n1b in {
+        let a0 = norm(heap, fs, wd, chx, sess, iv, sp, x, buffer.bytes(n1b), cin, hh, ww, true);
+        let w1 = conv_w3(heap, fs, sp, prefix, ".conv1", cin, cout, iv);
+        borrow w1 as &w1r in {
+            let a1 = conv3(heap, fs, wd, chx, c3, sess, iv, a0, contents(w1r), cin, cout, hh, ww);
+            let b1 = bias_vec(heap, fs, sp, prefix, ".conv1", cout, iv);
+            borrow b1 as &b1r in {
+                let a2 = bias(heap, fs, wd, chx, sess, iv, a1, contents(b1r), cout, hh, ww);
+                let n2 = nm(heap, prefix, ".norm2", "");
+                borrow n2 as &n2b in {
+                    let a3 = norm(heap, fs, wd, chx, sess, iv, sp, a2, buffer.bytes(n2b), cout, hh, ww, true);
+                    let w2 = conv_w3(heap, fs, sp, prefix, ".conv2", cout, cout, iv);
+                    borrow w2 as &w2r in {
+                        let a4 = conv3(heap, fs, wd, chx, c3, sess, iv, a3, contents(w2r), cout, cout, hh, ww);
+                        var hres = x;
+                        if cin != cout {
+                            let pd = pad16(sess, iv, chx, x, cin, hh, ww);
+                            let ws = conv_w1(heap, fs, sp, prefix, ".conv_shortcut", cin, cout, iv);
+                            borrow ws as &wsr in {
+                                let s1 = conv1(heap, fs, wd, chx, sess, iv, pd, contents(wsr), cin, cout, hh, ww);
+                                let bs = bias_vec(heap, fs, sp, prefix, ".conv_shortcut", cout, iv);
+                                borrow bs as &bsr in {
+                                    hres = bias(heap, fs, wd, chx, sess, iv, s1, contents(bsr), cout, hh, ww);
+                                }
+                                unbox_slice(heap, bs);
+                            }
+                            unbox_slice(heap, ws);
+                        }
+                        let b2 = bias_vec(heap, fs, sp, prefix, ".conv2", cout, iv);
+                        borrow b2 as &b2r in {
+                            r = bias_res(heap, fs, wd, chx, sess, iv, a4, contents(b2r), hres, cout, hh, ww);
+                        }
+                        unbox_slice(heap, b2);
+                    }
+                    unbox_slice(heap, w2);
+                }
+                buffer.drop(heap, n2);
+            }
+            unbox_slice(heap, b1);
+        }
+        unbox_slice(heap, w1);
+    }
+    buffer.drop(heap, n1);
+    return r;
+}
+
+// the middle block's attention for one frame: one head of `cc` channels over the positions of the bordered image (the keys of the border and the padding rows are masked out; `mutant` 3 does not mask them)
+fn attention[&h, &f, &w, &c, &k, &s, &v, &p, &a](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], c3: &k [byte], sess: &!s [byte], iv: &!v [int], sp: &p [byte], x: int, cc: int, hh: int, ww: int, prefix: &a [byte], mutant: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let ng = nm(heap, prefix, ".norm", "");
+    var result = 0;
+    borrow ng as &ngb in {
+        let nrm = norm(heap, fs, wd, chx, sess, iv, sp, x, buffer.bytes(ngb), cc, hh, ww, false);
+        let wq = conv_w1(heap, fs, sp, prefix, ".to_qkv", cc, 3 * cc, iv);
+        var qkv = 0;
+        borrow wq as &wqr in {
+            let q1 = conv1(heap, fs, wd, chx, sess, iv, nrm, contents(wqr), cc, 3 * cc, hh, ww);
+            let bq = bias_vec(heap, fs, sp, prefix, ".to_qkv", 3 * cc, iv);
+            borrow bq as &bqr in {
+                qkv = bias(heap, fs, wd, chx, sess, iv, q1, contents(bqr), 3 * cc, hh, ww);
+            }
+            unbox_slice(heap, bq);
+        }
+        unbox_slice(heap, wq);
+        let rr = lr(hh, ww);
+        let nsp = fresh(iv);
+        program(sess, iv, "sp", nsp, chx, "vae_split16");
+        kv(sess, iv, "r", rr);
+        kv(sess, iv, "c", cc);
+        emit(sess, iv, " sc=");
+        emit_float(sess, iv, 1.0 / sqrt(float_of(cc)));
+        end(sess, iv);
+        link_to(sess, iv, qkv, "sp", nsp, "qkv");
+        let nsc = fresh(iv);
+        program(sess, iv, "sc", nsc, chx, "ported/gemm_mma");
+        kv(sess, iv, "m", rr);
+        kv(sess, iv, "n", rr);
+        kv(sess, iv, "k", cc);
+        end(sess, iv);
+        link_names(sess, iv, "sp", nsp, "q", "sc", nsc, "a");
+        link_names(sess, iv, "sp", nsp, "k", "sc", nsc, "w");
+        let nma = fresh(iv);
+        program(sess, iv, "ma", nma, chx, "vae_mask_add");
+        kv(sess, iv, "n", rr);
+        end(sess, iv);
+        link_names(sess, iv, "sc", nsc, "y", "ma", nma, "sc");
+        let mk = box_slice(heap, rr, 0.0);
+        borrow mut mk as &!mkw in {
+            var i = 0;
+            while i < rr {
+                contents(mkw)[i] = 0.0 - 1000000000.0;
+                i = i + 1;
+            }
+            var y = 0;
+            while y < hh {
+                var xx = 0;
+                while xx < ww {
+                    contents(mkw)[(y + 1) * lwp(ww) + 1 + xx] = 0.0;
+                    xx = xx + 1;
+                }
+                y = y + 1;
+            }
+            if mutant == 3 {
+                i = 0;
+                while i < rr {
+                    contents(mkw)[i] = 0.0;
+                    i = i + 1;
+                }
+            }
+        }
+        borrow mk as &mkr in {
+            put_f32(heap, fs, wd, "ma", nma, "mk.f32", contents(mkr), iv);
+        }
+        unbox_slice(heap, mk);
+        resident(sess, iv, wd, "ma", nma, "mk", "mk.f32", "f32");
+        let nst = fresh(iv);
+        program(sess, iv, "st", nst, chx, "dit_stats");
+        kv(sess, iv, "nh", 1);
+        kv(sess, iv, "nq", rr);
+        kv(sess, iv, "t", rr);
+        kv(sess, iv, "qs", 32);
+        kv(sess, iv, "cs", 64);
+        end(sess, iv);
+        link_names(sess, iv, "ma", nma, "z", "st", nst, "sc");
+        let npv = fresh(iv);
+        program(sess, iv, "pv", npv, chx, "dit_pv");
+        kv(sess, iv, "nh", 1);
+        kv(sess, iv, "nq", rr);
+        kv(sess, iv, "t", rr);
+        kv(sess, iv, "qs", 32);
+        kv(sess, iv, "cs", 64);
+        kv(sess, iv, "dw", 32);
+        kv(sess, iv, "d", cc);
+        end(sess, iv);
+        link_names(sess, iv, "ma", nma, "z", "pv", npv, "sc");
+        link_names(sess, iv, "st", nst, "m", "pv", npv, "m");
+        link_names(sess, iv, "st", nst, "z", "pv", npv, "z");
+        link_names(sess, iv, "sp", nsp, "v", "pv", npv, "v");
+        let o16 = pad16(sess, iv, chx, mk_pv(npv), cc, hh, ww);
+        let wp = conv_w1(heap, fs, sp, prefix, ".proj", cc, cc, iv);
+        borrow wp as &wpr in {
+            let pr = conv1(heap, fs, wd, chx, sess, iv, o16, contents(wpr), cc, cc, hh, ww);
+            let bp = bias_vec(heap, fs, sp, prefix, ".proj", cc, iv);
+            borrow bp as &bpr in {
+                result = bias_res(heap, fs, wd, chx, sess, iv, pr, contents(bpr), x, cc, hh, ww);
+            }
+            unbox_slice(heap, bp);
+        }
+        unbox_slice(heap, wp);
+    }
+    buffer.drop(heap, ng);
+    return result;
+}
+
+fn mk_pv(n: int) -> [] int {
+    return mk(10, n);
+}
+
+// One down block's downsample (blocks 0 to 2): the space-to-depth convolution of `x`, plus the shortcut of the block's input `x0`: the 2 x 2 mean (`vae_avg2`) and a 0/1 matrix, the identity for block 0 and, for the
+// blocks that halve time, `sel[o, o / 2] = 1` for odd `o` only (the zero frame in front of the single frame: output channel 2c is zero). `mutant` 2 takes every channel's mean, the pad frame forgotten; 1 drops a tap.
+fn down[&h, &f, &w, &c, &k, &s, &v, &p, &a](heap: &!h Heap, fs: &f Fs(""), wd: &w [byte], chx: &c [byte], c3: &k [byte], sess: &!s [byte], iv: &!v [int], sp: &p [byte], x: int, x0: int, cin: int, cout: int, hh: int, ww: int, temporal: bool, prefix: &a [byte], mutant: int) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let h2 = hh / 2;
+    let w2 = ww / 2;
+    let nsd = fresh(iv);
+    program(sess, iv, "sd", nsd, chx, "vae_s2d");
+    kv(sess, iv, "h", hh);
+    kv(sess, iv, "w", ww);
+    kv(sess, iv, "c", cout);
+    kv(sess, iv, "r", lr(hh, ww));
+    kv(sess, iv, "r2", lr(h2, w2));
+    kv(sess, iv, "g2", lg(w2));
+    end(sess, iv);
+    link_to(sess, iv, x, "sd", nsd, "x");
+    var r = 0;
+    let wsd = s2d_weights(heap, fs, sp, prefix, ".downsampler.resample.1", cout, mutant, iv);
+    borrow wsd as &wsr in {
+        let cv = conv3(heap, fs, wd, chx, c3, sess, iv, mk(7, nsd), contents(wsr), 4 * cout, cout, h2, w2);
+        let nav = fresh(iv);
+        program(sess, iv, "av", nav, chx, "vae_avg2");
+        kv(sess, iv, "h", hh);
+        kv(sess, iv, "w", ww);
+        kv(sess, iv, "c", cin);
+        kv(sess, iv, "r", lr(hh, ww));
+        kv(sess, iv, "r2", lr(h2, w2));
+        kv(sess, iv, "g2", lg(w2));
+        end(sess, iv);
+        link_to(sess, iv, x0, "av", nav, "x");
+        let sel = box_slice(heap, cout * cin, 0.0);
+        borrow mut sel as &!selw in {
+            var o = 0;
+            while o < cout {
+                if temporal {
+                    if o % 2 == 1 || mutant == 2 {
+                        contents(selw)[o * cin + o / 2] = 1.0;
+                    }
+                } else {
+                    contents(selw)[o * cin + o] = 1.0;
+                }
+                o = o + 1;
+            }
+        }
+        borrow sel as &selr in {
+            let sh = conv1(heap, fs, wd, chx, sess, iv, mk(8, nav), contents(selr), cin, cout, h2, w2);
+            let bd = bias_vec(heap, fs, sp, prefix, ".downsampler.resample.1", cout, iv);
+            borrow bd as &bdr in {
+                r = bias_res(heap, fs, wd, chx, sess, iv, cv, contents(bdr), sh, cout, h2, w2);
+            }
+            unbox_slice(heap, bd);
+        }
+        unbox_slice(heap, sel);
+    }
+    unbox_slice(heap, wsd);
+    return r;
+}
+
+// ---- the commands
+
+fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+fn put_int[&i](io: &!i Io, n: int) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](24, byte_of(0));
+        var k = 0;
+        var x = n;
+        if x == 0 {
+            out[0] = byte_of(48);
+            k = 1;
+        }
+        while x > 0 {
+            out[k] = byte_of(48 + x % 10);
+            x = x / 10;
+            k = k + 1;
+        }
+        var l = 0;
+        var r = k - 1;
+        while l < r {
+            let tmp = out[l];
+            out[l] = out[r];
+            out[r] = tmp;
+            l = l + 1;
+            r = r - 1;
+        }
+        io.write_all(io, out[0..k]);
+    }
+    return 0;
+}
+
+fn put_float[&i](io: &!i Io, x: float) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](32, byte_of(0));
+        let n = fmt.float_into(out, x);
+        io.write_all(io, out[0..n]);
+    }
+    return 0;
+}
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 6 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn block_name[&h](heap: &!h Heap, i: int, tail: &static [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 64), "encoder.down_blocks.");
+    b = buffer.push_nat(heap, b, i);
+    b = buffer.append(heap, b, tail);
+    return b;
+}
+
+// a deterministic synthetic picture `[3, H, W]` in [-1, 1]: a smooth pattern and noise from a linear congruential generator (nothing of anyone's)
+fn synthetic[&h](heap: &!h Heap, hh: int, ww: int) -> [heap] Box[[float]] {
+    let img = box_slice(heap, 3 * hh * ww, 0.0);
+    borrow mut img as &!iw in {
+        var state = 12345;
+        var c = 0;
+        while c < 3 {
+            var y = 0;
+            while y < hh {
+                var x = 0;
+                while x < ww {
+                    state = state * 1103515245 + 12345 & 2147483647;
+                    let noise = float_of(state % 2000) / 1000.0 - 1.0;
+                    var v = 0.6 * math.sin(0.045 * float_of(x) + 0.9 * float_of(c)) * math.cos(0.031 * float_of(y)) + 0.25 * noise;
+                    if v > 1.0 {
+                        v = 1.0;
+                    }
+                    if v < 0.0 - 1.0 {
+                        v = 0.0 - 1.0;
+                    }
+                    contents(iw)[(c * hh + y) * ww + x] = v;
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+            c = c + 1;
+        }
+    }
+    return img;
+}
+
+fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if na != 8 && na != 9 {
+        put(io, "usage: wan_vae_enc_gpu prepare <vae.safetensors> <work dir> <repo dir> <input.f32 | -> <H> <W> [<mutant 1-3>]\n");
+        return 100;
+    }
+    let sp = arg(args, 2);
+    let wd = arg(args, 3);
+    let repo = arg(args, 4);
+    let hh = num(arg(args, 6));
+    let ww = num(arg(args, 7));
+    var mutant = 0;
+    if na == 9 {
+        mutant = num(arg(args, 8));
+    }
+    if hh < 16 || ww < 16 || hh % 16 != 0 || ww % 16 != 0 || hh > 4096 || ww > 4096 {
+        put(io, "H and W are multiples of 16, 16 to 4096\n");
+        return 101;
+    }
+    if files.path_ok(fs, wd) == false || files.path_ok(fs, repo) == false || files.path_ok(fs, sp) == false {
+        put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let chx = nm(heap, repo, "/tests/chx", "");
+    let c3 = nm(heap, repo, "/examples/cnn/conv3.chx", "");
+    var status = 0;
+    borrow chx as &chxr in {
+        borrow c3 as &c3r in {
+            let chxs = buffer.bytes(chxr);
+            let c3s = buffer.bytes(c3r);
+            // the picture
+            var img = box_slice(heap, 1, 0.0);
+            var have = false;
+            if is_text(arg(args, 5), "-") {
+                unbox_slice(heap, img);
+                img = synthetic(heap, hh, ww);
+                have = true;
+                borrow img as &sir in {
+                    let zp = path_plain(heap, wd, "z_input.f32");
+                    borrow zp as &zpb in {
+                        wenc_codec.write_f32(heap, fs, buffer.bytes(zpb), contents(sir));
+                    }
+                    buffer.drop(heap, zp);
+                }
+            } else {
+                let (v, n) = wenc_st.load_raw(heap, fs, arg(args, 5));
+                unbox_slice(heap, img);
+                img = v;
+                have = n == 3 * hh * ww;
+            }
+            if have == false {
+                put(io, "the input is not 3 x H x W singles\n");
+                status = 103;
+            } else {
+                let h0 = hh / 2;
+                let w0 = ww / 2;
+                let rr = lr(h0, w0);
+                let g0 = lg(w0);
+                let sess = box_slice(heap, 1048576, byte_of(0));
+                let iv = box_slice(heap, 4, 0);
+                borrow mut sess as &!sw in {
+                    borrow mut iv as &!ivw in {
+                        // the input rows: the patchified picture, 12 channels padded to 32, as halves with guard rows
+                        let xr = box_slice(heap, (rr + 2 * g0) * 32, 0.0);
+                        borrow img as &imr in {
+                            borrow mut xr as &!xw in {
+                                var y = 0;
+                                while y < h0 {
+                                    var x = 0;
+                                    while x < w0 {
+                                        var c = 0;
+                                        while c < 3 {
+                                            var q = 0;
+                                            while q < 2 {
+                                                var p = 0;
+                                                while p < 2 {
+                                                    contents(xw)[(g0 + (y + 1) * lwp(w0) + x + 1) * 32 + 4 * c + 2 * q + p] = contents(imr)[(c * hh + 2 * y + p) * ww + 2 * x + q];
+                                                    p = p + 1;
+                                                }
+                                                q = q + 1;
+                                            }
+                                            c = c + 1;
+                                        }
+                                        x = x + 1;
+                                    }
+                                    y = y + 1;
+                                }
+                            }
+                        }
+                        borrow xr as &xrr in {
+                            let ip = path_plain(heap, wd, "img.f16");
+                            borrow ip as &ipb in {
+                                if wenc_codec.write_f16(heap, fs, buffer.bytes(ipb), contents(xrr)) != 0 {
+                                    contents(ivw)[2] = contents(ivw)[2] + 1;
+                                }
+                            }
+                            buffer.drop(heap, ip);
+                        }
+                        unbox_slice(heap, xr);
+                        // conv_in
+                        let n0 = fresh(contents(ivw));
+                        let w0f = conv_w3_in(heap, fs, sp, 160, contents(ivw));
+                        borrow w0f as &w0r in {
+                            put_f16(heap, fs, wd, "cv", n0, ".f16", contents(w0r), contents(ivw));
+                        }
+                        unbox_slice(heap, w0f);
+                        program_path(contents(sw), contents(ivw), "cv", n0, c3s);
+                        kv(contents(sw), contents(ivw), "rp", rr);
+                        kv(contents(sw), contents(ivw), "cin", 32);
+                        kv(contents(sw), contents(ivw), "cout", 160);
+                        kv(contents(sw), contents(ivw), "wp", lwp(w0));
+                        kv(contents(sw), contents(ivw), "g", g0);
+                        end(contents(sw), contents(ivw));
+                        emit(contents(sw), contents(ivw), "resident cv");
+                        emit_nat(contents(sw), contents(ivw), n0);
+                        emit(contents(sw), contents(ivw), ".x ");
+                        emit(contents(sw), contents(ivw), wd);
+                        emit(contents(sw), contents(ivw), "/img.f16 f16\n");
+                        resident(contents(sw), contents(ivw), wd, "cv", n0, "w", ".f16", "f16");
+                        var x = 0;
+                        let b0 = bias_vec(heap, fs, sp, "encoder.conv_in", "", 160, contents(ivw));
+                        borrow b0 as &b0r in {
+                            x = bias(heap, fs, wd, chxs, contents(sw), contents(ivw), mk(1, n0), contents(b0r), 160, h0, w0);
+                        }
+                        unbox_slice(heap, b0);
+                        // down blocks 0 to 3
+                        var cur_h = h0;
+                        var cur_w = w0;
+                        var blk = 0;
+                        while blk < 4 {
+                            var cin = 160;
+                            var cout = 160;
+                            if blk == 1 {
+                                cout = 320;
+                            }
+                            if blk == 2 {
+                                cin = 320;
+                                cout = 640;
+                            }
+                            if blk == 3 {
+                                cin = 640;
+                                cout = 640;
+                            }
+                            let x0 = x;
+                            let r0 = block_name(heap, blk, ".resnets.0");
+                            let r1 = block_name(heap, blk, ".resnets.1");
+                            var xa = 0;
+                            borrow r0 as &r0b in {
+                                xa = resnet(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), sp, x, cin, cout, cur_h, cur_w, buffer.bytes(r0b));
+                            }
+                            borrow r1 as &r1b in {
+                                xa = resnet(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), sp, xa, cout, cout, cur_h, cur_w, buffer.bytes(r1b));
+                            }
+                            buffer.drop(heap, r0);
+                            buffer.drop(heap, r1);
+                            if blk < 3 {
+                                let pre = block_name(heap, blk, "");
+                                borrow pre as &preb in {
+                                    x = down(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), sp, xa, x0, cin, cout, cur_h, cur_w, blk >= 1, buffer.bytes(preb), mutant);
+                                }
+                                buffer.drop(heap, pre);
+                                cur_h = cur_h / 2;
+                                cur_w = cur_w / 2;
+                            } else {
+                                let nad = fresh(contents(ivw));
+                                program(contents(sw), contents(ivw), "ad", nad, chxs, "dit_add");
+                                kv(contents(sw), contents(ivw), "s", lr(cur_h, cur_w));
+                                kv(contents(sw), contents(ivw), "n", cout);
+                                kv(contents(sw), contents(ivw), "bn", 128);
+                                end(contents(sw), contents(ivw));
+                                link_to(contents(sw), contents(ivw), xa, "ad", nad, "a");
+                                link_to(contents(sw), contents(ivw), x0, "ad", nad, "b");
+                                x = mk(9, nad);
+                            }
+                            blk = blk + 1;
+                        }
+                        // the middle block, the head and the quantisation convolution
+                        let m = 640;
+                        let ma0 = resnet(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), sp, x, m, m, cur_h, cur_w, "encoder.mid_block.resnets.0");
+                        let ma1 = attention(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), sp, ma0, m, cur_h, cur_w, "encoder.mid_block.attentions.0", mutant);
+                        let ma2 = resnet(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), sp, ma1, m, m, cur_h, cur_w, "encoder.mid_block.resnets.1");
+                        let nh = norm(heap, fs, wd, chxs, contents(sw), contents(ivw), sp, ma2, "encoder.norm_out", m, cur_h, cur_w, true);
+                        let wco = conv_w3(heap, fs, sp, "encoder.conv_out", "", m, 96, contents(ivw));
+                        var q2 = 0;
+                        borrow wco as &wcor in {
+                            let co = conv3(heap, fs, wd, chxs, c3s, contents(sw), contents(ivw), nh, contents(wcor), m, 96, cur_h, cur_w);
+                            let bco = bias_vec(heap, fs, sp, "encoder.conv_out", "", 96, contents(ivw));
+                            borrow bco as &bcor in {
+                                let cb = bias(heap, fs, wd, chxs, contents(sw), contents(ivw), co, contents(bcor), 96, cur_h, cur_w);
+                                let pq = pad16(contents(sw), contents(ivw), chxs, cb, 96, cur_h, cur_w);
+                                let wq = conv_w1(heap, fs, sp, "quant_conv", "", 96, 96, contents(ivw));
+                                borrow wq as &wqr in {
+                                    let qc = conv1(heap, fs, wd, chxs, contents(sw), contents(ivw), pq, contents(wqr), 96, 96, cur_h, cur_w);
+                                    let bq = bias_vec(heap, fs, sp, "quant_conv", "", 96, contents(ivw));
+                                    borrow bq as &bqr in {
+                                        q2 = bias(heap, fs, wd, chxs, contents(sw), contents(ivw), qc, contents(bqr), 96, cur_h, cur_w);
+                                    }
+                                    unbox_slice(heap, bq);
+                                }
+                                unbox_slice(heap, wq);
+                            }
+                            unbox_slice(heap, bco);
+                        }
+                        unbox_slice(heap, wco);
+                        emit(contents(sw), contents(ivw), "program probe ");
+                        emit(contents(sw), contents(ivw), chxs);
+                        emit(contents(sw), contents(ivw), "/dit_rows2.chx");
+                        kv(contents(sw), contents(ivw), "m", lr(cur_h, cur_w));
+                        kv(contents(sw), contents(ivw), "n", 96);
+                        kv(contents(sw), contents(ivw), "bn", 32);
+                        end(contents(sw), contents(ivw));
+                        emit(contents(sw), contents(ivw), "link ");
+                        emit_ref(contents(sw), contents(ivw), q2);
+                        emit(contents(sw), contents(ivw), " -> probe.x\nsave ");
+                        emit_ref(contents(sw), contents(ivw), q2);
+                        emit(contents(sw), contents(ivw), " ");
+                        emit(contents(sw), contents(ivw), wd);
+                        emit(contents(sw), contents(ivw), "/x.f32 f32\nsteps\nanswer probe.y\n");
+                    }
+                }
+                // the session file
+                var errors = 0;
+                var programs = 0;
+                var length = 0;
+                borrow iv as &ivr in {
+                    errors = contents(ivr)[2];
+                    programs = contents(ivr)[1];
+                    length = contents(ivr)[0];
+                }
+                borrow sess as &sr in {
+                    let sf = path_plain(heap, wd, "enc.session");
+                    borrow sf as &sfb in {
+                        if files.write_big(fs, buffer.bytes(sfb), contents(sr)[0..length]) != 0 {
+                            errors = errors + 1;
+                        }
+                    }
+                    buffer.drop(heap, sf);
+                }
+                unbox_slice(heap, sess);
+                unbox_slice(heap, iv);
+                put(io, "session: ");
+                put_int(io, programs);
+                put(io, " operations, ");
+                put_int(io, length);
+                put(io, " bytes, ");
+                put_int(io, errors);
+                put(io, " errors\n");
+                if errors != 0 {
+                    status = 104;
+                }
+            }
+            unbox_slice(heap, img);
+        }
+    }
+    buffer.drop(heap, chx);
+    buffer.drop(heap, c3);
+    return status;
+}
+
+fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    let na = arg_count(args);
+    if na != 6 && na != 7 {
+        put(io, "usage: wan_vae_enc_gpu compare <work dir> <reference mean .f32> <H> <W> [4]\n");
+        return 100;
+    }
+    let hh = num(arg(args, 4));
+    let ww = num(arg(args, 5));
+    var logvar = false;
+    if na == 7 {
+        logvar = num(arg(args, 6)) == 4;
+    }
+    if hh < 16 || ww < 16 || hh % 16 != 0 || ww % 16 != 0 {
+        put(io, "H and W are multiples of 16\n");
+        return 101;
+    }
+    let lh = hh / 16;
+    let lw = ww / 16;
+    let rr = lr(lh, lw);
+    let xp = path_plain(heap, arg(args, 2), "x.f32");
+    var status = 105;
+    borrow xp as &xpb in {
+        let (got, n) = wenc_st.load_raw(heap, fs, buffer.bytes(xpb));
+        let (want, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
+        if n != rr * 96 || m != 48 * lh * lw {
+            put(io, "the session's output or the reference has the wrong size\n");
+            status = 106;
+        } else {
+            var ss = 0.0;
+            var dd = 0.0;
+            var mx = 0.0;
+            borrow got as &gr in {
+                borrow want as &wr in {
+                    var c = 0;
+                    while c < 48 {
+                        var y = 0;
+                        while y < lh {
+                            var x = 0;
+                            while x < lw {
+                                var ch = c;
+                                if logvar {
+                                    ch = c + 48;
+                                }
+                                let a = contents(gr)[((y + 1) * lwp(lw) + x + 1) * 96 + ch];
+                                let b = contents(wr)[(c * lh + y) * lw + x];
+                                let d = a - b;
+                                ss = ss + b * b;
+                                dd = dd + d * d;
+                                var ad = d;
+                                if ad < 0.0 {
+                                    ad = 0.0 - ad;
+                                }
+                                if ad > mx {
+                                    mx = ad;
+                                }
+                                x = x + 1;
+                            }
+                            y = y + 1;
+                        }
+                        c = c + 1;
+                    }
+                }
+            }
+            let cnt = float_of(48 * lh * lw);
+            let rel = sqrt(dd / cnt) / sqrt(ss / cnt);
+            put(io, "mean (48 x ");
+            put_int(io, lh);
+            put(io, " x ");
+            put_int(io, lw);
+            put(io, "): rel ");
+            put_float(io, rel);
+            put(io, " max ");
+            put_float(io, mx);
+            put(io, " bound ");
+            put_float(io, bound());
+            put(io, "\n");
+            status = 1;
+            if rel <= bound() {
+                status = 0;
+            }
+        }
+        unbox_slice(heap, got);
+        unbox_slice(heap, want);
+    }
+    buffer.drop(heap, xp);
+    return status;
+}
+
+// `latent <vae config.json> <work dir> <H> <W> <out.f32>`: the posterior's mean of the session's output, normalised as the image-to-video pipeline does (`pipeline_wan_i2v.py` lines 443-462):
+// `(mean - latents_mean) * (1 / latents_std)` per channel, the 48 constants from the checkpoint's `config.json`. The file is `[48, H/16, W/16]` singles, what the denoiser's first frame conditions on.
+fn latent[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 7 {
+        put(io, "usage: wan_vae_enc_gpu latent <vae config.json> <work dir> <H> <W> <out.f32>\n");
+        return 100;
+    }
+    let hh = num(arg(args, 4));
+    let ww = num(arg(args, 5));
+    if hh < 16 || ww < 16 || hh % 16 != 0 || ww % 16 != 0 {
+        put(io, "H and W are multiples of 16\n");
+        return 101;
+    }
+    let lh = hh / 16;
+    let lw = ww / 16;
+    var status = 105;
+    let (cfg, e) = files.read_all(heap, fs, arg(args, 2));
+    let stats = box_slice(heap, 96, 0.0);
+    var have = 0;
+    if e == 0 {
+        borrow cfg as &cr in {
+            let body = buffer.bytes(cr);
+            let tape = box_slice(heap, json.tape_len(body), 0);
+            borrow mut tape as &!tw in {
+                let nodes = json.parse(body, contents(tw));
+                if nodes > 0 && json.is_object(contents(tw), 0) {
+                    let mn = json.get(body, contents(tw), 0, "latents_mean");
+                    let sd = json.get(body, contents(tw), 0, "latents_std");
+                    if mn >= 0 && sd >= 0 && json.count(contents(tw), mn) == 48 && json.count(contents(tw), sd) == 48 {
+                        borrow mut stats as &!sw in {
+                            var k = 0;
+                            while k < 48 {
+                                contents(sw)[k] = json.to_float(body, contents(tw), json.at(contents(tw), mn, k));
+                                contents(sw)[48 + k] = json.to_float(body, contents(tw), json.at(contents(tw), sd, k));
+                                k = k + 1;
+                            }
+                        }
+                        have = 1;
+                    }
+                }
+            }
+            unbox_slice(heap, tape);
+        }
+    }
+    buffer.drop(heap, cfg);
+    let xp = path_plain(heap, arg(args, 3), "x.f32");
+    borrow xp as &xpb in {
+        let (got, n) = wenc_st.load_raw(heap, fs, buffer.bytes(xpb));
+        if have == 1 && n == lr(lh, lw) * 96 {
+            let out = box_slice(heap, 48 * lh * lw, 0.0);
+            borrow got as &gr in {
+                borrow stats as &str in {
+                    borrow mut out as &!ow in {
+                        var c = 0;
+                        while c < 48 {
+                            var y = 0;
+                            while y < lh {
+                                var x = 0;
+                                while x < lw {
+                                    contents(ow)[(c * lh + y) * lw + x] = (contents(gr)[((y + 1) * lwp(lw) + x + 1) * 96 + c] - contents(str)[c]) * (1.0 / contents(str)[48 + c]);
+                                    x = x + 1;
+                                }
+                                y = y + 1;
+                            }
+                            c = c + 1;
+                        }
+                    }
+                }
+            }
+            borrow out as &our in {
+                if wenc_codec.write_f32(heap, fs, arg(args, 6), contents(our)) == 0 {
+                    status = 0;
+                }
+            }
+            unbox_slice(heap, out);
+        } else {
+            put(io, "the configuration or the session's output is not what was expected\n");
+            status = 106;
+        }
+        unbox_slice(heap, got);
+    }
+    buffer.drop(heap, xp);
+    unbox_slice(heap, stats);
+    if status == 0 {
+        put(io, "latent: 48 x ");
+        put_int(io, lh);
+        put(io, " x ");
+        put_int(io, lw);
+        put(io, " singles written\n");
+    }
+    return status;
+}
+
+fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) >= 2 && is_text(arg(args, 1), "prepare") {
+        return prepare(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && is_text(arg(args, 1), "compare") {
+        return compare(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && is_text(arg(args, 1), "latent") {
+        return latent(io, heap, fs, args);
+    }
+    put(io, "usage: wan_vae_enc_gpu prepare ... | compare ...\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

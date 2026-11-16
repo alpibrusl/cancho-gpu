@@ -5,15 +5,19 @@ import std.fmt;
 import std.io;
 import wenc_st;
 import wenc_ops;
+import wenc_codec;
 
 // wan_vae_enc_ref -- slice E1 of docs/wan-vae-encoder.md: the VAE encoder of Wan2.2-TI2V-5B in binary64, from the checkpoint's weights, held to torch's float32 outputs (tests/data/wan_vae_enc/).
 //
 //   wan_vae_enc_ref <vae.safetensors> <data dir> <case a|b|c> <T> <H> <W> [<mutant 1-5>]
 //
+// Case `z` has no torch data: it reads `<data dir>/z_input.f32` (`wan_vae_enc_gpu prepare` writes it with `-` for the input), compares nothing and writes `<data dir>/z_mean.f32`, the first 48 channels of `quant`, which
+// `wan_vae_enc_gpu compare` holds the GPU session to. Built then with `tests/wan_enc/codec.cho` and `studio/files.cho` too.
+//
 // The optional last argument makes one deliberate error that the comparison must refuse: 1 the spatial downsample's zero pad on the left and top, 2 `time_conv` also applied to the first frame (a plain
 // causal stride-2 convolution), 3 `AvgDown3D` grouping channels in the order (c, row, column, time slot), 4 the log-variance half taken as the mean, 5 patchify with row and column offsets exchanged.
 //
-//   cancho build tests/wan_vae_enc_ref.cho tests/wan_enc/st.cho tests/wan_enc/ops.cho --std -o build/wan_vae_enc_ref
+//   cancho build tests/wan_vae_enc_ref.cho tests/wan_enc/st.cho tests/wan_enc/ops.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/wan_vae_enc_ref
 //
 // Reads `<data>/<case>_input.f32` (`[3, T, H, W]`), runs the encoder over the whole clip (the model's chunked loop with its feature cache is the same function: this is what the comparison checks), and for
 // each stage prints `<stage> values <n> rel <rms(diff) / rms(torch)> max <largest |diff|>`. The stages are torch's hooks: `conv_in`, `down0` to `down3`, `mid`, `quant`, and `mean`. The exit status is the
@@ -389,6 +393,9 @@ fn shown[&i](io: &!i Io, n: int) -> [io_write] int {
 
 // Compare `got` with torch's values of the stage `stage` (the file `<dir>/<case>_<stage>.f32`): print a line, answer 1 if it is over `tol()` or could not be compared.
 fn compare[&i, &h, &f, &g, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], case: &static [byte], stage: &static [byte], got: &g [float]) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if is_text(case, "z") {
+        return 0;
+    }
     var path = buffer.append(heap, buffer.empty(heap, 96), dir);
     path = buffer.append(heap, path, "/");
     path = buffer.append(heap, path, case);
@@ -474,7 +481,7 @@ fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
     return true;
 }
 
-fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
     if arg_count(args) != 7 && arg_count(args) != 8 {
         put(io, "usage: wan_vae_enc_ref <vae.safetensors> <data dir> <case a|b|c> <T> <H> <W>\n");
         return 100;
@@ -487,6 +494,9 @@ fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args)
     }
     if is_text(arg(args, 3), "c") {
         case = "c";
+    }
+    if is_text(arg(args, 3), "z") {
+        case = "z";
     }
     let t0 = num(arg(args, 4));
     let h0 = num(arg(args, 5));
@@ -638,6 +648,13 @@ fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args)
         }
         unbox_slice(heap, ho);
         borrow qc as &qr in {
+            if is_text(case, "z") {
+                let zp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/z_mean.f32");
+                borrow zp as &zpb in {
+                    wenc_codec.write_f32(heap, fs, buffer.bytes(zpb), contents(qr)[0..len(contents(qr)) / 2]);
+                }
+                buffer.drop(heap, zp);
+            }
             failures = failures + compare(io, heap, fs, dir, case, "quant", contents(qr));
             if contents(bw)[1] == 4 {
                 failures = failures + compare(io, heap, fs, dir, case, "mean", contents(qr)[len(contents(qr)) / 2..len(contents(qr))]);

@@ -1,0 +1,74 @@
+edition 9;
+
+import std.io;
+import wenc_codec;
+
+// codec_check -- `wenc_codec`'s half and single encoders held to known IEEE bit patterns (RFC-style values written by hand, from the format's definition, not from the encoder's output). The exit status is the
+// number of failures.
+//
+//   cancho build tests/wan_enc/codec_check.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/codec_check && build/codec_check
+
+fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+fn want(got: int, expect: int) -> [] int {
+    if got == expect {
+        return 0;
+    }
+    return 1;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    release(fs);
+    release(heap);
+    release(args);
+    var bad = 0;
+    var n = 0;
+    // half: (value, bits)
+    bad = bad + want(wenc_codec.f16_bits(1.0), 15360);
+    bad = bad + want(wenc_codec.f16_bits(0.0 - 2.0), 49152);
+    bad = bad + want(wenc_codec.f16_bits(0.0), 0);
+    bad = bad + want(wenc_codec.f16_bits(-0.0), 32768);
+    bad = bad + want(wenc_codec.f16_bits(65504.0), 31743);
+    bad = bad + want(wenc_codec.f16_bits(65520.0), 31744);
+    bad = bad + want(wenc_codec.f16_bits(1.0e10), 31744);
+    bad = bad + want(wenc_codec.f16_bits(0.0 - 1.0e10), 64512);
+    bad = bad + want(wenc_codec.f16_bits(0.00006103515625), 1024);
+    bad = bad + want(wenc_codec.f16_bits(0.000030517578125), 512);
+    bad = bad + want(wenc_codec.f16_bits(0.000000059604644775390625), 1);
+    bad = bad + want(wenc_codec.f16_bits(0.0000000298023223876953125), 0);
+    bad = bad + want(wenc_codec.f16_bits(0.00000004470348358154296875), 1);
+    bad = bad + want(wenc_codec.f16_bits(0.1), 11878);
+    bad = bad + want(wenc_codec.f16_bits(1.0 / 3.0), 13653);
+    bad = bad + want(wenc_codec.f16_bits(1.00048828125), 15360);
+    bad = bad + want(wenc_codec.f16_bits(1.00146484375), 15362);
+    bad = bad + want(wenc_codec.f16_bits(1.0009765625), 15361);
+    bad = bad + want(wenc_codec.f16_bits(2047.5), 26624);
+    bad = bad + want(wenc_codec.f16_bits(2046.5), 26622);
+    bad = bad + want(wenc_codec.f16_bits(2048.0), 26624);
+    bad = bad + want(wenc_codec.f16_bits(0.0 - 0.5), 47104);
+    // single: (value, bits)
+    bad = bad + want(wenc_codec.f32_word(1.0), 1065353216);
+    bad = bad + want(wenc_codec.f32_word(0.0 - 2.5), 3223322624);
+    bad = bad + want(wenc_codec.f32_word(0.1), 1036831949);
+    bad = bad + want(wenc_codec.f32_word(0.0), 0);
+    n = 25;
+    borrow mut io as &!i in {
+        if bad == 0 {
+            put(i, "codec: all checks pass\n");
+        } else {
+            put(i, "codec: FAILURES\n");
+        }
+    }
+    release(io);
+    return bad;
+}
