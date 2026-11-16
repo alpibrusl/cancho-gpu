@@ -95,10 +95,9 @@ fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id:
     return (known, word);
 }
 
-// The most one answer may carry. `http.server` queues 64 KiB per connection (`output_size`) and offers the rest to the kernel once; a bigger body is cut and
-// the connection closed (measured 2026-11-16: 6 MB arrived as 327119 bytes). 200000 is under that with room; a bigger file is refused with 413, not sent cut.
+// The most one file may be: the server holds it whole while it is sent (`studio` streams it with `hold`/`stream`, as the package's own `/big/<n>` does).
 fn serve_limit() -> [] int {
-    return 200000;
+    return 67108864;
 }
 
 // The page of job `id` (the text after `/jobs/`): 200, 404 for an id with no argument file, 422 for one that is not 1 to 9 digits.
@@ -210,7 +209,7 @@ pub fn file_of[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], re
     }
     if big && status == 200 {
         buffer.drop(heap, data);
-        return (413, buffer.append(heap, buffer.empty(heap, 96), "too big for this server: http.server keeps 64 KiB of output per connection (docs/studio.md)"));
+        return (413, buffer.append(heap, buffer.empty(heap, 96), "the file is over 64 MiB"));
     }
     if status != 200 {
         buffer.drop(heap, data);

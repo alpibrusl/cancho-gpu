@@ -76,7 +76,13 @@ check "file: the bytes arrive unchanged" "$(cmp "$T/got.bin" "$T/data/out/1/vide
 check "file: media type" "$(grep -ci '^content-type: video/mp4' "$T/hdr")" 1
 check "file: the log is the worker's output" "$(curl -s localhost:18091/files/1/log | head -1)" '[video]'
 head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
-check "file: 6 MB is refused, not sent cut" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1/video.gif)" 413
+check "file: 6 MB arrive unchanged (streamed)" "$(curl -s localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
+check "file: Content-Length is the size" "$(curl -s -D - -o /dev/null localhost:18091/files/1/video.gif | tr -d '\r' | grep -i '^content-length' | awk '{print $2}')" 6000000
+head -c 40000000 /dev/urandom > "$T/data/out/1/video.gif"
+check "file: 40 MB arrive unchanged" "$(curl -s localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
+check "file: two in a row on one connection" "$(curl -s localhost:18091/files/1/video.gif localhost:18091/files/1/video.gif | wc -c | tr -d ' ')" 80000000
+check "the server serves after streaming" "$(curl -s localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
+head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
 head -c 150000 /dev/urandom > "$T/data/out/1/edited.png"
 check "file: 150 KB arrive unchanged" "$(curl -s localhost:18091/files/1/edited.png | cmp - "$T/data/out/1/edited.png" && echo same)" same
 rm "$T/data/out/1/edited.png"
