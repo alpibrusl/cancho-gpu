@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -143,6 +143,39 @@ check "file: the log is the worker's output" "$(c localhost:18091/files/1/log | 
 head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
 check "file: 6 MB arrive unchanged (streamed)" "$(c localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
 check "file: Content-Length is the size" "$(c -D - -o /dev/null localhost:18091/files/1/video.gif | tr -d '\r' | grep -i '^content-length' | awk '{print $2}')" 6000000
+# Range (what Safari asks of a video): pieces of video.gif (6000000 random bytes) compared with `tail -c | head -c`.
+G="$T/data/out/1/video.gif"; N=6000000
+rg() { c -H "Range: $1" localhost:18091/files/1/video.gif; }
+piece() { tail -c +$(( $1 + 1 )) "$G" | head -c "$2"; }
+same() { rg "$1" > "$T/got"; piece "$2" "$3" > "$T/want"; if cmp -s "$T/got" "$T/want"; then echo same; else echo different; fi; }
+hdr() { c -D - -o /dev/null -H "Range: $1" localhost:18091/files/1/video.gif | tr -d '\r'; }
+check "range: a plain GET says Accept-Ranges" "$(c -D - -o /dev/null localhost:18091/files/1/video.gif | tr -d '\r' | grep -ci '^accept-ranges: bytes')" 1
+check "range: bytes=0-1 is 206" "$(hdr bytes=0-1 | head -1 | cut -d' ' -f2)" 206
+check "range: ...with Content-Range" "$(hdr bytes=0-1 | grep -i '^content-range' | cut -d' ' -f2-)" "bytes 0-1/6000000"
+check "range: ...and Content-Length 2" "$(hdr bytes=0-1 | grep -i '^content-length' | cut -d' ' -f2)" 2
+check "range: bytes=0-1 is the first two bytes" "$(same bytes=0-1 0 2)" same
+check "range: bytes=1000-1999" "$(same bytes=1000-1999 1000 1000)" same
+check "range: across the 64 KiB piece boundary" "$(same bytes=65530-65545 65530 16)" same
+check "range: bytes=5990000- runs to the end" "$(same bytes=5990000- 5990000 10000)" same
+check "range: bytes=-5 is the last five" "$(same bytes=-5 5999995 5)" same
+check "range: a suffix longer than the file is the file" "$(rg bytes=-99999999 | wc -c | tr -d ' ')" $N
+check "range: a last byte past the end is cut" "$(same bytes=5999990-99999999 5999990 10)" same
+check "range: ...and says where it ends" "$(hdr bytes=5999990-99999999 | grep -i '^content-range' | cut -d' ' -f2-)" "bytes 5999990-5999999/6000000"
+check "range: a megabyte from the middle" "$(same bytes=2000000-2999999 2000000 1000000)" same
+check "range: starting at the end: 416" "$(hdr bytes=6000000- | head -1 | cut -d' ' -f2)" 416
+check "range: ...with Content-Range */N" "$(hdr bytes=6000000- | grep -i '^content-range' | cut -d' ' -f2-)" "bytes */6000000"
+check "range: the last 0 bytes: 416" "$(hdr bytes=-0 | head -1 | cut -d' ' -f2)" 416
+check "range: two ranges: the whole file, 200" "$(hdr bytes=0-0,5-9 | head -1 | cut -d' ' -f2)" 200
+check "range: not a range: 200" "$(hdr bytes=abc | head -1 | cut -d' ' -f2)" 200
+check "range: last before first: 200" "$(hdr bytes=9-3 | head -1 | cut -d' ' -f2)" 200
+check "range: another unit: 200" "$(hdr items=0-1 | head -1 | cut -d' ' -f2)" 200
+check "range: a number too long to be a size: 200" "$(hdr bytes=0-99999999999999 | head -1 | cut -d' ' -f2)" 200
+# Several files at once: six downloads of the 6 MB file in parallel, each compared.
+PARS=""
+for k in 1 2 3 4 5 6; do (c localhost:18091/files/1/video.gif | cmp - "$G" > "$T/par$k" 2>&1; echo $? >> "$T/par$k") & PARS="$PARS $!"; done
+for q in $PARS; do wait $q; done
+check "streams: six at once, each whole" "$(cat "$T"/par? | tr -d '\n')" 000000
+check "streams: the server serves after" "$(c localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
 head -c 40000000 /dev/urandom > "$T/data/out/1/video.gif"
 check "file: 40 MB arrive unchanged" "$(c localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
 check "file: two in a row on one connection" "$(c localhost:18091/files/1/video.gif localhost:18091/files/1/video.gif | wc -c | tr -d ' ')" 80000000

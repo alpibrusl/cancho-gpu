@@ -1,0 +1,87 @@
+edition 9;
+
+module range;
+
+import std.bytes;
+
+// `range` -- the `Range` header of a file request (RFC 9110 section 14, the part Safari needs to play a video: it asks `bytes=0-1`, then pieces).
+//
+//   parse(value, total) -> (kind, first, last)
+//     kind 0: no usable range: send the whole file, 200 (no header, not `bytes=`, a list of ranges, a spelling that is not a range, `last` before `first`)
+//     kind 1: bytes `first` to `last`, both inclusive and inside the file: 206
+//     kind 2: the range starts at or after the end of the file (or asks for the last 0 bytes, or the file is empty): 416
+//
+// `bytes=a-b`, `bytes=a-` (to the end), `bytes=-n` (the last n bytes; more than the file has is the whole file). A `last` past the end is cut to the end. Only digits, at most 12 of them.
+
+fn digits[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 12 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+pub fn parse[&t](value: &t [byte], total: int) -> [] (int, int, int) {
+    if bytes.starts_with(value, "bytes=") == false {
+        return (0, 0, 0);
+    }
+    let spec = value[6..len(value)];
+    var dash = 0 - 1;
+    var i = 0;
+    while i < len(spec) {
+        let c = int_of(spec[i]);
+        if c == 44 {
+            return (0, 0, 0);
+        }
+        if c == 45 && dash < 0 {
+            dash = i;
+        }
+        i = i + 1;
+    }
+    if dash < 0 {
+        return (0, 0, 0);
+    }
+    let left = spec[0..dash];
+    let right = spec[dash + 1..len(spec)];
+    if len(left) == 0 {
+        let n = digits(right);
+        if n < 0 {
+            return (0, 0, 0);
+        }
+        if n == 0 || total == 0 {
+            return (2, 0, 0);
+        }
+        var first = total - n;
+        if first < 0 {
+            first = 0;
+        }
+        return (1, first, total - 1);
+    }
+    let a = digits(left);
+    if a < 0 {
+        return (0, 0, 0);
+    }
+    var b = total - 1;
+    if len(right) > 0 {
+        b = digits(right);
+        if b < 0 || b < a {
+            return (0, 0, 0);
+        }
+    }
+    if a >= total {
+        return (2, 0, 0);
+    }
+    if b > total - 1 {
+        b = total - 1;
+    }
+    return (1, a, b);
+}

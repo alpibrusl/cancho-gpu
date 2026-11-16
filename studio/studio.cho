@@ -9,6 +9,7 @@ import files;
 import jobs;
 import results;
 import auth;
+import range;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -20,7 +21,7 @@ import auth;
 //     GET  /api/jobs/N    {"id":N,"state":"queued|running|done|failed C"}
 //
 //     GET /jobs/N        the job's page: state, the result when done, the log (HTML the server writes)
-//     GET /files/N/NAME  edited.png, video.mp4, video.gif or log of job N (a closed list of names)
+//     GET /files/N/NAME  edited.png, video.mp4, video.gif or log of job N (a closed list of names), streamed in pieces; `Range: bytes=a-b` is answered 206, up to 8 files at once
 //
 //     GET /jobs          the jobs, newest first, each a link to its page
 //     GET /app.js        <site-dir>/app.js
@@ -70,53 +71,85 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
             }
             buffer.drop(heap, line);
             var out = buffer.empty(heap, 4096);
-            // One file at a time is streamed (`hold`, `stream`, `answer`: docs/http-server.md section 14): its bytes, the ticket of the held request (-1: none), how many went.
-            var sbuf = buffer.empty(heap, 16);
-            var sticket = 0 - 1;
-            var spos = 0;
+            // Files are streamed (`hold`, `stream`, `answer`: docs/http-server.md section 14), up to 8 at once. A stream is four integers in `streams` (its ticket + 1, 0 for a free slot; how many
+            // bytes of path it has in `arena`; the next byte to send; the byte to stop before) and a path in `arena` (512 bytes a slot): no file is held in memory and no handle is held open, each turn
+            // of the loop reads the next piece (at most what the connection has room for, 64 KiB) with `files.read_at`.
+            let streams = box_slice(heap, 32, 0);
+            let arena = box_slice(heap, 4096, byte_of(0));
+            let scratch = box_slice(heap, 65536, byte_of(0));
+            var streaming = 0;
             while true {
                 var wait_ms = 1000;
-                if sticket >= 0 {
+                if streaming > 0 {
                     wait_ms = 20;
                 }
                 srv = server.wait(heap, srv, clock, listener, wait_ms);
-                if sticket >= 0 {
-                    var total = 0;
-                    borrow sbuf as &sb0 in {
-                        total = buffer.size(sb0);
+                streaming = 0;
+                var si = 0;
+                while si < 8 {
+                    var tk = 0;
+                    var plen = 0;
+                    var pos = 0;
+                    var fin = 0;
+                    borrow streams as &sa in {
+                        tk = contents(sa)[si * 4];
+                        plen = contents(sa)[si * 4 + 1];
+                        pos = contents(sa)[si * 4 + 2];
+                        fin = contents(sa)[si * 4 + 3];
                     }
-                    var want = 0;
-                    borrow srv as &sr0 in {
-                        want = server.space(sr0, server.ticket_slot(sticket));
-                    }
-                    var give = total - spos;
-                    if want < give {
-                        give = want;
-                    }
-                    var n = 0;
-                    if give > 0 {
-                        borrow mut srv as &!sw0 in {
-                            borrow sbuf as &sb1 in {
-                                n = server.stream(sw0, sticket, buffer.bytes(sb1)[spos..spos + give]);
+                    if tk > 0 {
+                        let ticket = tk - 1;
+                        var want = 0;
+                        borrow srv as &sr0 in {
+                            want = server.space(sr0, server.ticket_slot(ticket));
+                        }
+                        var give = fin - pos;
+                        if want < give {
+                            give = want;
+                        }
+                        if give > 65536 {
+                            give = 65536;
+                        }
+                        var finished = pos >= fin;
+                        if give > 0 && finished == false {
+                            var n = 0;
+                            borrow arena as &ar in {
+                                borrow mut scratch as &!sc in {
+                                    n = files.read_at(fs, contents(ar)[si * 512..si * 512 + plen], pos, contents(sc)[0..give]);
+                                }
+                            }
+                            if n <= 0 {
+                                finished = true;
+                            } else {
+                                var m = 0;
+                                borrow mut srv as &!sw0 in {
+                                    borrow scratch as &sc2 in {
+                                        m = server.stream(sw0, ticket, contents(sc2)[0..n]);
+                                    }
+                                }
+                                if m < 0 {
+                                    finished = true;
+                                } else {
+                                    pos = pos + m;
+                                    finished = pos >= fin;
+                                    borrow mut streams as &!sm in {
+                                        contents(sm)[si * 4 + 2] = pos;
+                                    }
+                                }
                             }
                         }
-                    }
-                    var finished = n < 0;
-                    if n >= 0 {
-                        spos = spos + n;
-                        if spos >= total {
+                        if finished {
                             borrow mut srv as &!sw1 in {
-                                server.answer(sw1, sticket, "");
+                                server.answer(sw1, ticket, "");
                             }
-                            finished = true;
+                            borrow mut streams as &!sm2 in {
+                                contents(sm2)[si * 4] = 0;
+                            }
+                        } else {
+                            streaming = streaming + 1;
                         }
                     }
-                    if finished {
-                        buffer.drop(heap, sbuf);
-                        sbuf = buffer.empty(heap, 16);
-                        sticket = 0 - 1;
-                        spos = 0;
-                    }
+                    si = si + 1;
                 }
                 var more = true;
                 while more {
@@ -131,6 +164,10 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                             buffer.clear(ob);
                         }
                         var take = false;
+                        var tslot = 0 - 1;
+                        var tplen = 0;
+                        var tfrom = 0;
+                        var tto = 0;
                         let now_s = clock_unix_ms(clock) / 1000;
                         borrow srv as &sr in {
                             let head = server.head(sr);
@@ -215,28 +252,78 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 buffer.drop(heap, answer);
                             } else if bytes.starts_with(path, "/files/") && bytes.equal(method, "GET") {
                                 let rest = path[7..len(path)];
-                                let (st, answer) = results.file_of(heap, fs, dir, rest);
-                                if st == 200 && sticket < 0 {
+                                let (st, fpath, size) = results.file_info(heap, fs, dir, rest);
+                                if st == 200 {
+                                    var free = 0 - 1;
+                                    borrow streams as &sf in {
+                                        var k = 0;
+                                        while k < 8 && free < 0 {
+                                            if contents(sf)[k * 4] == 0 {
+                                                free = k;
+                                            }
+                                            k = k + 1;
+                                        }
+                                    }
                                     var cut = 0;
                                     while cut < len(rest) && int_of(rest[cut]) != 47 {
                                         cut = cut + 1;
                                     }
-                                    var size = 0;
-                                    borrow answer as &zb in {
-                                        size = buffer.size(zb);
+                                    let (rk, ra, rb) = range.parse(http.header(head, table, "range"), size);
+                                    if free < 0 {
+                                        out = server.reply_as(heap, out, 503, "text/plain; charset=utf-8", "too many files are being sent; retry", keep, "Retry-After: 1\r\n");
+                                    } else if rk == 2 {
+                                        var extra = buffer.append(heap, buffer.empty(heap, 64), "Content-Range: bytes */");
+                                        extra = buffer.push_nat(heap, extra, size);
+                                        extra = buffer.append(heap, extra, "\r\n");
+                                        borrow extra as &xb in {
+                                            out = server.reply_as(heap, out, 416, "text/plain; charset=utf-8", "range not satisfiable", keep, buffer.bytes(xb));
+                                        }
+                                        buffer.drop(heap, extra);
+                                    } else {
+                                        var status = 200;
+                                        var from = 0;
+                                        var to = size;
+                                        var extra = buffer.append(heap, buffer.empty(heap, 96), "Accept-Ranges: bytes\r\n");
+                                        if rk == 1 {
+                                            status = 206;
+                                            from = ra;
+                                            to = rb + 1;
+                                            extra = buffer.append(heap, extra, "Content-Range: bytes ");
+                                            extra = buffer.push_nat(heap, extra, ra);
+                                            extra = buffer.push(heap, extra, byte_of(45));
+                                            extra = buffer.push_nat(heap, extra, rb);
+                                            extra = buffer.push(heap, extra, byte_of(47));
+                                            extra = buffer.push_nat(heap, extra, size);
+                                            extra = buffer.append(heap, extra, "\r\n");
+                                        }
+                                        borrow extra as &xb2 in {
+                                            out = http.respond_head_with(heap, out, status, results.content_type(rest[cut + 1..len(rest)]), to - from, keep, buffer.bytes(xb2));
+                                        }
+                                        buffer.drop(heap, extra);
+                                        borrow fpath as &fb in {
+                                            let pb = buffer.bytes(fb);
+                                            borrow mut arena as &!am in {
+                                                var c = 0;
+                                                while c < len(pb) && c < 512 {
+                                                    contents(am)[free * 512 + c] = pb[c];
+                                                    c = c + 1;
+                                                }
+                                            }
+                                            tplen = len(pb);
+                                        }
+                                        tslot = free;
+                                        tfrom = from;
+                                        tto = to;
+                                        take = true;
                                     }
-                                    out = http.respond_head(heap, out, 200, results.content_type(rest[cut + 1..len(rest)]), size, keep);
-                                    buffer.drop(heap, sbuf);
-                                    sbuf = answer;
-                                    take = true;
-                                } else if st == 200 {
-                                    buffer.drop(heap, answer);
-                                    out = server.reply_as(heap, out, 503, "text/plain; charset=utf-8", "another file is being sent; retry", keep, "Retry-After: 1\r\n");
+                                    buffer.drop(heap, fpath);
                                 } else {
-                                    borrow answer as &ab in {
-                                        out = server.reply_as(heap, out, st, "text/plain; charset=utf-8", buffer.bytes(ab), keep, "");
+                                    buffer.drop(heap, fpath);
+                                    if st == 422 {
+                                        out = server.reply_as(heap, out, 422, "text/plain; charset=utf-8", "the id is 1 to 9 digits", keep, "");
+                                    } else {
+                                        out = server.reply_as(heap, out, 404, "text/plain; charset=utf-8", "not found", keep, "");
                                     }
-                                    buffer.drop(heap, answer);
                                 }
                             } else {
                                 out = server.failure(heap, out, 404, "not found", keep);
@@ -244,10 +331,16 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                         }
                         borrow mut srv as &!sw in {
                             if take {
-                                sticket = server.hold(sw);
-                                spos = 0;
+                                let ticket = server.hold(sw);
+                                borrow mut streams as &!sm3 in {
+                                    contents(sm3)[tslot * 4] = ticket + 1;
+                                    contents(sm3)[tslot * 4 + 1] = tplen;
+                                    contents(sm3)[tslot * 4 + 2] = tfrom;
+                                    contents(sm3)[tslot * 4 + 3] = tto;
+                                }
+                                streaming = streaming + 1;
                                 borrow out as &ob in {
-                                    server.stream(sw, sticket, buffer.bytes(ob));
+                                    server.stream(sw, ticket, buffer.bytes(ob));
                                 }
                             } else {
                                 borrow out as &ob in {
@@ -259,7 +352,9 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                 }
             }
             server.close(heap, srv);
-            buffer.drop(heap, sbuf);
+            unbox_slice(heap, streams);
+            unbox_slice(heap, arena);
+            unbox_slice(heap, scratch);
             buffer.drop(heap, out);
             return 0;
         }
