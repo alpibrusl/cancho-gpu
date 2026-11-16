@@ -7,6 +7,7 @@ import std.io;
 import http.server;
 import files;
 import jobs;
+import results;
 
 // studio -- the web app of docs/studio.md, slice 1: the page and the model list. Nothing starts a program here.
 //
@@ -14,6 +15,9 @@ import jobs;
 //
 //     POST /api/jobs      {kind, prompt, ...} -> 202 {"id":N}: `<data>/N.argv` and a line in `<data>/queue` (docs/studio.md); `studio_worker` runs it
 //     GET  /api/jobs/N    {"id":N,"state":"queued|running|done|failed C"}
+//
+//     GET /jobs/N        the job's page: state, the result when done, the log (HTML the server writes)
+//     GET /files/N/NAME  edited.png, video.mp4, video.gif or log of job N (a closed list of names)
 //
 //     GET /              the page (HTML the server writes)
 //     GET /api/models    the registry of tools/media.py, as JSON
@@ -57,8 +61,54 @@ fn serve[&h, &k, &l, &i, &f, &d](heap: &!h Heap, clock: &k Clock, listener: &!l 
             }
             buffer.drop(heap, line);
             var out = buffer.empty(heap, 4096);
+            // One file at a time is streamed (`hold`, `stream`, `answer`: docs/http-server.md section 14): its bytes, the ticket of the held request (-1: none), how many went.
+            var sbuf = buffer.empty(heap, 16);
+            var sticket = 0 - 1;
+            var spos = 0;
             while true {
-                srv = server.wait(heap, srv, clock, listener, 1000);
+                var wait_ms = 1000;
+                if sticket >= 0 {
+                    wait_ms = 20;
+                }
+                srv = server.wait(heap, srv, clock, listener, wait_ms);
+                if sticket >= 0 {
+                    var total = 0;
+                    borrow sbuf as &sb0 in {
+                        total = buffer.size(sb0);
+                    }
+                    var want = 0;
+                    borrow srv as &sr0 in {
+                        want = server.space(sr0, server.ticket_slot(sticket));
+                    }
+                    var give = total - spos;
+                    if want < give {
+                        give = want;
+                    }
+                    var n = 0;
+                    if give > 0 {
+                        borrow mut srv as &!sw0 in {
+                            borrow sbuf as &sb1 in {
+                                n = server.stream(sw0, sticket, buffer.bytes(sb1)[spos..spos + give]);
+                            }
+                        }
+                    }
+                    var finished = n < 0;
+                    if n >= 0 {
+                        spos = spos + n;
+                        if spos >= total {
+                            borrow mut srv as &!sw1 in {
+                                server.answer(sw1, sticket, "");
+                            }
+                            finished = true;
+                        }
+                    }
+                    if finished {
+                        buffer.drop(heap, sbuf);
+                        sbuf = buffer.empty(heap, 16);
+                        sticket = 0 - 1;
+                        spos = 0;
+                    }
+                }
                 var more = true;
                 while more {
                     var slot = 0 - 1;
@@ -71,6 +121,7 @@ fn serve[&h, &k, &l, &i, &f, &d](heap: &!h Heap, clock: &k Clock, listener: &!l 
                         borrow mut out as &!ob in {
                             buffer.clear(ob);
                         }
+                        var take = false;
                         let now_s = clock_unix_ms(clock) / 1000;
                         borrow srv as &sr in {
                             let head = server.head(sr);
@@ -94,19 +145,59 @@ fn serve[&h, &k, &l, &i, &f, &d](heap: &!h Heap, clock: &k Clock, listener: &!l 
                                     out = server.reply_as(heap, out, st, "application/json", buffer.bytes(ab), keep, "");
                                 }
                                 buffer.drop(heap, answer);
+                            } else if bytes.starts_with(path, "/jobs/") && bytes.equal(method, "GET") {
+                                let (st, answer) = results.job_page(heap, fs, dir, path[6..len(path)]);
+                                borrow answer as &ab in {
+                                    out = server.reply_as(heap, out, st, "text/html; charset=utf-8", buffer.bytes(ab), keep, "");
+                                }
+                                buffer.drop(heap, answer);
+                            } else if bytes.starts_with(path, "/files/") && bytes.equal(method, "GET") {
+                                let rest = path[7..len(path)];
+                                let (st, answer) = results.file_of(heap, fs, dir, rest);
+                                if st == 200 && sticket < 0 {
+                                    var cut = 0;
+                                    while cut < len(rest) && int_of(rest[cut]) != 47 {
+                                        cut = cut + 1;
+                                    }
+                                    var size = 0;
+                                    borrow answer as &zb in {
+                                        size = buffer.size(zb);
+                                    }
+                                    out = http.respond_head(heap, out, 200, results.content_type(rest[cut + 1..len(rest)]), size, keep);
+                                    buffer.drop(heap, sbuf);
+                                    sbuf = answer;
+                                    take = true;
+                                } else if st == 200 {
+                                    buffer.drop(heap, answer);
+                                    out = server.reply_as(heap, out, 503, "text/plain; charset=utf-8", "another file is being sent; retry", keep, "Retry-After: 1\r\n");
+                                } else {
+                                    borrow answer as &ab in {
+                                        out = server.reply_as(heap, out, st, "text/plain; charset=utf-8", buffer.bytes(ab), keep, "");
+                                    }
+                                    buffer.drop(heap, answer);
+                                }
                             } else {
                                 out = server.failure(heap, out, 404, "not found", keep);
                             }
                         }
                         borrow mut srv as &!sw in {
-                            borrow out as &ob in {
-                                server.respond(sw, buffer.bytes(ob));
+                            if take {
+                                sticket = server.hold(sw);
+                                spos = 0;
+                                borrow out as &ob in {
+                                    server.stream(sw, sticket, buffer.bytes(ob));
+                                }
+                            } else {
+                                borrow out as &ob in {
+                                    server.respond(sw, buffer.bytes(ob));
+                                }
                             }
                         }
                     }
                 }
             }
             server.close(heap, srv);
+            buffer.drop(heap, sbuf);
             buffer.drop(heap, out);
             return 0;
         }

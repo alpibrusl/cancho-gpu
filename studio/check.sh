@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -57,5 +57,38 @@ build/studio_worker "$T/media" /Users/test "$T/data"
 check "job 1 done" "$(curl -s localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
 check "job 2 failed 3" "$(curl -s localhost:18091/api/jobs/2)" '{"id":2,"state":"failed 3"}'
 check "job 1 got its arguments" "$(grep -c . "$T/data/1.log")" 11
+# The results page and the files (job 1 done with a fake result, job 2 failed, job 3 queued).
+mkdir -p "$T/data/out/1"
+printf '\211PNG\r\n\032\n\0\0binary\377\0' > "$T/data/out/1/video.mp4"
+cp "$T/data/out/1/video.mp4" "$T/data/secret.bin"
+printf '3 queued\n' >/dev/null
+printf 'video\0q\0' > "$T/data/3.argv"
+curl -s localhost:18091/jobs/1 > "$T/page1"
+check "page of a done job: state" "$(grep -c 'state: done' "$T/page1")" 1
+check "page of a done job: the video" "$(grep -c 'src=/files/1/video.mp4' "$T/page1")" 1
+check "page of a done job: no picture it does not have" "$(grep -c 'edited.png\|video.gif' "$T/page1")" 0
+check "page of a failed job: no result" "$(curl -s localhost:18091/jobs/2 | grep -c 'state: failed 3.*\(video\|edited\)')" 0
+check "page of a queued job refreshes" "$(curl -s localhost:18091/jobs/3 | grep -c 'refresh')" 1
+check "page of an unknown job" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/jobs/99)" 404
+check "page of a bad id" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/jobs/1a)" 422
+curl -s -D "$T/hdr" localhost:18091/files/1/video.mp4 > "$T/got.bin"
+check "file: the bytes arrive unchanged" "$(cmp "$T/got.bin" "$T/data/out/1/video.mp4" && echo same)" same
+check "file: media type" "$(grep -ci '^content-type: video/mp4' "$T/hdr")" 1
+check "file: the log is the worker's output" "$(curl -s localhost:18091/files/1/log | head -1)" '[video]'
+head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
+check "file: 6 MB arrive unchanged (streamed)" "$(curl -s localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
+check "file: Content-Length is the size" "$(curl -s -D - -o /dev/null localhost:18091/files/1/video.gif | tr -d '\r' | grep -i '^content-length' | awk '{print $2}')" 6000000
+head -c 40000000 /dev/urandom > "$T/data/out/1/video.gif"
+check "file: 40 MB arrive unchanged" "$(curl -s localhost:18091/files/1/video.gif | cmp - "$T/data/out/1/video.gif" && echo same)" same
+check "file: two in a row on one connection" "$(curl -s localhost:18091/files/1/video.gif localhost:18091/files/1/video.gif | wc -c | tr -d ' ')" 80000000
+check "the server serves after streaming" "$(curl -s localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
+head -c 6000000 /dev/urandom > "$T/data/out/1/video.gif"
+head -c 150000 /dev/urandom > "$T/data/out/1/edited.png"
+check "file: 150 KB arrive unchanged" "$(curl -s localhost:18091/files/1/edited.png | cmp - "$T/data/out/1/edited.png" && echo same)" same
+rm "$T/data/out/1/edited.png"
+check "file: a name not on the list" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1/secret.bin)" 404
+check "file: a path is not a name" "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' 'localhost:18091/files/1/../secret.bin')" 404
+check "file: a file the job does not have" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1/edited.png)" 404
+check "file: bad id" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18091/files/1a/log)" 422
 rc=0; build/studio 18092 relative 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 2
 exit $fail
