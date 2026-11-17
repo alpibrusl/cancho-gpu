@@ -33,6 +33,7 @@ component Studio {
     state is_image: Bool = false;
     state not_video: Bool = false;
     state not_edit: Bool = true;
+    state not_pic: Bool = false;
     state not_image: Bool = true;
     state isize: String = "1024x1024";
     state image2: String = "";
@@ -46,11 +47,13 @@ component Studio {
 
     on Kind(v) {
         kind = v;
+        image = "";
         is_edit = v == "edit";
         is_video = v == "video";
         is_image = v == "image";
         not_video = v != "video";
         not_edit = v != "edit";
+        not_pic = v == "image";
         not_image = v != "image";
         ready = !busy && len(prompt) > 0 && (v != "edit" || len(image) > 0);
         blocked = !ready;
@@ -91,7 +94,10 @@ component Studio {
         if len(model) > 0 {
             extra = extra + ",\"model\":" + json.quote(model);
         }
-        extra = extra + ",\"rewrite\":" + json.quote(if kind == "image" { "off" } else { rewrite });
+        extra = extra + ",\"rewrite\":" + json.quote(if kind == "image" || (kind == "video" && len(image) > 0) { "off" } else { rewrite });
+        if kind == "video" && len(image) > 0 {
+            extra = extra + ",\"image\":" + json.quote(image);
+        }
         lead = if kind == "image" { ",\"size\":" + json.quote(isize) } else { ",\"frames\":" + frames + ",\"size\":" + json.quote(size) };
         sent = await(net.post("api/jobs", "\{\"kind\":" + json.quote(kind) + ",\"prompt\":" + json.quote(prompt) + lead + ",\"seed\":" + seed + extra + "\}"));
         accepted = match sent {
@@ -141,7 +147,7 @@ component Studio {
             Heading { level: 1 "New job" }
             Select { label: "What to make" options: ["video", "edit", "image"] value: kind on: Kind }
             TextField { label: "Prompt" value: prompt on: Prompt }
-            TextField { label: "Picture to edit (a path on the server's machine)" value: image on: Image disabled: not_edit }
+            TextField { label: "Picture (a path on the server's machine). An edit: the picture to edit. A video: optional, the first frame, which the video continues (about 90 s for 17 frames; the rewrite is off). Changing what to make empties it" value: image on: Image disabled: not_pic }
             TextField { label: "A second picture to combine with it (a path on the server's machine; empty: none)" value: image2 on: Image2 disabled: not_edit }
             Select { label: "Size of each picture when combining, in pixels (589824 = 768 x 768, the default; 262144 = 512 x 512; 1048576 = 1024 x 1024, the largest measured)" options: ["589824", "262144", "1048576"] value: carea on: CArea disabled: not_edit }
             Select { label: "Frames (a video)" options: ["17", "9", "25", "33"] value: frames on: Frames disabled: not_video }
