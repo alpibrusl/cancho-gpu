@@ -1,6 +1,6 @@
 # Combining two (or more) pictures in one edit (design, 2026-11-17)
 
-> **Status: built and measured for two pictures with conditions up to 960 x 960; **1024 x 1024 conditions give a wrong picture and are refused** (section 7); `media edit --also` runs it.** Claims are **[read]** (from `diffusers`' `transformer_qwenimage21.py` and `pipeline_qwenimage21.py` in the venv, and this repository's files; not run), **[reasoned]** or **[estimate]**. The owner asked (2026-11-16) for "combining two images in the input request".
+> **Status: built and measured for two pictures, conditions up to 1024 x 1024 (the largest measured); the step's attention was reworked after section 7 found a 32-bit limit (section 8); `media edit --also` runs it.** Claims are **[read]** (from `diffusers`' `transformer_qwenimage21.py` and `pipeline_qwenimage21.py` in the venv, and this repository's files; not run), **[reasoned]** or **[estimate]**. The owner asked (2026-11-16) for "combining two images in the input request".
 
 ## 1. What was read: the model takes N pictures
 
@@ -72,3 +72,22 @@ One model, two pictures of 512^2 to 1024^2 and one prompt; no float64 run of the
 ```
 scripts/media edit FIRST.png "Place the red fox sitting on the rocks in front of the lighthouse at dusk" --also SECOND.png -o out/combined --seed 3
 ```
+
+## 8. The step on the target's own rows, over two segments of keys (measured, 2026-11-17)
+
+**What it replaces.** Section 7 found that a step of `tests/dit_edit_lib.py` computed every program on NP rows (the prefix's length, the target padded up to it) and kept the scores of 32 heads for NP queries over 2 NP keys: 64 NP^2 elements, which overflowed a 32-bit index at NP 8,256 (4.4e9 against 2^32) and gave a wrong picture with no error. It was also wasteful: a step of 4,096 target rows paid for 8,256.
+**What was built.** (1) **Two kernels**, `tests/chx/dit_stats_o2.chx` and `tests/chx/dit_pv_mma2.chx`: the softmax statistics and the weighted sum of v over **two segments of keys** (the cached prefix's, then the target's), in two consecutive loops with the running maximum and normaliser carried through both; no concatenation is needed (`dit_cat` can only join two halves of one length, and a `link` needs equal element counts, which is what made the obvious fix impossible: the language has no conditional store and no view of part of a buffer). The scores of each segment are a separate matrix (`dit_scores_mma` twice): 32 x NS x NP and 32 x NS x NS elements. (2) **`Edit`** runs a step whose target has fewer rows than the prefix (NS = the target's rows padded to 64 < NP) on **NS rows** in every per-row program, and the attention over the two segments (the cache read from its resident files, `dit_cat` no longer used in the step); the prefix pass is unchanged. `DIT_STEP=padded` selects the old step (for comparison); the `unified` mode keeps it.
+**Held to the one-segment kernels** (`tests/dit_attention_seg.py`, in `scripts/gate.sh`): on random scores, masks and f16 values, the segments of unequal length in both orders (128 + 64 and 64 + 192 keys, 2 heads, 128 query rows): **the maximum exactly equal, the normaliser and the weighted sum bit for bit (difference 0)**; **9 mutants killed**, among them the second segment's maximum free to fall, its sum added instead of multiplied, the second loop restarted from the first chunk's statistics, every head of the second segment read from the first head, the second segment's v or mask read from the wrong place, and the second segment accumulated from zero. (A tenth edit survived at first, a weakness of the test's shape: with 64 query rows there is one tile and `i * bm` is always 0; the cases now have 128.)
+**Held to the old step on the whole run:** **the one-picture edit's PNG is byte for byte the old step's** (same photograph, prompt and seed), and **the two-picture runs at 768 x 768 conditions are byte for byte the old step's**, so nothing but the speed and the limit changed.
+
+**[measured] Two pictures, conditions of 1024 x 1024** (the fox and the lighthouse, the same prompt, seed and noise; NP 8,256, a target of 4,096):
+| | before (section 7) | now |
+|---|---|---|
+| the picture | **wrong** (green cast, mean RGB 48, 48, 24) | **right** (mean RGB 89.8, 106.8, 115.6; torch's 90.5, 107.3, 116.1) |
+| against torch's BF16 pipeline | 9.6 dB | **42.7 dB** (mean abs 0.89 of 255) |
+| a step | 26 s | **9 to 10 s** |
+| prefix + 8 steps | 213 s | **97 s** |
+So the reading of section 7 was right (a 32-bit index in the scores' matrix): removing the matrix of 4.4e9 elements removed the fault; the largest matrix now is 32 x 4,096 x 8,256 = 1.1e9.
+**The limit that is left:** the prefix pass keeps 32 NP^2 scores: NP must be under 11,585 (32 NP^2 < 2^32). Two pictures of 1024 x 1024 are 8,300 rows; three would be 12,400 (refused, before any GPU work, by the driver and by `media edit`). `media edit --also` now accepts `--condition-area` up to what that allows (two pictures of 1048576 pixels are the largest **measured**; more is not run).
+
+**What this does not show.** One prompt, one seed, two pictures; the 42.7 dB is a distance between two approximations like the others (not a measure of one's error), with no floor measured at this size; no float64 run of the whole pipeline; the prefix pass is still NP rows (a quadratic cost: about 40 of the 97 s at 1024 x 1024 conditions); the studio is unchanged.

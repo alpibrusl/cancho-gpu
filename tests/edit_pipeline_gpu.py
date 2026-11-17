@@ -106,11 +106,12 @@ Wt, Ht = Wt // 32 * 32, Ht // 32 * 32
 GHt, GWt = Ht // 16, Wt // 16
 pix = infos[0]["pix"]
 print("target %d x %d (%d x %d latent grid, %d tokens)" % (Wt, Ht, GHt, GWt, GHt * GWt), flush=True)
-# The step's attention keeps the scores of 32 heads for NP query rows over 2 NP keys: 64 NP^2 elements, which the kernels index with 32 bits. Measured (docs/two-images.md section 7): conditions of 960 x 960 (NP 7,296,
-# 3.4e9 elements) are right, of 1024 x 1024 (NP 8,256, 4.4e9) give a picture with a green cast and no error. Refuse before any GPU work, with a margin of 128 text rows.
+# The attention keeps the scores of 32 heads: the prefix pass NP x NP of them (32 NP^2 elements), which the kernels index with 32 bits. Measured (docs/two-images.md section 7): conditions of 1024 x 1024 gave a picture with a green cast and no error
+# when the step padded its target to NP rows (64 NP^2 elements, 4.4e9 at NP 8,256); the step now runs on the target's own rows over two segments of keys (docs/two-images.md section 8), so only the prefix pass is left: NP < 11,585.
+# Refuse before any GPU work, with a margin of 128 text rows.
 _np_est = max((sum(i["GH"] * i["GW"] for i in infos) + 128 + 63) // 64 * 64, (GHt * GWt + 63) // 64 * 64)
-if 64 * _np_est * _np_est >= 2 ** 32:
-    print("edit: the joint sequence would have about %d prefix rows: the step's attention scores (%.2g elements) pass what the kernels can index (2^32). Lower --condition-area (960 x 960 = 921600 is the largest measured; 768 x 768 = 589824 is the default for two pictures)" % (_np_est, 64.0 * _np_est * _np_est), file=sys.stderr)
+if 32 * _np_est * _np_est >= 2 ** 32:
+    print("edit: the joint sequence would have about %d prefix rows: the prefix pass's attention scores (%.2g elements) pass what the kernels can index (2^32). Lower --condition-area (1024 x 1024 = 1048576 is the largest measured for two pictures)" % (_np_est, 32.0 * _np_est * _np_est), file=sys.stderr)
     sys.exit(2)
 timings["host prep"] = time.time() - t0
 
@@ -183,8 +184,9 @@ x, mod, temb, rope, sel, allowed, pad_exp = der.assemble(prompt, pad, cond, late
 pre, tgt = np.nonzero(~sel)[0], np.nonzero(sel)[0]
 NPR, NTG = len(pre), len(tgt)
 NP = max((NPR + 63) // 64 * 64, (NTG + 63) // 64 * 64)
-if 64 * NP * NP >= 2 ** 32:  # the authoritative check (the one after stage 0 is an estimate)
-    print("edit: NP = %d: the step's attention scores (%.2g elements) pass what the kernels can index (2^32): lower --condition-area" % (NP, 64.0 * NP * NP), file=sys.stderr)
+_scores = 32.0 * NP * NP * (1 if (NTG + 63) // 64 * 64 < NP else 2)  # the prefix pass's NP x NP scores; a step that cannot run on fewer rows than the prefix (NP = the target's) pads to 2 NP keys
+if _scores >= 2 ** 32:  # the authoritative check (the one after stage 0 is an estimate)
+    print("edit: NP = %d: the attention scores (%.2g elements) pass what the kernels can index (2^32): lower --condition-area" % (NP, _scores), file=sys.stderr)
     sys.exit(2)
 print("joint sequence %d: prefix %d rows, target %d rows, padded to %d" % (len(x), NPR, NTG, NP), flush=True)
 e = Edit(P("edit_work"), WDIR, NP, NPR, NTG, int(arg("--gp", 4)), int(arg("--gs", 2)), resident="--resident" in sys.argv, unified="--unified" in sys.argv)

@@ -1,0 +1,54 @@
+// The statistics of a softmax over TWO segments of keys, in one pass with the running maximum and normaliser carried through both (docs/two-images.md section 8): the keys of an edit's step are the cached prefix's (t1 of them) and the target's
+// own (t2), and the scores of each are a separate matrix, so that no matrix has more than nh * nq * max(t1, t2) elements and no concatenation of keys of unequal lengths is needed (dit_cat can only join two halves of one size). For each row,
+// m = the maximum and z = sum exp(s + mask - m) over the t1 + t2 scores of the row, **the same m and z as dit_stats_o.chx on the scores laid side by side** (the chunks are visited in the same order, so the sums are the same).
+algo dit_stats_o2(nh, nq, t1, t2, qs, cs)
+  in  sc1:   f32[nh * nq, t1]
+  in  mask1: f32[nq, t1]
+  in  sc2:   f32[nh * nq, t2]
+  in  mask2: f32[nq, t2]
+  out m:     f32[nh * nq]
+  out z:     f32[nh * nq]
+{
+  grid h over nh, qb over nq / qs
+  let f0 = load sc1[h * nq + qb * qs, 0 ; qs, cs]
+  let k0 = load mask1[qb * qs, 0 ; qs, cs]
+  let s0 = f0 + k0
+  let m1 = rowmax &s0
+  let e0 = exp (s0 - &m1)
+  let z1 = rowsum e0
+  let mx, zz = for c in 1 .. t1 / cs with m1, z1 {
+    let sm = load sc1[h * nq + qb * qs, c * cs ; qs, cs]
+    let mk = load mask1[qb * qs, c * cs ; qs, cs]
+    let s2 = sm + mk
+    let cm = rowmax &s2
+    let r  = relu (cm - &m1)
+    let mn = &m1 + r
+    let nr = m1 - &mn
+    let al = exp nr
+    let sh = s2 - &mn
+    let e  = exp sh
+    let cz = rowsum e
+    let zs = z1 * al
+    yield mn, zs + cz
+  }
+  let mf, zf = for c in 0 .. t2 / cs with mx, zz {
+    let sm = load sc2[h * nq + qb * qs, c * cs ; qs, cs]
+    let mk = load mask2[qb * qs, c * cs ; qs, cs]
+    let s2 = sm + mk
+    let cm = rowmax &s2
+    let r  = relu (cm - &mx)
+    let mn = &mx + r
+    let nr = mx - &mn
+    let al = exp nr
+    let sh = s2 - &mn
+    let e  = exp sh
+    let cz = rowsum e
+    let zs = zz * al
+    yield mn, zs + cz
+  }
+  store mf -> m[h * nq + qb * qs]
+  store zf -> z[h * nq + qb * qs]
+}
+
+schedule dit_stats_o2 for apple-m-series { threads 64 }
+schedule dit_stats_o2 for nvidia-ada     { threads 128 }

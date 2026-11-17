@@ -138,8 +138,9 @@ def cmd_edit(a):
         if not os.path.isfile(extra):
             die("no such image: " + extra)
     area = a.condition_area or (1024 * 1024 if not a.also else 768 * 768)
-    if a.also and area > 960 * 960:
-        die("--condition-area %d is more than 921600 (960 x 960): with several pictures the attention scores pass what the kernels can index and the picture comes out wrong (docs/two-images.md)" % area)
+    prefix_rows = (len(a.also) + 1) * (area // 256) + 128  # the pictures' latent tokens and the text: the prefix pass keeps 32 x rows^2 attention scores, indexed with 32 bits
+    if a.also and 32 * prefix_rows * prefix_rows >= 2 ** 32:
+        die("--condition-area %d with %d pictures is about %d prefix rows: the attention scores pass what the kernels can index (at most about 11,500 rows; two pictures of 1024 x 1024 are 8,300). Lower it (docs/two-images.md)" % (area, len(a.also) + 1, prefix_rows))
     wd = a.weights or os.environ.get("CANCHO_MEDIA_EDIT_WEIGHTS") or os.path.join(CACHE, "qwen-edit-dit")
     tw = a.text_weights or os.environ.get("CANCHO_MEDIA_EDIT_TEXT_WEIGHTS") or os.path.join(CACHE, "qwen-edit-text")
     if not snapshot(info["repo"], "transformer"):
@@ -238,7 +239,7 @@ def main():
     e.add_argument("image")
     e.add_argument("instruction")
     e.add_argument("--also", action="append", default=[], metavar="IMAGE", help="another picture to combine with the first (repeat for more; docs/two-images.md): the instruction can refer to them")
-    e.add_argument("--condition-area", type=int, default=None, help="pixels each picture is resized to (default 1048576 for one picture, 589824 = 768 x 768 for several; at most 921600 for several)")
+    e.add_argument("--condition-area", type=int, default=None, help="pixels each picture is resized to (default 1048576 for one picture, 589824 = 768 x 768 for several; two pictures of 1048576 are the largest measured)")
     e.add_argument("-o", "--output", required=True, help="directory for edited.png")
     e.add_argument("--model", help="model name (`media models`; default %s)" % DEFAULT["edit"])
     e.add_argument("--seed", type=int, default=0)

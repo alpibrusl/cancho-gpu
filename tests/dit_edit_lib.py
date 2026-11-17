@@ -96,17 +96,26 @@ class Edit:
         self.W = lambda n: os.path.join(wdir, n)
         self.secs = {"prefix": 0.0, "step": 0.0}
         self.unified, self.phase, self.errfile = unified, None, None
+        # docs/two-images.md section 8: a step whose target has fewer rows than the prefix (NS = ntg padded to 64 < NP) runs every per-row program on NS rows and its attention over two segments of keys (the cached prefix's, then the target's):
+        # the scores of 32 heads are then NS x (NP or NS) each, never NS x 2 NP (64 NP^2 elements overflowed a 32-bit index at NP > 8192), and nothing is computed for the padding of the target
+        self.NS = (ntg + 63) // 64 * 64
+        self.fast = (not unified) and self.NS < self.NP and STATS == "online" and os.environ.get("DIT_STEP", "segments") != "padded"
         self.resident, self.proc = resident or unified, None  # resident: one session of all 32 blocks for the prefix and one that stays open for every step (docs/diffusion.md D9i)
 
     def static(self, cs_pre, sn_pre, cs_tgt, sn_tgt, mask_pre, mask_step):
         self.tab = {"prefix": (cs_pre, sn_pre), "step": (cs_tgt, sn_tgt)}
         self.mask_pre, self.mask_step = mask_pre, mask_step
-        P, NP = self.P, self.NP
-        f32(P("cs_pre.f32"), cs_pre); f32(P("sn_pre.f32"), sn_pre); f32(P("cs_tgt.f32"), cs_tgt); f32(P("sn_tgt.f32"), sn_tgt)
+        P, NP, NS = self.P, self.NP, self.NS
+        R = NS if self.fast else NP  # the rows of a step's per-row programs
+        f32(P("cs_pre.f32"), cs_pre); f32(P("sn_pre.f32"), sn_pre); f32(P("cs_tgt.f32"), cs_tgt[:R]); f32(P("sn_tgt.f32"), sn_tgt[:R])
         f32(P("sel_pre.f32"), np.ones((NP, 1)) if self.mut == "prefix-sampled-t" else np.zeros((NP, 1)))  # the prefix reads the t = 0 row of the modulation
-        f32(P("sel_tgt.f32"), np.ones((NP, 1)))
+        f32(P("sel_tgt.f32"), np.ones((R, 1)))
         f32(P("mask_pre.f32"), mask_pre)
-        f32(P("mask_step.f32"), mask_step)
+        if self.fast:  # the step's mask [NP, 2 NP] cut into the two segments' masks, for the NS target rows
+            f32(P("mask_s1.f32"), mask_step[:NS, :NP])
+            f32(P("mask_s2.f32"), mask_step[:NS, NP:NP + NS])
+        else:
+            f32(P("mask_step.f32"), mask_step)
 
     def modulation(self, mod):
         for i, nm in enumerate(("s1", "g1", "s2", "g2")):
@@ -114,86 +123,102 @@ class Edit:
 
     def _blocks(self, name, lo, hi, xfile, prefix, alias=False, keep_open=False, unified=False):
         P, W, NP, mut = self.P, self.W, self.NP, self.mut
+        fast = self.fast and not prefix and not unified
+        R = self.NS if fast else NP  # the rows of every per-row program of the blocks
         s = Session(self.work, name, self.timed)
         suf = "u" if unified else ("pre" if prefix else "tgt")
         prev = None
         for b in range(lo, hi):
             n = lambda t: "b%d_%s" % (b, t)
             sel_f = P("sel_%s.f32" % suf)
-            s.program(n("lnm1"), "dit_lnmod", f"s={NP} n={D}")
+            s.program(n("lnm1"), "dit_lnmod", f"s={R} n={D}")
             if prev:
                 s.link(prev, n("lnm1") + ".x")
             else:
                 s.res(n("lnm1") + ".x", xfile)
             s.res(n("lnm1") + ".sc", P("ms_s1.bin")); s.res(n("lnm1") + ".sel", sel_f)
             for gg, wf in (("gq", "wq"), ("gk", "wk"), ("gv", "wv")):
-                s.program(n(gg), "ported/gemm_mma", f"m={NP} n={D} k={D}")
+                s.program(n(gg), "ported/gemm_mma", f"m={R} n={D} k={D}")
                 s.link(n("lnm1") + ".y", n(gg) + ".a"); s.res(n(gg) + ".w", W("%s%d.f16" % (wf, b)), "f16")
             for nm, src, wf in (("nq", "gq", "nq"), ("nk", "gk", "nk")):
-                s.program(n(nm), "rmsnorm_rows", f"r={NP * H} n={HD} eps=0.000001")
+                s.program(n(nm), "rmsnorm_rows", f"r={R * H} n={HD} eps=0.000001")
                 s.link(n(src) + ".y", n(nm) + ".x"); s.res(n(nm) + ".w", W("%s%d.f32" % (wf, b)))
             for rn, src, sc_ in (("rq", "nq", repr(1 / math.sqrt(HD))), ("rk", "nk", "1.0")):
-                s.program(n(rn), "dit_rope16", f"s={NP} nh={H} h=64 sc={sc_}")
+                s.program(n(rn), "dit_rope16", f"s={R} nh={H} h=64 sc={sc_}")
                 s.link(n(src) + ".y", n(rn) + ".x"); s.res(n(rn) + ".cs", P("cs_%s.f32" % suf)); s.res(n(rn) + ".sn", P("sn_%s.f32" % suf))
-            s.program(n("vh"), "dit_to_f16", f"s={NP} n={D}"); s.link(n("gv") + ".y", n("vh") + ".x")
-            if prefix:
+            s.program(n("vh"), "dit_to_f16", f"s={R} n={D}"); s.link(n("gv") + ".y", n("vh") + ".x")
+            if fast:
+                pass
+            elif prefix:
                 s.save(n("rk") + ".y", P("kpre%d.f16" % b), "f16")
                 s.save(n("vh") + ".y", P("vpre%d.f16" % b), "f16")
                 kk, vv, t, maskf = n("rk") + ".y", n("vh") + ".y", NP, "mask_pre.f32"
             else:
                 kk, vv, t, maskf = n("ck") + ".y", n("cv") + ".y", 2 * NP, "mask_u.f32" if unified else "mask_step.f32"
                 for cn, src, pf in (("ck", "rk", "kz" if unified else "kpre"), ("cv", "vh", "vz" if unified else "vpre")):
-                    s.program(n(cn), "dit_cat", f"s={NP} n={D} bn=1024")
+                    s.program(n(cn), "dit_cat", f"s={R} n={D} bn=1024")
                     if mut == "no-cat":  # the cached prefix left out: the target's own twice
                         s.link(n(src) + ".y", n(cn) + ".a")
                     else:
                         s.res(n(cn) + ".a", P("%s%d.f16" % (pf, b)), "f16")
                     s.link(n(src) + ".y", n(cn) + ".b")
-            s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={NP} t={t} d={HD}")
-            s.link(n("rq") + ".y", n("sc") + ".q"); s.link(kk, n("sc") + ".k")
-            if STATS == "online":  # the statistics in one pass over the scores, one kernel carrying the maximum and the normaliser (D14)
-                s.program(n("st"), "dit_stats_o", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
-            elif ONE_PASS:  # the statistics in one pass over the scores, per chunk of 64 keys and then merged (D10); `DIT_STATS=two` runs D8's two-pass kernel instead
-                s.program(n("stc"), "dit_stats_c", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("stc") + ".sc"); s.res(n("stc") + ".mask", P(maskf))
-                s.program(n("st"), "dit_stats_comb", f"nh={H} nq={NP} nc={t // 64} qs=32"); s.link(n("stc") + ".mc", n("st") + ".mc"); s.link(n("stc") + ".zc", n("st") + ".zc")
+            if fast:  # two segments of keys: the cached prefix's (resident, NP rows) and the target's own (NS rows); no concatenation
+                s.program(n("sc1"), "dit_scores_mma", f"nh={H} nq={R} t={NP} d={HD}")
+                s.link(n("rq") + ".y", n("sc1") + ".q"); s.res(n("sc1") + ".k", P("kpre%d.f16" % b), "f16")
+                s.program(n("sc2"), "dit_scores_mma", f"nh={H} nq={R} t={R} d={HD}")
+                s.link(n("rq") + ".y", n("sc2") + ".q"); s.link(n("rk") + ".y", n("sc2") + ".k")
+                s.program(n("st"), "dit_stats_o2", f"nh={H} nq={R} t1={NP} t2={R} qs=16 cs=64")
+                s.link(n("sc1") + ".sc", n("st") + ".sc1"); s.link(n("sc2") + ".sc", n("st") + ".sc2"); s.res(n("st") + ".mask1", P("mask_s1.f32")); s.res(n("st") + ".mask2", P("mask_s2.f32"))
+                s.program(n("pv"), "dit_pv_mma2", f"nh={H} nq={R} t1={NP} t2={R} d={HD}")
+                s.link(n("sc1") + ".sc", n("pv") + ".sc1"); s.link(n("sc2") + ".sc", n("pv") + ".sc2"); s.res(n("pv") + ".mask1", P("mask_s1.f32")); s.res(n("pv") + ".mask2", P("mask_s2.f32"))
+                s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z")
+                s.res(n("pv") + ".v1", P("vpre%d.f16" % b), "f16"); s.link(n("vh") + ".y", n("pv") + ".v2")
             else:
-                s.program(n("st"), "dit_stats_m", f"nh={H} nq={NP} t={t} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
-            s.program(n("pv"), "dit_pv_mma", f"nh={H} nq={NP} t={t} d={HD}")
-            s.link(n("sc") + ".sc", n("pv") + ".sc"); s.res(n("pv") + ".mask", P(maskf)); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(vv, n("pv") + ".v")
-            s.program(n("c1"), "dit_to_f16", f"s={NP} n={D}"); s.link(n("pv") + ".o", n("c1") + ".x")
-            s.program(n("go"), "ported/gemm_mma", f"m={NP} n={D} k={D}"); s.link(n("c1") + ".y", n("go") + ".a"); s.res(n("go") + ".w", W("wo%d.f16" % b), "f16")
-            s.program(n("gr1"), "dit_gate_res", f"s={NP} n={D}")
+                s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={NP} t={t} d={HD}")
+                s.link(n("rq") + ".y", n("sc") + ".q"); s.link(kk, n("sc") + ".k")
+                if STATS == "online":  # the statistics in one pass over the scores, one kernel carrying the maximum and the normaliser (D14)
+                    s.program(n("st"), "dit_stats_o", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
+                elif ONE_PASS:  # the statistics in one pass over the scores, per chunk of 64 keys and then merged (D10); `DIT_STATS=two` runs D8's two-pass kernel instead
+                    s.program(n("stc"), "dit_stats_c", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("stc") + ".sc"); s.res(n("stc") + ".mask", P(maskf))
+                    s.program(n("st"), "dit_stats_comb", f"nh={H} nq={NP} nc={t // 64} qs=32"); s.link(n("stc") + ".mc", n("st") + ".mc"); s.link(n("stc") + ".zc", n("st") + ".zc")
+                else:
+                    s.program(n("st"), "dit_stats_m", f"nh={H} nq={NP} t={t} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
+                s.program(n("pv"), "dit_pv_mma", f"nh={H} nq={NP} t={t} d={HD}")
+                s.link(n("sc") + ".sc", n("pv") + ".sc"); s.res(n("pv") + ".mask", P(maskf)); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(vv, n("pv") + ".v")
+            s.program(n("c1"), "dit_to_f16", f"s={R} n={D}"); s.link(n("pv") + ".o", n("c1") + ".x")
+            s.program(n("go"), "ported/gemm_mma", f"m={R} n={D} k={D}"); s.link(n("c1") + ".y", n("go") + ".a"); s.res(n("go") + ".w", W("wo%d.f16" % b), "f16")
+            s.program(n("gr1"), "dit_gate_res", f"s={R} n={D}")
             if prev:
                 s.link(prev, n("gr1") + ".x")
             else:
                 s.res(n("gr1") + ".x", xfile)
             s.link(n("go") + ".y", n("gr1") + ".y"); s.res(n("gr1") + ".g", P("ms_g1.bin")); s.res(n("gr1") + ".sel", sel_f)
-            s.program(n("lnm2"), "dit_lnmod", f"s={NP} n={D}"); s.link(n("gr1") + ".z", n("lnm2") + ".x"); s.res(n("lnm2") + ".sc", P("ms_s2.bin")); s.res(n("lnm2") + ".sel", sel_f)
+            s.program(n("lnm2"), "dit_lnmod", f"s={R} n={D}"); s.link(n("gr1") + ".z", n("lnm2") + ".x"); s.res(n("lnm2") + ".sc", P("ms_s2.bin")); s.res(n("lnm2") + ".sel", sel_f)
             for gg, wf in (("gg", "wg"), ("gp", "wp")):
-                s.program(n(gg), "ported/gemm_mma", f"m={NP} n={3 * D} k={D}")
+                s.program(n(gg), "ported/gemm_mma", f"m={R} n={3 * D} k={D}")
                 s.link(n("lnm2") + ".y", n(gg) + ".a"); s.res(n(gg) + ".w", W("%s%d.f16" % (wf, b)), "f16")
-            s.program(n("sw"), "dit_swiglu", f"s={NP} n={3 * D} bn=1024"); s.link(n("gg") + ".y", n("sw") + ".g"); s.link(n("gp") + ".y", n("sw") + ".u")
-            s.program(n("gd"), "ported/gemm_mma", f"m={NP} n={D} k={3 * D}"); s.link(n("sw") + ".y", n("gd") + ".a"); s.res(n("gd") + ".w", W("wout%d.f16" % b), "f16")
-            s.program(n("gr2"), "dit_gate_res", f"s={NP} n={D}")
+            s.program(n("sw"), "dit_swiglu", f"s={R} n={3 * D} bn=1024"); s.link(n("gg") + ".y", n("sw") + ".g"); s.link(n("gp") + ".y", n("sw") + ".u")
+            s.program(n("gd"), "ported/gemm_mma", f"m={R} n={D} k={3 * D}"); s.link(n("sw") + ".y", n("gd") + ".a"); s.res(n("gd") + ".w", W("wout%d.f16" % b), "f16")
+            s.program(n("gr2"), "dit_gate_res", f"s={R} n={D}")
             s.link(n("gr1") + ".z", n("gr2") + ".x"); s.link(n("gd") + ".y", n("gr2") + ".y"); s.res(n("gr2") + ".g", P("ms_g2.bin")); s.res(n("gr2") + ".sel", sel_f)
             prev = n("gr2") + ".z"
             if alias and b > lo:
                 # the activations of block b live in the buffers of block b - 1's (docs/resident.md 21.4): the session file's checks prove nothing reads them any more. The residual stream
                 # (gr2.z, which is saved at the end) and what a prefix pass saves (the keys and values) keep their own
-                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y"), ("sc", "sc"), ("st", "m"), ("st", "z")] + ([("stc", "mc"), ("stc", "zc")] if STATS == "chunk" else []) + [ ("pv", "o"), ("c1", "y"),
+                outs = [("lnm1", "y"), ("gq", "y"), ("gk", "y"), ("gv", "y"), ("nq", "y"), ("nk", "y"), ("rq", "y")] + ([("sc1", "sc"), ("sc2", "sc")] if fast else [("sc", "sc")]) + [("st", "m"), ("st", "z")] + ([("stc", "mc"), ("stc", "zc")] if STATS == "chunk" else []) + [ ("pv", "o"), ("c1", "y"),
                         ("go", "y"), ("gr1", "z"), ("lnm2", "y"), ("gg", "y"), ("gp", "y"), ("sw", "y"), ("gd", "y")]
-                outs += [("ck", "y"), ("cv", "y")] if not prefix else []
+                outs += [("ck", "y"), ("cv", "y")] if not (prefix or fast) else []
                 outs += [("rk", "y"), ("vh", "y")] if not (prefix or unified) else []
                 for sfx, o in outs:
                     s.alias("b%d_%s.%s" % (b - 1, sfx, o), "b%d_%s.%s" % (b, sfx, o))
         outf = P("x_%s_%d.bin" % (suf, hi))
         s.save(prev, outf, "f32")
         if keep_open:
-            path = s.write(prev, NP, D)
+            path = s.write(prev, R, D)
             self.errfile = path + ".err"
             self.proc = subprocess.Popen([SESSION, path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(self.errfile, "w"), text=True, bufsize=1)
             return outf, 0.0
-        return outf, s.run(prev, NP, D)
+        return outf, s.run(prev, R, D)
 
     # ---- one session for the prefix pass and every step (D12): the prefix is a step whose first NP keys (the cache, zeros at first) are all hidden by the mask, whose rows are modulated from t = 0 (`sel` zeros) and rotated by the
     # prefix's tables; after it the keys and values it computed are copied on the device to the cache (`copy`) and the same programs run the steps with the target's inputs. Only the files that differ between the two are read again.
@@ -256,7 +281,8 @@ class Edit:
     def step(self, x_tgt, report=None):
         if self.unified:
             return self._step_unified(x_tgt)
-        f32(self.P("xtgt.f32"), x_tgt)
+        R = self.NS if self.fast else self.NP
+        f32(self.P("xtgt.f32"), x_tgt[:R])
         x = self.P("xtgt.f32")
         self.secs["step"] = 0.0
         if self.resident:
@@ -268,13 +294,21 @@ class Edit:
             self._ask("1")
             self._ask("checkpoint")
             self.secs["step"] = time.perf_counter() - t0
-            return np.fromfile(self.P("x_tgt_%d.bin" % NB), dtype="<f4").reshape(self.NP, D).astype(np.float64)
+            return self._padded(np.fromfile(self.P("x_tgt_%d.bin" % NB), dtype="<f4").reshape(R, D).astype(np.float64))
         for lo in range(0, NB, self.GS):
             x, secs = self._blocks("stp%d" % lo, lo, lo + self.GS, x, False)
             self.secs["step"] += secs
             if report:
-                report(lo + self.GS, np.fromfile(x, dtype="<f4").reshape(self.NP, D)[:self.NTG].astype(np.float64))
-        return np.fromfile(x, dtype="<f4").reshape(self.NP, D).astype(np.float64)
+                report(lo + self.GS, np.fromfile(x, dtype="<f4").reshape(R, D)[:self.NTG].astype(np.float64))
+        return self._padded(np.fromfile(x, dtype="<f4").reshape(R, D).astype(np.float64))
+
+    def _padded(self, y):
+        """The step's output as [NP, 4096]: the NS rows computed and zeros after (what callers have always been given)."""
+        if y.shape[0] == self.NP:
+            return y
+        out = np.zeros((self.NP, D))
+        out[:y.shape[0]] = y
+        return out
 
     def _ask(self, line):
         self.proc.stdin.write(line + "\n")
