@@ -4,6 +4,13 @@
 
 > Later notes: `docs/studio-variations.md` (variations of one request, the CLI's parameters, the pages' style) and `docs/studio-design.md` (a visual design to apply, and what islands can and cannot do here).
 
+## Running it
+
+```
+CANCHO=<the pinned cancho> UI=<the cancho-ui binary> scripts/studio-up.sh [PORT] [DATA_DIR]
+```
+`scripts/studio-up.sh` (default port 8090, data in `build/studio-data`) builds what is missing, starts the server and the worker and prints `studio: http://127.0.0.1:PORT/?token=...`; open it, Ctrl-C stops both; `--rebuild` as the last argument builds again. A job needs the Metal session and the weights (`scripts/media doctor`); the pages and the API work without them. Do not point it at the data directory of another running studio.
+
 ## Goal
 
 A page on `localhost` where one types a prompt (and, for an edit, names a photo), starts a job, sees it progress, and opens the result. It is the `media` command line (`docs/cli.md`) with a browser in front: the models, the limits and the one-GPU-job lock are the CLI's, unchanged.

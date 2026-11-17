@@ -596,4 +596,30 @@ check "image: ...and the page lists the file" "$(cget /jobs/$IMI | grep -o '<li>
 mkdir -p "$R/off/out/$IVF"; printf 'PNGDATA' > "$R/off/out/$IVF/image.png"; echo done > "$R/off/$IVF.state"
 check "image: a set's cell shows the image" "$(cget /sets/$IVF | grep -c "alt=\"variation\" src=/files/$IVF/image.png")" 1
 check "image: the OpenAPI document names the kind and the file" "$(jq -r '.components.schemas.NewJob.properties.kind.enum | join(",")' studio/openapi.json) $(jq -r '.paths["/files/{id}/{name}"].get.parameters[1].schema.enum | index("image.png")' studio/openapi.json)" "video,edit,image 1"
+# Several pictures (docs/two-images.md): an edit with a second picture, in the API and in the /edit form.
+Tq=$(wc -l < "$R/off/queue" | tr -d ' ')
+TW=$(pj '{"kind":"edit","prompt":"combine them","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":1048576,"seed":3}'); TWI=$(echo "$TW" | jq -r .id)
+check "two pictures: the arguments media gets" "$(argv_of $TWI)" "edit -o $R/off/out/X --seed 3 --also /tmp/b.png --condition-area 1048576 -- /tmp/a.png combine them "
+TW2=$(pj '{"kind":"edit","prompt":"combine them","image":"/tmp/a.png","also":"/tmp/b.png"}'); TW2I=$(echo "$TW2" | jq -r .id)
+check "two pictures: without condition_area media's default applies (none passed)" "$(argv_of $TW2I)" "edit -o $R/off/out/X --also /tmp/b.png -- /tmp/a.png combine them "
+Tq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"kind":"video","prompt":"x","also":"/tmp/b.png"' '"kind":"image","prompt":"x","also":"/tmp/b.png"' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":""' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":5' '"kind":"edit","prompt":"x","image":"/tmp/a.png","condition_area":589824' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":65535' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":1048577' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":"768"'; do
+  check "two pictures: refused 422: $bad" "$(po "{$bad}" | tail -c 4)" " 422"
+done
+check "two pictures: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Tq2"
+check "two pictures: the job page lists the second picture and the size among the parameters" "$(cget /jobs/$TWI | grep -o '<dt>[a-z-]*</dt><dd>[^<]*</dd>' | sed 's/<dt>//; s#</dt><dd># #; s#</dd>##' | tr '\n' ';')" "kind edit;seed 3;also /tmp/b.png;condition-area 1048576;rewrite off;"
+# the form
+printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' > "$R/p1.jpg"; head -c 4000 /dev/urandom >> "$R/p1.jpg"
+printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' > "$R/p2.png"; head -c 4000 /dev/urandom >> "$R/p2.png"
+FM=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=both -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" -F condition_area=1048576 localhost:18097/edit); FMI=${FM##*/}
+check "edit form: two pictures make one job" "$(echo "$FM" | sed 's#.*/jobs/[0-9]*#ok#')" ok
+check "edit form: ...and its arguments name both uploaded pictures, the second as -2, and the size" "$(argv_of $FMI | sed "s#$R/off#D#g")" "edit -o D/out/X --also D/upload-$FMI-2.png --condition-area 1048576 -- D/upload-$FMI.jpg both "
+check "edit form: both pictures are on disk, nothing else" "$(ls "$R/off" | grep "^upload-$FMI" | tr '\n' ' ')" "upload-$FMI-2.png upload-$FMI.jpg "
+check "edit form: no second picture (an empty file field) is one picture" "$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=one -F "image=@$R/p1.jpg" -F "image2=@/dev/null" localhost:18097/edit | sed 's#.*/jobs/[0-9]*#ok#')" ok
+Fq=$(wc -l < "$R/off/queue" | tr -d ' '); Fu=$(ls "$R/off" | grep -c '^upload-')
+check "edit form: a second file that is not a picture is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=bad -F "image=@$R/p1.jpg" -F "image2=@/etc/hosts" localhost:18097/edit)" 422
+check "edit form: a condition_area that is not digits is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=bad -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" -F condition_area=big localhost:18097/edit)" 422
+check "edit form: it offers the second picture and the size" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=image2\|name=condition_area' | sort | tr '\n' ' ')" "name=condition_area name=image2 "
+check "edit form: the two refused requests queued no job and saved no picture (the checks come before the files)" "$(wc -l < "$R/off/queue" | tr -d ' ') $(ls "$R/off" | grep -c '^upload-')" "$Fq $Fu"
+check "two pictures: the OpenAPI document names also and condition_area in the job and image2 in the form" "$(jq -r '.components.schemas.NewJob.properties | [has("also"), has("condition_area")] | join(",")' studio/openapi.json) $(grep -c '"image2"' studio/openapi.json)" "true,true 1"
 exit $fail

@@ -2,7 +2,7 @@
   "schema": "cancho-ui-trace",
   "version": "0.1.0",
   "component": "Studio",
-  "note": "A video job: refused while the prompt is empty, started, queued, running, done, and no more polling after it. Then an edit (with its steps): refused without a picture, started, and the server's refusal shown. Then a video with fps, three variations and a model, and the set's address shown. Then a text-to-image job (a size and steps of its own, no frames, the rewrite sent off whatever is chosen). net.post and net.get answers are scripted.",
+  "note": "A video job: refused while the prompt is empty, started, queued, running, done, and no more polling after it. Then an edit (with its steps): refused without a picture, started, and the server's refusal shown. Then a video with fps, three variations and a model, and the set's address shown. Then a text-to-image job (a size and steps of its own, no frames, the rewrite sent off whatever is chosen). Then an edit of two pictures (a second path and the size of each). net.post and net.get answers are scripted.",
   "steps": [
     { "event": "Start", "expect": { "outcome": "disabled" } },
     { "event": "Prompt", "params": ["a fox"], "state": { "prompt": "a fox", "blocked": false } },
@@ -57,6 +57,16 @@
                   "issued": [ { "request": 7, "effect": "net.post",
                                 "args": ["api/jobs", "{\"kind\":\"image\",\"prompt\":\"a fox\",\"size\":\"512x512\",\"seed\":0,\"steps\":4,\"model\":\"qwen-image-2.1-turbo\",\"rewrite\":\"off\"}"] } ] } },
     { "resolve": 7, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":10}\"}" },
-      "state": { "job": "10", "job_state": "queued", "note": "Job 10 is queued.", "busy": false } }
+      "state": { "job": "10", "job_state": "queued", "note": "Job 10 is queued.", "busy": false } },
+    { "event": "Kind", "params": ["edit"], "state": { "kind": "edit", "is_edit": true, "is_image": false } },
+    { "event": "Image2", "params": ["/photos/b.jpg"], "state": { "image2": "/photos/b.jpg" } },
+    { "event": "CArea", "params": ["1048576"], "state": { "carea": "1048576" } },
+    { "event": "Rewrite", "params": ["off"], "state": { "rewrite": "off" } },
+    { "event": "Start",
+      "expect": { "outcome": "suspended",
+                  "issued": [ { "request": 8, "effect": "net.post",
+                                "args": ["api/jobs", "{\"kind\":\"edit\",\"prompt\":\"a fox\",\"frames\":17,\"size\":\"640x352\",\"seed\":0,\"image\":\"/photos/a.jpg\",\"steps\":4,\"also\":\"/photos/b.jpg\",\"condition_area\":1048576,\"model\":\"qwen-image-2.1-turbo\",\"rewrite\":\"off\"}"] } ] } },
+    { "resolve": 8, "with": { "Ok": "{\"status\":202,\"body\":\"{\\\"id\\\":11}\"}" },
+      "state": { "job": "11", "job_state": "queued", "note": "Job 11 is queued.", "busy": false } }
   ]
 }

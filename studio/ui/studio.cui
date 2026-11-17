@@ -35,6 +35,8 @@ component Studio {
     state not_edit: Bool = true;
     state not_image: Bool = true;
     state isize: String = "1024x1024";
+    state image2: String = "";
+    state carea: String = "589824";
     state ready: Bool = false;
     state blocked: Bool = true;
     state sent: Result[String, String] = Ok("");
@@ -68,6 +70,8 @@ component Studio {
     on Seed(v) { seed = v; }
     on Rewrite(v) { rewrite = v; }
     on ISize(v) { isize = v; }
+    on Image2(v) { image2 = v; }
+    on CArea(v) { carea = v; }
     on Steps(v) { steps = v; }
     on Fps(v) { fps = v; }
     on Variations(v) { variations = v; }
@@ -78,6 +82,9 @@ component Studio {
         blocked = true;
         note = "Sending ...";
         extra = if kind == "edit" { ",\"image\":" + json.quote(image) + ",\"steps\":" + steps } else { if kind == "image" { ",\"steps\":" + steps } else { ",\"fps\":" + fps } };
+        if kind == "edit" && len(image2) > 0 {
+            extra = extra + ",\"also\":" + json.quote(image2) + ",\"condition_area\":" + carea;
+        }
         if variations != "1" {
             extra = extra + ",\"variations\":" + variations;
         }
@@ -135,6 +142,8 @@ component Studio {
             Select { label: "What to make" options: ["video", "edit", "image"] value: kind on: Kind }
             TextField { label: "Prompt" value: prompt on: Prompt }
             TextField { label: "Picture to edit (a path on the server's machine)" value: image on: Image disabled: not_edit }
+            TextField { label: "A second picture to combine with it (a path on the server's machine; empty: none)" value: image2 on: Image2 disabled: not_edit }
+            Select { label: "Size of each picture when combining, in pixels (589824 = 768 x 768, the default; 262144 = 512 x 512; 1048576 = 1024 x 1024, the largest measured)" options: ["589824", "262144", "1048576"] value: carea on: CArea disabled: not_edit }
             Select { label: "Frames (a video)" options: ["17", "9", "25", "33"] value: frames on: Frames disabled: not_video }
             Select { label: "Size (a video)" options: ["640x352", "512x288", "1024x576"] value: size on: Size disabled: not_video }
             Select { label: "Size (a picture from a prompt; 1024x1024 takes about 75 s, 512x512 about 25 s)" options: ["1024x1024", "512x512"] value: isize on: ISize disabled: not_image }
