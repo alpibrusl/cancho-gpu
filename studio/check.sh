@@ -110,6 +110,7 @@ if [ -n "${UI:-}" ]; then
   check "ui: cancho-ui check" "$($UI check studio/ui/studio.cui >/dev/null 2>&1; echo $?)" 0
   check "ui: replay trace passes" "$($UI test studio/ui/studio.cui studio/ui/studio.trace.json 2>&1 | tail -1 | cut -c1-4)" PASS
   $UI build studio/ui/studio.cui --page -o "$T/site" --name cancho-studio >/dev/null 2>&1
+  check "ui: the built page reads api/jobs (the list of recent jobs)" "$(grep -c 'api/jobs"' "$T/site/app.js" 2>/dev/null | sed 's/^[1-9].*/yes/')" yes
 else
   echo "skip ui checks (set UI to the cancho-ui binary)"
   printf '<!doctype html><title>fake page</title>' > "$T/site/index.html"; printf 'console.log(1)' > "$T/site/app.js"
@@ -180,6 +181,8 @@ check "argv: the prompt is one entry after --" "$(tr '\0' '\n' < "$T/data/1.argv
 build/studio_worker "$T/media" /Users/test "$T/data"
 check "job 1 done" "$(c localhost:18091/api/jobs/1)" '{"id":1,"state":"done"}'
 check "job 2 failed 3" "$(c localhost:18091/api/jobs/2)" '{"id":2,"state":"failed 3"}'
+check "the list: newest first, state, kind, prompt (a quote in the prompt is escaped)" "$(c localhost:18091/api/jobs)" '{"running":0,"queued":0,"jobs":[{"id":2,"state":"failed 3","kind":"edit","prompt":"sunny"},{"id":1,"state":"done","kind":"video","prompt":"-a fox; $(rm -rf /) \"q\""}]}'
+check "the list is JSON" "$(c -o /dev/null -w '%{content_type}' localhost:18091/api/jobs)" 'application/json'
 check "job 1 got its arguments" "$(grep -c . "$T/data/1.log")" 11
 # The results page and the files (job 1 done with a fake result, job 2 failed, job 3 queued).
 mkdir -p "$T/data/out/1"
@@ -275,6 +278,7 @@ row() { # path-in-document, method, url, curl args...
   check "openapi: $m $url ($got) is listed under $d" "$(doc_lists "$d" "$got")" yes
 }
 row /api/models GET /api/models
+row /api/jobs GET /api/jobs
 check "openapi: 202 on POST /api/jobs is listed (queued by the checks above)" "$(doc_lists /api/jobs 202)" yes
 row /api/jobs POST /api/jobs -H 'Content-Type: application/json' -d '{"kind":"nope"}'
 row /api/jobs POST /api/jobs -H 'Content-Type: text/plain' -d '{}'
@@ -607,6 +611,7 @@ else
   check "main page: a page with no <head> and <body> tags is served as it is" "$(TOK=$TOK2 c localhost:18094/)" '<!doctype html><title>fake page</title>'
 fi
 check "main page: the stylesheet has the rules for the page's fields" "$(TOK=$TOK2 c localhost:18094/style.css | grep -o '#root \.cui-field{\|#root>\.cui-col{' | sort -u | tr '\n' ' ')" "#root .cui-field{ #root>.cui-col{ "
+check "main page: the stylesheet has the rule for the recent jobs' cards" "$(TOK=$TOK2 c localhost:18094/style.css | grep -c '#root>\.cui-col>\.cui-col{')" 1
 
 # Several pictures (docs/two-images.md): an edit with a second picture, in the API and in the /edit form.
 Tq=$(wc -l < "$R/off/queue" | tr -d ' ')
