@@ -263,6 +263,7 @@ check "site: no site, / is the stub" "$(c localhost:18091/ | grep -c 'Slice 1')"
 TOK=$TOK1 post '{"kind":"video","prompt":"third"}' >/dev/null
 check "jobs: newest first" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'class=idn>#[0-9]*' | tr '\n' ' ')" 'class=idn>#3 class=idn>#2 class=idn>#1 '
 check "jobs: states" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'class=\"badge [a-z]*\"' | tr '\n' ' ')" 'class="badge queued" class="badge failed" class="badge done" '
+check "jobs: a finished video's card draws the first frame of its clip" "$(TOK=$TOK2 c localhost:18094/jobs | grep -c '<video muted playsinline preload=metadata src=/files/1/video.mp4#t=0.1></video>')" 1
 # The OpenAPI document (studio/openapi.json): served as it is, and held to what the server answers. Each row is a request and the status measured; the document must list that status for that path.
 cp studio/openapi.json "$T/site/openapi.json"; TOK=$TOK2
 check "openapi: served as the file, as JSON" "$(c localhost:18094/openapi.json | cmp - studio/openapi.json && echo same)" same
@@ -621,6 +622,7 @@ else
   check "main page: a page with no <head> and <body> tags is served as it is" "$(TOK=$TOK2 c localhost:18094/)" '<!doctype html><title>fake page</title>'
 fi
 check "main page: the stylesheet has the rules for the page's fields" "$(TOK=$TOK2 c localhost:18094/style.css | grep -o '#root \.cui-field{\|#root>\.cui-col{' | sort -u | tr '\n' ' ')" "#root .cui-field{ #root>.cui-col{ "
+check "narrow screens: the stylesheet has one column and 16 px gutters under 600 px" "$(TOK=$TOK2 c localhost:18094/style.css | grep -c '@media(max-width:600px){header.top{padding:12px 16px}.*\.grid{grid-template-columns:1fr}')" 1
 
 # Several pictures (docs/two-images.md): an edit with a second picture, in the API and in the /edit form.
 Tq=$(wc -l < "$R/off/queue" | tr -d ' ')
