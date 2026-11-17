@@ -1,6 +1,6 @@
 # cancho-studio: the visual design, and whether islands help (2026-11-16)
 
-> **Status: the design is applied to the pages the server writes (section 5); islands are read, not built.** Claims are tagged **[read]** (from a file, not run) or **[not run]**. The owner supplied a design (section 1) and asked whether the page could use islands "as in cancho-ota" (section 3), and said to look at how they are used in code, not only in the docs; section 3 is from the code.
+> **Status: the design is applied to the pages the server writes (section 5) and to the cancho-ui page of `/` (section 6); islands are read, not built.** Claims are tagged **[read]** (from a file, not run) or **[not run]**. The owner supplied a design (section 1) and asked whether the page could use islands "as in cancho-ota" (section 3), and said to look at how they are used in code, not only in the docs; section 3 is from the code.
 
 ## 1. The design given (read 2026-11-16)
 
@@ -79,3 +79,10 @@ Inside the frame the script gets `cancho.props`, `cancho.onprops(fn)` and `canch
 **Two things that were not the design's fault and were fixed in the checks.** A fixed `sleep 1` after starting a server, and the worker tests' fixed sleeps, failed when the machine was busy (another session's compile took the load average to 17 and 22): they now wait for the server's `listening` line and for the state file.
 
 **Not done, as section 1 said:** thumbnails for videos, a stage line and a real progress bar (the worker writes none), the picture preview (script), **Run again** and **Reuse prompt**, and the Studio page `/` (still the cancho-ui page, with its own look: the design's composer and job grid are not built; the nav's "Studio" leads to it). Not seen in a browser: a phone width, the light scheme (there is none), and a job list of 200.
+
+## 6. The main page, `/` (measured, 2026-11-17)
+
+**What was missing.** Section 5 applied the design to the pages the server writes; **`/` is the cancho-ui page** (built by `cancho-ui`, its own markup and script), and it kept cancho-ui's default look: the owner saw "the same page" and asked whether the form's style had changed. It had not.
+**What was done.** The server now serves `/` with **the stylesheet linked before `</head>` (after the page's own `<style>`, so that it wins) and the header right after `<body>`** (`results.decorate`: a page that does not have both tags is served as it is). The page's JavaScript and markup are untouched; `style.css` has rules for its elements, written under `#root` so that they outrank the page's own (`.cui-field input` set a transparent, borderless field): a dark card for the form, fields with a border, a focus ring, the unused fields dimmed, the Start button disabled in grey. The heading is "New job" (the header already carries the brand).
+**Checked.** `studio/check.sh` **390 ok, 0 failed** with `UI` set, 385 without (the page checks need the cancho-ui binary): the stylesheet linked once, after the page's own style and before `</head>`; the header once, marking Studio as the open place and before the app's root; the app's root and script where they were; `/` equals the built `index.html` with those two additions removed; the stylesheet holds the page's rules; and a page with no `<head>` and `<body>` tags is served as it is. **Seen in the browser pane** (800 px wide, the form's first fields and a scroll further).
+**Not done:** the design's composer next to a grid of the recent jobs on the same page (the page does not list jobs: no list API); the header's counts are those of the moment the page loaded (the page does not refresh them); the narrow (phone) layout was not looked at.

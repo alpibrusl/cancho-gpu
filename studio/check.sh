@@ -253,7 +253,7 @@ SP2=$!
 trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
 waitup "$T/s2.log"
 TOK2=$(grep -o 'token=[0-9a-f]*' "$T/s2.log" | cut -d= -f2); TOK=$TOK2
-check "site: / is index.html" "$(c localhost:18094/ | cmp - "$T/site/index.html" && echo same)" same
+check "site: / is index.html, with the stylesheet and the header added and nothing else changed" "$(c localhost:18094/ | sed 's#<link rel=stylesheet href=/style.css>##; s#<header class=top>.*</header>##' | cmp - "$T/site/index.html" && echo same)" same
 check "site: /app.js is app.js, a script" "$(c -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
 check "site: app.js bytes unchanged" "$(c localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
 TOK=$TOK1
@@ -596,6 +596,18 @@ check "image: ...and the page lists the file" "$(cget /jobs/$IMI | grep -o '<li>
 mkdir -p "$R/off/out/$IVF"; printf 'PNGDATA' > "$R/off/out/$IVF/image.png"; echo done > "$R/off/$IVF.state"
 check "image: a set's cell shows the image" "$(cget /sets/$IVF | grep -c "alt=\"variation\" src=/files/$IVF/image.png")" 1
 check "image: the OpenAPI document names the kind and the file" "$(jq -r '.components.schemas.NewJob.properties.kind.enum | join(",")' studio/openapi.json) $(jq -r '.paths["/files/{id}/{name}"].get.parameters[1].schema.enum | index("image.png")' studio/openapi.json)" "video,edit,image 1"
+# The cancho-ui page of `/` served with the design (docs/studio-design.md section 6): the stylesheet linked after the page's own style and the header after <body>; a page without those tags is served as it is.
+if [ -n "${UI:-}" ]; then
+  PG=$(TOK=$TOK2 c localhost:18094/)
+  check "main page: the stylesheet is linked once, after the page's own style and before </head>" "$(echo "$PG" | tr '\n' ' ' | grep -c '</style> *<link rel=stylesheet href=/style.css></head>')" 1
+  check "main page: the header is there once and marks Studio as the open place" "$(echo "$PG" | grep -c 'class=brand') $(echo "$PG" | grep -o 'aria-current=page>[A-Za-z ]*' | tr '\n' ' ')" "1 aria-current=page>Studio "
+  check "main page: the app is untouched (its root and its script are where they were)" "$(echo "$PG" | grep -c 'id="root"') $(echo "$PG" | grep -c 'src="./app.js"')" "1 1"
+  check "main page: the header comes before the app's root" "$(echo "$PG" | tr '\n' ' ' | grep -c '<body><header class=top>.*</header> *<div id="root"')" 1
+else
+  check "main page: a page with no <head> and <body> tags is served as it is" "$(TOK=$TOK2 c localhost:18094/)" '<!doctype html><title>fake page</title>'
+fi
+check "main page: the stylesheet has the rules for the page's fields" "$(TOK=$TOK2 c localhost:18094/style.css | grep -o '#root \.cui-field{\|#root>\.cui-col{' | sort -u | tr '\n' ' ')" "#root .cui-field{ #root>.cui-col{ "
+
 # Several pictures (docs/two-images.md): an edit with a second picture, in the API and in the /edit form.
 Tq=$(wc -l < "$R/off/queue" | tr -d ' ')
 TW=$(pj '{"kind":"edit","prompt":"combine them","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":1048576,"seed":3}'); TWI=$(echo "$TW" | jq -r .id)

@@ -138,7 +138,7 @@ component Studio {
 
     view {
         Column {
-            Heading { level: 1 "cancho-studio" }
+            Heading { level: 1 "New job" }
             Select { label: "What to make" options: ["video", "edit", "image"] value: kind on: Kind }
             TextField { label: "Prompt" value: prompt on: Prompt }
             TextField { label: "Picture to edit (a path on the server's machine)" value: image on: Image disabled: not_edit }
