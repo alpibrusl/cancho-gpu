@@ -272,7 +272,13 @@ pub fn decorate[&h, &f, &d, &p](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], p
         out = buffer.append(heap, out, buffer.bytes(hb));
     }
     buffer.drop(heap, hd);
-    return buffer.append(heap, out, page[at_body + 6..len(page)]);
+    let at_end = bytes.find(page, "</body>");
+    if at_end < at_body + 6 {
+        return buffer.append(heap, out, page[at_body + 6..len(page)]);
+    }
+    out = buffer.append(heap, out, page[at_body + 6..at_end]);
+    out = buffer.append(heap, out, "<iframe class=recent src=/recent title=\"Recent jobs\"></iframe>");
+    return buffer.append(heap, out, page[at_end..len(page)]);
 }
 
 pub fn close[&h](heap: &!h Heap, page: buffer.Buffer) -> [heap] buffer.Buffer {
@@ -446,13 +452,72 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     return (200, close(heap, page));
 }
 
+// The number of digits at `from` in `line` and where they end: (n, end). No digit: (0, from).
+fn nat_at[&l](line: &l [byte], from: int) -> [] (int, int) {
+    var n = 0;
+    var i = from;
+    while i < len(line) && int_of(line[i]) >= 48 && int_of(line[i]) <= 57 && i < from + 9 {
+        n = n * 10 + (int_of(line[i]) - 48);
+        i = i + 1;
+    }
+    return (n, i);
+}
+
+// What a running job's log says about where it is: (the last stage, steps done, steps in all). The stage is the last line `== name` or `== name: N s` (the name); the steps are the last `step i: ...` of a run that
+// said `steps N, ...` first (the drivers of an edit and of a picture; i counts from 0) or the last `step i of N: ...` (the video sampler). A log with no such line is ("", 0, 0).
+fn log_progress[&h, &l](heap: &!h Heap, log: &l [byte]) -> [heap] (buffer.Buffer, int, int) {
+    var label = buffer.empty(heap, 32);
+    var done = 0;
+    var total = 0;
+    var i = 0;
+    while i < len(log) {
+        var e = i;
+        while e < len(log) && int_of(log[e]) != 10 {
+            e = e + 1;
+        }
+        let line = log[i..e];
+        if bytes.starts_with(line, "== ") {
+            var stop = 3;
+            while stop < len(line) && int_of(line[stop]) != 58 {
+                stop = stop + 1;
+            }
+            buffer.drop(heap, label);
+            label = buffer.append(heap, buffer.empty(heap, 32), line[3..stop]);
+        } else if bytes.starts_with(line, "steps ") {
+            let (n, after) = nat_at(line, 6);
+            total = n;
+            done = 0;
+        } else if bytes.starts_with(line, "step ") {
+            let (a, p) = nat_at(line, 5);
+            if p < len(line) && int_of(line[p]) == 58 {
+                done = a + 1;
+            } else if bytes.starts_with(line[p..len(line)], " of ") {
+                let (b, after2) = nat_at(line, p + 4);
+                done = a;
+                total = b;
+            }
+        }
+        i = e + 1;
+    }
+    return (label, done, total);
+}
+
 // `GET /jobs`: the jobs in `queue`, newest first (the 200 last), each a link to its page and its state.
-pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+// `embed` is the version the main page shows in a frame (`GET /recent`): no header, the 12 newest, it refreshes itself, and a card opens in the whole window.
+pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], embed: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
     var running_any = false;
     let (nrun, nq) = counts(heap, fs, dir);
     running_any = nrun + nq > 0;
-    var page = open(heap, fs, dir, "jobs", "jobs", running_any);
-    page = buffer.append(heap, page, "<div class=row><h1>Jobs</h1><span class=meta>Newest first &middot; refreshes while a job is queued or running</span></div><div class=grid>");
+    var page = buffer.empty(heap, 2048);
+    var cap = 200;
+    if embed {
+        cap = 12;
+        page = buffer.append(heap, page, "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><link rel=stylesheet href=/style.css><meta http-equiv=refresh content=5><base target=_top><title>cancho-studio: recent jobs</title><body class=embed><div class=grid>");
+    } else {
+        buffer.drop(heap, page);
+        page = open(heap, fs, dir, "jobs", "jobs", running_any);
+        page = buffer.append(heap, page, "<div class=row><h1>Jobs</h1><span class=meta>Newest first &middot; refreshes while a job is queued or running</span></div><div class=grid>");
+    }
     var text = buffer.empty(heap, 8);
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     borrow qp as &q in {
@@ -465,7 +530,7 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
     borrow text as &tb in {
         let all = buffer.bytes(tb);
         var end = len(all);
-        while end > 0 && shown < 200 {
+        while end > 0 && shown < cap {
             var stop = end;
             while stop > 0 && int_of(all[stop - 1]) == 10 {
                 stop = stop - 1;
@@ -532,8 +597,28 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
                         page = buffer.append(heap, page, "</span><span class=idn>#");
                         page = buffer.append(heap, page, id);
                         page = buffer.append(heap, page, "</span></div>");
+                        var stage = buffer.empty(heap, 8);
+                        var sdone = 0;
+                        var stotal = 0;
                         if is_running {
-                            page = buffer.append(heap, page, "<div class=bar><i></i></div>");
+                            let (lg, has_lg) = job_file(heap, fs, dir, id, ".log");
+                            if has_lg {
+                                borrow lg as &lgr in {
+                                    let (lab, d1, t1) = log_progress(heap, buffer.bytes(lgr));
+                                    buffer.drop(heap, stage);
+                                    stage = lab;
+                                    sdone = d1;
+                                    stotal = t1;
+                                }
+                            }
+                            buffer.drop(heap, lg);
+                            if stotal > 0 && sdone <= stotal {
+                                page = buffer.append(heap, page, "<div class=bar><i class=det style=\"width:");
+                                page = buffer.push_nat(heap, page, sdone * 100 / stotal);
+                                page = buffer.append(heap, page, "%\"></i></div>");
+                            } else {
+                                page = buffer.append(heap, page, "<div class=bar><i></i></div>");
+                            }
                         }
                         page = buffer.append(heap, page, "<div class=body><span class=prompt>");
                         let (av, has_av) = job_file(heap, fs, dir, id, ".argv");
@@ -554,6 +639,19 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
                             }
                         }
                         buffer.drop(heap, av);
+                        borrow stage as &stg in {
+                            if len(buffer.bytes(stg)) > 0 {
+                                page = buffer.append(heap, page, " &middot; ");
+                                page = escape(heap, page, buffer.bytes(stg));
+                            }
+                        }
+                        if stotal > 0 && sdone <= stotal {
+                            page = buffer.append(heap, page, " &middot; step ");
+                            page = buffer.push_nat(heap, page, sdone);
+                            page = buffer.append(heap, page, " of ");
+                            page = buffer.push_nat(heap, page, stotal);
+                        }
+                        buffer.drop(heap, stage);
                         page = buffer.append(heap, page, "</span></div></a>");
                         shown = shown + 1;
                     }
@@ -564,6 +662,9 @@ pub fn job_list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [h
         }
     }
     buffer.drop(heap, text);
+    if embed {
+        return buffer.append(heap, page, "</div>");
+    }
     return close(heap, buffer.append(heap, page, "</div>"));
 }
 
@@ -690,7 +791,7 @@ pub fn site_file[&h, &f, &s, &n](heap: &!h Heap, fs: &f Fs(""), site: &s [byte],
 // The media type for a name of the closed list, or "" for a name that is not on it.
 // The one stylesheet of the pages the server writes (`GET /style.css`): a system font, a card for each result, light and dark by the browser's setting, no script, no outside file.
 pub fn css() -> [] &static [byte] {
-    return ":root{color-scheme:dark;--bg:#121314;--surface:#1B1D1F;--raised:#24272A;--line:#2A2D30;--line2:#3A3E42;--line3:#4A4F54;--fg:#ECEAE4;--muted:#B5B2A9;--accent:#F2B544;--accent2:#FFD27A;--err:#FFB4A0;--ink:#141413;--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent2)}header.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 32px;padding:14px 32px;border-bottom:1px solid var(--line)}.brand{font:500 16px var(--mono);color:var(--fg)}.brand:hover{color:var(--fg)}nav{display:flex;flex-wrap:wrap;gap:4px;flex-grow:1}nav a{padding:12px 14px;border-radius:8px;color:var(--muted)}nav a[aria-current=page]{background:var(--raised);color:var(--fg);font-weight:500}.status{display:flex;align-items:center;gap:8px;font:13px var(--mono);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--line3)}.busy .dot{background:var(--accent)}main{max-width:1216px;margin:0 auto;padding:28px 32px 48px;display:flex;flex-direction:column;gap:20px}h1{margin:0;font-size:22px;font-weight:600}h2{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--muted)}p{margin:0;color:var(--muted)}b{color:var(--fg)}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.row h1{flex-grow:1}.pill{padding:4px 12px;border-radius:999px;border:1px solid var(--line2);font:13px var(--mono);color:var(--fg)}img,video{display:block;max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line)}.card,form,.cell{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px}.cell{padding:16px}.cell h2 a{color:var(--fg)}.cell h2{font-size:15px;color:var(--fg)}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}.job{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--fg)}.job:hover{color:var(--fg);border-color:var(--line3)}.job.running{border-color:var(--accent)}.thumb{position:relative;aspect-ratio:16/9;background:#202326;display:flex;align-items:center;justify-content:center;font:12px var(--mono);color:var(--muted)}.thumb img{width:100%;height:100%;object-fit:cover;border:0;border-radius:0}.badge{position:absolute;top:10px;left:10px;padding:3px 9px;border-radius:999px;font:500 12px var(--mono);background:var(--line2);color:var(--fg)}.badge.running{background:var(--accent);color:var(--ink)}.badge.failed{background:var(--err);color:var(--ink)}.badge.done{background:var(--bg)}.idn{position:absolute;top:10px;right:10px;font:12px var(--mono);color:var(--muted)}.bar{height:4px;background:var(--line);overflow:hidden}.bar i{display:block;height:4px;width:40%;background:var(--accent);animation:slide 1.6s ease-in-out infinite}@keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}@media(prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}.body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px}.prompt{font-weight:500;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.meta{font:12px var(--mono);color:var(--muted)}.split{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}.split>.main{flex:999 1 560px;min-width:0;padding:0;display:flex;flex-direction:column;gap:12px}.side{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}.card p{color:var(--fg);font-size:16px}.acts{display:flex;flex-wrap:wrap;gap:8px}.btn{min-height:44px;padding:0 16px;border:1px solid var(--line2);border-radius:8px;color:var(--fg);display:inline-flex;align-items:center}.btn:hover{color:var(--fg);border-color:var(--line3)}dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font:13px var(--mono)}dt{color:var(--muted)}dd{margin:0}ul{margin:0;padding:0;list-style:none;font:13px var(--mono)}li{padding:12px 0;border-bottom:1px solid var(--line)}li:last-child{border:0}.alert{border:1px solid var(--err);color:var(--err);border-radius:10px;padding:12px 14px}form{display:flex;flex-direction:column;gap:16px;max-width:44rem}label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}input,select,textarea,button{font:inherit;color:inherit}input:not([type=file]),select,textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);width:100%}input[type=file]{padding:24px;border:2px dashed var(--line3);border-radius:14px;background:var(--surface);width:100%;color:var(--muted)}button{min-height:48px;padding:0 28px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font-weight:600;cursor:pointer}button:hover{background:var(--accent2)}.choices{display:flex;flex-wrap:wrap;justify-content:center;gap:12px}.choices button{min-width:180px;background:var(--surface);color:var(--fg);border:1px solid var(--line2)}.choices button:hover{border-color:var(--accent);background:var(--surface)}form.choices{background:none;border:0;padding:0;max-width:none;flex-direction:row;align-items:center;justify-content:center}code{font-family:var(--mono)}#root{max-width:48rem;margin:0 auto;padding:28px 0 48px}#root>.cui-col{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 24px;gap:16px}#root h1{font-size:22px;margin:0 0 4px}#root .cui-field{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:6px;flex:0 0 auto}#root .cui-field input:not([type=checkbox]):not([type=file]):not([type=range]),#root .cui-field select,#root .cui-field textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--fg);font-size:15px;width:100%;box-shadow:none}#root .cui-field input:disabled,#root .cui-field select:disabled{opacity:.4}#root .cui-field input:focus-visible,#root .cui-field select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}#root button:disabled{opacity:.4;cursor:not-allowed;background:var(--line2);color:var(--muted)}#root span{color:var(--muted)}#root [role=status]{color:var(--fg)}#root h2{margin:12px 0 0;font-size:13px;font-weight:500;color:var(--muted)}#root>.cui-col>.cui-col{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;gap:4px}#root>.cui-col>.cui-col>[role=heading]{font:500 13px var(--mono);color:var(--accent)}#root>.cui-col>.cui-col>span:nth-child(2){color:var(--fg);font-weight:500}#root>.cui-col>.cui-col>span:nth-child(3){font:12px var(--mono)}";
+    return ":root{color-scheme:dark;--bg:#121314;--surface:#1B1D1F;--raised:#24272A;--line:#2A2D30;--line2:#3A3E42;--line3:#4A4F54;--fg:#ECEAE4;--muted:#B5B2A9;--accent:#F2B544;--accent2:#FFD27A;--err:#FFB4A0;--ink:#141413;--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent2)}header.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 32px;padding:14px 32px;border-bottom:1px solid var(--line)}.brand{font:500 16px var(--mono);color:var(--fg)}.brand:hover{color:var(--fg)}nav{display:flex;flex-wrap:wrap;gap:4px;flex-grow:1}nav a{padding:12px 14px;border-radius:8px;color:var(--muted)}nav a[aria-current=page]{background:var(--raised);color:var(--fg);font-weight:500}.status{display:flex;align-items:center;gap:8px;font:13px var(--mono);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--line3)}.busy .dot{background:var(--accent)}main{max-width:1216px;margin:0 auto;padding:28px 32px 48px;display:flex;flex-direction:column;gap:20px}h1{margin:0;font-size:22px;font-weight:600}h2{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--muted)}p{margin:0;color:var(--muted)}b{color:var(--fg)}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.row h1{flex-grow:1}.pill{padding:4px 12px;border-radius:999px;border:1px solid var(--line2);font:13px var(--mono);color:var(--fg)}img,video{display:block;max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line)}.card,form,.cell{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px}.cell{padding:16px}.cell h2 a{color:var(--fg)}.cell h2{font-size:15px;color:var(--fg)}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}.job{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--fg)}.job:hover{color:var(--fg);border-color:var(--line3)}.job.running{border-color:var(--accent)}.thumb{position:relative;aspect-ratio:16/9;background:#202326;display:flex;align-items:center;justify-content:center;font:12px var(--mono);color:var(--muted)}.thumb img{width:100%;height:100%;object-fit:cover;border:0;border-radius:0}.badge{position:absolute;top:10px;left:10px;padding:3px 9px;border-radius:999px;font:500 12px var(--mono);background:var(--line2);color:var(--fg)}.badge.running{background:var(--accent);color:var(--ink)}.badge.failed{background:var(--err);color:var(--ink)}.badge.done{background:var(--bg)}.idn{position:absolute;top:10px;right:10px;font:12px var(--mono);color:var(--muted)}.bar{height:4px;background:var(--line);overflow:hidden}.bar i{display:block;height:4px;width:40%;background:var(--accent);animation:slide 1.6s ease-in-out infinite}@keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}@media(prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}.body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px}.prompt{font-weight:500;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.meta{font:12px var(--mono);color:var(--muted)}.split{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}.split>.main{flex:999 1 560px;min-width:0;padding:0;display:flex;flex-direction:column;gap:12px}.side{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}.card p{color:var(--fg);font-size:16px}.acts{display:flex;flex-wrap:wrap;gap:8px}.btn{min-height:44px;padding:0 16px;border:1px solid var(--line2);border-radius:8px;color:var(--fg);display:inline-flex;align-items:center}.btn:hover{color:var(--fg);border-color:var(--line3)}dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font:13px var(--mono)}dt{color:var(--muted)}dd{margin:0}ul{margin:0;padding:0;list-style:none;font:13px var(--mono)}li{padding:12px 0;border-bottom:1px solid var(--line)}li:last-child{border:0}.alert{border:1px solid var(--err);color:var(--err);border-radius:10px;padding:12px 14px}form{display:flex;flex-direction:column;gap:16px;max-width:44rem}label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}input,select,textarea,button{font:inherit;color:inherit}input:not([type=file]),select,textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);width:100%}input[type=file]{padding:24px;border:2px dashed var(--line3);border-radius:14px;background:var(--surface);width:100%;color:var(--muted)}button{min-height:48px;padding:0 28px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font-weight:600;cursor:pointer}button:hover{background:var(--accent2)}.choices{display:flex;flex-wrap:wrap;justify-content:center;gap:12px}.choices button{min-width:180px;background:var(--surface);color:var(--fg);border:1px solid var(--line2)}.choices button:hover{border-color:var(--accent);background:var(--surface)}form.choices{background:none;border:0;padding:0;max-width:none;flex-direction:row;align-items:center;justify-content:center}code{font-family:var(--mono)}#root{max-width:48rem;margin:0 auto;padding:28px 0 48px}#root>.cui-col{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 24px;gap:16px}#root h1{font-size:22px;margin:0 0 4px}#root .cui-field{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:6px;flex:0 0 auto}#root .cui-field input:not([type=checkbox]):not([type=file]):not([type=range]),#root .cui-field select,#root .cui-field textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--fg);font-size:15px;width:100%;box-shadow:none}#root .cui-field input:disabled,#root .cui-field select:disabled{opacity:.4}#root .cui-field input:focus-visible,#root .cui-field select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}#root button:disabled{opacity:.4;cursor:not-allowed;background:var(--line2);color:var(--muted)}#root span{color:var(--muted)}.bar i.det{animation:none;margin:0;transition:width .6s}body.embed{padding:0;background:var(--bg)}iframe.recent{display:block;width:100%;max-width:1216px;height:760px;margin:0 auto 32px;border:0}#root [role=status]{color:var(--fg)}";
 }
 
 pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
