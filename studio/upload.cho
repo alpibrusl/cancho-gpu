@@ -20,7 +20,7 @@ import results;
 
 pub fn form_page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
     var page = results.open(heap, fs, dir, "edit a picture", "edit", false);
-    page = buffer.append(heap, page, "<div class=row><h1>Edit a picture</h1></div><p>The picture stays on this machine. It is copied to the studio's data directory and nowhere else.</p><form method=post action=/edit enctype=multipart/form-data><label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit)<select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label><label>Steps (optional; the model's default is 8)<input name=steps type=number min=1 max=50></label><label>Model (optional; see /api/models)<input name=model maxlength=40></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label><div><button>Edit</button></div></form>");
+    page = buffer.append(heap, page, "<div class=row><h1>Edit a picture</h1></div><p>The picture stays on this machine. It is copied to the studio's data directory and nowhere else.</p><form method=post action=/edit enctype=multipart/form-data><label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><label>Second picture (optional: combine it with the first; the instruction can refer to both)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label><label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label><label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit)<select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label><label>Steps (optional; the model's default is 8)<input name=steps type=number min=1 max=50></label><label>Model (optional; see /api/models)<input name=model maxlength=40></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label><div><button>Edit</button></div></form>");
     return results.close(heap, page);
 }
 
@@ -191,9 +191,19 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             let (stpf, stpt) = part(body, dl, "steps");
             let (mf, mt) = part(body, dl, "model");
             let (imf, imt) = part(body, dl, "image");
+            let (i2f, i2t) = part(body, dl, "image2");  // a second picture to combine with the first (docs/two-images.md): an empty file field is a part of 0 bytes, which is "none"
+            let (caf, cat) = part(body, dl, "condition_area");
             var kind = 0;
             if imf >= 0 && imt - imf >= 16 {
                 kind = kind_of(body[imf..imt]);
+            }
+            var kind2 = 0;
+            var has2 = false;
+            if i2f >= 0 && i2t > i2f {
+                has2 = true;
+                if i2t - i2f >= 16 {
+                    kind2 = kind_of(body[i2f..i2t]);
+                }
             }
             if pf < 0 || pt - pf < 1 || pt - pf > 1000 {
                 why = "prompt is a text of 1 to 1000 bytes";
@@ -203,6 +213,10 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "a picture is needed";
             } else if kind == 0 {
                 why = "the picture is not a JPEG, PNG or WebP file";
+            } else if has2 && kind2 == 0 {
+                why = "the second picture is not a JPEG, PNG or WebP file";
+            } else if caf >= 0 && cat > caf && (all_digits(body[caf..cat]) == false || cat - caf > 7) {
+                why = "condition_area is the pixels each picture is resized to, a whole number";
             } else if sf >= 0 && st > sf && all_digits(body[sf..st]) == false {
                 why = "seed is an integer from 0 to 2147483647";
             } else if vf >= 0 && vt > vf && (all_digits(body[vf..vt]) == false || vt - vf > 2) {
@@ -235,7 +249,30 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             saved = files.write_big(fs, buffer.bytes(pb), body[imf..imt]);
                         }
                     }
-                    if saved != 0 {
+                    var path2 = buffer.empty(heap, 8);
+                    var saved2 = 0;
+                    if has2 {
+                        buffer.drop(heap, path2);
+                        path2 = buffer.append(heap, buffer.empty(heap, 96), dir);
+                        path2 = buffer.append(heap, path2, "/upload-");
+                        path2 = buffer.push_nat(heap, path2, id);
+                        if kind2 == 1 {
+                            path2 = buffer.append(heap, path2, "-2.jpg");
+                        } else if kind2 == 2 {
+                            path2 = buffer.append(heap, path2, "-2.png");
+                        } else {
+                            path2 = buffer.append(heap, path2, "-2.webp");
+                        }
+                        saved2 = 0 - 1;
+                        if saved == 0 {
+                            borrow path2 as &pb3 in {
+                                if len(buffer.bytes(pb3)) <= 390 {
+                                    saved2 = files.write_big(fs, buffer.bytes(pb3), body[i2f..i2t]);
+                                }
+                            }
+                        }
+                    }
+                    if saved != 0 || saved2 != 0 {
                         why = "the picture could not be saved";
                     } else {
                         var json = buffer.append(heap, buffer.empty(heap, 256), "{\"kind\":\"edit\",\"prompt\":\"");
@@ -245,6 +282,17 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             json = quoted(heap, json, buffer.bytes(pb2));
                         }
                         json = buffer.append(heap, json, "\"");
+                        if has2 {
+                            json = buffer.append(heap, json, ",\"also\":\"");
+                            borrow path2 as &pb4 in {
+                                json = quoted(heap, json, buffer.bytes(pb4));
+                            }
+                            json = buffer.append(heap, json, "\"");
+                            if caf >= 0 && cat > caf {
+                                json = buffer.append(heap, json, ",\"condition_area\":");
+                                json = buffer.append(heap, json, body[caf..cat]);
+                            }
+                        }
                         if sf >= 0 && st > sf {
                             json = buffer.append(heap, json, ",\"seed\":");
                             json = buffer.append(heap, json, body[sf..st]);
@@ -296,6 +344,7 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                         }
                     }
                     buffer.drop(heap, path);
+                    buffer.drop(heap, path2);
                 }
             }
         }

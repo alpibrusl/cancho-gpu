@@ -117,6 +117,8 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
             let is_edit = kind_n >= 0 && json.string_equals(body, tp, kind_n, "edit");
             let is_image = kind_n >= 0 && json.string_equals(body, tp, kind_n, "image");
             let image_n = json.get(body, tp, 0, "image");
+            let also_n = json.get(body, tp, 0, "also");
+            let carea_n = json.get(body, tp, 0, "condition_area");
             let frames_n = json.get(body, tp, 0, "frames");
             let size_n = json.get(body, tp, 0, "size");
             let seed_n = json.get(body, tp, 0, "seed");
@@ -131,6 +133,10 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                 why = "prompt is a string of 1 to 1000 bytes";
             } else if is_edit && (image_n < 0 || json.string_length(body, tp, image_n) < 2 || json.string_length(body, tp, image_n) > 400) {
                 why = "an edit needs image: the absolute path of a file on the server's machine";
+            } else if also_n >= 0 && (is_edit == false || json.is_string(tp, also_n) == false || json.string_length(body, tp, also_n) < 2 || json.string_length(body, tp, also_n) > 400) {
+                why = "also is the absolute path of a second picture to combine with image, for an edit";
+            } else if carea_n >= 0 && (also_n < 0 || json.is_int(tp, carea_n) == false || json.to_int(body, tp, carea_n) < 65536 || json.to_int(body, tp, carea_n) > 1048576) {
+                why = "condition_area is the pixels each picture is resized to, 65536 to 1048576, when also is given";
             } else if is_image && frames_n >= 0 {
                 why = "frames is for a video";
             } else if frames_n >= 0 && (json.to_int(body, tp, frames_n) < 1 || json.to_int(body, tp, frames_n) > 129) {
@@ -255,6 +261,34 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             bad = bad + ef;
                         }
                         buffer.drop(heap, fpb);
+                    }
+                    if also_n >= 0 {  // a second picture to combine (docs/two-images.md): media edit --also, with the area each picture is resized to (media's default for several is 589824)
+                        let alb = box_slice(heap, json.string_length(body, tp, also_n), byte_of(0));
+                        var al = alb;
+                        borrow mut al as &!alw in {
+                            json.string_into(body, tp, also_n, contents(alw));
+                        }
+                        let (lg, eg) = process.add(heap, list, "--also");
+                        list = lg;
+                        bad = bad + eg;
+                        borrow al as &alr in {
+                            let (lh, eh) = process.add(heap, list, contents(alr));
+                            list = lh;
+                            bad = bad + eh;
+                        }
+                        unbox_slice(heap, al);
+                        if carea_n >= 0 {
+                            let (li, ei) = process.add(heap, list, "--condition-area");
+                            list = li;
+                            bad = bad + ei;
+                            let cb = digits(heap, json.to_int(body, tp, carea_n));
+                            borrow cb as &cbb in {
+                                let (lj, ej) = process.add(heap, list, buffer.bytes(cbb));
+                                list = lj;
+                                bad = bad + ej;
+                            }
+                            buffer.drop(heap, cb);
+                        }
                     }
                     // `--` so that a prompt that starts with `-` is a prompt, not an option.
                     let (l10, e10) = process.add(heap, list, "--");

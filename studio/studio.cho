@@ -209,7 +209,11 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     let (sst, sdata) = results.site_file(heap, fs, site, "index.html");
                                     if sst == 200 {
                                         borrow sdata as &sb in {
-                                            out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(sb), keep, "");
+                                            let dec = results.decorate(heap, fs, dir, buffer.bytes(sb));
+                                            borrow dec as &db in {
+                                                out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(db), keep, "");
+                                            }
+                                            buffer.drop(heap, dec);
                                         }
                                         served = true;
                                     }

@@ -253,7 +253,7 @@ SP2=$!
 trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
 waitup "$T/s2.log"
 TOK2=$(grep -o 'token=[0-9a-f]*' "$T/s2.log" | cut -d= -f2); TOK=$TOK2
-check "site: / is index.html" "$(c localhost:18094/ | cmp - "$T/site/index.html" && echo same)" same
+check "site: / is index.html, with the stylesheet and the header added and nothing else changed" "$(c localhost:18094/ | sed 's#<link rel=stylesheet href=/style.css>##; s#<header class=top>.*</header>##' | cmp - "$T/site/index.html" && echo same)" same
 check "site: /app.js is app.js, a script" "$(c -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
 check "site: app.js bytes unchanged" "$(c localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
 TOK=$TOK1
@@ -596,4 +596,42 @@ check "image: ...and the page lists the file" "$(cget /jobs/$IMI | grep -o '<li>
 mkdir -p "$R/off/out/$IVF"; printf 'PNGDATA' > "$R/off/out/$IVF/image.png"; echo done > "$R/off/$IVF.state"
 check "image: a set's cell shows the image" "$(cget /sets/$IVF | grep -c "alt=\"variation\" src=/files/$IVF/image.png")" 1
 check "image: the OpenAPI document names the kind and the file" "$(jq -r '.components.schemas.NewJob.properties.kind.enum | join(",")' studio/openapi.json) $(jq -r '.paths["/files/{id}/{name}"].get.parameters[1].schema.enum | index("image.png")' studio/openapi.json)" "video,edit,image 1"
+# The cancho-ui page of `/` served with the design (docs/studio-design.md section 6): the stylesheet linked after the page's own style and the header after <body>; a page without those tags is served as it is.
+if [ -n "${UI:-}" ]; then
+  PG=$(TOK=$TOK2 c localhost:18094/)
+  check "main page: the stylesheet is linked once, after the page's own style and before </head>" "$(echo "$PG" | tr '\n' ' ' | grep -c '</style> *<link rel=stylesheet href=/style.css></head>')" 1
+  check "main page: the header is there once and marks Studio as the open place" "$(echo "$PG" | grep -c 'class=brand') $(echo "$PG" | grep -o 'aria-current=page>[A-Za-z ]*' | tr '\n' ' ')" "1 aria-current=page>Studio "
+  check "main page: the app is untouched (its root and its script are where they were)" "$(echo "$PG" | grep -c 'id="root"') $(echo "$PG" | grep -c 'src="./app.js"')" "1 1"
+  check "main page: the header comes before the app's root" "$(echo "$PG" | tr '\n' ' ' | grep -c '<body><header class=top>.*</header> *<div id="root"')" 1
+else
+  check "main page: a page with no <head> and <body> tags is served as it is" "$(TOK=$TOK2 c localhost:18094/)" '<!doctype html><title>fake page</title>'
+fi
+check "main page: the stylesheet has the rules for the page's fields" "$(TOK=$TOK2 c localhost:18094/style.css | grep -o '#root \.cui-field{\|#root>\.cui-col{' | sort -u | tr '\n' ' ')" "#root .cui-field{ #root>.cui-col{ "
+
+# Several pictures (docs/two-images.md): an edit with a second picture, in the API and in the /edit form.
+Tq=$(wc -l < "$R/off/queue" | tr -d ' ')
+TW=$(pj '{"kind":"edit","prompt":"combine them","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":1048576,"seed":3}'); TWI=$(echo "$TW" | jq -r .id)
+check "two pictures: the arguments media gets" "$(argv_of $TWI)" "edit -o $R/off/out/X --seed 3 --also /tmp/b.png --condition-area 1048576 -- /tmp/a.png combine them "
+TW2=$(pj '{"kind":"edit","prompt":"combine them","image":"/tmp/a.png","also":"/tmp/b.png"}'); TW2I=$(echo "$TW2" | jq -r .id)
+check "two pictures: without condition_area media's default applies (none passed)" "$(argv_of $TW2I)" "edit -o $R/off/out/X --also /tmp/b.png -- /tmp/a.png combine them "
+Tq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"kind":"video","prompt":"x","also":"/tmp/b.png"' '"kind":"image","prompt":"x","also":"/tmp/b.png"' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":""' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":5' '"kind":"edit","prompt":"x","image":"/tmp/a.png","condition_area":589824' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":65535' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":1048577' '"kind":"edit","prompt":"x","image":"/tmp/a.png","also":"/tmp/b.png","condition_area":"768"'; do
+  check "two pictures: refused 422: $bad" "$(po "{$bad}" | tail -c 4)" " 422"
+done
+check "two pictures: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Tq2"
+check "two pictures: the job page lists the second picture and the size among the parameters" "$(cget /jobs/$TWI | grep -o '<dt>[a-z-]*</dt><dd>[^<]*</dd>' | sed 's/<dt>//; s#</dt><dd># #; s#</dd>##' | tr '\n' ';')" "kind edit;seed 3;also /tmp/b.png;condition-area 1048576;rewrite off;"
+# the form
+printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' > "$R/p1.jpg"; head -c 4000 /dev/urandom >> "$R/p1.jpg"
+printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' > "$R/p2.png"; head -c 4000 /dev/urandom >> "$R/p2.png"
+FM=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=both -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" -F condition_area=1048576 localhost:18097/edit); FMI=${FM##*/}
+check "edit form: two pictures make one job" "$(echo "$FM" | sed 's#.*/jobs/[0-9]*#ok#')" ok
+check "edit form: ...and its arguments name both uploaded pictures, the second as -2, and the size" "$(argv_of $FMI | sed "s#$R/off#D#g")" "edit -o D/out/X --also D/upload-$FMI-2.png --condition-area 1048576 -- D/upload-$FMI.jpg both "
+check "edit form: both pictures are on disk, nothing else" "$(ls "$R/off" | grep "^upload-$FMI" | tr '\n' ' ')" "upload-$FMI-2.png upload-$FMI.jpg "
+check "edit form: no second picture (an empty file field) is one picture" "$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=one -F "image=@$R/p1.jpg" -F "image2=@/dev/null" localhost:18097/edit | sed 's#.*/jobs/[0-9]*#ok#')" ok
+Fq=$(wc -l < "$R/off/queue" | tr -d ' '); Fu=$(ls "$R/off" | grep -c '^upload-')
+check "edit form: a second file that is not a picture is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=bad -F "image=@$R/p1.jpg" -F "image2=@/etc/hosts" localhost:18097/edit)" 422
+check "edit form: a condition_area that is not digits is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=bad -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" -F condition_area=big localhost:18097/edit)" 422
+check "edit form: it offers the second picture and the size" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=image2\|name=condition_area' | sort | tr '\n' ' ')" "name=condition_area name=image2 "
+check "edit form: the two refused requests queued no job and saved no picture (the checks come before the files)" "$(wc -l < "$R/off/queue" | tr -d ' ') $(ls "$R/off" | grep -c '^upload-')" "$Fq $Fu"
+check "two pictures: the OpenAPI document names also and condition_area in the job and image2 in the form" "$(jq -r '.components.schemas.NewJob.properties | [has("also"), has("condition_area")] | join(",")' studio/openapi.json) $(grep -c '"image2"' studio/openapi.json)" "true,true 1"
 exit $fail
