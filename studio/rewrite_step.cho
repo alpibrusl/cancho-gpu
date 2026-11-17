@@ -115,7 +115,7 @@ pub fn apply[&h, &f, &n, &k, &l, &d, &i, &m, &p](heap: &!h Heap, fs: &f Fs(""), 
         is_edit = bytes.equal(list[k0a..k0b], "edit");
         is_video = bytes.equal(list[k0a..k0b], "video");
     }
-    if dashes < 0 || (is_edit == false && is_video == false) || (is_edit && count - dashes - 1 != 2) || (is_video && count - dashes - 1 != 1) {
+    if dashes < 0 || is_edit == false && is_video == false || is_edit && count - dashes - 1 != 2 || is_video && count - dashes - 1 != 1 {
         return (9, buffer.empty(heap, 8));
     }
     let (pa, pb) = entry_at(list, count - 1);
@@ -163,7 +163,7 @@ pub fn apply[&h, &f, &n, &k, &l, &d, &i, &m, &p](heap: &!h Heap, fs: &f Fs(""), 
     } else {
         borrow system as &sb in {
             borrow picture as &pcb in {
-                let (c, text) = rewrite.ask(heap, net, clock, model, buffer.bytes(sb), list[pa..pb], buffer.bytes(pcb), seconds);
+                let (c, text) = rewrite.ask(heap, net, clock, model, buffer.bytes(sb), list[pa..pb], buffer.bytes(pcb), "", seconds);
                 code = c;
                 if c == 0 {
                     borrow text as &tb in {

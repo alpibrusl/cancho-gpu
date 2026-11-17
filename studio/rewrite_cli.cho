@@ -9,8 +9,8 @@ import rewrite;
 //
 //   rewrite_cli clean <text>                                          the cleaning rule, on a text
 //   rewrite_cli b64 <file>                                            a file as base64 (RFC 4648, no line breaks)
-//   rewrite_cli ask <model> <system file> <prompt> <picture file|-> <seconds>
-//                                                                     one call to the Ollama at 127.0.0.1:11434
+//   rewrite_cli ask <model> <system file> <prompt> <picture file|-> <seconds> [<second picture file>]
+//                                                                     one call to the Ollama at 127.0.0.1:11434 (a second picture needs a first)
 //
 // Prints `code <n> <reason>` on the first line and, when there is one, the text on the second; the exit status is the code (0: a prompt). Built with
 //   cancho build studio/rewrite_cli.cho studio/rewrite.cho studio/files.cho --std -o build/rewrite_cli
@@ -128,7 +128,7 @@ fn run[&i, &h, &f, &n, &k, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), net: &
         buffer.drop(heap, data);
         return 0;
     }
-    if arg_count(args) == 7 && is_text(arg(args, 1), "ask") {
+    if (arg_count(args) == 7 || arg_count(args) == 8) && is_text(arg(args, 1), "ask") {
         let seconds = num(arg(args, 6));
         if seconds < 1 || seconds > 3600 {
             put(io, "seconds is 1 to 3600\n");
@@ -143,15 +143,30 @@ fn run[&i, &h, &f, &n, &k, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), net: &
             picture = p;
             e2 = e;
         }
+        var picture2 = buffer.empty(heap, 8);
+        if arg_count(args) == 8 {
+            if is_text(arg(args, 5), "-") {
+                e2 = 1;
+            } else {
+                let (p2, e3) = files.read_all(heap, fs, arg(args, 7));
+                buffer.drop(heap, picture2);
+                picture2 = p2;
+                if e3 != 0 {
+                    e2 = e3;
+                }
+            }
+        }
         var status = 102;
         if e1 == 0 && e2 == 0 {
             borrow system as &sb in {
                 borrow picture as &pb in {
-                    let (code, text) = rewrite.ask(heap, net, clock, arg(args, 2), buffer.bytes(sb), arg(args, 4), buffer.bytes(pb), seconds);
-                    borrow text as &tb in {
-                        status = report(io, code, buffer.bytes(tb));
+                    borrow picture2 as &pb2 in {
+                        let (code, text) = rewrite.ask(heap, net, clock, arg(args, 2), buffer.bytes(sb), arg(args, 4), buffer.bytes(pb), buffer.bytes(pb2), seconds);
+                        borrow text as &tb in {
+                            status = report(io, code, buffer.bytes(tb));
+                        }
+                        buffer.drop(heap, text);
                     }
-                    buffer.drop(heap, text);
                 }
             }
         } else {
@@ -159,9 +174,10 @@ fn run[&i, &h, &f, &n, &k, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), net: &
         }
         buffer.drop(heap, system);
         buffer.drop(heap, picture);
+        buffer.drop(heap, picture2);
         return status;
     }
-    put(io, "usage: rewrite_cli clean <text> | b64 <file> | ask <model> <system file> <prompt> <picture file|-> <seconds>\n");
+    put(io, "usage: rewrite_cli clean <text> | b64 <file> | ask <model> <system file> <prompt> <picture file|-> <seconds> [<second picture file>]\n");
     return 100;
 }
 
