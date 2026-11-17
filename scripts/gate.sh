@@ -15,7 +15,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CANCHO=${CANCHO:-cancho}
 cd "$ROOT"
-"$CANCHO" fmt --check src tests device tools
+"$CANCHO" fmt --check src tests device tools media
 tests/files.sh
 "$CANCHO" build
 "$CANCHO" test
@@ -58,6 +58,7 @@ python3 tests/vit_pieces.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/vit_pieces.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
+CANCHO="$CANCHO" sh tests/media_diff.sh
 python3 tests/dit_attention_seg.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_attention_seg.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" scripts/build-session.sh

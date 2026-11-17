@@ -1,0 +1,270 @@
+edition 10;
+
+import std.buffer;
+import std.io;
+
+// media -- the command line of tools/media.py, in cancho (docs/media-cho.md). Slice A: the parts that decide and do not run anything.
+//
+//   media models                               the supported models per task (the text `media.py models` prints)
+//   media check image WxH PROMPT               the refusals of `media image`, or `ok`
+//   media check video WxH FRAMES FORCE         the refusals of `media video` (FORCE 0 or 1), or `ok frames N latent L tokens T`
+//
+// A refusal is one line on stderr, `media: ...`, exit 2: the words of tools/media.py, so that tests/media_diff.sh can hold the two equal.
+// Built with  cancho build media/media.cho --std -o build/media   Its authority is the point: it reads no file, starts nothing, reaches no network.
+
+fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A decimal number of at most nine digits, or -1.
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// `WxH` (or `WXH`): the width and the height, or (-1, -1).
+fn size_of[&t](text: &t [byte]) -> [] (int, int) {
+    var cut = 0 - 1;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 120 || c == 88 {
+            if cut >= 0 {
+                return (0 - 1, 0 - 1);
+            }
+            cut = i;
+        }
+        i = i + 1;
+    }
+    if cut < 1 {
+        return (0 - 1, 0 - 1);
+    }
+    let w = num(text[0..cut]);
+    let h = num(text[cut + 1..len(text)]);
+    if w < 0 || h < 0 {
+        return (0 - 1, 0 - 1);
+    }
+    return (w, h);
+}
+
+fn push_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    if n < 0 {
+        return buffer.append(heap, buffer.push(heap, out, byte_of(45)), "?");
+    }
+    if n == 0 {
+        return buffer.push(heap, out, byte_of(48));
+    }
+    var digits = 0;
+    var v = n;
+    while v > 0 {
+        digits = digits + 1;
+        v = v / 10;
+    }
+    var acc = out;
+    var place = digits;
+    while place > 0 {
+        var p = 1;
+        var k = 1;
+        while k < place {
+            p = p * 10;
+            k = k + 1;
+        }
+        acc = buffer.push(heap, acc, byte_of(48 + n / p % 10));
+        place = place - 1;
+    }
+    return acc;
+}
+
+// The refusal: `media: <message>` on stderr; the exit status 2.
+fn refuse[&i, &m](io: &!i Io, msg: &m [byte]) -> [err_write] int {
+    io.error_all(io, "media: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 2;
+}
+
+// Refuse with a message built in a buffer; the buffer is consumed.
+fn refuse_buf[&i, &h](io: &!i Io, heap: &!h Heap, msg: buffer.Buffer) -> [err_write, heap] int {
+    var code = 2;
+    borrow msg as &mb in {
+        code = refuse(io, buffer.bytes(mb));
+    }
+    buffer.drop(heap, msg);
+    return code;
+}
+
+fn refuse_text[&i](io: &!i Io, msg: &static [byte]) -> [err_write] int {
+    io.error_all(io, "media: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 2;
+}
+
+fn check_image[&i, &h, &p](io: &!i Io, heap: &!h Heap, size: &static [byte], prompt: &p [byte]) -> [io_write, err_write, heap] int {
+    let (w, h2) = size_of(size);
+    if w < 0 {
+        return refuse_text(io, "--size is WxH in pixels, for example 1024x1024");
+    }
+    if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 96), "--size must be multiples of 32, at least 64: got ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        return refuse_buf(io, heap, m);
+    }
+    if w * h2 > 1024 * 1024 {
+        var m = push_int(heap, buffer.empty(heap, 128), w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " is more than 1024 x 1024 pixels, the largest size measured (docs/text-to-image.md)");
+        return refuse_buf(io, heap, m);
+    }
+    var blank = true;
+    var k = 0;
+    while k < len(prompt) {
+        let c = int_of(prompt[k]);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            blank = false;
+        }
+        k = k + 1;
+    }
+    if blank {
+        return refuse_text(io, "the prompt is empty");
+    }
+    io.write_all(io, "ok\n");
+    return 0;
+}
+
+fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], frames_text: &static [byte], force: bool) -> [io_write, err_write, heap] int {
+    let (w, h2) = size_of(size);
+    let want = num(frames_text);
+    if w < 0 || want < 0 {
+        return refuse_text(io, "usage: media check video WxH FRAMES FORCE");
+    }
+    if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "--size WxH: both sides must be multiples of 32 (the latent is 16 times smaller and is cut into 2 x 2 patches); ");
+        m = buffer.append(heap, m, size);
+        m = buffer.append(heap, m, " is not");
+        return refuse_buf(io, heap, m);
+    }
+    var base = want;
+    if base < 1 {
+        base = 1;
+    }
+    let lf = (base - 1 + 3) / 4 + 1;
+    let frames = 1 + 4 * (lf - 1);
+    if frames != want {
+        io.write_all(io, "media: ");
+        var m = push_int(heap, buffer.empty(heap, 64), want);
+        m = buffer.append(heap, m, " frames requested; the model makes 1 + 4k, so ");
+        m = push_int(heap, m, frames);
+        borrow m as &mb in {
+            io.write_all(io, buffer.bytes(mb));
+        }
+        io.write_all(io, "\n");
+        buffer.drop(heap, m);
+    }
+    let tokens = lf * (h2 / 32) * (w / 32);
+    if tokens > 4000 && force == false {
+        var m = push_int(heap, buffer.empty(heap, 320), frames);
+        m = buffer.append(heap, m, " frames at ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " are ");
+        m = push_int(heap, m, tokens);
+        m = buffer.append(heap, m, " tokens: the denoiser's attention here is measured only up to about 1,100 (docs/diffusion.md V4a; the fused switch `ATT=1` is not wired into this driver). Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force");
+        return refuse_buf(io, heap, m);
+    }
+    if frames * w * h2 > 17 * 1024 * 576 && force == false {
+        var m = push_int(heap, buffer.empty(heap, 320), frames);
+        m = buffer.append(heap, m, " frames at ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " decode as one clip and the decoder runs out of GPU memory above about 17 frames of 1024x576 or 33 of 640x352 (docs/diffusion.md V2b). Use fewer frames or a smaller size, or --force");
+        return refuse_buf(io, heap, m);
+    }
+    var m = buffer.append(heap, buffer.empty(heap, 64), "ok frames ");
+    m = push_int(heap, m, frames);
+    m = buffer.append(heap, m, " latent ");
+    m = push_int(heap, m, lf);
+    m = buffer.append(heap, m, " tokens ");
+    m = push_int(heap, m, tokens);
+    m = buffer.push(heap, m, byte_of(10));
+    borrow m as &mb2 in {
+        io.write_all(io, buffer.bytes(mb2));
+    }
+    buffer.drop(heap, m);
+    return 0;
+}
+
+fn models[&i](io: &!i Io) -> [io_write] int {
+    io.write_all(io, "video:\n");
+    io.write_all(io, "  fastwan2.2-ti2v-5b     FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers (default)  [3 DMD steps, 640x352 to 1280x704, up to 33 frames measured]\n");
+    io.write_all(io, "  wan2.2-ti2v-5b-base    Wan-AI/Wan2.2-TI2V-5B-Diffusers  [only with --image: 30 Euler steps with guidance, continues the picture (docs/video-image.md)]\n");
+    io.write_all(io, "edit:\n");
+    io.write_all(io, "  qwen-image-2.1-turbo   Qwen/Qwen-Image-2.1-Turbo (default)  [8 steps, image + instruction]\n");
+    io.write_all(io, "image:\n");
+    io.write_all(io, "  qwen-image-2.1-turbo   Qwen/Qwen-Image-2.1-Turbo (default)  [8 steps, a prompt, 512x512 to 1024x1024 measured]\n");
+    return 0;
+}
+
+fn run[&i, &h, &a](io: &!i Io, heap: &!h Heap, args: &a Args) -> [args, io_write, err_write, heap] int {
+    if arg_count(args) == 2 && is_text(arg(args, 1), "models") {
+        return models(io);
+    }
+    if arg_count(args) == 5 && is_text(arg(args, 1), "check") && is_text(arg(args, 2), "image") {
+        return check_image(io, heap, arg(args, 3), arg(args, 4));
+    }
+    if arg_count(args) == 6 && is_text(arg(args, 1), "check") && is_text(arg(args, 2), "video") {
+        return check_video(io, heap, arg(args, 3), arg(args, 4), is_text(arg(args, 5), "1"));
+    }
+    io.error_all(io, "usage: media models | check image WxH PROMPT | check video WxH FRAMES FORCE\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(fs);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow mut heap as &!h in {
+            borrow args as &g in {
+                status = run(i, h, g);
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    return status;
+}
