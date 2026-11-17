@@ -31,8 +31,9 @@ SECTIONS = (24, 20, 20)
 
 
 def positions(types, grid_hw, merge=2):
-    """[3, N] mRoPE positions of one sequence; `types` is 0 for text and 1 for image tokens, `grid_hw` the image's patch grid."""
-    out, cur, i = [], 0, 0
+    """[3, N] mRoPE positions of one sequence; `types` is 0 for text and 1 for image tokens, `grid_hw` the image's patch grid, or **a list of grids, one for each run of image tokens in order** (docs/two-images.md)."""
+    multi = isinstance(grid_hw[0], (list, tuple))
+    out, cur, i, run = [], 0, 0, 0
     while i < len(types):
         j = i
         while j < len(types) and types[j] == types[i]:
@@ -41,7 +42,9 @@ def positions(types, grid_hw, merge=2):
             out.append(np.arange(cur, cur + j - i)[None].repeat(3, 0))
             cur += j - i
         else:
-            gh, gw = grid_hw[0] // merge, grid_hw[1] // merge
+            g = grid_hw[run] if multi else grid_hw
+            run += 1
+            gh, gw = g[0] // merge, g[1] // merge
             rr, cc = np.meshgrid(np.arange(gh), np.arange(gw), indexing="ij")
             out.append(np.stack([np.full(gh * gw, cur), rr.reshape(-1) + cur, cc.reshape(-1) + cur]))
             cur += max(gh, gw)
@@ -60,15 +63,23 @@ def tables(pos):
     return np.cos(ang), np.sin(ang)
 
 
+def template_n(n):
+    """The pipeline's template for n pictures: the placeholder repeated with a space between pictures (`_get_qwen_prompt_embeds`)."""
+    one = "<image1><|vision_start|><|image_pad|><|vision_end|>"
+    rep = one + "".join(f" <image{i}><|vision_start|><|image_pad|><|vision_end|>" for i in range(2, n + 1))
+    return TEMPLATE.replace(one, rep)
+
+
 def build(prompt, img):
-    """The processor's ids for the template with this image, the patch grid, and the vision tower's outputs in float64."""
+    """The processor's ids for the template with this image (or a **list** of images: docs/two-images.md), the patch grid (a list of grids for a list), and the processor's outputs."""
     from PIL import Image
     from transformers import AutoProcessor
     proc = AutoProcessor.from_pretrained(vr.CKPT + "processor")
-    pil = Image.fromarray(img.astype(np.uint8))
-    o = proc(text=[TEMPLATE.format(prompt)], images=[pil], padding=True, return_tensors="pt")
+    many = isinstance(img, (list, tuple))
+    pils = [Image.fromarray(a.astype(np.uint8)) for a in (img if many else [img])]
+    o = proc(text=[template_n(len(pils)).format(prompt)], images=pils, padding=True, return_tensors="pt")
     ids = o["input_ids"][0].numpy().astype(int)
-    grid = o["image_grid_thw"][0].tolist()
+    grid = [g.tolist() for g in o["image_grid_thw"]] if many else o["image_grid_thw"][0].tolist()
     return ids, grid, o
 
 
@@ -77,13 +88,23 @@ def main():
     sz = sys.argv[sys.argv.index("--size") + 1] if "--size" in sys.argv else "256x384"
     n, m = (int(a) for a in (sz.split("x") if "x" in sz else (sz, sz)))
     prompt = sys.argv[sys.argv.index("--prompt") + 1] if "--prompt" in sys.argv else "Make the sky purple."
-    img = np.round(vr.synthetic(n, m))
-    ids, grid, o = build(prompt, img)
-    assert grid[1:] == [n // 16, m // 16], "the processor resized the image: %s" % grid
-    merged, deep, _, _ = vr.tower(img)
+    two = "--two" in sys.argv  # docs/two-images.md: a second picture of the transposed shape, flipped (so that it differs)
+    sizes = [(n, m)] + ([(m, n)] if two else [])
+    imgs = [np.round(vr.synthetic(a, b)) for a, b in sizes]
+    if two:
+        imgs[1] = imgs[1][::-1].copy()
+    img = imgs[0]
+    ids, grid, o = build(prompt, imgs if two else img)
+    grids = grid if two else [grid]
+    for g, (a, b) in zip(grids, sizes):
+        assert g[1:] == [a // 16, b // 16], "the processor resized the image: %s" % g
+    towers = [vr.tower(i) for i in imgs]
+    merged = np.concatenate([t[0] for t in towers], 0)
+    deep = np.concatenate([t[1] for t in towers], 1)
+    grid = grids[0] if not two else grids
     types = (ids == IMG_PAD).astype(int)
     assert types.sum() == merged.shape[0], (types.sum(), merged.shape)
-    pos = positions(types, grid[1:])
+    pos = positions(types, [g[1:] for g in grids] if two else grids[0][1:])
     cos, sin = tables(pos)
     emb = tr._f.get_slice("model.language_model.embed_tokens.weight")
     x = np.stack([emb[int(t):int(t) + 1][0].double().numpy() for t in ids])

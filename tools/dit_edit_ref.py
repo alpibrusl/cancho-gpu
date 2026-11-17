@@ -45,7 +45,8 @@ def rope_angles(shapes, pad_exp):
         position += text_len
         cursor = start + h * w
         frame.extend([position] * (h * w))
-        position += max(h, w)
+        if MUT != "no-advance":  # the cursor advances by max(h, w) after each image block: the next block's frame position
+            position += max(h, w)
         hidx.extend(r for r in range(-(h - h // 2), h // 2) for _ in range(w))
         widx.extend(c for _ in range(h) for c in range(-(w - w // 2), w // 2))
     if cursor < S:
@@ -78,9 +79,13 @@ def assemble(prompt, pad, cond, target, t):
     x[text_pos] = txt[~pad]  # text rows in order
     x[np.nonzero(pad_exp)[0]] = img
     rope = rope_angles(SHAPES, pad_exp)
-    block_len = [len(cond), ntgt]
+    block_len = [h * w for (h, w) in SHAPES]  # the conditions in order, then the target: any number of pictures (docs/two-images.md)
+    assert sum(block_len) == len(cond) + ntgt, "SHAPES holds %d image tokens, the conditions and the target %d" % (sum(block_len), len(cond) + ntgt)
+    blk = np.arange(len(block_len))
+    if MUT == "one-block":  # the conditions as ONE block: they would attend to each other bidirectionally
+        blk = np.where(blk < len(block_len) - 1, 0, 1)
     ids = np.full(S, -1)
-    ids[np.nonzero(pad_exp)[0]] = np.repeat(np.arange(2), block_len)
+    ids[np.nonzero(pad_exp)[0]] = np.repeat(blk, block_len)
     sel = np.zeros(S, dtype=bool)
     sel[np.nonzero(pad_exp)[0][-ntgt:]] = True
     idx = np.arange(S)
@@ -94,10 +99,49 @@ def assemble(prompt, pad, cond, target, t):
 
 
 SHAPES = None
+MUT = None  # a deliberate bug the comparison must refuse: one-block, no-advance
+
+
+def main_random():
+    """docs/two-images.md check 1: the float64 joint step for TWO condition pictures of different shapes against torch's `QwenImage21Transformer2DModel`, on random inputs (the transformer does not read what the rows are).
+    `python tools/dit_edit_ref.py --random [--mutate one-block|no-advance] [--torch32]`"""
+    global SHAPES, MUT
+    MUT = sys.argv[sys.argv.index("--mutate") + 1] if "--mutate" in sys.argv else None
+    rng = np.random.default_rng(5)
+    shapes_c = [(8, 6), (6, 10)]  # two pictures of different shape, in latent tokens
+    tgt_hw = (8, 8)
+    SHAPES = shapes_c + [tgt_hw]
+    t = 0.978453
+    runs = [8, 3, 6]  # text rows before the first picture, between the two, and after
+    npad = [h * w // SLOT for h, w in shapes_c]
+    pad = np.concatenate([np.zeros(runs[0], bool), np.ones(npad[0], bool), np.zeros(runs[1], bool), np.ones(npad[1], bool), np.zeros(runs[2], bool)])
+    prompt = rng.normal(size=(len(pad), 4096))
+    cond = rng.normal(size=(sum(h * w for h, w in shapes_c), 64))
+    target = rng.normal(size=(tgt_hw[0] * tgt_hw[1], 64))
+    x, mod, temb, rope, sel, allowed, pad_exp = assemble(prompt, pad, cond, target, t)
+    print("joint sequence %d: %d text rows, conditions %s, target %s; mutant %s" % (len(x), (~pad_exp).sum(), shapes_c, tgt_hw, MUT), flush=True)
+    xs = x.copy()
+    for i in range(32):
+        wts = {k: ref.load64("transformer_blocks.%d.%s" % (i, v)) for k, v in ref.BLOCK0.items()}
+        xs = ref.block(xs, wts, mod, rope, sel, None, allowed)
+    y = step.back(xs, temb, sel)[sel]
+    print("float64 step: output rms %.4g" % np.sqrt((y ** 2).mean()))
+    import torch
+    from diffusers import QwenImage21Transformer2DModel
+    m = QwenImage21Transformer2DModel.from_pretrained("Qwen/Qwen-Image-2.1-Turbo", subfolder="transformer", torch_dtype=torch.float32, low_cpu_mem_usage=True, local_files_only=True).eval()
+    img_mask = torch.tensor(np.concatenate([pad, np.ones(len(target) // SLOT, dtype=bool)]))[None]
+    with torch.no_grad():
+        o = m(hidden_states=torch.tensor(np.concatenate([cond, target], 0), dtype=torch.float32)[None], timestep=torch.tensor([t], dtype=torch.float32),
+              encoder_hidden_states=torch.tensor(prompt, dtype=torch.float32)[None], encoder_hidden_states_mask=None, img_shapes=[[(1, hh, ww) for hh, ww in SHAPES]], img_mask=img_mask, return_dict=False)[0]
+    ty = o[0, -len(target):].double().numpy()
+    d = np.abs(y - ty)
+    print("float64 vs torch float32 (the target rows): mean abs error %.3g (%.3g of the rms %.3g), max %.3g" % (d.mean(), d.mean() / np.sqrt((y ** 2).mean()), np.sqrt((y ** 2).mean()), d.max()))
 
 
 def main():
     global SHAPES
+    if "--random" in sys.argv:
+        return main_random()
     refdir, out = sys.argv[1], sys.argv[2]
     t = float(sys.argv[sys.argv.index("--t") + 1]) if "--t" in sys.argv else 0.978453
     prompt = np.load(os.path.join(refdir, "out_f64.npy")).astype(np.float64)

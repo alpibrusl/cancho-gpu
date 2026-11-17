@@ -1,3 +1,13 @@
 build/
 results/
 __pycache__/
+
+# what the generators write (docs/text-to-image.md, docs/two-images.md): never committed, and never a user's picture
+out/
+scratchpad/
+edited.png
+image.png
+before_after.png
+input_resized*.png
+video.gif
+video.mp4
