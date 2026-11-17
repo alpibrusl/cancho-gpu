@@ -316,7 +316,13 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 }
                                 buffer.drop(heap, vtext);
                             } else if bytes.equal(path, "/jobs") && bytes.equal(method, "GET") {
-                                let list = results.job_list(heap, fs, dir);
+                                let list = results.job_list(heap, fs, dir, false);
+                                borrow list as &lb in {
+                                    out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(lb), keep, "");
+                                }
+                                buffer.drop(heap, list);
+                            } else if bytes.equal(path, "/recent") && bytes.equal(method, "GET") {
+                                let list = results.job_list(heap, fs, dir, true);
                                 borrow list as &lb in {
                                     out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(lb), keep, "");
                                 }

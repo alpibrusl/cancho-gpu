@@ -41,29 +41,8 @@ component Studio {
     state blocked: Bool = true;
     state sent: Result[String, String] = Ok("");
     state polled: Result[String, String] = Ok("");
-    state listed: Result[String, String] = Ok("");
-    state recent: List[String] = [];
-    state tally: String = "";
-    state none: Bool = true;
 
     every 3000 Poll;
-    every 5000 Recent;
-    start Recent;
-
-    on Recent {
-        listed = await(net.get("api/jobs"));
-        recent = match listed {
-            Ok(text) => { take(json.items(text, "jobs"), 12) }
-            Err(e) => { recent }
-            Cancelled => { recent }
-        };
-        tally = match listed {
-            Ok(text) => { "GPU busy: " + json.get(text, "running", "0") + " running, " + json.get(text, "queued", "0") + " queued" }
-            Err(e) => { "The list of jobs could not be read: " + e }
-            Cancelled => { tally }
-        };
-        none = len(recent) == 0;
-    }
 
     on Kind(v) {
         kind = v;
@@ -180,18 +159,6 @@ component Studio {
             Text { "With the rewrite set to ab the server runs the job twice, with your prompt and with a rewritten one, and a page at /compare/N asks which result is better without saying which is which." }
             Text { "To edit a picture from this computer instead of naming a path, open /edit on this server." }
             Text { "Result of job {job}: open /jobs/{job} on this server. All jobs: /jobs." }
-            Heading { level: 2 "Recent jobs" }
-            Text { role: status "{tally}" }
-            If { when: none Text { "No jobs yet." } }
-            For {
-                over: recent
-                as: j
-                Column {
-                    Text { role: heading "#{json.get(j, \"id\", \"?\")}  {json.get(j, \"state\", \"?\")}" }
-                    Text { "{json.get(j, \"prompt\", \"\")}" }
-                    Text { "{json.get(j, \"kind\", \"\")} - /jobs/{json.get(j, \"id\", \"\")}" }
-                }
-            }
         }
     }
 }

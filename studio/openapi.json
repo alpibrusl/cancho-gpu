@@ -187,6 +187,16 @@
         }
       }
     },
+    "/recent": {
+      "get": {
+        "summary": "The 12 newest jobs as the cards of /jobs, with no header: the page the main page shows in a frame. It refreshes itself every 5 s and a card opens in the whole window. A running job shows its stage and its steps done when its log says them (a line `== stage`, `steps N` then `step i:`, or `step i of N`).",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
     "/jobs": {
       "get": {
         "summary": "The jobs, newest first (200 at most), as an HTML list.",

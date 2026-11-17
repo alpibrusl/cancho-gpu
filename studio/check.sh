@@ -110,7 +110,6 @@ if [ -n "${UI:-}" ]; then
   check "ui: cancho-ui check" "$($UI check studio/ui/studio.cui >/dev/null 2>&1; echo $?)" 0
   check "ui: replay trace passes" "$($UI test studio/ui/studio.cui studio/ui/studio.trace.json 2>&1 | tail -1 | cut -c1-4)" PASS
   $UI build studio/ui/studio.cui --page -o "$T/site" --name cancho-studio >/dev/null 2>&1
-  check "ui: the built page reads api/jobs (the list of recent jobs)" "$(grep -c 'api/jobs"' "$T/site/app.js" 2>/dev/null | sed 's/^[1-9].*/yes/')" yes
 else
   echo "skip ui checks (set UI to the cancho-ui binary)"
   printf '<!doctype html><title>fake page</title>' > "$T/site/index.html"; printf 'console.log(1)' > "$T/site/app.js"
@@ -256,7 +255,7 @@ SP2=$!
 trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
 waitup "$T/s2.log"
 TOK2=$(grep -o 'token=[0-9a-f]*' "$T/s2.log" | cut -d= -f2); TOK=$TOK2
-check "site: / is index.html, with the stylesheet and the header added and nothing else changed" "$(c localhost:18094/ | sed 's#<link rel=stylesheet href=/style.css>##; s#<header class=top>.*</header>##' | cmp - "$T/site/index.html" && echo same)" same
+check "site: / is index.html, with the stylesheet, the header and the frame of recent jobs added and nothing else changed" "$(c localhost:18094/ | sed 's#<link rel=stylesheet href=/style.css>##; s#<header class=top>.*</header>##; s#<iframe class=recent src=/recent title="Recent jobs"></iframe>##' | cmp - "$T/site/index.html" && echo same)" same
 check "site: /app.js is app.js, a script" "$(c -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
 check "site: app.js bytes unchanged" "$(c localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
 TOK=$TOK1
@@ -286,6 +285,7 @@ row '/api/jobs/{id}' GET /api/jobs/1
 row '/api/jobs/{id}' GET /api/jobs/99999
 row '/api/jobs/{id}' GET /api/jobs/x
 row /jobs GET /jobs
+row /recent GET /recent
 row '/jobs/{id}' GET /jobs/1
 row '/jobs/{id}' GET /jobs/99999
 row '/jobs/{id}' GET /jobs/x
@@ -568,6 +568,15 @@ check "design: the status of an idle GPU with one waiting job" "$(TOK=$TOK2 c lo
 mkdir -p "$R/off/out/$PEI"; printf 'x' > "$R/off/out/$PEI/edited.png"; echo running > "$R/off/$PEI.state"
 check "design: with a job running the status says busy and counts it" "$(cget /jobs | grep -o 'GPU busy &middot; 1 running &middot; [0-9]* queued' | sed 's/[0-9]* queued/N queued/')" "GPU busy &middot; 1 running &middot; N queued"
 check "design: a running job's card has the moving bar and the running badge" "$(cget /jobs | grep -o 'class=\"badge running\"\|class=bar' | tr '\n' ' ')" 'class="badge running" class=bar '
+printf '== lowering\nsteps 8, mu 1.2, timesteps []\nstep 0: t 1000.0\nstep 2: t 900.0, 9 s wall\n' > "$R/off/$PEI.log"
+check "progress: a running edit shows its stage and the steps done, and the bar is that far" "$(cget /jobs | grep -o 'class=det style=\"width:[0-9]*%\"\|lowering &middot; step [0-9]* of [0-9]*' | tr '\n' ' ')" 'class=det style="width:37%" lowering &middot; step 3 of 8 '
+printf '== sampling\nstep 5 of 10: sigma 0.5 -> 0.4, 3 s\n' > "$R/off/$PEI.log"
+check "progress: a video's \"step i of N\" is read too" "$(cget /jobs | grep -o 'class=det style=\"width:[0-9]*%\"\|sampling &middot; step [0-9]* of [0-9]*' | tr '\n' ' ')" 'class=det style="width:50%" sampling &middot; step 5 of 10 '
+printf 'no stage lines here\n' > "$R/off/$PEI.log"
+check "progress: a log with none keeps the moving bar and no stage" "$(cget /jobs | grep -c 'class=det')" 0
+check "recent: the frame's page has no header, refreshes itself, opens cards in the window, and shows the running card" "$(cget /recent | grep -c 'class=brand') $(cget /recent | grep -c 'http-equiv=refresh content=5><base target=_top>') $(cget /recent | grep -c 'class=\"job running\"')" "0 1 1"
+check "recent: it is the same cards as /jobs (the ids, newest first)" "$(cget /recent | grep -o 'class=idn>#[0-9]*' | head -3 | tr '\n' ' ')" "$(cget /jobs | grep -o 'class=idn>#[0-9]*' | head -3 | tr '\n' ' ')"
+rm -f "$R/off/$PEI.log"
 check "design: the job page's parameters are its kind and its options, in order" "$(cget /jobs/$PEI | grep -o '<dt>[a-z]*</dt><dd>[^<]*</dd>' | sed 's/<dt>//; s#</dt><dd># #; s#</dd>##' | tr '\n' ';')" "kind edit;seed 2;model qwen-image-2.1-turbo;steps 4;rewrite off;"
 echo done > "$R/off/$PEI.state"
 check "design: a finished edit is its own thumbnail on /jobs" "$(cget /jobs | grep -c "loading=lazy src=/files/$PEI/edited.png")" 1
@@ -607,11 +616,11 @@ if [ -n "${UI:-}" ]; then
   check "main page: the header is there once and marks Studio as the open place" "$(echo "$PG" | grep -c 'class=brand') $(echo "$PG" | grep -o 'aria-current=page>[A-Za-z ]*' | tr '\n' ' ')" "1 aria-current=page>Studio "
   check "main page: the app is untouched (its root and its script are where they were)" "$(echo "$PG" | grep -c 'id="root"') $(echo "$PG" | grep -c 'src="./app.js"')" "1 1"
   check "main page: the header comes before the app's root" "$(echo "$PG" | tr '\n' ' ' | grep -c '<body><header class=top>.*</header> *<div id="root"')" 1
+  check "main page: the frame of recent jobs is once, after the app and before </body>" "$(echo "$PG" | tr '\n' ' ' | grep -c '<script type="module" src="./app.js"></script> *<iframe class=recent src=/recent title="Recent jobs"></iframe></body>')" 1
 else
   check "main page: a page with no <head> and <body> tags is served as it is" "$(TOK=$TOK2 c localhost:18094/)" '<!doctype html><title>fake page</title>'
 fi
 check "main page: the stylesheet has the rules for the page's fields" "$(TOK=$TOK2 c localhost:18094/style.css | grep -o '#root \.cui-field{\|#root>\.cui-col{' | sort -u | tr '\n' ' ')" "#root .cui-field{ #root>.cui-col{ "
-check "main page: the stylesheet has the rule for the recent jobs' cards" "$(TOK=$TOK2 c localhost:18094/style.css | grep -c '#root>\.cui-col>\.cui-col{')" 1
 
 # Several pictures (docs/two-images.md): an edit with a second picture, in the API and in the /edit form.
 Tq=$(wc -l < "$R/off/queue" | tr -d ' ')
