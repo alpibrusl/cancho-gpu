@@ -636,6 +636,17 @@ for bad in '"kind":"video","prompt":"x","also":"/tmp/b.png"' '"kind":"image","pr
 done
 check "two pictures: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Tq2"
 check "two pictures: the job page lists the second picture and the size among the parameters" "$(cget /jobs/$TWI | grep -o '<dt>[a-z-]*</dt><dd>[^<]*</dd>' | sed 's/<dt>//; s#</dt><dd># #; s#</dd>##' | tr '\n' ';')" "kind edit;seed 3;also /tmp/b.png;condition-area 1048576;rewrite off;"
+# A video that starts from a picture (docs/video-image.md): kind video with image
+Vq=$(wc -l < "$R/off/queue" | tr -d ' ')
+VI=$(pj '{"kind":"video","prompt":"the fox runs","image":"/tmp/fox.png","frames":17,"size":"640x352","seed":3,"steps":20}'); VII=$(echo "$VI" | jq -r .id)
+check "image to video: the arguments media gets" "$(argv_of $VII)" "video -o $R/off/out/X --frames 17 --size 640x352 --seed 3 --steps 20 --image /tmp/fox.png -- the fox runs "
+Vq2=$(wc -l < "$R/off/queue" | tr -d ' ')
+for bad in '"kind":"image","prompt":"x","image":"/tmp/fox.png"' '"kind":"video","prompt":"x","image":5' '"kind":"video","prompt":"x","image":"/"' '"kind":"video","prompt":"x","image":"/tmp/fox.png","frames":1' '"kind":"video","prompt":"x","image":"/tmp/fox.png","rewrite":"on"' '"kind":"video","prompt":"x","steps":4'; do
+  check "image to video: refused 422: $bad" "$(po "{$bad}" | tail -c 4)" " 422"
+done
+check "image to video: the refusals queued nothing" "$(wc -l < "$R/off/queue" | tr -d ' ')" "$Vq2"
+check "image to video: the job page lists the picture among the parameters" "$(cget /jobs/$VII | grep -o '<dt>image</dt><dd>[^<]*</dd>')" "<dt>image</dt><dd>/tmp/fox.png</dd>"
+check "image to video: the OpenAPI document says a video can take image" "$(jq -r '.components.schemas.NewJob.properties.image.description' studio/openapi.json | grep -c 'video')" 1
 # the form
 printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' > "$R/p1.jpg"; head -c 4000 /dev/urandom >> "$R/p1.jpg"
 printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR' > "$R/p2.png"; head -c 4000 /dev/urandom >> "$R/p2.png"

@@ -133,6 +133,12 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                 why = "prompt is a string of 1 to 1000 bytes";
             } else if is_edit && (image_n < 0 || json.string_length(body, tp, image_n) < 2 || json.string_length(body, tp, image_n) > 400) {
                 why = "an edit needs image: the absolute path of a file on the server's machine";
+            } else if image_n >= 0 && (is_image || json.is_string(tp, image_n) == false || json.string_length(body, tp, image_n) < 2 || json.string_length(body, tp, image_n) > 400) {
+                why = "image is the absolute path of a picture on the server's machine, for an edit or to start a video from (docs/video-image.md)";
+            } else if is_video && image_n >= 0 && frames_n >= 0 && json.to_int(body, tp, frames_n) < 2 {
+                why = "a video that starts from a picture needs frames of at least 2 (frame 0 is the picture)";
+            } else if is_video && image_n >= 0 && rewrite_n >= 0 && json.string_equals(body, tp, rewrite_n, "off") == false {
+                why = "rewrite is not available for a video that starts from a picture (not measured)";
             } else if also_n >= 0 && (is_edit == false || json.is_string(tp, also_n) == false || json.string_length(body, tp, also_n) < 2 || json.string_length(body, tp, also_n) > 400) {
                 why = "also is the absolute path of a second picture to combine with image, for an edit";
             } else if carea_n >= 0 && (also_n < 0 || json.is_int(tp, carea_n) == false || json.to_int(body, tp, carea_n) < 65536 || json.to_int(body, tp, carea_n) > 1048576) {
@@ -143,8 +149,8 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                 why = "frames is an integer from 1 to 129";
             } else if seed_n >= 0 && (json.to_int(body, tp, seed_n) < 0 || json.to_int(body, tp, seed_n) > 2147483647) {
                 why = "seed is an integer from 0 to 2147483647";
-            } else if steps_n >= 0 && ((is_edit == false && is_image == false) || json.is_int(tp, steps_n) == false || json.to_int(body, tp, steps_n) < 1 || json.to_int(body, tp, steps_n) > 50) {
-                why = "steps is an integer from 1 to 50, for an edit or an image";
+            } else if steps_n >= 0 && ((is_edit == false && is_image == false && (is_video == false || image_n < 0)) || json.is_int(tp, steps_n) == false || json.to_int(body, tp, steps_n) < 1 || json.to_int(body, tp, steps_n) > 50) {
+                why = "steps is an integer from 1 to 50, for an edit, an image, or a video that starts from a picture";
             } else if fps_n >= 0 && (is_video == false || json.is_int(tp, fps_n) == false || json.to_int(body, tp, fps_n) < 1 || json.to_int(body, tp, fps_n) > 60) {
                 why = "fps is an integer from 1 to 60, for a video";
             } else if model_n >= 0 && (json.is_string(tp, model_n) == false || json.string_plain(tp, model_n) == false || model_ok(json.string_view(body, tp, model_n)) == false) {
@@ -238,7 +244,7 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                         list = lb;
                         bad = bad + eb;
                     }
-                    if (is_edit || is_image) && steps_n >= 0 {
+                    if (is_edit || is_image || (is_video && image_n >= 0)) && steps_n >= 0 {
                         let (lc, ec) = process.add(heap, list, "--steps");
                         list = lc;
                         bad = bad + ec;
@@ -290,6 +296,22 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             buffer.drop(heap, cb);
                         }
                     }
+                    if is_video && image_n >= 0 {  // image to video (docs/video-image.md): the picture is the first frame; media picks the base model
+                        let vib = box_slice(heap, json.string_length(body, tp, image_n), byte_of(0));
+                        var vim = vib;
+                        borrow mut vim as &!viw in {
+                            json.string_into(body, tp, image_n, contents(viw));
+                        }
+                        let (lk, ek) = process.add(heap, list, "--image");
+                        list = lk;
+                        bad = bad + ek;
+                        borrow vim as &vir in {
+                            let (ll, el) = process.add(heap, list, contents(vir));
+                            list = ll;
+                            bad = bad + el;
+                        }
+                        unbox_slice(heap, vim);
+                    }
                     // `--` so that a prompt that starts with `-` is a prompt, not an option.
                     let (l10, e10) = process.add(heap, list, "--");
                     list = l10;
@@ -339,7 +361,7 @@ fn create_one[&h, &f, &d, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], bod
                             if rewrite_n >= 0 {
                                 rewrite_on = json.string_equals(body, tp, rewrite_n, "on");
                             }
-                            if is_image {
+                            if is_image || (is_video && image_n >= 0) {
                                 rewrite_on = false;
                             }
                             if force == 1 {
