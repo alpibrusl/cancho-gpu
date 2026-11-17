@@ -2,6 +2,7 @@
 """cancho-media: one command line for the image and video generators of this repository (docs/cli.md).
 
     scripts/media video "PROMPT" -o DIR [--frames N] [--size WxH] [--seed S] [--fps N]
+    scripts/media video "PROMPT" --image PICTURE -o DIR   (the base model continues the picture: docs/video-image.md)
     scripts/media edit  IMAGE "INSTRUCTION" -o DIR [--seed S] [--steps N]
     scripts/media image "PROMPT" -o DIR [--size WxH] [--seed N] [--steps N]
     scripts/media models                       (the supported models per task; `--model NAME` on each task)
@@ -13,6 +14,7 @@ cache directory refuses a second run. Limits are the ones measured (docs/diffusi
 import argparse
 import glob
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,10 +30,12 @@ MAX_PIXEL_FRAMES = 17 * 1024 * 576  # the decoder runs out of GPU memory above a
 
 # The models each task can use. A model is a name, the Hugging Face repositories it needs, and the driver that runs it; a new model is a new entry and its driver (docs/cli.md). Only these two exist.
 MODELS = {
-    "video": {"fastwan2.2-ti2v-5b": {"repo": "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", "also": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "note": "3 DMD steps, 640x352 to 1280x704, up to 33 frames measured"}},
+    "video": {"fastwan2.2-ti2v-5b": {"repo": "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers", "also": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "note": "3 DMD steps, 640x352 to 1280x704, up to 33 frames measured"},
+              "wan2.2-ti2v-5b-base": {"repo": "Wan-AI/Wan2.2-TI2V-5B-Diffusers", "also": None, "i2v": True, "note": "only with --image: 30 Euler steps with guidance, continues the picture (docs/video-image.md)"}},
     "edit": {"qwen-image-2.1-turbo": {"repo": "Qwen/Qwen-Image-2.1-Turbo", "also": None, "note": "8 steps, image + instruction"}},
     "image": {"qwen-image-2.1-turbo": {"repo": "Qwen/Qwen-Image-2.1-Turbo", "also": None, "note": "8 steps, a prompt, 512x512 to 1024x1024 measured"}},
 }
+BASE_VIDEO = "wan2.2-ti2v-5b-base"
 DEFAULT = {"video": "fastwan2.2-ti2v-5b", "edit": "qwen-image-2.1-turbo", "image": "qwen-image-2.1-turbo"}
 
 
@@ -91,9 +95,75 @@ def run(cmd, label):
     print("== %s: %.0f s" % (label, time.time() - t0), flush=True)
 
 
+def picture_f32(path, w, h, dest):
+    """The picture as [3, h, w] little-endian singles in [-1, 1]: resized to cover w x h and cropped at the centre (docs/video-image.md step 1)."""
+    from PIL import Image
+    import numpy as np
+    try:
+        im = Image.open(path).convert("RGB")
+    except Exception as e:  # PIL raises many types for a file it cannot read
+        die("cannot read the picture %s: %s" % (path, e))
+    k = max(w / im.width, h / im.height)
+    nw, nh = max(w, round(im.width * k)), max(h, round(im.height * k))
+    im = im.resize((nw, nh), Image.LANCZOS)
+    x0, y0 = (nw - w) // 2, (nh - h) // 2
+    a = np.asarray(im.crop((x0, y0, x0 + w, y0 + h)), dtype=np.float32)
+    np.ascontiguousarray((a / 127.5 - 1.0).transpose(2, 0, 1).astype("<f4")).tofile(dest)
+
+
+def video_image(a, info, w, h, lf, frames):
+    """media video --image: the base model continues the picture (docs/video-image.md)."""
+    if lf < 2:
+        die("--frames %d: frame 0 is the picture, ask for at least 2 (the model makes 1 + 4k, so 5)" % a.frames)
+    if a.steps < 1 or a.guidance < 1:
+        die("--steps must be at least 1 and --guidance at least 1 (1 turns guidance off)")
+    base = snapshot(info["repo"])
+    tdir = a.weights or snapshot(info["repo"], "transformer")
+    enc = os.path.join(ROOT, "build/wan_vae_enc_gpu")
+    if not base or not tdir or not snapshot(info["repo"], "vae"):
+        die("the base model is not in the Hugging Face cache: `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (about 30 GB; or pass --weights DIR for its transformer)")
+    if not os.path.exists(enc):
+        die("build/wan_vae_enc_gpu is missing: `cancho build tests/wan_vae_enc_gpu.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/wan_vae_enc_gpu` (docs/wan-vae-encoder.md section 10)")
+    wdir = os.path.expanduser(a.wdir or os.path.join(CACHE, "wan-f16-base"))
+    free = shutil.disk_usage(CACHE if os.path.isdir(CACHE) else "/").free
+    if not os.path.exists(os.path.join(wdir, "proj_out.f16")) and free < 14e9:
+        die("the base model's f16 weight files (10 GB) are written to %s on first use and only %.0f GB are free" % (wdir, free / 1e9))
+    out = os.path.abspath(a.output)
+    os.makedirs(out, exist_ok=True)
+    work = os.path.join(out, "work")
+    os.makedirs(work, exist_ok=True)
+    pic, cond, txt, neg = (os.path.join(work, n) for n in ("picture.f32", "cond.f32", "text.npy", "neg.npy"))
+    vae = snapshot(info["repo"], "vae")
+    with Lock():
+        picture_f32(a.image, w, h, pic)
+        run([enc, "prepare", os.path.join(vae, "diffusion_pytorch_model.safetensors"), work, ROOT, pic, str(h), str(w)], "picture encoder: prepare")
+        run(["sh", "-c", "printf '1\\ncheckpoint\\n' | %s %s" % (shlex.quote(SESSION), shlex.quote(os.path.join(work, "enc.session")))], "picture encoder: run (GPU)")
+        run([enc, "latent", os.path.join(vae, "config.json"), work, str(h), str(w), cond], "picture encoder: latent")
+        run([sys.executable, "tools/wan_text.py", a.prompt, txt], "text encoder (host, torch)")
+        run([sys.executable, "tools/wan_text.py", "", neg], "empty negative text")
+        run([sys.executable, "tests/wan_video_gpu.py", out, "--weights", tdir, "--text", txt, "--neg", neg, "--cond", cond, "--base", "--steps", str(a.steps), "--guidance", str(a.guidance),
+             "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16), "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)], "base model, %d steps with guidance, and decoder (GPU)" % a.steps)
+    open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
+    mp4_and_done(a, out)
+
+
+def mp4_and_done(a, out):
+    if shutil.which("ffmpeg"):
+        mp4 = os.path.join(out, "video.mp4")
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(a.fps), "-i", os.path.join(out, "frames/f%03d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", mp4])
+        print("wrote " + mp4 if r.returncode == 0 else "media: ffmpeg failed; the gif and the frames are there")
+    print("done: %s (video.gif, frames/, prompt.txt)" % out)
+
+
 def cmd_video(a):
     need_gpu()
-    model, info = pick("video", a.model)
+    model, info = pick("video", a.model or (BASE_VIDEO if a.image else None))
+    if a.image and not info.get("i2v"):
+        die("--image needs the base model: %s is distilled and does not continue a picture (docs/wan-vae-encoder.md section 12); use --model %s" % (model, BASE_VIDEO))
+    if info.get("i2v") and not a.image:
+        die("%s is for --image (a picture to continue); for a video from a prompt alone use the default model" % model)
+    if a.image and not os.path.isfile(a.image):
+        die("no such image: " + a.image)
     w, h = (int(v) for v in a.size.lower().split("x"))
     if w % 32 or h % 32 or w < 64 or h < 64:
         die("--size WxH: both sides must be multiples of 32 (the latent is 16 times smaller and is cut into 2 x 2 patches); %s is not" % a.size)
@@ -107,12 +177,14 @@ def cmd_video(a):
             "Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force" % (frames, w, h, tokens))
     if frames * w * h > MAX_PIXEL_FRAMES and not a.force:
         die("%d frames at %dx%d decode as one clip and the decoder runs out of GPU memory above about 17 frames of 1024x576 or 33 of 640x352 (docs/diffusion.md V2b). Use fewer frames or a smaller size, or --force" % (frames, w, h))
+    if a.image:
+        return video_image(a, info, w, h, lf, frames)
     tdir = a.weights or snapshot(info["repo"], "transformer")
     if not tdir or not snapshot(info["also"]):
         die("weights not in the Hugging Face cache: `hf download FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers` and `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (or pass --weights DIR)")
     out = os.path.abspath(a.output)
     os.makedirs(out, exist_ok=True)
-    wdir = os.path.expanduser(a.wdir)
+    wdir = os.path.expanduser(a.wdir or os.path.join(CACHE, "wan-f16"))
     free = shutil.disk_usage(os.path.dirname(wdir) if os.path.isdir(os.path.dirname(wdir)) else CACHE if os.path.isdir(CACHE) else "/").free
     if not os.path.exists(os.path.join(wdir, "proj_out.f16")) and free < 14e9:
         die("the f16 weight files (10 GB) are written to %s on first use and only %.0f GB are free" % (wdir, free / 1e9))
@@ -122,11 +194,7 @@ def cmd_video(a):
         run([sys.executable, "tests/wan_video_gpu.py", out, "--weights", tdir, "--text", txt, "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16),
              "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)], "denoiser and decoder (GPU)")
     open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
-    if shutil.which("ffmpeg"):
-        mp4 = os.path.join(out, "video.mp4")
-        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(a.fps), "-i", os.path.join(out, "frames/f%03d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", mp4])
-        print("wrote " + mp4 if r.returncode == 0 else "media: ffmpeg failed; the gif and the frames are there")
-    print("done: %s (video.gif, frames/, prompt.txt)" % out)
+    mp4_and_done(a, out)
 
 
 def cmd_edit(a):
@@ -232,7 +300,10 @@ def main():
     v.add_argument("--seed", type=int, default=0)
     v.add_argument("--fps", type=int, default=16)
     v.add_argument("--weights", help="FastWan transformer directory (default: the Hugging Face cache)")
-    v.add_argument("--wdir", default=os.path.join(CACHE, "wan-f16"), help="where the 10 GB of f16 weight files are kept between runs")
+    v.add_argument("--wdir", default=None, help="where the 10 GB of f16 weight files are kept between runs")
+    v.add_argument("--image", help="a picture to continue: the first frame (uses the base model, 30 steps; docs/video-image.md)")
+    v.add_argument("--steps", type=int, default=30, help="with --image: Euler steps (default 30)")
+    v.add_argument("--guidance", type=float, default=5.0, help="with --image: classifier-free guidance (default 5; 1 is off)")
     v.add_argument("--force", action="store_true", help="go past the measured limits")
     v.set_defaults(f=cmd_video)
     e = sub.add_parser("edit", help="edit an image from an instruction (Qwen-Image-2.1-Turbo)")

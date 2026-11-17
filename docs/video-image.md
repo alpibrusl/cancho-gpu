@@ -1,0 +1,33 @@
+# `media video --image`: a video that continues a picture (design, 2026-11-17)
+
+> **Status: design, then built in the same PR; the measured result goes in section 5.** Claims are tagged **[read]**, **[measured]** or **[estimate]**. The pieces exist and were measured one by one (docs/wan-vae-encoder.md sections 10 to 12); this document is only the command that runs them in order.
+
+## 1. What it does
+
+`scripts/media video "PROMPT" --image PICTURE -o DIR [--frames N] [--size WxH] [--seed S] [--steps N] [--guidance G]`
+
+The picture is the first frame; the prompt says what happens next. **It uses the base model (Wan2.2-TI2V-5B), not FastWan**: the distilled weights cut to another scene after frame 0 and the base model continues the picture (docs/wan-vae-encoder.md section 12, **[measured]** one picture, one seed). The price is 30 Euler steps with guidance (two transformer calls a step): **[measured]** 2.2 s a step at 17 frames of 640 x 352, so about 66 s for the sampler plus the decoder (11 s) and the one-time weight conversion.
+
+## 2. The steps, in order (one GPU job; the lock is taken once)
+
+1. **Picture to `[3, H, W]` floats in [-1, 1]** at the chosen `WxH`: resized to cover and cropped at the centre (no stretching), RGB, `x / 127.5 - 1`. This is the only new code, in `tools/media.py` (the wrapper that already imports PIL and numpy; no new file, no new language).
+2. `build/wan_vae_enc_gpu prepare` then `build/cancho-gpu-metal-session <work>/enc.session` then `build/wan_vae_enc_gpu latent`: the first frame's latent `cond.f32`.
+3. `tools/wan_text.py` twice: the prompt and the empty negative.
+4. `tests/wan_video_gpu.py --base --cond cond.f32 --neg neg.npy --steps 30 --guidance 5`, with the base transformer, its own f16 directory (`~/.cache/cancho-media/wan-f16-base`) and `--size (h/16)x(w/16)`.
+5. The mp4 as for `video`.
+
+## 3. Refusals (each exits 2 with the reason and its remedy; none reaches a crash)
+
+No such picture, or a file PIL cannot read; `--image` with `--model` naming FastWan (the model has no registered way to do this); a size that is not a multiple of 32; fewer than 2 frames (frame 0 is the picture); more than 4,000 tokens or the decoder's pixel limit (as `video`); `--steps` below 1; `--guidance` below 1; the base transformer, the VAE or the encoder binary (`build/wan_vae_enc_gpu`, with the `cancho build` line that makes it) missing; less than 14 GB free where the base weights' f16 files would be written.
+
+## 4. What it does not do
+
+Not wired into the studio. No UniPC sampler (Euler is built). **The base model at 17 frames and 640 x 352 degrades into artefacts after about frame 4, torch does the same (docs/wan-vae-encoder.md section 12)**: the command is honest about the model, it does not hide that; longer or larger clips are limited by the same measured token and decoder limits as `video`. The picture is never copied outside `DIR/work`.
+
+## 5. Results
+
+**[measured] 2026-11-17, one run, M4 Max.** The picture is a model-made one (`media image`, the fox prompt of docs/text-to-image.md, 640 x 352, seed 1; not a person's photo). `media video "…the fox turns its head" --image pic.png --frames 17 --size 640x352 --seed 1`: **93 s of wall clock** (picture encoder 1 + 0 + 0 s, umT5 8 s and 4 s, base model 30 steps with guidance and the decoder 80 s; the f16 files already existed). The encoder's latent is a real one (42,240 values, std 0.58). The script's own number for the mixing: frame 0 of the latent equals the condition (0).
+
+**Looked at** (frames 0, 1, 4, 8, 16 beside the picture): **every frame is the same fox in the same snow and trees**, frame 0 is the picture; the fox hardly moves (it did not turn its head: the prompt's action is not followed at 17 frames). **From frame 1 a streak of saturated colour crosses the top of the picture** in some frames (frame 1, 4, 8; frame 16 is clean): the artefact docs/wan-vae-encoder.md section 12 measured in torch too at this size, not scored here. Relative rms of frame k against frame 0 (the script's number): k=1 0.096, 4 0.196, 8 0.252, 16 0.239 (the earlier fox picture gave 0.307 at k=1: another picture and prompt, so no comparison is made).
+
+**Not shown:** one picture, prompt and seed; no torch reference of this run (the section 12 reference is for another picture); no run with a portrait or a different aspect (the crop was not exercised: the picture was already 640 x 352); the refusals for a missing base model, encoder binary or disk were not provoked (only a missing picture, `--image` with the distilled model, and the base model without `--image`).
