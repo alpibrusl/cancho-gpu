@@ -36,6 +36,8 @@ MODELS = {
     "image": {"qwen-image-2.1-turbo": {"repo": "Qwen/Qwen-Image-2.1-Turbo", "also": None, "note": "8 steps, a prompt, 512x512 to 1024x1024 measured"}},
 }
 BASE_VIDEO = "wan2.2-ti2v-5b-base"
+# Wan2.2's own default negative prompt (its shared_config `sample_neg_prompt`, from memory of the repository, not read here): the model was trained with it; docs/video-image.md section 7
+NEG_OFFICIAL = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
 DEFAULT = {"video": "fastwan2.2-ti2v-5b", "edit": "qwen-image-2.1-turbo", "image": "qwen-image-2.1-turbo"}
 
 
@@ -142,7 +144,7 @@ def video_image(a, info, w, h, lf, frames):
         run(["sh", "-c", "printf '1\\ncheckpoint\\n' | %s %s" % (shlex.quote(SESSION), shlex.quote(os.path.join(work, "enc.session")))], "picture encoder: run (GPU)")
         run([enc, "latent", os.path.join(vae, "config.json"), work, str(h), str(w), cond], "picture encoder: latent")
         run([sys.executable, "tools/wan_text.py", a.prompt, txt], "text encoder (host, torch)")
-        run([sys.executable, "tools/wan_text.py", "", neg], "empty negative text")
+        run([sys.executable, "tools/wan_text.py", NEG_OFFICIAL if a.negative is None else a.negative, neg], "negative text")
         run([sys.executable, "tests/wan_video_gpu.py", out, "--weights", tdir, "--text", txt, "--neg", neg, "--cond", cond, "--base", "--steps", str(a.steps), "--guidance", str(a.guidance),
              "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16), "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)], "base model, %d steps with guidance, and decoder (GPU)" % a.steps)
     open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
@@ -305,7 +307,8 @@ def main():
     v.add_argument("--wdir", default=None, help="where the 10 GB of f16 weight files are kept between runs")
     v.add_argument("--image", help="a picture to continue: the first frame (uses the base model, 30 steps; docs/video-image.md)")
     v.add_argument("--steps", type=int, default=30, help="with --image: Euler steps (default 30)")
-    v.add_argument("--guidance", type=float, default=5.0, help="with --image: classifier-free guidance (default 5; 1 is off)")
+    v.add_argument("--guidance", type=float, default=3.5, help="with --image: classifier-free guidance (default 3.5, measured better than the model's 5 for a clip this short; 1 is off)")
+    v.add_argument("--negative", default=None, help="with --image: the negative prompt (default Wan's own; an empty string for none)")
     v.add_argument("--force", action="store_true", help="go past the measured limits")
     v.set_defaults(f=cmd_video)
     e = sub.add_parser("edit", help="edit an image from an instruction (Qwen-Image-2.1-Turbo)")

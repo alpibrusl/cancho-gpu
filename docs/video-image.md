@@ -39,3 +39,16 @@ Not wired into the studio. No UniPC sampler (Euler is built). **The base model a
 ## 6. In the studio (2026-11-17)
 
 **API only.** `POST /api/jobs` with `"kind":"video"` and `"image":"/absolute/path"` (the same field an edit uses; a path on the server's machine) queues `media video ... --steps N --image PATH -- PROMPT`, so the base model continues the picture. Refused with 422 and a reason: `image` on an image job or not a string path, `frames` below 2, `rewrite` other than `off` (the rewriter has not been measured on this), `steps` on a video without a picture. The rewrite is forced off for these jobs. `studio/check.sh` holds the arguments, six refusals (nothing queued), the job page's parameter list and the OpenAPI text: **413 ok, 0 failed**. **Not done:** the page's form (`studio.cui`) has no field for it yet; **no real job was run through the studio's worker** (the checks use the fake worker; the argument list was only parsed by `media`, which refused the missing picture as it should); `/api/models` still lists only the distilled model (the base one is chosen by `--image`).
+## 7. Why the clip degraded, and what helped (measured 2026-11-17)
+
+**Question:** is the deterioration after about frame 8 the model's, or ours? **Measured:** the same picture, prompt (the running fox), noise (seed 3), 17 frames of 640 x 352, 30 steps, only the guidance and the negative prompt changed (the second text, `neg.npy`; the first is unchanged). Relative rms of frame k against frame 0, as the script prints it, and what the frames look like (**looked at**, frames 0, 4, 8, 12, 16):
+
+| negative | guidance | k=1 | 4 | 8 | 16 | looked at |
+|---|---|---|---|---|---|---|
+| empty (as built until now) | 5 | 0.219 | 0.477 | 0.697 | 1.045 | fox deforms from frame 8, blur and bright artefacts |
+| Wan's own | 5 | 0.284 | 0.498 | 0.764 | 1.143 | worse: white blobs, the fox dissolves |
+| empty | 3.5 | 0.198 | 0.396 | 0.623 | 0.726 | coherent, but the fox's tail and legs bend wrongly by frame 16 |
+| **Wan's own** | **3.5** | 0.220 | 0.396 | 0.592 | 0.595 | **a coherent fox runs to the end**, clean legs and tail |
+| Wan's own | 2.5 | 0.135 | 0.276 | 0.459 | 0.582 | coherent, moves less (it mostly trots in place) |
+
+**Reading:** **the guidance was the main cause** (the model's default 5 over-saturates a short clip); the negative prompt does nothing useful at 5 and tidies the anatomy at 3.5. One picture, one prompt, one seed, so the ranking of 3.5 and 2.5 is a taste for how much motion; the table is what happened, not a law. **Changed:** `media video --image` now defaults to guidance 3.5 and the negative prompt above (`--guidance`, `--negative ""` for none); the end-to-end run of the new defaults gave the same numbers as the experiment (0.220, 0.396, 0.592, 0.595). The negative's text was written from memory of Wan2.2's `shared_config.py`, **not re-read here**; it was not compared with the file. Not tried: guidance schedules, UniPC, longer clips, and other pictures (a different picture may want another guidance).
