@@ -1,0 +1,36 @@
+# `media` in cancho (design, 2026-11-17)
+
+> **Status: slices A and B built: `image` and `edit` run as a cancho program (section 6 has the measured runs); the rest is a plan.** Claims are tagged **[read]** (from the compiler's docs or std at the pinned commit a49ea779), **[measured]** or **[estimate]**. Part of `docs/python-removal.md` phase 2.
+
+## 1. What cancho can and cannot do, from the compiler's documents **[read]** (`docs/processes.md`, `std/process.cho`, `std/dirs.cho`)
+
+* **No environment, no working directory.** A cancho program has no `HOME`, `PATH` or `PWD`; a child's environment is exactly the list it is given. Everything the Python took from the environment is passed on the command line by a shell wrapper (`scripts/media`, a helper script).
+* **No inherited terminal.** A child's streams are `Null`, a pipe or a file; there is no `Inherit`. `std.process.capture_both` reads both streams to the child's end with a bound and a deadline, so **a stage's output appears when the stage ends, not line by line** (a regression from the Python for the two-minute jobs; a copy of its poll loop that relays could fix it).
+* **A child is started by name beneath a directory** (`exec_spawn_under`), and **starts in that directory**; a link as the last component is followed. The authority report says `exec_under`, no path. The stage drivers need the repository root as their working directory, so the program started is `scripts/stage` (a three-line shell script: `cd` to the root, `exec "$CANCHO_MEDIA_PY" "$@"`): the only program `build/media` can start is a file of `scripts/`.
+* **No PNG, zlib or image codec in `std`** (searched). This is why the chain (`--segments`: reads and writes frames), `--image` (resize and crop) and the GIF stay in Python for now (`docs/python-removal.md` phase 3).
+
+## 2. Slice A (built): decisions without effects
+
+`build/media models`, `build/media check image|video ...`: the size, frame and token refusals of `tools/media.py`, in the same words. `tests/media_diff.sh` runs both and compares exit status and message (9 refusal cases, 4 accepted ones worked by hand); authority: no file, no network, no program. In the gate.
+
+## 3. Slice B: `image` and `edit` as a cancho command
+
+`scripts/media` becomes the dispatcher: for `image`, `edit` (without `--rewrite`) and `models` it runs `build/media`; for everything else (`video`, `rewrite`, `doctor`, `edit --rewrite`) it runs `tools/media.py` as before. The wrapper passes what the environment gave: `--root`, `--cwd`, `--home`, `--py`, `--path`, `--cache`, `--pid` (its own, kept by `exec`), `--online`, `--edit-weights`, `--edit-text-weights`.
+
+What `build/media image|edit` does, in order, with the Python's words for each refusal: the Metal session is built; the model is supported; the size (as slice A); the picture(s) exist; the condition area (edit); the Hugging Face snapshot has a `transformer` (a listing of `snapshots/`); the weights directory exists; the output directory is made (a `mkdir -p`); **the GPU lock is the wrapper's, not the program's** (decided while building: the wrapper writes its own pid, which `exec` would keep, into `<cache>/gpu.lock`, refuses when that pid is alive and removes the file at the end, so `tools/media.py` and `scripts/media` exclude each other and a crash leaves a stale pid that nothing honours; a lock inside cancho would need the program's own pid, which cancho cannot read); the stage runs (`scripts/stage tests/t2i_pipeline_gpu.py ...` or `tests/edit_pipeline_gpu.py ...`) with its output relayed after it ends; `prompt.txt`; `done: <path>`.
+
+**Differences accepted, stated:** the lock message has no pid; the stage's output comes at its end; paths are normalised textually (`.` and `..`, not links) where Python's `abspath` is the same; the platform check is "the session binary is there".
+
+## 4. Checks
+
+`tests/media_stage.sh` (in the gate): a temporary tree plays the repository's root, the Hugging Face cache and the weights; the stage is a program that prints its arguments (for Python, `subprocess.run` is replaced by a print, in a one-line `python3 -c`). Six runs (`image`, sized, with weights flags, `edit`, two pictures, three pictures with an area) compare **exit status, the stage's argument list word for word, the `done:` line, `prompt.txt` and the errors**; eleven refusals (bad size, empty prompt, missing weights, unsupported model, missing picture, missing `--also`, area too big, no snapshot, no session) compare message and exit status; a failing stage gives exit 1 and its errors are shown. 51 checks, all equal. **Mutant:** `--resident` renamed in `build/media` fails 6 of them. Real runs: section 6.
+
+## 5. Not in this slice
+
+`video` (the text encoder stage, the base model, the chain: PNG codec first), `edit --rewrite` (a second child and a parse), `doctor`, live relay of stage output.
+
+## 6. Measured on this machine (2026-11-17, M4 Max, the pinned compiler a49ea779)
+
+`scripts/media image "<the fox prompt>" -o DIR --size 512x512 --seed 1` through `build/media`: **27 s of wall clock**, a fox in snow (looked at), the stage's timings as before (language model 4 s, steps 17 s, decoder 1 s); the Python path took 30 s for the same command earlier today. `scripts/media edit fox.png "Make it a snowy night with a full moon." -o DIR --seed 1`: **92 s** (the Python path: 94 s), 1024 x 1024 `edited.png`. The lock file is gone after each run; with a live pid in it a second job is refused (`media: another media job is running (pid N)`, exit 2) and nothing is created. The edited picture was not looked at here (the run shows the plumbing, not the model).
+
+**What is still Python in these two commands:** the stage drivers (`tests/t2i_pipeline_gpu.py`, `tests/edit_pipeline_gpu.py`), started through `scripts/stage` (a shell script). The orchestration (arguments, every refusal, paths, the snapshot lookup, the lock's rules, the report, `prompt.txt`) is cancho. **Authority of `build/media` (`cancho authority`):** `exec_under` (the programs of `scripts/` only), `fs_read("")`, `fs_write("")`, `dir_read`, `dir_write`, pipes and the clock; **no network**.

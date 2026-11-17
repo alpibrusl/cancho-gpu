@@ -1,7 +1,45 @@
 #!/bin/sh
-# cancho-media: see docs/cli.md. Uses this repository's .venv, else the venv of the first image edits, unless CANCHO_MEDIA_PY names another interpreter.
+# cancho-media: see docs/cli.md. `image`, `edit` (without --rewrite) and `models` run build/media (media/media.cho, docs/media-cho.md) when it is built; everything else, and these when it is not, run tools/media.py.
+# CANCHO_MEDIA_IMPL=python forces the Python. The interpreter is this repository's .venv, else the venv of the first image edits, unless CANCHO_MEDIA_PY names another.
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 PY=${CANCHO_MEDIA_PY:-$HERE/.venv/bin/python}
 [ -x "$PY" ] || PY=$HOME/Workspace/alpibrusl/cancho/imgtest/.venv/bin/python
 [ -x "$PY" ] || PY=python3
-exec "$PY" "$(dirname "$0")/../tools/media.py" "$@"
+CACHE=${CANCHO_MEDIA_CACHE:-$HOME/.cache/cancho-media}
+ONLINE=""
+if [ "${1:-}" = "--online" ]; then ONLINE=1; shift; fi
+cho=0
+case "${1:-}" in
+  models) cho=1 ;;
+  image) cho=1 ;;
+  edit) cho=1; for a in "$@"; do [ "$a" = "--rewrite" ] && cho=0; done ;;
+esac
+[ -x "$HERE/build/media" ] || cho=0
+[ "${CANCHO_MEDIA_IMPL:-}" = python ] && cho=0
+if [ $cho = 0 ]; then
+  [ -n "$ONLINE" ] && set -- --online "$@"
+  exec "$PY" "$HERE/tools/media.py" "$@"
+fi
+if [ "$1" = models ]; then exec "$HERE/build/media" models; fi
+# one GPU job at a time: the lock file holds this shell's pid, which tools/media.py reads too
+LOCK=$CACHE/gpu.lock
+mkdir -p "$CACHE"
+if [ -e "$LOCK" ]; then
+  pid=$(cat "$LOCK" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "media: another media job is running (pid $pid): one GPU job at a time" >&2
+    exit 2
+  fi
+fi
+echo $$ >"$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+trap 'exit 130' INT TERM
+for v in DIT_STEP DIT_STATS LANG TMPDIR PATH HOME; do
+  eval "val=\${$v-}"
+  [ -n "$val" ] && set -- --env "$v=$val" "$@"
+done
+[ -n "$ONLINE" ] && set -- --online "$@"
+[ -n "${CANCHO_MEDIA_EDIT_TEXT_WEIGHTS:-}" ] && set -- --edit-text-weights "$CANCHO_MEDIA_EDIT_TEXT_WEIGHTS" "$@"
+[ -n "${CANCHO_MEDIA_EDIT_WEIGHTS:-}" ] && set -- --edit-weights "$CANCHO_MEDIA_EDIT_WEIGHTS" "$@"
+"$HERE/build/media" --root "$HERE" --cwd "$(pwd -P)" --home "$HOME" --py "$PY" --cache "$CACHE" "$@"
+exit $?

@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 C="${CANCHO:-cancho}"
 PY="${PYMEDIA:-scripts/media}"
 mkdir -p build
-$C build media/media.cho --std -o build/media 2>&1 | grep -v "^ld: warning" || true
+$C build media/media.cho media/pathx.cho media/stage.cho studio/files.cho --std -o build/media 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 fail=0
@@ -40,5 +40,8 @@ check "video 640x352 16 rounds up" "$(build/media check video 640x352 16 0)" "$(
 check "video 1x frame"     "$(build/media check video 640x352 1 0)" "ok frames 1 latent 1 tokens 220"
 check "image ok"           "$(build/media check image 1024x1024 "a fox")" ok
 if [ $HAVE_PY = 1 ]; then check "models" "$(build/media models)" "$($PY models)"; fi
-check "no network or files" "$($C authority media/media.cho --std 2>&1 | grep -c -E 'net_|fs_|exec')" 0
+A=$($C authority media/media.cho media/pathx.cho media/stage.cho studio/files.cho --std 2>&1)
+check "authority: no network, no signals" "$(echo "$A" | grep -c -E '^    (the network|signals)$')" 2
+check "authority: programs only beneath a directory" "$(echo "$A" | grep -c -E '^    (exec_under)$')" 1
+check "authority: no exec of a path" "$(echo "$A" | grep -c -E 'exec\(')" 0
 exit $fail

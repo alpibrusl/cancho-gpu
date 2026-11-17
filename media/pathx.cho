@@ -1,0 +1,137 @@
+edition 10;
+
+module pathx;
+
+import std.buffer;
+
+// pathx -- the path work `tools/media.py` gets from os.path and os.makedirs, in cancho (docs/media-cho.md).
+// A cancho program has no working directory, so a relative path is joined to the one the wrapper passes (`--cwd`).
+
+// Drop the last component of the absolute path in `b`.
+fn pop[&h](heap: &!h Heap, b: buffer.Buffer) -> [heap] buffer.Buffer {
+    var at = 0;
+    borrow b as &br in {
+        let all = buffer.bytes(br);
+        var k = 0;
+        while k < len(all) {
+            if int_of(all[k]) == 47 {
+                at = k;
+            }
+            k = k + 1;
+        }
+    }
+    var out = buffer.empty(heap, 64);
+    borrow b as &bs in {
+        out = buffer.append(heap, out, buffer.bytes(bs)[0..at]);
+    }
+    buffer.drop(heap, b);
+    return out;
+}
+
+fn is_dot[&t](c: &t [byte]) -> [] bool {
+    return len(c) == 1 && int_of(c[0]) == 46;
+}
+
+fn is_dotdot[&t](c: &t [byte]) -> [] bool {
+    return len(c) == 2 && int_of(c[0]) == 46 && int_of(c[1]) == 46;
+}
+
+// `text`'s components applied to `out` (an absolute path without a trailing slash, "" for the root).
+fn walk[&h, &t](heap: &!h Heap, out: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    var acc = out;
+    var at = 0;
+    while at <= len(text) {
+        var stop = at;
+        while stop < len(text) && int_of(text[stop]) != 47 {
+            stop = stop + 1;
+        }
+        let comp = text[at..stop];
+        if len(comp) > 0 && is_dot(comp) == false {
+            if is_dotdot(comp) {
+                acc = pop(heap, acc);
+            } else {
+                acc = buffer.append(heap, buffer.push(heap, acc, byte_of(47)), comp);
+            }
+        }
+        at = stop + 1;
+    }
+    return acc;
+}
+
+// `path` made absolute against `cwd` and normalised textually (`.`, `..` and repeated slashes; links are not looked at), as os.path.abspath does.
+pub fn absolute[&h, &c, &t](heap: &!h Heap, cwd: &c [byte], path: &t [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 64);
+    if len(path) == 0 || int_of(path[0]) != 47 {
+        out = walk(heap, out, cwd);
+    }
+    out = walk(heap, out, path);
+    var empty = false;
+    borrow out as &ob in {
+        empty = len(buffer.bytes(ob)) == 0;
+    }
+    if empty {
+        out = buffer.push(heap, out, byte_of(47));
+    }
+    return out;
+}
+
+// `dir` + "/" + `name`.
+pub fn under[&h, &d, &n](heap: &!h Heap, dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/"), name);
+}
+
+// `mkdir -p` of the absolute path `path` (as os.makedirs(exist_ok=True)): 0 or an errno.
+pub fn make_all[&f, &t](fs: &f Fs(""), path: &t [byte]) -> [fs_read(""), dir_write] int {
+    if len(path) < 2 || int_of(path[0]) != 47 {
+        return 22;
+    }
+    var from = 1;
+    var status = 0;
+    while from < len(path) && status == 0 {
+        var stop = from;
+        while stop < len(path) && int_of(path[stop]) != 47 {
+            stop = stop + 1;
+        }
+        let here = path[0..stop];
+        var made = false;
+        match open_dir(fs, here) {
+            DirOpened::Ok(d) => {
+                dir_close(d);
+                made = true;
+            }
+            DirOpened::Failed(e) => {
+            }
+        }
+        if made == false {
+            var cut = stop - 1;
+            while cut > 0 && int_of(path[cut]) != 47 {
+                cut = cut - 1;
+            }
+            var plen = cut;
+            if cut == 0 {
+                plen = 1;
+            }
+            let parent = path[0..plen];
+            match open_dir(fs, parent) {
+                DirOpened::Ok(pd) => {
+                    var parent_dir = pd;
+                    borrow parent_dir as &pr in {
+                        match dir_mkdir(pr, path[cut + 1..stop], 493) {
+                            Done::Ok(n) => {
+                            }
+                            Done::Failed(e) => {
+                                status = e;
+                            }
+                        }
+                    }
+                    dir_close(parent_dir);
+                }
+                DirOpened::Failed(e) => {
+                    status = e;
+                }
+            }
+        }
+        from = stop + 1;
+    }
+    return status;
+}

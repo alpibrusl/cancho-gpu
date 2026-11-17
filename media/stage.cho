@@ -1,0 +1,60 @@
+edition 10;
+
+module stage;
+
+import std.buffer;
+import std.io;
+import std.process;
+
+// stage -- run one stage of a job (docs/media-cho.md section 3): the program `stage` of the directory `sdir` (scripts/), started on a NUL-separated list, its output and its errors read to its end and written
+// to ours when it has ended. The exit status: the child's, 128 + the signal, 124 for the deadline, 125 for more output than the bound, 255 if it did not start.
+
+pub fn add_arg[&h, &t](heap: &!h Heap, list: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    return buffer.push(heap, buffer.append(heap, list, text), byte_of(0));
+}
+
+pub fn run[&i, &h, &x, &y, &c, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    match process.channels_with_errors() {
+        process.ChannelsWithErrors::Failed(er) => {
+            return 255;
+        }
+        process.ChannelsWithErrors::Ok(to_child, child_in, from_child, child_out, from_errors, child_errors) => {
+            match exec_spawn_under(exec, sdir, "stage", args, env, Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
+                Spawned::Failed(er) => {
+                    pipe_close(to_child);
+                    pipe_close(from_child);
+                    pipe_close(from_errors);
+                    return 255;
+                }
+                Spawned::Ok(child) => {
+                    let (out, errs, ran) = process.capture_both(heap, clock, child, to_child, from_child, from_errors, "", 4194304, 4194304, timeout_ms);
+                    borrow out as &ob in {
+                        io.write_all(io, buffer.bytes(ob));
+                    }
+                    borrow errs as &eb in {
+                        io.error_all(io, buffer.bytes(eb));
+                    }
+                    buffer.drop(heap, out);
+                    buffer.drop(heap, errs);
+                    match ran {
+                        process.Ran::Code(n) => {
+                            return n;
+                        }
+                        process.Ran::Signaled(s) => {
+                            return 128 + s;
+                        }
+                        process.Ran::TimedOut => {
+                            return 124;
+                        }
+                        process.Ran::TooMuch => {
+                            return 125;
+                        }
+                        process.Ran::Failed(er) => {
+                            return 255;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
