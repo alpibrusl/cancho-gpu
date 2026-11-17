@@ -120,6 +120,8 @@ def video_image(a, info, w, h, lf, frames):
     base = snapshot(info["repo"])
     tdir = a.weights or snapshot(info["repo"], "transformer")
     enc = os.path.join(ROOT, "build/wan_vae_enc_gpu")
+    if a.weights and not os.path.isfile(os.path.join(a.weights, "config.json")):
+        die("--weights %s has no config.json: it must be the base model's transformer directory" % a.weights)
     if not base or not tdir or not snapshot(info["repo"], "vae"):
         die("the base model is not in the Hugging Face cache: `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (about 30 GB; or pass --weights DIR for its transformer)")
     if not os.path.exists(enc):
