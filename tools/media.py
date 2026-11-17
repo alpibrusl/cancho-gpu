@@ -161,6 +161,12 @@ def video_image(a, info, w, h, lf, frames):
         die("--frames %d: frame 0 is the picture, ask for at least 2 (the model makes 1 + 4k, so 5)" % a.frames)
     if a.steps < 1 or a.guidance < 1:
         die("--steps must be at least 1 and --guidance at least 1 (1 turns guidance off)")
+    if a.segments < 1:
+        die("--segments must be at least 1")
+    if a.segments > 2 and not a.force:
+        die("--segments %d: the third clip of a chain degrades (smeared background, colour fringes; docs/video-chain.md section 4, measured on one picture); two are clean. --force to ask for more" % a.segments)
+    if len(a.then) > a.segments - 1:
+        die("--then given %d times but %d segments need at most %d (the first uses the prompt)" % (len(a.then), a.segments, a.segments - 1))
     base = snapshot(info["repo"])
     tdir = a.weights or snapshot(info["repo"], "transformer")
     enc = os.path.join(ROOT, "build/wan_vae_enc_gpu")
@@ -176,21 +182,88 @@ def video_image(a, info, w, h, lf, frames):
         die("the base model's f16 weight files (10 GB) are written to %s on first use and only %.0f GB are free" % (wdir, free / 1e9))
     out = os.path.abspath(a.output)
     os.makedirs(out, exist_ok=True)
-    work = os.path.join(out, "work")
+    vae = snapshot(info["repo"], "vae")
+    segs = a.segments
+    prompts = [a.prompt] + [t for t in a.then] + [a.prompt] * (segs - 1 - len(a.then))
+    carry, ref, cors = a.image, None, []
+    with Lock():
+        for k in range(segs):
+            sdir = out if segs == 1 else os.path.join(out, "seg%d" % (k + 1))
+            os.makedirs(sdir, exist_ok=True)
+            if segs > 1:
+                print("== segment %d of %d (%d frames, seed %d)" % (k + 1, segs, frames, a.seed + k), flush=True)
+            video_segment(a, w, h, lf, sdir, carry, prompts[k], a.seed + k, tdir, vae, enc, wdir)
+            if segs == 1:
+                break
+            fs = sorted(glob.glob(os.path.join(sdir, "frames", "f*.png")))
+            if ref is None:  # the first segment's own first frame is the picture as the model sees it: the colour reference of the whole video
+                ref = frame_stats(fs[0])
+            cor = ramp_correct(fs, ref, os.path.join(sdir, "corrected"), not a.no_correct)
+            cors += cor if k == 0 else cor[1:]
+            carry = cor[-1]  # the last frame is the clean one (docs/video-chain.md section 5)
+    if segs == 1:
+        open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
+    else:
+        join_segments(a, out, cors, prompts)
+    mp4_and_done(a, out)
+
+
+def video_segment(a, w, h, lf, sdir, image, prompt, seed, tdir, vae, enc, wdir):
+    """One clip from a picture (docs/video-image.md); the GPU lock is the caller's."""
+    work = os.path.join(sdir, "work")
     os.makedirs(work, exist_ok=True)
     pic, cond, txt, neg = (os.path.join(work, n) for n in ("picture.f32", "cond.f32", "text.npy", "neg.npy"))
-    vae = snapshot(info["repo"], "vae")
-    with Lock():
-        picture_f32(a.image, w, h, pic)
-        run([enc, "prepare", os.path.join(vae, "diffusion_pytorch_model.safetensors"), work, ROOT, pic, str(h), str(w)], "picture encoder: prepare")
-        run(["sh", "-c", "printf '1\\ncheckpoint\\n' | %s %s" % (shlex.quote(SESSION), shlex.quote(os.path.join(work, "enc.session")))], "picture encoder: run (GPU)")
-        run([enc, "latent", os.path.join(vae, "config.json"), work, str(h), str(w), cond], "picture encoder: latent")
-        run([sys.executable, "tools/wan_text.py", a.prompt, txt], "text encoder (host, torch)")
-        run([sys.executable, "tools/wan_text.py", NEG_OFFICIAL if a.negative is None else a.negative, neg], "negative text")
-        run([sys.executable, "tests/wan_video_gpu.py", out, "--weights", tdir, "--text", txt, "--neg", neg, "--cond", cond, "--base", "--steps", str(a.steps), "--guidance", str(a.guidance),
-             "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16), "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)], "base model, %d steps with guidance, and decoder (GPU)" % a.steps)
-    open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
-    mp4_and_done(a, out)
+    picture_f32(image, w, h, pic)
+    run([enc, "prepare", os.path.join(vae, "diffusion_pytorch_model.safetensors"), work, ROOT, pic, str(h), str(w)], "picture encoder: prepare")
+    run(["sh", "-c", "printf '1\\ncheckpoint\\n' | %s %s" % (shlex.quote(SESSION), shlex.quote(os.path.join(work, "enc.session")))], "picture encoder: run (GPU)")
+    run([enc, "latent", os.path.join(vae, "config.json"), work, str(h), str(w), cond], "picture encoder: latent")
+    run([sys.executable, "tools/wan_text.py", prompt, txt], "text encoder (host, torch)")
+    run([sys.executable, "tools/wan_text.py", NEG_OFFICIAL if a.negative is None else a.negative, neg], "negative text")
+    run([sys.executable, "tests/wan_video_gpu.py", sdir, "--weights", tdir, "--text", txt, "--neg", neg, "--cond", cond, "--base", "--steps", str(a.steps), "--guidance", str(a.guidance),
+         "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16), "--seed", str(seed), "--wdir", wdir, "--fps", str(a.fps)], "base model, %d steps with guidance, and decoder (GPU)" % a.steps)
+
+
+def frame_stats(path):
+    """Per-channel mean and standard deviation of a picture (the colour reference of a chain)."""
+    from PIL import Image
+    import numpy as np
+    a = np.asarray(Image.open(path).convert("RGB"), dtype=float).reshape(-1, 3)
+    return a.mean(0), a.std(0)
+
+
+def ramp_correct(frames, ref, dst, on):
+    """The ramped colour correction of docs/video-chain.md: frame j of n has its per-channel mean and spread moved j/(n-1) of the way to the reference's, so the first frame (the previous segment's last,
+    already matched) is untouched and the last is fully matched. Writes PNGs into `dst` and returns their paths; with `on` false it only returns the segment's own frames."""
+    if not on:
+        return list(frames)
+    from PIL import Image
+    import numpy as np
+    os.makedirs(dst, exist_ok=True)
+    rm, rs = ref
+    out = []
+    for j, f in enumerate(frames):
+        w = j / (len(frames) - 1)
+        a = np.asarray(Image.open(f).convert("RGB"), dtype=float)
+        m, sd = a.reshape(-1, 3).mean(0), a.reshape(-1, 3).std(0)
+        o = (a - m) / (sd + 1e-6) * ((1 - w) * sd + w * rs) + ((1 - w) * m + w * rm)
+        p = os.path.join(dst, os.path.basename(f))
+        Image.fromarray(np.clip(o, 0, 255).astype(np.uint8)).save(p)
+        out.append(p)
+    return out
+
+
+def join_segments(a, out, frames, prompts):
+    """The chain's frames as frames/f000.png ... , video.gif and prompt.txt (one prompt a line) in `out`."""
+    from PIL import Image
+    os.makedirs(os.path.join(out, "frames"), exist_ok=True)
+    ims = []
+    for i, f in enumerate(frames):
+        im = Image.open(f).convert("RGB")
+        im.save(os.path.join(out, "frames", "f%03d.png" % i))
+        ims.append(im)
+    ims[0].save(os.path.join(out, "video.gif"), save_all=True, append_images=ims[1:], duration=int(1000 / a.fps), loop=0)
+    open(os.path.join(out, "prompt.txt"), "w").write("\n".join(prompts) + "\n")
+    print("joined %d segments: %d frames" % (len(prompts), len(frames)))
 
 
 def mp4_and_done(a, out):
@@ -202,6 +275,8 @@ def mp4_and_done(a, out):
 
 
 def cmd_video(a):
+    if (a.segments != 1 or a.then or a.no_correct) and not a.image:
+        die("--segments, --then and --no-correct are for a video from a picture (--image): they chain clips (docs/video-chain.md)")
     if a.rewrite and a.image:
         die("--rewrite is not available for a video from a picture: the rewriter has no template for it (not measured)")
     need_gpu()
@@ -364,6 +439,9 @@ def main():
     v.add_argument("--image", help="a picture to continue: the first frame (uses the base model, 30 steps; docs/video-image.md)")
     v.add_argument("--steps", type=int, default=30, help="with --image: Euler steps (default 30)")
     v.add_argument("--guidance", type=float, default=3.5, help="with --image: classifier-free guidance (default 3.5, measured better than the model's 5 for a clip this short; 1 is off)")
+    v.add_argument("--segments", type=int, default=1, help="with --image: chain this many clips, each starting from the previous one's last frame (default 1; two are clean, the third degrades: docs/video-chain.md); each is --frames long, the joined video has frames + (segments - 1) (frames - 1)")
+    v.add_argument("--then", action="append", default=[], metavar="PROMPT", help="with --segments: the prompt of the next clip (repeat for more; the default is the first prompt again)")
+    v.add_argument("--no-correct", action="store_true", help="with --segments: no colour correction toward the first picture (the colours drift darker and more saturated along a chain)")
     v.add_argument("--negative", default=None, help="with --image: the negative prompt (default Wan's own; an empty string for none)")
     v.add_argument("--force", action="store_true", help="go past the measured limits")
     v.add_argument("--rewrite", action="store_true", help="first have a local model (via Ollama) rewrite the prompt as a text-to-video prompt (not with --image); both are printed, the original is kept in prompt.orig.txt (docs/studio-rewrite.md)")
