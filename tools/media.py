@@ -5,7 +5,7 @@
     scripts/media video "PROMPT" --image PICTURE -o DIR   (the base model continues the picture: docs/video-image.md)
     scripts/media edit  IMAGE "INSTRUCTION" -o DIR [--seed S] [--steps N]
     scripts/media image "PROMPT" -o DIR [--size WxH] [--seed N] [--steps N]
-    scripts/media rewrite {video|edit} "PROMPT" [--image PICTURE]   (only the prompt rewriter, no GPU: what `--rewrite` would send)
+    scripts/media rewrite {video|edit} "PROMPT" [--image PICTURE [--also PICTURE2]]   (only the prompt rewriter, no GPU: what `--rewrite` would send)
     scripts/media models                       (the supported models per task; `--model NAME` on each task)
     scripts/media doctor                       (what is installed and what is missing)
 
@@ -101,15 +101,15 @@ def run(cmd, label):
     print("== %s: %.0f s" % (label, time.time() - t0), flush=True)
 
 
-def rewrite_prompt(kind, prompt, picture, model, seconds=600):
+def rewrite_prompt(kind, prompt, picture, model, seconds=600, picture2=None):
     """The prompt rewritten by the local model (docs/studio-rewrite.md), or the original with the reason it was not (the layer fails open, D4). Prints both. A missing binary is a refusal: the person asked for it."""
     if not os.path.isfile(REWRITE_CLI):
         die("--rewrite needs build/rewrite_cli: `cancho build studio/rewrite_cli.cho studio/rewrite.cho studio/files.cho --std -o build/rewrite_cli`")
-    system = os.path.join(REWRITE_PROMPTS, kind + ".txt")
+    system = os.path.join(REWRITE_PROMPTS, ("edit2" if picture2 else kind) + ".txt")
     if not os.path.isfile(system):
         die("no system prompt for %s: %s" % (kind, system))
     pic = os.path.abspath(picture) if picture else "-"  # the rewriter's file reads want absolute paths
-    r = subprocess.run([REWRITE_CLI, "ask", model, system, prompt, pic, str(seconds)], cwd=ROOT, capture_output=True, text=True, timeout=seconds + 60)
+    r = subprocess.run([REWRITE_CLI, "ask", model, system, prompt, pic, str(seconds)] + ([os.path.abspath(picture2)] if picture2 else []), cwd=ROOT, capture_output=True, text=True, timeout=seconds + 60)
     lines = r.stdout.split("\n")
     head = lines[0] if lines else ""
     if r.returncode != 0 or len(lines) < 2 or not lines[1].strip():
@@ -126,9 +126,15 @@ def cmd_rewrite(a):
         die("there is no rewriter template for a video from a picture (not measured); --image is for `rewrite edit`")
     if a.image and not os.path.isfile(a.image):
         die("no such image: " + a.image)
+    if a.also and a.kind != "edit":
+        die("--also is for `rewrite edit`")
+    if len(a.also) > 1:
+        die("the rewriter reads at most two pictures (image1 and --also once): the two-picture template is the one measured")
+    if a.also and not os.path.isfile(a.also[0]):
+        die("no such image: " + a.also[0])
     if not a.prompt.strip():
         die("the prompt is empty")
-    new = rewrite_prompt(a.kind, a.prompt, a.image, a.rewrite_model)
+    new = rewrite_prompt(a.kind, a.prompt, a.image, a.rewrite_model, picture2=a.also[0] if a.also else None)
     print(new)
     sys.exit(0 if new != a.prompt else 1)
 
@@ -245,8 +251,8 @@ def cmd_video(a):
 
 
 def cmd_edit(a):
-    if a.rewrite and a.also:
-        die("--rewrite is not available with --also: the rewriter reads one picture here (the two-picture template is not wired in)")
+    if a.rewrite and len(a.also) > 1:
+        die("--rewrite reads at most two pictures (the image and one --also): the two-picture template is the one measured")
     need_gpu()
     model, info = pick("edit", a.model)
     if not os.path.isfile(a.image):
@@ -269,7 +275,7 @@ def cmd_edit(a):
     orig = a.instruction
     with Lock():
         if a.rewrite:
-            a.instruction = rewrite_prompt("edit", a.instruction, a.image, a.rewrite_model)
+            a.instruction = rewrite_prompt("edit", a.instruction, a.image, a.rewrite_model, picture2=a.also[0] if a.also else None)
         run([sys.executable, "tests/edit_pipeline_gpu.py", os.path.abspath(a.image), os.path.join(out, "work"), "--prompt", a.instruction, "--seed", str(a.seed), "--steps", str(a.steps),
              "--weights", wd, "--text-weights", tw, "--out", os.path.join(out, "edited.png"), "--resident"]
             + sum((["--also", os.path.abspath(x)] for x in a.also), []) + (["--condition-area", str(area)] if a.also else []), "image edit (GPU, five stages)")
@@ -372,7 +378,7 @@ def main():
     e.add_argument("--model", help="model name (`media models`; default %s)" % DEFAULT["edit"])
     e.add_argument("--seed", type=int, default=0)
     e.add_argument("--steps", type=int, default=8)
-    e.add_argument("--rewrite", action="store_true", help="first have a local model (via Ollama; it sees the picture) rewrite the instruction (not with --also); both are printed, the original is kept in prompt.orig.txt (docs/studio-rewrite.md)")
+    e.add_argument("--rewrite", action="store_true", help="first have a local model (via Ollama; it sees the picture) rewrite the instruction (with --also, at most one: it reads both); both are printed, the original is kept in prompt.orig.txt (docs/studio-rewrite.md)")
     e.add_argument("--rewrite-model", default=REWRITER, help="the Ollama model that rewrites (default %s)" % REWRITER)
 
     e.add_argument("--weights", help="head-permuted f16 transformer blocks (env CANCHO_MEDIA_EDIT_WEIGHTS)")
@@ -392,6 +398,7 @@ def main():
     r.add_argument("kind", choices=["video", "edit"])
     r.add_argument("prompt")
     r.add_argument("--image", help="for edit: the picture the model reads")
+    r.add_argument("--also", action="append", default=[], metavar="IMAGE", help="for edit: the second picture (image2); at most one")
     r.add_argument("--rewrite-model", default=REWRITER, help="the Ollama model (default %s)" % REWRITER)
     r.set_defaults(f=cmd_rewrite)
     sub.add_parser("models", help="list the supported models per task").set_defaults(f=cmd_models)

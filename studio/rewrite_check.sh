@@ -139,6 +139,38 @@ job "$D" 4 video -o "$D/out/4" -- "a fox"; echo on > "$D/4.rewrite"; "$W" "$T/me
 check "system prompt: a missing file is not rewritten, and the job runs" "$(note "$D" 4) $(cat "$D/4.state")" "studio: prompt not rewritten: no system prompt for this kind of job done"
 unstub
 
+# 10b. two pictures (the command-line rewriter, `media --rewrite` with `--also`): a test build of rewrite_cli with the port replaced, against the stand-in
+sed -e 's/11434/18160/g' studio/rewrite_cli.cho > "$T/src/rewrite_cli.cho"
+build "$T/cli" "$T/src/rewrite_cli.cho" "$T/src/rewrite.cho" "$T/src/files.cho"
+printf 'AAA' > "$T/a.bin"; printf 'BBB' > "$T/b.bin"; printf 'sys' > "$T/sys.txt"
+two() { "$T/cli" ask m "$T/sys.txt" "p" "$1" 5 "$2"; }
+stub echo
+two "$T/a.bin" "$T/b.bin" > "$T/o2.txt" || true
+check "two pictures: the request carries both, in order (image1, image2)" "$(grep -o '"images":\[[^]]*\]' "$T/last.json")" '"images":["QUFB","QkJC"]'
+check "two pictures: the answer is the prompt" "$(sed -n 1p "$T/o2.txt")" "code 0 ok"
+"$T/cli" ask m "$T/sys.txt" "p" "$T/a.bin" 5 > /dev/null || true
+check "one picture: the request carries one" "$(grep -o '"images":\[[^]]*\]' "$T/last.json")" '"images":["QUFB"]'
+out=$(two "$T/a.bin" "$T/nosuch" 2>&1) && st=0 || st=$?
+check "two pictures: an unreadable second picture is refused (102)" "$st" 102
+out=$(two - "$T/b.bin" 2>&1) && st=0 || st=$?
+check "two pictures: a second picture without a first is refused (102)" "$st" 102
+unstub
+# the mutant: the second picture is dropped
+mkdir -p "$T/m2"; cp "$T/src/rewrite.cho" "$T/src/rewrite_cli.cho" "$T/src/files.cho" "$T/m2/"
+python3 - "$T/m2/rewrite.cho" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+a = "        if len(picture2) > 0 {\n            w = json.put_string(heap, w, picture2);"
+assert a in s
+open(p, "w").write(s.replace(a, "        if false {\n            w = json.put_string(heap, w, picture2);", 1))
+PY
+build "$T/m2/cli" "$T/m2/rewrite_cli.cho" "$T/m2/rewrite.cho" "$T/m2/files.cho"
+stub echo
+"$T/m2/cli" ask m "$T/sys.txt" "p" "$T/a.bin" 5 "$T/b.bin" > /dev/null || true
+if [ "$(grep -o '"images":\[[^]]*\]' "$T/last.json")" != '"images":["QUFB","QkJC"]' ]; then echo "ok   mutant the second picture is dropped: killed"; else echo "FAIL mutant the second picture is dropped: survived"; fail=1; fi
+unstub
+
 # 11. mutants of the step, each of which one check above must refuse
 mutant() { # name file sed-expression check-description
   mkdir -p "$T/m"; rm -f "$T/m"/*
