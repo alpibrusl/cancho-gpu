@@ -21,6 +21,7 @@ import sets;
 //     <site-dir> holds `index.html` and `app.js`, the page `cancho-ui build studio/ui/studio.cui --page -o <site-dir>` wrote; without it `GET /` is a stub.
 //
 //     POST /api/jobs      {kind, prompt, ...} -> 202 {"id":N}: `<data>/N.argv` and a line in `<data>/queue` (docs/studio.md); `studio_worker` runs it
+//     GET  /api/jobs      {"running":R,"queued":Q,"jobs":[{id,state,kind,prompt}, ...]} the 50 newest
 //     GET  /api/jobs/N    {"id":N,"state":"queued|running|done|failed C"}
 //
 //     GET /jobs/N        the job's page: state, the result when done, the log (HTML the server writes)
@@ -328,6 +329,12 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     out = server.reply_as(heap, out, st, "application/json", buffer.bytes(ab), keep, "");
                                 }
                                 buffer.drop(heap, answer);
+                            } else if bytes.equal(path, "/api/jobs") && bytes.equal(method, "GET") {
+                                let list = results.api_list(heap, fs, dir);
+                                borrow list as &lb in {
+                                    out = server.reply_as(heap, out, 200, "application/json", buffer.bytes(lb), keep, "");
+                                }
+                                buffer.drop(heap, list);
                             } else if bytes.starts_with(path, "/api/jobs/") && bytes.equal(method, "GET") {
                                 let (st, answer) = jobs.state_of(heap, fs, dir, path[10..len(path)]);
                                 borrow answer as &ab in {

@@ -121,6 +121,14 @@
       }
     },
     "/api/jobs": {
+      "get": {
+        "summary": "The 50 newest jobs, newest first, with the counts the header shows: running and queued among the 200 newest. `kind` is the first entry of the job's argument list, `prompt` the last (as written; a control character is a space).",
+        "responses": {
+          "200": { "description": "The list.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobList" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
       "post": {
         "summary": "Queue a job: writes <data>/N.argv and a line in <data>/queue; the worker runs it.",
         "requestBody": {
@@ -269,6 +277,15 @@
         }
       },
       "Queued": { "type": "object", "required": ["id"], "properties": { "id": { "type": "integer", "minimum": 1 }, "pair": { "type": "integer", "minimum": 1 }, "ids": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "With variations: every job of the set, in order." }, "set": { "type": "string", "description": "With variations: the path of the set's page." } } },
+      "JobList": {
+        "type": "object",
+        "required": ["running", "queued", "jobs"],
+        "properties": {
+          "running": { "type": "integer" },
+          "queued": { "type": "integer" },
+          "jobs": { "type": "array", "maxItems": 50, "items": { "type": "object", "required": ["id", "state", "kind", "prompt"], "properties": { "id": { "type": "integer" }, "state": { "type": "string", "pattern": "^(queued|running|done|failed [0-9]+)$" }, "kind": { "type": "string" }, "prompt": { "type": "string" } } } }
+        }
+      },
       "JobState": {
         "type": "object",
         "required": ["id", "state"],
