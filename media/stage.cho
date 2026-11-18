@@ -6,55 +6,62 @@ import std.buffer;
 import std.io;
 import std.process;
 
-// stage -- run one stage of a job (docs/media-cho.md section 3): the program `stage` of the directory `sdir` (scripts/), started on a NUL-separated list, its output and its errors read to its end and written
-// to ours when it has ended. The exit status: the child's, 128 + the signal, 124 for the deadline, 125 for more output than the bound, 255 if it did not start.
+// stage -- run one program of a job (docs/media-cho.md section 3): the program `name` of the directory `sdir` (scripts/ for a stage, build/ for the rewriter), started on a NUL-separated list, its output and its
+// errors read to its end with a bound and a deadline. The exit status: the child's, 128 + the signal, 124 for the deadline, 125 for more output than the bound, 255 if it did not start.
 
 pub fn add_arg[&h, &t](heap: &!h Heap, list: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
     return buffer.push(heap, buffer.append(heap, list, text), byte_of(0));
 }
 
-pub fn run[&i, &h, &x, &y, &c, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+// The status, what the child wrote to its output, and to its errors (both buffers are the caller's to drop).
+pub fn capture[&h, &x, &y, &c, &n, &a, &e](heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, name: &n [byte], args: &a [byte], env: &e [byte], timeout_ms: int) -> [heap, exec_under, clock, poll] (int, buffer.Buffer, buffer.Buffer) {
     match process.channels_with_errors() {
         process.ChannelsWithErrors::Failed(er) => {
-            return 255;
+            return (255, buffer.empty(heap, 8), buffer.empty(heap, 8));
         }
         process.ChannelsWithErrors::Ok(to_child, child_in, from_child, child_out, from_errors, child_errors) => {
-            match exec_spawn_under(exec, sdir, "stage", args, env, Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
+            match exec_spawn_under(exec, sdir, name, args, env, Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
                 Spawned::Failed(er) => {
                     pipe_close(to_child);
                     pipe_close(from_child);
                     pipe_close(from_errors);
-                    return 255;
+                    return (255, buffer.empty(heap, 8), buffer.empty(heap, 8));
                 }
                 Spawned::Ok(child) => {
                     let (out, errs, ran) = process.capture_both(heap, clock, child, to_child, from_child, from_errors, "", 4194304, 4194304, timeout_ms);
-                    borrow out as &ob in {
-                        io.write_all(io, buffer.bytes(ob));
-                    }
-                    borrow errs as &eb in {
-                        io.error_all(io, buffer.bytes(eb));
-                    }
-                    buffer.drop(heap, out);
-                    buffer.drop(heap, errs);
                     match ran {
-                        process.Ran::Code(n) => {
-                            return n;
+                        process.Ran::Code(n2) => {
+                            return (n2, out, errs);
                         }
                         process.Ran::Signaled(s) => {
-                            return 128 + s;
+                            return (128 + s, out, errs);
                         }
                         process.Ran::TimedOut => {
-                            return 124;
+                            return (124, out, errs);
                         }
                         process.Ran::TooMuch => {
-                            return 125;
+                            return (125, out, errs);
                         }
                         process.Ran::Failed(er) => {
-                            return 255;
+                            return (255, out, errs);
                         }
                     }
                 }
             }
         }
     }
+}
+
+// `capture` of the program `stage`, its output and errors written to ours when it has ended.
+pub fn run[&i, &h, &x, &y, &c, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    let (code, out, errs) = capture(heap, exec, sdir, clock, "stage", args, env, timeout_ms);
+    borrow out as &ob in {
+        io.write_all(io, buffer.bytes(ob));
+    }
+    borrow errs as &eb in {
+        io.error_all(io, buffer.bytes(eb));
+    }
+    buffer.drop(heap, out);
+    buffer.drop(heap, errs);
+    return code;
 }

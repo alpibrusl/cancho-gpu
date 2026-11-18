@@ -5,6 +5,7 @@ import std.dirs;
 import std.io;
 import files;
 import pathx;
+import rewriter;
 import stage;
 
 // media -- the command line of tools/media.py, in cancho (docs/media-cho.md). Slice A: the parts that decide and do not run anything.
@@ -245,6 +246,18 @@ struct Ctx {
     edit_text_weights: &static [byte],
 }
 
+fn rewriter_blank[&t](text: &t [byte]) -> [] bool {
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
 fn lower_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] buffer.Buffer {
     var out = buffer.empty(heap, 32);
     var k = 0;
@@ -392,8 +405,67 @@ fn weights_of[&h, &zc](heap: &!h Heap, ctx: &zc Ctx, flag: &static [byte], from_
     return pathx.under(heap, ctx.cache, name);
 }
 
+// The prompt through the rewriter (tools/media.py rewrite_prompt): (0, the new text), or (2, a copy) after a refusal; the rewriter failing is not a refusal, the original comes back with the reason on stderr.
+fn rewrite_text[&i, &h, &f, &x, &c, &zc, &p, &q, &r, &m](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), clock: &c Clock, ctx: &zc Ctx, kind: &static [byte], prompt: &p [byte], pic: &q [byte], pic2: &r [byte], model: &m [byte]) -> [err_write, heap, fs_read(""), exec_under, clock, poll] (int, buffer.Buffer) {
+    var answer = buffer.append(heap, buffer.empty(heap, 64), prompt);
+    let cli = pathx.under(heap, ctx.root, "build/rewrite_cli");
+    var there = false;
+    borrow cli as &cb in {
+        there = is_file(fs, buffer.bytes(cb));
+    }
+    buffer.drop(heap, cli);
+    if there == false {
+        return (refuse_text(io, "--rewrite needs build/rewrite_cli: `cancho build studio/rewrite_cli.cho studio/rewrite.cho studio/files.cho --std -o build/rewrite_cli`"), answer);
+    }
+    var sysp = buffer.append(heap, buffer.empty(heap, 96), ctx.root);
+    sysp = buffer.append(heap, sysp, "/studio/rewrite/");
+    if len(pic2) > 0 {
+        sysp = buffer.append(heap, sysp, "edit2");
+    } else {
+        sysp = buffer.append(heap, sysp, kind);
+    }
+    sysp = buffer.append(heap, sysp, ".txt");
+    var status = 0;
+    var have = false;
+    borrow sysp as &sb in {
+        have = is_file(fs, buffer.bytes(sb));
+    }
+    if have == false {
+        var m2 = buffer.append(heap, buffer.empty(heap, 128), "no system prompt for ");
+        m2 = buffer.append(heap, m2, kind);
+        m2 = buffer.append(heap, m2, ": ");
+        borrow sysp as &sb2 in {
+            m2 = buffer.append(heap, m2, buffer.bytes(sb2));
+        }
+        buffer.drop(heap, sysp);
+        return (refuse_buf(io, heap, m2), answer);
+    }
+    let bpath = pathx.under(heap, ctx.root, "build");
+    borrow bpath as &bp in {
+        match open_dir(fs, buffer.bytes(bp)) {
+            DirOpened::Failed(e) => {
+                status = refuse_text(io, "build/ is not at the --root given");
+            }
+            DirOpened::Ok(d) => {
+                var bd = d;
+                borrow bd as &bdr in {
+                    borrow sysp as &sb3 in {
+                        let nb = rewriter.ask(io, heap, exec, bdr, clock, buffer.bytes(sb3), model, prompt, pic, pic2);
+                        buffer.drop(heap, answer);
+                        answer = nb;
+                    }
+                }
+                dir_close(bd);
+            }
+        }
+    }
+    buffer.drop(heap, bpath);
+    buffer.drop(heap, sysp);
+    return (status, answer);
+}
+
 // Run the stage and write prompt.txt: the end both commands share. `list` is the stage's argument list (NUL-separated), `out` the output directory.
-fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte], out: &t [byte], text: &p [byte], result: &r [byte]) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
+fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p, &o](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte], out: &t [byte], text: &p [byte], orig: &o [byte], result: &r [byte]) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
     io.write_all(io, "== ");
     io.write_all(io, label);
     io.write_all(io, "\n");
@@ -426,6 +498,18 @@ fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p](io: &!i Io, heap: &!h
     }
     buffer.drop(heap, pp);
     buffer.drop(heap, pt);
+    if is_text(text, orig) == false {
+        let po = pathx.under(heap, out, "prompt.orig.txt");
+        var ot = buffer.append(heap, buffer.empty(heap, 64), orig);
+        ot = buffer.push(heap, ot, byte_of(10));
+        borrow po as &pob in {
+            borrow ot as &otb in {
+                files.write_all(fs, buffer.bytes(pob), buffer.bytes(otb));
+            }
+        }
+        buffer.drop(heap, po);
+        buffer.drop(heap, ot);
+    }
     io.write_all(io, "done: ");
     io.write_all(io, result);
     io.write_all(io, "\n");
@@ -563,7 +647,7 @@ fn cmd_image[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs
                 list = put_arg(heap, list, "--resident");
                 borrow list as &lb in {
                     borrow png as &pg2 in {
-                        status = start_stage(io, heap, fs, exec, sdir, clock, "text to image (GPU, three stages)", buffer.bytes(lb), env, buffer.bytes(ob), prompt, buffer.bytes(pg2));
+                        status = start_stage(io, heap, fs, exec, sdir, clock, "text to image (GPU, three stages)", buffer.bytes(lb), env, buffer.bytes(ob), prompt, prompt, buffer.bytes(pg2));
                     }
                 }
                 buffer.drop(heap, list);
@@ -591,6 +675,8 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
     var tweights = "";
     var also = buffer.empty(heap, 64);
     var n_also = 0;
+    var rewrite = false;
+    var rewrite_model = "qwen3.8:27b-mlx";
     var k = from;
     let n = arg_count(args);
     while k < n {
@@ -602,6 +688,15 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
                 return bad_value(io, "-o/--output");
             }
             output = arg(args, k);
+        } else if is_text(t, "--rewrite") {
+            rewrite = true;
+        } else if is_text(t, "--rewrite-model") {
+            k = k + 1;
+            if k >= n {
+                buffer.drop(heap, also);
+                return bad_value(io, "--rewrite-model");
+            }
+            rewrite_model = arg(args, k);
         } else if is_text(t, "--also") {
             k = k + 1;
             if k >= n {
@@ -669,6 +764,10 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
         buffer.drop(heap, also);
         io.error_all(io, "media: the following arguments are required: image, instruction, -o/--output\n");
         return 2;
+    }
+    if rewrite && n_also > 1 {
+        buffer.drop(heap, also);
+        return refuse_text(io, "--rewrite reads at most two pictures (the image and one --also): the two-picture template is the one measured");
     }
     var status = session_and_model(io, heap, fs, ctx, "edit", model);
     if status == 0 {
@@ -741,6 +840,31 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
                 let work = pathx.under(heap, buffer.bytes(ob), "work");
                 let png = pathx.under(heap, buffer.bytes(ob), "edited.png");
                 let img2 = pathx.absolute(heap, ctx.cwd, image);
+                var final = buffer.append(heap, buffer.empty(heap, 64), instruction);
+                var rewrite_status = 0;
+                if rewrite {
+                    var first_also = buffer.empty(heap, 8);
+                    borrow also as &fa in {
+                        let all3 = buffer.bytes(fa);
+                        var e3 = 0;
+                        while e3 < len(all3) && int_of(all3[e3]) != 0 {
+                            e3 = e3 + 1;
+                        }
+                        if e3 > 0 {
+                            buffer.drop(heap, first_also);
+                            first_also = pathx.absolute(heap, ctx.cwd, all3[0..e3]);
+                        }
+                    }
+                    borrow img2 as &im3 in {
+                        borrow first_also as &fb in {
+                            let (rs, nt) = rewrite_text(io, heap, fs, exec, clock, ctx, "edit", instruction, buffer.bytes(im3), buffer.bytes(fb), rewrite_model);
+                            rewrite_status = rs;
+                            buffer.drop(heap, final);
+                            final = nt;
+                        }
+                    }
+                    buffer.drop(heap, first_also);
+                }
                 var list = put_arg(heap, buffer.empty(heap, 256), "tests/edit_pipeline_gpu.py");
                 borrow img2 as &i2 in {
                     list = put_arg(heap, list, buffer.bytes(i2));
@@ -749,7 +873,9 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
                     list = put_arg(heap, list, buffer.bytes(wk));
                 }
                 list = put_arg(heap, list, "--prompt");
-                list = put_arg(heap, list, instruction);
+                borrow final as &fn1 in {
+                    list = put_arg(heap, list, buffer.bytes(fn1));
+                }
                 list = put_arg(heap, list, "--seed");
                 list = put_num(heap, list, num(seed));
                 list = put_arg(heap, list, "--steps");
@@ -788,11 +914,18 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
                     list = put_arg(heap, list, "--condition-area");
                     list = put_num(heap, list, area);
                 }
-                borrow list as &lb in {
-                    borrow png as &pg2 in {
-                        status = start_stage(io, heap, fs, exec, sdir, clock, "image edit (GPU, five stages)", buffer.bytes(lb), env, buffer.bytes(ob), instruction, buffer.bytes(pg2));
+                if rewrite_status != 0 {
+                    status = rewrite_status;
+                } else {
+                    borrow list as &lb in {
+                        borrow png as &pg2 in {
+                            borrow final as &fn2 in {
+                                status = start_stage(io, heap, fs, exec, sdir, clock, "image edit (GPU, five stages)", buffer.bytes(lb), env, buffer.bytes(ob), buffer.bytes(fn2), instruction, buffer.bytes(pg2));
+                            }
+                        }
                     }
                 }
+                buffer.drop(heap, final);
                 buffer.drop(heap, list);
                 buffer.drop(heap, work);
                 buffer.drop(heap, png);
@@ -804,6 +937,135 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
     buffer.drop(heap, wd);
     buffer.drop(heap, tw);
     buffer.drop(heap, also);
+    return status;
+}
+
+// `media rewrite {video|edit} PROMPT [--image P] [--also P] [--rewrite-model M]`: only the rewriter, no GPU (tools/media.py cmd_rewrite). Prints the new prompt; exit 0 when it changed, 1 when not.
+fn cmd_rewrite[&i, &h, &f, &x, &c, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), clock: &c Clock, ctx: &zc Ctx, args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), exec_under, clock, poll] int {
+    var kind = "";
+    var prompt = "";
+    var positional = 0;
+    var image = "";
+    var also = "";
+    var n_also = 0;
+    var model = "qwen3.8:27b-mlx";
+    var k = from;
+    let n = arg_count(args);
+    while k < n {
+        let t = arg(args, k);
+        if is_text(t, "--image") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--image");
+            }
+            image = arg(args, k);
+        } else if is_text(t, "--also") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--also");
+            }
+            if n_also == 0 {
+                also = arg(args, k);
+            }
+            n_also = n_also + 1;
+        } else if is_text(t, "--rewrite-model") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--rewrite-model");
+            }
+            model = arg(args, k);
+        } else if positional == 0 {
+            kind = t;
+            positional = 1;
+        } else if positional == 1 {
+            prompt = t;
+            positional = 2;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    if positional < 2 || is_text(kind, "video") == false && is_text(kind, "edit") == false {
+        io.error_all(io, "usage: media rewrite {video|edit} PROMPT [--image PICTURE [--also PICTURE2]] [--rewrite-model M]\n");
+        return 2;
+    }
+    let is_edit = is_text(kind, "edit");
+    if is_edit && len(image) == 0 {
+        return refuse_text(io, "rewrite edit needs --image PICTURE (the model reads it)");
+    }
+    if is_edit == false && len(image) > 0 {
+        return refuse_text(io, "there is no rewriter template for a video from a picture (not measured); --image is for `rewrite edit`");
+    }
+    var img_abs = pathx.absolute(heap, ctx.cwd, image);
+    if len(image) > 0 {
+        var there = false;
+        borrow img_abs as &ib in {
+            there = is_file(fs, buffer.bytes(ib));
+        }
+        if there == false {
+            buffer.drop(heap, img_abs);
+            var m = buffer.append(heap, buffer.empty(heap, 96), "no such image: ");
+            m = buffer.append(heap, m, image);
+            return refuse_buf(io, heap, m);
+        }
+    }
+    if n_also > 0 && is_edit == false {
+        buffer.drop(heap, img_abs);
+        return refuse_text(io, "--also is for `rewrite edit`");
+    }
+    if n_also > 1 {
+        buffer.drop(heap, img_abs);
+        return refuse_text(io, "the rewriter reads at most two pictures (image1 and --also once): the two-picture template is the one measured");
+    }
+    var also_abs = buffer.empty(heap, 8);
+    if n_also == 1 {
+        buffer.drop(heap, also_abs);
+        also_abs = pathx.absolute(heap, ctx.cwd, also);
+        var there2 = false;
+        borrow also_abs as &ab in {
+            there2 = is_file(fs, buffer.bytes(ab));
+        }
+        if there2 == false {
+            buffer.drop(heap, img_abs);
+            buffer.drop(heap, also_abs);
+            var m = buffer.append(heap, buffer.empty(heap, 96), "no such image: ");
+            m = buffer.append(heap, m, also);
+            return refuse_buf(io, heap, m);
+        }
+    }
+    if rewriter_blank(prompt) {
+        buffer.drop(heap, img_abs);
+        buffer.drop(heap, also_abs);
+        return refuse_text(io, "the prompt is empty");
+    }
+    var status = 0;
+    var no_picture = buffer.append(heap, buffer.empty(heap, 4), "-");
+    borrow img_abs as &ia in {
+        borrow no_picture as &np in {
+            borrow also_abs as &aa in {
+                var pic = buffer.bytes(np);
+                if len(image) > 0 {
+                    pic = buffer.bytes(ia);
+                }
+                let (rs, nt) = rewrite_text(io, heap, fs, exec, clock, ctx, kind, prompt, pic, buffer.bytes(aa), model);
+                status = rs;
+                if rs == 0 {
+                    borrow nt as &ntb in {
+                        io.write_all(io, buffer.bytes(ntb));
+                        io.write_all(io, "\n");
+                        if is_text(buffer.bytes(ntb), prompt) {
+                            status = 1;
+                        }
+                    }
+                }
+                buffer.drop(heap, nt);
+            }
+        }
+    }
+    buffer.drop(heap, no_picture);
+    buffer.drop(heap, img_abs);
+    buffer.drop(heap, also_abs);
     return status;
 }
 
@@ -882,6 +1144,14 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
             env = stage.add_arg(heap, env, "HF_HUB_OFFLINE=1");
         }
         var ctx = Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw };
+        if is_text(arg(args, k), "rewrite") {
+            var rctx = Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw };
+            borrow rctx as &rc in {
+                status = cmd_rewrite(io, heap, fs, exec, clock, rc, args, k + 1);
+            }
+            buffer.drop(heap, env);
+            return status;
+        }
         let scripts = pathx.under(heap, root, "scripts");
         borrow scripts as &sc in {
             match open_dir(fs, buffer.bytes(sc)) {

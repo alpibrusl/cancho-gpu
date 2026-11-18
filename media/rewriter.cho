@@ -1,0 +1,112 @@
+edition 10;
+
+module rewriter;
+
+import std.buffer;
+import std.io;
+import stage;
+
+// rewriter -- `rewrite_prompt` of tools/media.py in cancho: ask build/rewrite_cli (studio/rewrite_cli.cho) to rewrite a prompt with the local model, and fail open: the original comes back, with the reason on stderr
+// (docs/studio-rewrite.md D4). The rewriter is a program of build/, started by name beneath it; it reaches only the local Ollama (`cancho authority studio/rewrite_cli.cho`).
+
+fn first_line_end[&t](text: &t [byte], from: int) -> [] int {
+    var k = from;
+    while k < len(text) && int_of(text[k]) != 10 {
+        k = k + 1;
+    }
+    return k;
+}
+
+fn is_blank[&t](text: &t [byte]) -> [] bool {
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
+// Strip leading and trailing whitespace (Python's str.strip for ASCII).
+fn trimmed[&t](text: &t [byte]) -> [] &t [byte] {
+    var a = 0;
+    var b = len(text);
+    while a < b && (int_of(text[a]) == 32 || int_of(text[a]) == 9 || int_of(text[a]) == 10 || int_of(text[a]) == 13) {
+        a = a + 1;
+    }
+    while b > a && (int_of(text[b - 1]) == 32 || int_of(text[b - 1]) == 9 || int_of(text[b - 1]) == 10 || int_of(text[b - 1]) == 13) {
+        b = b - 1;
+    }
+    return text[a..b];
+}
+
+// The prompt rewritten, or a copy of `prompt` (the reason is written to stderr). `picture` is an absolute path or "-"; `picture2` an absolute path or "".
+pub fn ask[&i, &h, &x, &y, &c, &s, &p, &q, &r, &m](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), bdir: &y Dir, clock: &c Clock, system: &s [byte], model: &m [byte], prompt: &p [byte], picture: &q [byte], picture2: &r [byte]) -> [err_write, heap, exec_under, clock, poll] buffer.Buffer {
+    var list = stage.add_arg(heap, buffer.empty(heap, 256), "ask");
+    list = stage.add_arg(heap, list, model);
+    list = stage.add_arg(heap, list, system);
+    list = stage.add_arg(heap, list, prompt);
+    list = stage.add_arg(heap, list, picture);
+    list = stage.add_arg(heap, list, "600");
+    if len(picture2) > 0 {
+        list = stage.add_arg(heap, list, picture2);
+    }
+    var code = 255;
+    var out = buffer.empty(heap, 8);
+    var errs = buffer.empty(heap, 8);
+    borrow list as &lb in {
+        let (c2, o2, e2) = stage.capture(heap, exec, bdir, clock, "rewrite_cli", buffer.bytes(lb), "", 660000);
+        code = c2;
+        buffer.drop(heap, out);
+        buffer.drop(heap, errs);
+        out = o2;
+        errs = e2;
+    }
+    buffer.drop(heap, list);
+    buffer.drop(heap, errs);
+    var answer = buffer.append(heap, buffer.empty(heap, 64), prompt);
+    var good = false;
+    borrow out as &ob in {
+        let all = buffer.bytes(ob);
+        let e1 = first_line_end(all, 0);
+        // a first line, a newline, a second line that is not blank
+        if code == 0 && e1 < len(all) {
+            let e2 = first_line_end(all, e1 + 1);
+            if is_blank(all[e1 + 1..e2]) == false {
+                good = true;
+                buffer.drop(heap, answer);
+                answer = buffer.append(heap, buffer.empty(heap, 64), all[e1 + 1..e2]);
+                io.error_all(io, "media: prompt rewritten by ");
+                io.error_all(io, model);
+                io.error_all(io, ":\n  was: ");
+                io.error_all(io, prompt);
+                io.error_all(io, "\n  now: ");
+                io.error_all(io, all[e1 + 1..e2]);
+                io.error_all(io, "\n");
+            }
+        }
+        if good == false {
+            // the reason: what follows the first space of the first line, else the whole output stripped, else "no answer"
+            let head = all[0..e1];
+            var sp = 0;
+            while sp < len(head) && int_of(head[sp]) != 32 {
+                sp = sp + 1;
+            }
+            var reason = trimmed(all);
+            if sp < len(head) && sp + 1 < len(head) {
+                reason = head[sp + 1..len(head)];
+            }
+            io.error_all(io, "media: prompt not rewritten (");
+            if len(reason) == 0 {
+                io.error_all(io, "no answer");
+            } else {
+                io.error_all(io, reason);
+            }
+            io.error_all(io, "): the original is used\n");
+        }
+    }
+    buffer.drop(heap, out);
+    return answer;
+}

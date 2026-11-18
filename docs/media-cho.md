@@ -1,6 +1,6 @@
 # `media` in cancho (design, 2026-11-17)
 
-> **Status: slices A and B built: `image` and `edit` run as a cancho program (section 6 has the measured runs); the rest is a plan.** Claims are tagged **[read]** (from the compiler's docs or std at the pinned commit a49ea779), **[measured]** or **[estimate]**. Part of `docs/python-removal.md` phase 2.
+> **Status: slices A, B and C built: `image`, `edit` (with `--rewrite`), `rewrite` and `models` run as a cancho program (sections 6 and 7 have the measured runs); `video` and `doctor` are a plan.** Claims are tagged **[read]** (from the compiler's docs or std at the pinned commit a49ea779), **[measured]** or **[estimate]**. Part of `docs/python-removal.md` phase 2.
 
 ## 1. What cancho can and cannot do, from the compiler's documents **[read]** (`docs/processes.md`, `std/process.cho`, `std/dirs.cho`)
 
@@ -25,12 +25,18 @@ What `build/media image|edit` does, in order, with the Python's words for each r
 
 `tests/media_stage.sh` (in the gate): a temporary tree plays the repository's root, the Hugging Face cache and the weights; the stage is a program that prints its arguments (for Python, `subprocess.run` is replaced by a print, in a one-line `python3 -c`). Six runs (`image`, sized, with weights flags, `edit`, two pictures, three pictures with an area) compare **exit status, the stage's argument list word for word, the `done:` line, `prompt.txt` and the errors**; eleven refusals (bad size, empty prompt, missing weights, unsupported model, missing picture, missing `--also`, area too big, no snapshot, no session) compare message and exit status; a failing stage gives exit 1 and its errors are shown. 51 checks, all equal. **Mutant:** `--resident` renamed in `build/media` fails 6 of them. Real runs: section 6.
 
-## 5. Not in this slice
+## 5. Not built
 
-`video` (the text encoder stage, the base model, the chain: PNG codec first), `edit --rewrite` (a second child and a parse), `doctor`, live relay of stage output.
+`video` (the text encoder stage, the base model, the chain: PNG codec first), `doctor` (it asks which Python modules import: a child of the interpreter), live relay of stage output.
 
 ## 6. Measured on this machine (2026-11-17, M4 Max, the pinned compiler a49ea779)
 
 `scripts/media image "<the fox prompt>" -o DIR --size 512x512 --seed 1` through `build/media`: **27 s of wall clock**, a fox in snow (looked at), the stage's timings as before (language model 4 s, steps 17 s, decoder 1 s); the Python path took 30 s for the same command earlier today. `scripts/media edit fox.png "Make it a snowy night with a full moon." -o DIR --seed 1`: **92 s** (the Python path: 94 s), 1024 x 1024 `edited.png`. The lock file is gone after each run; with a live pid in it a second job is refused (`media: another media job is running (pid N)`, exit 2) and nothing is created. The edited picture was not looked at here (the run shows the plumbing, not the model).
 
 **What is still Python in these two commands:** the stage drivers (`tests/t2i_pipeline_gpu.py`, `tests/edit_pipeline_gpu.py`), started through `scripts/stage` (a shell script). The orchestration (arguments, every refusal, paths, the snapshot lookup, the lock's rules, the report, `prompt.txt`) is cancho. **Authority of `build/media` (`cancho authority`):** `exec_under` (the programs of `scripts/` only), `fs_read("")`, `fs_write("")`, `dir_read`, `dir_write`, pipes and the clock; **no network**.
+
+## 7. Slice C: the rewriter (2026-11-18)
+
+`build/media rewrite {video|edit} PROMPT ...` and `edit --rewrite` ask `build/rewrite_cli` (the studio's rewriter, already cancho) through the same capture as a stage, but beneath `build/` (`media/rewriter.cho`; `media/stage.cho` now has `capture`, which the stage runner uses too). It fails open as the Python does: the original prompt comes back with `media: prompt not rewritten (reason): the original is used` on stderr; the refusals (no image for `rewrite edit`, an image for `rewrite video`, a missing picture, `--also` on a video, three pictures, an empty prompt, the missing `build/rewrite_cli`, the missing system prompt) are the Python's words. `edit --rewrite` rewrites inside the GPU lock, writes the new text to `prompt.txt` and the old to `prompt.orig.txt` when they differ. `rewrite` takes no lock (no GPU).
+
+**Checked:** `tests/media_stage.sh` now has 106 checks, all equal to Python's: a fake `rewrite_cli` that answers with its own arguments (so the check holds the exact argument list the rewriter is called with: `ask`, model, system prompt file, prompt, picture or `-`, `600`, second picture), a fail-soft case, the refusals, and the missing program. **Mutant:** the deadline argument `600` changed to `60` fails 12 of them. `scripts/build-media.sh` builds `build/media` (the four modules and `studio/files.cho`).
