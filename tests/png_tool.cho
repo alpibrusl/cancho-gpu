@@ -1,0 +1,136 @@
+edition 10;
+
+import std.buffer;
+import std.io;
+import files;
+import png;
+
+// png_tool -- the PNG codec of media/png.cho as a command, for tests/png_diff.sh (docs/png-cho.md).
+//   png_tool decode IN.png OUT.rgb     prints `W H`, writes the RGB bytes; a refusal is `png: ...` on stderr, exit 1
+//   png_tool encode W H IN.rgb OUT.png writes the PNG
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn same[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn fail[&i, &m](io: &!i Io, msg: &m [byte]) -> [err_write] int {
+    io.error_all(io, "png: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 1;
+}
+
+fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let n = arg_count(args);
+    if n == 4 && same(arg(args, 1), "decode") {
+        let (data, e) = files.read_all(heap, fs, arg(args, 2));
+        var status = 1;
+        if e != 0 {
+            status = fail(io, "cannot read the file");
+        } else {
+            borrow data as &db in {
+                let (code, w, h2, rgb) = png.decode(heap, buffer.bytes(db));
+                if code != 0 {
+                    status = fail(io, png.message(code));
+                } else {
+                    var line = buffer.push_nat(heap, buffer.empty(heap, 32), w);
+                    line = buffer.push(heap, line, byte_of(32));
+                    line = buffer.push_nat(heap, line, h2);
+                    line = buffer.push(heap, line, byte_of(10));
+                    borrow line as &lb in {
+                        io.write_all(io, buffer.bytes(lb));
+                    }
+                    buffer.drop(heap, line);
+                    borrow rgb as &rb in {
+                        if files.write_big(fs, arg(args, 3), contents(rb)) == 0 {
+                            status = 0;
+                        } else {
+                            status = fail(io, "cannot write the file");
+                        }
+                    }
+                }
+                unbox_slice(heap, rgb);
+            }
+        }
+        buffer.drop(heap, data);
+        return status;
+    }
+    if n == 6 && same(arg(args, 1), "encode") {
+        let w = num(arg(args, 2));
+        let h2 = num(arg(args, 3));
+        let (data, e) = files.read_all(heap, fs, arg(args, 4));
+        var status = 1;
+        if e != 0 {
+            status = fail(io, "cannot read the file");
+        } else {
+            borrow data as &db in {
+                let png_bytes = png.encode(heap, w, h2, buffer.bytes(db));
+                borrow png_bytes as &pb in {
+                    if len(buffer.bytes(pb)) == 0 {
+                        status = fail(io, "bad size");
+                    } else if files.write_big(fs, arg(args, 5), buffer.bytes(pb)) == 0 {
+                        status = 0;
+                    } else {
+                        status = fail(io, "cannot write the file");
+                    }
+                }
+                buffer.drop(heap, png_bytes);
+            }
+        }
+        buffer.drop(heap, data);
+        return status;
+    }
+    return fail(io, "usage: png_tool decode IN OUT | encode W H IN OUT");
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(signals);
+    release(tty);
+    release(clock);
+    release(exec);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow mut heap as &!h in {
+            borrow fs as &f in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

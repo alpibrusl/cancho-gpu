@@ -1,0 +1,762 @@
+edition 10;
+
+module png;
+
+import std.buffer;
+import std.crc;
+
+// png -- a PNG codec in cancho (docs/png-cho.md): what `video` needs of PIL. Decode: 8-bit gray, gray+alpha, palette, RGB and RGBA, not interlaced, to 8-bit RGB (as
+// `Image.open(p).convert("RGB")`: alpha dropped, not composited). Encode: 8-bit RGB with stored (uncompressed) deflate blocks, which every reader accepts.
+// Every refusal is a code from `message`, and no input reaches a panic: each index is checked against its length first.
+
+// ---- bits and Huffman codes (the canonical decoder of zlib's puff.c) ----
+
+// `n` bits from the stream, least significant first. `st[0]` is the bit position, `st[1]` becomes 1 when the input ran out.
+fn bits[&s, &t](src: &s [byte], st: &!t [int], n: int) -> [] int {
+    var v = 0;
+    var k = 0;
+    while k < n {
+        let p = st[0];
+        if p >> 3 >= len(src) {
+            st[1] = 1;
+            return 0;
+        }
+        let b = int_of(src[p >> 3]) >> (p & 7) & 1;
+        v = v | b << k;
+        st[0] = p + 1;
+        k = k + 1;
+    }
+    return v;
+}
+
+// A table is 320 ints: counts of codes by length [0, 16), symbols [16, 304), scratch offsets [304, 320). `lens[0..n]` are the code lengths.
+fn build[&u, &l](h: &!u [int], lens: &l [int], n: int) -> [] int {
+    var i = 0;
+    while i < 320 {
+        h[i] = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        h[lens[i]] = h[lens[i]] + 1;
+        i = i + 1;
+    }
+    h[305] = 0;
+    var m = 1;
+    while m < 15 {
+        h[305 + m] = h[304 + m] + h[m];
+        m = m + 1;
+    }
+    i = 0;
+    while i < n {
+        let k = lens[i];
+        if k != 0 {
+            h[16 + h[304 + k]] = i;
+            h[304 + k] = h[304 + k] + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// The next symbol, or -1 for a code the table does not have.
+fn symbol[&s, &t, &u](src: &s [byte], st: &!t [int], h: &u [int]) -> [] int {
+    var code = 0;
+    var first = 0;
+    var index = 0;
+    var k = 1;
+    while k <= 15 {
+        code = code | bits(src, st, 1);
+        let count = h[k];
+        if code - count < first {
+            return h[16 + index + (code - first)];
+        }
+        index = index + count;
+        first = first + count << 1;
+        code = code << 1;
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+// The extra bits and base of length code `sym` (0..28) as (base, extra).
+fn length_code(sym: int) -> [] (int, int) {
+    var base = 3;
+    var c = 0;
+    while c < sym {
+        var extra = 0;
+        if c >= 8 {
+            extra = c - 4 >> 2;
+        }
+        base = base + (1 << extra);
+        c = c + 1;
+    }
+    if sym == 28 {
+        return (258, 0);
+    }
+    var extra = 0;
+    if sym >= 8 {
+        extra = sym - 4 >> 2;
+    }
+    return (base, extra);
+}
+
+// The base and extra bits of distance code `d` (0..29).
+fn dist_code(d: int) -> [] (int, int) {
+    var base = 1;
+    var c = 0;
+    while c < d {
+        var extra = 0;
+        if c >= 4 {
+            extra = c - 2 >> 1;
+        }
+        base = base + (1 << extra);
+        c = c + 1;
+    }
+    var extra = 0;
+    if d >= 4 {
+        extra = d - 2 >> 1;
+    }
+    return (base, extra);
+}
+
+// The order the code length code lengths come in.
+fn order(i: int) -> [] int {
+    if i == 0 {
+        return 16;
+    }
+    if i == 1 {
+        return 17;
+    }
+    if i == 2 {
+        return 18;
+    }
+    if i == 3 {
+        return 0;
+    }
+    if i == 4 {
+        return 8;
+    }
+    if i == 5 {
+        return 7;
+    }
+    if i == 6 {
+        return 9;
+    }
+    if i == 7 {
+        return 6;
+    }
+    if i == 8 {
+        return 10;
+    }
+    if i == 9 {
+        return 5;
+    }
+    if i == 10 {
+        return 11;
+    }
+    if i == 11 {
+        return 4;
+    }
+    if i == 12 {
+        return 12;
+    }
+    if i == 13 {
+        return 3;
+    }
+    if i == 14 {
+        return 13;
+    }
+    if i == 15 {
+        return 2;
+    }
+    if i == 16 {
+        return 14;
+    }
+    if i == 17 {
+        return 1;
+    }
+    return 15;
+}
+
+// Literal and length symbols with `lit` and `dist` until the end of block; the new output position, or -1.
+fn codes[&s, &t, &u, &v, &d](src: &s [byte], st: &!t [int], lit: &u [int], dist: &v [int], dst: &!d [byte], at: int) -> [] int {
+    var op = at;
+    while true {
+        let sym = symbol(src, st, lit);
+        if sym < 0 || st[1] != 0 {
+            return 0 - 1;
+        }
+        if sym < 256 {
+            if op >= len(dst) {
+                return 0 - 1;
+            }
+            dst[op] = byte_of(sym);
+            op = op + 1;
+        } else if sym == 256 {
+            return op;
+        } else {
+            let lc = sym - 257;
+            if lc >= 29 {
+                return 0 - 1;
+            }
+            let (lbase, lextra) = length_code(lc);
+            let n = lbase + bits(src, st, lextra);
+            let ds = symbol(src, st, dist);
+            if ds < 0 || ds >= 30 || st[1] != 0 {
+                return 0 - 1;
+            }
+            let (dbase, dextra) = dist_code(ds);
+            let back = dbase + bits(src, st, dextra);
+            if back > op || op + n > len(dst) || st[1] != 0 {
+                return 0 - 1;
+            }
+            var k = 0;
+            while k < n {
+                dst[op] = dst[op - back];
+                op = op + 1;
+                k = k + 1;
+            }
+        }
+    }
+    return 0 - 1;
+}
+
+// One stored block: bytes aligned, LEN, NLEN, then LEN bytes.
+fn stored[&s, &t, &d](src: &s [byte], st: &!t [int], dst: &!d [byte], at: int) -> [] int {
+    let p = st[0] + 7 >> 3;
+    if p + 4 > len(src) {
+        return 0 - 1;
+    }
+    let n = int_of(src[p]) | int_of(src[p + 1]) << 8;
+    let nn = int_of(src[p + 2]) | int_of(src[p + 3]) << 8;
+    if n + nn != 65535 || p + 4 + n > len(src) || at + n > len(dst) {
+        return 0 - 1;
+    }
+    var k = 0;
+    while k < n {
+        dst[at + k] = src[p + 4 + k];
+        k = k + 1;
+    }
+    st[0] = p + 4 + n << 3;
+    return at + n;
+}
+
+// Inflate the raw deflate stream `src` into `dst`; the number of bytes written or -1. `st[0]` ends at the stream's last bit.
+fn inflate[&h, &s, &t, &d](heap: &!h Heap, src: &s [byte], st: &!t [int], dst: &!d [byte]) -> [heap] int {
+    let tl = box_slice(heap, 320, 0);
+    let td = box_slice(heap, 320, 0);
+    let tc = box_slice(heap, 320, 0);
+    let lens = box_slice(heap, 320, 0);
+    var op = 0;
+    var last = false;
+    while last == false && op >= 0 {
+        last = bits(src, st, 1) == 1;
+        let kind = bits(src, st, 2);
+        if st[1] != 0 {
+            op = 0 - 1;
+        } else if kind == 0 {
+            op = stored(src, st, dst, op);
+        } else if kind == 1 {
+            borrow mut lens as &!lw in {
+                borrow mut tl as &!lt in {
+                    borrow mut td as &!dt in {
+                        var i = 0;
+                        while i < 288 {
+                            var w = 8;
+                            if i >= 144 && i < 256 {
+                                w = 9;
+                            }
+                            if i >= 256 && i < 280 {
+                                w = 7;
+                            }
+                            contents(lw)[i] = w;
+                            i = i + 1;
+                        }
+                        build(contents(lt), contents(lw)[0..288], 288);
+                        i = 0;
+                        while i < 30 {
+                            contents(lw)[i] = 5;
+                            i = i + 1;
+                        }
+                        build(contents(dt), contents(lw)[0..30], 30);
+                        op = codes(src, st, contents(lt), contents(dt), dst, op);
+                    }
+                }
+            }
+        } else if kind == 2 {
+            borrow mut lens as &!lw in {
+                borrow mut tl as &!lt in {
+                    borrow mut td as &!dt in {
+                        borrow mut tc as &!ct in {
+                            op = dynamic(src, st, contents(lw), contents(lt), contents(dt), contents(ct), dst, op);
+                        }
+                    }
+                }
+            }
+        } else {
+            op = 0 - 1;
+        }
+    }
+    unbox_slice(heap, tl);
+    unbox_slice(heap, td);
+    unbox_slice(heap, tc);
+    unbox_slice(heap, lens);
+    return op;
+}
+
+// A dynamic block: its code length codes, then the literal/length and distance codes, then the data.
+fn dynamic[&s, &t, &w, &u, &v, &x, &d](src: &s [byte], st: &!t [int], lens: &!w [int], lit: &!u [int], dist: &!v [int], cl: &!x [int], dst: &!d [byte], at: int) -> [] int {
+    let nlen = bits(src, st, 5) + 257;
+    let ndist = bits(src, st, 5) + 1;
+    let ncode = bits(src, st, 4) + 4;
+    if nlen > 286 || ndist > 30 || st[1] != 0 {
+        return 0 - 1;
+    }
+    var i = 0;
+    while i < 19 {
+        lens[i] = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while i < ncode {
+        lens[order(i)] = bits(src, st, 3);
+        i = i + 1;
+    }
+    build(cl, lens[0..19], 19);
+    var index = 0;
+    let total = nlen + ndist;
+    while index < total {
+        let sym = symbol(src, st, cl);
+        if sym < 0 || st[1] != 0 {
+            return 0 - 1;
+        }
+        if sym < 16 {
+            lens[index] = sym;
+            index = index + 1;
+        } else {
+            var prev = 0;
+            var rep = 0;
+            if sym == 16 {
+                if index == 0 {
+                    return 0 - 1;
+                }
+                prev = lens[index - 1];
+                rep = 3 + bits(src, st, 2);
+            } else if sym == 17 {
+                rep = 3 + bits(src, st, 3);
+            } else {
+                rep = 11 + bits(src, st, 7);
+            }
+            if index + rep > total {
+                return 0 - 1;
+            }
+            var k = 0;
+            while k < rep {
+                lens[index + k] = prev;
+                k = k + 1;
+            }
+            index = index + rep;
+        }
+    }
+    build(lit, lens[0..nlen], nlen);
+    build(dist, lens[nlen..total], ndist);
+    return codes(src, st, lit, dist, dst, at);
+}
+
+// ---- checksums ----
+
+pub fn adler32[&t](data: &t [byte]) -> [] int {
+    var a = 1;
+    var b = 0;
+    var i = 0;
+    while i < len(data) {
+        a = a + int_of(data[i]);
+        if a >= 65521 {
+            a = a - 65521;
+        }
+        b = b + a;
+        if b >= 65521 {
+            b = b - 65521;
+        }
+        i = i + 1;
+    }
+    return b << 16 | a;
+}
+
+fn be32[&t](d: &t [byte], at: int) -> [] int {
+    return int_of(d[at]) << 24 | int_of(d[at + 1]) << 16 | int_of(d[at + 2]) << 8 | int_of(d[at + 3]);
+}
+
+// ---- decode ----
+
+// The refusal for a code (0 is "ok").
+pub fn message(code: int) -> [] &static [byte] {
+    if code == 0 {
+        return "ok";
+    }
+    if code == 1 {
+        return "not a PNG file";
+    }
+    if code == 2 {
+        return "damaged PNG (chunk length or checksum)";
+    }
+    if code == 3 {
+        return "unsupported PNG (only 8-bit, not interlaced, at most 16384 x 16384)";
+    }
+    if code == 4 {
+        return "damaged PNG (zlib header)";
+    }
+    if code == 5 {
+        return "damaged PNG (compressed data)";
+    }
+    if code == 6 {
+        return "damaged PNG (data does not match the size)";
+    }
+    if code == 7 {
+        return "damaged PNG (row filter)";
+    }
+    return "PNG error";
+}
+
+fn paeth(a: int, b: int, c: int) -> [] int {
+    let p = a + b - c;
+    var pa = p - a;
+    if pa < 0 {
+        pa = 0 - pa;
+    }
+    var pb = p - b;
+    if pb < 0 {
+        pb = 0 - pb;
+    }
+    var pc = p - c;
+    if pc < 0 {
+        pc = 0 - pc;
+    }
+    if pa <= pb && pa <= pc {
+        return a;
+    }
+    if pb <= pc {
+        return b;
+    }
+    return c;
+}
+
+// Undo the row filters of `raw` (h rows of 1 filter byte and `stride` bytes), in place; 0 or 7.
+fn unfilter[&r](raw: &!r [byte], w: int, h: int, stride: int, bpp: int) -> [] int {
+    var y = 0;
+    while y < h {
+        let row = y * (stride + 1);
+        let ft = int_of(raw[row]);
+        if ft > 4 {
+            return 7;
+        }
+        var x = 0;
+        while x < stride {
+            let at = row + 1 + x;
+            var a = 0;
+            var b = 0;
+            var c = 0;
+            if x >= bpp {
+                a = int_of(raw[at - bpp]);
+            }
+            if y > 0 {
+                b = int_of(raw[at - stride - 1]);
+                if x >= bpp {
+                    c = int_of(raw[at - stride - 1 - bpp]);
+                }
+            }
+            var v = int_of(raw[at]);
+            if ft == 1 {
+                v = v + a;
+            } else if ft == 2 {
+                v = v + b;
+            } else if ft == 3 {
+                v = v + (a + b >> 1);
+            } else if ft == 4 {
+                v = v + paeth(a, b, c);
+            }
+            raw[at] = byte_of(v & 255);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return 0;
+}
+
+// The picture in `file` as (status, width, height, w*h*3 RGB bytes); the bytes are 1 long when the status is not 0. The caller ends the box with `unbox_slice`.
+pub fn decode[&h, &s](heap: &!h Heap, file: &s [byte]) -> [heap] (int, int, int, Box[[byte]]) {
+    let none = box_slice(heap, 1, byte_of(0));
+    if len(file) < 8 || be32(file, 0) != 2303741511 || be32(file, 4) != 218765834 {
+        return (1, 0, 0, none);
+    }
+    var pos = 8;
+    var w = 0;
+    var h2 = 0;
+    var ct = 0 - 1;
+    var depth = 8;
+    var seen = false;
+    var idat = buffer.empty(heap, 4096);
+    let pal = box_slice(heap, 768, byte_of(0));
+    var failure = 0;
+    var done = false;
+    while done == false && failure == 0 {
+        if pos + 12 > len(file) {
+            failure = 2;
+        } else {
+            let n = be32(file, pos);
+            let kind = file[pos + 4..pos + 8];
+            if n < 0 || n > len(file) || pos + 12 + n > len(file) {
+                failure = 2;
+            } else if crc.crc32_of(file[pos + 4..pos + 8 + n]) != be32(file, pos + 8 + n) {
+                failure = 2;
+            } else {
+                let body = file[pos + 8..pos + 8 + n];
+                if int_of(kind[0]) == 73 && int_of(kind[1]) == 72 {
+                    if n != 13 {
+                        failure = 2;
+                    } else {
+                        w = be32(body, 0);
+                        h2 = be32(body, 4);
+                        ct = int_of(body[9]);
+                        depth = int_of(body[8]);
+                        let dd = int_of(body[8]);
+                        if dd != 8 && dd != 4 && dd != 2 && dd != 1 || dd != 8 && (int_of(body[9]) != 0 && int_of(body[9]) != 3) || int_of(body[10]) != 0 || int_of(body[11]) != 0 || int_of(body[12]) != 0 {
+                            failure = 3;
+                        }
+                        if int_of(body[9]) != 0 && int_of(body[9]) != 2 && int_of(body[9]) != 3 && int_of(body[9]) != 4 && int_of(body[9]) != 6 {
+                            failure = 3;
+                        }
+                        if w < 1 || h2 < 1 || w > 16384 || h2 > 16384 {
+                            failure = 3;
+                        }
+                        seen = true;
+                    }
+                } else if int_of(kind[0]) == 80 && int_of(kind[1]) == 76 {
+                    if n > 768 || n % 3 != 0 {
+                        failure = 2;
+                    } else {
+                        borrow mut pal as &!pw in {
+                            var k = 0;
+                            while k < n {
+                                contents(pw)[k] = body[k];
+                                k = k + 1;
+                            }
+                        }
+                    }
+                } else if int_of(kind[0]) == 73 && int_of(kind[1]) == 68 {
+                    idat = buffer.append(heap, idat, body);
+                } else if int_of(kind[0]) == 73 && int_of(kind[1]) == 69 {
+                    done = true;
+                }
+                pos = pos + 12 + n;
+            }
+        }
+    }
+    if failure == 0 && (seen == false || done == false) {
+        failure = 2;
+    }
+    if failure == 0 {
+        return body_of(heap, idat, pal, w, h2, ct, depth, none);
+    }
+    unbox_slice(heap, pal);
+    buffer.drop(heap, idat);
+    return (failure, w, h2, none);
+}
+
+// Inflate, unfilter and convert to RGB.
+fn body_of[&h](heap: &!h Heap, idat: buffer.Buffer, pal: Box[[byte]], w: int, h2: int, ct: int, depth: int, none: Box[[byte]]) -> [heap] (int, int, int, Box[[byte]]) {
+    var bpp = 1;
+    if ct == 2 {
+        bpp = 3;
+    }
+    if ct == 4 {
+        bpp = 2;
+    }
+    if ct == 6 {
+        bpp = 4;
+    }
+    let stride = w * bpp * depth + 7 >> 3;
+    if depth < 8 {
+        bpp = 1;
+    }
+    let rawlen = (stride + 1) * h2;
+    var status = 0;
+    var rgb = none;
+    let raw = box_slice(heap, rawlen, byte_of(0));
+    let st = box_slice(heap, 2, 0);
+    borrow idat as &ib in {
+        let z = buffer.bytes(ib);
+        if len(z) < 6 {
+            status = 4;
+        } else if int_of(z[0]) & 15 != 8 || ((int_of(z[0]) << 8) + int_of(z[1])) % 31 != 0 || int_of(z[1]) & 32 != 0 {
+            status = 4;
+        } else {
+            borrow mut st as &!sw in {
+                borrow mut raw as &!rw in {
+                    contents(sw)[0] = 16;
+                    let got = inflate(heap, z, contents(sw), contents(rw));
+                    if got < 0 {
+                        status = 5;
+                    } else if got != rawlen {
+                        status = 6;
+                    } else {
+                        let tail = contents(sw)[0] + 7 >> 3;
+                        if tail + 4 > len(z) || adler32(contents(rw)[0..rawlen]) != be32(z, tail) {
+                            status = 5;
+                        } else {
+                            status = unfilter(contents(rw), w, h2, stride, bpp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if status == 0 {
+        unbox_slice(heap, rgb);
+        rgb = box_slice(heap, w * h2 * 3, byte_of(0));
+        borrow raw as &rr in {
+            borrow pal as &pr in {
+                borrow mut rgb as &!ow in {
+                    expand(contents(rr), contents(pr), contents(ow), w, h2, ct, bpp, depth, stride);
+                }
+            }
+        }
+    }
+    unbox_slice(heap, raw);
+    unbox_slice(heap, st);
+    unbox_slice(heap, pal);
+    buffer.drop(heap, idat);
+    return (status, w, h2, rgb);
+}
+
+fn expand[&r, &p, &o](raw: &r [byte], pal: &p [byte], out: &!o [byte], w: int, h: int, ct: int, bpp: int, depth: int, stride: int) -> [] int {
+    var y = 0;
+    while y < h {
+        var x = 0;
+        while x < w {
+            let src = y * (stride + 1) + 1 + x * bpp;
+            let dst = (y * w + x) * 3;
+            if depth < 8 {
+                let per = 8 / depth;
+                let byte_at = y * (stride + 1) + 1 + x / per;
+                let shift = 8 - depth - x % per * depth;
+                let v = int_of(raw[byte_at]) >> shift & (1 << depth) - 1;
+                if ct == 3 {
+                    out[dst] = pal[v * 3];
+                    out[dst + 1] = pal[v * 3 + 1];
+                    out[dst + 2] = pal[v * 3 + 2];
+                } else {
+                    let g = byte_of(v * 255 / ((1 << depth) - 1));
+                    out[dst] = g;
+                    out[dst + 1] = g;
+                    out[dst + 2] = g;
+                }
+            } else if ct == 2 || ct == 6 {
+                out[dst] = raw[src];
+                out[dst + 1] = raw[src + 1];
+                out[dst + 2] = raw[src + 2];
+            } else if ct == 3 {
+                let k = int_of(raw[src]) * 3;
+                out[dst] = pal[k];
+                out[dst + 1] = pal[k + 1];
+                out[dst + 2] = pal[k + 2];
+            } else {
+                out[dst] = raw[src];
+                out[dst + 1] = raw[src];
+                out[dst + 2] = raw[src];
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return 0;
+}
+
+// ---- encode ----
+
+fn put32[&h](heap: &!h Heap, b: buffer.Buffer, v: int) -> [heap] buffer.Buffer {
+    var o = b;
+    o = buffer.push(heap, o, byte_of(v >> 24 & 255));
+    o = buffer.push(heap, o, byte_of(v >> 16 & 255));
+    o = buffer.push(heap, o, byte_of(v >> 8 & 255));
+    return buffer.push(heap, o, byte_of(v & 255));
+}
+
+// One chunk: length, type (4 bytes), data, checksum of type and data.
+fn chunk[&h, &k, &t](heap: &!h Heap, out: buffer.Buffer, kind: &k [byte], body: &t [byte]) -> [heap] buffer.Buffer {
+    var o = put32(heap, out, len(body));
+    var c = crc.crc32_start();
+    c = crc.crc32_update(c, kind);
+    c = crc.crc32_update(c, body);
+    o = buffer.append(heap, o, kind);
+    o = buffer.append(heap, o, body);
+    return put32(heap, o, crc.crc32_finish(c));
+}
+
+// The PNG of `rgb` (w*h*3 bytes): unfiltered rows in stored deflate blocks. A buffer the caller ends, or an empty one when the size is wrong.
+pub fn encode[&h, &t](heap: &!h Heap, w: int, h2: int, rgb: &t [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 64);
+    if w < 1 || h2 < 1 || w > 16384 || h2 > 16384 || len(rgb) != w * h2 * 3 {
+        return out;
+    }
+    let stride = w * 3;
+    let rawlen = (stride + 1) * h2;
+    // the raw rows, filter byte 0 each
+    var raw = buffer.empty(heap, rawlen);
+    var y = 0;
+    while y < h2 {
+        raw = buffer.push(heap, raw, byte_of(0));
+        raw = buffer.append(heap, raw, rgb[y * stride..(y + 1) * stride]);
+        y = y + 1;
+    }
+    var z = buffer.empty(heap, rawlen + rawlen / 65535 * 5 + 16);
+    z = buffer.push(heap, z, byte_of(120));
+    z = buffer.push(heap, z, byte_of(1));
+    borrow raw as &rb in {
+        let all = buffer.bytes(rb);
+        var at = 0;
+        while at < rawlen {
+            var n = rawlen - at;
+            var final = 1;
+            if n > 65535 {
+                n = 65535;
+                final = 0;
+            }
+            z = buffer.push(heap, z, byte_of(final));
+            z = buffer.push(heap, z, byte_of(n & 255));
+            z = buffer.push(heap, z, byte_of(n >> 8));
+            z = buffer.push(heap, z, byte_of(65535 - n & 255));
+            z = buffer.push(heap, z, byte_of(65535 - n >> 8));
+            z = buffer.append(heap, z, all[at..at + n]);
+            at = at + n;
+        }
+        z = put32(heap, z, adler32(all));
+    }
+    buffer.drop(heap, raw);
+    var head = buffer.empty(heap, 13);
+    head = put32(heap, head, w);
+    head = put32(heap, head, h2);
+    head = buffer.push(heap, head, byte_of(8));
+    head = buffer.push(heap, head, byte_of(2));
+    head = buffer.push(heap, head, byte_of(0));
+    head = buffer.push(heap, head, byte_of(0));
+    head = buffer.push(heap, head, byte_of(0));
+    var sig = buffer.empty(heap, 8);
+    sig = put32(heap, sig, 2303741511);
+    sig = put32(heap, sig, 218765834);
+    borrow sig as &sb in {
+        out = buffer.append(heap, out, buffer.bytes(sb));
+    }
+    borrow head as &hb in {
+        out = chunk(heap, out, "IHDR", buffer.bytes(hb));
+    }
+    borrow z as &zb in {
+        out = chunk(heap, out, "IDAT", buffer.bytes(zb));
+    }
+    out = chunk(heap, out, "IEND", "");
+    buffer.drop(heap, head);
+    buffer.drop(heap, z);
+    buffer.drop(heap, sig);
+    return out;
+}
