@@ -248,3 +248,70 @@ pub fn planar_f32[&h, &s](heap: &!h Heap, rgb: &s [byte], w: int, h2: int) -> [h
     }
     return out;
 }
+
+// ---- colour statistics and the ramped correction of docs/video-chain.md section 5 ----
+
+// Per-channel mean and standard deviation of the pixels of `rgb`, as numpy computes them (`a.mean(0)`, `a.std(0)` of an (N, 3) float64 array: the sums run down the
+// rows in order, the spread is the root of the mean squared difference): out = [mean r, mean g, mean b, std r, std g, std b].
+pub fn stats[&s, &o](rgb: &s [byte], out: &!o [float]) -> [] int {
+    let n = float_of(len(rgb) / 3);
+    var c = 0;
+    while c < 3 {
+        var sum = 0.0;
+        var i = 0;
+        while i < len(rgb) / 3 {
+            sum = sum + float_of(int_of(rgb[i * 3 + c]));
+            i = i + 1;
+        }
+        let mean = sum / n;
+        var ss = 0.0;
+        i = 0;
+        while i < len(rgb) / 3 {
+            let d = float_of(int_of(rgb[i * 3 + c])) - mean;
+            ss = ss + d * d;
+            i = i + 1;
+        }
+        out[c] = mean;
+        out[3 + c] = sqrt(ss / n);
+        c = c + 1;
+    }
+    return 0;
+}
+
+// Frame `j` of `n`, moved `j / (n - 1)` of the way to the reference's mean and spread (`ref` as `stats` gives them), as `ramp_correct` of tools/media.py does:
+// (a - m) / (sd + 1e-6) * ((1 - w) sd + w rs) + ((1 - w) m + w rm), clipped to 0..255 and cut (not rounded) to a byte. `n` is at least 2.
+pub fn ramp[&h, &s, &r](heap: &!h Heap, rgb: &s [byte], refs: &r [float], j: int, n: int) -> [heap] Box[[byte]] {
+    let own = box_slice(heap, 6, 0.0);
+    borrow mut own as &!ow in {
+        stats(rgb, contents(ow));
+    }
+    let out = box_slice(heap, len(rgb), byte_of(0));
+    let w = float_of(j) / float_of(n - 1);
+    borrow own as &om in {
+        borrow mut out as &!bw in {
+            var c = 0;
+            while c < 3 {
+                let m = contents(om)[c];
+                let sd = contents(om)[3 + c];
+                let rm = refs[c];
+                let rs = refs[3 + c];
+                var i = 0;
+                while i < len(rgb) / 3 {
+                    let a = float_of(int_of(rgb[i * 3 + c]));
+                    let o = (a - m) / (sd + 0.000001) * ((1.0 - w) * sd + w * rs) + ((1.0 - w) * m + w * rm);
+                    var v = 0;
+                    if o >= 255.0 {
+                        v = 255;
+                    } else if o > 0.0 {
+                        v = truncate(o);
+                    }
+                    contents(bw)[i * 3 + c] = byte_of(v);
+                    i = i + 1;
+                }
+                c = c + 1;
+            }
+        }
+    }
+    unbox_slice(heap, own);
+    return out;
+}

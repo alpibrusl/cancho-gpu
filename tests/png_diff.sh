@@ -31,6 +31,15 @@ while read -r n w ht want; do
   build/png_tool cover "$R/tests/png/$n.png" "$w" "$ht" "$T/c.f32"
   check "cover $n ${w}x$ht" "$(shasum -a 256 "$T/c.f32" | cut -d' ' -f1)" "$want"
 done < tests/png/cover.list
+# colour statistics (bit for bit as numpy gives them) and the ramped correction (the RGB bytes tools/media.py ramp_correct writes)
+while read -r n b0 b1 b2 b3 b4 b5; do
+  check "stats $n" "$(build/png_tool stats "$R/tests/png/$n.png" | tr '\n' ' ')" "$b0 $b1 $b2 $b3 $b4 $b5 "
+done < tests/png/stats.list
+while read -r n ref j cnt want; do
+  build/png_tool ramp "$R/tests/png/$n.png" "$R/tests/png/$ref.png" "$j" "$cnt" "$T/r.png"
+  build/png_tool decode "$T/r.png" "$T/r.rgb" > /dev/null
+  check "ramp $n toward $ref, frame $j of $cnt" "$(shasum -a 256 "$T/r.rgb" | cut -d' ' -f1)" "$want"
+done < tests/png/ramp.list
 refuse() { # file, message
   out=$(build/png_tool decode "$R/tests/png/$1.png" "$T/o.rgb" 2>&1) && code=0 || code=$?
   check "refuse $1" "$code $out" "1 png: $2"

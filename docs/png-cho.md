@@ -22,6 +22,10 @@
 
 `image.resize` is Pillow's LANCZOS, coefficient for coefficient (`Resample.c`: support 3, weights normalised then rounded to 22 fractional bits, a horizontal pass then a vertical, each rounded and clipped to a byte). `image.cover` is `picture_f32`'s geometry (scale to cover, Python's round-half-even for the size, centre crop) and `image.planar_f32` writes `[3, h, w]` little-endian singles of `v / 127.5 - 1` in single precision. **Checked:** `tests/png/cover.list` holds 15 cases whose sha256 is what `tools/media.py picture_f32` wrote (shrinking, enlarging, square, wide, 1 x 1, palette and RGBA sources, 1024 x 1024 to 128 x 96 and 1100 x 700), all **byte-identical**; mutants (the fixed-point scale, the rounding term, round-half-even instead of half-up) fail 2, 11 and 1 checks. A 1024 x 1024 picture to 1100 x 700 takes 0.06 s.
 
-## 5. Not here
+## 5. Colour statistics and the ramped correction (`image.stats`, `image.ramp`)
 
-The per-channel mean and spread, the ramped correction, the GIF (stays `ffmpeg`), and the `video` command: the next slices.
+`stats` is `frame_stats` of `tools/media.py`: the per-channel mean and standard deviation as numpy computes them (the sums down the rows in order, the root of the mean squared difference); `ramp` is `ramp_correct`'s arithmetic for one frame, with the result cut (not rounded) to a byte as `astype(np.uint8)` does. **Checked** (`tests/png/stats.list`, `ramp.list`): the six statistics of seven pictures are **bit for bit** what numpy gave (compared as the bits of each double), and eight ramped frames (first, middle and last of chains of 2 to 5, other pictures as the reference, RGBA and palette sources, a 1024 x 1024 one) are **byte-identical** to the ones `ramp_correct` writes. **Mutants:** rounding instead of cutting fails 8 checks, the ramp's `n - 1` replaced by `n` fails 6; changing the `1e-6` guard to `1e-5` is **not** caught (its effect is far below one level on these pictures), so that constant is checked by the arithmetic being otherwise exact, not by a test.
+
+## 6. Not here
+
+The GIF (stays `ffmpeg`), and the `video` command itself: the next slices.

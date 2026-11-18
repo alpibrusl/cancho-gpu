@@ -9,6 +9,8 @@ import png;
 // png_tool -- the PNG codec of media/png.cho as a command, for tests/png_diff.sh (docs/png-cho.md).
 //   png_tool decode IN.png OUT.rgb     prints `W H`, writes the RGB bytes; a refusal is `png: ...` on stderr, exit 1
 //   png_tool encode W H IN.rgb OUT.png writes the PNG
+//   png_tool stats IN.png              prints the six statistics (mean r g b, std r g b) as the bits of each double, one a line (tools/media.py frame_stats)
+//   png_tool ramp IN.png REF.png J N OUT.png  frame J of N corrected toward the statistics of REF (tools/media.py ramp_correct), written as a PNG
 //   png_tool cover IN.png W H OUT.f32  the picture covering W x H, centre-cropped, as planar little-endian singles in [-1, 1] (tools/media.py picture_f32)
 
 fn num[&t](text: &t [byte]) -> [] int {
@@ -107,6 +109,95 @@ fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args)
             }
         }
         buffer.drop(heap, data);
+        return status;
+    }
+    if n == 3 && same(arg(args, 1), "stats") {
+        let (data, e) = files.read_all(heap, fs, arg(args, 2));
+        var status = 1;
+        if e != 0 {
+            status = fail(io, "cannot read the file");
+        } else {
+            borrow data as &db in {
+                let (code, w, h2, rgb) = png.decode(heap, buffer.bytes(db));
+                if code != 0 {
+                    status = fail(io, png.message(code));
+                } else {
+                    let st = box_slice(heap, 6, 0.0);
+                    borrow mut st as &!sw in {
+                        borrow rgb as &rb in {
+                            image.stats(contents(rb), contents(sw));
+                        }
+                    }
+                    var line = buffer.empty(heap, 128);
+                    borrow st as &sr in {
+                        var k = 0;
+                        while k < 6 {
+                            line = buffer.push_nat(heap, line, bits_of(contents(sr)[k]));
+                            line = buffer.push(heap, line, byte_of(10));
+                            k = k + 1;
+                        }
+                    }
+                    borrow line as &lb in {
+                        io.write_all(io, buffer.bytes(lb));
+                    }
+                    buffer.drop(heap, line);
+                    unbox_slice(heap, st);
+                    status = 0;
+                }
+                unbox_slice(heap, rgb);
+            }
+        }
+        buffer.drop(heap, data);
+        return status;
+    }
+    if n == 7 && same(arg(args, 1), "ramp") {
+        let j = num(arg(args, 4));
+        let cnt = num(arg(args, 5));
+        let (data, e) = files.read_all(heap, fs, arg(args, 2));
+        let (rdata, re) = files.read_all(heap, fs, arg(args, 3));
+        var status = 1;
+        if e != 0 || re != 0 || j < 0 || cnt < 2 || j >= cnt {
+            status = fail(io, "cannot read the files or bad frame numbers");
+        } else {
+            borrow data as &db in {
+                borrow rdata as &rdb in {
+                    let (code, w, h2, rgb) = png.decode(heap, buffer.bytes(db));
+                    let (rcode, rw, rh, rrgb) = png.decode(heap, buffer.bytes(rdb));
+                    if code != 0 || rcode != 0 {
+                        status = fail(io, "cannot decode a picture");
+                    } else {
+                        let st = box_slice(heap, 6, 0.0);
+                        borrow mut st as &!sw in {
+                            borrow rrgb as &rrb in {
+                                image.stats(contents(rrb), contents(sw));
+                            }
+                        }
+                        borrow st as &sr in {
+                            borrow rgb as &rb in {
+                                let fixed = image.ramp(heap, contents(rb), contents(sr), j, cnt);
+                                borrow fixed as &fb in {
+                                    let out = png.encode(heap, w, h2, contents(fb));
+                                    borrow out as &ob in {
+                                        if files.write_big(fs, arg(args, 6), buffer.bytes(ob)) == 0 {
+                                            status = 0;
+                                        } else {
+                                            status = fail(io, "cannot write the file");
+                                        }
+                                    }
+                                    buffer.drop(heap, out);
+                                }
+                                unbox_slice(heap, fixed);
+                            }
+                        }
+                        unbox_slice(heap, st);
+                    }
+                    unbox_slice(heap, rgb);
+                    unbox_slice(heap, rrgb);
+                }
+            }
+        }
+        buffer.drop(heap, data);
+        buffer.drop(heap, rdata);
         return status;
     }
     if n == 6 && same(arg(args, 1), "cover") {
