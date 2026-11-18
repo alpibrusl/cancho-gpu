@@ -3,11 +3,13 @@ edition 10;
 import std.buffer;
 import std.io;
 import files;
+import image;
 import png;
 
 // png_tool -- the PNG codec of media/png.cho as a command, for tests/png_diff.sh (docs/png-cho.md).
 //   png_tool decode IN.png OUT.rgb     prints `W H`, writes the RGB bytes; a refusal is `png: ...` on stderr, exit 1
 //   png_tool encode W H IN.rgb OUT.png writes the PNG
+//   png_tool cover IN.png W H OUT.f32  the picture covering W x H, centre-cropped, as planar little-endian singles in [-1, 1] (tools/media.py picture_f32)
 
 fn num[&t](text: &t [byte]) -> [] int {
     if len(text) == 0 {
@@ -102,6 +104,41 @@ fn run[&i, &h, &f, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &a Args)
                     }
                 }
                 buffer.drop(heap, png_bytes);
+            }
+        }
+        buffer.drop(heap, data);
+        return status;
+    }
+    if n == 6 && same(arg(args, 1), "cover") {
+        let w = num(arg(args, 3));
+        let h2 = num(arg(args, 4));
+        let (data, e) = files.read_all(heap, fs, arg(args, 2));
+        var status = 1;
+        if e != 0 || w < 1 || h2 < 1 || w > 16384 || h2 > 16384 {
+            status = fail(io, "cannot read the file");
+        } else {
+            borrow data as &db in {
+                let (code, iw, ih, rgb) = png.decode(heap, buffer.bytes(db));
+                if code != 0 {
+                    status = fail(io, png.message(code));
+                } else {
+                    borrow rgb as &rb in {
+                        let fitted = image.cover(heap, contents(rb), iw, ih, w, h2);
+                        borrow fitted as &fb in {
+                            let planes = image.planar_f32(heap, contents(fb), w, h2);
+                            borrow planes as &pb in {
+                                if files.write_big(fs, arg(args, 5), contents(pb)) == 0 {
+                                    status = 0;
+                                } else {
+                                    status = fail(io, "cannot write the file");
+                                }
+                            }
+                            unbox_slice(heap, planes);
+                        }
+                        unbox_slice(heap, fitted);
+                    }
+                }
+                unbox_slice(heap, rgb);
             }
         }
         buffer.drop(heap, data);

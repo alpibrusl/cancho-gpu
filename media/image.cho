@@ -1,0 +1,250 @@
+edition 10;
+
+module image;
+
+import std.math;
+
+// image -- the picture work of `media video --image` in cancho (docs/png-cho.md §5): Pillow's LANCZOS resize, the centre crop that covers w x h, and the planar
+// single-precision form the video stages read. The resize is Pillow's algorithm, coefficient for coefficient (Resample.c: supports of 3, weights normalised then
+// rounded to 22 fractional bits, a horizontal pass then a vertical one, each rounded and clipped to a byte), so its output is Pillow's, byte for byte.
+
+fn sinc(x: float) -> [] float {
+    if x == 0.0 {
+        return 1.0;
+    }
+    let y = x * 3.141592653589793;
+    return math.sin(y) / y;
+}
+
+fn lanczos(x: float) -> [] float {
+    if x >= 0.0 - 3.0 && x < 3.0 {
+        return sinc(x) * sinc(x / 3.0);
+    }
+    return 0.0;
+}
+
+// The integer size of `x`, toward zero.
+fn cut(x: float) -> [] int {
+    return truncate(x);
+}
+
+// For each of `outsize` outputs: [first input, count] in `bounds[2i..2i+2]`, and `ksize` fixed-point weights in `kk[i*ksize..]`.
+// Returns ksize; the caller sized the arrays with `ksize_of`.
+fn ksize_of(insize: int, outsize: int) -> [] int {
+    var scale = float_of(insize) / float_of(outsize);
+    if scale < 1.0 {
+        scale = 1.0;
+    }
+    return cut(math.ceil(3.0 * scale)) * 2 + 1;
+}
+
+fn coeffs[&b, &k](insize: int, outsize: int, bounds: &!b [int], kk: &!k [int]) -> [] int {
+    let scale = float_of(insize) / float_of(outsize);
+    var fscale = scale;
+    if fscale < 1.0 {
+        fscale = 1.0;
+    }
+    let support = 3.0 * fscale;
+    let ks = ksize_of(insize, outsize);
+    let ss = 1.0 / fscale;
+    var xx = 0;
+    while xx < outsize {
+        let center = (float_of(xx) + 0.5) * scale;
+        var xmin = cut(center - support + 0.5);
+        if xmin < 0 {
+            xmin = 0;
+        }
+        var xmax = cut(center + support + 0.5);
+        if xmax > insize {
+            xmax = insize;
+        }
+        xmax = xmax - xmin;
+        var total = 0.0;
+        var x = 0;
+        while x < xmax {
+            total = total + lanczos((float_of(x + xmin) - center + 0.5) * ss);
+            x = x + 1;
+        }
+        x = 0;
+        while x < ks {
+            kk[xx * ks + x] = 0;
+            x = x + 1;
+        }
+        x = 0;
+        while x < xmax {
+            var w = lanczos((float_of(x + xmin) - center + 0.5) * ss);
+            if total != 0.0 {
+                w = w / total;
+            }
+            var q = 0;
+            if w < 0.0 {
+                q = cut(0.0 - 0.5 + w * 4194304.0);
+            } else {
+                q = cut(0.5 + w * 4194304.0);
+            }
+            kk[xx * ks + x] = q;
+            x = x + 1;
+        }
+        bounds[xx * 2] = xmin;
+        bounds[xx * 2 + 1] = xmax;
+        xx = xx + 1;
+    }
+    return ks;
+}
+
+fn clip(ss: int) -> [] byte {
+    let v = ss >> 22;
+    if v < 0 {
+        return byte_of(0);
+    }
+    if v > 255 {
+        return byte_of(255);
+    }
+    return byte_of(v);
+}
+
+// `src` (w x h, RGB) resized to nw x nh with Pillow's LANCZOS; w*h*3 bytes in, nw*nh*3 out. Sizes are at least 1.
+pub fn resize[&h, &s](heap: &!h Heap, src: &s [byte], w: int, h2: int, nw: int, nh: int) -> [heap] Box[[byte]] {
+    // horizontal pass: h2 rows of nw pixels
+    let mid = box_slice(heap, nw * h2 * 3, byte_of(0));
+    let hb = box_slice(heap, nw * 2, 0);
+    let hks = ksize_of(w, nw);
+    let hk = box_slice(heap, nw * hks, 0);
+    borrow mut hb as &!hbw in {
+        borrow mut hk as &!hkw in {
+            coeffs(w, nw, contents(hbw), contents(hkw));
+            borrow mut mid as &!mw in {
+                var y = 0;
+                while y < h2 {
+                    var xx = 0;
+                    while xx < nw {
+                        let xmin = contents(hbw)[xx * 2];
+                        let n = contents(hbw)[xx * 2 + 1];
+                        var c = 0;
+                        while c < 3 {
+                            var ss = 2097152;
+                            var x = 0;
+                            while x < n {
+                                ss = ss + int_of(src[(y * w + xmin + x) * 3 + c]) * contents(hkw)[xx * hks + x];
+                                x = x + 1;
+                            }
+                            contents(mw)[(y * nw + xx) * 3 + c] = clip(ss);
+                            c = c + 1;
+                        }
+                        xx = xx + 1;
+                    }
+                    y = y + 1;
+                }
+            }
+        }
+    }
+    unbox_slice(heap, hb);
+    unbox_slice(heap, hk);
+    // vertical pass: nh rows of nw pixels
+    let out = box_slice(heap, nw * nh * 3, byte_of(0));
+    let vb = box_slice(heap, nh * 2, 0);
+    let vks = ksize_of(h2, nh);
+    let vk = box_slice(heap, nh * vks, 0);
+    borrow mut vb as &!vbw in {
+        borrow mut vk as &!vkw in {
+            coeffs(h2, nh, contents(vbw), contents(vkw));
+            borrow mid as &mr in {
+                borrow mut out as &!ow in {
+                    var yy = 0;
+                    while yy < nh {
+                        let ymin = contents(vbw)[yy * 2];
+                        let n = contents(vbw)[yy * 2 + 1];
+                        var x = 0;
+                        while x < nw * 3 {
+                            var ss = 2097152;
+                            var k = 0;
+                            while k < n {
+                                ss = ss + int_of(contents(mr)[(ymin + k) * nw * 3 + x]) * contents(vkw)[yy * vks + k];
+                                k = k + 1;
+                            }
+                            contents(ow)[yy * nw * 3 + x] = clip(ss);
+                            x = x + 1;
+                        }
+                        yy = yy + 1;
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, vb);
+    unbox_slice(heap, vk);
+    unbox_slice(heap, mid);
+    return out;
+}
+
+// Python's round(): to the nearest whole number, a tie to the even one.
+fn round_even(x: float) -> [] int {
+    let f = math.floor(x);
+    let d = x - f;
+    var n = cut(f);
+    if d > 0.5 {
+        n = n + 1;
+    } else if d == 0.5 && n % 2 != 0 {
+        n = n + 1;
+    }
+    return n;
+}
+
+// The picture resized to cover w x h (the larger of the two ratios) and cropped at the centre, as tools/media.py picture_f32 does: w*h*3 RGB bytes.
+pub fn cover[&h, &s](heap: &!h Heap, src: &s [byte], iw: int, ih: int, w: int, h2: int) -> [heap] Box[[byte]] {
+    var k = float_of(w) / float_of(iw);
+    let ky = float_of(h2) / float_of(ih);
+    if ky > k {
+        k = ky;
+    }
+    var nw = round_even(float_of(iw) * k);
+    var nh = round_even(float_of(ih) * k);
+    if nw < w {
+        nw = w;
+    }
+    if nh < h2 {
+        nh = h2;
+    }
+    let big = resize(heap, src, iw, ih, nw, nh);
+    let x0 = (nw - w) / 2;
+    let y0 = (nh - h2) / 2;
+    let out = box_slice(heap, w * h2 * 3, byte_of(0));
+    borrow big as &br in {
+        borrow mut out as &!ow in {
+            var y = 0;
+            while y < h2 {
+                var x = 0;
+                while x < w * 3 {
+                    contents(ow)[y * w * 3 + x] = contents(br)[(y0 + y) * nw * 3 + x0 * 3 + x];
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+        }
+    }
+    unbox_slice(heap, big);
+    return out;
+}
+
+// The RGB bytes (w x h) as [3, h, w] little-endian binary32 in [-1, 1]: v / 127.5 - 1, in single precision as numpy does it.
+pub fn planar_f32[&h, &s](heap: &!h Heap, rgb: &s [byte], w: int, h2: int) -> [heap] Box[[byte]] {
+    let out = box_slice(heap, w * h2 * 12, byte_of(0));
+    borrow mut out as &!ow in {
+        var c = 0;
+        while c < 3 {
+            var i = 0;
+            while i < w * h2 {
+                let v = f32_of_int(int_of(rgb[i * 3 + c])) / 127.5f32 - 1.0f32;
+                let bits = bits_of32(v);
+                let at = (c * w * h2 + i) * 4;
+                contents(ow)[at] = byte_of(bits & 255);
+                contents(ow)[at + 1] = byte_of(bits >> 8 & 255);
+                contents(ow)[at + 2] = byte_of(bits >> 16 & 255);
+                contents(ow)[at + 3] = byte_of(bits >> 24 & 255);
+                i = i + 1;
+            }
+            c = c + 1;
+        }
+    }
+    return out;
+}
