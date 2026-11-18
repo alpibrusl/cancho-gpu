@@ -27,7 +27,7 @@ What `build/media image|edit` does, in order, with the Python's words for each r
 
 ## 5. Not built
 
-`video` (the text encoder stage, the base model, the chain: PNG codec first), `doctor` (it asks which Python modules import: a child of the interpreter), live relay of stage output.
+`video` (the text encoder stage, the base model, the chain: the PNG codec is built, `docs/png-cho.md`; resize and colour statistics next), `doctor` (it asks which Python modules import: a child of the interpreter), live relay of stage output.
 
 ## 6. Measured on this machine (2026-11-17, M4 Max, the pinned compiler a49ea779)
 

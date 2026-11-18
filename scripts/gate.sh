@@ -60,6 +60,7 @@ python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_cat.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" sh tests/media_diff.sh
 CANCHO="$CANCHO" sh tests/media_stage.sh
+CANCHO="$CANCHO" sh tests/png_diff.sh
 python3 tests/dit_attention_seg.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/dit_attention_seg.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" scripts/build-session.sh
