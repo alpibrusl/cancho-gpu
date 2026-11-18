@@ -564,7 +564,7 @@ fn cmd_rewrite[&i, &h, &f, &x, &c, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f F
     return status;
 }
 
-fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), clock: &c Clock, args: &a Args) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), clock: &c Clock, args: &a Args) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_read, file_write, dir_read, dir_write, exec_under, clock, poll] int {
     let n = arg_count(args);
     // the plain commands of slice A take no context
     if n == 2 && shared.is_text(arg(args, 1), "models") {

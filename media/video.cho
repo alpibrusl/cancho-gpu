@@ -5,6 +5,7 @@ module video;
 import std.buffer;
 import std.dirs;
 import std.io;
+import clip;
 import files;
 import pathx;
 import stage;
@@ -44,7 +45,7 @@ fn model_kind[&t](low: &t [byte]) -> [] int {
     return 0;
 }
 
-pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_read, file_write, dir_read, dir_write, exec_under, clock, poll] int {
     var prompt = "";
     var positional = 0;
     var output = "";
@@ -59,6 +60,10 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
     var segments = "1";
     var thens = 0;
     var no_correct = false;
+    var steps = "30";
+    var guidance = "3.5";
+    var has_negative = false;
+    var negative = "";
     var force = false;
     var rewrite = false;
     var rewrite_model = "qwen3.8:27b-mlx";
@@ -120,16 +125,25 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
                 return shared.bad_value(io, "--image");
             }
             image = arg(args, k);
-        } else if shared.is_text(t, "--steps") || shared.is_text(t, "--negative") {
+        } else if shared.is_text(t, "--steps") {
+            k = k + 1;
+            if k >= n || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--steps");
+            }
+            steps = arg(args, k);
+        } else if shared.is_text(t, "--negative") {
             k = k + 1;
             if k >= n {
-                return shared.bad_value(io, "--steps/--negative");
+                return shared.bad_value(io, "--negative");
             }
+            negative = arg(args, k);
+            has_negative = true;
         } else if shared.is_text(t, "--guidance") {
             k = k + 1;
             if k >= n || is_number(arg(args, k)) == false {
                 return shared.bad_value(io, "--guidance");
             }
+            guidance = arg(args, k);
         } else if shared.is_text(t, "--segments") {
             k = k + 1;
             if k >= n || shared.num(arg(args, k)) < 0 {
@@ -167,11 +181,15 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
         io.error_all(io, "media: the following arguments are required: prompt, -o/--output\n");
         return 2;
     }
-    if len(image) > 0 {
-        return shared.refuse_text(io, "--image is not built in the cancho media yet: run it with CANCHO_MEDIA_IMPL=python");
-    }
-    if shared.num(segments) != 1 || thens > 0 || no_correct {
+    let with_image = len(image) > 0;
+    if with_image == false && (shared.num(segments) != 1 || thens > 0 || no_correct) {
         return shared.refuse_text(io, "--segments, --then and --no-correct are for a video from a picture (--image): they chain clips (docs/video-chain.md)");
+    }
+    if with_image && (shared.num(segments) != 1 || thens > 0 || no_correct) {
+        return shared.refuse_text(io, "a chain of clips (--segments, --then, --no-correct) is not built in the cancho media yet: run it with CANCHO_MEDIA_IMPL=python");
+    }
+    if rewrite && with_image {
+        return shared.refuse_text(io, "--rewrite is not available for a video from a picture: the rewriter has no template for it (not measured)");
     }
     // need_gpu: the Metal session binary
     let sp = pathx.under(heap, ctx.root, "build/cancho-gpu-metal-session");
@@ -189,6 +207,9 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
     borrow low as &lb in {
         kind = model_kind(buffer.bytes(lb));
     }
+    if with_image && len(model) == 0 {
+        kind = 2;
+    }
     if kind == 0 {
         var m = buffer.append(heap, buffer.empty(heap, 192), "model '");
         borrow low as &lb2 in {
@@ -198,9 +219,31 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
         buffer.drop(heap, low);
         return shared.refuse_buf(io, heap, m);
     }
+    if with_image && kind != 2 {
+        var m = buffer.append(heap, buffer.empty(heap, 256), "--image needs the base model: ");
+        borrow low as &lb3 in {
+            m = buffer.append(heap, m, buffer.bytes(lb3));
+        }
+        m = buffer.append(heap, m, " is distilled and does not continue a picture (docs/wan-vae-encoder.md section 12); use --model wan2.2-ti2v-5b-base");
+        buffer.drop(heap, low);
+        return shared.refuse_buf(io, heap, m);
+    }
     buffer.drop(heap, low);
-    if kind == 2 {
+    if kind == 2 && with_image == false {
         return shared.refuse_text(io, "wan2.2-ti2v-5b-base is for --image (a picture to continue); for a video from a prompt alone use the default model");
+    }
+    if with_image {
+        let pabs = pathx.absolute(heap, ctx.cwd, image);
+        var found = false;
+        borrow pabs as &pb in {
+            found = shared.is_file(fs, buffer.bytes(pb));
+        }
+        buffer.drop(heap, pabs);
+        if found == false {
+            var m = buffer.append(heap, buffer.empty(heap, 128), "no such image: ");
+            m = buffer.append(heap, m, image);
+            return shared.refuse_buf(io, heap, m);
+        }
     }
     let (w, h2) = shared.size_of(size);
     if w < 0 {
@@ -209,6 +252,19 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
     let (code, frames, lf, tokens) = shared.video_limits(io, heap, size, w, h2, shared.num(frames_text), force);
     if code != 0 {
         return code;
+    }
+    if with_image {
+        let status = clip.from_picture(io, heap, fs, exec, sdir, clock, ctx, env, image, prompt, has_negative, negative, steps, guidance, weights, wdir_arg, output, shared.num(frames_text), lf, w, h2, seed, fps);
+        if status != 0 {
+            return status;
+        }
+        let out = pathx.absolute(heap, ctx.cwd, output);
+        var done = 0;
+        borrow out as &ob0 in {
+            done = mp4_and_done(io, heap, exec, sdir, clock, ctx, env, buffer.bytes(ob0), fps);
+        }
+        buffer.drop(heap, out);
+        return done;
     }
     // the weights: --weights or the Hugging Face snapshot, and the base model's other files
     var tdir = buffer.empty(heap, 8);

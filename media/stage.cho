@@ -54,7 +54,12 @@ pub fn capture[&h, &x, &y, &c, &n, &a, &e](heap: &!h Heap, exec: &x Exec(""), sd
 
 // `capture` of the program `stage`, its output and errors written to ours when it has ended.
 pub fn run[&i, &h, &x, &y, &c, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
-    let (code, out, errs) = capture(heap, exec, sdir, clock, "stage", args, env, timeout_ms);
+    return run_as(io, heap, exec, sdir, clock, "stage", args, env, timeout_ms);
+}
+
+// `capture` of the program `name` of `sdir` (scripts/stage, scripts/enc, scripts/enc-session), its output and errors written to ours when it has ended.
+pub fn run_as[&i, &h, &x, &y, &c, &n, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, name: &n [byte], args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    let (code, out, errs) = capture(heap, exec, sdir, clock, name, args, env, timeout_ms);
     borrow out as &ob in {
         io.write_all(io, buffer.bytes(ob));
     }

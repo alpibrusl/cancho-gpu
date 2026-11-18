@@ -1,0 +1,4 @@
+#!/bin/sh
+# The GPU step of the picture encoder: the Metal session on the file `$1`, answering the two prompts its protocol asks (tools/media.py: `printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session FILE`).
+cd "$(dirname "$0")/.." || exit 1
+printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session "$1"

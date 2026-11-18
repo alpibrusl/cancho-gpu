@@ -473,11 +473,16 @@ pub fn rewrite_text[&i, &h, &f, &x, &c, &zc, &p, &q, &r, &m](io: &!i Io, heap: &
 
 // One stage of a job: `== label`, the program run on `list` (NUL-separated), `== label: N s`. 0, or 1 after a refusal ("label failed (exit N)").
 pub fn step[&i, &h, &x, &y, &c, &l, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    return step_as(io, heap, exec, sdir, clock, "stage", label, list, env);
+}
+
+// `step` of the program `program` of scripts/.
+pub fn step_as[&i, &h, &x, &y, &c, &p, &lb, &l, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &p [byte], label: &lb [byte], list: &l [byte], env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
     io.write_all(io, "== ");
     io.write_all(io, label);
     io.write_all(io, "\n");
     let t0 = clock_ms(clock);
-    let code = stage.run(io, heap, exec, sdir, clock, list, env, 10800000);
+    let code = stage.run_as(io, heap, exec, sdir, clock, program, list, env, 10800000);
     if code != 0 {
         var m = buffer.append(heap, buffer.empty(heap, 96), label);
         m = buffer.append(heap, m, " failed (exit ");

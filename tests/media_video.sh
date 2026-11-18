@@ -24,6 +24,11 @@ cat >"$R/scripts/stage" <<'EOS'
 for a in "$@"; do echo "STAGE $a"; done
 EOS
 chmod +x "$R/scripts/stage"
+mkdir -p "$H/.cache/huggingface/hub/models--Wan-AI--Wan2.2-TI2V-5B-Diffusers/snapshots/abc/transformer" "$T/w/base"
+: >"$T/w/base/config.json"
+: >"$R/build/wan_vae_enc_gpu"
+cp "$R/scripts/stage" "$R/scripts/enc"; cp "$R/scripts/stage" "$R/scripts/enc-session"
+cp tests/png/gradient1024.png "$T/cwd/fox.png"; cp tests/png/filter4_ties.png "$T/cwd/small.png"; cp tests/png/gray.png "$T/cwd/gray.png"
 mkdir -p "$R/studio/rewrite"
 for k in video edit edit2; do echo "system $k" >"$R/studio/rewrite/$k.txt"; done
 cat >"$R/build/rewrite_cli" <<'EOS'
@@ -42,16 +47,17 @@ subprocess.run=lambda cmd,cwd=None,**k:real(cmd,cwd=cwd,**k) if cmd[0].endswith(
 sys.argv=["media"]+sys.argv[1:]
 runpy.run_path("'"$R"'/tools/media.py",run_name="__main__")' "$@"); }
 cho() { (cd "$W" && "$REPO/build/media" --root "$R" --cwd "$W" --home "${HOME2:-$H}" --py /bin/true --cache "$K" --ffmpeg ${FREEKB:+--free-kb $FREEKB} "$@"); }
-norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##"; }
+norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##; /^STAGE -c\$/d; s#^STAGE printf .* \(/[^ ]*\)\$#STAGE \1#"; }
 both() { # name, args...: the whole output (timings dropped), exit status, prompt.txt and errors
   name=$1; shift
   rm -rf "$W/o"
   p_out=$(py "$@" 2>"$T/p.err") && p_code=0 || p_code=$?
-  p_prompt=$(cat "$W/o/prompt.txt" 2>/dev/null || true); p_orig=$(cat "$W/o/prompt.orig.txt" 2>/dev/null || true); rm -rf "$W/o"
+  p_prompt=$(cat "$W/o/prompt.txt" 2>/dev/null || true); p_orig=$(cat "$W/o/prompt.orig.txt" 2>/dev/null || true); p_pic=$(cksum "$W/o/work/picture.f32" 2>/dev/null | cut -d" " -f1,2 || true); rm -rf "$W/o"
   c_out=$(cho "$@" 2>"$T/c.err") && c_code=0 || c_code=$?
-  c_prompt=$(cat "$W/o/prompt.txt" 2>/dev/null || true); c_orig=$(cat "$W/o/prompt.orig.txt" 2>/dev/null || true)
+  c_prompt=$(cat "$W/o/prompt.txt" 2>/dev/null || true); c_orig=$(cat "$W/o/prompt.orig.txt" 2>/dev/null || true); c_pic=$(cksum "$W/o/work/picture.f32" 2>/dev/null | cut -d" " -f1,2 || true)
+  check "$name: picture floats" "$c_pic" "$p_pic"
   check "$name: exit" "$c_code" "$p_code"
-  check "$name: output" "$(echo "$c_out" | norm)" "$(echo "$p_out" | norm)"
+  check "$name: output" "$(printf "%s\n" "$c_out" | norm)" "$(printf "%s\n" "$p_out" | norm)"
   check "$name: prompt.txt" "$c_prompt" "$p_prompt"
   check "$name: prompt.orig.txt" "$c_orig" "$p_orig"
   check "$name: errors" "$(grep -v '^$' "$T/c.err" | norm)" "$(grep -v '^$' "$T/p.err" | norm)"
@@ -79,6 +85,25 @@ both "video wdir flag"        video "a red fox" -o o --wdir "$T/w/dit"
 both "video rewritten"        video "a red fox" -o o --rewrite
 both "video rewrite fails soft" video "FAILSOFT a red fox" -o o --rewrite --rewrite-model m1
 both "video forced"           video "a fox" -o o --size 1280x704 --frames 33 --force
+both "image"                  video "a fox runs" -o o --image fox.png
+both "image small, nonsquare" video "a fox runs" -o o --image small.png --size 512x288 --frames 9 --seed 3 --fps 8
+both "image grayscale"        video "a fox runs" -o o --image gray.png --size 384x256 --frames 5
+both "image steps, guidance"  video "a fox runs" -o o --image small.png --steps 12 --guidance 4
+both "image guidance 4.50"    video "a fox runs" -o o --image small.png --guidance 4.50
+both "image no negative"      video "a fox runs" -o o --image small.png --negative ""
+both "image own negative"     video "a fox runs" -o o --image small.png --negative "blurry, dark"
+both "image base weights"     video "a fox runs" -o o --image small.png --weights "$T/w/base"
+both "image wdir flag"        video "a fox runs" -o o --image small.png --wdir "$T/w/base"
+both "image explicit model"   video "a fox runs" -o o --image small.png --model WAN2.2-TI2V-5B-BASE
+refuse "image missing"        video "a fox" -o o --image nothere.png
+refuse "image one frame"      video "a fox" -o o --image small.png --frames 1
+refuse "image zero steps"     video "a fox" -o o --image small.png --steps 0
+refuse "image weak guidance"  video "a fox" -o o --image small.png --guidance 0.5
+refuse "image distilled model" video "a fox" -o o --image small.png --model fastwan2.2-ti2v-5b
+refuse "image rewrite"        video "a fox" -o o --image small.png --rewrite
+refuse "image weights no config" video "a fox" -o o --image small.png --weights "$T/w/dit"
+refuse "image bad size"       video "a fox" -o o --image small.png --size 641x352
+refuse "image too many tokens" video "a fox" -o o --image small.png --size 1280x704 --frames 33
 refuse "video bad size"       video "a fox" -o o --size 641x352
 refuse "video too many tokens" video "a fox" -o o --size 1280x704 --frames 33
 refuse "video too many pixels" video "a fox" -o o --size 1024x576 --frames 25
@@ -89,6 +114,7 @@ refuse "video then"           video "a fox" -o o --then "more"
 refuse "video no-correct"     video "a fox" -o o --no-correct
 mkdir -p "$T/empty"
 HOME2=$T/empty refuse "video no weights" video "a fox" -o o
+HOME2=$T/empty refuse "image no base model" video "a fox" -o o --image small.png
 unset HOME2
 # the disk check: only the cancho side can be told how much is free (Python asks the machine)
 FREEKB=1000 cho video "a fox" -o o >/dev/null 2>"$T/c.err" && c_code=0 || c_code=$?

@@ -16,8 +16,8 @@ case "${1:-}" in
   rewrite) cho=1 ;;
   video) cho=1 ;;
 esac
-# `video --image` (a picture to continue, a chain of clips) is still tools/media.py's
-for a in "$@"; do [ "$a" = --image ] && [ "${1:-}" = video ] && cho=0; done
+# a chain of clips (`video --segments`, `--then`, `--no-correct`) is still tools/media.py's; one clip from a picture (`video --image`) is cancho's
+for a in "$@"; do case "$a" in --segments|--then|--no-correct) [ "${1:-}" = video ] && cho=0 ;; esac; done
 [ -x "$HERE/build/media" ] || cho=0
 [ "${CANCHO_MEDIA_IMPL:-}" = python ] && cho=0
 if [ $cho = 0 ]; then

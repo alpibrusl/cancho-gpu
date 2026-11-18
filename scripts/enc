@@ -1,0 +1,4 @@
+#!/bin/sh
+# The picture encoder of a video from a picture, started by build/media (media/clip.cho): build/wan_vae_enc_gpu in the repository's root. A cancho program can start only a program of scripts/.
+cd "$(dirname "$0")/.." || exit 1
+exec build/wan_vae_enc_gpu "$@"
