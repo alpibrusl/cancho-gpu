@@ -1,0 +1,363 @@
+edition 10;
+
+module clip;
+
+import std.buffer;
+import files;
+import image;
+import negative;
+import pathx;
+import png;
+import stage;
+import shared;
+
+// clip -- `media video PROMPT --image PICTURE -o DIR` in cancho (docs/media-cho.md section 9): one clip that continues a picture, as tools/media.py video_image does it for a single segment. The picture is read, resized to cover
+// the frame and cropped here (media/png.cho, media/image.cho: the same pixels as Pillow, docs/png-cho.md); the picture encoder (build/wan_vae_enc_gpu, three steps), the text encoder and the base model's denoiser are programs
+// of scripts/ (`enc`, `enc-session`, `stage`). The chain (`--segments`, `--then`, `--no-correct`) is not built: the wrapper gives it to tools/media.py.
+
+// The text of a number as Python prints a float: `4` is `4.0`, `.5` is `0.5`, `4.50` is `4.5`. The whole part alone is `whole` (it tells whether the guidance is under 1).
+fn float_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] (buffer.Buffer, bool) {
+    var dot = len(text);
+    var i = 0;
+    while i < len(text) {
+        if int_of(text[i]) == 46 && dot == len(text) {
+            dot = i;
+        }
+        i = i + 1;
+    }
+    var start = 0;
+    while start + 1 < dot && int_of(text[start]) == 48 {
+        start = start + 1;
+    }
+    var out = buffer.empty(heap, 16);
+    var under_one = false;
+    if dot == 0 {
+        out = buffer.push(heap, out, byte_of(48));
+        under_one = true;
+    } else {
+        out = buffer.append(heap, out, text[start..dot]);
+        under_one = dot - start == 1 && int_of(text[start]) == 48;
+    }
+    out = buffer.push(heap, out, byte_of(46));
+    var stop = len(text);
+    while stop > dot + 2 && int_of(text[stop - 1]) == 48 {
+        stop = stop - 1;
+    }
+    if dot + 1 >= len(text) {
+        out = buffer.push(heap, out, byte_of(48));
+    } else {
+        out = buffer.append(heap, out, text[dot + 1..stop]);
+    }
+    return (out, under_one);
+}
+
+// The picture as [3, h, w] singles in [-1, 1], resized to cover w x h and cropped at the centre (tools/media.py picture_f32), written to `dest`: 0, or 2 after a refusal.
+fn picture_f32[&i, &h, &f, &p, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), path: &p [byte], w: int, h2: int, dest: &d [byte]) -> [err_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let (data, e) = files.read_all(heap, fs, path);
+    var status = 2;
+    var why = "the file cannot be read";
+    if e == 0 {
+        borrow data as &db in {
+            let (code, iw, ih, rgb) = png.decode(heap, buffer.bytes(db));
+            if code != 0 {
+                why = png.message(code);
+            } else {
+                borrow rgb as &rb in {
+                    let fitted = image.cover(heap, contents(rb), iw, ih, w, h2);
+                    borrow fitted as &fb in {
+                        let planes = image.planar_f32(heap, contents(fb), w, h2);
+                        borrow planes as &pb in {
+                            if files.write_big(fs, dest, contents(pb)) == 0 {
+                                status = 0;
+                            } else {
+                                why = "cannot write the picture's floats";
+                            }
+                        }
+                        unbox_slice(heap, planes);
+                    }
+                    unbox_slice(heap, fitted);
+                }
+            }
+            unbox_slice(heap, rgb);
+        }
+    }
+    buffer.drop(heap, data);
+    if status != 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 128), "cannot read the picture ");
+        m = buffer.append(heap, m, path);
+        m = buffer.append(heap, m, ": ");
+        m = buffer.append(heap, m, why);
+        return shared.refuse_buf(io, heap, m);
+    }
+    return 0;
+}
+
+// After the refusals of cmd_video: the checks of video_image, the picture's floats, the three encoder steps, the text and negative text, the denoiser, prompt.txt. 0 or the status to exit with.
+pub fn from_picture[&i, &h, &f, &x, &y, &c, &e, &zc, &pi, &p, &n, &st, &g, &wt, &wa, &o, &sd, &fp](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], picture: &pi [byte], prompt: &p [byte], has_negative: bool, negative_text: &n [byte], steps_text: &st [byte], guidance_text: &g [byte], weights: &wt [byte], wdir_arg: &wa [byte], output: &o [byte], asked: int, lf: int, w: int, h2: int, seed: &sd [byte], fps: &fp [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_read, file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    if lf < 2 {
+        var m = buffer.append(heap, buffer.empty(heap, 128), "--frames ");
+        m = shared.push_int(heap, m, asked);
+        m = buffer.append(heap, m, ": frame 0 is the picture, ask for at least 2 (the model makes 1 + 4k, so 5)");
+        return shared.refuse_buf(io, heap, m);
+    }
+    let steps = shared.num(steps_text);
+    let (guidance, under_one) = float_text(heap, guidance_text);
+    if steps < 1 || under_one {
+        buffer.drop(heap, guidance);
+        return shared.refuse_text(io, "--steps must be at least 1 and --guidance at least 1 (1 turns guidance off)");
+    }
+    // the base model's files
+    let base = shared.snapshot_of(heap, fs, ctx.home, "Wan-AI--Wan2.2-TI2V-5B-Diffusers", "");
+    let vae = shared.snapshot_of(heap, fs, ctx.home, "Wan-AI--Wan2.2-TI2V-5B-Diffusers", "vae");
+    var tdir = buffer.empty(heap, 8);
+    if len(weights) > 0 {
+        tdir = buffer.append(heap, tdir, weights);
+    } else {
+        buffer.drop(heap, tdir);
+        tdir = shared.snapshot_of(heap, fs, ctx.home, "Wan-AI--Wan2.2-TI2V-5B-Diffusers", "transformer");
+    }
+    var status = 0;
+    if len(weights) > 0 {
+        let wabs = pathx.absolute(heap, ctx.cwd, weights);
+        var cfg = buffer.empty(heap, 8);
+        borrow wabs as &wb in {
+            buffer.drop(heap, cfg);
+            cfg = pathx.under(heap, buffer.bytes(wb), "config.json");
+        }
+        buffer.drop(heap, wabs);
+        var has = false;
+        borrow cfg as &cb in {
+            has = shared.is_file(fs, buffer.bytes(cb));
+        }
+        buffer.drop(heap, cfg);
+        if has == false {
+            var m = buffer.append(heap, buffer.empty(heap, 192), "--weights ");
+            m = buffer.append(heap, m, weights);
+            m = buffer.append(heap, m, " has no config.json: it must be the base model's transformer directory");
+            status = shared.refuse_buf(io, heap, m);
+        }
+    }
+    if status == 0 {
+        var missing = false;
+        borrow base as &bb in {
+            missing = len(buffer.bytes(bb)) == 0;
+        }
+        borrow tdir as &tb in {
+            missing = missing || len(buffer.bytes(tb)) == 0;
+        }
+        borrow vae as &vb in {
+            missing = missing || len(buffer.bytes(vb)) == 0;
+        }
+        if missing {
+            status = shared.refuse_text(io, "the base model is not in the Hugging Face cache: `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (about 30 GB; or pass --weights DIR for its transformer)");
+        }
+    }
+    buffer.drop(heap, base);
+    if status == 0 {
+        borrow guidance as &gb in {
+            borrow tdir as &tb2 in {
+                borrow vae as &vb2 in {
+                    status = with_encoder(io, heap, fs, exec, sdir, clock, ctx, env, picture, prompt, has_negative, negative_text, steps, buffer.bytes(gb), buffer.bytes(tb2), buffer.bytes(vb2), wdir_arg, output, lf, w, h2, seed, fps);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, guidance);
+    buffer.drop(heap, tdir);
+    buffer.drop(heap, vae);
+    return status;
+}
+
+// `list` plus the path `base`/`name` as one argument.
+fn add_path[&h, &b, &n](heap: &!h Heap, list: buffer.Buffer, base: &b [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    let p = pathx.under(heap, base, name);
+    var l = list;
+    borrow p as &pb in {
+        l = stage.add_arg(heap, l, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return l;
+}
+
+// One step of the job: program `program` of scripts/ on the list (consumed).
+fn run_list[&i, &h, &x, &y, &c, &p, &lb, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &p [byte], label: &lb [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    var status = 0;
+    borrow list as &lb in {
+        status = shared.step_as(io, heap, exec, sdir, clock, program, label, buffer.bytes(lb), env);
+    }
+    buffer.drop(heap, list);
+    return status;
+}
+
+// The encoder's binary, the weight directory, the disk, the output directory and the steps.
+fn with_encoder[&i, &h, &f, &x, &y, &c, &e, &zc, &pi, &p, &n, &g, &t, &v, &wa, &o, &sd, &fp](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], picture: &pi [byte], prompt: &p [byte], has_negative: bool, negative_text: &n [byte], steps: int, guidance: &g [byte], tdir: &t [byte], vae: &v [byte], wdir_arg: &wa [byte], output: &o [byte], lf: int, w: int, h2: int, seed: &sd [byte], fps: &fp [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_read, file_write, dir_write, exec_under, clock, poll] int {
+    let enc = pathx.under(heap, ctx.root, "build/wan_vae_enc_gpu");
+    var there = false;
+    borrow enc as &eb in {
+        there = shared.is_file(fs, buffer.bytes(eb));
+    }
+    buffer.drop(heap, enc);
+    if there == false {
+        return shared.refuse_text(io, "build/wan_vae_enc_gpu is missing: `cancho build tests/wan_vae_enc_gpu.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/wan_vae_enc_gpu` (docs/wan-vae-encoder.md section 10)");
+    }
+    // wdir: --wdir (a leading ~/ is the home directory) or the cache's wan-f16-base
+    var wdir = buffer.empty(heap, 8);
+    if len(wdir_arg) == 0 {
+        buffer.drop(heap, wdir);
+        wdir = pathx.under(heap, ctx.cache, "wan-f16-base");
+    } else if len(wdir_arg) >= 2 && int_of(wdir_arg[0]) == 126 && int_of(wdir_arg[1]) == 47 {
+        buffer.drop(heap, wdir);
+        wdir = pathx.under(heap, ctx.home, wdir_arg[2..len(wdir_arg)]);
+    } else {
+        wdir = buffer.append(heap, wdir, wdir_arg);
+    }
+    var have = false;
+    borrow wdir as &wd0 in {
+        let pf = pathx.under(heap, buffer.bytes(wd0), "proj_out.f16");
+        borrow pf as &pfb in {
+            have = shared.is_file(fs, buffer.bytes(pfb));
+        }
+        buffer.drop(heap, pf);
+    }
+    let kb = shared.num(ctx.free_kb);
+    if have == false && kb >= 0 && kb * 1024 < 14000000000 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the base model's f16 weight files (10 GB) are written to ");
+        borrow wdir as &wd1 in {
+            m = buffer.append(heap, m, buffer.bytes(wd1));
+        }
+        m = buffer.append(heap, m, " on first use and only ");
+        m = shared.push_int(heap, m, (kb * 1024 + 500000000) / 1000000000);
+        m = buffer.append(heap, m, " GB are free");
+        buffer.drop(heap, wdir);
+        return shared.refuse_buf(io, heap, m);
+    }
+    let out = pathx.absolute(heap, ctx.cwd, output);
+    var work = buffer.empty(heap, 8);
+    borrow out as &ob00 in {
+        buffer.drop(heap, work);
+        work = pathx.under(heap, buffer.bytes(ob00), "work");
+    }
+    var status = 0;
+    borrow work as &wk in {
+        if pathx.make_all(fs, buffer.bytes(wk)) != 0 {
+            status = shared.refuse_text(io, "cannot create the output directory");
+        }
+    }
+    if status == 0 {
+        borrow out as &ob in {
+            borrow work as &wk2 in {
+                borrow wdir as &wdb in {
+                    status = steps_of(io, heap, fs, exec, sdir, clock, ctx, env, picture, prompt, has_negative, negative_text, steps, guidance, tdir, vae, buffer.bytes(wdb), buffer.bytes(ob), buffer.bytes(wk2), lf, w, h2, seed, fps);
+                }
+            }
+        }
+    }
+    if status == 0 {
+        borrow out as &ob2 in {
+            shared.write_prompts(heap, fs, buffer.bytes(ob2), prompt, prompt);
+        }
+    }
+    buffer.drop(heap, out);
+    buffer.drop(heap, work);
+    buffer.drop(heap, wdir);
+    return status;
+}
+
+// The picture's floats and the six programs: the encoder (prepare, GPU session, latent), the two texts, the denoiser.
+fn steps_of[&i, &h, &f, &x, &y, &c, &e, &zc, &pi, &p, &n, &g, &t, &v, &wd, &o, &wk, &sd, &fp](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], picture: &pi [byte], prompt: &p [byte], has_negative: bool, negative_text: &n [byte], steps: int, guidance: &g [byte], tdir: &t [byte], vae: &v [byte], wdir: &wd [byte], out: &o [byte], work: &wk [byte], lf: int, w: int, h2: int, seed: &sd [byte], fps: &fp [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, clock, poll] int {
+    let pabs = pathx.absolute(heap, ctx.cwd, picture);
+    let pic = pathx.under(heap, work, "picture.f32");
+    var status = 0;
+    borrow pabs as &pa in {
+        borrow pic as &pcb in {
+            status = picture_f32(io, heap, fs, buffer.bytes(pa), w, h2, buffer.bytes(pcb));
+        }
+    }
+    buffer.drop(heap, pabs);
+    buffer.drop(heap, pic);
+    if status != 0 {
+        return status;
+    }
+    // the picture encoder: prepare, the GPU session, the latent
+    var l = stage.add_arg(heap, buffer.empty(heap, 256), "prepare");
+    l = add_path(heap, l, vae, "diffusion_pytorch_model.safetensors");
+    l = stage.add_arg(heap, l, work);
+    l = stage.add_arg(heap, l, ctx.root);
+    l = add_path(heap, l, work, "picture.f32");
+    l = shared.put_num(heap, l, h2);
+    l = shared.put_num(heap, l, w);
+    status = run_list(io, heap, exec, sdir, clock, "enc", "picture encoder: prepare", l, env);
+    if status != 0 {
+        return status;
+    }
+    status = run_list(io, heap, exec, sdir, clock, "enc-session", "picture encoder: run (GPU)", add_path(heap, buffer.empty(heap, 128), work, "enc.session"), env);
+    if status != 0 {
+        return status;
+    }
+    var l3 = stage.add_arg(heap, buffer.empty(heap, 256), "latent");
+    l3 = add_path(heap, l3, vae, "config.json");
+    l3 = stage.add_arg(heap, l3, work);
+    l3 = shared.put_num(heap, l3, h2);
+    l3 = shared.put_num(heap, l3, w);
+    l3 = add_path(heap, l3, work, "cond.f32");
+    status = run_list(io, heap, exec, sdir, clock, "enc", "picture encoder: latent", l3, env);
+    if status != 0 {
+        return status;
+    }
+    // the text and the negative text
+    var l4 = stage.add_arg(heap, buffer.empty(heap, 256), "tools/wan_text.py");
+    l4 = stage.add_arg(heap, l4, prompt);
+    l4 = add_path(heap, l4, work, "text.npy");
+    status = run_list(io, heap, exec, sdir, clock, "stage", "text encoder (host, torch)", l4, env);
+    if status != 0 {
+        return status;
+    }
+    var l5 = stage.add_arg(heap, buffer.empty(heap, 1024), "tools/wan_text.py");
+    if has_negative {
+        l5 = stage.add_arg(heap, l5, negative_text);
+    } else {
+        l5 = stage.add_arg(heap, l5, negative.official());
+    }
+    l5 = add_path(heap, l5, work, "neg.npy");
+    status = run_list(io, heap, exec, sdir, clock, "stage", "negative text", l5, env);
+    if status != 0 {
+        return status;
+    }
+    // the denoiser and the decoder
+    var l6 = stage.add_arg(heap, buffer.empty(heap, 512), "tests/wan_video_gpu.py");
+    l6 = stage.add_arg(heap, l6, out);
+    l6 = stage.add_arg(heap, l6, "--weights");
+    l6 = stage.add_arg(heap, l6, tdir);
+    l6 = stage.add_arg(heap, l6, "--text");
+    l6 = add_path(heap, l6, work, "text.npy");
+    l6 = stage.add_arg(heap, l6, "--neg");
+    l6 = add_path(heap, l6, work, "neg.npy");
+    l6 = stage.add_arg(heap, l6, "--cond");
+    l6 = add_path(heap, l6, work, "cond.f32");
+    l6 = stage.add_arg(heap, l6, "--base");
+    l6 = stage.add_arg(heap, l6, "--steps");
+    l6 = shared.put_num(heap, l6, steps);
+    l6 = stage.add_arg(heap, l6, "--guidance");
+    l6 = stage.add_arg(heap, l6, guidance);
+    l6 = stage.add_arg(heap, l6, "--frames");
+    l6 = shared.put_num(heap, l6, lf);
+    l6 = stage.add_arg(heap, l6, "--size");
+    l6 = shared.push_int(heap, l6, h2 / 16);
+    l6 = buffer.push(heap, l6, byte_of(120));
+    l6 = shared.push_int(heap, l6, w / 16);
+    l6 = buffer.push(heap, l6, byte_of(0));
+    l6 = stage.add_arg(heap, l6, "--seed");
+    l6 = stage.add_arg(heap, l6, seed);
+    l6 = stage.add_arg(heap, l6, "--wdir");
+    l6 = stage.add_arg(heap, l6, wdir);
+    l6 = stage.add_arg(heap, l6, "--fps");
+    l6 = stage.add_arg(heap, l6, fps);
+    var label = shared.push_int(heap, buffer.append(heap, buffer.empty(heap, 96), "base model, "), steps);
+    label = buffer.append(heap, label, " steps with guidance, and decoder (GPU)");
+    var status6 = 0;
+    borrow label as &lab in {
+        status6 = run_list(io, heap, exec, sdir, clock, "stage", buffer.bytes(lab), l6, env);
+    }
+    buffer.drop(heap, label);
+    return status6;
+}

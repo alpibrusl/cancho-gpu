@@ -1,0 +1,609 @@
+edition 10;
+
+module shared;
+
+import std.buffer;
+import std.bytes;
+import std.dirs;
+import std.io;
+import files;
+import pathx;
+import rewriter;
+import stage;
+
+// shared -- what the commands of media/media.cho and media/video.cho have in common (docs/media-cho.md): the refusals, the size and weight checks, the context the wrapper passes, the rewriter and the stage runner.
+
+pub fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A decimal number of at most nine digits, or -1.
+pub fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// `WxH` (or `WXH`): the width and the height, or (-1, -1).
+pub fn size_of[&t](text: &t [byte]) -> [] (int, int) {
+    var cut = 0 - 1;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 120 || c == 88 {
+            if cut >= 0 {
+                return (0 - 1, 0 - 1);
+            }
+            cut = i;
+        }
+        i = i + 1;
+    }
+    if cut < 1 {
+        return (0 - 1, 0 - 1);
+    }
+    let w = num(text[0..cut]);
+    let h = num(text[cut + 1..len(text)]);
+    if w < 0 || h < 0 {
+        return (0 - 1, 0 - 1);
+    }
+    return (w, h);
+}
+
+pub fn push_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    if n < 0 {
+        return buffer.append(heap, buffer.push(heap, out, byte_of(45)), "?");
+    }
+    if n == 0 {
+        return buffer.push(heap, out, byte_of(48));
+    }
+    var digits = 0;
+    var v = n;
+    while v > 0 {
+        digits = digits + 1;
+        v = v / 10;
+    }
+    var acc = out;
+    var place = digits;
+    while place > 0 {
+        var p = 1;
+        var k = 1;
+        while k < place {
+            p = p * 10;
+            k = k + 1;
+        }
+        acc = buffer.push(heap, acc, byte_of(48 + n / p % 10));
+        place = place - 1;
+    }
+    return acc;
+}
+
+// The refusal: `media: <message>` on stderr; the exit status 2.
+pub fn refuse[&i, &m](io: &!i Io, msg: &m [byte]) -> [err_write] int {
+    io.error_all(io, "media: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 2;
+}
+
+// Refuse with a message built in a buffer; the buffer is consumed.
+pub fn refuse_buf[&i, &h](io: &!i Io, heap: &!h Heap, msg: buffer.Buffer) -> [err_write, heap] int {
+    var code = 2;
+    borrow msg as &mb in {
+        code = refuse(io, buffer.bytes(mb));
+    }
+    buffer.drop(heap, msg);
+    return code;
+}
+
+pub fn refuse_text[&i](io: &!i Io, msg: &static [byte]) -> [err_write] int {
+    io.error_all(io, "media: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 2;
+}
+
+pub fn check_image[&i, &h, &p, &z](io: &!i Io, heap: &!h Heap, size: &z [byte], prompt: &p [byte]) -> [err_write, heap] int {
+    let (w, h2) = size_of(size);
+    if w < 0 {
+        return refuse_text(io, "--size is WxH in pixels, for example 1024x1024");
+    }
+    if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 96), "--size must be multiples of 32, at least 64: got ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        return refuse_buf(io, heap, m);
+    }
+    if w * h2 > 1024 * 1024 {
+        var m = push_int(heap, buffer.empty(heap, 128), w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " is more than 1024 x 1024 pixels, the largest size measured (docs/text-to-image.md)");
+        return refuse_buf(io, heap, m);
+    }
+    var blank = true;
+    var k = 0;
+    while k < len(prompt) {
+        let c = int_of(prompt[k]);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            blank = false;
+        }
+        k = k + 1;
+    }
+    if blank {
+        return refuse_text(io, "the prompt is empty");
+    }
+    return 0;
+}
+
+// The limits of `media video` after the size is read: (0, frames, latent frames, tokens), or (2, ..) after a refusal. `size` is the text the person gave (the refusal quotes it).
+pub fn video_limits[&i, &h, &z](io: &!i Io, heap: &!h Heap, size: &z [byte], w: int, h2: int, want: int, force: bool) -> [io_write, err_write, heap] (int, int, int, int) {
+    if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "--size WxH: both sides must be multiples of 32 (the latent is 16 times smaller and is cut into 2 x 2 patches); ");
+        m = buffer.append(heap, m, size);
+        m = buffer.append(heap, m, " is not");
+        return (refuse_buf(io, heap, m), 0, 0, 0);
+    }
+    var base = want;
+    if base < 1 {
+        base = 1;
+    }
+    let lf = (base - 1 + 3) / 4 + 1;
+    let frames = 1 + 4 * (lf - 1);
+    if frames != want {
+        io.write_all(io, "media: ");
+        var m = push_int(heap, buffer.empty(heap, 64), want);
+        m = buffer.append(heap, m, " frames requested; the model makes 1 + 4k, so ");
+        m = push_int(heap, m, frames);
+        borrow m as &mb in {
+            io.write_all(io, buffer.bytes(mb));
+        }
+        io.write_all(io, "\n");
+        buffer.drop(heap, m);
+    }
+    let tokens = lf * (h2 / 32) * (w / 32);
+    if tokens > 4000 && force == false {
+        var m = push_int(heap, buffer.empty(heap, 320), frames);
+        m = buffer.append(heap, m, " frames at ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " are ");
+        m = push_int(heap, m, tokens);
+        m = buffer.append(heap, m, " tokens: the denoiser's attention here is measured only up to about 1,100 (docs/diffusion.md V4a; the fused switch `ATT=1` is not wired into this driver). Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force");
+        return (refuse_buf(io, heap, m), 0, 0, 0);
+    }
+    if frames * w * h2 > 17 * 1024 * 576 && force == false {
+        var m = push_int(heap, buffer.empty(heap, 320), frames);
+        m = buffer.append(heap, m, " frames at ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " decode as one clip and the decoder runs out of GPU memory above about 17 frames of 1024x576 or 33 of 640x352 (docs/diffusion.md V2b). Use fewer frames or a smaller size, or --force");
+        return (refuse_buf(io, heap, m), 0, 0, 0);
+    }
+    return (0, frames, lf, tokens);
+}
+
+pub fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], frames_text: &static [byte], force: bool) -> [io_write, err_write, heap] int {
+    let (w, h2) = size_of(size);
+    let want = num(frames_text);
+    if w < 0 || want < 0 {
+        return refuse_text(io, "usage: media check video WxH FRAMES FORCE");
+    }
+    let (code, frames, lf, tokens) = video_limits(io, heap, size, w, h2, want, force);
+    if code != 0 {
+        return code;
+    }
+    var m = buffer.append(heap, buffer.empty(heap, 64), "ok frames ");
+    m = push_int(heap, m, frames);
+    m = buffer.append(heap, m, " latent ");
+    m = push_int(heap, m, lf);
+    m = buffer.append(heap, m, " tokens ");
+    m = push_int(heap, m, tokens);
+    m = buffer.push(heap, m, byte_of(10));
+    borrow m as &mb2 in {
+        io.write_all(io, buffer.bytes(mb2));
+    }
+    buffer.drop(heap, m);
+    return 0;
+}
+
+pub fn models[&i](io: &!i Io) -> [io_write] int {
+    io.write_all(io, "video:\n");
+    io.write_all(io, "  fastwan2.2-ti2v-5b     FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers (default)  [3 DMD steps, 640x352 to 1280x704, up to 33 frames measured]\n");
+    io.write_all(io, "  wan2.2-ti2v-5b-base    Wan-AI/Wan2.2-TI2V-5B-Diffusers  [only with --image: 30 Euler steps with guidance, continues the picture (docs/video-image.md)]\n");
+    io.write_all(io, "edit:\n");
+    io.write_all(io, "  qwen-image-2.1-turbo   Qwen/Qwen-Image-2.1-Turbo (default)  [8 steps, image + instruction]\n");
+    io.write_all(io, "image:\n");
+    io.write_all(io, "  qwen-image-2.1-turbo   Qwen/Qwen-Image-2.1-Turbo (default)  [8 steps, a prompt, 512x512 to 1024x1024 measured]\n");
+    return 0;
+}
+
+// What the wrapper (scripts/media) passes in place of the environment (docs/media-cho.md section 3).
+pub struct Ctx {
+    root: &static [byte],
+    cwd: &static [byte],
+    home: &static [byte],
+    cache: &static [byte],
+    edit_weights: &static [byte],
+    edit_text_weights: &static [byte],
+    free_kb: &static [byte],
+    ffmpeg: &static [byte],
+}
+
+pub fn rewriter_blank[&t](text: &t [byte]) -> [] bool {
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
+pub fn lower_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 32);
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c >= 65 && c <= 90 {
+            out = buffer.push(heap, out, byte_of(c + 32));
+        } else {
+            out = buffer.push(heap, out, byte_of(c));
+        }
+        k = k + 1;
+    }
+    return out;
+}
+
+pub fn bad_value[&i](io: &!i Io, flag: &static [byte]) -> [err_write] int {
+    io.error_all(io, "media: argument ");
+    io.error_all(io, flag);
+    io.error_all(io, ": expected a value (a whole number where a number is asked)\n");
+    return 2;
+}
+
+// Is there a Hugging Face snapshot of `repo` (`Org--Name`) with `sub` in it? (tools/media.py snapshot())
+pub fn has_snapshot[&h, &f, &o, &r, &u](heap: &!h Heap, fs: &f Fs(""), home: &o [byte], repo: &r [byte], sub: &u [byte]) -> [heap, fs_read(""), dir_read] bool {
+    var base = buffer.append(heap, buffer.empty(heap, 128), home);
+    base = buffer.append(heap, base, "/.cache/huggingface/hub/models--");
+    base = buffer.append(heap, base, repo);
+    base = buffer.append(heap, base, "/snapshots");
+    var found = false;
+    borrow base as &bb in {
+        if files.path_ok(fs, buffer.bytes(bb)) {
+            match open_dir(fs, buffer.bytes(bb)) {
+                DirOpened::Failed(e) => {
+                }
+                DirOpened::Ok(d) => {
+                    var snaps = d;
+                    borrow snaps as &sn in {
+                        let names = dirs.list(heap, sn, 64);
+                        borrow names as &nm in {
+                            var i = 0;
+                            while i < dirs.count(nm) {
+                                let one = pathx.under(heap, buffer.bytes(bb), dirs.name(nm, i));
+                                var deeper = buffer.empty(heap, 8);
+                                borrow one as &ob in {
+                                    buffer.drop(heap, deeper);
+                                    deeper = pathx.under(heap, buffer.bytes(ob), sub);
+                                }
+                                buffer.drop(heap, one);
+                                borrow deeper as &db in {
+                                    match open_dir(fs, buffer.bytes(db)) {
+                                        DirOpened::Ok(sd) => {
+                                            dir_close(sd);
+                                            found = true;
+                                        }
+                                        DirOpened::Failed(e) => {
+                                        }
+                                    }
+                                }
+                                buffer.drop(heap, deeper);
+                                i = i + 1;
+                            }
+                        }
+                        dirs.drop(heap, names);
+                    }
+                    dir_close(snaps);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, base);
+    return found;
+}
+
+pub fn is_dir[&f, &t](fs: &f Fs(""), path: &t [byte]) -> [fs_read("")] bool {
+    if files.path_ok(fs, path) == false {
+        return false;
+    }
+    match open_dir(fs, path) {
+        DirOpened::Ok(d) => {
+            dir_close(d);
+            return true;
+        }
+        DirOpened::Failed(e) => {
+            return false;
+        }
+    }
+}
+
+pub fn is_file[&f, &t](fs: &f Fs(""), path: &t [byte]) -> [fs_read("")] bool {
+    return files.exists(fs, path);
+}
+
+// The refusals `image` and `edit` share and Python makes in the same order: the Metal session, then the model name.
+pub fn session_and_model[&i, &h, &f, &m, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), ctx: &zc Ctx, task: &static [byte], model: &m [byte]) -> [err_write, heap, fs_read("")] int {
+    let sp = pathx.under(heap, ctx.root, "build/cancho-gpu-metal-session");
+    var there = false;
+    borrow sp as &sb in {
+        there = is_file(fs, buffer.bytes(sb));
+    }
+    buffer.drop(heap, sp);
+    if there == false {
+        return refuse_text(io, "build/cancho-gpu-metal-session is missing: build it with `CANCHO=<pinned cancho> scripts/build-metal-session.sh` (cancho.toml names the compiler)");
+    }
+    let low = lower_text(heap, model);
+    var known = true;
+    borrow low as &lb in {
+        known = len(buffer.bytes(lb)) == 0 || is_text(buffer.bytes(lb), "qwen-image-2.1-turbo");
+    }
+    if known == false {
+        var m2 = buffer.append(heap, buffer.empty(heap, 128), "model '");
+        borrow low as &lb2 in {
+            m2 = buffer.append(heap, m2, buffer.bytes(lb2));
+        }
+        m2 = buffer.append(heap, m2, "' is not supported for ");
+        m2 = buffer.append(heap, m2, task);
+        m2 = buffer.append(heap, m2, "; supported: qwen-image-2.1-turbo");
+        buffer.drop(heap, low);
+        return refuse_buf(io, heap, m2);
+    }
+    buffer.drop(heap, low);
+    return 0;
+}
+
+// The snapshot and the weights directory: the same two refusals in both commands.
+pub fn weights_checks[&i, &h, &f, &w, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), ctx: &zc Ctx, wd: &w [byte]) -> [err_write, heap, fs_read(""), dir_read] int {
+    if has_snapshot(heap, fs, ctx.home, "Qwen--Qwen-Image-2.1-Turbo", "transformer") == false {
+        return refuse_text(io, "Qwen-Image-2.1-Turbo is not in the Hugging Face cache (the repository's directory is empty): `hf download Qwen/Qwen-Image-2.1-Turbo` (about 50 GB)");
+    }
+    if is_dir(fs, wd) == false {
+        var m = buffer.append(heap, buffer.empty(heap, 320), "the transformer's f16 block weights (head-permuted, 14 GB, written by tests/dit_big.py: docs/diffusion.md D7) are not at ");
+        m = buffer.append(heap, m, wd);
+        m = buffer.append(heap, m, ": pass --weights DIR or set CANCHO_MEDIA_EDIT_WEIGHTS");
+        return refuse_buf(io, heap, m);
+    }
+    return 0;
+}
+
+pub fn weights_of[&h, &zc](heap: &!h Heap, ctx: &zc Ctx, flag: &static [byte], from_env: &static [byte], name: &static [byte]) -> [heap] buffer.Buffer {
+    if len(flag) > 0 {
+        return pathx.absolute(heap, ctx.cwd, flag);
+    }
+    if len(from_env) > 0 {
+        return pathx.absolute(heap, ctx.cwd, from_env);
+    }
+    return pathx.under(heap, ctx.cache, name);
+}
+
+// The prompt through the rewriter (tools/media.py rewrite_prompt): (0, the new text), or (2, a copy) after a refusal; the rewriter failing is not a refusal, the original comes back with the reason on stderr.
+pub fn rewrite_text[&i, &h, &f, &x, &c, &zc, &p, &q, &r, &m](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), clock: &c Clock, ctx: &zc Ctx, kind: &static [byte], prompt: &p [byte], pic: &q [byte], pic2: &r [byte], model: &m [byte]) -> [err_write, heap, fs_read(""), exec_under, clock, poll] (int, buffer.Buffer) {
+    var answer = buffer.append(heap, buffer.empty(heap, 64), prompt);
+    let cli = pathx.under(heap, ctx.root, "build/rewrite_cli");
+    var there = false;
+    borrow cli as &cb in {
+        there = is_file(fs, buffer.bytes(cb));
+    }
+    buffer.drop(heap, cli);
+    if there == false {
+        return (refuse_text(io, "--rewrite needs build/rewrite_cli: `cancho build studio/rewrite_cli.cho studio/rewrite.cho studio/files.cho --std -o build/rewrite_cli`"), answer);
+    }
+    var sysp = buffer.append(heap, buffer.empty(heap, 96), ctx.root);
+    sysp = buffer.append(heap, sysp, "/studio/rewrite/");
+    if len(pic2) > 0 {
+        sysp = buffer.append(heap, sysp, "edit2");
+    } else {
+        sysp = buffer.append(heap, sysp, kind);
+    }
+    sysp = buffer.append(heap, sysp, ".txt");
+    var status = 0;
+    var have = false;
+    borrow sysp as &sb in {
+        have = is_file(fs, buffer.bytes(sb));
+    }
+    if have == false {
+        var m2 = buffer.append(heap, buffer.empty(heap, 128), "no system prompt for ");
+        m2 = buffer.append(heap, m2, kind);
+        m2 = buffer.append(heap, m2, ": ");
+        borrow sysp as &sb2 in {
+            m2 = buffer.append(heap, m2, buffer.bytes(sb2));
+        }
+        buffer.drop(heap, sysp);
+        return (refuse_buf(io, heap, m2), answer);
+    }
+    let bpath = pathx.under(heap, ctx.root, "build");
+    borrow bpath as &bp in {
+        match open_dir(fs, buffer.bytes(bp)) {
+            DirOpened::Failed(e) => {
+                status = refuse_text(io, "build/ is not at the --root given");
+            }
+            DirOpened::Ok(d) => {
+                var bd = d;
+                borrow bd as &bdr in {
+                    borrow sysp as &sb3 in {
+                        let nb = rewriter.ask(io, heap, exec, bdr, clock, buffer.bytes(sb3), model, prompt, pic, pic2);
+                        buffer.drop(heap, answer);
+                        answer = nb;
+                    }
+                }
+                dir_close(bd);
+            }
+        }
+    }
+    buffer.drop(heap, bpath);
+    buffer.drop(heap, sysp);
+    return (status, answer);
+}
+
+// One stage of a job: `== label`, the program run on `list` (NUL-separated), `== label: N s`. 0, or 1 after a refusal ("label failed (exit N)").
+pub fn step[&i, &h, &x, &y, &c, &l, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    return step_as(io, heap, exec, sdir, clock, "stage", label, list, env);
+}
+
+// `step` of the program `program` of scripts/.
+pub fn step_as[&i, &h, &x, &y, &c, &p, &lb, &l, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &p [byte], label: &lb [byte], list: &l [byte], env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    io.write_all(io, "== ");
+    io.write_all(io, label);
+    io.write_all(io, "\n");
+    let t0 = clock_ms(clock);
+    let code = stage.run_as(io, heap, exec, sdir, clock, program, list, env, 10800000);
+    if code != 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 96), label);
+        m = buffer.append(heap, m, " failed (exit ");
+        m = push_int(heap, m, code);
+        m = buffer.push(heap, m, byte_of(41));
+        refuse_buf(io, heap, m);
+        return 1;
+    }
+    var s = buffer.append(heap, buffer.empty(heap, 96), "== ");
+    s = buffer.append(heap, s, label);
+    s = buffer.append(heap, s, ": ");
+    s = push_int(heap, s, (clock_ms(clock) - t0 + 500) / 1000);
+    s = buffer.append(heap, s, " s\n");
+    borrow s as &sb in {
+        io.write_all(io, buffer.bytes(sb));
+    }
+    buffer.drop(heap, s);
+    return 0;
+}
+
+// prompt.txt (the prompt used, a line) and, when the rewriter changed it, prompt.orig.txt (the one given).
+pub fn write_prompts[&h, &f, &t, &p, &o](heap: &!h Heap, fs: &f Fs(""), out: &t [byte], text: &p [byte], orig: &o [byte]) -> [heap, fs_write(""), file_write] int {
+    let pp = pathx.under(heap, out, "prompt.txt");
+    var pt = buffer.append(heap, buffer.empty(heap, 64), text);
+    pt = buffer.push(heap, pt, byte_of(10));
+    borrow pp as &ppb in {
+        borrow pt as &ptb in {
+            files.write_all(fs, buffer.bytes(ppb), buffer.bytes(ptb));
+        }
+    }
+    buffer.drop(heap, pp);
+    buffer.drop(heap, pt);
+    if is_text(text, orig) == false {
+        let po = pathx.under(heap, out, "prompt.orig.txt");
+        var ot = buffer.append(heap, buffer.empty(heap, 64), orig);
+        ot = buffer.push(heap, ot, byte_of(10));
+        borrow po as &pob in {
+            borrow ot as &otb in {
+                files.write_all(fs, buffer.bytes(pob), buffer.bytes(otb));
+            }
+        }
+        buffer.drop(heap, po);
+        buffer.drop(heap, ot);
+    }
+    return 0;
+}
+
+// Run the stage and write prompt.txt: the end `image` and `edit` share. `list` is the stage's argument list (NUL-separated), `out` the output directory.
+pub fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p, &o](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte], out: &t [byte], text: &p [byte], orig: &o [byte], result: &r [byte]) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
+    if step(io, heap, exec, sdir, clock, label, list, env) != 0 {
+        return 1;
+    }
+    write_prompts(heap, fs, out, text, orig);
+    io.write_all(io, "done: ");
+    io.write_all(io, result);
+    io.write_all(io, "\n");
+    return 0;
+}
+
+// The last snapshot of the Hugging Face repository `repo` (`Org--Name`) that has `sub` in it, as a path under `home`; empty when there is none (tools/media.py snapshot(): sorted, the last).
+pub fn snapshot_of[&h, &f, &o, &r, &u](heap: &!h Heap, fs: &f Fs(""), home: &o [byte], repo: &r [byte], sub: &u [byte]) -> [heap, fs_read(""), dir_read] buffer.Buffer {
+    var base = buffer.append(heap, buffer.empty(heap, 128), home);
+    base = buffer.append(heap, base, "/.cache/huggingface/hub/models--");
+    base = buffer.append(heap, base, repo);
+    base = buffer.append(heap, base, "/snapshots");
+    var best = buffer.empty(heap, 8);
+    borrow base as &bb in {
+        if files.path_ok(fs, buffer.bytes(bb)) {
+            match open_dir(fs, buffer.bytes(bb)) {
+                DirOpened::Failed(e) => {
+                }
+                DirOpened::Ok(d) => {
+                    var snaps = d;
+                    borrow snaps as &sn in {
+                        let names = dirs.list(heap, sn, 64);
+                        borrow names as &nm in {
+                            var i = 0;
+                            while i < dirs.count(nm) {
+                                var cand = pathx.under(heap, buffer.bytes(bb), dirs.name(nm, i));
+                                if len(sub) > 0 {
+                                    var deeper = buffer.empty(heap, 8);
+                                    borrow cand as &cb0 in {
+                                        buffer.drop(heap, deeper);
+                                        deeper = pathx.under(heap, buffer.bytes(cb0), sub);
+                                    }
+                                    buffer.drop(heap, cand);
+                                    cand = deeper;
+                                }
+                                var ok = false;
+                                var bigger = false;
+                                borrow cand as &cb in {
+                                    ok = is_dir(fs, buffer.bytes(cb));
+                                    borrow best as &bt in {
+                                        bigger = len(buffer.bytes(bt)) == 0 || bytes.compare(buffer.bytes(cb), buffer.bytes(bt)) > 0;
+                                    }
+                                }
+                                if ok && bigger {
+                                    buffer.drop(heap, best);
+                                    best = cand;
+                                } else {
+                                    buffer.drop(heap, cand);
+                                }
+                                i = i + 1;
+                            }
+                        }
+                        dirs.drop(heap, names);
+                    }
+                    dir_close(snaps);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, base);
+    return best;
+}
+
+// An argument of the stage: `text`, then its NUL.
+pub fn put_arg[&h, &t](heap: &!h Heap, list: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    return stage.add_arg(heap, list, text);
+}
+
+pub fn put_num[&h](heap: &!h Heap, list: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    return buffer.push(heap, push_int(heap, list, n), byte_of(0));
+}

@@ -14,7 +14,10 @@ case "${1:-}" in
   image) cho=1 ;;
   edit) cho=1 ;;
   rewrite) cho=1 ;;
+  video) cho=1 ;;
 esac
+# a chain of clips (`video --segments`, `--then`, `--no-correct`) is still tools/media.py's; one clip from a picture (`video --image`) is cancho's
+for a in "$@"; do case "$a" in --segments|--then|--no-correct) [ "${1:-}" = video ] && cho=0 ;; esac; done
 [ -x "$HERE/build/media" ] || cho=0
 [ "${CANCHO_MEDIA_IMPL:-}" = python ] && cho=0
 if [ $cho = 0 ]; then
@@ -41,6 +44,9 @@ for v in DIT_STEP DIT_STATS LANG TMPDIR PATH HOME; do
   eval "val=\${$v-}"
   [ -n "$val" ] && set -- --env "$v=$val" "$@"
 done
+command -v ffmpeg >/dev/null 2>&1 && set -- --ffmpeg "$@"
+FREE=$(df -k "$CACHE" 2>/dev/null | awk 'NR==2{print $4}')
+[ -n "$FREE" ] && set -- --free-kb "$FREE" "$@"
 [ -n "$ONLINE" ] && set -- --online "$@"
 [ -n "${CANCHO_MEDIA_EDIT_TEXT_WEIGHTS:-}" ] && set -- --edit-text-weights "$CANCHO_MEDIA_EDIT_TEXT_WEIGHTS" "$@"
 [ -n "${CANCHO_MEDIA_EDIT_WEIGHTS:-}" ] && set -- --edit-weights "$CANCHO_MEDIA_EDIT_WEIGHTS" "$@"

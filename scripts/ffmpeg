@@ -1,0 +1,3 @@
+#!/bin/sh
+# The program `build/media` starts for the mp4 of a video (docs/media-cho.md section 8): ffmpeg, found on the PATH the wrapper passed. A cancho program can start only a program of scripts/.
+exec ffmpeg "$@"
