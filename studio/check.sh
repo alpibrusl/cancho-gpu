@@ -672,6 +672,20 @@ check "edit form: a second file that is not a picture is refused: 422" "$(curl -
 check "edit form: a condition_area that is not digits is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=bad -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" -F condition_area=big localhost:18097/edit)" 422
 check "edit form: it offers the second picture and the size" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=image2\|name=condition_area' | sort | tr '\n' ' ')" "name=condition_area name=image2 "
 check "edit form: the two refused requests queued no job and saved no picture (the checks come before the files)" "$(wc -l < "$R/off/queue" | tr -d ' ') $(ls "$R/off" | grep -c '^upload-')" "$Fq $Fu"
+# the pictures the person gave, on the job's page and from /files (studio/results.cho: input1.*, input2.*)
+FT=$(curl -s -o /dev/null -D - -H "$(hdr)" localhost:18097/files/$FMI/input1.jpg | tr -d '\r' | grep -i '^content-type' | tr 'A-Z' 'a-z' | tr -d ' ')
+check "inputs: the first picture is served unchanged, as image/jpeg" "$(curl -s -H "$(hdr)" localhost:18097/files/$FMI/input1.jpg | cmp - "$R/p1.jpg" && echo same) $FT" "same content-type:image/jpeg"
+FT2=$(curl -s -o /dev/null -D - -H "$(hdr)" localhost:18097/files/$FMI/input2.png | tr -d '\r' | grep -i '^content-type' | tr 'A-Z' 'a-z' | tr -d ' ')
+check "inputs: the second picture is served unchanged, as image/png" "$(curl -s -H "$(hdr)" localhost:18097/files/$FMI/input2.png | cmp - "$R/p2.png" && echo same) $FT2" "same content-type:image/png"
+check "inputs: a type the upload did not have is 404 (input1.png, input2.webp)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/files/$FMI/input1.png) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/files/$FMI/input2.webp)" "404 404"
+check "inputs: names off the list are 404 (input3.png, input1, a path)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/files/$FMI/input3.png) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/files/$FMI/input1) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" --path-as-is localhost:18097/files/$FMI/..%2Fupload-$FMI.jpg)" "404 404 404"
+check "inputs: a job with no upload has no input (404)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/files/$PEI/input1.jpg)" 404
+check "inputs: the page of a job still waiting shows the two pictures and no result" "$(cget /jobs/$FMI | grep -o '<figure><a href=/files/[0-9]*/[a-z0-9.]*' | sed 's#.*/files/[0-9]*/##' | tr '\n' ' ')" "input1.jpg input2.png "
+printf 'done\n' > "$R/off/$FMI.state"; mkdir -p "$R/off/out/$FMI"; head -c 3000 /dev/urandom > "$R/off/out/$FMI/edited.png"
+check "inputs: a finished edit shows the first picture, the second and the result, in that order" "$(cget /jobs/$FMI | grep -o '<figure><a href=/files/[0-9]*/[a-z0-9.]*' | sed 's#.*/files/[0-9]*/##' | tr '\n' ' ')" "input1.jpg input2.png edited.png "
+check "inputs: ...captioned Picture 1, Picture 2 and Result, and the result is not shown twice" "$(cget /jobs/$FMI | grep -o '<figcaption>[A-Za-z0-9 ]*</figcaption>' | sed 's#</*figcaption>##g' | tr '\n' ',') $(cget /jobs/$FMI | grep -c '<img alt=\"the edited picture\" src=')" "Picture 1,Picture 2,Result, 0"
+check "inputs: a job made by the API (no upload) shows its result alone, as before" "$(cget /jobs/$PEI | grep -c 'class=trio') $(cget /jobs/$PEI | grep -c '<img alt=\"the edited picture\" src=')" "0 1"
+check "inputs: the OpenAPI document lists the six names" "$(jq -r '.paths["/files/{id}/{name}"].get.parameters[] | select(.name=="name") | .schema.enum | map(select(startswith("input"))) | length' studio/openapi.json)" 6
 # the cases page (studio/cases.cho): six forms that post to /edit with two pictures and a prepared instruction
 CS=$(curl -s -H "$(hdr)" localhost:18097/cases)
 check "cases: six forms, each to /edit as multipart" "$(echo "$CS" | grep -o '<form id=[a-z]* method=post action=/edit enctype=multipart/form-data>' | wc -l | tr -d ' ')" 6

@@ -9,7 +9,7 @@ import files;
 // `results` -- what the browser sees of a job (docs/studio.md, route 3): a page the server writes, and the job's files by a closed list of names.
 //
 //   GET /jobs/N          HTML: the state, the result (an <img> or a <video>) when it is done, the log; refreshes itself while queued or running
-//   GET /files/N/NAME    NAME is one of edited.png, image.png, video.mp4, video.gif, log; never a path from the client
+//   GET /files/N/NAME    NAME is one of edited.png, image.png, video.mp4, video.gif, log, or a picture the person gave (input1.jpg|png|webp, input2.jpg|png|webp: the files `upload-N...` that POST /edit kept); never a path from the client
 //
 // `media` writes `<data>/out/N/{edited.png,image.png,video.mp4,video.gif}`; the worker writes `<data>/N.log`.
 
@@ -53,6 +53,48 @@ fn out_path[&h, &d, &i, &n](heap: &!h Heap, dir: &d [byte], id: &i [byte], name:
 
 pub fn has_out[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
     let p = out_path(heap, dir, id, name);
+    var yes = false;
+    borrow p as &pb in {
+        yes = files.exists(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
+// The file name's tail of the upload behind a name of the closed list: `input1.png` is `<data>/upload-N.png`, `input2.png` is `<data>/upload-N-2.png` (studio/upload.cho keeps them so). "" for any other name.
+fn upload_tail[&n](name: &n [byte]) -> [] &static [byte] {
+    if bytes.equal(name, "input1.jpg") {
+        return ".jpg";
+    }
+    if bytes.equal(name, "input1.png") {
+        return ".png";
+    }
+    if bytes.equal(name, "input1.webp") {
+        return ".webp";
+    }
+    if bytes.equal(name, "input2.jpg") {
+        return "-2.jpg";
+    }
+    if bytes.equal(name, "input2.png") {
+        return "-2.png";
+    }
+    if bytes.equal(name, "input2.webp") {
+        return "-2.webp";
+    }
+    return "";
+}
+
+// `<data>/upload-N` + `tail`
+fn upload_path[&h, &d, &i, &t](heap: &!h Heap, dir: &d [byte], id: &i [byte], tail: &t [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, buffer.empty(heap, 64), dir);
+    p = buffer.append(heap, p, "/upload-");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, tail);
+    return p;
+}
+
+fn has_upload[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
+    let p = upload_path(heap, dir, id, upload_tail(name));
     var yes = false;
     borrow p as &pb in {
         yes = files.exists(fs, buffer.bytes(pb));
@@ -370,8 +412,25 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
         page = buffer.append(heap, page, buffer.bytes(sb2));
     }
     page = buffer.append(heap, page, "</span></div><div class=split><section class=main>");
+    // the pictures the person gave and, when the job is done, the result beside them (an edit made through the form: studio/upload.cho keeps its pictures)
+    var row = buffer.empty(heap, 8);
+    let (row2, shown) = input_figures(heap, row, fs, dir, id);
+    row = row2;
+    var in_row = false;
+    if shown > 0 {
+        if done && has_out(heap, fs, dir, id, "edited.png") {
+            row = figure(heap, row, id, "edited.png", "the edited picture", "Result");
+            in_row = true;
+        }
+        page = buffer.append(heap, page, "<div class=trio>");
+        borrow row as &rowr in {
+            page = buffer.append(heap, page, buffer.bytes(rowr));
+        }
+        page = buffer.append(heap, page, "</div>");
+    }
+    buffer.drop(heap, row);
     if done {
-        if has_out(heap, fs, dir, id, "edited.png") {
+        if in_row == false && has_out(heap, fs, dir, id, "edited.png") {
             page = buffer.append(heap, page, "<img alt=\"the edited picture\" src=/files/");
             page = buffer.append(heap, page, id);
             page = buffer.append(heap, page, "/edited.png>");
@@ -451,6 +510,50 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     buffer.drop(heap, av);
     buffer.drop(heap, state);
     return (200, close(heap, page));
+}
+
+// One figure of the job page's row of pictures: the file `name` of the job, with its caption.
+fn figure[&h, &i](heap: &!h Heap, page: buffer.Buffer, id: &i [byte], name: &static [byte], alt: &static [byte], caption: &static [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<figure><a href=/files/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    p = buffer.append(heap, p, "><img alt=\"");
+    p = buffer.append(heap, p, alt);
+    p = buffer.append(heap, p, "\" loading=lazy src=/files/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    p = buffer.append(heap, p, "></a><figcaption>");
+    p = buffer.append(heap, p, caption);
+    return buffer.append(heap, p, "</figcaption></figure>");
+}
+
+// The pictures the person gave this job, as figures: (the page, how many). A job made by POST /api/jobs has none (its picture is a path, never served).
+fn input_figures[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read("")] (buffer.Buffer, int) {
+    var p = page;
+    var n = 0;
+    if has_upload(heap, fs, dir, id, "input1.jpg") {
+        p = figure(heap, p, id, "input1.jpg", "the first picture", "Picture 1");
+        n = n + 1;
+    } else if has_upload(heap, fs, dir, id, "input1.png") {
+        p = figure(heap, p, id, "input1.png", "the first picture", "Picture 1");
+        n = n + 1;
+    } else if has_upload(heap, fs, dir, id, "input1.webp") {
+        p = figure(heap, p, id, "input1.webp", "the first picture", "Picture 1");
+        n = n + 1;
+    }
+    if has_upload(heap, fs, dir, id, "input2.jpg") {
+        p = figure(heap, p, id, "input2.jpg", "the second picture", "Picture 2");
+        n = n + 1;
+    } else if has_upload(heap, fs, dir, id, "input2.png") {
+        p = figure(heap, p, id, "input2.png", "the second picture", "Picture 2");
+        n = n + 1;
+    } else if has_upload(heap, fs, dir, id, "input2.webp") {
+        p = figure(heap, p, id, "input2.webp", "the second picture", "Picture 2");
+        n = n + 1;
+    }
+    return (p, n);
 }
 
 // The number of digits at `from` in `line` and where they end: (n, end). No digit: (0, from).
@@ -797,12 +900,21 @@ pub fn site_file[&h, &f, &s, &n](heap: &!h Heap, fs: &f Fs(""), site: &s [byte],
 // The media type for a name of the closed list, or "" for a name that is not on it.
 // The one stylesheet of the pages the server writes (`GET /style.css`): a system font, a card for each result, light and dark by the browser's setting, no script, no outside file.
 pub fn css() -> [] &static [byte] {
-    return ":root{color-scheme:dark;--bg:#121314;--surface:#1B1D1F;--raised:#24272A;--line:#2A2D30;--line2:#3A3E42;--line3:#4A4F54;--fg:#ECEAE4;--muted:#B5B2A9;--accent:#F2B544;--accent2:#FFD27A;--err:#FFB4A0;--ink:#141413;--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent2)}header.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 32px;padding:14px 32px;border-bottom:1px solid var(--line)}.brand{font:500 16px var(--mono);color:var(--fg)}.brand:hover{color:var(--fg)}nav{display:flex;flex-wrap:wrap;gap:4px;flex-grow:1}nav a{padding:12px 14px;border-radius:8px;color:var(--muted)}nav a[aria-current=page]{background:var(--raised);color:var(--fg);font-weight:500}.status{display:flex;align-items:center;gap:8px;font:13px var(--mono);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--line3)}.busy .dot{background:var(--accent)}main{max-width:1216px;margin:0 auto;padding:28px 32px 48px;display:flex;flex-direction:column;gap:20px}h1{margin:0;font-size:22px;font-weight:600}h2{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--muted)}p{margin:0;color:var(--muted)}b{color:var(--fg)}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.row h1{flex-grow:1}.pill{padding:4px 12px;border-radius:999px;border:1px solid var(--line2);font:13px var(--mono);color:var(--fg)}img,video{display:block;max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line)}.card,form,.cell{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px}.cell{padding:16px}.cell h2 a{color:var(--fg)}.cell h2{font-size:15px;color:var(--fg)}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}.job{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--fg)}.job:hover{color:var(--fg);border-color:var(--line3)}.job.running{border-color:var(--accent)}.thumb{position:relative;aspect-ratio:16/9;background:#202326;display:flex;align-items:center;justify-content:center;font:12px var(--mono);color:var(--muted)}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover;border:0;border-radius:0}.badge{position:absolute;top:10px;left:10px;padding:3px 9px;border-radius:999px;font:500 12px var(--mono);background:var(--line2);color:var(--fg)}.badge.running{background:var(--accent);color:var(--ink)}.badge.failed{background:var(--err);color:var(--ink)}.badge.done{background:var(--bg)}.idn{position:absolute;top:10px;right:10px;font:12px var(--mono);color:var(--muted)}.bar{height:4px;background:var(--line);overflow:hidden}.bar i{display:block;height:4px;width:40%;background:var(--accent);animation:slide 1.6s ease-in-out infinite}@keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}@media(prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}.body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px}.prompt{font-weight:500;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.meta{font:12px var(--mono);color:var(--muted)}.split{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}.split>.main{flex:999 1 560px;min-width:0;padding:0;display:flex;flex-direction:column;gap:12px}.side{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}.card p{color:var(--fg);font-size:16px}.acts{display:flex;flex-wrap:wrap;gap:8px}.btn{min-height:44px;padding:0 16px;border:1px solid var(--line2);border-radius:8px;color:var(--fg);display:inline-flex;align-items:center}.btn:hover{color:var(--fg);border-color:var(--line3)}dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font:13px var(--mono)}dt{color:var(--muted)}dd{margin:0}ul{margin:0;padding:0;list-style:none;font:13px var(--mono)}li{padding:12px 0;border-bottom:1px solid var(--line)}li:last-child{border:0}.alert{border:1px solid var(--err);color:var(--err);border-radius:10px;padding:12px 14px}form{display:flex;flex-direction:column;gap:16px;max-width:44rem}label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}input,select,textarea,button{font:inherit;color:inherit}input:not([type=file]),select,textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);width:100%}input[type=file]{padding:24px;border:2px dashed var(--line3);border-radius:14px;background:var(--surface);width:100%;color:var(--muted)}button{min-height:48px;padding:0 28px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font-weight:600;cursor:pointer}button:hover{background:var(--accent2)}.choices{display:flex;flex-wrap:wrap;justify-content:center;gap:12px}.choices button{min-width:180px;background:var(--surface);color:var(--fg);border:1px solid var(--line2)}.choices button:hover{border-color:var(--accent);background:var(--surface)}form.choices{background:none;border:0;padding:0;max-width:none;flex-direction:row;align-items:center;justify-content:center}code{font-family:var(--mono)}#root{max-width:48rem;margin:0 auto;padding:28px 0 48px}#root>.cui-col{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 24px;gap:16px}#root h1{font-size:22px;margin:0 0 4px}#root .cui-field{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:6px;flex:0 0 auto}#root .cui-field input:not([type=checkbox]):not([type=file]):not([type=range]),#root .cui-field select,#root .cui-field textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--fg);font-size:15px;width:100%;box-shadow:none}#root .cui-field input:disabled,#root .cui-field select:disabled{opacity:.4}#root .cui-field input:focus-visible,#root .cui-field select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}#root button:disabled{opacity:.4;cursor:not-allowed;background:var(--line2);color:var(--muted)}#root span{color:var(--muted)}.bar i.det{animation:none;margin:0;transition:width .6s}body.embed{padding:0;background:var(--bg)}iframe.recent{display:block;width:100%;max-width:1216px;height:760px;margin:0 auto 32px;border:0}#root [role=status]{color:var(--fg)}@media(max-width:600px){header.top{padding:12px 16px}nav a{padding:10px 12px}main{padding:20px 16px 40px}#root{padding:20px 16px 32px}#root>.cui-col{padding:16px}.grid{grid-template-columns:1fr}iframe.recent{height:900px;padding:0 16px}.split>.main{flex-basis:100%}}";
+    return ":root{color-scheme:dark;--bg:#121314;--surface:#1B1D1F;--raised:#24272A;--line:#2A2D30;--line2:#3A3E42;--line3:#4A4F54;--fg:#ECEAE4;--muted:#B5B2A9;--accent:#F2B544;--accent2:#FFD27A;--err:#FFB4A0;--ink:#141413;--mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}a{color:var(--accent);text-decoration:none}a:hover{color:var(--accent2)}header.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 32px;padding:14px 32px;border-bottom:1px solid var(--line)}.brand{font:500 16px var(--mono);color:var(--fg)}.brand:hover{color:var(--fg)}nav{display:flex;flex-wrap:wrap;gap:4px;flex-grow:1}nav a{padding:12px 14px;border-radius:8px;color:var(--muted)}nav a[aria-current=page]{background:var(--raised);color:var(--fg);font-weight:500}.status{display:flex;align-items:center;gap:8px;font:13px var(--mono);color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--line3)}.busy .dot{background:var(--accent)}main{max-width:1216px;margin:0 auto;padding:28px 32px 48px;display:flex;flex-direction:column;gap:20px}h1{margin:0;font-size:22px;font-weight:600}h2{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--muted)}p{margin:0;color:var(--muted)}b{color:var(--fg)}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.row h1{flex-grow:1}.pill{padding:4px 12px;border-radius:999px;border:1px solid var(--line2);font:13px var(--mono);color:var(--fg)}img,video{display:block;max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line)}.card,form,.cell{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px}.cell{padding:16px}.cell h2 a{color:var(--fg)}.cell h2{font-size:15px;color:var(--fg)}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}.job{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;color:var(--fg)}.job:hover{color:var(--fg);border-color:var(--line3)}.job.running{border-color:var(--accent)}.thumb{position:relative;aspect-ratio:16/9;background:#202326;display:flex;align-items:center;justify-content:center;font:12px var(--mono);color:var(--muted)}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover;border:0;border-radius:0}.badge{position:absolute;top:10px;left:10px;padding:3px 9px;border-radius:999px;font:500 12px var(--mono);background:var(--line2);color:var(--fg)}.badge.running{background:var(--accent);color:var(--ink)}.badge.failed{background:var(--err);color:var(--ink)}.badge.done{background:var(--bg)}.idn{position:absolute;top:10px;right:10px;font:12px var(--mono);color:var(--muted)}.bar{height:4px;background:var(--line);overflow:hidden}.bar i{display:block;height:4px;width:40%;background:var(--accent);animation:slide 1.6s ease-in-out infinite}@keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}@media(prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}.body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px}.prompt{font-weight:500;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.meta{font:12px var(--mono);color:var(--muted)}.split{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}.split>.main{flex:999 1 560px;min-width:0;padding:0;display:flex;flex-direction:column;gap:12px}.side{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px}.card p{color:var(--fg);font-size:16px}.acts{display:flex;flex-wrap:wrap;gap:8px}.btn{min-height:44px;padding:0 16px;border:1px solid var(--line2);border-radius:8px;color:var(--fg);display:inline-flex;align-items:center}.btn:hover{color:var(--fg);border-color:var(--line3)}dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font:13px var(--mono)}dt{color:var(--muted)}dd{margin:0}ul{margin:0;padding:0;list-style:none;font:13px var(--mono)}li{padding:12px 0;border-bottom:1px solid var(--line)}li:last-child{border:0}.alert{border:1px solid var(--err);color:var(--err);border-radius:10px;padding:12px 14px}form{display:flex;flex-direction:column;gap:16px;max-width:44rem}label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}input,select,textarea,button{font:inherit;color:inherit}input:not([type=file]),select,textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);width:100%}input[type=file]{padding:24px;border:2px dashed var(--line3);border-radius:14px;background:var(--surface);width:100%;color:var(--muted)}button{min-height:48px;padding:0 28px;border:0;border-radius:10px;background:var(--accent);color:var(--ink);font-weight:600;cursor:pointer}button:hover{background:var(--accent2)}.choices{display:flex;flex-wrap:wrap;justify-content:center;gap:12px}.choices button{min-width:180px;background:var(--surface);color:var(--fg);border:1px solid var(--line2)}.choices button:hover{border-color:var(--accent);background:var(--surface)}form.choices{background:none;border:0;padding:0;max-width:none;flex-direction:row;align-items:center;justify-content:center}code{font-family:var(--mono)}#root{max-width:48rem;margin:0 auto;padding:28px 0 48px}#root>.cui-col{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 24px;gap:16px}#root h1{font-size:22px;margin:0 0 4px}#root .cui-field{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:6px;flex:0 0 auto}#root .cui-field input:not([type=checkbox]):not([type=file]):not([type=range]),#root .cui-field select,#root .cui-field textarea{min-height:44px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--bg);color:var(--fg);font-size:15px;width:100%;box-shadow:none}#root .cui-field input:disabled,#root .cui-field select:disabled{opacity:.4}#root .cui-field input:focus-visible,#root .cui-field select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}#root button:disabled{opacity:.4;cursor:not-allowed;background:var(--line2);color:var(--muted)}#root span{color:var(--muted)}.bar i.det{animation:none;margin:0;transition:width .6s}body.embed{padding:0;background:var(--bg)}iframe.recent{display:block;width:100%;max-width:1216px;height:760px;margin:0 auto 32px;border:0}#root [role=status]{color:var(--fg)}@media(max-width:600px){header.top{padding:12px 16px}nav a{padding:10px 12px}main{padding:20px 16px 40px}#root{padding:20px 16px 32px}#root>.cui-col{padding:16px}.grid{grid-template-columns:1fr}iframe.recent{height:900px;padding:0 16px}.split>.main{flex-basis:100%}}.trio{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}.trio figure{margin:0}.trio img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}.trio figcaption{color:var(--muted);font-size:13px;margin-top:6px}";
 }
 
 pub fn content_type[&n](name: &n [byte]) -> [] &static [byte] {
     if bytes.equal(name, "edited.png") || bytes.equal(name, "image.png") {
         return "image/png";
+    }
+    if bytes.equal(name, "input1.jpg") || bytes.equal(name, "input2.jpg") {
+        return "image/jpeg";
+    }
+    if bytes.equal(name, "input1.png") || bytes.equal(name, "input2.png") {
+        return "image/png";
+    }
+    if bytes.equal(name, "input1.webp") || bytes.equal(name, "input2.webp") {
+        return "image/webp";
     }
     if bytes.equal(name, "video.mp4") {
         return "video/mp4";
@@ -835,6 +947,10 @@ pub fn file_info[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], 
         return (404, buffer.empty(heap, 8), 0 - 1);
     }
     var path = out_path(heap, dir, id, name);
+    if len(upload_tail(name)) > 0 {
+        buffer.drop(heap, path);
+        path = upload_path(heap, dir, id, upload_tail(name));
+    }
     if bytes.equal(name, "log") {
         buffer.drop(heap, path);
         path = job_path(heap, dir, id, ".log");

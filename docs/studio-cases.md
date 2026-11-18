@@ -31,7 +31,17 @@ Each case has an optional **Real sizes** box (up to 200 bytes; the instruction a
 
 **Not possible here:** a true fit (a garment against body measurements, a sofa against a wall's length) needs geometry the model does not have: a depth or pose estimate, or a drawing at scale, which is a project of its own.
 
-## 5. Not shown
+## 5. The pictures you gave, beside the result (2026-11-19)
+
+**Asked for:** "in the results of jobs I can see the three pictures". A two-picture edit's page (`/jobs/N`) showed only the result; the two pictures it was made from were on disk (`upload-N.*`, `upload-N-2.*`, kept by `POST /edit`) but nowhere on the page, so a result could not be judged against what went in.
+
+**What it does now:** an edit made through the form shows a row **Picture 1, Picture 2, Result** (the result joins the row when the job is done; while it waits or runs, the two inputs show alone; a failed job shows its inputs and the alert). Each is a link to the full file. A job with one picture shows two figures; a job made by `POST /api/jobs` has no upload and its page is as before (its `image` is a path on the machine, and a path from a request is never served). The files come from `GET /files/N/NAME` with six new names in the closed list, `input1.jpg|png|webp` and `input2.jpg|png|webp`, each served from the upload of that name (`input2.png` is `upload-N-2.png`) with its own type; no other name reaches a path, so `input3.png`, `input1` and `..%2F...` are 404. `studio/openapi.json` lists them.
+
+**Checked:** `studio/check.sh` has 10 new checks (434 ok; the run on unmodified `main` has 424 ok): both pictures arrive byte for byte with `image/jpeg` and `image/png`, a type the upload did not have (`input1.png`, `input2.webp`), a name off the list and a job with no upload are 404, the page of a waiting job lists the two inputs, the page of a finished job lists input1, input2 and the result in that order with the captions `Picture 1`, `Picture 2`, `Result` and no second copy of the result, a job made by the API shows its result alone, and the OpenAPI document lists the six names. **One check fails the same way with and without this change** (`image: a size at the limit is accepted`, whitespace in its expected text, `' 202 202 202'` against `' 202  202  202'`); it is not touched here.
+
+**Not done:** the pictures are not on the list page (`/jobs`: one thumbnail per job, the result) or on the comparison pages; they stay on the studio's disk as long as the data directory does (nothing deletes `upload-N.*`), which a person with private pictures should know.
+
+## 6. Not shown
 
 The other four cases have not been run; whether they work as well as try-on is open (a room is a harder case than a jacket: the layout has to hold). One pair of pictures made by the same model is the easiest input; photographs of real people and rooms (shadows, odd poses, cluttered rooms) are not tested. The model does not always keep a pattern or a face exactly, which the page says.
 
