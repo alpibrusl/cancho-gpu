@@ -265,7 +265,7 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
 }
 
 // After the refusals: the disk check, the rewriter, the two stages, prompt.txt, the mp4 and the report.
-fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], prompt: &p [byte], rewrite: bool, rewrite_model: &static [byte], out: &o [byte], tdir: &t [byte], wdir: &d [byte], lf: int, w: int, h2: int, seed: &static [byte], fps: &static [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, exec_under, clock, poll] int {
+fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], prompt: &p [byte], rewrite: bool, rewrite_model: &static [byte], out: &o [byte], tdir: &t [byte], wdir: &d [byte], lf: int, w: int, h2: int, seed: &static [byte], fps: &static [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_write, exec_under, clock, poll] int {
     let pf = pathx.under(heap, wdir, "proj_out.f16");
     var have = false;
     borrow pf as &pfb in {
