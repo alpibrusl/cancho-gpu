@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -660,5 +660,15 @@ check "edit form: a second file that is not a picture is refused: 422" "$(curl -
 check "edit form: a condition_area that is not digits is refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=bad -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" -F condition_area=big localhost:18097/edit)" 422
 check "edit form: it offers the second picture and the size" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=image2\|name=condition_area' | sort | tr '\n' ' ')" "name=condition_area name=image2 "
 check "edit form: the two refused requests queued no job and saved no picture (the checks come before the files)" "$(wc -l < "$R/off/queue" | tr -d ' ') $(ls "$R/off" | grep -c '^upload-')" "$Fq $Fu"
+# the cases page (studio/cases.cho): six forms that post to /edit with two pictures and a prepared instruction
+CS=$(curl -s -H "$(hdr)" localhost:18097/cases)
+check "cases: six forms, each to /edit as multipart" "$(echo "$CS" | grep -o '<form id=[a-z]* method=post action=/edit enctype=multipart/form-data>' | wc -l | tr -d ' ')" 6
+check "cases: each asks for image, image2 and the instruction (and no script)" "$(echo "$CS" | grep -o 'name=image type=file\|name=image2 type=file\|<textarea name=prompt' | sort | uniq -c | tr -s ' ' | tr '\n' ';') $(echo "$CS" | grep -ci '<script')" " 6 <textarea name=prompt; 6 name=image type=file; 6 name=image2 type=file; 0"
+check "cases: the instructions name image1 and image2" "$(echo "$CS" | grep -o '<textarea[^>]*>[^<]*</textarea>' | grep 'image1' | grep -c 'image2')" 6
+check "cases: the header has the place and marks it open" "$(echo "$CS" | grep -o '<a href=/cases aria-current=page>Cases</a>' | wc -l | tr -d ' ')" 1
+check "cases: the other pages link to it" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'href=/cases')" 1
+TRY=$(echo "$CS" | grep -o '<form id=tryon.*' | grep -o '<textarea[^>]*>[^<]*' | head -1 | sed 's/<textarea[^>]*>//')
+CF=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" --form-string "prompt=$TRY" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit); CFI=${CF##*/}
+check "cases: the try-on form's own instruction and two pictures make a two-picture edit" "$(argv_of $CFI | sed "s#$R/off#D#g" | cut -c1-110)" "edit -o D/out/X --also D/upload-$CFI-2.png -- D/upload-$CFI.jpg Dress the person in image1 in the clothing shown"
 check "two pictures: the OpenAPI document names also and condition_area in the job and image2 in the form" "$(jq -r '.components.schemas.NewJob.properties | [has("also"), has("condition_area")] | join(",")' studio/openapi.json) $(grep -c '"image2"' studio/openapi.json)" "true,true 1"
 exit $fail
