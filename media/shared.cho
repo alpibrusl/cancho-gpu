@@ -3,6 +3,7 @@ edition 10;
 module shared;
 
 import std.buffer;
+import std.bytes;
 import std.dirs;
 import std.io;
 import files;
@@ -156,17 +157,13 @@ pub fn check_image[&i, &h, &p, &z](io: &!i Io, heap: &!h Heap, size: &z [byte], 
     return 0;
 }
 
-pub fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], frames_text: &static [byte], force: bool) -> [io_write, err_write, heap] int {
-    let (w, h2) = size_of(size);
-    let want = num(frames_text);
-    if w < 0 || want < 0 {
-        return refuse_text(io, "usage: media check video WxH FRAMES FORCE");
-    }
+// The limits of `media video` after the size is read: (0, frames, latent frames, tokens), or (2, ..) after a refusal. `size` is the text the person gave (the refusal quotes it).
+pub fn video_limits[&i, &h, &z](io: &!i Io, heap: &!h Heap, size: &z [byte], w: int, h2: int, want: int, force: bool) -> [io_write, err_write, heap] (int, int, int, int) {
     if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
         var m = buffer.append(heap, buffer.empty(heap, 192), "--size WxH: both sides must be multiples of 32 (the latent is 16 times smaller and is cut into 2 x 2 patches); ");
         m = buffer.append(heap, m, size);
         m = buffer.append(heap, m, " is not");
-        return refuse_buf(io, heap, m);
+        return (refuse_buf(io, heap, m), 0, 0, 0);
     }
     var base = want;
     if base < 1 {
@@ -195,7 +192,7 @@ pub fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], fra
         m = buffer.append(heap, m, " are ");
         m = push_int(heap, m, tokens);
         m = buffer.append(heap, m, " tokens: the denoiser's attention here is measured only up to about 1,100 (docs/diffusion.md V4a; the fused switch `ATT=1` is not wired into this driver). Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force");
-        return refuse_buf(io, heap, m);
+        return (refuse_buf(io, heap, m), 0, 0, 0);
     }
     if frames * w * h2 > 17 * 1024 * 576 && force == false {
         var m = push_int(heap, buffer.empty(heap, 320), frames);
@@ -204,7 +201,20 @@ pub fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], fra
         m = buffer.push(heap, m, byte_of(120));
         m = push_int(heap, m, h2);
         m = buffer.append(heap, m, " decode as one clip and the decoder runs out of GPU memory above about 17 frames of 1024x576 or 33 of 640x352 (docs/diffusion.md V2b). Use fewer frames or a smaller size, or --force");
-        return refuse_buf(io, heap, m);
+        return (refuse_buf(io, heap, m), 0, 0, 0);
+    }
+    return (0, frames, lf, tokens);
+}
+
+pub fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], frames_text: &static [byte], force: bool) -> [io_write, err_write, heap] int {
+    let (w, h2) = size_of(size);
+    let want = num(frames_text);
+    if w < 0 || want < 0 {
+        return refuse_text(io, "usage: media check video WxH FRAMES FORCE");
+    }
+    let (code, frames, lf, tokens) = video_limits(io, heap, size, w, h2, want, force);
+    if code != 0 {
+        return code;
     }
     var m = buffer.append(heap, buffer.empty(heap, 64), "ok frames ");
     m = push_int(heap, m, frames);
@@ -239,6 +249,8 @@ pub struct Ctx {
     cache: &static [byte],
     edit_weights: &static [byte],
     edit_text_weights: &static [byte],
+    free_kb: &static [byte],
+    ffmpeg: &static [byte],
 }
 
 pub fn rewriter_blank[&t](text: &t [byte]) -> [] bool {
@@ -459,8 +471,8 @@ pub fn rewrite_text[&i, &h, &f, &x, &c, &zc, &p, &q, &r, &m](io: &!i Io, heap: &
     return (status, answer);
 }
 
-// Run the stage and write prompt.txt: the end both commands share. `list` is the stage's argument list (NUL-separated), `out` the output directory.
-pub fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p, &o](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte], out: &t [byte], text: &p [byte], orig: &o [byte], result: &r [byte]) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
+// One stage of a job: `== label`, the program run on `list` (NUL-separated), `== label: N s`. 0, or 1 after a refusal ("label failed (exit N)").
+pub fn step[&i, &h, &x, &y, &c, &l, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
     io.write_all(io, "== ");
     io.write_all(io, label);
     io.write_all(io, "\n");
@@ -483,6 +495,11 @@ pub fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p, &o](io: &!i Io, h
         io.write_all(io, buffer.bytes(sb));
     }
     buffer.drop(heap, s);
+    return 0;
+}
+
+// prompt.txt (the prompt used, a line) and, when the rewriter changed it, prompt.orig.txt (the one given).
+pub fn write_prompts[&h, &f, &t, &p, &o](heap: &!h Heap, fs: &f Fs(""), out: &t [byte], text: &p [byte], orig: &o [byte]) -> [heap, fs_write(""), file_write] int {
     let pp = pathx.under(heap, out, "prompt.txt");
     var pt = buffer.append(heap, buffer.empty(heap, 64), text);
     pt = buffer.push(heap, pt, byte_of(10));
@@ -505,10 +522,76 @@ pub fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p, &o](io: &!i Io, h
         buffer.drop(heap, po);
         buffer.drop(heap, ot);
     }
+    return 0;
+}
+
+// Run the stage and write prompt.txt: the end `image` and `edit` share. `list` is the stage's argument list (NUL-separated), `out` the output directory.
+pub fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p, &o](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte], out: &t [byte], text: &p [byte], orig: &o [byte], result: &r [byte]) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
+    if step(io, heap, exec, sdir, clock, label, list, env) != 0 {
+        return 1;
+    }
+    write_prompts(heap, fs, out, text, orig);
     io.write_all(io, "done: ");
     io.write_all(io, result);
     io.write_all(io, "\n");
     return 0;
+}
+
+// The last snapshot of the Hugging Face repository `repo` (`Org--Name`) that has `sub` in it, as a path under `home`; empty when there is none (tools/media.py snapshot(): sorted, the last).
+pub fn snapshot_of[&h, &f, &o, &r, &u](heap: &!h Heap, fs: &f Fs(""), home: &o [byte], repo: &r [byte], sub: &u [byte]) -> [heap, fs_read(""), dir_read] buffer.Buffer {
+    var base = buffer.append(heap, buffer.empty(heap, 128), home);
+    base = buffer.append(heap, base, "/.cache/huggingface/hub/models--");
+    base = buffer.append(heap, base, repo);
+    base = buffer.append(heap, base, "/snapshots");
+    var best = buffer.empty(heap, 8);
+    borrow base as &bb in {
+        if files.path_ok(fs, buffer.bytes(bb)) {
+            match open_dir(fs, buffer.bytes(bb)) {
+                DirOpened::Failed(e) => {
+                }
+                DirOpened::Ok(d) => {
+                    var snaps = d;
+                    borrow snaps as &sn in {
+                        let names = dirs.list(heap, sn, 64);
+                        borrow names as &nm in {
+                            var i = 0;
+                            while i < dirs.count(nm) {
+                                var cand = pathx.under(heap, buffer.bytes(bb), dirs.name(nm, i));
+                                if len(sub) > 0 {
+                                    var deeper = buffer.empty(heap, 8);
+                                    borrow cand as &cb0 in {
+                                        buffer.drop(heap, deeper);
+                                        deeper = pathx.under(heap, buffer.bytes(cb0), sub);
+                                    }
+                                    buffer.drop(heap, cand);
+                                    cand = deeper;
+                                }
+                                var ok = false;
+                                var bigger = false;
+                                borrow cand as &cb in {
+                                    ok = is_dir(fs, buffer.bytes(cb));
+                                    borrow best as &bt in {
+                                        bigger = len(buffer.bytes(bt)) == 0 || bytes.compare(buffer.bytes(cb), buffer.bytes(bt)) > 0;
+                                    }
+                                }
+                                if ok && bigger {
+                                    buffer.drop(heap, best);
+                                    best = cand;
+                                } else {
+                                    buffer.drop(heap, cand);
+                                }
+                                i = i + 1;
+                            }
+                        }
+                        dirs.drop(heap, names);
+                    }
+                    dir_close(snaps);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, base);
+    return best;
 }
 
 // An argument of the stage: `text`, then its NUL.

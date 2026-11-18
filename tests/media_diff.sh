@@ -39,7 +39,7 @@ check "video 640x352 16 rounds up" "$(build/media check video 640x352 16 0)" "$(
 check "video 1x frame"     "$(build/media check video 640x352 1 0)" "ok frames 1 latent 1 tokens 220"
 check "image ok"           "$(build/media check image 1024x1024 "a fox")" ok
 if [ $HAVE_PY = 1 ]; then check "models" "$(build/media models)" "$($PY models)"; fi
-A=$($C authority media/media.cho media/shared.cho media/pathx.cho media/stage.cho media/rewriter.cho studio/files.cho --std 2>&1)
+A=$($C authority media/media.cho media/shared.cho media/video.cho media/pathx.cho media/stage.cho media/rewriter.cho studio/files.cho --std 2>&1)
 check "authority: no network, no signals" "$(echo "$A" | grep -c -E '^    (the network|signals)$')" 2
 check "authority: programs only beneath a directory" "$(echo "$A" | grep -c -E '^    (exec_under)$')" 1
 check "authority: no exec of a path" "$(echo "$A" | grep -c -E 'exec\(')" 0

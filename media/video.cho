@@ -1,0 +1,393 @@
+edition 10;
+
+module video;
+
+import std.buffer;
+import std.dirs;
+import std.io;
+import files;
+import pathx;
+import stage;
+import shared;
+
+// video -- `media video PROMPT -o DIR` in cancho (docs/media-cho.md section 8): a video from a prompt, as tools/media.py cmd_video does it. The text encoder and the denoiser are the Python stages of
+// scripts/stage; everything around them (the arguments, every refusal, the model and weights lookup, the disk check, the rewriter, prompt.txt, the mp4) is here. `--image`, `--segments` and the chain are not built yet:
+// the wrapper (scripts/media) gives them to tools/media.py.
+
+// The text of a whole number as Python's `str(float)` would print a guidance: `3` is `3.0`, `3.5` stays. 0 for a text that is not a number.
+fn is_number[&t](text: &t [byte]) -> [] bool {
+    if len(text) == 0 {
+        return false;
+    }
+    var dots = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 46 {
+            dots = dots + 1;
+        } else if c < 48 || c > 57 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return dots <= 1 && len(text) > dots;
+}
+
+// Is `repo-name` one of the models for a video? 0 none, 1 the default, 2 the base model.
+fn model_kind[&t](low: &t [byte]) -> [] int {
+    if len(low) == 0 || shared.is_text(low, "fastwan2.2-ti2v-5b") {
+        return 1;
+    }
+    if shared.is_text(low, "wan2.2-ti2v-5b-base") {
+        return 2;
+    }
+    return 0;
+}
+
+pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    var prompt = "";
+    var positional = 0;
+    var output = "";
+    var frames_text = "17";
+    var size = "640x352";
+    var model = "";
+    var seed = "0";
+    var fps = "16";
+    var weights = "";
+    var wdir_arg = "";
+    var image = "";
+    var segments = "1";
+    var thens = 0;
+    var no_correct = false;
+    var force = false;
+    var rewrite = false;
+    var rewrite_model = "qwen3.8:27b-mlx";
+    var k = from;
+    let n = arg_count(args);
+    while k < n {
+        let t = arg(args, k);
+        if shared.is_text(t, "-o") || shared.is_text(t, "--output") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "-o/--output");
+            }
+            output = arg(args, k);
+        } else if shared.is_text(t, "--frames") {
+            k = k + 1;
+            if k >= n || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--frames");
+            }
+            frames_text = arg(args, k);
+        } else if shared.is_text(t, "--size") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--size");
+            }
+            size = arg(args, k);
+        } else if shared.is_text(t, "--model") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--model");
+            }
+            model = arg(args, k);
+        } else if shared.is_text(t, "--seed") {
+            k = k + 1;
+            if k >= n || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--seed");
+            }
+            seed = arg(args, k);
+        } else if shared.is_text(t, "--fps") {
+            k = k + 1;
+            if k >= n || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--fps");
+            }
+            fps = arg(args, k);
+        } else if shared.is_text(t, "--weights") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--weights");
+            }
+            weights = arg(args, k);
+        } else if shared.is_text(t, "--wdir") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--wdir");
+            }
+            wdir_arg = arg(args, k);
+        } else if shared.is_text(t, "--image") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--image");
+            }
+            image = arg(args, k);
+        } else if shared.is_text(t, "--steps") || shared.is_text(t, "--negative") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--steps/--negative");
+            }
+        } else if shared.is_text(t, "--guidance") {
+            k = k + 1;
+            if k >= n || is_number(arg(args, k)) == false {
+                return shared.bad_value(io, "--guidance");
+            }
+        } else if shared.is_text(t, "--segments") {
+            k = k + 1;
+            if k >= n || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--segments");
+            }
+            segments = arg(args, k);
+        } else if shared.is_text(t, "--then") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--then");
+            }
+            thens = thens + 1;
+        } else if shared.is_text(t, "--no-correct") {
+            no_correct = true;
+        } else if shared.is_text(t, "--force") {
+            force = true;
+        } else if shared.is_text(t, "--rewrite") {
+            rewrite = true;
+        } else if shared.is_text(t, "--rewrite-model") {
+            k = k + 1;
+            if k >= n {
+                return shared.bad_value(io, "--rewrite-model");
+            }
+            rewrite_model = arg(args, k);
+        } else if positional == 0 {
+            prompt = t;
+            positional = 1;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    if positional < 1 || len(output) == 0 {
+        io.error_all(io, "media: the following arguments are required: prompt, -o/--output\n");
+        return 2;
+    }
+    if len(image) > 0 {
+        return shared.refuse_text(io, "--image is not built in the cancho media yet: run it with CANCHO_MEDIA_IMPL=python");
+    }
+    if shared.num(segments) != 1 || thens > 0 || no_correct {
+        return shared.refuse_text(io, "--segments, --then and --no-correct are for a video from a picture (--image): they chain clips (docs/video-chain.md)");
+    }
+    // need_gpu: the Metal session binary
+    let sp = pathx.under(heap, ctx.root, "build/cancho-gpu-metal-session");
+    var there = false;
+    borrow sp as &spb in {
+        there = shared.is_file(fs, buffer.bytes(spb));
+    }
+    buffer.drop(heap, sp);
+    if there == false {
+        return shared.refuse_text(io, "build/cancho-gpu-metal-session is missing: build it with `CANCHO=<pinned cancho> scripts/build-metal-session.sh` (cancho.toml names the compiler)");
+    }
+    // pick("video", model)
+    let low = shared.lower_text(heap, model);
+    var kind = 0;
+    borrow low as &lb in {
+        kind = model_kind(buffer.bytes(lb));
+    }
+    if kind == 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "model '");
+        borrow low as &lb2 in {
+            m = buffer.append(heap, m, buffer.bytes(lb2));
+        }
+        m = buffer.append(heap, m, "' is not supported for video; supported: fastwan2.2-ti2v-5b, wan2.2-ti2v-5b-base");
+        buffer.drop(heap, low);
+        return shared.refuse_buf(io, heap, m);
+    }
+    buffer.drop(heap, low);
+    if kind == 2 {
+        return shared.refuse_text(io, "wan2.2-ti2v-5b-base is for --image (a picture to continue); for a video from a prompt alone use the default model");
+    }
+    let (w, h2) = shared.size_of(size);
+    if w < 0 {
+        return shared.refuse_text(io, "--size is WxH in pixels, for example 640x352");
+    }
+    let (code, frames, lf, tokens) = shared.video_limits(io, heap, size, w, h2, shared.num(frames_text), force);
+    if code != 0 {
+        return code;
+    }
+    // the weights: --weights or the Hugging Face snapshot, and the base model's other files
+    var tdir = buffer.empty(heap, 8);
+    if len(weights) > 0 {
+        tdir = buffer.append(heap, tdir, weights);
+    } else {
+        buffer.drop(heap, tdir);
+        tdir = shared.snapshot_of(heap, fs, ctx.home, "FastVideo--FastWan2.2-TI2V-5B-FullAttn-Diffusers", "transformer");
+    }
+    let base = shared.snapshot_of(heap, fs, ctx.home, "Wan-AI--Wan2.2-TI2V-5B-Diffusers", "");
+    var missing = false;
+    borrow tdir as &tb in {
+        missing = len(buffer.bytes(tb)) == 0;
+    }
+    borrow base as &bsb in {
+        missing = missing || len(buffer.bytes(bsb)) == 0;
+    }
+    buffer.drop(heap, base);
+    if missing {
+        buffer.drop(heap, tdir);
+        return shared.refuse_text(io, "weights not in the Hugging Face cache: `hf download FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers` and `hf download Wan-AI/Wan2.2-TI2V-5B-Diffusers` (or pass --weights DIR)");
+    }
+    let out = pathx.absolute(heap, ctx.cwd, output);
+    var status = 0;
+    borrow out as &ob in {
+        if pathx.make_all(fs, buffer.bytes(ob)) != 0 {
+            status = shared.refuse_text(io, "cannot create the output directory");
+        }
+    }
+    // wdir: --wdir (a leading ~/ is the home directory) or the cache's wan-f16
+    var wdir = buffer.empty(heap, 8);
+    if len(wdir_arg) == 0 {
+        buffer.drop(heap, wdir);
+        wdir = pathx.under(heap, ctx.cache, "wan-f16");
+    } else if len(wdir_arg) >= 2 && int_of(wdir_arg[0]) == 126 && int_of(wdir_arg[1]) == 47 {
+        buffer.drop(heap, wdir);
+        wdir = pathx.under(heap, ctx.home, wdir_arg[2..len(wdir_arg)]);
+    } else {
+        wdir = buffer.append(heap, wdir, wdir_arg);
+    }
+    if status == 0 {
+        borrow out as &ob2 in {
+            borrow tdir as &tb2 in {
+                borrow wdir as &wb in {
+                    status = generate(io, heap, fs, exec, sdir, clock, ctx, env, prompt, rewrite, rewrite_model, buffer.bytes(ob2), buffer.bytes(tb2), buffer.bytes(wb), lf, w, h2, seed, fps);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, wdir);
+    buffer.drop(heap, tdir);
+    buffer.drop(heap, out);
+    return status;
+}
+
+// After the refusals: the disk check, the rewriter, the two stages, prompt.txt, the mp4 and the report.
+fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], prompt: &p [byte], rewrite: bool, rewrite_model: &static [byte], out: &o [byte], tdir: &t [byte], wdir: &d [byte], lf: int, w: int, h2: int, seed: &static [byte], fps: &static [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, exec_under, clock, poll] int {
+    let pf = pathx.under(heap, wdir, "proj_out.f16");
+    var have = false;
+    borrow pf as &pfb in {
+        have = shared.is_file(fs, buffer.bytes(pfb));
+    }
+    buffer.drop(heap, pf);
+    let kb = shared.num(ctx.free_kb);
+    if have == false && kb >= 0 && kb * 1024 < 14000000000 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the f16 weight files (10 GB) are written to ");
+        m = buffer.append(heap, m, wdir);
+        m = buffer.append(heap, m, " on first use and only ");
+        m = shared.push_int(heap, m, (kb * 1024 + 500000000) / 1000000000);
+        m = buffer.append(heap, m, " GB are free");
+        return shared.refuse_buf(io, heap, m);
+    }
+    var used = buffer.append(heap, buffer.empty(heap, 64), prompt);
+    var status = 0;
+    if rewrite {
+        let (rs, text) = shared.rewrite_text(io, heap, fs, exec, clock, ctx, "video", prompt, "-", "", rewrite_model);
+        buffer.drop(heap, used);
+        used = text;
+        status = rs;
+    }
+    if status == 0 {
+        let txt = pathx.under(heap, out, "text.npy");
+        borrow txt as &xb in {
+            borrow used as &ub in {
+                var l1 = stage.add_arg(heap, buffer.empty(heap, 128), "tools/wan_text.py");
+                l1 = stage.add_arg(heap, l1, buffer.bytes(ub));
+                l1 = stage.add_arg(heap, l1, buffer.bytes(xb));
+                borrow l1 as &l1b in {
+                    status = shared.step(io, heap, exec, sdir, clock, "text encoder (host, torch)", buffer.bytes(l1b), env);
+                }
+                buffer.drop(heap, l1);
+            }
+            if status == 0 {
+                var l2 = stage.add_arg(heap, buffer.empty(heap, 256), "tests/wan_video_gpu.py");
+                l2 = stage.add_arg(heap, l2, out);
+                l2 = stage.add_arg(heap, l2, "--weights");
+                l2 = stage.add_arg(heap, l2, tdir);
+                l2 = stage.add_arg(heap, l2, "--text");
+                l2 = stage.add_arg(heap, l2, buffer.bytes(xb));
+                l2 = stage.add_arg(heap, l2, "--frames");
+                l2 = shared.put_num(heap, l2, lf);
+                l2 = stage.add_arg(heap, l2, "--size");
+                l2 = shared.push_int(heap, l2, h2 / 16);
+                l2 = buffer.push(heap, l2, byte_of(120));
+                l2 = shared.push_int(heap, l2, w / 16);
+                l2 = buffer.push(heap, l2, byte_of(0));
+                l2 = stage.add_arg(heap, l2, "--seed");
+                l2 = stage.add_arg(heap, l2, seed);
+                l2 = stage.add_arg(heap, l2, "--wdir");
+                l2 = stage.add_arg(heap, l2, wdir);
+                l2 = stage.add_arg(heap, l2, "--fps");
+                l2 = stage.add_arg(heap, l2, fps);
+                borrow l2 as &l2b in {
+                    status = shared.step(io, heap, exec, sdir, clock, "denoiser and decoder (GPU)", buffer.bytes(l2b), env);
+                }
+                buffer.drop(heap, l2);
+            }
+        }
+        buffer.drop(heap, txt);
+    }
+    if status == 0 {
+        borrow used as &ub2 in {
+            shared.write_prompts(heap, fs, out, buffer.bytes(ub2), prompt);
+        }
+        mp4_and_done(io, heap, exec, sdir, clock, ctx, env, out, fps);
+    }
+    buffer.drop(heap, used);
+    return status;
+}
+
+// tools/media.py mp4_and_done: an mp4 from the frames when ffmpeg is there, then `done: DIR (...)`.
+fn mp4_and_done[&i, &h, &x, &y, &c, &e, &zc, &o](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], out: &o [byte], fps: &static [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    if len(ctx.ffmpeg) > 0 {
+        let mp4 = pathx.under(heap, out, "video.mp4");
+        let frames = pathx.under(heap, out, "frames/f%03d.png");
+        var list = stage.add_arg(heap, buffer.empty(heap, 256), "-y");
+        list = stage.add_arg(heap, list, "-loglevel");
+        list = stage.add_arg(heap, list, "error");
+        list = stage.add_arg(heap, list, "-framerate");
+        list = stage.add_arg(heap, list, fps);
+        list = stage.add_arg(heap, list, "-i");
+        borrow frames as &fb in {
+            list = stage.add_arg(heap, list, buffer.bytes(fb));
+        }
+        list = stage.add_arg(heap, list, "-c:v");
+        list = stage.add_arg(heap, list, "libx264");
+        list = stage.add_arg(heap, list, "-pix_fmt");
+        list = stage.add_arg(heap, list, "yuv420p");
+        borrow mp4 as &mb in {
+            list = stage.add_arg(heap, list, buffer.bytes(mb));
+        }
+        var code = 1;
+        borrow list as &lb in {
+            let (c2, so, se) = stage.capture(heap, exec, sdir, clock, "ffmpeg", buffer.bytes(lb), env, 3600000);
+            code = c2;
+            borrow so as &sob in {
+                io.write_all(io, buffer.bytes(sob));
+            }
+            borrow se as &seb in {
+                io.error_all(io, buffer.bytes(seb));
+            }
+            buffer.drop(heap, so);
+            buffer.drop(heap, se);
+        }
+        if code == 0 {
+            io.write_all(io, "wrote ");
+            borrow mp4 as &mb2 in {
+                io.write_all(io, buffer.bytes(mb2));
+            }
+            io.write_all(io, "\n");
+        } else {
+            io.write_all(io, "media: ffmpeg failed; the gif and the frames are there\n");
+        }
+        buffer.drop(heap, list);
+        buffer.drop(heap, mp4);
+        buffer.drop(heap, frames);
+    }
+    io.write_all(io, "done: ");
+    io.write_all(io, out);
+    io.write_all(io, " (video.gif, frames/, prompt.txt)\n");
+    return 0;
+}

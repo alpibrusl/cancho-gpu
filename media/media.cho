@@ -18,6 +18,7 @@ import stage;
 // Built with  cancho build media/media.cho --std -o build/media   Its authority is the point: it reads no file, starts nothing, reaches no network.
 
 import shared;
+import video;
 
 fn cmd_image[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
     var prompt = "";
@@ -588,6 +589,8 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
     var ew = "";
     var etw = "";
     var online = false;
+    var free_kb = "";
+    var ffmpeg = "";
     var env = buffer.empty(heap, 256);
     var k = 1;
     var going = true;
@@ -614,6 +617,12 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
         } else if shared.is_text(t, "--edit-text-weights") && k + 1 < n {
             etw = arg(args, k + 1);
             k = k + 2;
+        } else if shared.is_text(t, "--free-kb") && k + 1 < n {
+            free_kb = arg(args, k + 1);
+            k = k + 2;
+        } else if shared.is_text(t, "--ffmpeg") {
+            ffmpeg = "1";
+            k = k + 1;
         } else if shared.is_text(t, "--env") && k + 1 < n {
             env = stage.add_arg(heap, env, arg(args, k + 1));
             k = k + 2;
@@ -637,9 +646,9 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
         if online == false {
             env = stage.add_arg(heap, env, "HF_HUB_OFFLINE=1");
         }
-        var ctx = shared.Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw };
+        var ctx = shared.Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw, free_kb: free_kb, ffmpeg: ffmpeg };
         if shared.is_text(arg(args, k), "rewrite") {
-            var rctx = shared.Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw };
+            var rctx = shared.Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw, free_kb: free_kb, ffmpeg: ffmpeg };
             borrow rctx as &rc in {
                 status = cmd_rewrite(io, heap, fs, exec, clock, rc, args, k + 1);
             }
@@ -664,8 +673,12 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
                                 borrow ctx as &cx2 in {
                                     status = cmd_edit(io, heap, fs, exec, sd, clock, cx2, buffer.bytes(eb), args, k + 1);
                                 }
+                            } else if shared.is_text(arg(args, k), "video") {
+                                borrow ctx as &cx3 in {
+                                    status = video.cmd_video(io, heap, fs, exec, sd, clock, cx3, buffer.bytes(eb), args, k + 1);
+                                }
                             } else {
-                                io.error_all(io, "media: build/media runs image and edit; the other commands are tools/media.py's\n");
+                                io.error_all(io, "media: build/media runs image, edit, video and rewrite; the other commands are tools/media.py's\n");
                                 status = 2;
                             }
                         }
