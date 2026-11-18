@@ -667,6 +667,12 @@ check "cases: each asks for image, image2 and the instruction (and no script)" "
 check "cases: the instructions name image1 and image2" "$(echo "$CS" | grep -o '<textarea[^>]*>[^<]*</textarea>' | grep 'image1' | grep -c 'image2')" 6
 check "cases: the header has the place and marks it open" "$(echo "$CS" | grep -o '<a href=/cases aria-current=page>Cases</a>' | wc -l | tr -d ' ')" 1
 check "cases: the other pages link to it" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'href=/cases')" 1
+check "cases: each form offers the optional sizes" "$(echo "$CS" | grep -o 'name=note maxlength=200' | wc -l | tr -d ' ')" 6
+NF=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" -F prompt=place -F "note=the sofa is 2.2 m wide" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit); NFI=${NF##*/}
+check "cases: the sizes are added to the instruction as one argument" "$(argv_of $NFI | sed 's#.*\.jpg ##')" "place Real sizes: the sofa is 2.2 m wide. "
+check "cases: sizes of 201 bytes are refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=x --form-string "note=$(head -c 201 /dev/zero | tr '\0' a)" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit)" 422
+check "cases: an instruction and sizes over 1000 bytes together are refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" --form-string "prompt=$(head -c 900 /dev/zero | tr '\0' a)" --form-string "note=$(head -c 150 /dev/zero | tr '\0' b)" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit)" 422
+check "cases: sizes with a control character are refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=x --form-string "note=$(printf 'a\001b')" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit)" 422
 TRY=$(echo "$CS" | grep -o '<form id=tryon.*' | grep -o '<textarea[^>]*>[^<]*' | head -1 | sed 's/<textarea[^>]*>//')
 CF=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" --form-string "prompt=$TRY" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit); CFI=${CF##*/}
 check "cases: the try-on form's own instruction and two pictures make a two-picture edit" "$(argv_of $CFI | sed "s#$R/off#D#g" | cut -c1-110)" "edit -o D/out/X --also D/upload-$CFI-2.png -- D/upload-$CFI.jpg Dress the person in image1 in the clothing shown"

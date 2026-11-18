@@ -1,6 +1,6 @@
 # Studio cases: ready-made two-picture edits (2026-11-18)
 
-> **Status: built (`/cases`), one case run for real (try-on); the other five are written, not run.** Claims are **[measured]** unless tagged.
+> **Status: built (`/cases`), two cases run for real (try-on; an object in a room, with and without real sizes); the other four are written, not run.** Claims are **[measured]** unless tagged.
 
 ## 1. What it is
 
@@ -23,6 +23,14 @@ A two-picture edit (`docs/two-images.md`) needs the right instruction: which ele
 
 Pictures made by `media image` (no photograph of anyone): a woman with short dark hair in a white T-shirt and jeans (768 x 1024, seed 1), and a green quilted jacket laid flat (768 x 768, seed 1). `media edit person.png <the try-on instruction> --also jacket.png --seed 1`: **98 s** at the default condition area. **Looked at:** the person wears the jacket, zipped, with its colour, quilting and pockets; the face, hair, jeans and background are those of the first picture. **Seen as less good:** the result is 1024 x 1024 where the person was 768 x 1024 (the edit model's output size, not the picture's), so the framing changed; one run, one seed.
 
-## 4. Not shown
+## 4. Real sizes and "keep it as it is" (2026-11-18)
 
-The other five cases have not been run; whether they work as well as try-on is open (a room is a harder case than a jacket: the layout has to hold). One pair of pictures made by the same model is the easiest input; photographs of real people and rooms (shadows, odd poses, cluttered rooms) are not tested. The model does not always keep a pattern or a face exactly, which the page says.
+Each case has an optional **Real sizes** box (up to 200 bytes; the instruction and the sizes together at most 1000), added to the instruction as `Real sizes: ...` (`note` in `/edit`, `studio/upload.cho`), and the try-on and object instructions now say not to resize or reshape the garment or object. **A hint, not a measurement:** the model has no metres; it matches scale by eye.
+
+**Measured once** (a room 1024 x 768 and a two-seat sofa, both made by `media image`; the object case; seed 1; the sofa in the first run, same instruction): without sizes the sofa spans about 585 px of the 1024; with `Real sizes: the sofa is 1.4 m wide and 0.8 m deep, the door is 2 m high.` about 550 px. By the door (about 650 px for 2 m) 1.4 m would be about 455 px, so the hint moved the sofa **the right way and about a third of the way to what was asked** (about 1.7 m instead of 1.8 m, against 1.4). The sofa kept its shape, colour and proportions in both. **One pair, one seed**: no more than a sign that the words are read. **Seen as less good, in both:** the edit's output was 1024 x 1024 for a 1024 x 768 room, so the room is taller than the original's proportions.
+
+**Not possible here:** a true fit (a garment against body measurements, a sofa against a wall's length) needs geometry the model does not have: a depth or pose estimate, or a drawing at scale, which is a project of its own.
+
+## 5. Not shown
+
+The other four cases have not been run; whether they work as well as try-on is open (a room is a harder case than a jacket: the layout has to hold). One pair of pictures made by the same model is the easiest input; photographs of real people and rooms (shadows, odd poses, cluttered rooms) are not tested. The model does not always keep a pattern or a face exactly, which the page says.
