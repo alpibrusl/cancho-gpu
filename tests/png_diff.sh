@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 R=$(pwd -P)
 C="${CANCHO:-cancho}"
 mkdir -p build
-"$C" build tests/png_tool.cho media/png.cho studio/files.cho --std -o build/png_tool 2>&1 | grep -v "^ld: warning" || true
+"$C" build tests/png_tool.cho media/png.cho media/image.cho studio/files.cho --std -o build/png_tool 2>&1 | grep -v "^ld: warning" || true
 test -x build/png_tool
 T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
@@ -26,6 +26,11 @@ for f in tests/png/*.sha; do
   check "roundtrip $n" "$(shasum -a 256 "$T/e.rgb" | cut -d' ' -f1)" "$h"
   rm -f "$T/o.rgb" "$T/e.rgb" "$T/e.png"
 done
+# the picture covering W x H and cropped at the centre, as planar singles: the bytes tools/media.py picture_f32 writes (media/image.cho, Pillow's LANCZOS)
+while read -r n w ht want; do
+  build/png_tool cover "$R/tests/png/$n.png" "$w" "$ht" "$T/c.f32"
+  check "cover $n ${w}x$ht" "$(shasum -a 256 "$T/c.f32" | cut -d' ' -f1)" "$want"
+done < tests/png/cover.list
 refuse() { # file, message
   out=$(build/png_tool decode "$R/tests/png/$1.png" "$T/o.rgb" 2>&1) && code=0 || code=$?
   check "refuse $1" "$code $out" "1 png: $2"

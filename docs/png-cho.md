@@ -18,6 +18,10 @@
 
 **Speed:** a 1024 x 1024 gradient decodes in 0.014 s and encodes in 0.011 s (a debug compiler, native code).
 
-## 4. Not here
+## 4. Resize and crop (`media/image.cho`)
 
-Resize (LANCZOS), centre crop, the per-channel mean and spread, the ramped correction (they are float work on the RGB bytes), the GIF (stays `ffmpeg`), and the `video` command: the next slices.
+`image.resize` is Pillow's LANCZOS, coefficient for coefficient (`Resample.c`: support 3, weights normalised then rounded to 22 fractional bits, a horizontal pass then a vertical, each rounded and clipped to a byte). `image.cover` is `picture_f32`'s geometry (scale to cover, Python's round-half-even for the size, centre crop) and `image.planar_f32` writes `[3, h, w]` little-endian singles of `v / 127.5 - 1` in single precision. **Checked:** `tests/png/cover.list` holds 15 cases whose sha256 is what `tools/media.py picture_f32` wrote (shrinking, enlarging, square, wide, 1 x 1, palette and RGBA sources, 1024 x 1024 to 128 x 96 and 1100 x 700), all **byte-identical**; mutants (the fixed-point scale, the rounding term, round-half-even instead of half-up) fail 2, 11 and 1 checks. A 1024 x 1024 picture to 1100 x 700 takes 0.06 s.
+
+## 5. Not here
+
+The per-channel mean and spread, the ramped correction, the GIF (stays `ffmpeg`), and the `video` command: the next slices.
