@@ -1,0 +1,4 @@
+#!/bin/sh
+# One stage of a media job, started by build/media (media/stage.cho) as the only program it can start (docs/media-cho.md section 1): the repository's root as the working directory, the interpreter named by CANCHO_MEDIA_PY.
+cd "$(dirname "$0")/.." || exit 1
+exec "${CANCHO_MEDIA_PY:?CANCHO_MEDIA_PY is not set}" "$@"

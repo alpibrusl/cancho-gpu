@@ -1,0 +1,946 @@
+edition 10;
+
+import std.buffer;
+import std.dirs;
+import std.io;
+import files;
+import pathx;
+import stage;
+
+// media -- the command line of tools/media.py, in cancho (docs/media-cho.md). Slice A: the parts that decide and do not run anything.
+//
+//   media models                               the supported models per task (the text `media.py models` prints)
+//   media check image WxH PROMPT               the refusals of `media image`, or `ok`
+//   media check video WxH FRAMES FORCE         the refusals of `media video` (FORCE 0 or 1), or `ok frames N latent L tokens T`
+//
+// A refusal is one line on stderr, `media: ...`, exit 2: the words of tools/media.py, so that tests/media_diff.sh can hold the two equal.
+// Built with  cancho build media/media.cho --std -o build/media   Its authority is the point: it reads no file, starts nothing, reaches no network.
+
+fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A decimal number of at most nine digits, or -1.
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+// `WxH` (or `WXH`): the width and the height, or (-1, -1).
+fn size_of[&t](text: &t [byte]) -> [] (int, int) {
+    var cut = 0 - 1;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 120 || c == 88 {
+            if cut >= 0 {
+                return (0 - 1, 0 - 1);
+            }
+            cut = i;
+        }
+        i = i + 1;
+    }
+    if cut < 1 {
+        return (0 - 1, 0 - 1);
+    }
+    let w = num(text[0..cut]);
+    let h = num(text[cut + 1..len(text)]);
+    if w < 0 || h < 0 {
+        return (0 - 1, 0 - 1);
+    }
+    return (w, h);
+}
+
+fn push_int[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    if n < 0 {
+        return buffer.append(heap, buffer.push(heap, out, byte_of(45)), "?");
+    }
+    if n == 0 {
+        return buffer.push(heap, out, byte_of(48));
+    }
+    var digits = 0;
+    var v = n;
+    while v > 0 {
+        digits = digits + 1;
+        v = v / 10;
+    }
+    var acc = out;
+    var place = digits;
+    while place > 0 {
+        var p = 1;
+        var k = 1;
+        while k < place {
+            p = p * 10;
+            k = k + 1;
+        }
+        acc = buffer.push(heap, acc, byte_of(48 + n / p % 10));
+        place = place - 1;
+    }
+    return acc;
+}
+
+// The refusal: `media: <message>` on stderr; the exit status 2.
+fn refuse[&i, &m](io: &!i Io, msg: &m [byte]) -> [err_write] int {
+    io.error_all(io, "media: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 2;
+}
+
+// Refuse with a message built in a buffer; the buffer is consumed.
+fn refuse_buf[&i, &h](io: &!i Io, heap: &!h Heap, msg: buffer.Buffer) -> [err_write, heap] int {
+    var code = 2;
+    borrow msg as &mb in {
+        code = refuse(io, buffer.bytes(mb));
+    }
+    buffer.drop(heap, msg);
+    return code;
+}
+
+fn refuse_text[&i](io: &!i Io, msg: &static [byte]) -> [err_write] int {
+    io.error_all(io, "media: ");
+    io.error_all(io, msg);
+    io.error_all(io, "\n");
+    return 2;
+}
+
+fn check_image[&i, &h, &p, &z](io: &!i Io, heap: &!h Heap, size: &z [byte], prompt: &p [byte]) -> [err_write, heap] int {
+    let (w, h2) = size_of(size);
+    if w < 0 {
+        return refuse_text(io, "--size is WxH in pixels, for example 1024x1024");
+    }
+    if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 96), "--size must be multiples of 32, at least 64: got ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        return refuse_buf(io, heap, m);
+    }
+    if w * h2 > 1024 * 1024 {
+        var m = push_int(heap, buffer.empty(heap, 128), w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " is more than 1024 x 1024 pixels, the largest size measured (docs/text-to-image.md)");
+        return refuse_buf(io, heap, m);
+    }
+    var blank = true;
+    var k = 0;
+    while k < len(prompt) {
+        let c = int_of(prompt[k]);
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            blank = false;
+        }
+        k = k + 1;
+    }
+    if blank {
+        return refuse_text(io, "the prompt is empty");
+    }
+    return 0;
+}
+
+fn check_video[&i, &h](io: &!i Io, heap: &!h Heap, size: &static [byte], frames_text: &static [byte], force: bool) -> [io_write, err_write, heap] int {
+    let (w, h2) = size_of(size);
+    let want = num(frames_text);
+    if w < 0 || want < 0 {
+        return refuse_text(io, "usage: media check video WxH FRAMES FORCE");
+    }
+    if w % 32 != 0 || h2 % 32 != 0 || w < 64 || h2 < 64 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "--size WxH: both sides must be multiples of 32 (the latent is 16 times smaller and is cut into 2 x 2 patches); ");
+        m = buffer.append(heap, m, size);
+        m = buffer.append(heap, m, " is not");
+        return refuse_buf(io, heap, m);
+    }
+    var base = want;
+    if base < 1 {
+        base = 1;
+    }
+    let lf = (base - 1 + 3) / 4 + 1;
+    let frames = 1 + 4 * (lf - 1);
+    if frames != want {
+        io.write_all(io, "media: ");
+        var m = push_int(heap, buffer.empty(heap, 64), want);
+        m = buffer.append(heap, m, " frames requested; the model makes 1 + 4k, so ");
+        m = push_int(heap, m, frames);
+        borrow m as &mb in {
+            io.write_all(io, buffer.bytes(mb));
+        }
+        io.write_all(io, "\n");
+        buffer.drop(heap, m);
+    }
+    let tokens = lf * (h2 / 32) * (w / 32);
+    if tokens > 4000 && force == false {
+        var m = push_int(heap, buffer.empty(heap, 320), frames);
+        m = buffer.append(heap, m, " frames at ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " are ");
+        m = push_int(heap, m, tokens);
+        m = buffer.append(heap, m, " tokens: the denoiser's attention here is measured only up to about 1,100 (docs/diffusion.md V4a; the fused switch `ATT=1` is not wired into this driver). Use fewer frames or a smaller size (17 frames at 640x352 is 1,100 tokens), or --force");
+        return refuse_buf(io, heap, m);
+    }
+    if frames * w * h2 > 17 * 1024 * 576 && force == false {
+        var m = push_int(heap, buffer.empty(heap, 320), frames);
+        m = buffer.append(heap, m, " frames at ");
+        m = push_int(heap, m, w);
+        m = buffer.push(heap, m, byte_of(120));
+        m = push_int(heap, m, h2);
+        m = buffer.append(heap, m, " decode as one clip and the decoder runs out of GPU memory above about 17 frames of 1024x576 or 33 of 640x352 (docs/diffusion.md V2b). Use fewer frames or a smaller size, or --force");
+        return refuse_buf(io, heap, m);
+    }
+    var m = buffer.append(heap, buffer.empty(heap, 64), "ok frames ");
+    m = push_int(heap, m, frames);
+    m = buffer.append(heap, m, " latent ");
+    m = push_int(heap, m, lf);
+    m = buffer.append(heap, m, " tokens ");
+    m = push_int(heap, m, tokens);
+    m = buffer.push(heap, m, byte_of(10));
+    borrow m as &mb2 in {
+        io.write_all(io, buffer.bytes(mb2));
+    }
+    buffer.drop(heap, m);
+    return 0;
+}
+
+fn models[&i](io: &!i Io) -> [io_write] int {
+    io.write_all(io, "video:\n");
+    io.write_all(io, "  fastwan2.2-ti2v-5b     FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers (default)  [3 DMD steps, 640x352 to 1280x704, up to 33 frames measured]\n");
+    io.write_all(io, "  wan2.2-ti2v-5b-base    Wan-AI/Wan2.2-TI2V-5B-Diffusers  [only with --image: 30 Euler steps with guidance, continues the picture (docs/video-image.md)]\n");
+    io.write_all(io, "edit:\n");
+    io.write_all(io, "  qwen-image-2.1-turbo   Qwen/Qwen-Image-2.1-Turbo (default)  [8 steps, image + instruction]\n");
+    io.write_all(io, "image:\n");
+    io.write_all(io, "  qwen-image-2.1-turbo   Qwen/Qwen-Image-2.1-Turbo (default)  [8 steps, a prompt, 512x512 to 1024x1024 measured]\n");
+    return 0;
+}
+
+// What the wrapper (scripts/media) passes in place of the environment (docs/media-cho.md section 3).
+struct Ctx {
+    root: &static [byte],
+    cwd: &static [byte],
+    home: &static [byte],
+    cache: &static [byte],
+    edit_weights: &static [byte],
+    edit_text_weights: &static [byte],
+}
+
+fn lower_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 32);
+    var k = 0;
+    while k < len(text) {
+        let c = int_of(text[k]);
+        if c >= 65 && c <= 90 {
+            out = buffer.push(heap, out, byte_of(c + 32));
+        } else {
+            out = buffer.push(heap, out, byte_of(c));
+        }
+        k = k + 1;
+    }
+    return out;
+}
+
+fn bad_value[&i](io: &!i Io, flag: &static [byte]) -> [err_write] int {
+    io.error_all(io, "media: argument ");
+    io.error_all(io, flag);
+    io.error_all(io, ": expected a value (a whole number where a number is asked)\n");
+    return 2;
+}
+
+// Is there a Hugging Face snapshot of `repo` (`Org--Name`) with `sub` in it? (tools/media.py snapshot())
+fn has_snapshot[&h, &f, &o, &r, &u](heap: &!h Heap, fs: &f Fs(""), home: &o [byte], repo: &r [byte], sub: &u [byte]) -> [heap, fs_read(""), dir_read] bool {
+    var base = buffer.append(heap, buffer.empty(heap, 128), home);
+    base = buffer.append(heap, base, "/.cache/huggingface/hub/models--");
+    base = buffer.append(heap, base, repo);
+    base = buffer.append(heap, base, "/snapshots");
+    var found = false;
+    borrow base as &bb in {
+        if files.path_ok(fs, buffer.bytes(bb)) {
+            match open_dir(fs, buffer.bytes(bb)) {
+                DirOpened::Failed(e) => {
+                }
+                DirOpened::Ok(d) => {
+                    var snaps = d;
+                    borrow snaps as &sn in {
+                        let names = dirs.list(heap, sn, 64);
+                        borrow names as &nm in {
+                            var i = 0;
+                            while i < dirs.count(nm) {
+                                let one = pathx.under(heap, buffer.bytes(bb), dirs.name(nm, i));
+                                var deeper = buffer.empty(heap, 8);
+                                borrow one as &ob in {
+                                    buffer.drop(heap, deeper);
+                                    deeper = pathx.under(heap, buffer.bytes(ob), sub);
+                                }
+                                buffer.drop(heap, one);
+                                borrow deeper as &db in {
+                                    match open_dir(fs, buffer.bytes(db)) {
+                                        DirOpened::Ok(sd) => {
+                                            dir_close(sd);
+                                            found = true;
+                                        }
+                                        DirOpened::Failed(e) => {
+                                        }
+                                    }
+                                }
+                                buffer.drop(heap, deeper);
+                                i = i + 1;
+                            }
+                        }
+                        dirs.drop(heap, names);
+                    }
+                    dir_close(snaps);
+                }
+            }
+        }
+    }
+    buffer.drop(heap, base);
+    return found;
+}
+
+fn is_dir[&f, &t](fs: &f Fs(""), path: &t [byte]) -> [fs_read("")] bool {
+    if files.path_ok(fs, path) == false {
+        return false;
+    }
+    match open_dir(fs, path) {
+        DirOpened::Ok(d) => {
+            dir_close(d);
+            return true;
+        }
+        DirOpened::Failed(e) => {
+            return false;
+        }
+    }
+}
+
+fn is_file[&f, &t](fs: &f Fs(""), path: &t [byte]) -> [fs_read("")] bool {
+    return files.exists(fs, path);
+}
+
+// The refusals `image` and `edit` share and Python makes in the same order: the Metal session, then the model name.
+fn session_and_model[&i, &h, &f, &m, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), ctx: &zc Ctx, task: &static [byte], model: &m [byte]) -> [err_write, heap, fs_read("")] int {
+    let sp = pathx.under(heap, ctx.root, "build/cancho-gpu-metal-session");
+    var there = false;
+    borrow sp as &sb in {
+        there = is_file(fs, buffer.bytes(sb));
+    }
+    buffer.drop(heap, sp);
+    if there == false {
+        return refuse_text(io, "build/cancho-gpu-metal-session is missing: build it with `CANCHO=<pinned cancho> scripts/build-metal-session.sh` (cancho.toml names the compiler)");
+    }
+    let low = lower_text(heap, model);
+    var known = true;
+    borrow low as &lb in {
+        known = len(buffer.bytes(lb)) == 0 || is_text(buffer.bytes(lb), "qwen-image-2.1-turbo");
+    }
+    if known == false {
+        var m2 = buffer.append(heap, buffer.empty(heap, 128), "model '");
+        borrow low as &lb2 in {
+            m2 = buffer.append(heap, m2, buffer.bytes(lb2));
+        }
+        m2 = buffer.append(heap, m2, "' is not supported for ");
+        m2 = buffer.append(heap, m2, task);
+        m2 = buffer.append(heap, m2, "; supported: qwen-image-2.1-turbo");
+        buffer.drop(heap, low);
+        return refuse_buf(io, heap, m2);
+    }
+    buffer.drop(heap, low);
+    return 0;
+}
+
+// The snapshot and the weights directory: the same two refusals in both commands.
+fn weights_checks[&i, &h, &f, &w, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), ctx: &zc Ctx, wd: &w [byte]) -> [err_write, heap, fs_read(""), dir_read] int {
+    if has_snapshot(heap, fs, ctx.home, "Qwen--Qwen-Image-2.1-Turbo", "transformer") == false {
+        return refuse_text(io, "Qwen-Image-2.1-Turbo is not in the Hugging Face cache (the repository's directory is empty): `hf download Qwen/Qwen-Image-2.1-Turbo` (about 50 GB)");
+    }
+    if is_dir(fs, wd) == false {
+        var m = buffer.append(heap, buffer.empty(heap, 320), "the transformer's f16 block weights (head-permuted, 14 GB, written by tests/dit_big.py: docs/diffusion.md D7) are not at ");
+        m = buffer.append(heap, m, wd);
+        m = buffer.append(heap, m, ": pass --weights DIR or set CANCHO_MEDIA_EDIT_WEIGHTS");
+        return refuse_buf(io, heap, m);
+    }
+    return 0;
+}
+
+fn weights_of[&h, &zc](heap: &!h Heap, ctx: &zc Ctx, flag: &static [byte], from_env: &static [byte], name: &static [byte]) -> [heap] buffer.Buffer {
+    if len(flag) > 0 {
+        return pathx.absolute(heap, ctx.cwd, flag);
+    }
+    if len(from_env) > 0 {
+        return pathx.absolute(heap, ctx.cwd, from_env);
+    }
+    return pathx.under(heap, ctx.cache, name);
+}
+
+// Run the stage and write prompt.txt: the end both commands share. `list` is the stage's argument list (NUL-separated), `out` the output directory.
+fn start_stage[&i, &h, &f, &x, &y, &c, &l, &e, &t, &r, &p](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, label: &static [byte], list: &l [byte], env: &e [byte], out: &t [byte], text: &p [byte], result: &r [byte]) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
+    io.write_all(io, "== ");
+    io.write_all(io, label);
+    io.write_all(io, "\n");
+    let t0 = clock_ms(clock);
+    let code = stage.run(io, heap, exec, sdir, clock, list, env, 10800000);
+    if code != 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 96), label);
+        m = buffer.append(heap, m, " failed (exit ");
+        m = push_int(heap, m, code);
+        m = buffer.push(heap, m, byte_of(41));
+        refuse_buf(io, heap, m);
+        return 1;
+    }
+    var s = buffer.append(heap, buffer.empty(heap, 96), "== ");
+    s = buffer.append(heap, s, label);
+    s = buffer.append(heap, s, ": ");
+    s = push_int(heap, s, (clock_ms(clock) - t0 + 500) / 1000);
+    s = buffer.append(heap, s, " s\n");
+    borrow s as &sb in {
+        io.write_all(io, buffer.bytes(sb));
+    }
+    buffer.drop(heap, s);
+    let pp = pathx.under(heap, out, "prompt.txt");
+    var pt = buffer.append(heap, buffer.empty(heap, 64), text);
+    pt = buffer.push(heap, pt, byte_of(10));
+    borrow pp as &ppb in {
+        borrow pt as &ptb in {
+            files.write_all(fs, buffer.bytes(ppb), buffer.bytes(ptb));
+        }
+    }
+    buffer.drop(heap, pp);
+    buffer.drop(heap, pt);
+    io.write_all(io, "done: ");
+    io.write_all(io, result);
+    io.write_all(io, "\n");
+    return 0;
+}
+
+// An argument of the stage: `text`, then its NUL.
+fn put_arg[&h, &t](heap: &!h Heap, list: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    return stage.add_arg(heap, list, text);
+}
+
+fn put_num[&h](heap: &!h Heap, list: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    return buffer.push(heap, push_int(heap, list, n), byte_of(0));
+}
+
+fn cmd_image[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    var prompt = "";
+    var have_prompt = false;
+    var output = "";
+    var size = "1024x1024";
+    var seed = "0";
+    var steps = "8";
+    var model = "";
+    var weights = "";
+    var tweights = "";
+    var k = from;
+    let n = arg_count(args);
+    while k < n {
+        let t = arg(args, k);
+        if is_text(t, "-o") || is_text(t, "--output") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "-o/--output");
+            }
+            output = arg(args, k);
+        } else if is_text(t, "--size") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--size");
+            }
+            size = arg(args, k);
+        } else if is_text(t, "--seed") {
+            k = k + 1;
+            if k >= n || num(arg(args, k)) < 0 {
+                return bad_value(io, "--seed");
+            }
+            seed = arg(args, k);
+        } else if is_text(t, "--steps") {
+            k = k + 1;
+            if k >= n || num(arg(args, k)) < 0 {
+                return bad_value(io, "--steps");
+            }
+            steps = arg(args, k);
+        } else if is_text(t, "--model") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--model");
+            }
+            model = arg(args, k);
+        } else if is_text(t, "--weights") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--weights");
+            }
+            weights = arg(args, k);
+        } else if is_text(t, "--text-weights") {
+            k = k + 1;
+            if k >= n {
+                return bad_value(io, "--text-weights");
+            }
+            tweights = arg(args, k);
+        } else if have_prompt == false {
+            prompt = t;
+            have_prompt = true;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    if have_prompt == false || len(output) == 0 {
+        io.error_all(io, "media: the following arguments are required: prompt, -o/--output\n");
+        return 2;
+    }
+    let first = session_and_model(io, heap, fs, ctx, "image", model);
+    if first != 0 {
+        return first;
+    }
+    let sized = check_image(io, heap, size, prompt);
+    if sized != 0 {
+        return sized;
+    }
+    let (w, h2) = size_of(size);
+    let wd = weights_of(heap, ctx, weights, ctx.edit_weights, "qwen-edit-dit");
+    let tw = weights_of(heap, ctx, tweights, ctx.edit_text_weights, "qwen-edit-text");
+    var status = 0;
+    borrow wd as &wb in {
+        status = weights_checks(io, heap, fs, ctx, buffer.bytes(wb));
+    }
+    if status == 0 {
+        let out = pathx.absolute(heap, ctx.cwd, output);
+        borrow out as &ob in {
+            let made = pathx.make_all(fs, buffer.bytes(ob));
+            if made != 0 {
+                status = refuse_text(io, "cannot create the output directory");
+            } else {
+                let work = pathx.under(heap, buffer.bytes(ob), "work");
+                let png = pathx.under(heap, buffer.bytes(ob), "image.png");
+                var list = put_arg(heap, buffer.empty(heap, 256), "tests/t2i_pipeline_gpu.py");
+                borrow work as &wk in {
+                    list = put_arg(heap, list, buffer.bytes(wk));
+                }
+                list = put_arg(heap, list, "--prompt");
+                list = put_arg(heap, list, prompt);
+                list = put_arg(heap, list, "--seed");
+                list = put_num(heap, list, num(seed));
+                list = put_arg(heap, list, "--steps");
+                list = put_num(heap, list, num(steps));
+                list = put_arg(heap, list, "--size");
+                list = push_int(heap, list, w);
+                list = buffer.push(heap, list, byte_of(120));
+                list = put_num(heap, list, h2);
+                list = put_arg(heap, list, "--weights");
+                borrow wd as &wb2 in {
+                    list = put_arg(heap, list, buffer.bytes(wb2));
+                }
+                list = put_arg(heap, list, "--text-weights");
+                borrow tw as &tb in {
+                    list = put_arg(heap, list, buffer.bytes(tb));
+                }
+                list = put_arg(heap, list, "--out");
+                borrow png as &pg in {
+                    list = put_arg(heap, list, buffer.bytes(pg));
+                }
+                list = put_arg(heap, list, "--resident");
+                borrow list as &lb in {
+                    borrow png as &pg2 in {
+                        status = start_stage(io, heap, fs, exec, sdir, clock, "text to image (GPU, three stages)", buffer.bytes(lb), env, buffer.bytes(ob), prompt, buffer.bytes(pg2));
+                    }
+                }
+                buffer.drop(heap, list);
+                buffer.drop(heap, work);
+                buffer.drop(heap, png);
+            }
+        }
+        buffer.drop(heap, out);
+    }
+    buffer.drop(heap, wd);
+    buffer.drop(heap, tw);
+    return status;
+}
+
+fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    var image = "";
+    var instruction = "";
+    var positional = 0;
+    var output = "";
+    var seed = "0";
+    var steps = "8";
+    var area_text = "0";
+    var model = "";
+    var weights = "";
+    var tweights = "";
+    var also = buffer.empty(heap, 64);
+    var n_also = 0;
+    var k = from;
+    let n = arg_count(args);
+    while k < n {
+        let t = arg(args, k);
+        if is_text(t, "-o") || is_text(t, "--output") {
+            k = k + 1;
+            if k >= n {
+                buffer.drop(heap, also);
+                return bad_value(io, "-o/--output");
+            }
+            output = arg(args, k);
+        } else if is_text(t, "--also") {
+            k = k + 1;
+            if k >= n {
+                buffer.drop(heap, also);
+                return bad_value(io, "--also");
+            }
+            also = buffer.push(heap, buffer.append(heap, also, arg(args, k)), byte_of(0));
+            n_also = n_also + 1;
+        } else if is_text(t, "--condition-area") {
+            k = k + 1;
+            if k >= n || num(arg(args, k)) < 0 {
+                buffer.drop(heap, also);
+                return bad_value(io, "--condition-area");
+            }
+            area_text = arg(args, k);
+        } else if is_text(t, "--seed") {
+            k = k + 1;
+            if k >= n || num(arg(args, k)) < 0 {
+                buffer.drop(heap, also);
+                return bad_value(io, "--seed");
+            }
+            seed = arg(args, k);
+        } else if is_text(t, "--steps") {
+            k = k + 1;
+            if k >= n || num(arg(args, k)) < 0 {
+                buffer.drop(heap, also);
+                return bad_value(io, "--steps");
+            }
+            steps = arg(args, k);
+        } else if is_text(t, "--model") {
+            k = k + 1;
+            if k >= n {
+                buffer.drop(heap, also);
+                return bad_value(io, "--model");
+            }
+            model = arg(args, k);
+        } else if is_text(t, "--weights") {
+            k = k + 1;
+            if k >= n {
+                buffer.drop(heap, also);
+                return bad_value(io, "--weights");
+            }
+            weights = arg(args, k);
+        } else if is_text(t, "--text-weights") {
+            k = k + 1;
+            if k >= n {
+                buffer.drop(heap, also);
+                return bad_value(io, "--text-weights");
+            }
+            tweights = arg(args, k);
+        } else if positional == 0 {
+            image = t;
+            positional = 1;
+        } else if positional == 1 {
+            instruction = t;
+            positional = 2;
+        } else {
+            buffer.drop(heap, also);
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    if positional < 2 || len(output) == 0 {
+        buffer.drop(heap, also);
+        io.error_all(io, "media: the following arguments are required: image, instruction, -o/--output\n");
+        return 2;
+    }
+    var status = session_and_model(io, heap, fs, ctx, "edit", model);
+    if status == 0 {
+        let img = pathx.absolute(heap, ctx.cwd, image);
+        borrow img as &ib in {
+            if is_file(fs, buffer.bytes(ib)) == false {
+                var m = buffer.append(heap, buffer.empty(heap, 96), "no such image: ");
+                m = buffer.append(heap, m, image);
+                status = refuse_buf(io, heap, m);
+            }
+        }
+        buffer.drop(heap, img);
+    }
+    // each --also picture must be there, in the order given
+    if status == 0 {
+        borrow also as &ab in {
+            let all = buffer.bytes(ab);
+            var at = 0;
+            while at < len(all) && status == 0 {
+                var stop = at;
+                while stop < len(all) && int_of(all[stop]) != 0 {
+                    stop = stop + 1;
+                }
+                let one = pathx.absolute(heap, ctx.cwd, all[at..stop]);
+                borrow one as &ob1 in {
+                    if is_file(fs, buffer.bytes(ob1)) == false {
+                        var m = buffer.append(heap, buffer.empty(heap, 96), "no such image: ");
+                        m = buffer.append(heap, m, all[at..stop]);
+                        status = refuse_buf(io, heap, m);
+                    }
+                }
+                buffer.drop(heap, one);
+                at = stop + 1;
+            }
+        }
+    }
+    var area = num(area_text);
+    if area == 0 {
+        if n_also == 0 {
+            area = 1024 * 1024;
+        } else {
+            area = 768 * 768;
+        }
+    }
+    let prefix_rows = (n_also + 1) * (area / 256) + 128;
+    if status == 0 && n_also > 0 && 32 * prefix_rows * prefix_rows >= 4294967296 {
+        var m = buffer.append(heap, buffer.empty(heap, 320), "--condition-area ");
+        m = push_int(heap, m, area);
+        m = buffer.append(heap, m, " with ");
+        m = push_int(heap, m, n_also + 1);
+        m = buffer.append(heap, m, " pictures is about ");
+        m = push_int(heap, m, prefix_rows);
+        m = buffer.append(heap, m, " prefix rows: the attention scores pass what the kernels can index (at most about 11,500 rows; two pictures of 1024 x 1024 are 8,300). Lower it (docs/two-images.md)");
+        status = refuse_buf(io, heap, m);
+    }
+    let wd = weights_of(heap, ctx, weights, ctx.edit_weights, "qwen-edit-dit");
+    let tw = weights_of(heap, ctx, tweights, ctx.edit_text_weights, "qwen-edit-text");
+    if status == 0 {
+        borrow wd as &wb in {
+            status = weights_checks(io, heap, fs, ctx, buffer.bytes(wb));
+        }
+    }
+    if status == 0 {
+        let out = pathx.absolute(heap, ctx.cwd, output);
+        borrow out as &ob in {
+            let made = pathx.make_all(fs, buffer.bytes(ob));
+            if made != 0 {
+                status = refuse_text(io, "cannot create the output directory");
+            } else {
+                let work = pathx.under(heap, buffer.bytes(ob), "work");
+                let png = pathx.under(heap, buffer.bytes(ob), "edited.png");
+                let img2 = pathx.absolute(heap, ctx.cwd, image);
+                var list = put_arg(heap, buffer.empty(heap, 256), "tests/edit_pipeline_gpu.py");
+                borrow img2 as &i2 in {
+                    list = put_arg(heap, list, buffer.bytes(i2));
+                }
+                borrow work as &wk in {
+                    list = put_arg(heap, list, buffer.bytes(wk));
+                }
+                list = put_arg(heap, list, "--prompt");
+                list = put_arg(heap, list, instruction);
+                list = put_arg(heap, list, "--seed");
+                list = put_num(heap, list, num(seed));
+                list = put_arg(heap, list, "--steps");
+                list = put_num(heap, list, num(steps));
+                list = put_arg(heap, list, "--weights");
+                borrow wd as &wb2 in {
+                    list = put_arg(heap, list, buffer.bytes(wb2));
+                }
+                list = put_arg(heap, list, "--text-weights");
+                borrow tw as &tb in {
+                    list = put_arg(heap, list, buffer.bytes(tb));
+                }
+                list = put_arg(heap, list, "--out");
+                borrow png as &pg in {
+                    list = put_arg(heap, list, buffer.bytes(pg));
+                }
+                list = put_arg(heap, list, "--resident");
+                borrow also as &ab2 in {
+                    let all2 = buffer.bytes(ab2);
+                    var at2 = 0;
+                    while at2 < len(all2) {
+                        var stop2 = at2;
+                        while stop2 < len(all2) && int_of(all2[stop2]) != 0 {
+                            stop2 = stop2 + 1;
+                        }
+                        let one2 = pathx.absolute(heap, ctx.cwd, all2[at2..stop2]);
+                        list = put_arg(heap, list, "--also");
+                        borrow one2 as &o2 in {
+                            list = put_arg(heap, list, buffer.bytes(o2));
+                        }
+                        buffer.drop(heap, one2);
+                        at2 = stop2 + 1;
+                    }
+                }
+                if n_also > 0 {
+                    list = put_arg(heap, list, "--condition-area");
+                    list = put_num(heap, list, area);
+                }
+                borrow list as &lb in {
+                    borrow png as &pg2 in {
+                        status = start_stage(io, heap, fs, exec, sdir, clock, "image edit (GPU, five stages)", buffer.bytes(lb), env, buffer.bytes(ob), instruction, buffer.bytes(pg2));
+                    }
+                }
+                buffer.drop(heap, list);
+                buffer.drop(heap, work);
+                buffer.drop(heap, png);
+                buffer.drop(heap, img2);
+            }
+        }
+        buffer.drop(heap, out);
+    }
+    buffer.drop(heap, wd);
+    buffer.drop(heap, tw);
+    buffer.drop(heap, also);
+    return status;
+}
+
+fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), clock: &c Clock, args: &a Args) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    let n = arg_count(args);
+    // the plain commands of slice A take no context
+    if n == 2 && is_text(arg(args, 1), "models") {
+        return models(io);
+    }
+    if n == 5 && is_text(arg(args, 1), "check") && is_text(arg(args, 2), "image") {
+        let code = check_image(io, heap, arg(args, 3), arg(args, 4));
+        if code == 0 {
+            io.write_all(io, "ok\n");
+        }
+        return code;
+    }
+    if n == 6 && is_text(arg(args, 1), "check") && is_text(arg(args, 2), "video") {
+        return check_video(io, heap, arg(args, 3), arg(args, 4), is_text(arg(args, 5), "1"));
+    }
+    // the context flags, then the command
+    var root = "";
+    var cwd = "";
+    var home = "";
+    var py = "";
+    var cache = "";
+    var ew = "";
+    var etw = "";
+    var online = false;
+    var env = buffer.empty(heap, 256);
+    var k = 1;
+    var going = true;
+    while going && k < n {
+        let t = arg(args, k);
+        if is_text(t, "--root") && k + 1 < n {
+            root = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--cwd") && k + 1 < n {
+            cwd = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--home") && k + 1 < n {
+            home = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--py") && k + 1 < n {
+            py = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--cache") && k + 1 < n {
+            cache = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--edit-weights") && k + 1 < n {
+            ew = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--edit-text-weights") && k + 1 < n {
+            etw = arg(args, k + 1);
+            k = k + 2;
+        } else if is_text(t, "--env") && k + 1 < n {
+            env = stage.add_arg(heap, env, arg(args, k + 1));
+            k = k + 2;
+        } else if is_text(t, "--online") {
+            online = true;
+            k = k + 1;
+        } else {
+            going = false;
+        }
+    }
+    var status = 100;
+    if k >= n || len(root) == 0 || len(cwd) == 0 || len(home) == 0 || len(py) == 0 || len(cache) == 0 {
+        io.error_all(io, "usage: media models | check image WxH PROMPT | check video WxH FRAMES FORCE | --root R --cwd C --home H --py P --cache K [--online] [--env N=V]... (image|edit) ...\n");
+    } else {
+        var py_entry = buffer.append(heap, buffer.empty(heap, 128), "CANCHO_MEDIA_PY=");
+        py_entry = buffer.append(heap, py_entry, py);
+        borrow py_entry as &pe in {
+            env = stage.add_arg(heap, env, buffer.bytes(pe));
+        }
+        buffer.drop(heap, py_entry);
+        if online == false {
+            env = stage.add_arg(heap, env, "HF_HUB_OFFLINE=1");
+        }
+        var ctx = Ctx { root: root, cwd: cwd, home: home, cache: cache, edit_weights: ew, edit_text_weights: etw };
+        let scripts = pathx.under(heap, root, "scripts");
+        borrow scripts as &sc in {
+            match open_dir(fs, buffer.bytes(sc)) {
+                DirOpened::Failed(e) => {
+                    status = refuse_text(io, "scripts/ is not at the --root given");
+                }
+                DirOpened::Ok(d) => {
+                    var sdir = d;
+                    borrow sdir as &sd in {
+                        borrow env as &eb in {
+                            if is_text(arg(args, k), "image") {
+                                borrow ctx as &cx in {
+                                    status = cmd_image(io, heap, fs, exec, sd, clock, cx, buffer.bytes(eb), args, k + 1);
+                                }
+                            } else if is_text(arg(args, k), "edit") {
+                                borrow ctx as &cx2 in {
+                                    status = cmd_edit(io, heap, fs, exec, sd, clock, cx2, buffer.bytes(eb), args, k + 1);
+                                }
+                            } else {
+                                io.error_all(io, "media: build/media runs image and edit; the other commands are tools/media.py's\n");
+                                status = 2;
+                            }
+                        }
+                    }
+                    dir_close(sdir);
+                }
+            }
+        }
+        buffer.drop(heap, scripts);
+    }
+    buffer.drop(heap, env);
+    return status;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(signals);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow mut heap as &!h in {
+            borrow fs as &f in {
+                borrow exec as &x in {
+                    borrow clock as &c in {
+                        borrow args as &g in {
+                            status = run(i, h, f, x, c, g);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    release(exec);
+    release(clock);
+    return status;
+}
