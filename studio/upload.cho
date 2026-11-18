@@ -193,6 +193,11 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             let (imf, imt) = part(body, dl, "image");
             let (i2f, i2t) = part(body, dl, "image2");  // a second picture to combine with the first (docs/two-images.md): an empty file field is a part of 0 bytes, which is "none"
             let (caf, cat) = part(body, dl, "condition_area");
+            let (ntf, ntt) = part(body, dl, "note");  // optional real sizes (docs/studio-cases.md): added to the instruction as a sentence
+            var has_note = false;
+            if ntf >= 0 && ntt > ntf {
+                has_note = true;
+            }
             var kind = 0;
             if imf >= 0 && imt - imf >= 16 {
                 kind = kind_of(body[imf..imt]);
@@ -209,6 +214,8 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "prompt is a text of 1 to 1000 bytes";
             } else if no_controls(body[pf..pt]) == false {
                 why = "the prompt has no control characters";
+            } else if has_note && (ntt - ntf > 200 || no_controls(body[ntf..ntt]) == false || (pt - pf) + (ntt - ntf) + 12 > 1000) {
+                why = "the sizes are a text of at most 200 bytes without control characters, and with the instruction at most 1000 bytes";
             } else if imf < 0 || imt - imf < 16 {
                 why = "a picture is needed";
             } else if kind == 0 {
@@ -277,6 +284,11 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                     } else {
                         var json = buffer.append(heap, buffer.empty(heap, 256), "{\"kind\":\"edit\",\"prompt\":\"");
                         json = quoted(heap, json, body[pf..pt]);
+                        if has_note {
+                            json = buffer.append(heap, json, " Real sizes: ");
+                            json = quoted(heap, json, body[ntf..ntt]);
+                            json = buffer.append(heap, json, ".");
+                        }
                         json = buffer.append(heap, json, "\",\"image\":\"");
                         borrow path as &pb2 in {
                             json = quoted(heap, json, buffer.bytes(pb2));
