@@ -1,0 +1,43 @@
+edition 9;
+
+module cases;
+
+import std.buffer;
+import files;
+import results;
+
+// `cases` -- ready-made two-picture edits (docs/studio-cases.md): GET /cases. Each case is a form that posts to `/edit` (studio/upload.cho) with two labelled pictures and an instruction written in advance, which
+// the person can change before starting. Nothing new on the server: the form's fields are the ones `/edit` already takes (`image`, `image2`, `prompt`, `seed`, `rewrite`), so the same checks apply and the job is a
+// two-picture edit (docs/two-images.md). The instructions name the pictures `image1` and `image2`, as the model's template does. No JavaScript.
+//
+// The texts have no `<`, `>`, `&` or quotation marks: they go into a `<textarea>` as they are.
+
+// One case: `slug` (the card's id), `title`, a line saying what it does, the label of each picture, and the instruction.
+fn card[&h, &a, &b, &c, &d, &e, &g](heap: &!h Heap, page: buffer.Buffer, slug: &a [byte], title: &b [byte], what: &c [byte], first: &d [byte], second: &e [byte], prompt: &g [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<form id=");
+    p = buffer.append(heap, p, slug);
+    p = buffer.append(heap, p, " method=post action=/edit enctype=multipart/form-data><h2>");
+    p = buffer.append(heap, p, title);
+    p = buffer.append(heap, p, "</h2><p>");
+    p = buffer.append(heap, p, what);
+    p = buffer.append(heap, p, "</p><label>");
+    p = buffer.append(heap, p, first);
+    p = buffer.append(heap, p, " (image1; JPEG, PNG or WebP)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><label>");
+    p = buffer.append(heap, p, second);
+    p = buffer.append(heap, p, " (image2)<input name=image2 type=file accept=image/jpeg,image/png,image/webp required></label><label>The instruction (change it if you like)<textarea name=prompt required maxlength=1000 rows=4>");
+    p = buffer.append(heap, p, prompt);
+    p = buffer.append(heap, p, "</textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><div><button>Make it</button></div></form>");
+    return p;
+}
+
+pub fn page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = results.open(heap, fs, dir, "cases", "cases", false);
+    p = buffer.append(heap, p, "<div class=row><h1>Cases</h1></div><p>Two pictures and an instruction written for you: choose the case, give the two pictures, press the button. Each one is a two-picture edit (about two minutes and a half on this machine); the result is on the job page. The pictures stay on this machine. A picture that is clear, well lit and shows the whole thing works best; the model does not always keep a face or a pattern exactly, so look at the result.</p>");
+    p = card(heap, p, "tryon", "Try clothes on a person", "The person in the first picture wears the clothes of the second.", "A picture of the person (the whole body, or the part the clothes cover)", "A picture of the clothes (a garment on its own, laid flat or on a hanger, or worn by someone else)", "Dress the person in image1 in the clothing shown in image2. Keep the person's face, hair, skin, pose and the background exactly as in image1. The garment keeps its colour, pattern and cut from image2 and fits the body naturally, with folds and shadows that match the light of image1.");
+    p = card(heap, p, "room", "Redecorate a room", "The room in the first picture, furnished and decorated as the second picture shows.", "A picture of the room", "A picture of the style (another room, a mood board, a piece of furniture)", "Redecorate the room in image1 with the furniture, colours, materials and decoration of image2. Keep the room's shape, walls, windows, doors and the camera view of image1, and replace only what is inside it and its colours. The result is a realistic photograph with consistent light.");
+    p = card(heap, p, "object", "Put an object in a room", "A lamp, a sofa, a painting, a plant: the object of the second picture, placed in the room of the first.", "A picture of the room", "A picture of the object (on its own is best)", "Add the object shown in image2 to the room in image1, standing naturally on the floor or hanging where it makes sense. Keep everything else in image1 as it is. The object keeps its shape and colour, with a size, perspective, shadow and reflection that match the room.");
+    p = card(heap, p, "scene", "Put a person in another place", "The person of the first picture, in the place shown in the second.", "A picture of the person", "A picture of the place", "Place the person from image1 into the scene of image2, standing naturally in it. Keep the person's face, hair, clothes and pose from image1, and the place of image2 as it is. Match the light, the colour and the scale so that it looks like one photograph.");
+    p = card(heap, p, "hair", "Try a hairstyle", "The person of the first picture, with the hairstyle of the second.", "A picture of the person (the face)", "A picture of the hairstyle (someone with the hair you want)", "Give the person in image1 the hairstyle, hair colour and length of the person in image2. Keep the face, expression, skin, clothes and background of image1 unchanged, and make the hair fit the head naturally.");
+    p = card(heap, p, "style", "Use the style of another picture", "The first picture drawn or painted in the style of the second.", "A picture to restyle", "A picture in the style you want", "Redraw image1 in the artistic style of image2: its brush work or line, its colours, its textures and its mood. Keep the subject, the composition and the shapes of image1 recognisable.");
+    return results.close(heap, p);
+}

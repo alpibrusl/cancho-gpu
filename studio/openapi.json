@@ -58,6 +58,16 @@
         }
       }
     },
+    "/cases": {
+      "get": {
+        "summary": "Ready-made two-picture edits (HTML, no JavaScript): try clothes on a person, redecorate a room, put an object in a room, put a person in another place, a hairstyle, a style. Each case is a form that posts to /edit with image, image2 and an instruction written in advance.",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
     "/compare": {
       "get": {
         "summary": "The comparisons: the tally per kind of the choices that count (the rewritten prompt won, the prompt as written won, ties) and a link to each pair.",

@@ -211,11 +211,12 @@ fn nav_link[&h](heap: &!h Heap, page: buffer.Buffer, href: &static [byte], label
     return buffer.append(heap, p, "</a>");
 }
 
-// The header of every page: the brand, the four places (the open one marked) and the queue's status. `current` is `studio`, `edit`, `compare` or `jobs`.
+// The header of every page: the brand, the four places (the open one marked) and the queue's status. `current` is `studio`, `edit`, `cases`, `compare` or `jobs`.
 pub fn header[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], current: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
     var page = buffer.append(heap, buffer.empty(heap, 512), "<header class=top><a class=brand href=/>cancho-studio</a><nav>");
     page = nav_link(heap, page, "/", "Studio", "studio", current);
     page = nav_link(heap, page, "/edit", "Edit a picture", "edit", current);
+    page = nav_link(heap, page, "/cases", "Cases", "cases", current);
     page = nav_link(heap, page, "/compare", "Comparisons", "compare", current);
     page = nav_link(heap, page, "/jobs", "Jobs", "jobs", current);
     let (running, queued) = counts(heap, fs, dir);
