@@ -207,6 +207,162 @@ pub fn search_text[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]
     return text;
 }
 
+// Words that mean the same for finding a picture (docs/studio-sessions.md, section 17): a group is its words separated by spaces, groups are separated by `|`. A search word is looked for as itself (inside
+// any word, as always) and as any other word of its group **as a whole word** (so `bike` finds `bicycle`, `shoes` finds `sneakers`, `lamp` finds `chandelier`, and `hat` does not find `that`). A starting
+// list of true synonyms, easy to extend; a word in no group is only itself.
+fn groups() -> [] &static [byte] {
+    return "bike bicycle cycle|shoe sneaker trainer footwear|jeans denim|couch sofa settee|lamp chandelier lantern|fridge refrigerator|tv television|pants trousers|sweater jumper pullover sweatshirt|tshirt t-shirt tee|dress gown frock|hat cap beanie|dog puppy canine|cat kitten feline|car automobile|sea ocean|phone smartphone|rug carpet|painting artwork";
+}
+
+fn alnum(c: int) -> [] bool {
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+
+// Whether `hay` has `w` at `i`, ignoring ASCII case.
+fn at_ci[&h, &w](hay: &h [byte], i: int, w: &w [byte]) -> [] bool {
+    if i + len(w) > len(hay) {
+        return false;
+    }
+    var j = 0;
+    while j < len(w) {
+        var a = int_of(hay[i + j]);
+        var b = int_of(w[j]);
+        if a >= 65 && a <= 90 {
+            a = a + 32;
+        }
+        if b >= 65 && b <= 90 {
+            b = b + 32;
+        }
+        if a != b {
+            return false;
+        }
+        j = j + 1;
+    }
+    return true;
+}
+
+// Whether `hay` holds `w` as a whole word, ignoring case, with one trailing `s` allowed (`sneakers` for `sneaker`): the bytes around it are not letters or digits.
+fn contains_word_ci[&h, &w](hay: &h [byte], w: &w [byte]) -> [] bool {
+    if len(w) == 0 {
+        return false;
+    }
+    var i = 0;
+    while i + len(w) <= len(hay) {
+        if at_ci(hay, i, w) && (i == 0 || alnum(int_of(hay[i - 1])) == false) {
+            let e = i + len(w);
+            if e == len(hay) || alnum(int_of(hay[e])) == false {
+                return true;
+            }
+            if (int_of(hay[e]) == 115 || int_of(hay[e]) == 83) && (e + 1 == len(hay) || alnum(int_of(hay[e + 1])) == false) {
+                return true;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Equal, ignoring ASCII case and one trailing `s` (`sneakers` and `Sneaker` are the same word).
+fn same_word[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    var lx = len(x);
+    var ly = len(y);
+    if lx > 3 && (int_of(x[lx - 1]) == 115 || int_of(x[lx - 1]) == 83) {
+        lx = lx - 1;
+    }
+    if ly > 3 && (int_of(y[ly - 1]) == 115 || int_of(y[ly - 1]) == 83) {
+        ly = ly - 1;
+    }
+    if lx != ly {
+        return false;
+    }
+    var i = 0;
+    while i < lx {
+        var c = int_of(x[i]);
+        var d = int_of(y[i]);
+        if c >= 65 && c <= 90 {
+            c = c + 32;
+        }
+        if d >= 65 && d <= 90 {
+            d = d + 32;
+        }
+        if c != d {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Whether `text` holds the search word `token`, or a word of a group that has it.
+fn word_hit[&t, &w](text: &t [byte], token: &w [byte]) -> [] bool {
+    if contains_ci(text, token) {
+        return true;
+    }
+    let all = groups();
+    var gs = 0;
+    while gs < len(all) {
+        var ge = gs;
+        while ge < len(all) && int_of(all[ge]) != 124 {
+            ge = ge + 1;
+        }
+        let group = all[gs..ge];
+        // is the token in this group?
+        var has = false;
+        var ws = 0;
+        while ws < len(group) {
+            var we = ws;
+            while we < len(group) && int_of(group[we]) != 32 {
+                we = we + 1;
+            }
+            if we > ws && same_word(group[ws..we], token) {
+                has = true;
+            }
+            ws = we + 1;
+        }
+        if has {
+            var xs = 0;
+            while xs < len(group) {
+                var xe = xs;
+                while xe < len(group) && int_of(group[xe]) != 32 {
+                    xe = xe + 1;
+                }
+                if xe > xs && contains_word_ci(text, group[xs..xe]) {
+                    return true;
+                }
+                xs = xe + 1;
+            }
+        }
+        gs = ge + 1;
+    }
+    return false;
+}
+
+// Whether `text` is found by `q`: `q` as it is, or every word of `q` (in any order, each as itself or a synonym).
+pub fn query_hit[&t, &q](text: &t [byte], q: &q [byte]) -> [] bool {
+    if contains_ci(text, q) {
+        return true;
+    }
+    var words = 0;
+    var i = 0;
+    while i < len(q) {
+        while i < len(q) && int_of(q[i]) == 32 {
+            i = i + 1;
+        }
+        var j = i;
+        while j < len(q) && int_of(q[j]) != 32 {
+            j = j + 1;
+        }
+        if j > i {
+            words = words + 1;
+            if word_hit(text, q[i..j]) == false {
+                return false;
+            }
+        }
+        i = j;
+    }
+    return words > 0;
+}
+
 // Whether the picture is found by `q` (an empty `q` finds everything).
 pub fn matches[&h, &f, &d, &i, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], lib: bool, id: &i [byte], q: &q [byte]) -> [heap, fs_read(""), file_read] bool {
     if len(q) == 0 {
@@ -215,7 +371,7 @@ pub fn matches[&h, &f, &d, &i, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]
     let text = search_text(heap, fs, dir, lib, id);
     var yes = false;
     borrow text as &tb in {
-        yes = contains_ci(buffer.bytes(tb), q);
+        yes = query_hit(buffer.bytes(tb), q);
     }
     buffer.drop(heap, text);
     return yes;
