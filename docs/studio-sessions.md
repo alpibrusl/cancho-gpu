@@ -1,6 +1,6 @@
 # cancho-studio: an editing session (design, 2026-11-19)
 
-> **Status: slices 1 and 2 are built and checked (section 8); 3 to 5 are designed, not built.** Claims say what was read in this repository (`studio/upload.cho`, `studio/results.cho`, `studio/jobs.cho`, `docs/studio-variations.md` section 3, `docs/studio-cases.md`) and what was not run. It completes `docs/studio-variations.md` V2 ("a result as the next input"), which was designed there and never built.
+> **Status: slices 1 and 2 (section 8) and 6, the gallery (section 9), are built and checked; 3 to 5 are designed, not built.** Claims say what was read in this repository (`studio/upload.cho`, `studio/results.cho`, `studio/jobs.cho`, `docs/studio-variations.md` section 3, `docs/studio-cases.md`) and what was not run. It completes `docs/studio-variations.md` V2 ("a result as the next input"), which was designed there and never built.
 
 ## 1. What is asked
 
@@ -49,7 +49,7 @@ Under the session's last round: every picture of the session as a **thumbnail wi
 3. **The session page and `/sessions`**, with the tree.
 4. **The picker** (two pictures chosen, with an upload counting as one).
 5. *(later)* name a session, delete one (its uploads and results, asking first).
-6. **The gallery** (asked 2026-11-19), section 9.
+6. **The gallery** (asked 2026-11-19), section 9: built.
 
 Slices 1 and 2 give what was asked most directly; 3 and 4 make it feel like a session.
 
@@ -71,7 +71,7 @@ Slices 1 and 2 give what was asked most directly; 3 and 4 make it feel like a se
 
 **Not done / not measured:** the session page and the list (slice 3), the picker (4); the quality over five rounds and the output-size drift (section 7) are **still to be measured**; the `cancho authority` report of the studio is unchanged in kind (it lists the same capabilities; I did not diff it against main).
 
-## 9. The gallery (asked 2026-11-19, designed, not built)
+## 9. The gallery (asked 2026-11-19; built and checked, see the end of this section)
 
 **Asked for:** "the concept of a gallery, and a tag label: uploaded, generated, edited".
 
@@ -97,3 +97,7 @@ An upload used by a refine is **not** listed twice: a refine's first picture is 
 * **A job with both a result and uploads** shows up to three tiles (two uploaded, one edited); that is deliberate: each is a picture one can reuse.
 
 **Checks planned (fake `media`, as the others):** one job of each kind and a two-picture edit give the right tags and counts; the filter returns only that tag; a refine's first picture is not listed as uploaded; a not-done and a failed job add nothing; `tag=bad` and `page=x` give 422; an empty data directory gives an empty grid with a sentence; no token gives 401.
+
+**Built and checked (2026-11-19, `studio/gallery.cho`).** `GET /gallery[?tag=][&page=]` as designed: the tag from the file, newest job first (within a job: the uploads, then the result), 48 tiles a page with *Newer* and *Older*, a filter row, the tile's job and prompt, *Refine* on a result. The tiles reuse the job grid's styles; the tags are coloured (edited and generated in the accent colours, uploaded grey). A *Gallery* place is in the header of every page. `/gallery` is in `studio/openapi.json` (a check requires every route to be). 14 new checks in `studio/check.sh` (fake `media`): the number of tiles of each tag equals the files (uploads; done jobs' `edited.png`; done jobs' `image.png`), read across all pages; a failed job's `edited.png` is not listed; a refine's first picture is not an upload; a tile's `src` is the file the job page serves; a result offers Refine and an upload does not; 4 refusals (unknown tag, page not digits, 5 digits, mixed); a page past the end is empty with a sentence, status 200; no token 401; with 50 more uploads a page holds exactly 48 and offers Older, page 2 offers Newer, the pages together hold every upload once, and the newest upload leads page 1.
+
+**Measured, looked at** (the studio on this branch in the browser pane, a copy of the earlier jobs' data): 25 tiles, 25 pictures, **13.6 MB** in all (about 0.5 MB a tile; uploads are JPEGs of a few hundred KB and results are PNGs of about 1 MB), so a full page of 48 would be about 26 MB, **half of the 50 MB estimated above**. The pictures arrive as the page is scrolled (`loading=lazy`); in the first screenshot the tiles were still empty, a second one a moment later showed them. The tags read clearly; the picture fills its tile, cropped to 16:9 (a portrait photo loses its top or bottom in the tile; the job page shows it whole). **Not done:** thumbnails (a smaller file per tile) would cut the weight, not needed at this size; filtering by session waits for slice 3; the gallery does not list the frames of a video, nor a video.

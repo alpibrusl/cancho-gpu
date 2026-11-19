@@ -68,6 +68,21 @@
         }
       }
     },
+    "/gallery": {
+      "get": {
+        "summary": "Every picture the studio holds, newest job first, 48 a page (HTML): each with a tag from the file it is: uploaded (upload-N.*), generated (out/N/image.png), edited (out/N/edited.png; a result is listed only when its job is done). A result offers Refine.",
+        "parameters": [
+          { "name": "tag", "in": "query", "required": false, "schema": { "type": "string", "enum": ["uploaded", "generated", "edited"] } },
+          { "name": "page", "in": "query", "required": false, "schema": { "type": "string", "description": "1 to 4 digits; a page past the end is empty." } }
+        ],
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/compare": {
       "get": {
         "summary": "The comparisons: the tally per kind of the choices that count (the rewritten prompt won, the prompt as written won, ties) and a link to each pair.",

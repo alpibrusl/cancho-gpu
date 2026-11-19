@@ -1,0 +1,243 @@
+edition 9;
+
+module gallery;
+
+import std.buffer;
+import std.bytes;
+import std.http;
+import files;
+import results;
+import upload;
+
+// `gallery` -- every picture the studio holds (docs/studio-sessions.md, section 9): `GET /gallery`, newest job first, 48 tiles a page, each with a tag.
+//
+//   uploaded   `upload-N.*` (the first picture) and `upload-N-2.*` (the second), served as `/files/N/input1.*` and `input2.*`
+//   generated  `out/N/image.png`, a picture made from a prompt
+//   edited     `out/N/edited.png`, an edit (a refine too)
+//
+// The tag comes from the file, so nothing is stored and old jobs have one. A result is listed only when its job is `done`. `?tag=uploaded|generated|edited` filters, `?page=N` pages
+// (a page past the end is empty). Nothing from the client reaches a path: the ids are the ones in `queue`, the names are fixed.
+
+// The name under which `/files/ID/` serves the first or second upload of a job (`input1.png`...), or "" for none.
+fn upload_name[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], second: bool) -> [heap, fs_read("")] &static [byte] {
+    if second {
+        if results.has_upload(heap, fs, dir, id, "input2.jpg") {
+            return "input2.jpg";
+        }
+        if results.has_upload(heap, fs, dir, id, "input2.png") {
+            return "input2.png";
+        }
+        if results.has_upload(heap, fs, dir, id, "input2.webp") {
+            return "input2.webp";
+        }
+        return "";
+    }
+    if results.has_upload(heap, fs, dir, id, "input1.jpg") {
+        return "input1.jpg";
+    }
+    if results.has_upload(heap, fs, dir, id, "input1.png") {
+        return "input1.png";
+    }
+    if results.has_upload(heap, fs, dir, id, "input1.webp") {
+        return "input1.webp";
+    }
+    return "";
+}
+
+// One tile: the picture (a link to its job), its tag, the job, the prompt, and Refine for a result.
+fn tile[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte], tag: &static [byte], refine: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = buffer.append(heap, page, "<div class=job><a class=thumb href=/jobs/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "><img loading=lazy alt=\"");
+    p = buffer.append(heap, p, tag);
+    p = buffer.append(heap, p, " picture of job ");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "\" src=/files/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    p = buffer.append(heap, p, "><span class=\"badge ");
+    p = buffer.append(heap, p, tag);
+    p = buffer.append(heap, p, "\">");
+    p = buffer.append(heap, p, tag);
+    p = buffer.append(heap, p, "</span><span class=idn>job ");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "</span></a><div class=body><p class=prompt>");
+    let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
+    if has_av {
+        borrow av as &avr in {
+            let (ps, pe) = results.last_entry(buffer.bytes(avr));
+            p = results.escape(heap, p, buffer.bytes(avr)[ps..pe]);
+        }
+    }
+    buffer.drop(heap, av);
+    p = buffer.append(heap, p, "</p><span class=meta><a href=/jobs/");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, ">job ");
+    p = buffer.append(heap, p, id);
+    p = buffer.append(heap, p, "</a>");
+    if refine {
+        p = buffer.append(heap, p, " &middot; <a href=\"/edit?from=");
+        p = buffer.append(heap, p, id);
+        p = buffer.append(heap, p, "\">Refine</a>");
+    }
+    return buffer.append(heap, p, "</span></div></div>");
+}
+
+// Offer one picture to the page: counted when its tag passes the filter, shown when it falls on this page, and `more` when there is another after the page.
+// Returns (the page, seen so far, shown so far, whether more exist).
+fn offer[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &static [byte], tag: &static [byte], refine: bool, want: &static [byte], skip: int, seen: int, shown: int, more: bool) -> [heap, fs_read(""), file_read] (buffer.Buffer, int, int, bool) {
+    if len(name) == 0 || (len(want) > 0 && bytes.equal(want, tag) == false) {
+        return (page, seen, shown, more);
+    }
+    let n = seen + 1;
+    if n <= skip {
+        return (page, n, shown, more);
+    }
+    if shown >= 48 {
+        return (page, n, shown, true);
+    }
+    return (tile(heap, page, fs, dir, id, name, tag, refine), n, shown + 1, more);
+}
+
+fn filter_link[&h](heap: &!h Heap, page: buffer.Buffer, label: &static [byte], href: &static [byte], current: bool) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<a class=btn href=\"");
+    p = buffer.append(heap, p, href);
+    p = buffer.append(heap, p, "\"");
+    if current {
+        p = buffer.append(heap, p, " aria-current=page style=\"border-color:var(--accent)\"");
+    }
+    p = buffer.append(heap, p, ">");
+    p = buffer.append(heap, p, label);
+    return buffer.append(heap, p, "</a>");
+}
+
+// `GET /gallery[?tag=T][&page=N]`: (status, the page). 422 for a tag that is not one of the three or a page that is not 1 to 4 digits.
+pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query: &q [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    let (tf, tt) = http.query_value(query, "tag");
+    let (pf, pt) = http.query_value(query, "page");
+    var want = "";
+    var bad = false;
+    if tf >= 0 && tt > tf {
+        if bytes.equal(query[tf..tt], "uploaded") {
+            want = "uploaded";
+        } else if bytes.equal(query[tf..tt], "generated") {
+            want = "generated";
+        } else if bytes.equal(query[tf..tt], "edited") {
+            want = "edited";
+        } else {
+            bad = true;
+        }
+    }
+    var number = 1;
+    if pf >= 0 && pt > pf {
+        if pt - pf > 4 {
+            bad = true;
+        } else {
+            var k = pf;
+            var v = 0;
+            while k < pt {
+                let c = int_of(query[k]);
+                if c < 48 || c > 57 {
+                    bad = true;
+                } else {
+                    v = v * 10 + (c - 48);
+                }
+                k = k + 1;
+            }
+            if v >= 1 {
+                number = v;
+            }
+        }
+    }
+    if bad {
+        return (422, buffer.append(heap, buffer.empty(heap, 64), "tag is uploaded, generated or edited; page is a number of 1 to 4 digits"));
+    }
+    let skip = (number - 1) * 48;
+    var page = results.open(heap, fs, dir, "gallery", "gallery", false);
+    page = buffer.append(heap, page, "<div class=row><h1>Gallery</h1><span class=meta>Every picture the studio holds, newest job first</span></div><div class=acts>");
+    page = filter_link(heap, page, "All", "/gallery", len(want) == 0);
+    page = filter_link(heap, page, "Uploaded", "/gallery?tag=uploaded", bytes.equal(want, "uploaded"));
+    page = filter_link(heap, page, "Generated", "/gallery?tag=generated", bytes.equal(want, "generated"));
+    page = filter_link(heap, page, "Edited", "/gallery?tag=edited", bytes.equal(want, "edited"));
+    page = buffer.append(heap, page, "</div><div class=grid>");
+    var text = buffer.empty(heap, 8);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &qb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var seen = 0;
+    var shown = 0;
+    var more = false;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 && more == false {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                let id = all[start..stop];
+                if results.id_ok(id) {
+                    let first = upload_name(heap, fs, dir, id, false);
+                    let second = upload_name(heap, fs, dir, id, true);
+                    let made = upload.result_name(heap, fs, dir, id);
+                    var made_tag = "edited";
+                    if bytes.equal(made, "image.png") {
+                        made_tag = "generated";
+                    }
+                    let (p1, s1, h1, m1) = offer(heap, page, fs, dir, id, first, "uploaded", false, want, skip, seen, shown, more);
+                    let (p2, s2, h2, m2) = offer(heap, p1, fs, dir, id, second, "uploaded", false, want, skip, s1, h1, m1);
+                    let (p3, s3, h3, m3) = offer(heap, p2, fs, dir, id, made, made_tag, true, want, skip, s2, h2, m2);
+                    page = p3;
+                    seen = s3;
+                    shown = h3;
+                    more = m3;
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    page = buffer.append(heap, page, "</div>");
+    if shown == 0 {
+        page = buffer.append(heap, page, "<p>No pictures here yet.</p>");
+    }
+    if number > 1 || more {
+        page = buffer.append(heap, page, "<div class=acts>");
+        if number > 1 {
+            page = buffer.append(heap, page, "<a class=btn href=\"/gallery?");
+            if len(want) > 0 {
+                page = buffer.append(heap, page, "tag=");
+                page = buffer.append(heap, page, want);
+                page = buffer.append(heap, page, "&amp;");
+            }
+            page = buffer.append(heap, page, "page=");
+            page = buffer.push_nat(heap, page, number - 1);
+            page = buffer.append(heap, page, "\">Newer</a>");
+        }
+        if more {
+            page = buffer.append(heap, page, "<a class=btn href=\"/gallery?");
+            if len(want) > 0 {
+                page = buffer.append(heap, page, "tag=");
+                page = buffer.append(heap, page, want);
+                page = buffer.append(heap, page, "&amp;");
+            }
+            page = buffer.append(heap, page, "page=");
+            page = buffer.push_nat(heap, page, number + 1);
+            page = buffer.append(heap, page, "\">Older</a>");
+        }
+        page = buffer.append(heap, page, "</div>");
+    }
+    return (200, results.close(heap, page));
+}

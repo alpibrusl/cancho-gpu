@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -744,4 +744,34 @@ BEFR=$(ls "$D" | wc -l | tr -d ' ')
 check "refine: refused (422): not digits, no such job, a failed job, a picture as well as from" "$(rf -F from=abc) $(rf -F from=999999) $(rf -F from=$NOT) $(rf -F from=$SX -F "image=@$R/pic.png")" "422 422 422 422"
 check "refine: ...and none of those left a file behind" "$(ls "$D" | wc -l | tr -d ' ')" "$BEFR"
 check "refine: a path is never taken from the client (from=../x is refused)" "$(rf -F 'from=../x')" 422
+# the gallery (docs/studio-sessions.md, section 9): every picture, with a tag from the file it is
+GI=$(po '{"kind":"image","prompt":"a harbour crane"}' | grep -o '"id":[0-9]*' | grep -o '[0-9]*'); mkdir -p "$D/out/$GI"; printf 'png' > "$D/out/$GI/image.png"; echo done > "$D/$GI.state"
+printf 'png' > "$D/out/$NOT/edited.png"   # a failed job's file is never listed
+gal() { # tag: the tiles of all pages carrying that tag, by counting their badges
+  pg=1; n=0
+  while :; do
+    body=$(curl -s -H "$(hdr)" "localhost:18097/gallery?tag=$1&page=$pg")
+    n=$((n + $(echo "$body" | grep -o "class=\"badge $1\"" | wc -l)))
+    echo "$body" | grep -q 'Older</a>' || break
+    pg=$((pg + 1))
+  done
+  echo $n
+}
+want_made() { c=0; for dd in "$D"/out/*/; do j=$(basename "$dd"); [ -f "$dd/$1" ] && [ "$(cat "$D/$j.state" 2>/dev/null)" = done ] && c=$((c + 1)); done; echo $c; }
+check "gallery: uploaded tiles are the uploaded files" "$(gal uploaded)" "$(ls "$D" | grep -c '^upload-')"
+check "gallery: edited tiles are the done jobs' edited.png (a failed job's file is not listed)" "$(gal edited)" "$(want_made edited.png)"
+check "gallery: generated tiles are the done jobs' image.png" "$(gal generated)" "$(want_made image.png)"
+check "gallery: ...and there is one generated picture, with its job's prompt" "$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=generated' | grep -o 'class=prompt>a harbour crane' | wc -l | tr -d ' ')" 1
+check "gallery: a result tile offers Refine, an uploaded tile does not" "$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=edited' | grep -o 'Refine</a>' | wc -l | tr -d ' ') $(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=uploaded' | grep -o 'Refine</a>' | wc -l | tr -d ' ')" "$(want_made edited.png) 0"
+check "gallery: a refined job's first picture (an earlier result) is not listed as an upload" "$(ls "$D" | grep -c "^upload-$RFI")" 0
+check "gallery: a tile's picture is the file the job page serves" "$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=generated' | grep -o "src=/files/$GI/image.png")" "src=/files/$GI/image.png"
+check "gallery: the other pages link to it, and it marks itself open" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'href=/gallery') $(curl -s -H "$(hdr)" localhost:18097/gallery | grep -c 'href=/gallery aria-current=page')" "1 1"
+check "gallery: refused (422): an unknown tag, a page that is not digits, a page of 5 digits" "$(for q in tag=nope page=x page=12345 'tag=edited&page=1a'; do curl -s -o /dev/null -w '%{http_code} ' -H "$(hdr)" "localhost:18097/gallery?$q"; done)" "422 422 422 422 "
+check "gallery: a page past the end is empty, not an error" "$(curl -s -w ' %{http_code}' -H "$(hdr)" 'localhost:18097/gallery?page=9999' | grep -o 'No pictures here yet\.\|[0-9]*$' | tr '\n' ' ')" "No pictures here yet. 200 "
+check "gallery: no token: 401" "$(curl -s -o /dev/null -w '%{http_code}' localhost:18097/gallery)" 401
+for k in $(seq 1 50); do ED --form-string "prompt=fill $k" -F "image=@$R/pic.png" >/dev/null; done
+P1=$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=uploaded'); P2=$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=uploaded&page=2')
+check "gallery: a page holds 48 tiles and offers Older, the next page offers Newer" "$(echo "$P1" | grep -o 'class=\"badge uploaded\"' | wc -l | tr -d ' ') $(echo "$P1" | grep -c 'Older</a>') $(echo "$P2" | grep -c 'Newer</a>')" "48 1 1"
+check "gallery: the pages together hold every upload once" "$(gal uploaded)" "$(ls "$D" | grep -c '^upload-')"
+check "gallery: newest first (the last upload leads the first page)" "$(echo "$P1" | grep -o 'src=/files/[0-9]*/input1' | head -1)" "src=/files/$(ls "$D" | grep -o '^upload-[0-9]*' | grep -o '[0-9]*' | sort -n | tail -1)/input1"
 exit $fail
