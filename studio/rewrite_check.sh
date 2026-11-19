@@ -64,6 +64,7 @@ check "ok: <id>.argv is not changed" "$(cmp "$D/1.argv" "$T/1.argv.before" && ec
 check "ok: the request names the model" "$(grep -o '"model":"[a-z-]*"' "$T/last.json")" '"model":"test-model"'
 check "ok: the request asks for no streaming, no thinking, unloading" "$(grep -o '"stream":false,"think":false,"keep_alive":0' "$T/last.json")" '"stream":false,"think":false,"keep_alive":0'
 check "ok: the request has no tools" "$(grep -c '"tools"' "$T/last.json")" 0
+check "ok: the rewriter's temperature is still 0.3 (only the describer asks for 0)" "$(grep -o '"temperature":[0-9.]*' "$T/last.json")" '"temperature":0.3'
 check "ok: a video sends no picture" "$(grep -c '"images"' "$T/last.json")" 0
 check "ok: the system prompt sent is the video one" "$(grep -c 'text-to-video model' "$T/last.json")" 1
 unstub

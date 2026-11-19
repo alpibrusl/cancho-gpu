@@ -161,7 +161,7 @@ fn run[&i, &h, &f, &n, &k, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), net: &
             borrow system as &sb in {
                 borrow picture as &pb in {
                     borrow picture2 as &pb2 in {
-                        let (code, text) = rewrite.ask(heap, net, clock, arg(args, 2), buffer.bytes(sb), arg(args, 4), buffer.bytes(pb), buffer.bytes(pb2), seconds);
+                        let (code, text) = rewrite.ask(heap, net, clock, arg(args, 2), buffer.bytes(sb), arg(args, 4), buffer.bytes(pb), buffer.bytes(pb2), seconds, false);
                         borrow text as &tb in {
                             status = report(io, code, buffer.bytes(tb));
                         }
