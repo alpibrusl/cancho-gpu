@@ -239,3 +239,18 @@ pub fn write_big[&f, &p, &t](fs: &f Fs(""), path: &p [byte], text: &t [byte]) ->
     }
     return status;
 }
+
+// Remove the file at `path` (`unlink`; a directory is not removed): 0 when it is gone, an errno, -2 for a path not ok.
+pub fn remove[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_write("")] int {
+    if path_ok(fs, path) == false {
+        return 0 - 2;
+    }
+    match fs_remove(fs, path) {
+        Done::Ok(n) => {
+            return 0;
+        }
+        Done::Failed(e) => {
+            return e;
+        }
+    }
+}

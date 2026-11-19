@@ -143,6 +143,22 @@
         }
       }
     },
+    "/gallery/delete/{id}": {
+      "post": {
+        "summary": "Delete library picture `id` (the number in `L<id>`): its file, description and marks. Refused while a job is queued or running. An HTML form button (`application/x-www-form-urlencoded`, no fields).",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9]{1,9}$" } }],
+        "responses": {
+          "302": { "description": "Deleted: Location /gallery." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such library picture.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "409": { "description": "A job is queued or running; nothing was removed.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "description": "The id is not 1 to 9 digits.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "500": { "description": "A file could not be removed.", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
     "/compare/{id}": {
       "get": {
         "summary": "A pair (made by `rewrite: ab`): the two results as left and right, without saying which used the rewritten prompt; a form to choose once both have finished; after the choice, which was which and both prompts. Blind by convention: the job ids are in the page source.",
