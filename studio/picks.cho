@@ -1,0 +1,281 @@
+edition 9;
+
+module picks;
+
+import std.buffer;
+import std.bytes;
+import files;
+import results;
+import library;
+
+// `picks` -- choosing a picture from the gallery instead of uploading one (docs/studio-sessions.md, section 10.4). A choice is a text the form posts in `pick1` or `pick2`:
+//
+//   j/N/NAME   a job's picture: `edited.png` or `image.png` (its result, the job done), `input1.jpg|png|webp` or `input2.*` (a picture it was given)
+//   l/LN       a library picture
+//
+// `resolve` turns it into a path the SERVER builds from an id and a closed name; nothing from the client is a path and nothing is copied.
+
+// The name under which `/files/ID/` serves the first or second upload of a job (`input1.png`...), or "" for none.
+pub fn upload_name[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], second: bool) -> [heap, fs_read("")] &static [byte] {
+    if second {
+        if results.has_upload(heap, fs, dir, id, "input2.jpg") {
+            return "input2.jpg";
+        }
+        if results.has_upload(heap, fs, dir, id, "input2.png") {
+            return "input2.png";
+        }
+        if results.has_upload(heap, fs, dir, id, "input2.webp") {
+            return "input2.webp";
+        }
+        return "";
+    }
+    if results.has_upload(heap, fs, dir, id, "input1.jpg") {
+        return "input1.jpg";
+    }
+    if results.has_upload(heap, fs, dir, id, "input1.png") {
+        return "input1.png";
+    }
+    if results.has_upload(heap, fs, dir, id, "input1.webp") {
+        return "input1.webp";
+    }
+    return "";
+}
+
+// The name of library picture `n` (digits): `picture.jpg|png|webp` for the file that exists, or "".
+pub fn lib_name[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: &n [byte]) -> [heap, fs_read("")] &static [byte] {
+    var p = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n);
+    var name = "";
+    borrow p as &pb in {
+        let base = buffer.bytes(pb);
+        let b = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), base), ".jpg");
+        borrow b as &b1 in {
+            if files.exists(fs, buffer.bytes(b1)) {
+                name = "picture.jpg";
+            }
+        }
+        buffer.drop(heap, b);
+        if len(name) == 0 {
+            let c = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), base), ".png");
+            borrow c as &c1 in {
+                if files.exists(fs, buffer.bytes(c1)) {
+                    name = "picture.png";
+                }
+            }
+            buffer.drop(heap, c);
+        }
+        if len(name) == 0 {
+            let w = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), base), ".webp");
+            borrow w as &w1 in {
+                if files.exists(fs, buffer.bytes(w1)) {
+                    name = "picture.webp";
+                }
+            }
+            buffer.drop(heap, w);
+        }
+    }
+    buffer.drop(heap, p);
+    return name;
+}
+
+// The fixed name for a client's text naming an uploaded picture of a job, or "" (a closed list: nothing else is a name).
+fn closed_upload[&n](name: &n [byte]) -> [] &static [byte] {
+    if bytes.equal(name, "input1.jpg") {
+        return "input1.jpg";
+    }
+    if bytes.equal(name, "input1.png") {
+        return "input1.png";
+    }
+    if bytes.equal(name, "input1.webp") {
+        return "input1.webp";
+    }
+    if bytes.equal(name, "input2.jpg") {
+        return "input2.jpg";
+    }
+    if bytes.equal(name, "input2.png") {
+        return "input2.png";
+    }
+    if bytes.equal(name, "input2.webp") {
+        return "input2.webp";
+    }
+    return "";
+}
+
+// Resolve a choice: (the path of the picture, the `.from` line for it, whether it is a job's result, whether it is valid). An invalid choice has empty buffers.
+pub fn resolve[&h, &f, &d, &v](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], value: &v [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, buffer.Buffer, bool, bool) {
+    if bytes.starts_with(value, "l/") {
+        let ref = value[2..len(value)];
+        if results.lib_id_ok(ref) {
+            let name = lib_name(heap, fs, dir, ref[1..len(ref)]);
+            if len(name) > 0 {
+                var path = buffer.append(heap, buffer.empty(heap, 96), dir);
+                path = buffer.append(heap, path, "/lib-");
+                path = buffer.append(heap, path, ref[1..len(ref)]);
+                path = buffer.append(heap, path, results.lib_ext(name));
+                var line = buffer.append(heap, buffer.empty(heap, 32), ref);
+                line = buffer.append(heap, line, " ");
+                line = buffer.append(heap, line, name);
+                return (path, line, false, true);
+            }
+        }
+    } else if bytes.starts_with(value, "j/") {
+        let rest = value[2..len(value)];
+        var cut = 0;
+        while cut < len(rest) && int_of(rest[cut]) != 47 {
+            cut = cut + 1;
+        }
+        if cut > 0 && cut < len(rest) {
+            let id = rest[0..cut];
+            let name = rest[cut + 1..len(rest)];
+            if results.id_ok(id) {
+                if bytes.equal(name, "edited.png") || bytes.equal(name, "image.png") {
+                    if bytes.equal(results.result_name(heap, fs, dir, id), name) {
+                        var path = buffer.append(heap, buffer.empty(heap, 96), dir);
+                        path = buffer.append(heap, path, "/out/");
+                        path = buffer.append(heap, path, id);
+                        path = buffer.append(heap, path, "/");
+                        path = buffer.append(heap, path, name);
+                        var line = buffer.append(heap, buffer.empty(heap, 32), id);
+                        line = buffer.append(heap, line, " ");
+                        line = buffer.append(heap, line, name);
+                        return (path, line, true, true);
+                    }
+                } else {
+                    let sname = closed_upload(name);
+                    if len(sname) > 0 && results.has_upload(heap, fs, dir, id, sname) {
+                        var line = buffer.append(heap, buffer.empty(heap, 32), id);
+                        line = buffer.append(heap, line, " ");
+                        line = buffer.append(heap, line, sname);
+                        return (results.upload_path(heap, dir, id, results.upload_tail(sname)), line, false, true);
+                    }
+                }
+            }
+        }
+    }
+    return (buffer.empty(heap, 8), buffer.empty(heap, 8), false, false);
+}
+
+fn tile[&h, &v, &i, &n](heap: &!h Heap, page: buffer.Buffer, field: &static [byte], value: &v [byte], ref: &i [byte], name: &n [byte], tag: &static [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<label style=\"position:relative;display:block;width:96px;height:96px;flex-direction:row\"><input type=radio name=");
+    p = buffer.append(heap, p, field);
+    p = buffer.append(heap, p, " value=\"");
+    p = buffer.append(heap, p, value);
+    p = buffer.append(heap, p, "\" style=\"position:absolute;top:6px;left:6px;z-index:1\"><img loading=lazy alt=\"");
+    p = buffer.append(heap, p, tag);
+    p = buffer.append(heap, p, "\" title=\"");
+    p = buffer.append(heap, p, tag);
+    p = buffer.append(heap, p, "\" style=\"width:96px;height:96px;object-fit:cover;border-radius:8px\" src=/files/");
+    p = buffer.append(heap, p, ref);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, name);
+    return buffer.append(heap, p, "></label>");
+}
+
+// The picker for one picture slot (`field` is `pick1` or `pick2`): "or choose from the gallery", a closed `<details>` with the `limit` newest pictures (the library's, then the jobs') as radio tiles
+// and a first radio for none. No script. A choice is posted as the text `resolve` reads.
+pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], field: &static [byte], limit: int) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = buffer.append(heap, page, "<details><summary>or choose from the gallery</summary><div style=\"display:flex;flex-wrap:wrap;gap:6px;margin-top:8px\"><label style=\"flex-direction:row;align-items:center;gap:6px;width:96px\"><input type=radio name=");
+    p = buffer.append(heap, p, field);
+    p = buffer.append(heap, p, " value=\"\" checked style=\"width:auto;min-height:0\"> none</label>");
+    var shown = 0;
+    let idx = library.index(heap, fs, dir);
+    borrow idx as &ib in {
+        let all = buffer.bytes(ib);
+        var end = len(all);
+        while end > 0 && shown < limit {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                var sp = start;
+                while sp < stop && int_of(all[sp]) != 32 {
+                    sp = sp + 1;
+                }
+                let number = all[start..sp];
+                if results.id_ok(number) {
+                    let name = lib_name(heap, fs, dir, number);
+                    if len(name) > 0 {
+                        let ref = buffer.append(heap, buffer.push(heap, buffer.empty(heap, 12), byte_of(76)), number);
+                        var value = buffer.append(heap, buffer.empty(heap, 16), "l/");
+                        borrow ref as &rb in {
+                            value = buffer.append(heap, value, buffer.bytes(rb));
+                            borrow value as &vb in {
+                                p = tile(heap, p, field, buffer.bytes(vb), buffer.bytes(rb), name, "library");
+                            }
+                        }
+                        buffer.drop(heap, ref);
+                        buffer.drop(heap, value);
+                        shown = shown + 1;
+                    }
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, idx);
+    var text = buffer.empty(heap, 8);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &qb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 && shown < limit {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                let id = all[start..stop];
+                if results.id_ok(id) {
+                    let first = upload_name(heap, fs, dir, id, false);
+                    let second = upload_name(heap, fs, dir, id, true);
+                    let made = results.result_name(heap, fs, dir, id);
+                    var k = 0;
+                    while k < 3 {
+                        var name = first;
+                        var tag = "uploaded";
+                        if k == 1 {
+                            name = second;
+                        } else if k == 2 {
+                            name = made;
+                            if bytes.equal(made, "image.png") {
+                                tag = "generated";
+                            } else {
+                                tag = "edited";
+                            }
+                        }
+                        if len(name) > 0 && shown < limit {
+                            let value = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 40), "j/"), id), "/"), name);
+                            borrow value as &vb2 in {
+                                p = tile(heap, p, field, buffer.bytes(vb2), id, name, tag);
+                            }
+                            buffer.drop(heap, value);
+                            shown = shown + 1;
+                        }
+                        k = k + 1;
+                    }
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    return buffer.append(heap, p, "</div></details>");
+}
