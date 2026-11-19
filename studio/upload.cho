@@ -192,6 +192,12 @@ fn named[&t, &w](header: &t [byte], want: &w [byte]) -> [] bool {
 
 // The content of the part named `want`: (from, to), or (-1, -1) if there is none or the body is not well formed. `delim` is `--<boundary>`.
 pub fn part[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte]) -> [] (int, int) {
+    return part_nth(body, delim, want, 0);
+}
+
+// The `n`th (from 0) part of that name: a form field sent several times (several files chosen in one input, several boxes ticked) is several parts of one name.
+pub fn part_nth[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte], n: int) -> [] (int, int) {
+    var skip = n;
     var at = 0;
     while at < len(body) {
         let p = bytes.find(body[at..len(body)], delim);
@@ -217,7 +223,10 @@ pub fn part[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte]) -> [
         }
         let ce = cs + nx - 2;
         if named(body[hs..hs + he], want) {
-            return (cs, ce);
+            if skip == 0 {
+                return (cs, ce);
+            }
+            skip = skip - 1;
         }
         at = cs + nx;
     }

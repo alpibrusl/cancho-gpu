@@ -328,7 +328,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 }
                                 buffer.drop(heap, gpg);
                             } else if bytes.equal(path, "/cases") && bytes.equal(method, "GET") {
-                                let cpg = cases.page(heap, fs, dir);
+                                let cpg = cases.page(heap, fs, dir, http.query(head, table));
                                 borrow cpg as &cpb in {
                                     out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(cpb), keep, "");
                                 }

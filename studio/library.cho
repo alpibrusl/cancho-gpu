@@ -41,6 +41,23 @@ fn error_text[&h, &w](heap: &!h Heap, why: &w [byte]) -> [heap] buffer.Buffer {
     return buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\""), why), "\"}");
 }
 
+// The description of library picture `n` (digits): (the text, whether there is one). `<data>/lib-N.txt`, a line of at most 200 bytes the person gave when adding the picture.
+pub fn description[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: &n [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, bool) {
+    let p = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n), ".txt");
+    var text = buffer.empty(heap, 8);
+    var ok = false;
+    borrow p as &pb in {
+        if files.exists(fs, buffer.bytes(pb)) {
+            let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+            buffer.drop(heap, text);
+            text = b;
+            ok = e == 0;
+        }
+    }
+    buffer.drop(heap, p);
+    return (text, ok);
+}
+
 // `POST /gallery`: (status, text). 302 with the text empty when the picture is kept; else 422 or 500 with a JSON one-liner.
 pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
     let (bf, bt) = upload.boundary_of(ctype);
@@ -57,8 +74,12 @@ pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ct
             why = "a picture is needed";
         } else {
             let kind = upload.kind_of(body[imf..imt]);
+            let (df, dt) = upload.part(body, buffer.bytes(db), "description");
+            let has_desc = df >= 0 && dt > df;
             if kind == 0 {
                 why = "the picture is not a JPEG, PNG or WebP file";
+            } else if has_desc && (dt - df > 200 || upload.no_controls(body[df..dt]) == false) {
+                why = "the description is a line of at most 200 bytes with no control characters";
             } else {
                 let idx = index(heap, fs, dir);
                 var number = 1;
@@ -85,6 +106,17 @@ pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ct
                 buffer.drop(heap, path);
                 why = "the picture could not be saved";
                 status = 500;
+                if saved == 0 && has_desc {
+                    // the description first, so that a picture listed in the index always has it
+                    var dp = buffer.append(heap, buffer.empty(heap, 96), dir);
+                    dp = buffer.append(heap, dp, "/lib-");
+                    dp = buffer.push_nat(heap, dp, number);
+                    dp = buffer.append(heap, dp, ".txt");
+                    borrow dp as &dpb in {
+                        saved = files.write_all(fs, buffer.bytes(dpb), body[df..dt]);
+                    }
+                    buffer.drop(heap, dp);
+                }
                 if saved == 0 {
                     var line = buffer.push_nat(heap, buffer.empty(heap, 16), number);
                     line = buffer.append(heap, line, " ");

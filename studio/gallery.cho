@@ -44,7 +44,17 @@ fn tile[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), 
     p = buffer.append(heap, p, "\">");
     p = buffer.append(heap, p, tag);
     if mode == 2 {
-        p = buffer.append(heap, p, "</span><span class=idn>library</span></a><div class=body><p class=prompt>Added to the library</p><span class=meta>library &middot; <a href=\"/edit?pick1=l/");
+        p = buffer.append(heap, p, "</span><span class=idn>library</span></a><div class=body><p class=prompt>");
+        let (desc, has_desc) = library.description(heap, fs, dir, id[1..len(id)]);
+        if has_desc {
+            borrow desc as &dsb in {
+                p = results.escape(heap, p, buffer.bytes(dsb));
+            }
+        } else {
+            p = buffer.append(heap, p, "Added to the library");
+        }
+        buffer.drop(heap, desc);
+        p = buffer.append(heap, p, "</p><span class=meta>library &middot; <a href=\"/edit?pick1=l/");
         p = buffer.append(heap, p, id);
         p = buffer.append(heap, p, "\">Edit this</a></span></div></div>");
         return p;
@@ -81,9 +91,20 @@ fn tile[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), 
 
 // Offer one picture to the page: counted when its tag passes the filter, shown when it falls on this page, and `more` when there is another after the page.
 // Returns (the page, seen so far, shown so far, whether more exist).
-fn offer[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &n [byte], tag: &static [byte], mode: int, want: &static [byte], skip: int, seen: int, shown: int, more: bool) -> [heap, fs_read(""), file_read] (buffer.Buffer, int, int, bool) {
+fn offer[&h, &f, &d, &i, &n, &z](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte], name: &n [byte], tag: &static [byte], mode: int, want: &static [byte], q: &z [byte], skip: int, seen: int, shown: int, more: bool) -> [heap, fs_read(""), file_read] (buffer.Buffer, int, int, bool) {
     if len(name) == 0 || (len(want) > 0 && bytes.equal(want, tag) == false) {
         return (page, seen, shown, more);
+    }
+    if len(q) > 0 {
+        var found = false;
+        if mode == 2 {
+            found = picks.matches(heap, fs, dir, true, id[1..len(id)], q);
+        } else {
+            found = picks.matches(heap, fs, dir, false, id, q);
+        }
+        if found == false {
+            return (page, seen, shown, more);
+        }
     }
     let n = seen + 1;
     if n <= skip {
@@ -107,7 +128,35 @@ fn filter_link[&h](heap: &!h Heap, page: buffer.Buffer, label: &static [byte], h
     return buffer.append(heap, p, "</a>");
 }
 
-// `GET /gallery[?tag=T][&page=N]`: (status, the page). 422 for a tag that is not one of the three or a page that is not 1 to 4 digits.
+// `q` written for a query string: letters and digits as they are, everything else as `%XX`.
+fn put_q[&h, &q](heap: &!h Heap, page: buffer.Buffer, q: &q [byte]) -> [heap] buffer.Buffer {
+    var p = page;
+    var i = 0;
+    while i < len(q) {
+        let c = int_of(q[i]);
+        if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+            p = buffer.push(heap, p, byte_of(c));
+        } else {
+            p = buffer.push(heap, p, byte_of(37));
+            let hi = c / 16;
+            let lo = c - hi * 16;
+            if hi < 10 {
+                p = buffer.push(heap, p, byte_of(48 + hi));
+            } else {
+                p = buffer.push(heap, p, byte_of(55 + hi));
+            }
+            if lo < 10 {
+                p = buffer.push(heap, p, byte_of(48 + lo));
+            } else {
+                p = buffer.push(heap, p, byte_of(55 + lo));
+            }
+        }
+        i = i + 1;
+    }
+    return p;
+}
+
+// `GET /gallery[?tag=T][&q=WORDS][&page=N]`: (status, the page). 422 for a tag that is not one of the three or a page that is not 1 to 4 digits.
 pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query: &q [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     let (tf, tt) = http.query_value(query, "tag");
     let (pf, pt) = http.query_value(query, "page");
@@ -149,13 +198,26 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
         return (422, buffer.append(heap, buffer.empty(heap, 64), "tag is uploaded, generated or edited; page is a number of 1 to 4 digits"));
     }
     let skip = (number - 1) * 48;
-    var page = results.open(heap, fs, dir, "gallery", "gallery", false);
+    let qb = picks.query_text(heap, query, "q");
+    var page = buffer.empty(heap, 8);
+    borrow qb as &qbb in {
+    buffer.drop(heap, page);
+    page = results.open(heap, fs, dir, "gallery", "gallery", false);
     page = buffer.append(heap, page, "<div class=row><h1>Gallery</h1><span class=meta>Every picture the studio holds, newest job first</span></div><div class=acts>");
     page = filter_link(heap, page, "All", "/gallery", len(want) == 0);
     page = filter_link(heap, page, "Uploaded", "/gallery?tag=uploaded", bytes.equal(want, "uploaded"));
     page = filter_link(heap, page, "Generated", "/gallery?tag=generated", bytes.equal(want, "generated"));
     page = filter_link(heap, page, "Edited", "/gallery?tag=edited", bytes.equal(want, "edited"));
-    page = buffer.append(heap, page, "</div><form method=post action=/gallery enctype=multipart/form-data style=\"max-width:none;flex-direction:row;align-items:flex-end;flex-wrap:wrap\"><label style=\"flex:1 1 260px\">Add a picture to the library (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><div><button>Add</button></div></form><div class=grid>");
+    page = buffer.append(heap, page, "</div><form method=get action=/gallery style=\"max-width:none;flex-direction:row;align-items:flex-end;flex-wrap:wrap\">");
+    if len(want) > 0 {
+        page = buffer.append(heap, page, "<input type=hidden name=tag value=");
+        page = buffer.append(heap, page, want);
+        page = buffer.append(heap, page, ">");
+    }
+    page = buffer.append(heap, page, "<label style=\"flex:1 1 260px\">Search (words of a picture's description, or of the instruction a job's picture was made with)<input name=q maxlength=100 value=\"");
+    page = results.escape(heap, page, buffer.bytes(qbb));
+    page = buffer.append(heap, page, "\"></label><div><button>Search</button></div></form>");
+    page = buffer.append(heap, page, "<form method=post action=/gallery enctype=multipart/form-data style=\"max-width:none;flex-direction:row;align-items:flex-end;flex-wrap:wrap\"><label style=\"flex:1 1 260px\">Add a picture to the library (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><label style=\"flex:2 1 260px\">Description (optional, at most 200 characters: what is in it, to find it later)<input name=description maxlength=200></label><div><button>Add</button></div></form><div class=grid>");
     var seen = 0;
     var shown = 0;
     var more = false;
@@ -186,7 +248,7 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
                         let lname = picks.lib_name(heap, fs, dir, number);
                         let ref = buffer.append(heap, buffer.push(heap, buffer.empty(heap, 12), byte_of(76)), number);
                         borrow ref as &rb in {
-                            let (lp, ls, lh, lm) = offer(heap, page, fs, dir, buffer.bytes(rb), lname, "uploaded", 2, want, skip, seen, shown, more);
+                            let (lp, ls, lh, lm) = offer(heap, page, fs, dir, buffer.bytes(rb), lname, "uploaded", 2, want, buffer.bytes(qbb), skip, seen, shown, more);
                             page = lp;
                             seen = ls;
                             shown = lh;
@@ -232,9 +294,9 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
                     if bytes.equal(made, "image.png") {
                         made_tag = "generated";
                     }
-                    let (p1, s1, h1, m1) = offer(heap, page, fs, dir, id, first, "uploaded", 1, want, skip, seen, shown, more);
-                    let (p2, s2, h2, m2) = offer(heap, p1, fs, dir, id, second, "uploaded", 1, want, skip, s1, h1, m1);
-                    let (p3, s3, h3, m3) = offer(heap, p2, fs, dir, id, made, made_tag, 0, want, skip, s2, h2, m2);
+                    let (p1, s1, h1, m1) = offer(heap, page, fs, dir, id, first, "uploaded", 1, want, buffer.bytes(qbb), skip, seen, shown, more);
+                    let (p2, s2, h2, m2) = offer(heap, p1, fs, dir, id, second, "uploaded", 1, want, buffer.bytes(qbb), skip, s1, h1, m1);
+                    let (p3, s3, h3, m3) = offer(heap, p2, fs, dir, id, made, made_tag, 0, want, buffer.bytes(qbb), skip, s2, h2, m2);
                     page = p3;
                     seen = s3;
                     shown = h3;
@@ -258,6 +320,11 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
                 page = buffer.append(heap, page, want);
                 page = buffer.append(heap, page, "&amp;");
             }
+            if len(buffer.bytes(qbb)) > 0 {
+                page = buffer.append(heap, page, "q=");
+                page = put_q(heap, page, buffer.bytes(qbb));
+                page = buffer.append(heap, page, "&amp;");
+            }
             page = buffer.append(heap, page, "page=");
             page = buffer.push_nat(heap, page, number - 1);
             page = buffer.append(heap, page, "\">Newer</a>");
@@ -269,11 +336,18 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
                 page = buffer.append(heap, page, want);
                 page = buffer.append(heap, page, "&amp;");
             }
+            if len(buffer.bytes(qbb)) > 0 {
+                page = buffer.append(heap, page, "q=");
+                page = put_q(heap, page, buffer.bytes(qbb));
+                page = buffer.append(heap, page, "&amp;");
+            }
             page = buffer.append(heap, page, "page=");
             page = buffer.push_nat(heap, page, number + 1);
             page = buffer.append(heap, page, "\">Older</a>");
         }
         page = buffer.append(heap, page, "</div>");
     }
+    }
+    buffer.drop(heap, qb);
     return (200, results.close(heap, page));
 }

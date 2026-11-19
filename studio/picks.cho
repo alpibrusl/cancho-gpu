@@ -4,6 +4,7 @@ module picks;
 
 import std.buffer;
 import std.bytes;
+import std.http;
 import files;
 import results;
 import library;
@@ -154,15 +155,87 @@ pub fn resolve[&h, &f, &d, &v](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], va
     return (buffer.empty(heap, 8), buffer.empty(heap, 8), false, false);
 }
 
-fn tile[&h, &v, &i, &n](heap: &!h Heap, page: buffer.Buffer, field: &static [byte], value: &v [byte], ref: &i [byte], name: &n [byte], tag: &static [byte]) -> [heap] buffer.Buffer {
-    var p = buffer.append(heap, page, "<label style=\"position:relative;display:block;width:96px;height:96px;flex-direction:row\"><input type=radio name=");
+// ASCII case-insensitive: whether `hay` contains `needle` (an empty needle is in everything).
+pub fn contains_ci[&h, &n](hay: &h [byte], needle: &n [byte]) -> [] bool {
+    if len(needle) == 0 {
+        return true;
+    }
+    var i = 0;
+    while i + len(needle) <= len(hay) {
+        var j = 0;
+        var same = true;
+        while j < len(needle) && same {
+            var a = int_of(hay[i + j]);
+            var b = int_of(needle[j]);
+            if a >= 65 && a <= 90 {
+                a = a + 32;
+            }
+            if b >= 65 && b <= 90 {
+                b = b + 32;
+            }
+            if a != b {
+                same = false;
+            }
+            j = j + 1;
+        }
+        if same {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The words a picture is found by (docs/studio-sessions.md, section 15): a library picture's description, a job's picture's prompt. `lib` says which `id` is (the digits of a library number, or a job id).
+pub fn search_text[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], lib: bool, id: &i [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var text = buffer.empty(heap, 8);
+    if lib {
+        let (t, ok) = library.description(heap, fs, dir, id);
+        buffer.drop(heap, text);
+        text = t;
+        return text;
+    }
+    let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
+    if has_av {
+        borrow av as &avr in {
+            let (ps, pe) = results.last_entry(buffer.bytes(avr));
+            buffer.drop(heap, text);
+            text = buffer.append(heap, buffer.empty(heap, 64), buffer.bytes(avr)[ps..pe]);
+        }
+    }
+    buffer.drop(heap, av);
+    return text;
+}
+
+// Whether the picture is found by `q` (an empty `q` finds everything).
+pub fn matches[&h, &f, &d, &i, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], lib: bool, id: &i [byte], q: &q [byte]) -> [heap, fs_read(""), file_read] bool {
+    if len(q) == 0 {
+        return true;
+    }
+    let text = search_text(heap, fs, dir, lib, id);
+    var yes = false;
+    borrow text as &tb in {
+        yes = contains_ci(buffer.bytes(tb), q);
+    }
+    buffer.drop(heap, text);
+    return yes;
+}
+
+fn tile[&h, &v, &i, &n, &t](heap: &!h Heap, page: buffer.Buffer, field: &static [byte], kind: &static [byte], value: &v [byte], ref: &i [byte], name: &n [byte], tag: &static [byte], label: &t [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<label style=\"position:relative;display:block;width:96px;height:96px;flex-direction:row\"><input type=");
+    p = buffer.append(heap, p, kind);
+    p = buffer.append(heap, p, " name=");
     p = buffer.append(heap, p, field);
     p = buffer.append(heap, p, " value=\"");
     p = buffer.append(heap, p, value);
-    p = buffer.append(heap, p, "\" style=\"position:absolute;top:6px;left:6px;z-index:1\"><img loading=lazy alt=\"");
+    p = buffer.append(heap, p, "\" style=\"position:absolute;top:6px;left:6px;z-index:1;width:auto;min-height:0\"><img loading=lazy alt=\"");
     p = buffer.append(heap, p, tag);
     p = buffer.append(heap, p, "\" title=\"");
     p = buffer.append(heap, p, tag);
+    if len(label) > 0 {
+        p = buffer.append(heap, p, ": ");
+        p = results.escape(heap, p, label);
+    }
     p = buffer.append(heap, p, "\" style=\"width:96px;height:96px;object-fit:cover;border-radius:8px\" src=/files/");
     p = buffer.append(heap, p, ref);
     p = buffer.append(heap, p, "/");
@@ -173,9 +246,31 @@ fn tile[&h, &v, &i, &n](heap: &!h Heap, page: buffer.Buffer, field: &static [byt
 // The picker for one picture slot (`field` is `pick1` or `pick2`): "or choose from the gallery", a closed `<details>` with the `limit` newest pictures (the library's, then the jobs') as radio tiles
 // and a first radio for none. No script. A choice is posted as the text `resolve` reads.
 pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], field: &static [byte], limit: int) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var p = buffer.append(heap, page, "<details><summary>or choose from the gallery</summary><div style=\"display:flex;flex-wrap:wrap;gap:6px;margin-top:8px\"><label style=\"flex-direction:row;align-items:center;gap:6px;width:96px\"><input type=radio name=");
-    p = buffer.append(heap, p, field);
-    p = buffer.append(heap, p, " value=\"\" checked style=\"width:auto;min-height:0\"> none</label>");
+    return picker_q(heap, page, fs, dir, field, limit, "", false);
+}
+
+// The same, found by `q` (a picture's description or its job's prompt, ignoring case; empty for all), and with checkboxes when `multi` (several can be ticked: one text each, the same field name).
+pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], field: &static [byte], limit: int, q: &q [byte], multi: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var kind = "radio";
+    if multi {
+        kind = "checkbox";
+    }
+    var p = buffer.append(heap, page, "<details");
+    if multi {
+        p = buffer.append(heap, p, " open");
+    }
+    p = buffer.append(heap, p, "><summary>");
+    if multi {
+        p = buffer.append(heap, p, "tick the pictures to use, from the gallery");
+    } else {
+        p = buffer.append(heap, p, "or choose from the gallery");
+    }
+    p = buffer.append(heap, p, "</summary><div style=\"display:flex;flex-wrap:wrap;gap:6px;margin-top:8px\">");
+    if multi == false {
+        p = buffer.append(heap, p, "<label style=\"flex-direction:row;align-items:center;gap:6px;width:96px\"><input type=radio name=");
+        p = buffer.append(heap, p, field);
+        p = buffer.append(heap, p, " value=\"\" checked style=\"width:auto;min-height:0\"> none</label>");
+    }
     var shown = 0;
     let idx = library.index(heap, fs, dir);
     borrow idx as &ib in {
@@ -200,15 +295,19 @@ pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), di
                 let number = all[start..sp];
                 if results.id_ok(number) {
                     let name = lib_name(heap, fs, dir, number);
-                    if len(name) > 0 {
+                    if len(name) > 0 && matches(heap, fs, dir, true, number, q) {
                         let ref = buffer.append(heap, buffer.push(heap, buffer.empty(heap, 12), byte_of(76)), number);
                         var value = buffer.append(heap, buffer.empty(heap, 16), "l/");
+                        let (desc, has_desc) = library.description(heap, fs, dir, number);
                         borrow ref as &rb in {
                             value = buffer.append(heap, value, buffer.bytes(rb));
                             borrow value as &vb in {
-                                p = tile(heap, p, field, buffer.bytes(vb), buffer.bytes(rb), name, "library");
+                                borrow desc as &db in {
+                                    p = tile(heap, p, field, kind, buffer.bytes(vb), buffer.bytes(rb), name, "library", buffer.bytes(db));
+                                }
                             }
                         }
+                        buffer.drop(heap, desc);
                         buffer.drop(heap, ref);
                         buffer.drop(heap, value);
                         shown = shown + 1;
@@ -243,7 +342,7 @@ pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), di
                     start = start - 1;
                 }
                 let id = all[start..stop];
-                if results.id_ok(id) {
+                if results.id_ok(id) && matches(heap, fs, dir, false, id, q) {
                     let first = upload_name(heap, fs, dir, id, false);
                     let second = upload_name(heap, fs, dir, id, true);
                     let made = results.result_name(heap, fs, dir, id);
@@ -263,9 +362,13 @@ pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), di
                         }
                         if len(name) > 0 && shown < limit {
                             let value = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 40), "j/"), id), "/"), name);
+                            let label = search_text(heap, fs, dir, false, id);
                             borrow value as &vb2 in {
-                                p = tile(heap, p, field, buffer.bytes(vb2), id, name, tag);
+                                borrow label as &lb in {
+                                    p = tile(heap, p, field, kind, buffer.bytes(vb2), id, name, tag, buffer.bytes(lb));
+                                }
                             }
+                            buffer.drop(heap, label);
                             buffer.drop(heap, value);
                             shown = shown + 1;
                         }
@@ -277,5 +380,40 @@ pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), di
         }
     }
     buffer.drop(heap, text);
+    if shown == 0 {
+        p = buffer.append(heap, p, "<span class=meta>No pictures found.</span>");
+    }
     return buffer.append(heap, p, "</div></details>");
+}
+
+// The value of query parameter `key`, decoded (`+` is a space, `%XX` a byte), at most 100 bytes, no control characters; empty if absent. Used for `?q=`.
+pub fn query_text[&h, &q, &k](heap: &!h Heap, query: &q [byte], key: &k [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, 16);
+    let (a, b) = http.query_value(query, key);
+    if a < 0 {
+        return out;
+    }
+    var i = a;
+    var n = 0;
+    while i < b && n < 100 {
+        let c = int_of(query[i]);
+        var v = c;
+        var step = 1;
+        if c == 43 {
+            v = 32;
+        } else if c == 37 && i + 2 < b {
+            let hi = http.hex_value(int_of(query[i + 1]));
+            let lo = http.hex_value(int_of(query[i + 2]));
+            if hi >= 0 && lo >= 0 {
+                v = hi * 16 + lo;
+                step = 3;
+            }
+        }
+        if v >= 32 && v != 127 {
+            out = buffer.push(heap, out, byte_of(v));
+            n = n + 1;
+        }
+        i = i + step;
+    }
+    return out;
 }
