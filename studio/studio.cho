@@ -13,6 +13,7 @@ import range;
 import upload;
 import cases;
 import gallery;
+import sessions;
 import compare;
 import sets;
 
@@ -269,6 +270,18 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(fpb), keep, "");
                                 }
                                 buffer.drop(heap, form);
+                            } else if bytes.equal(path, "/sessions") && bytes.equal(method, "GET") {
+                                let sl = sessions.list(heap, fs, dir);
+                                borrow sl as &slb in {
+                                    out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(slb), keep, "");
+                                }
+                                buffer.drop(heap, sl);
+                            } else if bytes.starts_with(path, "/sessions/") && bytes.equal(method, "GET") {
+                                let (sst2, spg) = sessions.page(heap, fs, dir, path[10..len(path)]);
+                                borrow spg as &spb in {
+                                    out = server.reply_as(heap, out, sst2, "text/html; charset=utf-8", buffer.bytes(spb), keep, "");
+                                }
+                                buffer.drop(heap, spg);
                             } else if bytes.equal(path, "/gallery") && bytes.equal(method, "GET") {
                                 let (gst, gpg) = gallery.page(heap, fs, dir, http.query(head, table));
                                 borrow gpg as &gpb in {

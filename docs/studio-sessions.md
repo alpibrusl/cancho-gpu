@@ -1,6 +1,6 @@
 # cancho-studio: an editing session (design, 2026-11-19)
 
-> **Status: slices 1 and 2 (section 8) and 6, the gallery (section 9), are built and checked; 3 to 5 are designed, not built.** Claims say what was read in this repository (`studio/upload.cho`, `studio/results.cho`, `studio/jobs.cho`, `docs/studio-variations.md` section 3, `docs/studio-cases.md`) and what was not run. It completes `docs/studio-variations.md` V2 ("a result as the next input"), which was designed there and never built.
+> **Status: slices 1 and 2 (section 8), 6 the gallery (section 9), and 3 the sessions page with the two-place menu (section 11) are built and checked; 4 (the picker) and 5, and the library upload of section 10.3, are designed, not built.** Claims say what was read in this repository (`studio/upload.cho`, `studio/results.cho`, `studio/jobs.cho`, `docs/studio-variations.md` section 3, `docs/studio-cases.md`) and what was not run. It completes `docs/studio-variations.md` V2 ("a result as the next input"), which was designed there and never built.
 
 ## 1. What is asked
 
@@ -137,3 +137,15 @@ Every place that asks for a picture (the Edit form, each Cases card, the refine 
 ### 10.5 Order of work and what would show it wrong
 
 A) the menu and slice 3; B) the library upload and the picker. Each its own PR with its gate. The menu change must not break a page: the existing checks that read headers (`aria-current`, the places) are updated where they counted the old links, and **each update is named in the PR**, not hidden. For B: a pick of a failed job's file, of a name outside the list (`input3.png`, `../x`), of a library id that is not in the index, and a pick of a video job all 422 and leave no file; a pick plus an upload of the same slot uses the upload.
+
+## 11. The menu and the sessions page: built (2026-11-19)
+
+**The menu (10.1).** Two places in the header, **Create** and **Library**, and a row of tabs under it for the open place: Create has Generate, Edit a picture and Cases; Library has Gallery, Sessions, Jobs and Comparisons. Every old URL works. The header is written in one place (`results.header`), so the cancho-ui page of `/` gets it too (`results.decorate`). **Existing checks that read the header were changed, and each is named here:** the "design: ... marks X as the open place" checks (5 pages) now expect two marked links, the place and the tab; "main page: the header is there once and marks Studio" now says Create and Generate; "main page: the header comes before the app's root" allows the tab row between; "site: / is index.html, with ... added" also strips the tab row. No check was deleted or loosened beyond that.
+
+**Sessions (10.2).** `GET /sessions`: a card per session (the latest result, or the first picture; the number of rounds; the latest job's prompt and state), the most recently worked first, at most 60. `GET /sessions/ROOT`: a card per round, oldest first, with its pictures (a refine's first picture is the earlier result), result, prompt and state, a refine indented 24 px under the round it came from (up to six levels), and under them a form: the finished results as radio choices with a thumbnail (the newest checked), the instruction and a seed, posting `from` to `/edit`. A job with no `.root` that is an `edit` or `image` job is its own session of one round; a video is no session. `/sessions/abc` is 422, a root with no job 404. Both routes are in `studio/openapi.json`.
+
+**Checked** (`studio/check.sh`, 11 new checks, fake `media`): the card's round count equals the jobs with that root; an API edit is a session of one round; a video is not; the list is capped at 60; refusals 422/404/401; the rounds come oldest first with margins 0, 24 and 48 px for a root, its refine and the refine of that; the refine's first picture is the earlier result; the form offers the finished results with the newest checked; the Library and its Sessions tab are marked.
+
+**Looked at** (the studio on this branch in the browser pane, real jobs 11 and 12): the two places and the tabs read clearly; session 11 shows round 1 (the two pictures, the result, the instruction), round 2 indented with its first picture captioned as the result of an earlier job, and the refine form with the radio of round 2 checked. The radio buttons were oversized at first (the global input style applied to them) and are fixed. **Not run:** a phone-sized view.
+
+**Not built:** the library upload (10.3) and the picker (10.4), which this change prepares (the Library place and tabs) but does not include.
