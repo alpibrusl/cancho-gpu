@@ -232,10 +232,10 @@
     },
     "/files/{id}/{name}": {
       "get": {
-        "summary": "A file of a job, from a closed list of names, streamed in pieces. `Range: bytes=a-b`, `a-` and `-n` are answered 206; several ranges, another unit or a malformed value are ignored (200, the whole file).",
+        "summary": "A file of a job, from a closed list of names (the result, the log, and the pictures an edit through the form was given: `input1.*` and `input2.*`, the files `upload-N` and `upload-N-2` of the data directory), streamed in pieces. `Range: bytes=a-b`, `a-` and `-n` are answered 206; several ranges, another unit or a malformed value are ignored (200, the whole file).",
         "parameters": [
           { "$ref": "#/components/parameters/JobId" },
-          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "image.png", "video.mp4", "video.gif", "log"] } },
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "image.png", "video.mp4", "video.gif", "log", "input1.jpg", "input1.png", "input1.webp", "input2.jpg", "input2.png", "input2.webp"] } },
           { "name": "Range", "in": "header", "required": false, "schema": { "type": "string", "example": "bytes=0-1023" } }
         ],
         "responses": {

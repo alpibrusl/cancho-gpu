@@ -26,7 +26,7 @@ import sets;
 //     GET  /api/jobs/N    {"id":N,"state":"queued|running|done|failed C"}
 //
 //     GET /jobs/N        the job's page: state, the result when done, the log (HTML the server writes)
-//     GET /files/N/NAME  edited.png, video.mp4, video.gif or log of job N (a closed list of names), streamed in pieces; `Range: bytes=a-b` is answered 206, up to 8 files at once
+//     GET /files/N/NAME  edited.png, video.mp4, video.gif, log or input1/input2 (the pictures an edit through the form was given: .jpg, .png or .webp) of job N (a closed list of names), streamed in pieces; `Range: bytes=a-b` is answered 206, up to 8 files at once
 //
 //     GET /jobs          the jobs, newest first, each a link to its page
 //     GET /app.js        <site-dir>/app.js
