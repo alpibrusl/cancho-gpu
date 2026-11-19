@@ -879,4 +879,18 @@ check "grid: the OpenAPI document has q, description, pickm and images" "$(grep 
 # a description the describer wrote says (auto); one a person typed does not (docs/studio-sessions.md, section 16)
 : > "$D/lib-3.auto"
 check "auto: a description written by the describer says (auto), a typed one does not" "$(curl -s -H "$(hdr)" 'localhost:18097/gallery?q=quilted' | grep -o '(auto)' | wc -l | tr -d ' ') $(curl -s -H "$(hdr)" 'localhost:18097/gallery?q=denim' | grep -o '(auto)' | wc -l | tr -d ' ')" "1 0"
+# synonyms and words in any order (docs/studio-sessions.md, section 17)
+lastlib() { tail -1 "$D/lib.index" | cut -d' ' -f1; }
+SYB=$(LD "$R/pic.png" 'blue bicycle with a wicker basket' >/dev/null; lastlib); SYS=$(LD "$R/pic.png" 'beige sneakers against a white wall' >/dev/null; lastlib); SYC=$(LD "$R/pic.png" 'wooden dining table and a chandelier' >/dev/null; lastlib); SYF=$(LD "$R/pic.png" 'grey sofa and a rug' >/dev/null; lastlib); SYD=$(LD "$R/pic.png" 'woman in a red dress' >/dev/null; lastlib)
+libhits() { sq "q=$(printf '%s' "$1" | sed 's/ /%20/g')" | grep -o 'src=/files/L[0-9]*/picture' | grep -o 'L[0-9]*' | tr '\n' ' '; }
+check "synonyms: bike finds the bicycle, shoes the sneakers, lamp the chandelier, couch the sofa" "$(libhits bike)/$(libhits shoes)/$(libhits lamp)/$(libhits couch)" "L$SYB /L$SYS /L$SYC /L$SYF "
+check "synonyms: ...either way round, plural or not, in capitals, and with other members of the group" "$(libhits bicycle)/$(libhits Sneaker)/$(libhits TRAINERS)/$(libhits sofas)/$(libhits chandeliers)" "L$SYB /L$SYS /L$SYS /L$SYF /L$SYC "
+check "synonyms: a word of no group is only itself, and a synonym does not find an unrelated picture" "$(libhits zebra)/$(libhits bike | grep -c "L$SYF")/$(libhits lamp | grep -c "L$SYB")" "/0/0"
+check "synonyms: jeans and denim find the denim jeans, and a jacket is not a coat (the list holds true synonyms only)" "$(libhits denim)$(libhits jeans) $(libhits coat)" "L4 L4  L5 "
+SYH=$(LD "$R/pic.png" 'that landscape with a chat room' >/dev/null; lastlib); SYW=$(LD "$R/pic.png" 'a woolly hat on a bench' >/dev/null; lastlib)
+check "synonyms: a synonym is a whole word (beanie finds both pictures that have the whole word hat, and not the hat inside that or the cap inside landscape); a word you type still matches inside words, as before" "$(libhits beanie)/$(libhits beanie | grep -c "L$SYH")/$(libhits hat | grep -c "L$SYH")" "L$SYW L5 /0/1"
+check "words: several words in any order each have to be there (and an order that was a phrase still works)" "$(libhits 'jacket green')/$(libhits 'dress red')/$(libhits 'red dress')/$(libhits 'green bicycle')/$(libhits 'sofa rug')" "L3 /L$SYD /L$SYD //L$SYF "
+check "words: spaces around and between words do not matter" "$(libhits '++sofa++rug++')/$(libhits 'sofa%20%20rug')" "L$SYF /L$SYF "
+check "synonyms: the search of a job's picture by its instruction uses them too (an instruction with fill finds fills; padded with synonyms it finds nothing else)" "$(sq 'q=fill%2017' | grep -o 'badge uploaded\"' | wc -l | tr -d ' ') $(sq 'q=bicycle%20fill' | grep -o 'badge uploaded\"' | wc -l | tr -d ' ')" "1 0"
+check "synonyms: /cases pickers use them (bike shows the bicycle, and not the sofa)" "$(curl -s -H "$(hdr)" 'localhost:18097/cases?q=bike' | grep -o "value=\"l/L$SYB\"" | head -1) $(curl -s -H "$(hdr)" 'localhost:18097/cases?q=bike' | grep -c "value=\"l/L$SYF\"")" "value=\"l/L$SYB\" 0"
 exit $fail
