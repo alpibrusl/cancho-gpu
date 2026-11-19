@@ -34,3 +34,13 @@ Each case has an optional **Real sizes** box (up to 200 bytes; the instruction a
 ## 5. Not shown
 
 The other four cases have not been run; whether they work as well as try-on is open (a room is a harder case than a jacket: the layout has to hold). One pair of pictures made by the same model is the easiest input; photographs of real people and rooms (shadows, odd poses, cluttered rooms) are not tested. The model does not always keep a pattern or a face exactly, which the page says.
+
+## A tip when the standard instruction may do nothing (2026-11-19)
+
+**What was seen.** Two pictures of ordinary clothing, a woman in a pink long-sleeved top and floral pyjama trousers (image1) and a woman in a white t-shirt and black jeans (image2), made the standard try-on instruction return **image1 unchanged** (re-rendered a little sharper, the pyjamas still on): once, and again with another seed. Naming the garments, "replace the pink long-sleeved top with the white short-sleeved t-shirt worn in image2, and replace the floral pyjama trousers with the black skinny jeans with zip pockets worn in image2, keep the face, hair, skin, pose, bare feet and background", gave the wanted picture on the first try: the white t-shirt and the black zip-pocket jeans, the same face, hair, pose and bare feet. Other pairs worked with the standard text (a quilted jacket on a white t-shirt, a tracksuit on a white top), so the naming is not always needed; a matching set was the case where it was. **One pair of pictures, one run of each: a measured observation, not a rule.**
+
+**The room has the same shape.** A real photograph of a furnished living room (a blue sofa, a white chair, plants, a TV unit) redecorated with another living room as the style, with the standard room instruction, kept the blue sofa and added the new pieces (a cream sofa, an oval table, a rug, a chandelier): two sofas. Not repeated with named furniture, so the room tip is advice from the try-on result, not a measurement.
+
+**What the page does.** The try-on and room cards show a tip above the instruction: for a person who already wears a matching set, say which garments to swap, with an example; for a furnished room, say what to replace. The tip is outside the textarea, so the instruction posted is the one in the box. The other four cards have none (not measured). A form that builds the sentence from two fields ("what she wears now", "what to put on") would need `/edit` to compose the instruction on the server; it is not done.
+
+**Checked:** `studio/check.sh` (4 new checks): the tip is on exactly the try-on and room cards, above the instruction; it says to name the garments, or what to replace; it is not inside any textarea.
