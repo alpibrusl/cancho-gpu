@@ -32,52 +32,64 @@ fn cmd_image[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs
     var tweights = "";
     var k = from;
     let n = arg_count(args);
-    while k < n {
+    let stop = shared.dashdash(args, from);
+    while k < stop {
         let t = arg(args, k);
         if shared.is_text(t, "-o") || shared.is_text(t, "--output") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "-o/--output");
             }
             output = arg(args, k);
         } else if shared.is_text(t, "--size") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--size");
             }
             size = arg(args, k);
         } else if shared.is_text(t, "--seed") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--seed");
             }
             seed = arg(args, k);
         } else if shared.is_text(t, "--steps") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--steps");
             }
             steps = arg(args, k);
         } else if shared.is_text(t, "--model") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--model");
             }
             model = arg(args, k);
         } else if shared.is_text(t, "--weights") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--weights");
             }
             weights = arg(args, k);
         } else if shared.is_text(t, "--text-weights") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--text-weights");
             }
             tweights = arg(args, k);
         } else if have_prompt == false {
             prompt = t;
+            have_prompt = true;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    k = stop + 1;
+    while k < n {
+        if have_prompt == false {
+            prompt = arg(args, k);
             have_prompt = true;
         } else {
             io.error_all(io, "media: unrecognized arguments\n");
@@ -174,11 +186,12 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
     var rewrite_model = "qwen3.8:27b-mlx";
     var k = from;
     let n = arg_count(args);
-    while k < n {
+    let stop = shared.dashdash(args, from);
+    while k < stop {
         let t = arg(args, k);
         if shared.is_text(t, "-o") || shared.is_text(t, "--output") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "-o/--output");
             }
@@ -187,14 +200,14 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
             rewrite = true;
         } else if shared.is_text(t, "--rewrite-model") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--rewrite-model");
             }
             rewrite_model = arg(args, k);
         } else if shared.is_text(t, "--also") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--also");
             }
@@ -202,42 +215,42 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
             n_also = n_also + 1;
         } else if shared.is_text(t, "--condition-area") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--condition-area");
             }
             area_text = arg(args, k);
         } else if shared.is_text(t, "--seed") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--seed");
             }
             seed = arg(args, k);
         } else if shared.is_text(t, "--steps") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--steps");
             }
             steps = arg(args, k);
         } else if shared.is_text(t, "--model") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--model");
             }
             model = arg(args, k);
         } else if shared.is_text(t, "--weights") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--weights");
             }
             weights = arg(args, k);
         } else if shared.is_text(t, "--text-weights") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 buffer.drop(heap, also);
                 return shared.bad_value(io, "--text-weights");
             }
@@ -247,6 +260,21 @@ fn cmd_edit[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs:
             positional = 1;
         } else if positional == 1 {
             instruction = t;
+            positional = 2;
+        } else {
+            buffer.drop(heap, also);
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    k = stop + 1;
+    while k < n {
+        if positional == 0 {
+            image = arg(args, k);
+            positional = 1;
+        } else if positional == 1 {
+            instruction = arg(args, k);
             positional = 2;
         } else {
             buffer.drop(heap, also);
@@ -446,17 +474,18 @@ fn cmd_rewrite[&i, &h, &f, &x, &c, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f F
     var model = "qwen3.8:27b-mlx";
     var k = from;
     let n = arg_count(args);
-    while k < n {
+    let stop = shared.dashdash(args, from);
+    while k < stop {
         let t = arg(args, k);
         if shared.is_text(t, "--image") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--image");
             }
             image = arg(args, k);
         } else if shared.is_text(t, "--also") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--also");
             }
             if n_also == 0 {
@@ -465,7 +494,7 @@ fn cmd_rewrite[&i, &h, &f, &x, &c, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f F
             n_also = n_also + 1;
         } else if shared.is_text(t, "--rewrite-model") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--rewrite-model");
             }
             model = arg(args, k);
@@ -474,6 +503,20 @@ fn cmd_rewrite[&i, &h, &f, &x, &c, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f F
             positional = 1;
         } else if positional == 1 {
             prompt = t;
+            positional = 2;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    k = stop + 1;
+    while k < n {
+        if positional == 0 {
+            kind = arg(args, k);
+            positional = 1;
+        } else if positional == 1 {
+            prompt = arg(args, k);
             positional = 2;
         } else {
             io.error_all(io, "media: unrecognized arguments\n");

@@ -60,3 +60,13 @@ What `build/media image|edit` does, in order, with the Python's words for each r
 **Differences accepted, stated:** the picture must be a PNG (the Pillow path also reads JPEG and others; cancho's decoder refuses them with `cannot read the picture ...: ...`; `docs/png-cho.md` says which PNGs are read); a guidance is printed as Python prints a float for the usual forms (`4`, `4.50`, `.5`), not for exponents; a relative `--weights` is passed on as given, as the Python passes it.
 
 **Not built:** `--segments` and the chain (the colour ramp and the GIF; the pieces are in cancho), `doctor`.
+
+## 10. The `--` separator (2026-11-19): a bug the studio found
+
+**What happened.** The studio queues every job as `COMMAND -o DIR ... -- PICTURE PROMPT` (the `--` keeps a prompt that starts with `-` from being read as a flag), and `scripts/media` runs `build/media` whenever it is built. The cancho commands of sections 3 to 9 did not know `--`: `edit -o D --also B -- A "prompt"` took `--` as the picture, the picture as the instruction and the prompt as a third argument, and refused it (`media: unrecognized arguments`, exit 2). `image` and `video` jobs had the same fault. It showed only when `build/media` existed beside a studio (the gate builds it, so a studio started from a checkout the gate had run in failed every job); the checks of sections 4, 7, 8 and 9 never wrote a command the way the studio does, so all of them passed.
+
+**Fixed:** `shared.dashdash` finds the first `--`; the four commands (`image`, `edit`, `rewrite`, `video`) read options and positionals before it as before and **only positionals after it, whatever they look like** (argparse's rule, which `tools/media.py` already followed). A flag whose value would be the `--` itself is a missing value.
+
+**Checked:** `tests/media_stage.sh` and `tests/media_video.sh` now include runs written the studio's way (`image`, `edit` with one and two pictures, `rewrite`, `video`, and `video --image`, each after `--`, and prompts such as `-fox` and `-night` that look like flags), all equal to Python's on the whole output, exit status, the stage's arguments and the files written. **Mutant:** `dashdash` made to ignore the separator fails 31 of them.
+
+**Lesson, stated:** a differential check is only as good as the commands it writes. These had been written by hand in the form `COMMAND PROMPT -o DIR`, not in the form the one real caller uses; the new runs take the form from the studio's job files (`studio/upload.cho`, `studio/jobs.cho`).

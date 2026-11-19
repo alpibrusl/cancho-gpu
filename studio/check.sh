@@ -30,6 +30,18 @@ check "job 3 (no argv file): no log" "$(ls "$T/3.log" 2>/dev/null | wc -l | tr -
 check "job 4 had a state: not run again" "$(cat "$T/4.state")" old
 check "an id that is not digits is not a path" "$(ls "$T" | grep -c etc)" 0
 build/studio_worker "$T/fake.sh" /Users/test "$T"; check "second drain: nothing new, still 0" "$?" 0
+# the errors of a job are in its log (they went to /dev/null: a refused job had an empty log and no reason)
+E=$(mktemp -d)
+printf '#!/bin/sh\necho "out: $1"\necho "media: unrecognized arguments" >&2\n[ "$1" = shout ] && exit 2\nexit 0\n' > "$E/fake.sh"; chmod +x "$E/fake.sh"
+printf 'shout\0x\0' > "$E/1.argv"; printf 'quiet\0x\0' > "$E/2.argv"; printf '1\n2\n' > "$E/queue"
+build/studio_worker "$E/fake.sh" /Users/test "$E"
+check "errors: a refused job is failed 2" "$(cat "$E/1.state")" "failed 2"
+check "errors: its log has what it printed, then its errors under stderr:" "$(cat "$E/1.log" | tr '\n' '|')" "out: shout||stderr:|media: unrecognized arguments|"
+check "errors: a job that ended well keeps its errors in the log too" "$(cat "$E/2.log" | tr '\n' '|')" "out: quiet||stderr:|media: unrecognized arguments|"
+printf '#!/bin/sh\necho fine\n' > "$E/silent.sh"; chmod +x "$E/silent.sh"; printf 'a\0' > "$E/3.argv"; printf '3\n' > "$E/queue2"; mv "$E/queue2" "$E/queue"
+build/studio_worker "$E/silent.sh" /Users/test "$E"
+check "errors: a job with no errors has a log as before" "$(cat "$E/3.log")" "fine"
+rm -rf "$E"
 check "job 1 not run twice (log unchanged)" "$(wc -l < "$T/1.log" | tr -d ' ')" 1
 rc=0; build/studio_worker 2>/dev/null || rc=$?; check "usage: exit 2" "$rc" 2
 rc=0; build/studio_worker "$T/fake.sh" /Users/test relative/dir 2>/dev/null || rc=$?; check "relative data dir refused" "$rc" 3

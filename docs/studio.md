@@ -80,3 +80,7 @@ Until 1 and 2 exist: `edit` takes a path on the server's machine, or a picture s
 * Where it lives: a directory `studio/` in this repository (it needs `scripts/media` next to it) or its own repository. Proposed: here.
 * The cancho-ui changes above are proposals; none is filed yet.
 * `image` (text to image from a free prompt) is not wired in the CLI (`docs/cli.md`), so the page does not offer it.
+
+## The log holds the job's errors (2026-11-19)
+
+The worker started a job with its error stream thrown away (`Stdio::Null`), and `media` writes every refusal there (`media: ...`), so a job that was refused failed with **an empty log** and no reason on its page. The error stream now goes to `<data>/N.err` and, when the job ends, what it holds (at most 64 KiB) is added to the end of `N.log` under a line `stderr:`. A job that wrote no errors has the log it had. Errors therefore show when the job ends, not line by line while it runs. `studio/check.sh` has four checks (a refused job is `failed 2` and its log shows its output, then `stderr:` and the message; a job that ended well keeps its errors in the log too; a job with none has the log as before); with the copy disabled the log is `out: shout|` and the message is lost. The `N.err` file stays in the data directory.

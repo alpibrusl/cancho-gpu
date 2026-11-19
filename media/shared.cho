@@ -280,6 +280,19 @@ pub fn lower_text[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] buffer.Buff
     return out;
 }
 
+// The index of the first `--` among the arguments from `from`, or their count when there is none. What follows it is positional only, whatever it looks like (argparse's rule, which tools/media.py has and which the studio relies on: its jobs are `edit -o DIR -- PICTURE PROMPT`).
+pub fn dashdash[&a](args: &a Args, from: int) -> [args] int {
+    var k = from;
+    let n = arg_count(args);
+    while k < n {
+        if is_text(arg(args, k), "--") {
+            return k;
+        }
+        k = k + 1;
+    }
+    return n;
+}
+
 pub fn bad_value[&i](io: &!i Io, flag: &static [byte]) -> [err_write] int {
     io.error_all(io, "media: argument ");
     io.error_all(io, flag);

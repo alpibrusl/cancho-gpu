@@ -66,6 +66,14 @@ rw() { # name, args...: stdout, errors and exit status of `rewrite` (no GPU)
   check "$name: errors" "$(grep -v '^$' "$T/c.err" | sed "s#$T#TMP#g")" "$(grep -v '^$' "$T/p.err" | sed "s#$T#TMP#g")"
 }
 both "image"                  image "a red fox" -o o
+# the `--` separator: the studio runs every job as `COMMAND -o DIR ... -- PICTURE PROMPT`, so what follows it is positional, whatever it looks like (argparse's rule)
+both "image after --"         image -o o -- "a red fox"
+both "image: a prompt that looks like a flag after --" image -o o -- -fox
+both "edit after --"          edit -o o -- a.png "make it night"
+both "edit two pictures after --" edit -o o --also b.png --seed 3 -- a.png "combine them"
+both "edit: an instruction that looks like a flag after --" edit -o o -- a.png -night
+rw "rewrite after --"         rewrite edit --image a.png -- "make it night"
+rw "rewrite video after --"   rewrite video -- "a fox runs"
 both "image sized"            image "a red fox" -o o --size 640X480 --seed 7 --steps 4
 both "image weights flags"    image "a red fox" -o o --weights "$T/w/dit" --text-weights "$T/w/dit"
 both "edit"                   edit a.png "make it night" -o o
