@@ -49,6 +49,7 @@ Under the session's last round: every picture of the session as a **thumbnail wi
 3. **The session page and `/sessions`**, with the tree.
 4. **The picker** (two pictures chosen, with an upload counting as one).
 5. *(later)* name a session, delete one (its uploads and results, asking first).
+6. **The gallery** (asked 2026-11-19), section 9.
 
 Slices 1 and 2 give what was asked most directly; 3 and 4 make it feel like a session.
 
@@ -69,3 +70,30 @@ Slices 1 and 2 give what was asked most directly; 3 and 4 make it feel like a se
 **Once for real** (the studio on this branch, port 8092, a copy of a data directory with the earlier jobs, the GPU worker on `scripts/media`): job 11 (an edit, done) was refined with `from=11` and the instruction "Make the lighting a little warmer, keep everything else unchanged.", seed 3: job 12 was queued with `out/11/edited.png` as its picture (`.from` = `11 edited.png`, `.root` = `11`: job 11 predates `.root`, so it is its own session), ran to `done` in about two minutes, and its page shows **Picture 1 (result of an earlier job)** beside the **Result**, the prompt, the parameters and the two buttons. Looked at: the person and the jacket are the same, the background went from grey to a warm beige: the change asked for, and nothing else seen to change. One round only; five are still to be measured.
 
 **Not done / not measured:** the session page and the list (slice 3), the picker (4); the quality over five rounds and the output-size drift (section 7) are **still to be measured**; the `cancho authority` report of the studio is unchanged in kind (it lists the same capabilities; I did not diff it against main).
+
+## 9. The gallery (asked 2026-11-19, designed, not built)
+
+**Asked for:** "the concept of a gallery, and a tag label: uploaded, generated, edited".
+
+**What it is.** `GET /gallery`: every picture the studio holds, newest first, as a grid of tiles. Each tile has a **tag**, the picture, the job it belongs to (a link to `/jobs/N`) and, for a picture that can be refined, a *Refine* link (`/edit?from=N`). A filter row above the grid (`All`, `Uploaded`, `Generated`, `Edited`; `?tag=`) and 48 tiles a page (`?page=`).
+
+**The tag comes from the file, so nothing new is stored and the old jobs get one too:**
+
+| tag | which file | where |
+|---|---|---|
+| **uploaded** | `upload-N.*` (the first picture) and `upload-N-2.*` (the second) | `<data>/`, served as `/files/N/input1.*`, `input2.*` (#224) |
+| **generated** | `out/N/image.png` (a picture made from a prompt, `kind` image) | `/files/N/image.png` |
+| **edited** | `out/N/edited.png` (an edit, also a refine) | `/files/N/edited.png` |
+
+An upload used by a refine is **not** listed twice: a refine's first picture is an earlier result, so it has no upload of its own. Frames and video files are not pictures of the gallery. A job's result appears only when the job is `done`; a failed job shows nothing.
+
+**Where it meets the session.** The picker of slice 4 offers the gallery's pictures of that session (and may offer any picture: the limit is two). A tile's tag and job link tell *which round and which kind* a picture is, which is what a person needs to choose among them. The session page of slice 3 is the gallery filtered by session root, with the rounds in order.
+
+**Refusals and limits.** `tag` is one of the three words (else 422); `page` is digits (else 422); a page past the end is empty, not an error; both need the token like any route. The listing reads the data directory (names only); no file is read until the browser asks for a picture.
+
+**What would show this wrong, and what is not known.**
+* **Weight.** The tile shows the picture itself (the studio makes no thumbnails: a decoder and a resizer exist in cancho, `docs/png-cho.md`, but a thumbnail store is its own piece). A result is about 1 MB; 48 of them is about 50 MB per page. Measured when built (the page's size and the time to first tiles in the browser pane); if it is too heavy, the page size drops, or thumbnails become slice 7.
+* **Order across kinds.** Newest first means by job id; an upload and its result share an id and appear next to each other, upload first. Said here so it is not a surprise.
+* **A job with both a result and uploads** shows up to three tiles (two uploaded, one edited); that is deliberate: each is a picture one can reuse.
+
+**Checks planned (fake `media`, as the others):** one job of each kind and a two-picture edit give the right tags and counts; the filter returns only that tag; a refine's first picture is not listed as uploaded; a not-done and a failed job add nothing; `tag=bad` and `page=x` give 422; an empty data directory gives an empty grid with a sentence; no token gives 401.
