@@ -6,7 +6,6 @@ import std.buffer;
 import std.bytes;
 import files;
 import results;
-import upload;
 
 // `sessions` -- an editing session is the picture jobs with one root (docs/studio-sessions.md, sections 3 and 10.2): `GET /sessions` lists them, `GET /sessions/ROOT` shows one.
 //
@@ -89,7 +88,7 @@ fn members[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, 
                         if has_fv {
                             borrow fv as &fvb in {
                                 let pe = digits_end(buffer.bytes(fvb), 0);
-                                if pe > 0 && pe <= 9 && pe < len(buffer.bytes(fvb)) && int_of(buffer.bytes(fvb)[pe]) == 32 {
+                                if pe > 0 && pe <= 9 && pe < len(buffer.bytes(fvb)) && int_of(buffer.bytes(fvb)[pe]) == 32 && (bytes.starts_with(buffer.bytes(fvb)[pe + 1..len(buffer.bytes(fvb))], "edited.png") || bytes.starts_with(buffer.bytes(fvb)[pe + 1..len(buffer.bytes(fvb))], "image.png")) {
                                     out = buffer.append(heap, out, buffer.bytes(fvb)[0..pe]);
                                     parent_done = true;
                                 }
@@ -205,7 +204,7 @@ pub fn list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap,
                 seen = buffer.push(heap, seen, byte_of(32));
                 shown = shown + 1;
                 let latest = all[i0..i1];
-                let made = upload.result_name(heap, fs, dir, latest);
+                let made = results.result_name(heap, fs, dir, latest);
                 page = buffer.append(heap, page, "<a class=job href=/sessions/");
                 page = buffer.append(heap, page, root);
                 page = buffer.append(heap, page, "><div class=thumb>");
@@ -319,7 +318,7 @@ pub fn page[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], root:
                     page = buffer.append(heap, page, buffer.bytes(pb));
                 }
                 buffer.drop(heap, pics);
-                let made = upload.result_name(heap, fs, dir, id);
+                let made = results.result_name(heap, fs, dir, id);
                 if bytes.equal(made, "edited.png") {
                     page = results.figure(heap, page, id, "edited.png", "the result", "Result");
                 } else if bytes.equal(made, "image.png") {

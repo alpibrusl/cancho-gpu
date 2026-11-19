@@ -7,6 +7,7 @@ import std.bytes;
 import files;
 import jobs;
 import results;
+import picks;
 
 // `upload` -- a picture chosen in the browser, for an edit (docs/studio.md, "Editing a picture chosen in the page").
 //
@@ -41,32 +42,9 @@ fn flag_value[&a, &g](argv: &a [byte], flag: &g [byte]) -> [] (int, int) {
     return (0 - 1, 0 - 1);
 }
 
-// The name of the picture a finished job made, "edited.png" or "image.png", or "" for none (not done, failed, a video, or the file is gone).
-pub fn result_name[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] &static [byte] {
-    if results.id_ok(id) == false {
-        return "";
-    }
-    let (known, state) = results.state_word(heap, fs, dir, id);
-    var done = false;
-    borrow state as &sb in {
-        done = bytes.equal(buffer.bytes(sb), "done");
-    }
-    buffer.drop(heap, state);
-    if known == false || done == false {
-        return "";
-    }
-    if results.has_out(heap, fs, dir, id, "edited.png") {
-        return "edited.png";
-    }
-    if results.has_out(heap, fs, dir, id, "image.png") {
-        return "image.png";
-    }
-    return "";
-}
-
-// `GET /edit`, `GET /edit?from=N` (refine the result of job N: its picture is the first picture) and `GET /edit?again=N` (the prompt, seed, steps and model of job N filled in; a picture is still asked for).
-pub fn form_page[&h, &f, &d, &s, &a](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], from: &s [byte], again: &a [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    let rname = result_name(heap, fs, dir, from);
+// `GET /edit`, `GET /edit?pick1=CHOICE` (a picture of the gallery is the first picture), `GET /edit?from=N` (refine the result of job N: its picture is the first picture) and `GET /edit?again=N` (the prompt, seed, steps and model of job N filled in; a picture is still asked for).
+pub fn form_page[&h, &f, &d, &s, &a, &k](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], from: &s [byte], again: &a [byte], pick1: &k [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    let rname = results.result_name(heap, fs, dir, from);
     var page = results.open(heap, fs, dir, "edit a picture", "edit", false);
     page = buffer.append(heap, page, "<div class=row><h1>Edit a picture</h1></div><p>The picture stays on this machine. It is copied to the studio's data directory and nowhere else.</p><form method=post action=/edit enctype=multipart/form-data>");
     if len(rname) > 0 {
@@ -80,9 +58,37 @@ pub fn form_page[&h, &f, &d, &s, &a](heap: &!h Heap, fs: &f Fs(""), dir: &d [byt
         page = buffer.append(heap, page, from);
         page = buffer.append(heap, page, ">");
     } else {
-        page = buffer.append(heap, page, "<label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label>");
+        var chosen = false;
+        if len(pick1) > 0 {
+            let (cpath, cline, cres, cok) = picks.resolve(heap, fs, dir, pick1);
+            if cok {
+                borrow cline as &clb in {
+                    let t = buffer.bytes(clb);
+                    var sp = 0;
+                    while sp < len(t) && int_of(t[sp]) != 32 {
+                        sp = sp + 1;
+                    }
+                    page = buffer.append(heap, page, "<figure><img alt=\"the first picture\" src=/files/");
+                    page = buffer.append(heap, page, t[0..sp]);
+                    page = buffer.append(heap, page, "/");
+                    page = buffer.append(heap, page, t[sp + 1..len(t)]);
+                    page = buffer.append(heap, page, "><figcaption>A picture of the gallery is the first picture. Say what to change in it.</figcaption></figure><input type=hidden name=pick1 value=\"");
+                    page = buffer.append(heap, page, pick1);
+                    page = buffer.append(heap, page, "\">");
+                }
+                chosen = true;
+            }
+            buffer.drop(heap, cpath);
+            buffer.drop(heap, cline);
+        }
+        if chosen == false {
+            page = buffer.append(heap, page, "<label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp></label>");
+            page = picks.picker(heap, page, fs, dir, "pick1", 24);
+        }
     }
-    page = buffer.append(heap, page, "<label>Second picture (optional: combine it with the first; the instruction can refer to both)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label><label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label>");
+    page = buffer.append(heap, page, "<label>Second picture (optional: combine it with the first; the instruction can refer to both)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label>");
+    page = picks.picker(heap, page, fs, dir, "pick2", 24);
+    page = buffer.append(heap, page, "<label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label>");
     // what to fill in, from the argument list of job `again` (a job the server made: the file is its own)
     var pid = again;
     if len(rname) > 0 || results.id_ok(again) == false {
@@ -140,7 +146,7 @@ pub fn form_page[&h, &f, &d, &s, &a](heap: &!h Heap, fs: &f Fs(""), dir: &d [byt
 }
 
 // (from, to) of the boundary in a `Content-Type` value, or (-1, -1) for none, an empty one or one over 70 bytes.
-fn boundary_of[&t](ctype: &t [byte]) -> [] (int, int) {
+pub fn boundary_of[&t](ctype: &t [byte]) -> [] (int, int) {
     let at = bytes.find(ctype, "boundary=");
     if at < 0 {
         return (0 - 1, 0 - 1);
@@ -185,7 +191,7 @@ fn named[&t, &w](header: &t [byte], want: &w [byte]) -> [] bool {
 }
 
 // The content of the part named `want`: (from, to), or (-1, -1) if there is none or the body is not well formed. `delim` is `--<boundary>`.
-fn part[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte]) -> [] (int, int) {
+pub fn part[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte]) -> [] (int, int) {
     var at = 0;
     while at < len(body) {
         let p = bytes.find(body[at..len(body)], delim);
@@ -219,7 +225,7 @@ fn part[&b, &d, &w](body: &b [byte], delim: &d [byte], want: &w [byte]) -> [] (i
 }
 
 // 1 JPEG, 2 PNG, 3 WebP, 0 neither: by the first bytes.
-fn kind_of[&t](head: &t [byte]) -> [] int {
+pub fn kind_of[&t](head: &t [byte]) -> [] int {
     if len(head) >= 3 && int_of(head[0]) == 255 && int_of(head[1]) == 216 && int_of(head[2]) == 255 {
         return 1;
     }
@@ -247,7 +253,7 @@ fn quoted[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] b
     return out;
 }
 
-fn no_controls[&t](text: &t [byte]) -> [] bool {
+pub fn no_controls[&t](text: &t [byte]) -> [] bool {
     var i = 0;
     while i < len(text) {
         if int_of(text[i]) < 32 {
@@ -258,7 +264,7 @@ fn no_controls[&t](text: &t [byte]) -> [] bool {
     return true;
 }
 
-fn all_digits[&t](text: &t [byte]) -> [] bool {
+pub fn all_digits[&t](text: &t [byte]) -> [] bool {
     if len(text) == 0 || len(text) > 10 {
         return false;
     }
@@ -388,7 +394,38 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             var rname = "";
             if frf >= 0 && frt > frf {
                 has_from = true;
-                rname = result_name(heap, fs, dir, body[frf..frt]);
+                rname = results.result_name(heap, fs, dir, body[frf..frt]);
+            }
+            // a choice from the gallery in place of an upload (docs/studio-sessions.md, section 10.4); an upload of the same slot wins, `from` is its own refine and is refused with an upload
+            let (p1f, p1t) = part(body, dl, "pick1");
+            let (p2f, p2t) = part(body, dl, "pick2");
+            var use_pick1 = false;
+            var use_pick2 = false;
+            var p1path = buffer.empty(heap, 8);
+            var p1line = buffer.empty(heap, 8);
+            var p1res = false;
+            var ok1 = true;
+            var p2path = buffer.empty(heap, 8);
+            var p2line = buffer.empty(heap, 8);
+            var ok2 = true;
+            if p1f >= 0 && p1t > p1f && has_from == false && (imf < 0 || imt - imf < 16) {
+                use_pick1 = true;
+                buffer.drop(heap, p1path);
+                buffer.drop(heap, p1line);
+                let (a, b, c, d) = picks.resolve(heap, fs, dir, body[p1f..p1t]);
+                p1path = a;
+                p1line = b;
+                p1res = c;
+                ok1 = d;
+            }
+            if p2f >= 0 && p2t > p2f && (i2f < 0 || i2t - i2f < 16) {
+                use_pick2 = true;
+                buffer.drop(heap, p2path);
+                buffer.drop(heap, p2line);
+                let (a2, b2, c2, d2) = picks.resolve(heap, fs, dir, body[p2f..p2t]);
+                p2path = a2;
+                p2line = b2;
+                ok2 = d2;
             }
             let (ntf, ntt) = part(body, dl, "note");  // optional real sizes (docs/studio-cases.md): added to the instruction as a sentence
             var has_note = false;
@@ -417,9 +454,13 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "give a picture or from (the result of an earlier job), not both";
             } else if has_from && len(rname) == 0 {
                 why = "from is the id of a finished job that made a picture";
-            } else if has_from == false && (imf < 0 || imt - imf < 16) {
-                why = "a picture is needed";
-            } else if has_from == false && kind == 0 {
+            } else if use_pick1 && ok1 == false {
+                why = "pick1 is a picture of the gallery: j/JOB/NAME or l/LN";
+            } else if use_pick2 && ok2 == false {
+                why = "pick2 is a picture of the gallery: j/JOB/NAME or l/LN";
+            } else if has_from == false && use_pick1 == false && (imf < 0 || imt - imf < 16) {
+                why = "a picture is needed (upload one, or choose one from the gallery)";
+            } else if has_from == false && use_pick1 == false && kind == 0 {
                 why = "the picture is not a JPEG, PNG or WebP file";
             } else if has2 && kind2 == 0 {
                 why = "the second picture is not a JPEG, PNG or WebP file";
@@ -449,6 +490,14 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                         path = buffer.append(heap, path, body[frf..frt]);
                         path = buffer.append(heap, path, "/");
                         path = buffer.append(heap, path, rname);
+                        saved = 0;
+                    } else if use_pick1 {
+                        // a picture of the gallery: its path was built by `picks.resolve`; nothing is copied
+                        buffer.drop(heap, path);
+                        path = buffer.empty(heap, 8);
+                        borrow p1path as &q1 in {
+                            path = buffer.append(heap, path, buffer.bytes(q1));
+                        }
                         saved = 0;
                     } else {
                         path = buffer.append(heap, path, "/upload-");
@@ -489,6 +538,13 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             }
                         }
                     }
+                    if use_pick2 {
+                        buffer.drop(heap, path2);
+                        path2 = buffer.empty(heap, 8);
+                        borrow p2path as &q2 in {
+                            path2 = buffer.append(heap, path2, buffer.bytes(q2));
+                        }
+                    }
                     if saved != 0 || saved2 != 0 {
                         why = "the picture could not be saved";
                     } else {
@@ -504,7 +560,7 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             json = quoted(heap, json, buffer.bytes(pb2));
                         }
                         json = buffer.append(heap, json, "\"");
-                        if has2 {
+                        if has2 || use_pick2 {
                             json = buffer.append(heap, json, ",\"also\":\"");
                             borrow path2 as &pb4 in {
                                 json = quoted(heap, json, buffer.bytes(pb4));
@@ -556,33 +612,58 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                             }
                             var root = buffer.push_nat(heap, buffer.empty(heap, 16), made);
                             var inputs = buffer.empty(heap, 48);
+                            // the job whose RESULT is the first picture, if any (`from`, or a choice of a result): the session stays that job's; any other first picture starts a session
+                            var ref_job = buffer.empty(heap, 12);
                             if has_from {
-                                // a refine stays in the session of the job it came from (that job's `.root`, or the job itself when it has none)
-                                let (rv, has_rv) = results.job_file(heap, fs, dir, body[frf..frt], ".root");
-                                buffer.drop(heap, root);
-                                root = buffer.empty(heap, 16);
-                                if has_rv {
-                                    borrow rv as &rvb in {
-                                        var e = 0;
-                                        while e < len(buffer.bytes(rvb)) && int_of(buffer.bytes(rvb)[e]) >= 48 && int_of(buffer.bytes(rvb)[e]) <= 57 {
-                                            e = e + 1;
-                                        }
-                                        root = buffer.append(heap, root, buffer.bytes(rvb)[0..e]);
-                                    }
-                                } else {
-                                    root = buffer.append(heap, root, body[frf..frt]);
-                                }
-                                buffer.drop(heap, rv);
+                                ref_job = buffer.append(heap, ref_job, body[frf..frt]);
                                 inputs = buffer.append(heap, inputs, body[frf..frt]);
                                 inputs = buffer.append(heap, inputs, " ");
                                 inputs = buffer.append(heap, inputs, rname);
                                 inputs = buffer.append(heap, inputs, "\n");
+                            } else if use_pick1 {
+                                borrow p1line as &pl in {
+                                    let t = buffer.bytes(pl);
+                                    if p1res {
+                                        var sp = 0;
+                                        while sp < len(t) && int_of(t[sp]) != 32 {
+                                            sp = sp + 1;
+                                        }
+                                        ref_job = buffer.append(heap, ref_job, t[0..sp]);
+                                    }
+                                    inputs = buffer.append(heap, inputs, t);
+                                }
+                                inputs = buffer.append(heap, inputs, "\n");
                             } else {
                                 inputs = buffer.append(heap, inputs, "upload\n");
                             }
-                            if has2 {
+                            if use_pick2 {
+                                borrow p2line as &pl2 in {
+                                    inputs = buffer.append(heap, inputs, buffer.bytes(pl2));
+                                }
+                                inputs = buffer.append(heap, inputs, "\n");
+                            } else if has2 {
                                 inputs = buffer.append(heap, inputs, "upload\n");
                             }
+                            borrow ref_job as &rjb in {
+                                if len(buffer.bytes(rjb)) > 0 {
+                                    let (rv, has_rv) = results.job_file(heap, fs, dir, buffer.bytes(rjb), ".root");
+                                    buffer.drop(heap, root);
+                                    root = buffer.empty(heap, 16);
+                                    if has_rv {
+                                        borrow rv as &rvb in {
+                                            var e = 0;
+                                            while e < len(buffer.bytes(rvb)) && int_of(buffer.bytes(rvb)[e]) >= 48 && int_of(buffer.bytes(rvb)[e]) <= 57 {
+                                                e = e + 1;
+                                            }
+                                            root = buffer.append(heap, root, buffer.bytes(rvb)[0..e]);
+                                        }
+                                    } else {
+                                        root = buffer.append(heap, root, buffer.bytes(rjb));
+                                    }
+                                    buffer.drop(heap, rv);
+                                }
+                            }
+                            buffer.drop(heap, ref_job);
                             let more = other_ids(heap, fs, dir, made, made_set, paired);
                             let first_name = buffer.push_nat(heap, buffer.empty(heap, 16), made);
                             borrow first_name as &fnb in {
@@ -625,6 +706,10 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                     buffer.drop(heap, path2);
                 }
             }
+            buffer.drop(heap, p1path);
+            buffer.drop(heap, p1line);
+            buffer.drop(heap, p2path);
+            buffer.drop(heap, p2line);
         }
         buffer.drop(heap, delim);
     }

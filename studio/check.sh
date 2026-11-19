@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho studio/sessions.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho studio/sessions.cho studio/library.cho studio/picks.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -595,7 +595,7 @@ echo done > "$R/off/$PEI.state"
 check "design: a finished edit is its own thumbnail on /jobs" "$(cget /jobs | grep -c "loading=lazy src=/files/$PEI/edited.png")" 1
 check "design: a job page names its files that exist, and the log" "$(cget /jobs/$PEI | grep -o '<li><a href=/files/[0-9]*/[a-z.]*' | sed 's#.*/files/[0-9]*/##' | tr '\n' ' ')" "edited.png log "
 check "design: a failed job's page says so instead of a result" "$(cget /jobs/$((VF + 1)) | grep -c 'class=alert role=alert')" 1
-check "design: the edit form has the drop zone and the instruction as a text area" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'type=file accept=image/jpeg,image/png,image/webp required.*<textarea name=prompt')" 1
+check "design: the edit form has the drop zone and the instruction as a text area" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'name=image type=file accept=image/jpeg,image/png,image/webp></label>.*<textarea name=prompt')" 1
 check "design: the stylesheet names the font stack with the system font as fallback and loads nothing" "$(curl -s -H "$(hdr)" localhost:18097/style.css | grep -c "IBM Plex Sans',system-ui") $(curl -s -H "$(hdr)" localhost:18097/style.css | grep -c '@import\|url(')" "1 0"
 # Text to image (docs/text-to-image.md): the kind `image`.
 Iq=$(wc -l < "$R/off/queue" | tr -d ' ')
@@ -715,7 +715,7 @@ check "session: a job made by the form is its own session (.root) and its pictur
 AG=$(curl -s -H "$(hdr)" "localhost:18097/edit?again=$SX")
 check "again: the prompt comes back, escaped, in the text area" "$(echo "$AG" | grep -o '<textarea[^>]*>[^<]*' | sed 's/<textarea[^>]*>//')" 'make it &lt;b&gt;red&lt;/b&gt; &amp; &quot;bold&quot;'
 check "again: ...with the seed, the steps and the model" "$(echo "$AG" | grep -o 'name=seed[^>]*\|name=steps[^>]*\|name=model[^>]*' | grep -o 'value=[^ >]*' | tr '\n' ' ')" 'value=7 value=4 value="qwen-image-2.1-turbo" '
-check "again: ...and a picture is still asked for" "$(echo "$AG" | grep -c 'name=image type=file[^>]* required')" 1
+check "again: ...and a picture is still asked for (an upload or a choice from the gallery)" "$(echo "$AG" | grep -c 'name=image type=file') $(echo "$AG" | grep -c 'name=pick1')" "1 1"
 check "again: an id that is not digits, or a job that does not exist, is ignored (the plain form)" "$(for q in again=abc again=999999 'again=1;2' from=abc from=999999; do curl -s -w '%{http_code}' -H "$(hdr)" "localhost:18097/edit?$q" | grep -c 'value=7'; done | tr '\n' ' ')" "0 0 0 0 0 "
 NR=$(curl -s -H "$(hdr)" "localhost:18097/edit?from=$SX"); check "refine: a job that is not done is not offered as a picture (the plain form)" "$(echo "$NR" | grep -c 'name=from')" 0
 check "refine: the job page offers neither refine nor a video's prompt, but the prompt again" "$(curl -s -H "$(hdr)" localhost:18097/jobs/$SX | grep -o '/edit?from=[0-9]*\|/edit?again=[0-9]*' | tr '\n' ' ')" "/edit?again=$SX "
@@ -788,4 +788,40 @@ check "sessions: a round shows its pictures and its result (the refine's first p
 check "sessions: the refine form offers the finished results, the newest checked, and posts to /edit" "$(echo "$SP" | grep -o 'name=from value=[0-9]*\( checked\)\?>' | tr '\n' ';') $(echo "$SP" | grep -c 'action=/edit enctype=multipart/form-data')" "name=from value=$SX>;name=from value=$RFI checked>; 1"
 check "sessions: the header marks the Library and its Sessions tab" "$(echo "$SP" | grep -o '<a href=[^>]*aria-current=page>' | tr '\n' ' ')" "<a href=/gallery aria-current=page> <a href=/sessions aria-current=page> "
 check "sessions: the other pages link to the list (the Library's tabs)" "$(cget /gallery | grep -c 'href=/sessions')" 1
+# the library and the picker (docs/studio-sessions.md, sections 10.3 and 10.4)
+GP() { curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H "$(hdr)" "$@" localhost:18097/gallery; }
+check "library: a picture is kept and the person goes back to the gallery" "$(GP -F "image=@$R/pic.png" | sed 's#//[^/]*/#//H/#')" "302 http://H/gallery"
+check "library: the file and its line in the index" "$(cmp "$D/lib-1.png" "$R/pic.png" && echo same) $(cat "$D/lib.index")" "same 1 png"
+check "library: a JPEG gets .jpg and the next number (by the first bytes, not the name)" "$(GP -F "image=@$R/p1.jpg;filename=whatever.png" >/dev/null; ls "$D" | grep '^lib-' | tr '\n' ' ')" "lib-1.png lib-2.jpg "
+check "library: refused: not a picture 422, no picture 422, JSON (passes the gate, the handler refuses) 422, no token 401, a foreign page 403" "$(printf 'text, not a picture, long enough' > "$R/t.txt"; GP -F "image=@$R/t.txt" | cut -c1-3) $(GP -F other=x | cut -c1-3) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -H 'Content-Type: application/json' -XPOST -d '{}' localhost:18097/gallery) $(curl -s -o /dev/null -w '%{http_code}' -F "image=@$R/pic.png" localhost:18097/gallery) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -H 'Origin: http://evil.example' -F "image=@$R/pic.png" localhost:18097/gallery)" "422 422 422 401 403"
+check "library: ...and none of those kept a file" "$(ls "$D" | grep -c '^lib-')" 2
+check "library: it is served as a picture, byte for byte" "$(curl -s -H "$(hdr)" localhost:18097/files/L1/picture.png | cmp - "$R/pic.png" && echo same) $(curl -s -D - -o /dev/null -H "$(hdr)" localhost:18097/files/L2/picture.jpg | tr -d '\r' | grep -i '^content-type' | tr 'A-Z' 'a-z')" "same content-type: image/jpeg"
+check "library: wrong extension, no such picture, another name, a bad id: 404 404 404 422" "$(for u in L1/picture.jpg L99/picture.png L1/evil Lx/picture.png; do curl -s -o /dev/null -w '%{http_code} ' -H "$(hdr)" localhost:18097/files/$u; done)" "404 404 404 422 "
+GL=$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=uploaded')
+check "library: the gallery lists it, tagged uploaded, first, with Edit this" "$(echo "$GL" | grep -o 'src=/files/L[0-9]*/picture\.[a-z]*' | tr '\n' ' ') $(echo "$GL" | grep -o '/edit?pick1=l/L[0-9]*' | tr '\n' ' ')" "src=/files/L2/picture.jpg src=/files/L1/picture.png  /edit?pick1=l/L2 /edit?pick1=l/L1 "
+check "library: the gallery has the form to add one" "$(echo "$GL" | grep -c 'action=/gallery enctype=multipart/form-data')" 1
+LASTUP=$(ls "$D" | grep -o '^upload-[0-9]*\.png' | grep -o '[0-9]*' | sort -n | tail -1)
+check "picker: the edit form offers the library's and the newest job's pictures, for both slots" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -o 'name=pick[12] value=\"\(l/L1\|j/'"$LASTUP"'/input1.png\)\"' | sort | uniq -c | tr -s ' ' | tr '\n' ';')" " 1 name=pick1 value=\"j/$LASTUP/input1.png\"; 1 name=pick1 value=\"l/L1\"; 1 name=pick2 value=\"j/$LASTUP/input1.png\"; 1 name=pick2 value=\"l/L1\";"
+check "picker: the file inputs are no longer required, and the choice is a closed details" "$(curl -s -H "$(hdr)" localhost:18097/edit | grep -c 'type=file[^>]* required') $(curl -s -H "$(hdr)" localhost:18097/edit | grep -o '<summary>or choose from the gallery</summary>' | wc -l | tr -d ' ')" "0 2"
+check "picker: each case has two pickers (12 in all)" "$(curl -s -H "$(hdr)" localhost:18097/cases | grep -o '<summary>or choose from the gallery</summary>' | wc -l | tr -d ' ') $(curl -s -H "$(hdr)" localhost:18097/cases | grep -c 'type=file[^>]* required')" "12 0"
+BEF=$(ls "$D" | wc -l | tr -d ' ')
+PL=$(ED --form-string 'prompt=from the library' -F pick1=l/L1); PLI=${PL##*/}
+check "picker: a library picture is the first picture: its path in the job, nothing copied" "$(argv_of $PLI | sed "s#$D#D#g") $(ls "$D" | grep -c "^upload-$PLI")" "edit -o D/out/X -- D/lib-1.png from the library  0"
+check "picker: ...and .from names it, a library picture starts a session" "$(cat "$D/$PLI.from") / $(cat "$D/$PLI.root")" "L1 picture.png / $PLI"
+check "picker: the job's page shows it as the first picture" "$(curl -s -H "$(hdr)" localhost:18097/jobs/$PLI | grep -o 'src=/files/L1/picture.png\|Picture 1 (from the gallery)' | tr '\n' ' ')" "src=/files/L1/picture.png Picture 1 (from the gallery) "
+PR2=$(ED --form-string 'prompt=a result chosen' -F pick1=j/$SX/edited.png); PR2I=${PR2##*/}
+check "picker: a job's result chosen stays in that session, like from" "$(cat "$D/$PR2I.from") / $(cat "$D/$PR2I.root")" "$SX edited.png / $SX"
+PU=$(ED --form-string 'prompt=an upload chosen' -F pick1=j/$SX/input1.png); PUI=${PU##*/}
+check "picker: a picture a job was given can be chosen (its upload file, a new session)" "$(argv_of $PUI | sed "s#$D#D#g") / $(cat "$D/$PUI.from") / $(cat "$D/$PUI.root" | sed "s/^$PUI$/self/")" "edit -o D/out/X -- D/upload-$SX.png an upload chosen  / $SX input1.png / self"
+PT=$(ED --form-string 'prompt=two chosen' -F pick1=l/L1 -F pick2=l/L2); PTI=${PT##*/}
+check "picker: both slots by choice: --also is the second, and .from has two lines" "$(argv_of $PTI | sed "s#$D#D#g" | cut -c1-60) / $(wc -l < "$D/$PTI.from" | tr -d ' ')" "edit -o D/out/X --also D/lib-2.jpg -- D/lib-1.png two chosen / 2"
+PW=$(ED --form-string 'prompt=upload wins' -F "image=@$R/pic.png" -F pick1=l/L1); PWI=${PW##*/}
+check "picker: an upload of the same slot wins over a choice" "$(argv_of $PWI | sed "s#$D#D#g" | cut -c1-50) / $(cat "$D/$PWI.from")" "edit -o D/out/X -- D/upload-$PWI.png upload wins  / upload"
+AFT=$(ls "$D" | wc -l | tr -d ' ')
+pk() { curl -s -o /dev/null -w '%{http_code} ' -H "$(hdr)" -F prompt=x "$@" localhost:18097/edit; }
+check "picker: refused (422): a failed job's picture, a name outside the list, a path, a library picture that is not there, a video job's, junk, and neither upload nor choice" "$(pk -F pick1=j/$NOT/edited.png; pk -F pick1=j/$SX/input3.png; pk -F 'pick1=j/../x/edited.png'; pk -F pick1=l/L999; pk -F pick1=j/$W2/edited.png; pk -F pick1=junk; pk -F pick2=l/L999 -F pick1=l/L1; curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=x localhost:18097/edit)" "422 422 422 422 422 422 422 422"
+check "picker: ...and none of those left a file behind" "$(ls "$D" | wc -l | tr -d ' ')" "$AFT"
+FP=$(curl -s -H "$(hdr)" 'localhost:18097/edit?pick1=l/L1')
+check "picker: /edit?pick1= shows the picture as the first picture and carries the choice; a bad choice is the plain form" "$(echo "$FP" | grep -o 'src=/files/L1/picture.png\|name=pick1 value=\"l/L1\">' | tr '\n' ' ') $(curl -s -H "$(hdr)" 'localhost:18097/edit?pick1=l/L999' | grep -c 'type=hidden name=pick1')" "src=/files/L1/picture.png name=pick1 value=\"l/L1\"> src=/files/L1/picture.png  0"
+check "picker: the OpenAPI document names pick1, pick2 and POST /gallery" "$(jq -r '[.components.schemas // {} | tostring | length > 0] | .[0]' studio/openapi.json >/dev/null; grep -c '"pick1"' studio/openapi.json) $(grep -c '"pick2"' studio/openapi.json) $(jq -r '.paths["/gallery"] | has("post")' studio/openapi.json)" "1 1 true"
 exit $fail

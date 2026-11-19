@@ -45,7 +45,7 @@
         "summary": "Queue an edit of an uploaded picture: the picture is kept as <data>/upload-N.jpg, .png or .webp (by its first bytes) and a job is made as POST /api/jobs makes it. The one POST that is not JSON.",
         "requestBody": {
           "required": true,
-          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt"], "properties": { "from": { "type": "string", "description": "A refine (docs/studio-sessions.md): the id of a finished job whose result is the first picture (nothing is copied). Give it instead of image; both together are refused (422)." }, "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off", "ab"] }, "note": { "type": "string", "maxLength": 200, "description": "Optional real sizes, added to the instruction as `Real sizes: ...`; a hint for the scale. The instruction and the note together are at most 1000 bytes." }, "image2": { "type": "string", "format": "binary", "description": "Optional: a second picture to combine with the first (JPEG, PNG or WebP; an empty file field is none)." }, "condition_area": { "type": "string", "description": "With image2: the pixels each picture is resized to, 65536 to 1048576." }, "variations": { "type": "string", "description": "1 to 8; more than 1 makes a set and goes to /sets/{id}." }, "steps": { "type": "string", "description": "1 to 50, or empty." }, "model": { "type": "string", "description": "A name from /api/models, or empty." }, "image": { "type": "string", "format": "binary", "description": "Required unless from is given: JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
+          "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt"], "description": "A first picture is needed: image, pick1 or from.", "properties": { "from": { "type": "string", "description": "A refine (docs/studio-sessions.md): the id of a finished job whose result is the first picture (nothing is copied). Give it instead of image; both together are refused (422)." }, "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "seed": { "type": "string", "description": "An integer from 0 to 2147483647, or empty." }, "rewrite": { "type": "string", "enum": ["on", "off", "ab"] }, "note": { "type": "string", "maxLength": 200, "description": "Optional real sizes, added to the instruction as `Real sizes: ...`; a hint for the scale. The instruction and the note together are at most 1000 bytes." }, "image2": { "type": "string", "format": "binary", "description": "Optional: a second picture to combine with the first (JPEG, PNG or WebP; an empty file field is none)." }, "pick1": { "type": "string", "description": "A picture of the gallery as the first picture, instead of image (an upload of the same slot wins): j/JOB/NAME (edited.png or image.png of a done job, input1.* or input2.* of a job) or l/LN (a library picture). The server builds the path; nothing is copied." }, "pick2": { "type": "string", "description": "The same, as the second picture, instead of image2." }, "condition_area": { "type": "string", "description": "With image2: the pixels each picture is resized to, 65536 to 1048576." }, "variations": { "type": "string", "description": "1 to 8; more than 1 makes a set and goes to /sets/{id}." }, "steps": { "type": "string", "description": "1 to 50, or empty." }, "model": { "type": "string", "description": "A name from /api/models, or empty." }, "image": { "type": "string", "format": "binary", "description": "Required unless from is given: JPEG, PNG or WebP, up to 16 MiB for the whole request." } } } } }
         },
         "responses": {
           "302": { "description": "Queued: Location /jobs/N; /compare/N for a pair (rewrite ab); /sets/N for variations." },
@@ -69,6 +69,17 @@
       }
     },
     "/gallery": {
+      "post": {
+        "summary": "Add a picture to the library (multipart/form-data, the part image: JPEG, PNG or WebP, up to 15 MiB): kept as <data>/lib-N.* and listed in the gallery as uploaded; served as /files/LN/picture.EXT. No job is made.",
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["image"], "properties": { "image": { "type": "string", "format": "binary" } } } } } },
+        "responses": {
+          "302": { "description": "Kept: Location /gallery." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "$ref": "#/components/responses/Refused" }
+        }
+      },
       "get": {
         "summary": "Every picture the studio holds, newest job first, 48 a page (HTML): each with a tag from the file it is: uploaded (upload-N.*), generated (out/N/image.png), edited (out/N/edited.png; a result is listed only when its job is done). A result offers Refine.",
         "parameters": [
@@ -270,10 +281,10 @@
     },
     "/files/{id}/{name}": {
       "get": {
-        "summary": "A file of a job, from a closed list of names (the result, the log, and the pictures an edit through the form was given: `input1.*` and `input2.*`, the files `upload-N` and `upload-N-2` of the data directory), streamed in pieces. `Range: bytes=a-b`, `a-` and `-n` are answered 206; several ranges, another unit or a malformed value are ignored (200, the whole file).",
+        "summary": "A file of a job, from a closed list of names (the result, the log, and the pictures an edit through the form was given: `input1.*` and `input2.*`, the files `upload-N` and `upload-N-2` of the data directory; and, for a library picture whose id is `L` and digits, `picture.jpg`, `picture.png` or `picture.webp`, the file `lib-N.*`), streamed in pieces. `Range: bytes=a-b`, `a-` and `-n` are answered 206; several ranges, another unit or a malformed value are ignored (200, the whole file).",
         "parameters": [
           { "$ref": "#/components/parameters/JobId" },
-          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "image.png", "video.mp4", "video.gif", "log", "input1.jpg", "input1.png", "input1.webp", "input2.jpg", "input2.png", "input2.webp"] } },
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "enum": ["edited.png", "image.png", "video.mp4", "video.gif", "log", "input1.jpg", "input1.png", "input1.webp", "input2.jpg", "input2.png", "input2.webp", "picture.jpg", "picture.png", "picture.webp"] } },
           { "name": "Range", "in": "header", "required": false, "schema": { "type": "string", "example": "bytes=0-1023" } }
         ],
         "responses": {

@@ -1,0 +1,115 @@
+edition 9;
+
+module library;
+
+import std.buffer;
+import std.bytes;
+import files;
+import upload;
+
+// `library` -- pictures put in the gallery with no job (docs/studio-sessions.md, section 10.3). `POST /gallery` (multipart, the part `image`) keeps the picture as `<data>/lib-N.<jpg|png|webp>`
+// (the extension from the first bytes, never from the name the browser sends) and appends `N ext` to `<data>/lib.index`; the server is the only writer. The file is written before its line, so a crash
+// leaves an unlisted file, never a line naming nothing. Served as `/files/LN/picture.EXT` (`results.file_info`).
+
+// `lib.index` as text, one `N ext` per line, oldest first (the empty text if there is none).
+pub fn index[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    let p = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/lib.index");
+    var text = buffer.empty(heap, 8);
+    borrow p as &pb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, p);
+    return text;
+}
+
+// The number of the next library picture: the lines of the index plus one.
+fn next_number[&t](text: &t [byte]) -> [] int {
+    var n = 1;
+    var k = 0;
+    while k < len(text) {
+        if int_of(text[k]) == 10 {
+            n = n + 1;
+        }
+        k = k + 1;
+    }
+    return n;
+}
+
+fn error_text[&h, &w](heap: &!h Heap, why: &w [byte]) -> [heap] buffer.Buffer {
+    return buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\""), why), "\"}");
+}
+
+// `POST /gallery`: (status, text). 302 with the text empty when the picture is kept; else 422 or 500 with a JSON one-liner.
+pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+    let (bf, bt) = upload.boundary_of(ctype);
+    if bf < 0 {
+        return (422, error_text(heap, "a multipart/form-data body with a boundary is needed"));
+    }
+    var delim = buffer.append(heap, buffer.empty(heap, 80), "--");
+    delim = buffer.append(heap, delim, ctype[bf..bt]);
+    var status = 422;
+    var why = "the form is not well formed";
+    borrow delim as &db in {
+        let (imf, imt) = upload.part(body, buffer.bytes(db), "image");
+        if imf < 0 || imt - imf < 16 {
+            why = "a picture is needed";
+        } else {
+            let kind = upload.kind_of(body[imf..imt]);
+            if kind == 0 {
+                why = "the picture is not a JPEG, PNG or WebP file";
+            } else {
+                let idx = index(heap, fs, dir);
+                var number = 1;
+                borrow idx as &ib in {
+                    number = next_number(buffer.bytes(ib));
+                }
+                buffer.drop(heap, idx);
+                var ext = ".webp";
+                if kind == 1 {
+                    ext = ".jpg";
+                } else if kind == 2 {
+                    ext = ".png";
+                }
+                var path = buffer.append(heap, buffer.empty(heap, 96), dir);
+                path = buffer.append(heap, path, "/lib-");
+                path = buffer.push_nat(heap, path, number);
+                path = buffer.append(heap, path, ext);
+                var saved = 0 - 1;
+                borrow path as &pb in {
+                    if len(buffer.bytes(pb)) <= 390 {
+                        saved = files.write_big(fs, buffer.bytes(pb), body[imf..imt]);
+                    }
+                }
+                buffer.drop(heap, path);
+                why = "the picture could not be saved";
+                status = 500;
+                if saved == 0 {
+                    var line = buffer.push_nat(heap, buffer.empty(heap, 16), number);
+                    line = buffer.append(heap, line, " ");
+                    line = buffer.append(heap, line, ext[1..len(ext)]);
+                    line = buffer.push(heap, line, byte_of(10));
+                    let ip = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/lib.index");
+                    var rc = 0 - 1;
+                    borrow ip as &ipb in {
+                        borrow line as &lb in {
+                            rc = files.append_all(fs, buffer.bytes(ipb), buffer.bytes(lb));
+                        }
+                    }
+                    buffer.drop(heap, ip);
+                    buffer.drop(heap, line);
+                    if rc == 0 {
+                        why = "";
+                        status = 302;
+                    }
+                }
+            }
+        }
+    }
+    buffer.drop(heap, delim);
+    if status == 302 {
+        return (302, buffer.empty(heap, 8));
+    }
+    return (status, error_text(heap, why));
+}

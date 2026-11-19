@@ -14,6 +14,7 @@ import upload;
 import cases;
 import gallery;
 import sessions;
+import library;
 import compare;
 import sets;
 
@@ -190,7 +191,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 gate = 302;
                             } else if auth.token_ok(head, table, token) == false {
                                 gate = 401;
-                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && (bytes.equal(path, "/edit") == false || auth.multipart_ok(head, table) == false) && (bytes.starts_with(path, "/compare/") == false || auth.form_ok(head, table) == false) {
+                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && ((bytes.equal(path, "/edit") == false && bytes.equal(path, "/gallery") == false) || auth.multipart_ok(head, table) == false) && (bytes.starts_with(path, "/compare/") == false || auth.form_ok(head, table) == false) {
                                 gate = 415;
                             }
                             if gate == 403 {
@@ -253,10 +254,17 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 let eq = http.query(head, table);
                                 let (ff, ft) = http.query_value(eq, "from");
                                 let (af, at) = http.query_value(eq, "again");
+                                let (kf, kt) = http.query_value(eq, "pick1");
                                 var f0 = 0;
                                 var f1 = 0;
                                 var a0 = 0;
                                 var a1 = 0;
+                                var k0 = 0;
+                                var k1 = 0;
+                                if kf >= 0 {
+                                    k0 = kf;
+                                    k1 = kt;
+                                }
                                 if ff >= 0 {
                                     f0 = ff;
                                     f1 = ft;
@@ -265,7 +273,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     a0 = af;
                                     a1 = at;
                                 }
-                                let form = upload.form_page(heap, fs, dir, eq[f0..f1], eq[a0..a1]);
+                                let form = upload.form_page(heap, fs, dir, eq[f0..f1], eq[a0..a1], eq[k0..k1]);
                                 borrow form as &fpb in {
                                     out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(fpb), keep, "");
                                 }
@@ -282,6 +290,16 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     out = server.reply_as(heap, out, sst2, "text/html; charset=utf-8", buffer.bytes(spb), keep, "");
                                 }
                                 buffer.drop(heap, spg);
+                            } else if bytes.equal(path, "/gallery") && bytes.equal(method, "POST") {
+                                let (lst, ltext) = library.add(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr));
+                                if lst == 302 {
+                                    out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, "Location: /gallery\r\n");
+                                } else {
+                                    borrow ltext as &ltb in {
+                                        out = server.reply_as(heap, out, lst, "application/json", buffer.bytes(ltb), keep, "");
+                                    }
+                                }
+                                buffer.drop(heap, ltext);
                             } else if bytes.equal(path, "/gallery") && bytes.equal(method, "GET") {
                                 let (gst, gpg) = gallery.page(heap, fs, dir, http.query(head, table));
                                 borrow gpg as &gpb in {
