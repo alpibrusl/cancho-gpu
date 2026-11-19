@@ -103,6 +103,17 @@ fn has_upload[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id:
     return yes;
 }
 
+// Whether the job has the file `<id><tail>` (`.argv`, `.from`).
+fn has_file[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], tail: &static [byte]) -> [heap, fs_read("")] bool {
+    let p = job_path(heap, dir, id, tail);
+    var yes = false;
+    borrow p as &pb in {
+        yes = files.exists(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
 // (known, the state word): `queued` when there is an argument file but no state yet; letters, digits and spaces only, so it can go into HTML as it is.
 pub fn state_word[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (bool, buffer.Buffer) {
     var word = buffer.empty(heap, 16);
@@ -452,7 +463,19 @@ pub fn job_page[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], i
     }
     page = buffer.append(heap, page, "<div class=acts><a class=btn href=/files/");
     page = buffer.append(heap, page, id);
-    page = buffer.append(heap, page, "/log>Open the log</a></div></section><aside class=side>");
+    page = buffer.append(heap, page, "/log>Open the log</a>");
+    // the next round (docs/studio-sessions.md): refine this result, or start again from this job's prompt and settings
+    if done && (has_out(heap, fs, dir, id, "edited.png") || has_out(heap, fs, dir, id, "image.png")) {
+        page = buffer.append(heap, page, "<a class=btn href=\"/edit?from=");
+        page = buffer.append(heap, page, id);
+        page = buffer.append(heap, page, "\">Refine this result</a>");
+    }
+    if has_file(heap, fs, dir, id, ".argv") && has_out(heap, fs, dir, id, "video.mp4") == false {
+        page = buffer.append(heap, page, "<a class=btn href=\"/edit?again=");
+        page = buffer.append(heap, page, id);
+        page = buffer.append(heap, page, "\">Use this prompt again</a>");
+    }
+    page = buffer.append(heap, page, "</div></section><aside class=side>");
     let (orig, has_orig) = job_file(heap, fs, dir, id, ".prompt.orig");
     let (fresh, has_fresh) = job_file(heap, fs, dir, id, ".prompt.new");
     let (flag, has_flag) = job_file(heap, fs, dir, id, ".rewrite");
@@ -530,10 +553,33 @@ fn figure[&h, &i](heap: &!h Heap, page: buffer.Buffer, id: &i [byte], name: &sta
 }
 
 // The pictures the person gave this job, as figures: (the page, how many). A job made by POST /api/jobs has none (its picture is a path, never served).
-fn input_figures[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read("")] (buffer.Buffer, int) {
+fn input_figures[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
     var p = page;
     var n = 0;
-    if has_upload(heap, fs, dir, id, "input1.jpg") {
+    // a refine (studio/upload.cho, docs/studio-sessions.md): its first picture is the result of an earlier job, named in `<id>.from` as `JOB NAME`
+    let (fromfile, has_from) = job_file(heap, fs, dir, id, ".from");
+    var shown_from = false;
+    if has_from {
+        borrow fromfile as &ffb in {
+            let line = buffer.bytes(ffb);
+            let (digits, dend) = nat_at(line, 0);
+            if digits > 0 && dend < len(line) && id_ok(line[0..dend]) {
+                if bytes.starts_with(line[dend + 1..len(line)], "edited.png") {
+                    p = figure(heap, p, line[0..dend], "edited.png", "the first picture, the result of an earlier job", "Picture 1 (result of an earlier job)");
+                    n = n + 1;
+                    shown_from = true;
+                } else if bytes.starts_with(line[dend + 1..len(line)], "image.png") {
+                    p = figure(heap, p, line[0..dend], "image.png", "the first picture, the result of an earlier job", "Picture 1 (result of an earlier job)");
+                    n = n + 1;
+                    shown_from = true;
+                }
+            }
+        }
+    }
+    buffer.drop(heap, fromfile);
+    if shown_from {
+        // the first picture is shown; nothing else is the first picture
+    } else if has_upload(heap, fs, dir, id, "input1.jpg") {
         p = figure(heap, p, id, "input1.jpg", "the first picture", "Picture 1");
         n = n + 1;
     } else if has_upload(heap, fs, dir, id, "input1.png") {

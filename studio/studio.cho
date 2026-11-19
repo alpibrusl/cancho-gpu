@@ -247,7 +247,23 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                             } else if bytes.equal(path, "/style.css") && bytes.equal(method, "GET") {
                                 out = server.reply_as(heap, out, 200, "text/css; charset=utf-8", results.css(), keep, "");
                             } else if bytes.equal(path, "/edit") && bytes.equal(method, "GET") {
-                                let form = upload.form_page(heap, fs, dir);
+                                // `?from=N` refines the result of job N, `?again=N` fills in its prompt and settings: the value is used only if it is 1 to 9 digits (results.id_ok), else ignored
+                                let eq = http.query(head, table);
+                                let (ff, ft) = http.query_value(eq, "from");
+                                let (af, at) = http.query_value(eq, "again");
+                                var f0 = 0;
+                                var f1 = 0;
+                                var a0 = 0;
+                                var a1 = 0;
+                                if ff >= 0 {
+                                    f0 = ff;
+                                    f1 = ft;
+                                }
+                                if af >= 0 {
+                                    a0 = af;
+                                    a1 = at;
+                                }
+                                let form = upload.form_page(heap, fs, dir, eq[f0..f1], eq[a0..a1]);
                                 borrow form as &fpb in {
                                     out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(fpb), keep, "");
                                 }
