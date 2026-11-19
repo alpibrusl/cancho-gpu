@@ -253,6 +253,43 @@ fn quoted[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] b
     return out;
 }
 
+// A prompt or a note typed in a text area: a browser sends a new line as CR LF, so CR, LF and tab are allowed; any other control character (NUL included) is not.
+pub fn text_ok[&t](text: &t [byte]) -> [] bool {
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 32 && c != 9 && c != 10 && c != 13 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// `quoted`, with each run of CR, LF and tab written as one space: the instruction goes to the model as one line, and a new line in the argument list or the log would be a surprise.
+fn quoted_flat[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+    var out = b;
+    var i = 0;
+    var gap = false;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 9 || c == 10 || c == 13 {
+            gap = true;
+        } else {
+            if gap {
+                out = buffer.push(heap, out, byte_of(32));
+                gap = false;
+            }
+            if c == 34 || c == 92 {
+                out = buffer.push(heap, out, byte_of(92));
+            }
+            out = buffer.push(heap, out, byte_of(c));
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
 pub fn no_controls[&t](text: &t [byte]) -> [] bool {
     var i = 0;
     while i < len(text) {
@@ -446,9 +483,9 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             }
             if pf < 0 || pt - pf < 1 || pt - pf > 1000 {
                 why = "prompt is a text of 1 to 1000 bytes";
-            } else if no_controls(body[pf..pt]) == false {
-                why = "the prompt has no control characters";
-            } else if has_note && (ntt - ntf > 200 || no_controls(body[ntf..ntt]) == false || (pt - pf) + (ntt - ntf) + 12 > 1000) {
+            } else if text_ok(body[pf..pt]) == false {
+                why = "the prompt has no control characters (a new line is fine)";
+            } else if has_note && (ntt - ntf > 200 || text_ok(body[ntf..ntt]) == false || (pt - pf) + (ntt - ntf) + 12 > 1000) {
                 why = "the sizes are a text of at most 200 bytes without control characters, and with the instruction at most 1000 bytes";
             } else if has_from && imf >= 0 && imt > imf {
                 why = "give a picture or from (the result of an earlier job), not both";
@@ -549,10 +586,10 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                         why = "the picture could not be saved";
                     } else {
                         var json = buffer.append(heap, buffer.empty(heap, 256), "{\"kind\":\"edit\",\"prompt\":\"");
-                        json = quoted(heap, json, body[pf..pt]);
+                        json = quoted_flat(heap, json, body[pf..pt]);
                         if has_note {
                             json = buffer.append(heap, json, " Real sizes: ");
-                            json = quoted(heap, json, body[ntf..ntt]);
+                            json = quoted_flat(heap, json, body[ntf..ntt]);
                             json = buffer.append(heap, json, ".");
                         }
                         json = buffer.append(heap, json, "\",\"image\":\"");
