@@ -15,6 +15,7 @@ import cases;
 import gallery;
 import sessions;
 import library;
+import batch;
 import compare;
 import sets;
 
@@ -191,7 +192,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 gate = 302;
                             } else if auth.token_ok(head, table, token) == false {
                                 gate = 401;
-                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && ((bytes.equal(path, "/edit") == false && bytes.equal(path, "/gallery") == false) || auth.multipart_ok(head, table) == false) && (bytes.starts_with(path, "/compare/") == false || auth.form_ok(head, table) == false) {
+                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && ((bytes.equal(path, "/edit") == false && bytes.equal(path, "/gallery") == false && bytes.equal(path, "/batch") == false) || auth.multipart_ok(head, table) == false) && (bytes.starts_with(path, "/compare/") == false || auth.form_ok(head, table) == false) {
                                 gate = 415;
                             }
                             if gate == 403 {
@@ -290,6 +291,22 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     out = server.reply_as(heap, out, sst2, "text/html; charset=utf-8", buffer.bytes(spb), keep, "");
                                 }
                                 buffer.drop(heap, spg);
+                            } else if bytes.equal(path, "/batch") && bytes.equal(method, "POST") {
+                                let (bst, btext, bfirst) = batch.handle(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr));
+                                if bst == 302 {
+                                    var bextra = buffer.append(heap, buffer.empty(heap, 64), "Location: /sessions/");
+                                    bextra = buffer.push_nat(heap, bextra, bfirst);
+                                    bextra = buffer.append(heap, bextra, "\r\n");
+                                    borrow bextra as &bxb in {
+                                        out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, buffer.bytes(bxb));
+                                    }
+                                    buffer.drop(heap, bextra);
+                                } else {
+                                    borrow btext as &btb in {
+                                        out = server.reply_as(heap, out, bst, "application/json", buffer.bytes(btb), keep, "");
+                                    }
+                                }
+                                buffer.drop(heap, btext);
                             } else if bytes.equal(path, "/gallery") && bytes.equal(method, "POST") {
                                 let (lst, ltext) = library.add(heap, fs, dir, http.header(head, table, "content-type"), server.body(sr));
                                 if lst == 302 {

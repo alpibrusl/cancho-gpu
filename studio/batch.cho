@@ -1,0 +1,338 @@
+edition 9;
+
+module batch;
+
+import std.buffer;
+import std.bytes;
+import files;
+import jobs;
+import results;
+import upload;
+import picks;
+
+// `batch` -- one picture and several others, one edit each (docs/studio-sessions.md, section 14): `POST /batch`, the form of "try these clothes on this person" and "redecorate this room in
+// these styles". The first picture (`image` or `pick1`) is combined with each of up to five others (`image2` .. `image6`, or `pick2` .. `pick6`): one two-picture edit per other picture, all with
+// the same instruction, seed, steps and model. The jobs are one session (`.root` is the first), so `/sessions/FIRST` shows them together: each round is the first picture, one of the others, and its
+// result. Everything is checked before anything is written; a failure while the jobs are being made (the queue unreadable) leaves the ones already made and says so.
+//
+// The pictures are kept as `/edit` keeps them: the first as `upload-FIRST.<ext>`, each other as `upload-ID-2.<ext>` of its own job; a chosen picture is used where it is (picks.resolve), copied nowhere.
+
+fn image_name(k: int) -> [] &static [byte] {
+    if k == 2 {
+        return "image2";
+    }
+    if k == 3 {
+        return "image3";
+    }
+    if k == 4 {
+        return "image4";
+    }
+    if k == 5 {
+        return "image5";
+    }
+    return "image6";
+}
+
+fn pick_name(k: int) -> [] &static [byte] {
+    if k == 2 {
+        return "pick2";
+    }
+    if k == 3 {
+        return "pick3";
+    }
+    if k == 4 {
+        return "pick4";
+    }
+    if k == 5 {
+        return "pick5";
+    }
+    return "pick6";
+}
+
+// What slot `k` (2 to 6) holds: (state, kind, from, to, path, line). State 0 none, 1 an upload (kind 1 to 3, its bytes `body[from..to]`; the path and line are empty), 2 a choice that
+// resolved (the path of the picture and its `.from` line), 3 a choice that did not, or an upload that is not a picture.
+fn slot[&h, &f, &d, &b, &l](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte], dl: &l [byte], k: int) -> [heap, fs_read(""), file_read] (int, int, int, int, buffer.Buffer, buffer.Buffer) {
+    let (uf, ut) = upload.part(body, dl, image_name(k));
+    if uf >= 0 && ut - uf >= 16 {
+        let kind = upload.kind_of(body[uf..ut]);
+        if kind == 0 {
+            return (3, 0, uf, ut, buffer.empty(heap, 8), buffer.empty(heap, 8));
+        }
+        return (1, kind, uf, ut, buffer.empty(heap, 8), buffer.empty(heap, 8));
+    }
+    let (pf, pt) = upload.part(body, dl, pick_name(k));
+    if pf >= 0 && pt > pf {
+        let (path, line, is_result, ok) = picks.resolve(heap, fs, dir, body[pf..pt]);
+        if ok {
+            return (2, 0, 0, 0, path, line);
+        }
+        buffer.drop(heap, path);
+        buffer.drop(heap, line);
+        return (3, 0, 0, 0, buffer.empty(heap, 8), buffer.empty(heap, 8));
+    }
+    return (0, 0, 0, 0, buffer.empty(heap, 8), buffer.empty(heap, 8));
+}
+
+fn ext_of(kind: int) -> [] &static [byte] {
+    if kind == 1 {
+        return ".jpg";
+    }
+    if kind == 2 {
+        return ".png";
+    }
+    return ".webp";
+}
+
+fn fail[&h, &w](heap: &!h Heap, status: int, why: &w [byte]) -> [heap] (int, buffer.Buffer, int) {
+    return (status, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), "{\"error\":\""), why), "\"}"), 0);
+}
+
+// `POST /batch`: (status, text, the first job's id). 302 with an empty text and the first id when the jobs are made.
+pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer, int) {
+    let (bf, bt) = upload.boundary_of(ctype);
+    if bf < 0 {
+        return fail(heap, 422, "a multipart/form-data body with a boundary is needed");
+    }
+    var delim = buffer.append(heap, buffer.empty(heap, 80), "--");
+    delim = buffer.append(heap, delim, ctype[bf..bt]);
+    var status = 422;
+    var why = "the form is not well formed";
+    var first = 0;
+    borrow delim as &db in {
+        let dl = buffer.bytes(db);
+        let (pf, pt) = upload.part(body, dl, "prompt");
+        let (sf, st) = upload.part(body, dl, "seed");
+        let (stpf, stpt) = upload.part(body, dl, "steps");
+        let (mf, mt) = upload.part(body, dl, "model");
+        let (ntf, ntt) = upload.part(body, dl, "note");
+        let (caf, cat) = upload.part(body, dl, "condition_area");
+        let (imf, imt) = upload.part(body, dl, "image");
+        let (p1f, p1t) = upload.part(body, dl, "pick1");
+        var person_kind = 0;
+        var person_pick = false;
+        var p1path = buffer.empty(heap, 8);
+        var p1line = buffer.empty(heap, 8);
+        var person_ok = false;
+        if imf >= 0 && imt - imf >= 16 {
+            person_kind = upload.kind_of(body[imf..imt]);
+            person_ok = person_kind != 0;
+        } else if p1f >= 0 && p1t > p1f {
+            person_pick = true;
+            buffer.drop(heap, p1path);
+            buffer.drop(heap, p1line);
+            let (a, c1, c2, ok) = picks.resolve(heap, fs, dir, body[p1f..p1t]);
+            p1path = a;
+            p1line = c1;
+            person_ok = ok;
+        }
+        // the others: how many, and whether every one is a picture
+        var count = 0;
+        var bad = false;
+        var k = 2;
+        while k <= 6 {
+            let (state, kind, uf, ut, sp, sl) = slot(heap, fs, dir, body, dl, k);
+            if state == 3 {
+                bad = true;
+            } else if state != 0 {
+                count = count + 1;
+            }
+            buffer.drop(heap, sp);
+            buffer.drop(heap, sl);
+            k = k + 1;
+        }
+        let has_note = ntf >= 0 && ntt > ntf;
+        if pf < 0 || pt - pf < 1 || pt - pf > 1000 {
+            why = "prompt is a text of 1 to 1000 bytes";
+        } else if upload.text_ok(body[pf..pt]) == false {
+            why = "the prompt has no control characters (a new line is fine)";
+        } else if has_note && (ntt - ntf > 200 || upload.text_ok(body[ntf..ntt]) == false || (pt - pf) + (ntt - ntf) + 12 > 1000) {
+            why = "the sizes are a text of at most 200 bytes, and with the instruction at most 1000 bytes";
+        } else if person_ok == false {
+            why = "the first picture is needed: upload one or choose one from the gallery (a JPEG, PNG or WebP)";
+        } else if bad {
+            why = "one of the other pictures is not a JPEG, PNG or WebP file or a picture of the gallery";
+        } else if count < 1 {
+            why = "at least one other picture is needed (up to 5)";
+        } else if caf >= 0 && cat > caf && (upload.all_digits(body[caf..cat]) == false || cat - caf > 7) {
+            why = "condition_area is the pixels each picture is resized to, a whole number";
+        } else if sf >= 0 && st > sf && upload.all_digits(body[sf..st]) == false {
+            why = "seed is an integer from 0 to 2147483647";
+        } else if stpf >= 0 && stpt > stpf && (upload.all_digits(body[stpf..stpt]) == false || stpt - stpf > 3) {
+            why = "steps is a whole number from 1 to 50";
+        } else if mf >= 0 && mt > mf && upload.no_controls(body[mf..mt]) == false {
+            why = "the model name has no control characters";
+        } else {
+            let first_id = jobs.next_id(heap, fs, dir);
+            status = 500;
+            why = "the queue could not be read";
+            if first_id > 0 {
+                // the first picture: kept once as the first job's upload, or the chosen picture's own path
+                var person_path = buffer.empty(heap, 8);
+                var saved = 0;
+                if person_pick {
+                    borrow p1path as &q in {
+                        person_path = buffer.append(heap, person_path, buffer.bytes(q));
+                    }
+                } else {
+                    person_path = buffer.append(heap, person_path, dir);
+                    person_path = buffer.append(heap, person_path, "/upload-");
+                    person_path = buffer.push_nat(heap, person_path, first_id);
+                    person_path = buffer.append(heap, person_path, ext_of(person_kind));
+                    saved = 0 - 1;
+                    borrow person_path as &ppb in {
+                        if len(buffer.bytes(ppb)) <= 390 {
+                            saved = files.write_big(fs, buffer.bytes(ppb), body[imf..imt]);
+                        }
+                    }
+                }
+                why = "the picture could not be saved";
+                if saved == 0 {
+                    why = "";
+                    var broke = false;
+                    var j = 2;
+                    var made = 0;
+                    while j <= 6 && broke == false {
+                        let (state, kind, uf, ut, sp, sl) = slot(heap, fs, dir, body, dl, j);
+                        if state == 1 || state == 2 {
+                            let id = jobs.next_id(heap, fs, dir);
+                            var other_path = buffer.empty(heap, 8);
+                            var other_line = buffer.append(heap, buffer.empty(heap, 16), "upload");
+                            var ok = id > 0;
+                            if ok && state == 1 {
+                                other_path = buffer.append(heap, other_path, dir);
+                                other_path = buffer.append(heap, other_path, "/upload-");
+                                other_path = buffer.push_nat(heap, other_path, id);
+                                other_path = buffer.append(heap, other_path, "-2");
+                                other_path = buffer.append(heap, other_path, ext_of(kind));
+                                var wrote = 0 - 1;
+                                borrow other_path as &opb in {
+                                    if len(buffer.bytes(opb)) <= 390 {
+                                        wrote = files.write_big(fs, buffer.bytes(opb), body[uf..ut]);
+                                    }
+                                }
+                                ok = wrote == 0;
+                            } else if ok {
+                                borrow sp as &spb in {
+                                    other_path = buffer.append(heap, other_path, buffer.bytes(spb));
+                                }
+                                buffer.drop(heap, other_line);
+                                other_line = buffer.empty(heap, 8);
+                                borrow sl as &slb in {
+                                    other_line = buffer.append(heap, other_line, buffer.bytes(slb));
+                                }
+                            }
+                            if ok {
+                                var json = buffer.append(heap, buffer.empty(heap, 256), "{\"kind\":\"edit\",\"prompt\":\"");
+                                json = upload.quoted_flat(heap, json, body[pf..pt]);
+                                if has_note {
+                                    json = buffer.append(heap, json, " Real sizes: ");
+                                    json = upload.quoted_flat(heap, json, body[ntf..ntt]);
+                                    json = buffer.append(heap, json, ".");
+                                }
+                                json = buffer.append(heap, json, "\",\"image\":\"");
+                                borrow person_path as &ppb2 in {
+                                    json = upload.quoted(heap, json, buffer.bytes(ppb2));
+                                }
+                                json = buffer.append(heap, json, "\",\"also\":\"");
+                                borrow other_path as &opb2 in {
+                                    json = upload.quoted(heap, json, buffer.bytes(opb2));
+                                }
+                                json = buffer.append(heap, json, "\"");
+                                if caf >= 0 && cat > caf {
+                                    json = buffer.append(heap, json, ",\"condition_area\":");
+                                    json = buffer.append(heap, json, body[caf..cat]);
+                                }
+                                if sf >= 0 && st > sf {
+                                    json = buffer.append(heap, json, ",\"seed\":");
+                                    json = buffer.append(heap, json, body[sf..st]);
+                                }
+                                if stpf >= 0 && stpt > stpf {
+                                    json = buffer.append(heap, json, ",\"steps\":");
+                                    json = buffer.append(heap, json, body[stpf..stpt]);
+                                }
+                                if mf >= 0 && mt > mf {
+                                    json = buffer.append(heap, json, ",\"model\":\"");
+                                    json = upload.quoted(heap, json, body[mf..mt]);
+                                    json = buffer.push(heap, json, byte_of(34));
+                                }
+                                json = buffer.append(heap, json, "}");
+                                var cst = 0;
+                                var reply = buffer.empty(heap, 8);
+                                borrow json as &jb in {
+                                    let (a, r) = jobs.create(heap, fs, dir, buffer.bytes(jb), false);
+                                    cst = a;
+                                    buffer.drop(heap, reply);
+                                    reply = r;
+                                }
+                                buffer.drop(heap, json);
+                                var made_id = 0;
+                                borrow reply as &rb in {
+                                    made_id = upload.id_in(buffer.bytes(rb));
+                                }
+                                buffer.drop(heap, reply);
+                                if cst != 202 || made_id == 0 {
+                                    why = "a job could not be made; the ones before it are in the queue";
+                                    broke = true;
+                                } else {
+                                    if made == 0 {
+                                        first = made_id;
+                                    }
+                                    made = made + 1;
+                                    // `.root` is the first job; `.from` has the first picture (the first job's own upload, or the chosen one) and this job's other picture
+                                    var inputs = buffer.empty(heap, 64);
+                                    if person_pick {
+                                        borrow p1line as &plb in {
+                                            inputs = buffer.append(heap, inputs, buffer.bytes(plb));
+                                        }
+                                    } else if made == 1 {
+                                        inputs = buffer.append(heap, inputs, "upload");
+                                    } else {
+                                        inputs = buffer.push_nat(heap, inputs, first);
+                                        inputs = buffer.append(heap, inputs, " input1");
+                                        inputs = buffer.append(heap, inputs, ext_of(person_kind));
+                                    }
+                                    inputs = buffer.append(heap, inputs, "\n");
+                                    borrow other_line as &olb in {
+                                        inputs = buffer.append(heap, inputs, buffer.bytes(olb));
+                                    }
+                                    inputs = buffer.append(heap, inputs, "\n");
+                                    let name = buffer.push_nat(heap, buffer.empty(heap, 12), made_id);
+                                    let root = buffer.push_nat(heap, buffer.empty(heap, 12), first);
+                                    borrow name as &nb in {
+                                        borrow root as &rtb in {
+                                            borrow inputs as &ib in {
+                                                upload.record_one(heap, fs, dir, buffer.bytes(nb), buffer.bytes(rtb), buffer.bytes(ib));
+                                            }
+                                        }
+                                    }
+                                    buffer.drop(heap, name);
+                                    buffer.drop(heap, root);
+                                    buffer.drop(heap, inputs);
+                                }
+                            } else {
+                                why = "a picture could not be saved";
+                                broke = true;
+                            }
+                            buffer.drop(heap, other_path);
+                            buffer.drop(heap, other_line);
+                        }
+                        buffer.drop(heap, sp);
+                        buffer.drop(heap, sl);
+                        j = j + 1;
+                    }
+                    if broke == false {
+                        status = 302;
+                    }
+                }
+                buffer.drop(heap, person_path);
+            }
+        }
+        buffer.drop(heap, p1path);
+        buffer.drop(heap, p1line);
+    }
+    buffer.drop(heap, delim);
+    if status == 302 {
+        return (302, buffer.empty(heap, 8), first);
+    }
+    return fail(heap, status, why);
+}

@@ -239,7 +239,7 @@ pub fn kind_of[&t](head: &t [byte]) -> [] int {
 }
 
 // `text` as the inside of a JSON string: a quote or a backslash is escaped, nothing else changes (control characters were refused before).
-fn quoted[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+pub fn quoted[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
     var out = b;
     var i = 0;
     while i < len(text) {
@@ -267,7 +267,7 @@ pub fn text_ok[&t](text: &t [byte]) -> [] bool {
 }
 
 // `quoted`, with each run of CR, LF and tab written as one space: the instruction goes to the model as one line, and a new line in the argument list or the log would be a surprise.
-fn quoted_flat[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
+pub fn quoted_flat[&h, &t](heap: &!h Heap, b: buffer.Buffer, text: &t [byte]) -> [heap] buffer.Buffer {
     var out = b;
     var i = 0;
     var gap = false;
@@ -319,7 +319,7 @@ pub fn all_digits[&t](text: &t [byte]) -> [] bool {
 }
 
 // The id in `{"id":N}`, or 0.
-fn id_in[&t](answer: &t [byte]) -> [] int {
+pub fn id_in[&t](answer: &t [byte]) -> [] int {
     var n = 0;
     var i = 6;
     while i < len(answer) && int_of(answer[i]) >= 48 && int_of(answer[i]) <= 57 {
@@ -381,14 +381,14 @@ fn other_ids[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], first: i
 }
 
 // Write `<id>.root` and `<id>.from` (docs/studio-sessions.md): the session the job belongs to and where its pictures came from. Best effort in order (root last): a job with no `.root` is its own session.
-fn id_file[&h, &d, &n, &x](heap: &!h Heap, dir: &d [byte], id: &n [byte], ext: &x [byte]) -> [heap] buffer.Buffer {
+pub fn id_file[&h, &d, &n, &x](heap: &!h Heap, dir: &d [byte], id: &n [byte], ext: &x [byte]) -> [heap] buffer.Buffer {
     var p = buffer.append(heap, buffer.empty(heap, 96), dir);
     p = buffer.append(heap, p, "/");
     p = buffer.append(heap, p, id);
     return buffer.append(heap, p, ext);
 }
 
-fn record_one[&h, &f, &d, &n, &r, &x](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &n [byte], root: &r [byte], inputs: &x [byte]) -> [heap, fs_write(""), file_write] int {
+pub fn record_one[&h, &f, &d, &n, &r, &x](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &n [byte], root: &r [byte], inputs: &x [byte]) -> [heap, fs_write(""), file_write] int {
     let pf = id_file(heap, dir, id, ".from");
     let pr = id_file(heap, dir, id, ".root");
     var rc = 0;

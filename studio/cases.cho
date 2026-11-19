@@ -42,11 +42,69 @@ fn card[&h, &f, &r, &a, &b, &c, &d, &e, &g, &n, &t](heap: &!h Heap, fs: &f Fs(""
     return p;
 }
 
+// The instructions of the try-on and the room cases, shared by their cards and the batch cards.
+fn tryon_text() -> [] &static [byte] {
+    return "Dress the person in image1 in the clothing shown in image2. Keep the person's face, hair, skin, pose and the background exactly as in image1. Do not resize, reshape or restyle the garment: it keeps its colour, pattern, cut, length and proportions from image2, and is worn as it is, with folds and shadows that match the light of image1.";
+}
+
+fn room_text() -> [] &static [byte] {
+    return "Redecorate the room in image1 with the furniture, colours, materials and decoration of image2. Keep the room's shape, walls, windows, doors and the camera view of image1, and replace only what is inside it and its colours. The result is a realistic photograph with consistent light.";
+}
+
+// A card for one picture and several others, one edit each (docs/studio-sessions.md, section 14): posts to `/batch`. `others` names the several ones ("garment", "style").
+fn batch_card[&h, &f, &r, &a, &b, &c, &d, &e, &g, &n](heap: &!h Heap, fs: &f Fs(""), dir: &r [byte], page: buffer.Buffer, slug: &a [byte], title: &b [byte], what: &c [byte], first: &d [byte], others: &e [byte], prompt: &g [byte], sizes: &n [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = buffer.append(heap, page, "<form id=");
+    p = buffer.append(heap, p, slug);
+    p = buffer.append(heap, p, " method=post action=/batch enctype=multipart/form-data><h2>");
+    p = buffer.append(heap, p, title);
+    p = buffer.append(heap, p, "</h2><p>");
+    p = buffer.append(heap, p, what);
+    p = buffer.append(heap, p, "</p><label>");
+    p = buffer.append(heap, p, first);
+    p = buffer.append(heap, p, " (image1; JPEG, PNG or WebP)<input name=image type=file accept=image/jpeg,image/png,image/webp></label>");
+    p = picks.picker(heap, p, fs, dir, "pick1", 8);
+    var k = 2;
+    while k <= 6 {
+        p = buffer.append(heap, p, "<label>");
+        p = buffer.append(heap, p, others);
+        p = buffer.append(heap, p, " ");
+        p = buffer.push_nat(heap, p, k - 1);
+        if k == 2 {
+            p = buffer.append(heap, p, " (image2)");
+        } else {
+            p = buffer.append(heap, p, " (optional)");
+        }
+        p = buffer.append(heap, p, "<input name=image");
+        p = buffer.push_nat(heap, p, k);
+        p = buffer.append(heap, p, " type=file accept=image/jpeg,image/png,image/webp></label>");
+        if k == 2 {
+            p = picks.picker(heap, p, fs, dir, "pick2", 8);
+        } else if k == 3 {
+            p = picks.picker(heap, p, fs, dir, "pick3", 8);
+        } else if k == 4 {
+            p = picks.picker(heap, p, fs, dir, "pick4", 8);
+        } else if k == 5 {
+            p = picks.picker(heap, p, fs, dir, "pick5", 8);
+        } else {
+            p = picks.picker(heap, p, fs, dir, "pick6", 8);
+        }
+        k = k + 1;
+    }
+    p = buffer.append(heap, p, "<label>The instruction (the same for every one; change it if you like)<textarea name=prompt required maxlength=1000 rows=4>");
+    p = buffer.append(heap, p, prompt);
+    p = buffer.append(heap, p, "</textarea></label><label>Real sizes (optional; a hint for the scale, not a measurement: ");
+    p = buffer.append(heap, p, sizes);
+    p = buffer.append(heap, p, ")<input name=note maxlength=200></label><label>Seed (optional; the same seed for every one)<input name=seed type=number min=0 max=2147483647></label><div><button>Make one edit for each</button></div></form>");
+    return p;
+}
+
 pub fn page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
     var p = results.open(heap, fs, dir, "cases", "cases", false);
     p = buffer.append(heap, p, "<div class=row><h1>Cases</h1></div><p>Two pictures and an instruction written for you: choose the case, give the two pictures, press the button. Each one is a two-picture edit (about two minutes and a half on this machine); the result is on the job page. The pictures stay on this machine. A picture that is clear, well lit and shows the whole thing works best; the model does not always keep a face or a pattern exactly, so look at the result.</p>");
-    p = card(heap, fs, dir, p, "tryon", "Try clothes on a person", "The person in the first picture wears the clothes of the second.", "A picture of the person (the whole body, or the part the clothes cover)", "A picture of the clothes (a garment on its own, laid flat or on a hanger, or worn by someone else)", "Dress the person in image1 in the clothing shown in image2. Keep the person's face, hair, skin, pose and the background exactly as in image1. Do not resize, reshape or restyle the garment: it keeps its colour, pattern, cut, length and proportions from image2, and is worn as it is, with folds and shadows that match the light of image1.", "for example: the person is 1.70 m tall, the jacket is size M", "Tip: when the person already wears a matching set (pyjamas, a suit, a tracksuit), the instruction below can leave the outfit unchanged. Say which garments to swap, for example: replace the pink long-sleeved top with the white t-shirt worn in image2, and the floral pyjama trousers with the black jeans worn in image2. Measured: two pictures came back unchanged with the standard text, with another seed too, and worked once the garments were named.");
-    p = card(heap, fs, dir, p, "room", "Redecorate a room", "The room in the first picture, furnished and decorated as the second picture shows.", "A picture of the room", "A picture of the style (another room, a mood board, a piece of furniture)", "Redecorate the room in image1 with the furniture, colours, materials and decoration of image2. Keep the room's shape, walls, windows, doors and the camera view of image1, and replace only what is inside it and its colours. The result is a realistic photograph with consistent light.", "for example: the room is 4 m by 5 m, the ceiling is 2.5 m", "Tip: if the room is already furnished, name what to replace, for example: replace the blue sofa and the white chair with the cream sofa and the oval coffee table of image2. Measured once on a furnished room: the new pieces were added and the old sofa stayed.");
+    p = batch_card(heap, fs, dir, p, "tryon-many", "Try several garments on one person", "One person and up to five garments: one edit for each garment, made one after the other (about two minutes and a half each) and shown together in a session.", "A picture of the person (the whole body, or the part the clothes cover)", "Garment", tryon_text(), "for example: the person is 1.70 m tall");
+    p = batch_card(heap, fs, dir, p, "room-many", "Redecorate one room in several styles", "One room and up to five styles (another room, a mood board, a piece of furniture): one edit for each style, shown together in a session.", "A picture of the room", "Style", room_text(), "for example: the room is 4 m by 5 m");
+    p = card(heap, fs, dir, p, "tryon", "Try clothes on a person", "The person in the first picture wears the clothes of the second.", "A picture of the person (the whole body, or the part the clothes cover)", "A picture of the clothes (a garment on its own, laid flat or on a hanger, or worn by someone else)", tryon_text(), "for example: the person is 1.70 m tall, the jacket is size M", "Tip: when the person already wears a matching set (pyjamas, a suit, a tracksuit), the instruction below can leave the outfit unchanged. Say which garments to swap, for example: replace the pink long-sleeved top with the white t-shirt worn in image2, and the floral pyjama trousers with the black jeans worn in image2. Measured: two pictures came back unchanged with the standard text, with another seed too, and worked once the garments were named.");
+    p = card(heap, fs, dir, p, "room", "Redecorate a room", "The room in the first picture, furnished and decorated as the second picture shows.", "A picture of the room", "A picture of the style (another room, a mood board, a piece of furniture)", room_text(), "for example: the room is 4 m by 5 m, the ceiling is 2.5 m", "Tip: if the room is already furnished, name what to replace, for example: replace the blue sofa and the white chair with the cream sofa and the oval coffee table of image2. Measured once on a furnished room: the new pieces were added and the old sofa stayed.");
     p = card(heap, fs, dir, p, "object", "Put an object in a room", "A lamp, a sofa, a painting, a plant: the object of the second picture, placed in the room of the first.", "A picture of the room", "A picture of the object (on its own is best)", "Add the object shown in image2 to the room in image1, standing naturally on the floor or hanging where it makes sense. Keep everything else in image1 as it is. Do not resize or reshape the object: it keeps its shape, colour and proportions, and its size relative to the room follows the real sizes given, if any. Its perspective, shadow and reflection match the room.", "for example: the sofa is 2.2 m wide and 0.9 m deep, the door is 2 m high", "");
     p = card(heap, fs, dir, p, "scene", "Put a person in another place", "The person of the first picture, in the place shown in the second.", "A picture of the person", "A picture of the place", "Place the person from image1 into the scene of image2, standing naturally in it. Keep the person's face, hair, clothes and pose from image1, and the place of image2 as it is. Match the light, the colour and the scale so that it looks like one photograph.", "for example: the person is 1.75 m tall, the door is 2 m high", "");
     p = card(heap, fs, dir, p, "hair", "Try a hairstyle", "The person of the first picture, with the hairstyle of the second.", "A picture of the person (the face)", "A picture of the hairstyle (someone with the hair you want)", "Give the person in image1 the hairstyle, hair colour and length of the person in image2. Keep the face, expression, skin, clothes and background of image1 unchanged, and make the hair fit the head naturally.", "for example: shoulder-length hair, about 30 cm", "");
