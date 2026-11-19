@@ -116,4 +116,15 @@ c_err=$(cho image "a fox" -o o 2>&1 >/dev/null) && c_code=0 || c_code=$?
 check "failing stage: exit" "$c_code" 1
 check "failing stage: message" "$(echo "$c_err" | grep -c 'text to image (GPU, three stages) failed (exit 3)')" 1
 check "failing stage: stage's errors are shown" "$(echo "$c_err" | grep -c oops)" 1
+
+# live relay (docs/media-cho.md section 11): what a stage prints reaches our output (and our errors) while the stage still runs, not when it ends
+printf '#!/bin/sh\necho "first line"\necho "an early error" >&2\nsleep 4\necho "second line"\n' >"$R/scripts/stage"
+rm -f "$T/live.out" "$T/live.err"
+cho image "a fox" -o live >"$T/live.out" 2>"$T/live.err" &
+LP=$!
+sleep 2
+check "live: a line the stage printed is in our output while it still runs, the next is not" "$(grep -c 'first line' "$T/live.out") $(grep -c 'second line' "$T/live.out")" "1 0"
+check "live: ...and so is a line it wrote to its errors" "$(grep -c 'an early error' "$T/live.err")" 1
+wait $LP
+check "live: when the stage ends the rest has arrived, in order" "$(grep -v '^==' "$T/live.out" | grep -E 'first|second' | tr '\n' ' ')" "first line second line "
 exit $fail

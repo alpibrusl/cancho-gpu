@@ -494,6 +494,7 @@ pub fn step_as[&i, &h, &x, &y, &c, &p, &lb, &l, &e](io: &!i Io, heap: &!h Heap, 
     io.write_all(io, "== ");
     io.write_all(io, label);
     io.write_all(io, "\n");
+    flush_out(io);
     let t0 = clock_ms(clock);
     let code = stage.run_as(io, heap, exec, sdir, clock, program, list, env, 10800000);
     if code != 0 {

@@ -4,6 +4,7 @@ module stage;
 
 import std.buffer;
 import std.io;
+import std.option;
 import std.process;
 
 // stage -- run one program of a job (docs/media-cho.md section 3): the program `name` of the directory `sdir` (scripts/ for a stage, build/ for the rewriter), started on a NUL-separated list, its output and its
@@ -52,21 +53,237 @@ pub fn capture[&h, &x, &y, &c, &n, &a, &e](heap: &!h Heap, exec: &x Exec(""), sd
     }
 }
 
-// `capture` of the program `stage`, its output and errors written to ours when it has ended.
+// `run_as` of the program `stage`.
 pub fn run[&i, &h, &x, &y, &c, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
     return run_as(io, heap, exec, sdir, clock, "stage", args, env, timeout_ms);
 }
 
-// `capture` of the program `name` of `sdir` (scripts/stage, scripts/enc, scripts/enc-session), its output and errors written to ours when it has ended.
+// Close a channel the relay is done with, if it is still open (closing it also takes it off the poller).
+fn shut(held: option.Option[Pipe]) -> [] int {
+    match held {
+        option.Option::Some(p) => {
+            pipe_close(p);
+        }
+        option.Option::None => {
+        }
+    }
+    return 0;
+}
+
+// What a channel has now, passed on to our output (or our errors) as it comes: true when the channel has ended.
+fn pump[&i, &p, &s](io: &!i Io, from: &!p Pipe, scratch: &!s [byte], errors: bool) -> [io_write, err_write, pipe_read] bool {
+    while true {
+        match pipe_read(from, scratch) {
+            Received::Data(n) => {
+                if errors {
+                    io.error_all(io, scratch[0..n]);
+                } else {
+                    io.write_all(io, scratch[0..n]);
+                    // standard output is buffered when it is not a terminal (a file: the studio's log): without this the lines would wait for the buffer to fill or for the exit
+                    flush_out(io);
+                }
+            }
+            Received::End => {
+                return true;
+            }
+            Received::Again => {
+                return false;
+            }
+            Received::Failed(e) => {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Run the program `name` of `sdir` and pass its output and its errors on **as they come** (docs/media-cho.md section 11): a stage that runs for two minutes shows its steps while it runs, in the studio's log and
+// on a terminal, as the Python did; before, both were read to the end and written when the child had ended. Same status as `capture`: the child's, 128 + the signal, 124 for the deadline, 255 if it did not run.
 pub fn run_as[&i, &h, &x, &y, &c, &n, &a, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, name: &n [byte], args: &a [byte], env: &e [byte], timeout_ms: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
-    let (code, out, errs) = capture(heap, exec, sdir, clock, name, args, env, timeout_ms);
-    borrow out as &ob in {
-        io.write_all(io, buffer.bytes(ob));
+    match process.channels_with_errors() {
+        process.ChannelsWithErrors::Failed(er) => {
+            return 255;
+        }
+        process.ChannelsWithErrors::Ok(to_child, child_in, from_child, child_out, from_errors, child_errors) => {
+            match exec_spawn_under(exec, sdir, name, args, env, Stdio::Pipe(child_in), Stdio::Pipe(child_out), Stdio::Pipe(child_errors)) {
+                Spawned::Failed(er) => {
+                    pipe_close(to_child);
+                    pipe_close(from_child);
+                    pipe_close(from_errors);
+                    return 255;
+                }
+                Spawned::Ok(child) => {
+                    return relay(io, heap, clock, child, to_child, from_child, from_errors, timeout_ms);
+                }
+            }
+        }
     }
-    borrow errs as &eb in {
-        io.error_all(io, buffer.bytes(eb));
+}
+
+fn relay[&i, &h, &c](io: &!i Io, heap: &!h Heap, clock: &c Clock, child: Child, to_child: Pipe, from_child: Pipe, from_errors: Pipe, timeout_ms: int) -> [io_write, err_write, heap, clock, poll] int {
+    pipe_close(to_child);
+    let deadline = clock_ms(clock) + timeout_ms;
+    var reader = option.Option::Some(from_child);
+    var errors = option.Option::Some(from_errors);
+    var state = 0;
+    match poller_new() {
+        Polling::Failed(e) => {
+            state = 3;
+        }
+        Polling::Ok(p) => {
+            var poller = p;
+            var scratch_box = box_slice(heap, 4096, byte_of(0));
+            var events = box_slice(heap, 16, 0);
+            borrow mut poller as &!ph in {
+                borrow child as &ch in {
+                    if poller_add_child(ph, ch, 3) != 0 {
+                        state = 3;
+                    }
+                }
+                borrow mut reader as &!r in {
+                    match r {
+                        option.Option::Some(rp) => {
+                            pipe_nonblocking(rp);
+                            if poller_add_pipe(ph, rp, 1, 1) != 0 && state == 0 {
+                                state = 3;
+                            }
+                        }
+                        option.Option::None => {
+                        }
+                    }
+                }
+                borrow mut errors as &!r in {
+                    match r {
+                        option.Option::Some(rp) => {
+                            pipe_nonblocking(rp);
+                            if poller_add_pipe(ph, rp, 4, 1) != 0 && state == 0 {
+                                state = 3;
+                            }
+                        }
+                        option.Option::None => {
+                        }
+                    }
+                }
+                while state == 0 {
+                    let left = deadline - clock_ms(clock);
+                    if left <= 0 {
+                        state = 2;
+                    } else {
+                        var n = 0;
+                        borrow mut events as &!eb in {
+                            n = poller_wait(ph, contents(eb), left);
+                        }
+                        if n < 0 {
+                            state = 3;
+                        }
+                        var k = 0;
+                        var gone = false;
+                        var out_done = false;
+                        var err_done = false;
+                        while k < n && state == 0 {
+                            var token = 0;
+                            borrow events as &e in {
+                                token = contents(e)[2 * k];
+                            }
+                            if token == 3 {
+                                gone = true;
+                            }
+                            if token == 1 {
+                                borrow mut reader as &!r in {
+                                    match r {
+                                        option.Option::Some(rp) => {
+                                            borrow mut scratch_box as &!sb in {
+                                                if pump(io, rp, contents(sb), false) {
+                                                    out_done = true;
+                                                }
+                                            }
+                                        }
+                                        option.Option::None => {
+                                        }
+                                    }
+                                }
+                            }
+                            if token == 4 {
+                                borrow mut errors as &!r in {
+                                    match r {
+                                        option.Option::Some(rp) => {
+                                            borrow mut scratch_box as &!sb in {
+                                                if pump(io, rp, contents(sb), true) {
+                                                    err_done = true;
+                                                }
+                                            }
+                                        }
+                                        option.Option::None => {
+                                        }
+                                    }
+                                }
+                            }
+                            k = k + 1;
+                        }
+                        if out_done {
+                            shut(reader);
+                            reader = option.Option::None;
+                        }
+                        if err_done {
+                            shut(errors);
+                            errors = option.Option::None;
+                        }
+                        if gone && state == 0 {
+                            // everything the child wrote is in the channels now
+                            borrow mut reader as &!r in {
+                                match r {
+                                    option.Option::Some(rp) => {
+                                        borrow mut scratch_box as &!sb in {
+                                            pump(io, rp, contents(sb), false);
+                                        }
+                                    }
+                                    option.Option::None => {
+                                    }
+                                }
+                            }
+                            borrow mut errors as &!r in {
+                                match r {
+                                    option.Option::Some(rp) => {
+                                        borrow mut scratch_box as &!sb in {
+                                            pump(io, rp, contents(sb), true);
+                                        }
+                                    }
+                                    option.Option::None => {
+                                    }
+                                }
+                            }
+                            state = 1;
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, scratch_box);
+            unbox_slice(heap, events);
+            poller_close(poller);
+        }
     }
-    buffer.drop(heap, out);
-    buffer.drop(heap, errs);
+    shut(reader);
+    shut(errors);
+    if state != 1 {
+        borrow child as &ch in {
+            child_kill_group(ch, 256);
+            child_kill(ch, 256);
+        }
+    }
+    var code = 255;
+    match child_wait(child) {
+        Exited::Code(n) => {
+            code = n;
+        }
+        Exited::Signaled(sg) => {
+            code = 128 + sg;
+        }
+        Exited::Failed(er) => {
+            code = 255;
+        }
+    }
+    if state == 2 {
+        code = 124;
+    }
     return code;
 }

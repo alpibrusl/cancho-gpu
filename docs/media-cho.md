@@ -5,7 +5,7 @@
 ## 1. What cancho can and cannot do, from the compiler's documents **[read]** (`docs/processes.md`, `std/process.cho`, `std/dirs.cho`)
 
 * **No environment, no working directory.** A cancho program has no `HOME`, `PATH` or `PWD`; a child's environment is exactly the list it is given. Everything the Python took from the environment is passed on the command line by a shell wrapper (`scripts/media`, a helper script).
-* **No inherited terminal.** A child's streams are `Null`, a pipe or a file; there is no `Inherit`. `std.process.capture_both` reads both streams to the child's end with a bound and a deadline, so **a stage's output appears when the stage ends, not line by line** (a regression from the Python for the two-minute jobs; a copy of its poll loop that relays could fix it).
+* **No inherited terminal.** A child's streams are `Null`, a pipe or a file; there is no `Inherit`. `std.process.capture_both` reads both streams to the child's end with a bound and a deadline, so a stage's output used to appear when the stage ended, not line by line (a regression from the Python for the two-minute jobs). **Corrected 2026-11-19 (section 11): `media/stage.cho` has its own poll loop that relays each chunk as it arrives.**
 * **A child is started by name beneath a directory** (`exec_spawn_under`), and **starts in that directory**; a link as the last component is followed. The authority report says `exec_under`, no path. The stage drivers need the repository root as their working directory, so the program started is `scripts/stage` (a three-line shell script: `cd` to the root, `exec "$CANCHO_MEDIA_PY" "$@"`): the only program `build/media` can start is a file of `scripts/`.
 * **No PNG, zlib or image codec in `std`** (searched). This is why the chain (`--segments`: reads and writes frames), `--image` (resize and crop) and the GIF stay in Python for now (`docs/python-removal.md` phase 3).
 
@@ -19,7 +19,7 @@
 
 What `build/media image|edit` does, in order, with the Python's words for each refusal: the Metal session is built; the model is supported; the size (as slice A); the picture(s) exist; the condition area (edit); the Hugging Face snapshot has a `transformer` (a listing of `snapshots/`); the weights directory exists; the output directory is made (a `mkdir -p`); **the GPU lock is the wrapper's, not the program's** (decided while building: the wrapper writes its own pid, which `exec` would keep, into `<cache>/gpu.lock`, refuses when that pid is alive and removes the file at the end, so `tools/media.py` and `scripts/media` exclude each other and a crash leaves a stale pid that nothing honours; a lock inside cancho would need the program's own pid, which cancho cannot read); the stage runs (`scripts/stage tests/t2i_pipeline_gpu.py ...` or `tests/edit_pipeline_gpu.py ...`) with its output relayed after it ends; `prompt.txt`; `done: <path>`.
 
-**Differences accepted, stated:** the lock message has no pid; the stage's output comes at its end; paths are normalised textually (`.` and `..`, not links) where Python's `abspath` is the same; the platform check is "the session binary is there".
+**Differences accepted, stated:** the lock message has no pid; the stage's output came at its end (corrected: section 11); paths are normalised textually (`.` and `..`, not links) where Python's `abspath` is the same; the platform check is "the session binary is there".
 
 ## 4. Checks
 
@@ -27,7 +27,7 @@ What `build/media image|edit` does, in order, with the Python's words for each r
 
 ## 5. Not built
 
-`video` (the text encoder stage, the base model, the chain: the PNG codec is built, `docs/png-cho.md`; resize and colour statistics next), `doctor` (it asks which Python modules import: a child of the interpreter), live relay of stage output.
+`video` (the text encoder stage, the base model, the chain: the PNG codec is built, `docs/png-cho.md`; resize and colour statistics next), `doctor` (it asks which Python modules import: a child of the interpreter). (Live relay of stage output, listed here until 2026-11-19, is built: section 11. `video` is built too: sections 8 and 9.)
 
 ## 6. Measured on this machine (2026-11-17, M4 Max, the pinned compiler a49ea779)
 
@@ -70,3 +70,13 @@ What `build/media image|edit` does, in order, with the Python's words for each r
 **Checked:** `tests/media_stage.sh` and `tests/media_video.sh` now include runs written the studio's way (`image`, `edit` with one and two pictures, `rewrite`, `video`, and `video --image`, each after `--`, and prompts such as `-fox` and `-night` that look like flags), all equal to Python's on the whole output, exit status, the stage's arguments and the files written. **Mutant:** `dashdash` made to ignore the separator fails 31 of them.
 
 **Lesson, stated:** a differential check is only as good as the commands it writes. These had been written by hand in the form `COMMAND PROMPT -o DIR`, not in the form the one real caller uses; the new runs take the form from the studio's job files (`studio/upload.cho`, `studio/jobs.cho`).
+
+## 11. A stage's output while it runs (2026-11-19)
+
+**Seen in the studio.** A job's log stayed empty (`Content-Length: 0`) for the whole 97 s of an edit and appeared at the end: the log page was white, and the job page's progress, which reads the log, showed nothing. The cause is section 1's limit, kept since slice B: `std.process.capture_both` reads a child's streams **to the end** before it returns anything, so `media` could write a stage's output only after the stage had ended. The Python `media` let the stage inherit the terminal and so showed it live.
+
+**What it does now.** `media/stage.cho` has its own loop (`run_as`, `relay`, `pump`) on the same primitives as the standard one (a poller on the child and its two channels): what a channel has is written to our output or our errors at once, until the child ends, a deadline passes (124) or the poller fails (255); the exit status is as before. Two details that were needed: **standard output is fully buffered when it is not a terminal** (a file, the studio's log), so each relayed chunk and the `== stage` line before it are followed by `flush_out` (`fflush(stdout)`, the compiler's checked output, same `io_write` label: the authority report is unchanged: `exec_under`, no network, no foreign code); and `scripts/stage` starts the interpreter with `-u`, because a Python stage writing to a pipe is block-buffered too and its lines would leave the child in blocks of kilobytes. `capture` stays for the two callers that need the whole output as a value (the rewriter and ffmpeg).
+
+**Checked:** `tests/media_stage.sh` has three new checks with a stage that prints a line, prints an error line, sleeps 4 s and prints another: two seconds in, the first line is in our output, the second is not, the error line is in our errors; when the stage ends all are there, in order. With the `flush_out` removed the first of them fails. The 106 older checks (equal to Python's on output, exit status and stage arguments) and `tests/media_video.sh` and `tests/media_diff.sh` are unchanged. **Difference from the Python, stated:** the studio's log still gets a job's *errors* only when it ends (the worker adds them from `<id>.err`; docs/studio.md), since the worker gives the child's output and its errors different files and has no way to give them one.
+
+**Measured on a real job** (a try-on queued through the studio's form, job 11 of that data directory, its log sampled every 4 s while it ran; the worker there also had the error-log change of docs/studio.md): 33 bytes after 4 s (`== image edit (GPU, five stages)`), 236 bytes at 8 s, 758 bytes at 20 s, then one more line about every 8 s (the sampler's steps) up to 1,249 bytes at 100 s; the job ended at about 104 s with 2,665 bytes (the last stage's timings, `done:`, and the errors the worker adds at the end). The edit of the same kind before this change (job 8) had **0 bytes** until it ended. One job, one machine.
