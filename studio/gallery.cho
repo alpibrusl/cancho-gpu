@@ -50,6 +50,14 @@ fn tile[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), 
             borrow desc as &dsb in {
                 p = results.escape(heap, p, buffer.bytes(dsb));
             }
+            // written by the describer, not by a person (docs/studio-sessions.md, section 16)
+            let auto = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), id[1..len(id)]), ".auto");
+            borrow auto as &aub in {
+                if files.exists(fs, buffer.bytes(aub)) {
+                    p = buffer.append(heap, p, " <span class=meta>(auto)</span>");
+                }
+            }
+            buffer.drop(heap, auto);
         } else {
             p = buffer.append(heap, p, "Added to the library");
         }

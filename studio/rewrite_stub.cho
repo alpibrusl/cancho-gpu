@@ -19,6 +19,7 @@ import files;
 //   fence     200, content a code fence around one line
 //   empty     200, content `""`
 //   long      200, content of 1,001 bytes
+//   mid       200, content of 300 bytes: the word `red` seventy-five times (for the describer's cut to 200 bytes)
 //   control   200, content with a bell character in it
 //   badjson   200, a body that is not JSON
 //   nomessage 200, JSON without `message`
@@ -137,6 +138,15 @@ fn serve[&h, &k, &l, &f, &r, &m](heap: &!h Heap, clock: &k Clock, listener: &!l 
                                     while q < 1001 {
                                         text = buffer.push(heap, text, byte_of(97));
                                         q = q + 1;
+                                    }
+                                    text = buffer.push(heap, text, byte_of(34));
+                                } else if bytes.equal(mode, "mid") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 400), "\"");
+                                    var w = 0;
+                                    while w < 75 {
+                                        text = buffer.append(heap, text, "red ");
+                                        w = w + 1;
                                     }
                                     text = buffer.push(heap, text, byte_of(34));
                                 } else if bytes.equal(mode, "control") {
