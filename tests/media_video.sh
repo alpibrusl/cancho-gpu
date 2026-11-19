@@ -78,6 +78,10 @@ rw() { # name, args...: stdout, errors and exit status of `rewrite` (no GPU)
   check "$name: errors" "$(grep -v '^$' "$T/c.err" | sed "s#$T#TMP#g")" "$(grep -v '^$' "$T/p.err" | sed "s#$T#TMP#g")"
 }
 both "video"                  video "a red fox" -o o
+# the `--` separator (the studio's shape: `video -o DIR ... -- PROMPT`)
+both "video after --"         video -o o -- "a red fox"
+both "video: a prompt that looks like a flag after --" video -o o --seed 3 -- -fox
+both "video from a picture after --" video -o o --image fox.png --steps 12 -- "a fox runs"
 both "video sized"            video "a red fox" -o o --size 512x288 --frames 9 --seed 3 --fps 8
 both "video 20 frames"        video "a red fox" -o o --frames 20
 both "video weights flag"     video "a red fox" -o o --weights "$T/w/dit"

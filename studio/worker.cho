@@ -59,9 +59,9 @@ fn id_ok[&t](id: &t [byte]) -> [] bool {
     return true;
 }
 
-// Start `script` on `list` with the output in `log`, and wait: the exit status, 128 + the signal, 255 if it did not run.
-fn run[&x, &y, &s, &l, &e](exec: &x Exec(""), sdir: &y Dir, script: &s [byte], list: &l [byte], env: &e [byte], log: File) -> [exec_under] int {
-    match exec_spawn_under(exec, sdir, script, list, env, Stdio::Null, Stdio::File(log), Stdio::Null) {
+// Start `script` on `list` with the output in `log` and the errors in `errs`, and wait: the exit status, 128 + the signal, 255 if it did not run.
+fn run[&x, &y, &s, &l, &e](exec: &x Exec(""), sdir: &y Dir, script: &s [byte], list: &l [byte], env: &e [byte], log: File, errs: Stdio) -> [exec_under] int {
+    match exec_spawn_under(exec, sdir, script, list, env, Stdio::Null, Stdio::File(log), errs) {
         Spawned::Ok(child) => {
             match child_wait(child) {
                 Exited::Code(n) => {
@@ -79,6 +79,47 @@ fn run[&x, &y, &s, &l, &e](exec: &x Exec(""), sdir: &y Dir, script: &s [byte], l
             return 255;
         }
     }
+}
+
+// `run` with the child's errors written to the file `errpath` (made here, emptied if it was there); thrown away only if that file cannot be made. Before this the errors always went to /dev/null, so a job that
+// refused (`media: ...` is written to the error stream) failed with an empty log and no reason on the page.
+fn run_err[&f, &x, &y, &s, &l, &e, &p](fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, script: &s [byte], list: &l [byte], env: &e [byte], log: File, errpath: &p [byte]) -> [fs_write(""), exec_under] int {
+    if files.path_ok(fs, errpath) {
+        match open_write(fs, errpath) {
+            Opened::Ok(ef) => {
+                return run(exec, sdir, script, list, env, log, Stdio::File(ef));
+            }
+            Opened::Failed(e2) => {
+            }
+        }
+    }
+    return run(exec, sdir, script, list, env, log, Stdio::Null);
+}
+
+// After a job: what it wrote to the error stream (the file `errpath`) goes to the end of its log, under a line `stderr:`; nothing is added when there was none. At most 64 KiB are copied.
+fn copy_errors[&h, &f, &p, &q](heap: &!h Heap, fs: &f Fs(""), errpath: &p [byte], logpath: &q [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let size = files.size_of(fs, errpath);
+    if size <= 0 {
+        return 0;
+    }
+    var blk = buffer.append(heap, buffer.empty(heap, 128), "\nstderr:\n");
+    if size <= 65536 {
+        let (text, e) = files.read_all(heap, fs, errpath);
+        if e == 0 {
+            borrow text as &tb in {
+                blk = buffer.append(heap, blk, buffer.bytes(tb));
+            }
+        }
+        buffer.drop(heap, text);
+    } else {
+        blk = buffer.append(heap, blk, "(more than 64 KiB: the file `<id>.err` of the data directory has it)\n");
+    }
+    var code = 0;
+    borrow blk as &bb in {
+        code = files.append_all(fs, logpath, buffer.bytes(bb));
+    }
+    buffer.drop(heap, blk);
+    return code;
 }
 
 // Is `<dir>/<id>.state` there?
@@ -207,6 +248,7 @@ fn job[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &i](heap: &!h Heap, fs: &
         status = 4;
         put(heap, fs, dir, id, "state", "running\n");
         let log_path = named(heap, dir, id, "log");
+        let err_path = named(heap, dir, id, "err");
         borrow log_path as &lp in {
             if files.path_ok(fs, buffer.bytes(lp)) {
                 match open_write(fs, buffer.bytes(lp)) {
@@ -218,10 +260,13 @@ fn job[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &i](heap: &!h Heap, fs: &
                         borrow list as &lb in {
                             borrow fresh as &fb in {
                                 borrow env as &eb in {
-                                    if rcode == 0 {
-                                        code = run(exec, sdir, script, buffer.bytes(fb), buffer.bytes(eb), log);
-                                    } else {
-                                        code = run(exec, sdir, script, buffer.bytes(lb), buffer.bytes(eb), log);
+                                    borrow err_path as &ep in {
+                                        if rcode == 0 {
+                                            code = run_err(fs, exec, sdir, script, buffer.bytes(fb), buffer.bytes(eb), log, buffer.bytes(ep));
+                                        } else {
+                                            code = run_err(fs, exec, sdir, script, buffer.bytes(lb), buffer.bytes(eb), log, buffer.bytes(ep));
+                                        }
+                                        copy_errors(heap, fs, buffer.bytes(ep), buffer.bytes(lp));
                                     }
                                 }
                             }
@@ -281,6 +326,7 @@ fn job[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &i](heap: &!h Heap, fs: &
             }
         }
         buffer.drop(heap, log_path);
+        buffer.drop(heap, err_path);
     }
     buffer.drop(heap, list);
     buffer.drop(heap, fresh);

@@ -69,90 +69,91 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
     var rewrite_model = "qwen3.8:27b-mlx";
     var k = from;
     let n = arg_count(args);
-    while k < n {
+    let stop = shared.dashdash(args, from);
+    while k < stop {
         let t = arg(args, k);
         if shared.is_text(t, "-o") || shared.is_text(t, "--output") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "-o/--output");
             }
             output = arg(args, k);
         } else if shared.is_text(t, "--frames") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--frames");
             }
             frames_text = arg(args, k);
         } else if shared.is_text(t, "--size") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--size");
             }
             size = arg(args, k);
         } else if shared.is_text(t, "--model") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--model");
             }
             model = arg(args, k);
         } else if shared.is_text(t, "--seed") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--seed");
             }
             seed = arg(args, k);
         } else if shared.is_text(t, "--fps") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--fps");
             }
             fps = arg(args, k);
         } else if shared.is_text(t, "--weights") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--weights");
             }
             weights = arg(args, k);
         } else if shared.is_text(t, "--wdir") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--wdir");
             }
             wdir_arg = arg(args, k);
         } else if shared.is_text(t, "--image") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--image");
             }
             image = arg(args, k);
         } else if shared.is_text(t, "--steps") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--steps");
             }
             steps = arg(args, k);
         } else if shared.is_text(t, "--negative") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--negative");
             }
             negative = arg(args, k);
             has_negative = true;
         } else if shared.is_text(t, "--guidance") {
             k = k + 1;
-            if k >= n || is_number(arg(args, k)) == false {
+            if k >= stop || is_number(arg(args, k)) == false {
                 return shared.bad_value(io, "--guidance");
             }
             guidance = arg(args, k);
         } else if shared.is_text(t, "--segments") {
             k = k + 1;
-            if k >= n || shared.num(arg(args, k)) < 0 {
+            if k >= stop || shared.num(arg(args, k)) < 0 {
                 return shared.bad_value(io, "--segments");
             }
             segments = arg(args, k);
         } else if shared.is_text(t, "--then") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--then");
             }
             thens = thens + 1;
@@ -164,12 +165,23 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
             rewrite = true;
         } else if shared.is_text(t, "--rewrite-model") {
             k = k + 1;
-            if k >= n {
+            if k >= stop {
                 return shared.bad_value(io, "--rewrite-model");
             }
             rewrite_model = arg(args, k);
         } else if positional == 0 {
             prompt = t;
+            positional = 1;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    k = stop + 1;
+    while k < n {
+        if positional == 0 {
+            prompt = arg(args, k);
             positional = 1;
         } else {
             io.error_all(io, "media: unrecognized arguments\n");
