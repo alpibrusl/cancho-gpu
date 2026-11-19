@@ -100,9 +100,9 @@ pub fn b64[&h, &d](heap: &!h Heap, data: &d [byte]) -> [heap] buffer.Buffer {
     return out;
 }
 
-// The JSON body of `/api/chat`: `stream` false, `think` false, `keep_alive` 0 (the model is unloaded once it has answered, so it is not resident beside the generator), a low temperature, a cap on the
+// The JSON body of `/api/chat`: `stream` false, `think` false, `keep_alive` 0 (the model is unloaded once it has answered, so it is not resident beside the generator), a low temperature (0.3; 0 when `cold`, for a caller that wants the same answer to the same picture), a cap on the
 // tokens, a system message and a user message; `picture` (base64) is added as `images` when it is not empty, and `picture2` after it when that is not empty either (the order is kept: image1, image2). No `tools`.
-pub fn body_of[&h, &m, &s, &p, &i, &j](heap: &!h Heap, model: &m [byte], system: &s [byte], prompt: &p [byte], picture: &i [byte], picture2: &j [byte]) -> [heap] buffer.Buffer {
+pub fn body_of[&h, &m, &s, &p, &i, &j](heap: &!h Heap, model: &m [byte], system: &s [byte], prompt: &p [byte], picture: &i [byte], picture2: &j [byte], cold: bool) -> [heap] buffer.Buffer {
     var w = json.writer(heap, 1024 + len(picture) + len(picture2) + len(prompt) + len(system));
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "model");
@@ -116,7 +116,11 @@ pub fn body_of[&h, &m, &s, &p, &i, &j](heap: &!h Heap, model: &m [byte], system:
     w = json.put_key(heap, w, "options");
     w = json.begin_object(heap, w);
     w = json.put_key(heap, w, "temperature");
-    w = json.put_float(heap, w, 0.3);
+    if cold {
+        w = json.put_float(heap, w, 0.0);
+    } else {
+        w = json.put_float(heap, w, 0.3);
+    }
     w = json.put_key(heap, w, "num_predict");
     w = json.put_int(heap, w, 400);
     w = json.end_object(heap, w);
@@ -265,7 +269,7 @@ fn left[&k](clock: &k Clock, deadline: int) -> [clock] int {
 
 // Ask the rewriter for a prompt: (0, the prompt) or (a reason code, empty). `net` is the `Net` narrowed to 127.0.0.1:11434; `seconds` is the whole budget (connecting, loading the model, answering). `picture` is the
 // raw bytes of the picture (empty for none) and `picture2` those of a second one (empty for none; only read when `picture` is not empty); they are encoded here and never kept.
-pub fn ask[&h, &n, &k, &m, &s, &p, &i, &j](heap: &!h Heap, net: &n Net("127.0.0.1:11434"), clock: &k Clock, model: &m [byte], system: &s [byte], prompt: &p [byte], picture: &i [byte], picture2: &j [byte], seconds: int) -> [heap, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] (int, buffer.Buffer) {
+pub fn ask[&h, &n, &k, &m, &s, &p, &i, &j](heap: &!h Heap, net: &n Net("127.0.0.1:11434"), clock: &k Clock, model: &m [byte], system: &s [byte], prompt: &p [byte], picture: &i [byte], picture2: &j [byte], seconds: int, cold: bool) -> [heap, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] (int, buffer.Buffer) {
     let deadline = clock_unix_ms(clock) + seconds * 1000;
     var body = buffer.empty(heap, 8);
     if len(picture) > 0 {
@@ -278,14 +282,14 @@ pub fn ask[&h, &n, &k, &m, &s, &p, &i, &j](heap: &!h Heap, net: &n Net("127.0.0.
         borrow enc as &eb in {
             borrow enc2 as &eb2 in {
                 buffer.drop(heap, body);
-                body = body_of(heap, model, system, prompt, buffer.bytes(eb), buffer.bytes(eb2));
+                body = body_of(heap, model, system, prompt, buffer.bytes(eb), buffer.bytes(eb2), cold);
             }
         }
         buffer.drop(heap, enc2);
         buffer.drop(heap, enc);
     } else {
         buffer.drop(heap, body);
-        body = body_of(heap, model, system, prompt, "", "");
+        body = body_of(heap, model, system, prompt, "", "", cold);
     }
     var body_len = 0;
     borrow body as &bl in {

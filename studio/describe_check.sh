@@ -45,7 +45,8 @@ stub ok; describe_for 3
 check "ok: an undescribed picture gets the answer as lib-N.txt, marked auto" "$(cat "$D/lib-1.txt") / $(cat "$D/lib-2.txt") / $(files 1)$(files 2)" "A stub prompt. / A stub prompt. / lib-1.auto lib-1.txt lib-2.auto lib-2.txt "
 check "ok: a description a person typed is never touched" "$(cat "$D/lib-3.txt") / $(files 3)" "my own words / lib-3.txt "
 check "ok: the request names the model, sends a picture, asks for no streaming or thinking, and has no tools" "$(grep -o '"model":"test-model"' "$T/last.json") $(grep -c '"images"' "$T/last.json") $(grep -o '"stream":false,"think":false,"keep_alive":0' "$T/last.json") $(grep -c '"tools"' "$T/last.json")" '"model":"test-model" 1 "stream":false,"think":false,"keep_alive":0 0'
-check "ok: the question asks for one short line for a search index" "$(grep -c 'one short line for a search index' "$T/last.json")" 1
+check "ok: the question asks for plain comma-separated words, with no adjectives and no verbs, at most 20 words" "$(grep -c 'plain comma-separated words for a search index' "$T/last.json") $(grep -c 'no adjectives like serene or beautiful, no verbs, at most 20 words' "$T/last.json")" "1 1"
+check "ok: the temperature is 0, so the same picture gets the same words" "$(grep -o '"temperature":[0-9.]*' "$T/last.json" | sed 's/0\.0$/0/')" '"temperature":0'
 unstub
 
 # 4. at most three a pass, the rest on the next

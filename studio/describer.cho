@@ -12,7 +12,7 @@ import results;
 //   studio_describer <absolute data-dir> <model> [--every <seconds 1-3600>]
 //
 // A pass: when no job is queued or running (the GPU is the jobs'), take the library pictures (`lib.index`, newest first) that have no `lib-N.txt` and no `lib-N.tried`, and for up to three of them ask the
-// local vision-language model (Ollama on 127.0.0.1:11434, the rewriter's own call, `rewrite.ask`) for one short line. An answer is cut to 200 bytes and written as `lib-N.txt` with the marker `lib-N.auto`
+// local vision-language model (Ollama on 127.0.0.1:11434, the rewriter's own call, `rewrite.ask`) for a plain list of words. An answer is cut to 200 bytes and written as `lib-N.txt` with the marker `lib-N.auto`
 // (the page says "(auto)"). A picture the model cannot describe (an unusable answer, a file too big or gone) gets `lib-N.tried` and is not asked again; when Ollama cannot be reached, or answers with an error (the model not pulled yet), the
 // pass stops and the next one tries again. A description a person typed is never touched: it is written with the picture, before the picture is listed. The picture goes to 127.0.0.1 only and is never kept.
 
@@ -21,7 +21,7 @@ fn system_text() -> [] &static [byte] {
 }
 
 fn question() -> [] &static [byte] {
-    return "Describe this picture in one short line for a search index: what it shows, the colours, and the kind of clothing, furniture or place. At most 25 words.";
+    return "List what is in this picture as plain comma-separated words for a search index: each main object or garment with its colour or material, then the setting. Use common everyday nouns, no adjectives like serene or beautiful, no verbs, at most 20 words.";
 }
 
 fn max_picture() -> [] int {
@@ -115,7 +115,7 @@ fn describe_one[&h, &f, &nt, &ck, &m, &d, &n](heap: &!h Heap, fs: &f Fs(""), net
     var result = 2;
     if perr == 0 {
         borrow picture as &pcb in {
-            let (code, text) = rewrite.ask(heap, net, clock, model, system_text(), question(), buffer.bytes(pcb), "", 180);
+            let (code, text) = rewrite.ask(heap, net, clock, model, system_text(), question(), buffer.bytes(pcb), "", 180, true);
             if code == 0 {
                 borrow text as &tx in {
                     let short = shorten(heap, buffer.bytes(tx));

@@ -163,7 +163,7 @@ pub fn apply[&h, &f, &n, &k, &l, &d, &i, &m, &p](heap: &!h Heap, fs: &f Fs(""), 
     } else {
         borrow system as &sb in {
             borrow picture as &pcb in {
-                let (c, text) = rewrite.ask(heap, net, clock, model, buffer.bytes(sb), list[pa..pb], buffer.bytes(pcb), "", seconds);
+                let (c, text) = rewrite.ask(heap, net, clock, model, buffer.bytes(sb), list[pa..pb], buffer.bytes(pcb), "", seconds, false);
                 code = c;
                 if c == 0 {
                     borrow text as &tb in {
