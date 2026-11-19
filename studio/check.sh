@@ -707,4 +707,41 @@ TRY=$(echo "$CS" | grep -o '<form id=tryon.*' | grep -o '<textarea[^>]*>[^<]*' |
 CF=$(curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" --form-string "prompt=$TRY" -F "image=@$R/p1.jpg" -F "image2=@$R/p2.png" localhost:18097/edit); CFI=${CF##*/}
 check "cases: the try-on form's own instruction and two pictures make a two-picture edit" "$(argv_of $CFI | sed "s#$R/off#D#g" | cut -c1-110)" "edit -o D/out/X --also D/upload-$CFI-2.png -- D/upload-$CFI.jpg Dress the person in image1 in the clothing shown"
 check "two pictures: the OpenAPI document names also and condition_area in the job and image2 in the form" "$(jq -r '.components.schemas.NewJob.properties | [has("also"), has("condition_area")] | join(",")' studio/openapi.json) $(grep -c '"image2"' studio/openapi.json)" "true,true 1"
+# editing sessions (docs/studio-sessions.md): the prompt again, a result as the next input, .from and .root
+D=$R/off
+ED() { curl -s -o /dev/null -w '%{redirect_url}' -H "$(hdr)" "$@" localhost:18097/edit; }
+SX=$(ED --form-string 'prompt=make it <b>red</b> & "bold"' -F seed=7 -F steps=4 -F model=qwen-image-2.1-turbo -F "image=@$R/pic.png"); SX=${SX##*/}
+check "session: a job made by the form is its own session (.root) and its picture is an upload (.from)" "$(cat "$D/$SX.root") $(cat "$D/$SX.from")" "$SX upload"
+AG=$(curl -s -H "$(hdr)" "localhost:18097/edit?again=$SX")
+check "again: the prompt comes back, escaped, in the text area" "$(echo "$AG" | grep -o '<textarea[^>]*>[^<]*' | sed 's/<textarea[^>]*>//')" 'make it &lt;b&gt;red&lt;/b&gt; &amp; &quot;bold&quot;'
+check "again: ...with the seed, the steps and the model" "$(echo "$AG" | grep -o 'name=seed[^>]*\|name=steps[^>]*\|name=model[^>]*' | grep -o 'value=[^ >]*' | tr '\n' ' ')" 'value=7 value=4 value="qwen-image-2.1-turbo" '
+check "again: ...and a picture is still asked for" "$(echo "$AG" | grep -c 'name=image type=file[^>]* required')" 1
+check "again: an id that is not digits, or a job that does not exist, is ignored (the plain form)" "$(for q in again=abc again=999999 'again=1;2' from=abc from=999999; do curl -s -w '%{http_code}' -H "$(hdr)" "localhost:18097/edit?$q" | grep -c 'value=7'; done | tr '\n' ' ')" "0 0 0 0 0 "
+NR=$(curl -s -H "$(hdr)" "localhost:18097/edit?from=$SX"); check "refine: a job that is not done is not offered as a picture (the plain form)" "$(echo "$NR" | grep -c 'name=from')" 0
+check "refine: the job page offers neither refine nor a video's prompt, but the prompt again" "$(curl -s -H "$(hdr)" localhost:18097/jobs/$SX | grep -o '/edit?from=[0-9]*\|/edit?again=[0-9]*' | tr '\n' ' ')" "/edit?again=$SX "
+mkdir -p "$D/out/$SX"; printf 'png-bytes' > "$D/out/$SX/edited.png"; echo done > "$D/$SX.state"
+check "refine: a done job offers both on its page" "$(curl -s -H "$(hdr)" localhost:18097/jobs/$SX | grep -o '/edit?from=[0-9]*\|/edit?again=[0-9]*' | tr '\n' ' ')" "/edit?from=$SX /edit?again=$SX "
+FR=$(curl -s -H "$(hdr)" "localhost:18097/edit?from=$SX")
+check "refine: the form shows the result as the first picture and asks for no upload of it" "$(echo "$FR" | grep -c "src=/files/$SX/edited.png") $(echo "$FR" | grep -c 'name=from value='"$SX") $(echo "$FR" | grep -c 'name=image type=file') $(echo "$FR" | grep -c 'name=image2 type=file')" "1 1 0 1"
+BEF=$(ls "$D" | wc -l | tr -d ' ')
+RF=$(ED --form-string 'prompt=now blue' -F from=$SX); RFI=${RF##*/}
+check "refine: a job is made and the person goes to it" "$(echo "$RF" | sed 's#.*/jobs/[0-9]*#ok#')" ok
+check "refine: its first picture is the earlier result, named by the server, and nothing was copied" "$(argv_of $RFI | sed "s#$D#D#g") $(ls "$D" | grep -c "^upload-$RFI")" "edit -o D/out/X -- D/out/$SX/edited.png now blue  0"
+check "refine: .from names the job and the file, .root is the session of the job it came from" "$(cat "$D/$RFI.from") $(cat "$D/$RFI.root")" "$SX edited.png $SX"
+mkdir -p "$D/out/$RFI"; printf 'png2' > "$D/out/$RFI/edited.png"; echo done > "$D/$RFI.state"
+R3=$(ED --form-string 'prompt=and green' -F from=$RFI); R3=${R3##*/}
+check "refine: a third round stays in the first session" "$(cat "$D/$R3.root") $(cat "$D/$R3.from")" "$SX $RFI edited.png"
+check "refine: the page of the refined job shows the earlier result as its first picture" "$(curl -s -H "$(hdr)" localhost:18097/jobs/$RFI | grep -c "src=/files/$SX/edited.png")" 1
+check "refine: with a second picture uploaded, both are inputs and .from has two lines" "$(RT=$(ED --form-string 'prompt=combine' -F from=$SX -F "image2=@$R/pic.png"); RT=${RT##*/}; echo "$(wc -l < "$D/$RT.from" | tr -d ' ') $(argv_of $RT | grep -c -- '--also')")" "2 1"
+VR=$(ED --form-string 'prompt=more' -F from=$SX -F variations=2); VRI=${VR##*/}
+check "refine: variations are all in the session, with the same source" "$(cat "$D/$VRI.root") $(cat "$D/$((VRI + 1)).root") $(cat "$D/$((VRI + 1)).from")" "$SX $SX $SX edited.png"
+check "refine: rewrite=ab (a pair) records both jobs" "$(PB=$(ED --form-string 'prompt=pair' -F from=$SX -F rewrite=ab); PB=${PB##*/}; echo "$(cat "$D/$PB.root") $(cat "$D/$((PB + 1)).root")")" "$SX $SX"
+NOT=$(ED --form-string 'prompt=x' -F "image=@$R/pic.png"); NOT=${NOT##*/}
+AFTER=$(ls "$D" | wc -l | tr -d ' ')
+rf() { curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=x "$@" localhost:18097/edit; }
+mkdir -p "$D/out/$NOT"; echo failed > "$D/$NOT.state"
+BEFR=$(ls "$D" | wc -l | tr -d ' ')
+check "refine: refused (422): not digits, no such job, a failed job, a picture as well as from" "$(rf -F from=abc) $(rf -F from=999999) $(rf -F from=$NOT) $(rf -F from=$SX -F "image=@$R/pic.png")" "422 422 422 422"
+check "refine: ...and none of those left a file behind" "$(ls "$D" | wc -l | tr -d ' ')" "$BEFR"
+check "refine: a path is never taken from the client (from=../x is refused)" "$(rf -F 'from=../x')" 422
 exit $fail

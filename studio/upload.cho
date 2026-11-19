@@ -18,9 +18,124 @@ import results;
 // content ends at the next delimiter. Nothing from the client is a path: the file name the browser sends is not read, and the name kept is built from a number the server made and an extension chosen
 // by the picture's first bytes (JPEG, PNG or WebP; anything else is refused, whatever its name or `Content-Type` says).
 
-pub fn form_page[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+// The value of the option `flag` in a job's argument list (NUL-separated, up to its `--`): (from, to), or (-1, -1).
+fn flag_value[&a, &g](argv: &a [byte], flag: &g [byte]) -> [] (int, int) {
+    var i = 0;
+    while i < len(argv) {
+        var j = i;
+        while j < len(argv) && int_of(argv[j]) != 0 {
+            j = j + 1;
+        }
+        if bytes.equal(argv[i..j], "--") {
+            return (0 - 1, 0 - 1);
+        }
+        if bytes.equal(argv[i..j], flag) && j + 1 < len(argv) {
+            var k = j + 1;
+            while k < len(argv) && int_of(argv[k]) != 0 {
+                k = k + 1;
+            }
+            return (j + 1, k);
+        }
+        i = j + 1;
+    }
+    return (0 - 1, 0 - 1);
+}
+
+// The name of the picture a finished job made, "edited.png" or "image.png", or "" for none (not done, failed, a video, or the file is gone).
+pub fn result_name[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] &static [byte] {
+    if results.id_ok(id) == false {
+        return "";
+    }
+    let (known, state) = results.state_word(heap, fs, dir, id);
+    var done = false;
+    borrow state as &sb in {
+        done = bytes.equal(buffer.bytes(sb), "done");
+    }
+    buffer.drop(heap, state);
+    if known == false || done == false {
+        return "";
+    }
+    if results.has_out(heap, fs, dir, id, "edited.png") {
+        return "edited.png";
+    }
+    if results.has_out(heap, fs, dir, id, "image.png") {
+        return "image.png";
+    }
+    return "";
+}
+
+// `GET /edit`, `GET /edit?from=N` (refine the result of job N: its picture is the first picture) and `GET /edit?again=N` (the prompt, seed, steps and model of job N filled in; a picture is still asked for).
+pub fn form_page[&h, &f, &d, &s, &a](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], from: &s [byte], again: &a [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    let rname = result_name(heap, fs, dir, from);
     var page = results.open(heap, fs, dir, "edit a picture", "edit", false);
-    page = buffer.append(heap, page, "<div class=row><h1>Edit a picture</h1></div><p>The picture stays on this machine. It is copied to the studio's data directory and nowhere else.</p><form method=post action=/edit enctype=multipart/form-data><label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label><label>Second picture (optional: combine it with the first; the instruction can refer to both)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label><label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label><label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit)<select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label><label>Steps (optional; the model's default is 8)<input name=steps type=number min=1 max=50></label><label>Model (optional; see /api/models)<input name=model maxlength=40></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label><div><button>Edit</button></div></form>");
+    page = buffer.append(heap, page, "<div class=row><h1>Edit a picture</h1></div><p>The picture stays on this machine. It is copied to the studio's data directory and nowhere else.</p><form method=post action=/edit enctype=multipart/form-data>");
+    if len(rname) > 0 {
+        page = buffer.append(heap, page, "<figure><img alt=\"the picture to refine\" src=/files/");
+        page = buffer.append(heap, page, from);
+        page = buffer.append(heap, page, "/");
+        page = buffer.append(heap, page, rname);
+        page = buffer.append(heap, page, "><figcaption>The result of job ");
+        page = buffer.append(heap, page, from);
+        page = buffer.append(heap, page, " is the first picture. Say what to change in it.</figcaption></figure><input type=hidden name=from value=");
+        page = buffer.append(heap, page, from);
+        page = buffer.append(heap, page, ">");
+    } else {
+        page = buffer.append(heap, page, "<label>Picture (JPEG, PNG or WebP, up to 15 MB)<input name=image type=file accept=image/jpeg,image/png,image/webp required></label>");
+    }
+    page = buffer.append(heap, page, "<label>Second picture (optional: combine it with the first; the instruction can refer to both)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label><label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label>");
+    // what to fill in, from the argument list of job `again` (a job the server made: the file is its own)
+    var pid = again;
+    if len(rname) > 0 || results.id_ok(again) == false {
+        pid = "";
+    }
+    let (av, has_av) = results.job_file(heap, fs, dir, pid, ".argv");
+    let (orig, has_orig) = results.job_file(heap, fs, dir, pid, ".prompt.orig");
+    page = buffer.append(heap, page, "<label>What to change<textarea name=prompt required maxlength=1000 rows=3>");
+    if has_orig {
+        borrow orig as &obr in {
+            page = results.escape(heap, page, buffer.bytes(obr));
+        }
+    } else if has_av {
+        borrow av as &avr in {
+            let (ps, pe) = results.last_entry(buffer.bytes(avr));
+            page = results.escape(heap, page, buffer.bytes(avr)[ps..pe]);
+        }
+    }
+    page = buffer.append(heap, page, "</textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647");
+    if has_av {
+        borrow av as &avs in {
+            let (sf, st) = flag_value(buffer.bytes(avs), "--seed");
+            if sf >= 0 && all_digits(buffer.bytes(avs)[sf..st]) {
+                page = buffer.append(heap, page, " value=");
+                page = buffer.append(heap, page, buffer.bytes(avs)[sf..st]);
+            }
+        }
+    }
+    page = buffer.append(heap, page, "></label><label>Variations (the same edit with this many seeds, shown together; each takes as long as one edit)<select name=variations><option value=1>1<option>2<option>3<option>4<option>5<option>6<option>7<option>8</select></label>");
+    page = buffer.append(heap, page, "<label>Steps (optional; the model's default is 8)<input name=steps type=number min=1 max=50");
+    if has_av {
+        borrow av as &avt in {
+            let (tf, tt) = flag_value(buffer.bytes(avt), "--steps");
+            if tf >= 0 && all_digits(buffer.bytes(avt)[tf..tt]) {
+                page = buffer.append(heap, page, " value=");
+                page = buffer.append(heap, page, buffer.bytes(avt)[tf..tt]);
+            }
+        }
+    }
+    page = buffer.append(heap, page, "></label><label>Model (optional; see /api/models)<input name=model maxlength=40");
+    if has_av {
+        borrow av as &avm in {
+            let (mf, mt) = flag_value(buffer.bytes(avm), "--model");
+            if mf >= 0 && no_controls(buffer.bytes(avm)[mf..mt]) {
+                page = buffer.append(heap, page, " value=\"");
+                page = results.escape(heap, page, buffer.bytes(avm)[mf..mt]);
+                page = buffer.append(heap, page, "\"");
+            }
+        }
+    }
+    page = buffer.append(heap, page, "></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label><div><button>Edit</button></div></form>");
+    buffer.drop(heap, av);
+    buffer.drop(heap, orig);
     return results.close(heap, page);
 }
 
@@ -172,6 +287,81 @@ fn id_in[&t](answer: &t [byte]) -> [] int {
 }
 
 // Handle a POST /edit. (status, text, id): 302 with the job's id and an empty text (or the text `pair` when the job was made as a pair: the person is sent to /compare/N), or the status `jobs.create` or this function refuses with and a one-line JSON `{"error": ..}`.
+// The ids a request made, other than the first: the rest of `<first>.set`'s first line, or the second id of `<first>.pair`.
+fn other_ids[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], first: int, set: bool, pair: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var path = buffer.append(heap, buffer.empty(heap, 96), dir);
+    path = buffer.append(heap, path, "/");
+    path = buffer.push_nat(heap, path, first);
+    if set {
+        path = buffer.append(heap, path, ".set");
+    } else {
+        path = buffer.append(heap, path, ".pair");
+    }
+    var ids = buffer.empty(heap, 16);
+    if set || pair {
+        var text = buffer.empty(heap, 8);
+        var ok = 0 - 1;
+        borrow path as &pb in {
+            let (t, r) = files.read_all(heap, fs, buffer.bytes(pb));
+            buffer.drop(heap, text);
+            text = t;
+            ok = r;
+        }
+        if ok == 0 {
+            borrow text as &tb in {
+                let all = buffer.bytes(tb);
+                var end = 0;
+                while end < len(all) && int_of(all[end]) != 10 {
+                    end = end + 1;
+                }
+                var k = 0;
+                var first_tok = true;
+                while k < end {
+                    var e = k;
+                    while e < end && int_of(all[e]) != 32 {
+                        e = e + 1;
+                    }
+                    // a set lists every id (the first among them); a pair's file starts with the second id and ends with the flip bit
+                    if e > k && all_digits(all[k..e]) && (set || first_tok) {
+                        ids = buffer.append(heap, ids, all[k..e]);
+                        ids = buffer.push(heap, ids, byte_of(32));
+                    }
+                    first_tok = false;
+                    k = e + 1;
+                }
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    buffer.drop(heap, path);
+    return ids;
+}
+
+// Write `<id>.root` and `<id>.from` (docs/studio-sessions.md): the session the job belongs to and where its pictures came from. Best effort in order (root last): a job with no `.root` is its own session.
+fn id_file[&h, &d, &n, &x](heap: &!h Heap, dir: &d [byte], id: &n [byte], ext: &x [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, buffer.empty(heap, 96), dir);
+    p = buffer.append(heap, p, "/");
+    p = buffer.append(heap, p, id);
+    return buffer.append(heap, p, ext);
+}
+
+fn record_one[&h, &f, &d, &n, &r, &x](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &n [byte], root: &r [byte], inputs: &x [byte]) -> [heap, fs_write(""), file_write] int {
+    let pf = id_file(heap, dir, id, ".from");
+    let pr = id_file(heap, dir, id, ".root");
+    var rc = 0;
+    borrow pf as &pfb in {
+        rc = files.write_all(fs, buffer.bytes(pfb), inputs);
+    }
+    if rc == 0 {
+        borrow pr as &prb in {
+            rc = files.write_all(fs, buffer.bytes(prb), root);
+        }
+    }
+    buffer.drop(heap, pf);
+    buffer.drop(heap, pr);
+    return rc;
+}
+
 pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ctype: &c [byte], body: &b [byte], rewrite_default: bool) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer, int) {
     var status = 422;
     var why = "a multipart/form-data body with a boundary is needed";
@@ -193,6 +383,13 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             let (imf, imt) = part(body, dl, "image");
             let (i2f, i2t) = part(body, dl, "image2");  // a second picture to combine with the first (docs/two-images.md): an empty file field is a part of 0 bytes, which is "none"
             let (caf, cat) = part(body, dl, "condition_area");
+            let (frf, frt) = part(body, dl, "from");  // refine: the result of this earlier job is the first picture (docs/studio-sessions.md)
+            var has_from = false;
+            var rname = "";
+            if frf >= 0 && frt > frf {
+                has_from = true;
+                rname = result_name(heap, fs, dir, body[frf..frt]);
+            }
             let (ntf, ntt) = part(body, dl, "note");  // optional real sizes (docs/studio-cases.md): added to the instruction as a sentence
             var has_note = false;
             if ntf >= 0 && ntt > ntf {
@@ -216,9 +413,13 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                 why = "the prompt has no control characters";
             } else if has_note && (ntt - ntf > 200 || no_controls(body[ntf..ntt]) == false || (pt - pf) + (ntt - ntf) + 12 > 1000) {
                 why = "the sizes are a text of at most 200 bytes without control characters, and with the instruction at most 1000 bytes";
-            } else if imf < 0 || imt - imf < 16 {
+            } else if has_from && imf >= 0 && imt > imf {
+                why = "give a picture or from (the result of an earlier job), not both";
+            } else if has_from && len(rname) == 0 {
+                why = "from is the id of a finished job that made a picture";
+            } else if has_from == false && (imf < 0 || imt - imf < 16) {
                 why = "a picture is needed";
-            } else if kind == 0 {
+            } else if has_from == false && kind == 0 {
                 why = "the picture is not a JPEG, PNG or WebP file";
             } else if has2 && kind2 == 0 {
                 why = "the second picture is not a JPEG, PNG or WebP file";
@@ -241,19 +442,28 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                     why = "the queue could not be read";
                 } else {
                     var path = buffer.append(heap, buffer.empty(heap, 96), dir);
-                    path = buffer.append(heap, path, "/upload-");
-                    path = buffer.push_nat(heap, path, id);
-                    if kind == 1 {
-                        path = buffer.append(heap, path, ".jpg");
-                    } else if kind == 2 {
-                        path = buffer.append(heap, path, ".png");
-                    } else {
-                        path = buffer.append(heap, path, ".webp");
-                    }
                     var saved = 0 - 1;
-                    borrow path as &pb in {
-                        if len(buffer.bytes(pb)) <= 390 {
-                            saved = files.write_big(fs, buffer.bytes(pb), body[imf..imt]);
+                    if has_from {
+                        // no copy: the first picture is the earlier job's own result, named by the server from the job's id (never a path from the client)
+                        path = buffer.append(heap, path, "/out/");
+                        path = buffer.append(heap, path, body[frf..frt]);
+                        path = buffer.append(heap, path, "/");
+                        path = buffer.append(heap, path, rname);
+                        saved = 0;
+                    } else {
+                        path = buffer.append(heap, path, "/upload-");
+                        path = buffer.push_nat(heap, path, id);
+                        if kind == 1 {
+                            path = buffer.append(heap, path, ".jpg");
+                        } else if kind == 2 {
+                            path = buffer.append(heap, path, ".png");
+                        } else {
+                            path = buffer.append(heap, path, ".webp");
+                        }
+                        borrow path as &pb in {
+                            if len(buffer.bytes(pb)) <= 390 {
+                                saved = files.write_big(fs, buffer.bytes(pb), body[imf..imt]);
+                            }
                         }
                     }
                     var path2 = buffer.empty(heap, 8);
@@ -344,6 +554,62 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                                 paired = bytes.find(buffer.bytes(ab), "pair") >= 0;
                                 made_set = bytes.find(buffer.bytes(ab), "\"set\"") >= 0;
                             }
+                            var root = buffer.push_nat(heap, buffer.empty(heap, 16), made);
+                            var inputs = buffer.empty(heap, 48);
+                            if has_from {
+                                // a refine stays in the session of the job it came from (that job's `.root`, or the job itself when it has none)
+                                let (rv, has_rv) = results.job_file(heap, fs, dir, body[frf..frt], ".root");
+                                buffer.drop(heap, root);
+                                root = buffer.empty(heap, 16);
+                                if has_rv {
+                                    borrow rv as &rvb in {
+                                        var e = 0;
+                                        while e < len(buffer.bytes(rvb)) && int_of(buffer.bytes(rvb)[e]) >= 48 && int_of(buffer.bytes(rvb)[e]) <= 57 {
+                                            e = e + 1;
+                                        }
+                                        root = buffer.append(heap, root, buffer.bytes(rvb)[0..e]);
+                                    }
+                                } else {
+                                    root = buffer.append(heap, root, body[frf..frt]);
+                                }
+                                buffer.drop(heap, rv);
+                                inputs = buffer.append(heap, inputs, body[frf..frt]);
+                                inputs = buffer.append(heap, inputs, " ");
+                                inputs = buffer.append(heap, inputs, rname);
+                                inputs = buffer.append(heap, inputs, "\n");
+                            } else {
+                                inputs = buffer.append(heap, inputs, "upload\n");
+                            }
+                            if has2 {
+                                inputs = buffer.append(heap, inputs, "upload\n");
+                            }
+                            let more = other_ids(heap, fs, dir, made, made_set, paired);
+                            let first_name = buffer.push_nat(heap, buffer.empty(heap, 16), made);
+                            borrow first_name as &fnb in {
+                                borrow root as &rtb in {
+                                    borrow inputs as &inb in {
+                                        record_one(heap, fs, dir, buffer.bytes(fnb), buffer.bytes(rtb), buffer.bytes(inb));
+                                        borrow more as &mob in {
+                                            let list = buffer.bytes(mob);
+                                            var k = 0;
+                                            while k < len(list) {
+                                                var e = k;
+                                                while e < len(list) && int_of(list[e]) != 32 {
+                                                    e = e + 1;
+                                                }
+                                                if e > k {
+                                                    record_one(heap, fs, dir, list[k..e], buffer.bytes(rtb), buffer.bytes(inb));
+                                                }
+                                                k = e + 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            buffer.drop(heap, more);
+                            buffer.drop(heap, first_name);
+                            buffer.drop(heap, root);
+                            buffer.drop(heap, inputs);
                             buffer.drop(heap, answer);
                             answer = buffer.empty(heap, 8);
                             if paired {
