@@ -68,6 +68,20 @@
         }
       }
     },
+    "/batch": {
+      "post": {
+        "summary": "One picture and several others, one edit each (multipart/form-data): the first picture is `image` or `pick1`; the others are `image2` to `image6` (files) or `pick2` to `pick6` (a choice from the gallery), at least one; one two-picture edit is queued for each, with the same prompt, note, seed, steps, model and condition_area, all in one session (the first job's). Everything is checked before anything is made. Goes to /sessions/FIRST.",
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "note": { "type": "string", "maxLength": 200 }, "seed": { "type": "string" }, "steps": { "type": "string" }, "model": { "type": "string" }, "condition_area": { "type": "string" }, "image": { "type": "string", "format": "binary" }, "pick1": { "type": "string", "description": "j/JOB/NAME or l/LN, as for POST /edit." }, "image2": { "type": "string", "format": "binary" }, "image3": { "type": "string", "format": "binary" }, "image4": { "type": "string", "format": "binary" }, "image5": { "type": "string", "format": "binary" }, "image6": { "type": "string", "format": "binary" }, "pick2": { "type": "string" }, "pick3": { "type": "string" }, "pick4": { "type": "string" }, "pick5": { "type": "string" }, "pick6": { "type": "string" } } } } } },
+        "responses": {
+          "302": { "description": "The jobs are queued: Location /sessions/FIRST." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "500": { "description": "A job could not be made; the ones before it are queued (JSON)." }
+        }
+      }
+    },
     "/gallery": {
       "post": {
         "summary": "Add a picture to the library (multipart/form-data, the part image: JPEG, PNG or WebP, up to 15 MiB): kept as <data>/lib-N.* and listed in the gallery as uploaded; served as /files/LN/picture.EXT. No job is made.",
