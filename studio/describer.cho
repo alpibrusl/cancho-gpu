@@ -1,0 +1,280 @@
+edition 10;
+
+import std.buffer;
+import std.bytes;
+import std.io;
+import files;
+import rewrite;
+import results;
+
+// studio_describer -- writes the description of a library picture that has none (docs/studio-sessions.md, section 16).
+//
+//   studio_describer <absolute data-dir> <model> [--every <seconds 1-3600>]
+//
+// A pass: when no job is queued or running (the GPU is the jobs'), take the library pictures (`lib.index`, newest first) that have no `lib-N.txt` and no `lib-N.tried`, and for up to three of them ask the
+// local vision-language model (Ollama on 127.0.0.1:11434, the rewriter's own call, `rewrite.ask`) for one short line. An answer is cut to 200 bytes and written as `lib-N.txt` with the marker `lib-N.auto`
+// (the page says "(auto)"). A picture the model cannot describe (an unusable answer, a file too big or gone) gets `lib-N.tried` and is not asked again; when Ollama cannot be reached, or answers with an error (the model not pulled yet), the
+// pass stops and the next one tries again. A description a person typed is never touched: it is written with the picture, before the picture is listed. The picture goes to 127.0.0.1 only and is never kept.
+
+fn system_text() -> [] &static [byte] {
+    return "You write search descriptions of pictures for a personal picture library. Answer with one short line of plain words and nothing else: no introduction, no quotation marks, no list.";
+}
+
+fn question() -> [] &static [byte] {
+    return "Describe this picture in one short line for a search index: what it shows, the colours, and the kind of clothing, furniture or place. At most 25 words.";
+}
+
+fn max_picture() -> [] int {
+    return 12582912;
+}
+
+// `text` cut to at most 200 bytes, at a space if there is one in the last 60 bytes, and never inside a UTF-8 character.
+fn shorten[&h, &t](heap: &!h Heap, text: &t [byte]) -> [heap] buffer.Buffer {
+    var to = len(text);
+    if to > 200 {
+        to = 200;
+        var k = 200;
+        var found = false;
+        while k > 140 && found == false {
+            if int_of(text[k - 1]) == 32 {
+                found = true;
+                to = k - 1;
+            }
+            k = k - 1;
+        }
+        if found == false {
+            while to > 0 && int_of(text[to]) >= 128 && int_of(text[to]) < 192 {
+                to = to - 1;
+            }
+        }
+    }
+    return buffer.append(heap, buffer.empty(heap, to + 1), text[0..to]);
+}
+
+fn path_of[&h, &d, &n, &x](heap: &!h Heap, dir: &d [byte], number: &n [byte], ext: &x [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, buffer.empty(heap, 96), dir);
+    p = buffer.append(heap, p, "/lib-");
+    p = buffer.append(heap, p, number);
+    return buffer.append(heap, p, ext);
+}
+
+fn exists[&h, &f, &d, &n, &x](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], number: &n [byte], ext: &x [byte]) -> [heap, fs_read("")] bool {
+    let p = path_of(heap, dir, number, ext);
+    var yes = false;
+    borrow p as &pb in {
+        yes = files.exists(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
+fn mark[&h, &f, &d, &n, &x, &t](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], number: &n [byte], ext: &x [byte], text: &t [byte]) -> [heap, fs_write(""), file_write] int {
+    let p = path_of(heap, dir, number, ext);
+    var rc = 0 - 1;
+    borrow p as &pb in {
+        rc = files.write_all(fs, buffer.bytes(pb), text);
+    }
+    buffer.drop(heap, p);
+    return rc;
+}
+
+// The extension of library picture `number` (".jpg", ".png", ".webp"), or "" if the file is gone.
+fn picture_ext[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], number: &n [byte]) -> [heap, fs_read("")] &static [byte] {
+    if exists(heap, fs, dir, number, ".jpg") {
+        return ".jpg";
+    }
+    if exists(heap, fs, dir, number, ".png") {
+        return ".png";
+    }
+    if exists(heap, fs, dir, number, ".webp") {
+        return ".webp";
+    }
+    return "";
+}
+
+// Describe one picture: 0 written, 1 Ollama could not be reached or did not answer in time (try again later), 2 this picture cannot be described (marked tried).
+fn describe_one[&h, &f, &nt, &ck, &m, &d, &n](heap: &!h Heap, fs: &f Fs(""), net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &m [byte], dir: &d [byte], number: &n [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] int {
+    let ext = picture_ext(heap, fs, dir, number);
+    if len(ext) == 0 {
+        mark(heap, fs, dir, number, ".tried", "gone");
+        return 2;
+    }
+    let pp = path_of(heap, dir, number, ext);
+    var picture = buffer.empty(heap, 8);
+    var perr = 1;
+    borrow pp as &ppb in {
+        let size = files.size_of(fs, buffer.bytes(ppb));
+        if size >= 16 && size <= max_picture() {
+            let (b, e) = files.read_all(heap, fs, buffer.bytes(ppb));
+            buffer.drop(heap, picture);
+            picture = b;
+            perr = e;
+        }
+    }
+    buffer.drop(heap, pp);
+    var result = 2;
+    if perr == 0 {
+        borrow picture as &pcb in {
+            let (code, text) = rewrite.ask(heap, net, clock, model, system_text(), question(), buffer.bytes(pcb), "", 180);
+            if code == 0 {
+                borrow text as &tx in {
+                    let short = shorten(heap, buffer.bytes(tx));
+                    borrow short as &sb in {
+                        if len(buffer.bytes(sb)) > 0 && mark(heap, fs, dir, number, ".txt", buffer.bytes(sb)) == 0 {
+                            mark(heap, fs, dir, number, ".auto", "auto");
+                            result = 0;
+                        }
+                    }
+                    buffer.drop(heap, short);
+                }
+            } else if code == 1 || code == 2 || code == 3 || code == 4 || code == 7 || code == 8 {
+                result = 1;
+            }
+            buffer.drop(heap, text);
+        }
+    }
+    buffer.drop(heap, picture);
+    if result == 2 {
+        mark(heap, fs, dir, number, ".tried", "tried");
+    }
+    return result;
+}
+
+// One pass. Returns how many were described.
+fn pass[&h, &f, &nt, &ck, &m, &d](heap: &!h Heap, fs: &f Fs(""), net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] int {
+    let (running, queued) = results.counts(heap, fs, dir);
+    if running + queued > 0 {
+        return 0;
+    }
+    var text = buffer.empty(heap, 8);
+    let ip = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/lib.index");
+    borrow ip as &ib in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(ib));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, ip);
+    var done = 0;
+    var stop = false;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 && done < 3 && stop == false {
+            var cut = end;
+            while cut > 0 && int_of(all[cut - 1]) == 10 {
+                cut = cut - 1;
+            }
+            if cut == 0 {
+                end = 0;
+            } else {
+                var start = cut;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                var sp = start;
+                while sp < cut && int_of(all[sp]) != 32 {
+                    sp = sp + 1;
+                }
+                let number = all[start..sp];
+                if results.id_ok(number) && exists(heap, fs, dir, number, ".txt") == false && exists(heap, fs, dir, number, ".tried") == false {
+                    let r = describe_one(heap, fs, net, clock, model, dir, number);
+                    if r == 0 {
+                        done = done + 1;
+                    } else if r == 1 {
+                        stop = true;
+                    }
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    return done;
+}
+
+fn seconds_of[&t](text: &t [byte]) -> [] int {
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 || i >= 4 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    if n < 1 || n > 3600 || len(text) == 0 {
+        return 0 - 1;
+    }
+    return n;
+}
+
+fn run[&i, &h, &f, &nt, &ck, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, args: &g Args) -> [args, err_write, heap, fs_read(""), fs_write(""), file_read, file_write, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] int {
+    let n = arg_count(args);
+    var every = 10;
+    var ok = n == 3 || n == 5;
+    if n == 5 {
+        every = seconds_of(arg(args, 4));
+        ok = bytes.equal(arg(args, 3), "--every") && every > 0;
+    }
+    if ok == false || files.path_ok(fs, arg(args, 1)) == false || len(arg(args, 2)) == 0 {
+        io.error_all(io, "usage: studio_describer <absolute data-dir> <model> [--every <seconds 1-3600>]\n");
+        return 2;
+    }
+    match poller_new() {
+        Polling::Failed(e) => {
+            return 3;
+        }
+        Polling::Ok(pl) => {
+            var poller = pl;
+            let events = box_slice(heap, 8, 0);
+            var spare = events;
+            var stop = false;
+            while stop == false {
+                pass(heap, fs, net, clock, arg(args, 2), arg(args, 1));
+                var waited = 0;
+                borrow mut poller as &!pw in {
+                    borrow mut spare as &!eb in {
+                        waited = poller_wait(pw, contents(eb), every * 1000);
+                    }
+                }
+                if waited < 0 {
+                    stop = true;
+                }
+            }
+            unbox_slice(heap, spare);
+            poller_close(poller);
+        }
+    }
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(signals);
+    release(exec);
+    release(tty);
+    let ollama = narrow(net, "127.0.0.1:11434");
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow ollama as &o in {
+                    borrow clock as &c in {
+                        borrow args as &g in {
+                            status = run(i, h, f, o, c, g);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    release(ollama);
+    release(clock);
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

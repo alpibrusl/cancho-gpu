@@ -4,6 +4,7 @@
 #     scripts/studio-up.sh [PORT] [DATA_DIR]          (default: 8090 and build/studio-data; Ctrl-C stops both)
 #
 # Needs the pinned cancho (CANCHO), cancho-ui (UI) and the cancho packages (PK), as studio/check.sh does; builds what is missing into build/.
+# The describer (docs/studio-sessions.md, section 16) runs beside them unless `STUDIO_DESCRIBE=off`; `STUDIO_DESCRIBE_MODEL` names its model (default qwen3.5:4b). It needs Ollama; without it nothing is described.
 # `--rebuild` as the last argument builds the server, the worker and the page again. A job needs the Metal session (`scripts/build-metal-session.sh`)
 # and the weights `scripts/media doctor` lists; the page and the API work without them (a job then fails with its log).
 set -eu
@@ -27,6 +28,11 @@ fi
 if [ "$REBUILD" = 1 ] || [ ! -x build/studio_worker ]; then
   "$CANCHO" build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 fi
+DESCRIBE=${STUDIO_DESCRIBE:-on}
+DESCRIBER=0
+if [ "$DESCRIBE" != off ] && { [ "$REBUILD" = 1 ] || [ ! -x build/studio_describer ]; }; then
+  "$CANCHO" build studio/describer.cho studio/files.cho studio/rewrite.cho studio/results.cho --std -o build/studio_describer 2>&1 | grep -v "^ld: warning" || true
+fi
 if [ "$REBUILD" = 1 ] || [ ! -f "$SITE/index.html" ]; then
   "$UI" build studio/ui/studio.cui --page -o "$SITE" --name cancho-studio >/dev/null
 fi
@@ -44,4 +50,11 @@ done
 echo "studio: $(grep 'open http' "$LOG" | sed 's/^open //')"
 echo "data:   $DATA   (jobs, results and the log of the server)"
 echo "worker: running; jobs start when you make them in the page. Ctrl-C stops the studio."
+if [ "$DESCRIBE" != off ] && [ -x build/studio_describer ]; then
+  # writes a description for a library picture that has none, with a small vision model on Ollama (127.0.0.1:11434), when no job is waiting or running
+  build/studio_describer "$DATA" "${STUDIO_DESCRIBE_MODEL:-qwen3.5:4b}" --every 10 > "$DATA/describer.log" 2>&1 &
+  DESCRIBER=$!
+  trap 'kill $SERVER $DESCRIBER 2>/dev/null' EXIT INT TERM
+  echo "describer: library pictures with no description are described by ${STUDIO_DESCRIBE_MODEL:-qwen3.5:4b} on Ollama (STUDIO_DESCRIBE=off stops that)"
+fi
 build/studio_worker "$ROOT/scripts/media" "$HOME" "$DATA" --every 5

@@ -876,4 +876,7 @@ check "grid: an empty file input (a browser sends one when no file is chosen) ad
 Q3=$(wc -l < "$D/queue" | tr -d ' '); AF3=$(ls "$D" | wc -l | tr -d ' ')
 check "grid: six pictures are refused (422), and so is a bad tick next to good ones; nothing is made" "$(BT --form-string 'prompt=six' -F "image=@$R/pic.png" -F pickm=l/L3 -F pickm=l/L4 -F pickm=l/L1 -F "images=@$R/p1.jpg" -F "images=@$R/p2.png" -F "images=@$R/pic.png" | cut -c1-3) $(BT --form-string 'prompt=bad' -F "image=@$R/pic.png" -F pickm=l/L3 -F pickm=junk | cut -c1-3) $(( $(wc -l < "$D/queue" | tr -d ' ') - Q3 )) $(( $(ls "$D" | wc -l | tr -d ' ') - AF3 ))" "422 422 0 0"
 check "grid: the OpenAPI document has q, description, pickm and images" "$(grep -c '"name": "q"' studio/openapi.json) $(grep -c '"description": { "type": "string", "maxLength": 200' studio/openapi.json) $(grep -c '"pickm"' studio/openapi.json) $(grep -c '"images": { "type": "string", "format": "binary"' studio/openapi.json)" "2 1 1 1"
+# a description the describer wrote says (auto); one a person typed does not (docs/studio-sessions.md, section 16)
+: > "$D/lib-3.auto"
+check "auto: a description written by the describer says (auto), a typed one does not" "$(curl -s -H "$(hdr)" 'localhost:18097/gallery?q=quilted' | grep -o '(auto)' | wc -l | tr -d ' ') $(curl -s -H "$(hdr)" 'localhost:18097/gallery?q=denim' | grep -o '(auto)' | wc -l | tr -d ' ')" "1 0"
 exit $fail
