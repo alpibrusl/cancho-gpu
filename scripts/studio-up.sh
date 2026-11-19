@@ -22,7 +22,7 @@ SITE=$ROOT/build/studio-site
 cd "$ROOT"
 mkdir -p build "$DATA" "$SITE"
 if [ "$REBUILD" = 1 ] || [ ! -x build/studio ]; then
-  "$CANCHO" build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+  "$CANCHO" build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho studio/sessions.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 fi
 if [ "$REBUILD" = 1 ] || [ ! -x build/studio_worker ]; then
   "$CANCHO" build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true

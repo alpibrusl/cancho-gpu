@@ -1,6 +1,6 @@
 # cancho-studio: an editing session (design, 2026-11-19)
 
-> **Status: slices 1 and 2 (section 8) and 6, the gallery (section 9), are built and checked; 3 to 5 are designed, not built.** Claims say what was read in this repository (`studio/upload.cho`, `studio/results.cho`, `studio/jobs.cho`, `docs/studio-variations.md` section 3, `docs/studio-cases.md`) and what was not run. It completes `docs/studio-variations.md` V2 ("a result as the next input"), which was designed there and never built.
+> **Status: slices 1 and 2 (section 8), 6 the gallery (section 9), and 3 the sessions page with the two-place menu (section 11) are built and checked; 4 (the picker) and 5, and the library upload of section 10.3, are designed, not built.** Claims say what was read in this repository (`studio/upload.cho`, `studio/results.cho`, `studio/jobs.cho`, `docs/studio-variations.md` section 3, `docs/studio-cases.md`) and what was not run. It completes `docs/studio-variations.md` V2 ("a result as the next input"), which was designed there and never built.
 
 ## 1. What is asked
 
@@ -50,6 +50,7 @@ Under the session's last round: every picture of the session as a **thumbnail wi
 4. **The picker** (two pictures chosen, with an upload counting as one).
 5. *(later)* name a session, delete one (its uploads and results, asking first).
 6. **The gallery** (asked 2026-11-19), section 9: built.
+7. **Menu, sessions, library, picker** (asked 2026-11-19), section 10.
 
 Slices 1 and 2 give what was asked most directly; 3 and 4 make it feel like a session.
 
@@ -101,3 +102,50 @@ An upload used by a refine is **not** listed twice: a refine's first picture is 
 **Built and checked (2026-11-19, `studio/gallery.cho`).** `GET /gallery[?tag=][&page=]` as designed: the tag from the file, newest job first (within a job: the uploads, then the result), 48 tiles a page with *Newer* and *Older*, a filter row, the tile's job and prompt, *Refine* on a result. The tiles reuse the job grid's styles; the tags are coloured (edited and generated in the accent colours, uploaded grey). A *Gallery* place is in the header of every page. `/gallery` is in `studio/openapi.json` (a check requires every route to be). 14 new checks in `studio/check.sh` (fake `media`): the number of tiles of each tag equals the files (uploads; done jobs' `edited.png`; done jobs' `image.png`), read across all pages; a failed job's `edited.png` is not listed; a refine's first picture is not an upload; a tile's `src` is the file the job page serves; a result offers Refine and an upload does not; 4 refusals (unknown tag, page not digits, 5 digits, mixed); a page past the end is empty with a sentence, status 200; no token 401; with 50 more uploads a page holds exactly 48 and offers Older, page 2 offers Newer, the pages together hold every upload once, and the newest upload leads page 1.
 
 **Measured, looked at** (the studio on this branch in the browser pane, a copy of the earlier jobs' data): 25 tiles, 25 pictures, **13.6 MB** in all (about 0.5 MB a tile; uploads are JPEGs of a few hundred KB and results are PNGs of about 1 MB), so a full page of 48 would be about 26 MB, **half of the 50 MB estimated above**. The pictures arrive as the page is scrolled (`loading=lazy`); in the first screenshot the tiles were still empty, a second one a moment later showed them. The tags read clearly; the picture fills its tile, cropped to 16:9 (a portrait photo loses its top or bottom in the tile; the job page shows it whole). **Not done:** thumbnails (a smaller file per tile) would cut the weight, not needed at this size; filtering by session waits for slice 3; the gallery does not list the frames of a video, nor a video.
+
+## 10. One menu, sessions, a library and a picker (asked 2026-11-19, designed)
+
+**Asked for:** slice 3 (the session page); in the gallery, upload a picture; everywhere a picture is needed, choose it **from the gallery or upload one**; and merge the menu (Studio, Edit, Cases, Comparisons, and now Gallery and Jobs) into one or two places with a better UX.
+
+### 10.1 The menu: two places and tabs
+
+Six items in the header is too many, and they are two ideas: *making* and *looking back*. Two places, each with a row of tabs under the header:
+
+| place | tabs (the old items) |
+|---|---|
+| **Create** (`/`) | Generate (the old Studio page: video and image) - Edit a picture - Cases |
+| **Library** (`/gallery`) | Gallery - Sessions - Jobs - Comparisons |
+
+No route changes: every old URL still works, only the header differs (the open tab is marked, the place that holds it is marked). The page of `/` is the cancho-ui island and takes its header from `results.decorate`, so it gets the same header. *Why not one page with everything:* the Generate page is a cancho-ui island and the rest are server-written pages; merging them would move one into the other for no gain. The tabs give the same effect (one place, one click) and keep each page as it is.
+
+### 10.2 Slice 3: sessions
+
+`GET /sessions` lists the sessions, newest first: a card per root with the first picture, the latest result, the number of rounds and the state of the last. `GET /sessions/ROOT` is the session: a row per round (inputs, result, prompt, seed, state, links), a round that came from an earlier round indented under it, and the refine form underneath (the picker of 10.4). A session is the jobs with one `.root` (section 3). A job with no `.root` file (made before slice 2, or by the API) is its own session of one round; `/sessions` lists those too, so nothing is missing.
+
+### 10.3 The library: a picture with no job
+
+A person should be able to put a picture in the gallery without making a job. **`<data>/lib/L<n>.<jpg|png|webp>`**, written by `POST /gallery` (multipart, `image`, up to 15 MB; the extension from the first bytes, as `/edit` does); the number is the line count of an append-only `<data>/lib.index` (the queue's way; the server is the only writer). Served as `/files/L<n>/picture.<ext>` (the `file_info` of the other pictures, with an id that is `L` and digits and the closed names `picture.jpg|png|webp`). Listed by the gallery with the tag **uploaded** and the job link replaced by "library". Refusals: not a picture (422), none (422), over the limit (413), no token (401), a foreign Origin (403): the gate `/edit` already has.
+
+### 10.4 The picker
+
+Every place that asks for a picture (the Edit form, each Cases card, the refine form) gets, per picture, **the file input and, beside it, "or choose from the gallery"**: a `<details>` with the most recent pictures as radio tiles (name `pick1` / `pick2`). No JavaScript. The value is `j/N/NAME` (a job's picture: `edited.png`, `image.png`, `input1.*`, `input2.*`) or `l/L<n>` (a library picture). **The server resolves it**: N digits, NAME in the closed list, the file there (and, for a result, the job done); the path is built by the server; nothing is copied. A file uploaded in the same request wins over a pick of the same slot. `from` (a refine) stays and means `pick1=j/N/<its result>`.
+
+`.from` then names every picture: `N NAME` for a job's file, `L<n>` for the library, `upload` for a file sent with the job. The job page shows them all. A pick of a result stays in that result's session (`.root` of its job); a pick of an upload or of the library starts a session.
+
+*Costs, said now:* the file inputs can no longer be `required` (either an upload or a pick will do), so **the browser will not stop an empty submit; the server's one-line 422 is what the person sees**. Cases has six forms and two pickers each: 12 recent pictures per picker (not 24) keep that page's markup to about 100 KB; the images are `loading=lazy` inside a closed `<details>`, so none loads until opened.
+
+### 10.5 Order of work and what would show it wrong
+
+A) the menu and slice 3; B) the library upload and the picker. Each its own PR with its gate. The menu change must not break a page: the existing checks that read headers (`aria-current`, the places) are updated where they counted the old links, and **each update is named in the PR**, not hidden. For B: a pick of a failed job's file, of a name outside the list (`input3.png`, `../x`), of a library id that is not in the index, and a pick of a video job all 422 and leave no file; a pick plus an upload of the same slot uses the upload.
+
+## 11. The menu and the sessions page: built (2026-11-19)
+
+**The menu (10.1).** Two places in the header, **Create** and **Library**, and a row of tabs under it for the open place: Create has Generate, Edit a picture and Cases; Library has Gallery, Sessions, Jobs and Comparisons. Every old URL works. The header is written in one place (`results.header`), so the cancho-ui page of `/` gets it too (`results.decorate`). **Existing checks that read the header were changed, and each is named here:** the "design: ... marks X as the open place" checks (5 pages) now expect two marked links, the place and the tab; "main page: the header is there once and marks Studio" now says Create and Generate; "main page: the header comes before the app's root" allows the tab row between; "site: / is index.html, with ... added" also strips the tab row. No check was deleted or loosened beyond that.
+
+**Sessions (10.2).** `GET /sessions`: a card per session (the latest result, or the first picture; the number of rounds; the latest job's prompt and state), the most recently worked first, at most 60. `GET /sessions/ROOT`: a card per round, oldest first, with its pictures (a refine's first picture is the earlier result), result, prompt and state, a refine indented 24 px under the round it came from (up to six levels), and under them a form: the finished results as radio choices with a thumbnail (the newest checked), the instruction and a seed, posting `from` to `/edit`. A job with no `.root` that is an `edit` or `image` job is its own session of one round; a video is no session. `/sessions/abc` is 422, a root with no job 404. Both routes are in `studio/openapi.json`.
+
+**Checked** (`studio/check.sh`, 11 new checks, fake `media`): the card's round count equals the jobs with that root; an API edit is a session of one round; a video is not; the list is capped at 60; refusals 422/404/401; the rounds come oldest first with margins 0, 24 and 48 px for a root, its refine and the refine of that; the refine's first picture is the earlier result; the form offers the finished results with the newest checked; the Library and its Sessions tab are marked.
+
+**Looked at** (the studio on this branch in the browser pane, real jobs 11 and 12): the two places and the tabs read clearly; session 11 shows round 1 (the two pictures, the result, the instruction), round 2 indented with its first picture captioned as the result of an earlier job, and the refine form with the radio of round 2 checked. The radio buttons were oversized at first (the global input style applied to them) and are fixed. **Not run:** a phone-sized view.
+
+**Not built:** the library upload (10.3) and the picker (10.4), which this change prepares (the Library place and tabs) but does not include.

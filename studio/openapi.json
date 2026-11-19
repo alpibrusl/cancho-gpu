@@ -83,6 +83,29 @@
         }
       }
     },
+    "/sessions": {
+      "get": {
+        "summary": "The editing sessions (HTML), the most recently worked first: a card per session with its latest result, the number of rounds and the state of the last. A session is the picture jobs with one root; a job made before sessions is a session of one round.",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/sessions/{root}": {
+      "get": {
+        "summary": "One session (HTML): a row per round (its pictures, result, prompt and state; a refine indented under the round it came from) and a form to refine one of its results.",
+        "parameters": [ { "name": "root", "in": "path", "required": true, "schema": { "type": "string", "description": "The id of the first job of the session, 1 to 9 digits." } } ],
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/compare": {
       "get": {
         "summary": "The comparisons: the tally per kind of the choices that count (the rewritten prompt won, the prompt as written won, ties) and a link to each pair.",

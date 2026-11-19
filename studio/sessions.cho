@@ -1,0 +1,372 @@
+edition 9;
+
+module sessions;
+
+import std.buffer;
+import std.bytes;
+import files;
+import results;
+import upload;
+
+// `sessions` -- an editing session is the picture jobs with one root (docs/studio-sessions.md, sections 3 and 10.2): `GET /sessions` lists them, `GET /sessions/ROOT` shows one.
+//
+// A job belongs to a session when it has `<id>.root` (made by the edit form) or is an `edit` or `image` job without one (made before sessions, or by the API: its own session of one round).
+// The membership is read once into text, one line per job, newest first: `ID ROOT PARENT`, where PARENT is the job whose result was the first picture (0 for none).
+
+// The text from `from` to the first byte that is not a digit.
+fn digits_end[&t](text: &t [byte], from: int) -> [] int {
+    var e = from;
+    while e < len(text) && int_of(text[e]) >= 48 && int_of(text[e]) <= 57 {
+        e = e + 1;
+    }
+    return e;
+}
+
+// Whether the job's argument list starts with `edit` or `image` (its kind is the first entry).
+fn picture_kind[&a](argv: &a [byte]) -> [] bool {
+    var e = 0;
+    while e < len(argv) && int_of(argv[e]) != 0 {
+        e = e + 1;
+    }
+    return bytes.equal(argv[0..e], "edit") || bytes.equal(argv[0..e], "image");
+}
+
+// `ID ROOT PARENT\n` for every job of a session, newest first.
+fn members[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var out = buffer.empty(heap, 256);
+    var text = buffer.empty(heap, 8);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &qb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var end = len(all);
+        while end > 0 {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                let id = all[start..stop];
+                if results.id_ok(id) {
+                    let (rv, has_rv) = results.job_file(heap, fs, dir, id, ".root");
+                    let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
+                    var member = has_rv;
+                    if member == false && has_av {
+                        borrow av as &avb in {
+                            member = picture_kind(buffer.bytes(avb));
+                        }
+                    }
+                    if member {
+                        out = buffer.append(heap, out, id);
+                        out = buffer.push(heap, out, byte_of(32));
+                        var root_done = false;
+                        if has_rv {
+                            borrow rv as &rvb in {
+                                let re = digits_end(buffer.bytes(rvb), 0);
+                                if re > 0 && re <= 9 {
+                                    out = buffer.append(heap, out, buffer.bytes(rvb)[0..re]);
+                                    root_done = true;
+                                }
+                            }
+                        }
+                        if root_done == false {
+                            out = buffer.append(heap, out, id);
+                        }
+                        out = buffer.push(heap, out, byte_of(32));
+                        let (fv, has_fv) = results.job_file(heap, fs, dir, id, ".from");
+                        var parent_done = false;
+                        if has_fv {
+                            borrow fv as &fvb in {
+                                let pe = digits_end(buffer.bytes(fvb), 0);
+                                if pe > 0 && pe <= 9 && pe < len(buffer.bytes(fvb)) && int_of(buffer.bytes(fvb)[pe]) == 32 {
+                                    out = buffer.append(heap, out, buffer.bytes(fvb)[0..pe]);
+                                    parent_done = true;
+                                }
+                            }
+                        }
+                        if parent_done == false {
+                            out = buffer.push(heap, out, byte_of(48));
+                        }
+                        out = buffer.push(heap, out, byte_of(10));
+                        buffer.drop(heap, fv);
+                    }
+                    buffer.drop(heap, rv);
+                    buffer.drop(heap, av);
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, text);
+    return out;
+}
+
+// The three fields of the line that starts at `at`: (id from, id to, root from, root to, parent from, parent to, end of line).
+fn fields[&t](all: &t [byte], at: int) -> [] (int, int, int, int, int, int, int) {
+    let a = digits_end(all, at);
+    let b = digits_end(all, a + 1);
+    let c = digits_end(all, b + 1);
+    return (at, a, a + 1, b, b + 1, c, c + 1);
+}
+
+// How many jobs of root `root` there are in `all`.
+fn rounds_of[&t, &r](all: &t [byte], root: &r [byte]) -> [] int {
+    var n = 0;
+    var at = 0;
+    while at < len(all) {
+        let (i0, i1, r0, r1, p0, p1, nl) = fields(all, at);
+        if bytes.equal(all[r0..r1], root) {
+            n = n + 1;
+        }
+        at = nl;
+    }
+    return n;
+}
+
+// The (from, to) of the parent field of the line whose id is `id`, or (-1, -1) when there is no such line or its parent is 0.
+fn parent_of[&t, &i](all: &t [byte], id: &i [byte]) -> [] (int, int) {
+    var at = 0;
+    while at < len(all) {
+        let (i0, i1, r0, r1, p0, p1, nl) = fields(all, at);
+        if bytes.equal(all[i0..i1], id) {
+            if bytes.equal(all[p0..p1], "0") {
+                return (0 - 1, 0 - 1);
+            }
+            return (p0, p1);
+        }
+        at = nl;
+    }
+    return (0 - 1, 0 - 1);
+}
+
+// How deep job `id` is in its session: the number of parents above it, at most 6.
+fn depth_of[&t, &i](all: &t [byte], id: &i [byte]) -> [] int {
+    var depth = 0;
+    let (f0, t0) = parent_of(all, id);
+    var pf = f0;
+    var pt = t0;
+    while pf >= 0 && depth < 6 {
+        depth = depth + 1;
+        let (nf, nt) = parent_of(all, all[pf..pt]);
+        pf = nf;
+        pt = nt;
+    }
+    return depth;
+}
+
+// The prompt of a job, escaped, as it was given (the last entry of its argument list).
+fn prompt_text[&h, &f, &d, &i](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = page;
+    let (av, has_av) = results.job_file(heap, fs, dir, id, ".argv");
+    if has_av {
+        borrow av as &avr in {
+            let (ps, pe) = results.last_entry(buffer.bytes(avr));
+            p = results.escape(heap, p, buffer.bytes(avr)[ps..pe]);
+        }
+    }
+    buffer.drop(heap, av);
+    return p;
+}
+
+// `GET /sessions`: one card per session, the most recently worked first.
+pub fn list[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    let (nrun, nq) = results.counts(heap, fs, dir);
+    var page = results.open(heap, fs, dir, "sessions", "sessions", nrun + nq > 0);
+    page = buffer.append(heap, page, "<div class=row><h1>Sessions</h1><span class=meta>An edit and the rounds made from it, the most recent first</span></div><div class=grid>");
+    let all_buf = members(heap, fs, dir);
+    var seen = buffer.append(heap, buffer.empty(heap, 64), " ");
+    var shown = 0;
+    borrow all_buf as &ab in {
+        let all = buffer.bytes(ab);
+        var at = 0;
+        while at < len(all) && shown < 60 {
+            let (i0, i1, r0, r1, p0, p1, nl) = fields(all, at);
+            let root = all[r0..r1];
+            var token = buffer.append(heap, buffer.append(heap, buffer.push(heap, buffer.empty(heap, 16), byte_of(32)), root), " ");
+            var known = false;
+            borrow seen as &sb in {
+                borrow token as &tk in {
+                    known = bytes.find(buffer.bytes(sb), buffer.bytes(tk)) >= 0;
+                }
+            }
+            if known == false {
+                seen = buffer.append(heap, seen, root);
+                seen = buffer.push(heap, seen, byte_of(32));
+                shown = shown + 1;
+                let latest = all[i0..i1];
+                let made = upload.result_name(heap, fs, dir, latest);
+                page = buffer.append(heap, page, "<a class=job href=/sessions/");
+                page = buffer.append(heap, page, root);
+                page = buffer.append(heap, page, "><div class=thumb>");
+                if len(made) > 0 {
+                    page = buffer.append(heap, page, "<img loading=lazy alt=\"the latest result\" src=/files/");
+                    page = buffer.append(heap, page, latest);
+                    page = buffer.append(heap, page, "/");
+                    page = buffer.append(heap, page, made);
+                    page = buffer.append(heap, page, ">");
+                } else if results.has_upload(heap, fs, dir, root, "input1.jpg") {
+                    page = buffer.append(heap, page, "<img loading=lazy alt=\"the first picture\" src=/files/");
+                    page = buffer.append(heap, page, root);
+                    page = buffer.append(heap, page, "/input1.jpg>");
+                } else if results.has_upload(heap, fs, dir, root, "input1.png") {
+                    page = buffer.append(heap, page, "<img loading=lazy alt=\"the first picture\" src=/files/");
+                    page = buffer.append(heap, page, root);
+                    page = buffer.append(heap, page, "/input1.png>");
+                } else {
+                    page = buffer.append(heap, page, "no picture yet");
+                }
+                page = buffer.append(heap, page, "<span class=badge>");
+                page = buffer.push_nat(heap, page, rounds_of(all, root));
+                page = buffer.append(heap, page, " rounds</span><span class=idn>session ");
+                page = buffer.append(heap, page, root);
+                page = buffer.append(heap, page, "</span></div><div class=body><p class=prompt>");
+                page = prompt_text(heap, page, fs, dir, latest);
+                page = buffer.append(heap, page, "</p><span class=meta>latest: job ");
+                page = buffer.append(heap, page, latest);
+                let (known_state, word) = results.state_word(heap, fs, dir, latest);
+                page = buffer.append(heap, page, " &middot; ");
+                borrow word as &wb in {
+                    page = buffer.append(heap, page, buffer.bytes(wb));
+                }
+                buffer.drop(heap, word);
+                page = buffer.append(heap, page, "</span></div></a>");
+            }
+            buffer.drop(heap, token);
+            at = nl;
+        }
+    }
+    buffer.drop(heap, seen);
+    buffer.drop(heap, all_buf);
+    page = buffer.append(heap, page, "</div>");
+    if shown == 0 {
+        page = buffer.append(heap, page, "<p>No sessions yet. <a href=/edit>Edit a picture</a> to start one.</p>");
+    }
+    return results.close(heap, page);
+}
+
+// `GET /sessions/ROOT`: (status, the page). 422 for a root that is not 1 to 9 digits, 404 for one with no job.
+pub fn page[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], root: &r [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
+    if results.id_ok(root) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 48), "the session is 1 to 9 digits"));
+    }
+    let all_buf = members(heap, fs, dir);
+    var total = 0;
+    borrow all_buf as &ab0 in {
+        total = rounds_of(buffer.bytes(ab0), root);
+    }
+    if total == 0 {
+        buffer.drop(heap, all_buf);
+        return (404, buffer.append(heap, buffer.empty(heap, 32), "no such session"));
+    }
+    let (nrun, nq) = results.counts(heap, fs, dir);
+    var title = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 24), "session "), root);
+    var page = buffer.empty(heap, 8);
+    borrow title as &tr in {
+        buffer.drop(heap, page);
+        page = results.open(heap, fs, dir, buffer.bytes(tr), "sessions", nrun + nq > 0);
+    }
+    buffer.drop(heap, title);
+    page = buffer.append(heap, page, "<div class=row><a href=/sessions>&larr; All sessions</a><h1>Session ");
+    page = buffer.append(heap, page, root);
+    page = buffer.append(heap, page, "</h1><span class=pill>");
+    page = buffer.push_nat(heap, page, total);
+    page = buffer.append(heap, page, " rounds</span></div>");
+    var choices = buffer.empty(heap, 64);
+    var last_done = buffer.empty(heap, 16);
+    var round = 0;
+    borrow all_buf as &ab in {
+        let all = buffer.bytes(ab);
+        // oldest first: the text is newest first, so walk it from its end
+        var end = len(all);
+        while end > 0 {
+            var start = end - 1;
+            while start > 0 && int_of(all[start - 1]) != 10 {
+                start = start - 1;
+            }
+            let (i0, i1, r0, r1, p0, p1, nl) = fields(all, start);
+            if bytes.equal(all[r0..r1], root) {
+                round = round + 1;
+                let id = all[i0..i1];
+                page = buffer.append(heap, page, "<section class=card style=\"margin-left:");
+                page = buffer.push_nat(heap, page, depth_of(all, id) * 24);
+                page = buffer.append(heap, page, "px\"><div class=row><h2><a href=/jobs/");
+                page = buffer.append(heap, page, id);
+                page = buffer.append(heap, page, ">Round ");
+                page = buffer.push_nat(heap, page, round);
+                page = buffer.append(heap, page, " &middot; job ");
+                page = buffer.append(heap, page, id);
+                page = buffer.append(heap, page, "</a></h2>");
+                let (known_state, word) = results.state_word(heap, fs, dir, id);
+                page = buffer.append(heap, page, "<span class=pill>");
+                borrow word as &wb in {
+                    page = buffer.append(heap, page, buffer.bytes(wb));
+                }
+                buffer.drop(heap, word);
+                page = buffer.append(heap, page, "</span></div><div class=trio>");
+                let (pics, shown_inputs) = results.input_figures(heap, buffer.empty(heap, 8), fs, dir, id);
+                borrow pics as &pb in {
+                    page = buffer.append(heap, page, buffer.bytes(pb));
+                }
+                buffer.drop(heap, pics);
+                let made = upload.result_name(heap, fs, dir, id);
+                if bytes.equal(made, "edited.png") {
+                    page = results.figure(heap, page, id, "edited.png", "the result", "Result");
+                } else if bytes.equal(made, "image.png") {
+                    page = results.figure(heap, page, id, "image.png", "the result", "Result");
+                }
+                page = buffer.append(heap, page, "</div><p>");
+                page = prompt_text(heap, page, fs, dir, id);
+                page = buffer.append(heap, page, "</p></section>");
+                if len(made) > 0 {
+                    choices = buffer.append(heap, choices, "<label style=\"flex-direction:row;align-items:center;gap:8px\"><input type=radio name=from value=");
+                    choices = buffer.append(heap, choices, id);
+                    choices = buffer.append(heap, choices, "><img loading=lazy alt=\"\" style=\"width:64px;height:64px;object-fit:cover;border-radius:8px\" src=/files/");
+                    choices = buffer.append(heap, choices, id);
+                    choices = buffer.append(heap, choices, "/");
+                    choices = buffer.append(heap, choices, made);
+                    choices = buffer.append(heap, choices, "> Round ");
+                    choices = buffer.push_nat(heap, choices, round);
+                    choices = buffer.append(heap, choices, " (job ");
+                    choices = buffer.append(heap, choices, id);
+                    choices = buffer.append(heap, choices, ")</label>");
+                    buffer.drop(heap, last_done);
+                    last_done = buffer.append(heap, buffer.empty(heap, 16), id);
+                }
+            }
+            end = start;
+        }
+    }
+    borrow choices as &cb in {
+        if len(buffer.bytes(cb)) > 0 {
+            page = buffer.append(heap, page, "<form method=post action=/edit enctype=multipart/form-data><h2>Continue the session: refine a result</h2><p>Choose the result to refine, then say what to change in it.</p>");
+            // the newest finished result is the one that is checked
+            borrow last_done as &ld in {
+                let want = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 40), "value="), buffer.bytes(ld)), ">");
+                borrow want as &wb2 in {
+                    let at = bytes.find(buffer.bytes(cb), buffer.bytes(wb2));
+                    let cut = at + len(buffer.bytes(wb2)) - 1;
+                    page = buffer.append(heap, page, buffer.bytes(cb)[0..cut]);
+                    page = buffer.append(heap, page, " checked");
+                    page = buffer.append(heap, page, buffer.bytes(cb)[cut..len(buffer.bytes(cb))]);
+                }
+                buffer.drop(heap, want);
+            }
+            page = buffer.append(heap, page, "<label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><div><button>Refine</button></div></form>");
+        }
+    }
+    buffer.drop(heap, choices);
+    buffer.drop(heap, last_done);
+    buffer.drop(heap, all_buf);
+    return (200, results.close(heap, page));
+}

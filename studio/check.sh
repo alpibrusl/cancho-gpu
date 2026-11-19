@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 PK="${PK:-../cancho/packages}"
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
+$C build studio/studio.cho studio/files.cho studio/jobs.cho studio/results.cho studio/auth.cho studio/range.cho studio/upload.cho studio/compare.cho studio/sets.cho studio/cases.cho studio/gallery.cho studio/sessions.cho "$PK"/http-server/server.cho --std -o build/studio 2>&1 | grep -v "^ld: warning" || true
 $C build studio/worker.cho studio/files.cho studio/rewrite_step.cho studio/rewrite.cho --std -o build/studio_worker 2>&1 | grep -v "^ld: warning" || true
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -267,7 +267,7 @@ SP2=$!
 trap 'kill $SP $SP2 2>/dev/null; rm -rf "$T"' EXIT
 waitup "$T/s2.log"
 TOK2=$(grep -o 'token=[0-9a-f]*' "$T/s2.log" | cut -d= -f2); TOK=$TOK2
-check "site: / is index.html, with the stylesheet, the header and the frame of recent jobs added and nothing else changed" "$(c localhost:18094/ | sed 's#<link rel=stylesheet href=/style.css>##; s#<header class=top>.*</header>##; s#<iframe class=recent src=/recent title="Recent jobs"></iframe>##' | cmp - "$T/site/index.html" && echo same)" same
+check "site: / is index.html, with the stylesheet, the header and the frame of recent jobs added and nothing else changed" "$(c localhost:18094/ | sed 's#<link rel=stylesheet href=/style.css>##; s#<header class=top>.*</header>##; s#<div class=tabs>\(<a [^>]*>[^<]*</a>\)*</div>##; s#<iframe class=recent src=/recent title="Recent jobs"></iframe>##' | cmp - "$T/site/index.html" && echo same)" same
 check "site: /app.js is app.js, a script" "$(c -D - -o /dev/null localhost:18094/app.js | tr -d '\r' | grep -ci '^content-type: text/javascript')" 1
 check "site: app.js bytes unchanged" "$(c localhost:18094/app.js | cmp - "$T/site/app.js" && echo same)" same
 TOK=$TOK1
@@ -574,8 +574,8 @@ check "edit form: variations=9 is refused: 422" "$(curl -s -o /dev/null -w '%{ht
 check "edit form: steps that are not digits are refused: 422" "$(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -F prompt=s -F steps=4x -F "image=@$R/pic.png" localhost:18097/edit)" 422
 # The design applied (docs/studio-design.md): one header on every page, the queue's status in it, the job page's parameters, the cards of /jobs.
 for pair in "/jobs:jobs" "/edit:edit" "/compare:compare" "/sets/$VF:jobs" "/jobs/$PEI:jobs"; do
-  u=${pair%%:*}; k=${pair##*:}; case $k in jobs) href=/jobs;; edit) href=/edit;; compare) href=/compare;; esac
-  check "design: $u has the header and marks $k as the open place" "$(cget $u | grep -c "class=brand") $(cget $u | grep -o '<a href=[^>]*aria-current=page>' | tr '\n' ' ')" "1 <a href=$href aria-current=page> "
+  u=${pair%%:*}; k=${pair##*:}; case $k in jobs) href=/jobs; place=/gallery;; edit) href=/edit; place=/;; compare) href=/compare; place=/gallery;; esac
+  check "design: $u has the header and marks $k as the open tab, in its place (Create or Library)" "$(cget $u | grep -c "class=brand") $(cget $u | grep -o '<a href=[^>]*aria-current=page>' | tr '\n' ' ')" "1 <a href=$place aria-current=page> <a href=$href aria-current=page> "
 done
 check "design: the status of an idle GPU with one waiting job" "$(TOK=$TOK2 c localhost:18094/jobs | grep -o 'GPU idle[^<]*')" "GPU idle &middot; 1 queued"
 mkdir -p "$R/off/out/$PEI"; printf 'x' > "$R/off/out/$PEI/edited.png"; echo running > "$R/off/$PEI.state"
@@ -626,9 +626,9 @@ check "image: the OpenAPI document names the kind and the file" "$(jq -r '.compo
 if [ -n "${UI:-}" ]; then
   PG=$(TOK=$TOK2 c localhost:18094/)
   check "main page: the stylesheet is linked once, after the page's own style and before </head>" "$(echo "$PG" | tr '\n' ' ' | grep -c '</style> *<link rel=stylesheet href=/style.css></head>')" 1
-  check "main page: the header is there once and marks Studio as the open place" "$(echo "$PG" | grep -c 'class=brand') $(echo "$PG" | grep -o 'aria-current=page>[A-Za-z ]*' | tr '\n' ' ')" "1 aria-current=page>Studio "
+  check "main page: the header is there once and marks Generate, in Create, as the open tab" "$(echo "$PG" | grep -c 'class=brand') $(echo "$PG" | grep -o 'aria-current=page>[A-Za-z ]*' | tr '\n' ' ')" "1 aria-current=page>Create aria-current=page>Generate "
   check "main page: the app is untouched (its root and its script are where they were)" "$(echo "$PG" | grep -c 'id="root"') $(echo "$PG" | grep -c 'src="./app.js"')" "1 1"
-  check "main page: the header comes before the app's root" "$(echo "$PG" | tr '\n' ' ' | grep -c '<body><header class=top>.*</header> *<div id="root"')" 1
+  check "main page: the header comes before the app's root" "$(echo "$PG" | tr '\n' ' ' | grep -c '<body><header class=top>.*</header>.*<div id="root"')" 1
   check "main page: the frame of recent jobs is once, after the app and before </body>" "$(echo "$PG" | tr '\n' ' ' | grep -c '<script type="module" src="./app.js"></script> *<iframe class=recent src=/recent title="Recent jobs"></iframe></body>')" 1
 else
   check "main page: a page with no <head> and <body> tags is served as it is" "$(TOK=$TOK2 c localhost:18094/)" '<!doctype html><title>fake page</title>'
@@ -774,4 +774,18 @@ P1=$(curl -s -H "$(hdr)" 'localhost:18097/gallery?tag=uploaded'); P2=$(curl -s -
 check "gallery: a page holds 48 tiles and offers Older, the next page offers Newer" "$(echo "$P1" | grep -o 'class=\"badge uploaded\"' | wc -l | tr -d ' ') $(echo "$P1" | grep -c 'Older</a>') $(echo "$P2" | grep -c 'Newer</a>')" "48 1 1"
 check "gallery: the pages together hold every upload once" "$(gal uploaded)" "$(ls "$D" | grep -c '^upload-')"
 check "gallery: newest first (the last upload leads the first page)" "$(echo "$P1" | grep -o 'src=/files/[0-9]*/input1' | head -1)" "src=/files/$(ls "$D" | grep -o '^upload-[0-9]*' | grep -o '[0-9]*' | sort -n | tail -1)/input1"
+# sessions (docs/studio-sessions.md, section 10.2)
+SL=$(cget /sessions | sed 's/ [0-9][0-9][0-9]$//')
+SP=$(cget /sessions/$SX | sed 's/ [0-9][0-9][0-9]$//')
+want_rounds=$(grep -lx "$SX" "$D"/*.root | wc -l | tr -d ' ')
+check "sessions: the list has a card for the first job's session, with the number of rounds (the jobs with that root)" "$(echo "$SL" | grep -o "badge>[0-9]* rounds</span><span class=idn>session $SX<" | grep -o '[0-9]* rounds')" "$want_rounds rounds"
+check "sessions: an edit made without a root (through the API) is a session of one round (its page; the list shows 60 and 50 uploads came before)" "$(cget /sessions/$E1 | grep -o 'Round [0-9]* &middot;\|[0-9]*$' | tr '\n' ' ')" "Round 1 &middot; 200 "
+check "sessions: the list shows at most 60 sessions" "$(echo "$SL" | grep -o '<a class=job href=/sessions/' | wc -l | tr -d ' ')" 60
+check "sessions: a video job is not a session" "$(echo "$SL" | grep -c "href=/sessions/$W2>") $(cget /sessions/$W2 | grep -o '[0-9]*$')" "0 404"
+check "sessions: refused: not digits 422, no such session 404, no token 401" "$(cget /sessions/abc | grep -o '[0-9]*$') $(cget /sessions/999999 | grep -o '[0-9]*$') $(curl -s -o /dev/null -w '%{http_code}' localhost:18097/sessions/$SX)" "422 404 401"
+check "sessions: the page lists the rounds oldest first, with the refine indented under the round it came from" "$(echo "$SP" | grep -o "margin-left:[0-9]*px\"><div class=row><h2><a href=/jobs/$SX>Round 1\|margin-left:[0-9]*px\"><div class=row><h2><a href=/jobs/$RFI>Round [0-9]*\|margin-left:[0-9]*px\"><div class=row><h2><a href=/jobs/$R3>Round [0-9]*" | sed 's/"><div.*>Round / /' | tr '\n' ';')" "margin-left:0px 1;margin-left:24px 2;margin-left:48px 3;"
+check "sessions: a round shows its pictures and its result (the refine's first picture is the earlier result)" "$(echo "$SP" | grep -c "src=/files/$SX/edited.png") $(echo "$SP" | grep -c "src=/files/$RFI/edited.png")" "1 1"
+check "sessions: the refine form offers the finished results, the newest checked, and posts to /edit" "$(echo "$SP" | grep -o 'name=from value=[0-9]*\( checked\)\?>' | tr '\n' ';') $(echo "$SP" | grep -c 'action=/edit enctype=multipart/form-data')" "name=from value=$SX>;name=from value=$RFI checked>; 1"
+check "sessions: the header marks the Library and its Sessions tab" "$(echo "$SP" | grep -o '<a href=[^>]*aria-current=page>' | tr '\n' ' ')" "<a href=/gallery aria-current=page> <a href=/sessions aria-current=page> "
+check "sessions: the other pages link to the list (the Library's tabs)" "$(cget /gallery | grep -c 'href=/sessions')" 1
 exit $fail
