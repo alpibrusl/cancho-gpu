@@ -11,7 +11,7 @@ import upload;
 import picks;
 
 // `batch` -- one picture and several others, one edit each (docs/studio-sessions.md, section 14): `POST /batch`, the form of "try these clothes on this person" and "redecorate this room in
-// these styles". The first picture (`image` or `pick1`) is combined with each of up to five others (`image2` .. `image6`, or `pick2` .. `pick6`): one two-picture edit per other picture, all with
+// these styles". The first picture (`image` or `pick1`) is combined with each of up to five others (`image2` .. `image6`, or `pick2` .. `pick6`), or the several ticked in the grid (`pickm`, one part each) and the several files chosen in one input (`images`): one two-picture edit per other picture, all with
 // the same instruction, seed, steps and model. The jobs are one session (`.root` is the first), so `/sessions/FIRST` shows them together: each round is the first picture, one of the others, and its
 // result. Everything is checked before anything is written; a failure while the jobs are being made (the queue unreadable) leaves the ones already made and says so.
 //
@@ -52,7 +52,18 @@ fn pick_name(k: int) -> [] &static [byte] {
 // What slot `k` (2 to 6) holds: (state, kind, from, to, path, line). State 0 none, 1 an upload (kind 1 to 3, its bytes `body[from..to]`; the path and line are empty), 2 a choice that
 // resolved (the path of the picture and its `.from` line), 3 a choice that did not, or an upload that is not a picture.
 fn slot[&h, &f, &d, &b, &l](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body: &b [byte], dl: &l [byte], k: int) -> [heap, fs_read(""), file_read] (int, int, int, int, buffer.Buffer, buffer.Buffer) {
-    let (uf, ut) = upload.part(body, dl, image_name(k));
+    // slots 2 to 6 are the named fields `image2`/`pick2` .. `image6`/`pick6`; slots 7 to 11 are the boxes ticked in the grid (`pickm`, one part each) and 12 to 16 the files chosen together in one input (`images`)
+    var uf = 0 - 1;
+    var ut = 0 - 1;
+    if k <= 6 {
+        let (a, c) = upload.part(body, dl, image_name(k));
+        uf = a;
+        ut = c;
+    } else if k >= 12 {
+        let (a, c) = upload.part_nth(body, dl, "images", k - 12);
+        uf = a;
+        ut = c;
+    }
     if uf >= 0 && ut - uf >= 16 {
         let kind = upload.kind_of(body[uf..ut]);
         if kind == 0 {
@@ -60,7 +71,17 @@ fn slot[&h, &f, &d, &b, &l](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body:
         }
         return (1, kind, uf, ut, buffer.empty(heap, 8), buffer.empty(heap, 8));
     }
-    let (pf, pt) = upload.part(body, dl, pick_name(k));
+    var pf = 0 - 1;
+    var pt = 0 - 1;
+    if k <= 6 {
+        let (a, c) = upload.part(body, dl, pick_name(k));
+        pf = a;
+        pt = c;
+    } else if k <= 11 {
+        let (a, c) = upload.part_nth(body, dl, "pickm", k - 7);
+        pf = a;
+        pt = c;
+    }
     if pf >= 0 && pt > pf {
         let (path, line, is_result, ok) = picks.resolve(heap, fs, dir, body[pf..pt]);
         if ok {
@@ -129,7 +150,7 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
         var count = 0;
         var bad = false;
         var k = 2;
-        while k <= 6 {
+        while k <= 16 {
             let (state, kind, uf, ut, sp, sl) = slot(heap, fs, dir, body, dl, k);
             if state == 3 {
                 bad = true;
@@ -153,6 +174,8 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
             why = "one of the other pictures is not a JPEG, PNG or WebP file or a picture of the gallery";
         } else if count < 1 {
             why = "at least one other picture is needed (up to 5)";
+        } else if count > 5 {
+            why = "at most 5 other pictures at a time";
         } else if caf >= 0 && cat > caf && (upload.all_digits(body[caf..cat]) == false || cat - caf > 7) {
             why = "condition_area is the pixels each picture is resized to, a whole number";
         } else if sf >= 0 && st > sf && upload.all_digits(body[sf..st]) == false {
@@ -191,7 +214,7 @@ pub fn handle[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte],
                     var broke = false;
                     var j = 2;
                     var made = 0;
-                    while j <= 6 && broke == false {
+                    while j <= 16 && broke == false {
                         let (state, kind, uf, ut, sp, sl) = slot(heap, fs, dir, body, dl, j);
                         if state == 1 || state == 2 {
                             let id = jobs.next_id(heap, fs, dir);
