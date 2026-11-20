@@ -75,10 +75,14 @@ pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ct
             why = "a picture is needed";
         } else {
             let kind = upload.kind_of(body[imf..imt]);
+            let (grf, grt) = upload.part(body, buffer.bytes(db), "group");
+            let has_group = grf >= 0 && grt > grf;
             let (df, dt) = upload.part(body, buffer.bytes(db), "description");
             let has_desc = df >= 0 && dt > df;
             if kind == 0 {
                 why = "the picture is not a JPEG, PNG or WebP file";
+            } else if has_group && results.kind_index(body[grf..grt]) < 0 {
+                why = "group is person, garment, furniture, room, place, object, animal or other";
             } else if has_desc && (dt - df > 200 || upload.no_controls(body[df..dt]) == false) {
                 why = "the description is a line of at most 200 bytes with no control characters";
             } else {
@@ -117,6 +121,17 @@ pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ct
                         saved = files.write_all(fs, buffer.bytes(dpb), body[df..dt]);
                     }
                     buffer.drop(heap, dp);
+                }
+                if saved == 0 && has_group {
+                    // the group the person gave, before the picture is listed: the describer then leaves it alone
+                    var kp = buffer.append(heap, buffer.empty(heap, 96), dir);
+                    kp = buffer.append(heap, kp, "/lib-");
+                    kp = buffer.push_nat(heap, kp, number);
+                    kp = buffer.append(heap, kp, ".kind");
+                    borrow kp as &kpb in {
+                        saved = files.write_all(fs, buffer.bytes(kpb), results.kind_name(results.kind_index(body[grf..grt])));
+                    }
+                    buffer.drop(heap, kp);
                 }
                 if saved == 0 {
                     var line = buffer.push_nat(heap, buffer.empty(heap, 16), number);

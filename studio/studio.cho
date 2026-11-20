@@ -192,7 +192,7 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 gate = 302;
                             } else if auth.token_ok(head, table, token) == false {
                                 gate = 401;
-                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && ((bytes.equal(path, "/edit") == false && bytes.equal(path, "/gallery") == false && bytes.equal(path, "/batch") == false) || auth.multipart_ok(head, table) == false) && ((bytes.starts_with(path, "/compare/") == false && bytes.starts_with(path, "/gallery/delete/") == false) || auth.form_ok(head, table) == false) {
+                            } else if bytes.equal(method, "POST") && auth.json_ok(head, table) == false && ((bytes.equal(path, "/edit") == false && bytes.equal(path, "/gallery") == false && bytes.equal(path, "/batch") == false) || auth.multipart_ok(head, table) == false) && ((bytes.starts_with(path, "/compare/") == false && bytes.starts_with(path, "/gallery/delete/") == false && bytes.starts_with(path, "/gallery/group/") == false) || auth.form_ok(head, table) == false) {
                                 gate = 415;
                             }
                             if gate == 403 {
@@ -317,6 +317,16 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                     }
                                 }
                                 buffer.drop(heap, ltext);
+                            } else if bytes.starts_with(path, "/gallery/group/") && bytes.equal(method, "POST") {
+                                let (kst, ktext) = gallery.set_group(heap, fs, dir, path[15..len(path)], server.body(sr));
+                                if kst == 302 {
+                                    out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, "Location: /gallery\r\n");
+                                } else {
+                                    borrow ktext as &ktb in {
+                                        out = server.reply_as(heap, out, kst, "text/plain; charset=utf-8", buffer.bytes(ktb), keep, "");
+                                    }
+                                }
+                                buffer.drop(heap, ktext);
                             } else if bytes.starts_with(path, "/gallery/delete/") && bytes.equal(method, "POST") {
                                 let (dst, dtext) = gallery.remove(heap, fs, dir, path[16..len(path)]);
                                 if dst == 302 {

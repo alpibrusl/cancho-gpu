@@ -129,7 +129,7 @@
     "/gallery": {
       "post": {
         "summary": "Add a picture to the library (multipart/form-data, the part image: JPEG, PNG or WebP, up to 15 MiB): kept as <data>/lib-N.* and listed in the gallery as uploaded; served as /files/LN/picture.EXT. No job is made.",
-        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["image"], "properties": { "image": { "type": "string", "format": "binary" }, "description": { "type": "string", "maxLength": 200, "description": "Optional: what is in the picture, to find it later with ?q= (a line, no control characters)." } } } } } },
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["image"], "properties": { "image": { "type": "string", "format": "binary" }, "description": { "type": "string", "maxLength": 200, "description": "Optional: what is in the picture, to find it later with ?q= (a line, no control characters)." }, "group": { "type": "string", "enum": ["person", "garment", "furniture", "room", "place", "object", "animal", "other"], "description": "The group, if you know it: the describer then does not ask the model." } } } } } },
         "responses": {
           "302": { "description": "Kept: Location /gallery." },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -184,6 +184,22 @@
           "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/gallery/group/{id}": {
+      "post": {
+        "summary": "Set the group of library picture `id`: `group=WORD` where WORD is one of the eight groups (written as lib-N.kind, which the describer never replaces) or `auto` (the group is taken away and the describer sorts the picture again). An HTML form (`application/x-www-form-urlencoded`).",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[0-9]{1,9}$" } }],
+        "requestBody": { "required": true, "content": { "application/x-www-form-urlencoded": { "schema": { "type": "object", "required": ["group"], "properties": { "group": { "type": "string", "enum": ["auto", "person", "garment", "furniture", "room", "place", "object", "animal", "other"] } } } } } },
+        "responses": {
+          "302": { "description": "Done: Location /gallery." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "description": "No such library picture.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "422": { "description": "The id is not 1 to 9 digits, or the group is not a word of the list.", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "500": { "description": "The group could not be written.", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
     },
