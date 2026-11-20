@@ -73,17 +73,47 @@ for id in 7 8; do
   for f in video.mp4 video.gif edited.png image.png prompt.txt ci_s.f32 ctx.f16 text.npy video.npy; do printf 'x' > "$M/out/$id/$f"; done
   printf 'x' > "$M/out/$id/frames/f000.png"
   mkdir "$M/out/$id/vae"; printf 'x' > "$M/out/$id/vae/cv1.f16"; printf 'x' > "$M/out/$id/vae/bi2.f32"
+  mkdir -p "$M/out/$id/work/edit_work/deep" "$M/out/$id/work/vae_work"; printf 'x' > "$M/out/$id/work/z.npy"
+  printf 'x' > "$M/out/$id/work/edit_work/w.f16"; printf 'x' > "$M/out/$id/work/edit_work/deep/w2.f16"; printf 'x' > "$M/out/$id/work/vae_work/c.f16"
 done
 printf 'secret' > "$M/secret.txt"; ln -s "$M/secret.txt" "$M/out/7/link"
 printf 'video\0ok\0' > "$M/7.argv"; printf 'fail\0x\0' > "$M/8.argv"; printf '7\n8\n' > "$M/queue"
 build/studio_worker "$M/fake.sh" /Users/test "$M"
-check "tidy: work files removed" "$(ls "$M/out/7" | tr '\n' ' ')" 'edited.png frames image.png link prompt.txt vae video.gif video.mp4 '
+check "tidy: work files removed" "$(ls "$M/out/7" | tr '\n' ' ')" 'edited.png frames image.png link prompt.txt vae video.gif video.mp4 work '
 check "tidy: frames/ untouched" "$(ls "$M/out/7/frames")" f000.png
 check "tidy: a subdirectory of work files is emptied" "$(ls "$M/out/7/vae" | wc -l | tr -d ' ')" 0
 check "tidy: a link is not followed or removed" "$(cat "$M/secret.txt")" secret
-check "tidy: the log says how many" "$(tail -1 "$M/7.log")" "studio: removed 6 work files from out/7"
-check "tidy: a failed job keeps everything" "$(ls "$M/out/8" | wc -l | tr -d ' ')" 11
+check "tidy: the log says how many" "$(tail -1 "$M/7.log")" "studio: removed 10 work files from out/7"
+check "work: a done job has no file left in work/ at any depth" "$(find "$M/out/7/work" -type f | wc -l | tr -d ' ')" 0
+check "work: ...and its results are still there" "$(cat "$M/out/7/image.png" "$M/out/7/edited.png" "$M/out/7/prompt.txt")" xxx
+check "work: a job that failed keeps its work/ for the run that failed (looked at)" "$(find "$M/out/8/work" -type f | wc -l | tr -d ' ')" 4
+# a worker that starts later sweeps the jobs that ended: a failed one loses work/ only, a done one is tidied, a job that is not in the queue (or has no state yet) is not touched
+mkdir -p "$M/out/9/work/x" "$M/out/10/work/x" "$M/out/11/work"; printf 'x' > "$M/out/9/work/x/f"; printf 'x' > "$M/out/10/work/x/f"; printf 'x' > "$M/out/11/work/f"
+printf 'x' > "$M/out/9/video.mp4"; printf 'x' > "$M/out/9/junk.npy"; printf 'x' > "$M/out/8/junk.npy"; printf 'x' > "$M/out/10/video.mp4"
+printf 'done\n' > "$M/9.state"; printf 'failed 3\n' > "$M/10.state"; printf '7\n8\n9\n10\n' > "$M/queue"
+build/studio_worker "$M/fake.sh" /Users/test "$M"
+check "sweep: a failed job's work/ files are gone at the next start" "$(find "$M/out/8/work" -type f | wc -l | tr -d ' ')" 0
+check "sweep: ...but its other files stay (a failed job is looked at)" "$(ls "$M/out/8" | grep -c junk.npy)" 1
+check "sweep: a job that was done before the change is tidied" "$(ls "$M/out/9" | tr '\n' ' ')" "video.mp4 work "
+check "sweep: ...with nothing left in work/" "$(find "$M/out/9/work" -type f | wc -l | tr -d ' ')" 0
+check "sweep: a failed job's results stay" "$(ls "$M/out/10" | grep -c video.mp4)" 1
+check "sweep: ...and its work/ is emptied" "$(find "$M/out/10/work" -type f | wc -l | tr -d ' ')" 0
+check "sweep: a job that is not in the queue is not touched" "$(find "$M/out/11/work" -type f | wc -l | tr -d ' ')" 1
+# a running job's work/ is there while it runs (the script makes it, the worker removes it after) and a job left `running` by a dead worker is failed 255 and swept
+printf '#!/bin/sh\nmkdir -p "$3/out/12/work"; printf x > "$3/out/12/work/f"; ls "$3/out/12/work"; exit 0\n' > "$M/peek.sh"; chmod +x "$M/peek.sh"
+printf 'video\0x\0%s\0' "$M" > "$M/12.argv"; printf '12\n' > "$M/queue"
+build/studio_worker "$M/peek.sh" /Users/test "$M"
+check "work: seen by the job while it ran" "$(head -1 "$M/12.log")" f
+check "work: gone when it was done" "$(find "$M/out/12/work" -type f | wc -l | tr -d ' ')" 0
 rm -rf "$M"
+# the wrapper: CANCHO_MEDIA_CLEAN_WORK=1 removes DIR/work (the whole directory) after an exit 0, not after a failure, and does nothing without it
+W=$(mktemp -d); mkdir -p "$W/bin"
+printf '#!/bin/sh\nfor a; do [ "$p" = -o ] && o=$a; p=$a; done\nmkdir -p "$o/work/deep"; printf x > "$o/work/deep/f"; printf x > "$o/image.png"\ncase "$*" in *failme*) exit 7;; esac\nexit 0\n' > "$W/bin/py"; chmod +x "$W/bin/py"
+wrap() { env CANCHO_MEDIA_IMPL=python CANCHO_MEDIA_PY="$W/bin/py" CANCHO_MEDIA_CACHE="$W/cache" "$@" scripts/media image "p" -o "$W/o$n" -- x; }
+n=1; wrap >/dev/null 2>&1; check "wrapper: the work/ is kept by default" "$(ls "$W/o1" | tr '\n' ' ')" "image.png work "
+n=2; wrap CANCHO_MEDIA_CLEAN_WORK=1 >/dev/null 2>&1; check "wrapper: CLEAN_WORK=1 removes work/, keeps the result" "$(ls "$W/o2" | tr '\n' ' ')" "image.png "
+n=3; env CANCHO_MEDIA_IMPL=python CANCHO_MEDIA_PY="$W/bin/py" CANCHO_MEDIA_CACHE="$W/cache" CANCHO_MEDIA_CLEAN_WORK=1 scripts/media image failme -o "$W/o3" >/dev/null 2>&1 || true; check "wrapper: a failing job keeps its work/" "$(ls "$W/o3" | tr '\n' ' ')" "image.png work "
+rm -rf "$W"
 
 # The worker in a loop (`--every`): a job that arrives later is run; TERM while it waits stops it at once (exit 0); TERM during a job lets that job end first.
 L=$(mktemp -d)

@@ -293,7 +293,30 @@ A) the menu and slice 3; B) the library upload and the picker. Each its own PR w
 
 **Measured with the real describer** (`qwen3.5:4b`, blind, once each): **the generated gallery: 25 of 27 right.** The two: the white sneakers came back `object` (the question says shoes are `garment`) and the floor lamp `object` (it says a lamp is `furniture`). **The Commons photographs: 17 of 27**, and the ten misses are mostly the pictures, not the model: of the ten, the descriptions the model wrote show a clothes rack at a market (for the denim jacket), a robot, a bathroom that is a hammam with a chandelier called `place`, a child with a dog called `person`; I read the descriptions of those ten, not the pictures, so the split between the model's mistakes and the pictures' is a reading, not a count. The number that stands is the first one, on pictures made to show one group each; it is 27 pictures, one run.
 
-**Found while generating, not fixed:** a studio job leaves its intermediate files in `out/N/work`, **about 2 to 7 GB for each edit or image job**, and nothing deletes them. Generating the 27 pictures filled the disk (the jobs from the 19th on failed with `OSError ... requested and 0 written`; they were queued again after freeing space), and this session's scratch folder held 210 GB of such directories from earlier test studios. The results (`image.png`, `edited.png`) are small. A job should remove `work` when it ends or the studio should have a clean-up; that is a change to the worker and the media wrapper, and is left as the next piece.
+**Found while generating, not fixed:** a studio job leaves its intermediate files in `out/N/work`, **about 2 to 7 GB for each edit or image job**, and nothing deletes them. Generating the 27 pictures filled the disk (the jobs from the 19th on failed with `OSError ... requested and 0 written`; they were queued again after freeing space), and this session's scratch folder held 210 GB of such directories from earlier test studios. The results (`image.png`, `edited.png`) are small. A job should remove `work` when it ends or the studio should have a clean-up; that is a change to the worker and the media wrapper, and is done in section 21.
 
 **Checked** (`studio/check.sh`: 572 ok and the one failure that is also on main; 6 new checks): a group given at upload is kept and a bad one refused with nothing added; set by the form with the mark removed; the tile's list with the current group selected, and the page counting it under the new group; `auto` and a second `auto`; the refusals (word not in the list, no word, no picture, bad number, GET, text/plain, no token, foreign Origin) with no group written; the OpenAPI document. The script is checked by use above, not by a test.
 
+
+## 21. A finished job no longer leaves `work/` behind (asked 2026-11-20; built)
+
+**Why it was kept.** Nothing resumes from `out/N/work` and no option needs it: `build/media` makes `DIR/work` (`media/media.cho`, `media/clip.cho`) and hands it to the stage drivers as their scratch directory (`tests/t2i_pipeline_gpu.py`, `tests/edit_pipeline_gpu.py`: the stage files, `edit_work/`, `vae_work/`, the `.npy` and `.f32` between stages); only the logs and results are read afterwards. The worker's own tidy (docs/studio.md) existed since slice 2 but cleared only **one level** of subdirectories, so the files in `work/edit_work/` and `work/vae_work/`, where the gigabytes are, were never reached.
+
+**Measured** (this machine, `scripts/media image`, 8 steps, results `image.png` and `prompt.txt`):
+
+| job | `out/N` | of it `work/` | `work/edit_work` | `work/vae_work` | files in `work/` |
+|---|---|---|---|---|---|
+| 512 x 512 | 1.1 GB | 1.1 GB | 589 MB | 536 MB | 248 |
+| 1024 x 1024 | 3.1 GB | 3.0 GB | 2.4 GB | 615 MB | not counted |
+
+Both before the change; the results are `image.png` (a few hundred KB) and `prompt.txt`. An edit job is in the 2 to 7 GB the studio's owner saw; I did not run one here.
+
+**What changed.**
+* `scripts/media` (shell, because the pinned compiler cannot remove a directory: `unlinkat` without `AT_REMOVEDIR`): with `CANCHO_MEDIA_CLEAN_WORK=1` it removes `DIR/work` (`DIR` is the argument after `-o`) when the job exits 0. **Without the variable nothing changes**: the command line keeps `work/`, which is the explicit way to keep it for debugging. A failed job keeps it, to look at. Both the cancho program and the Python fallback are covered.
+* The studio's worker sets `CANCHO_MEDIA_CLEAN_WORK=1` in the environment it gives every job, so removal is the default for the studio. It has no switch to turn that off; to keep `work/` run `scripts/media` by hand.
+* The worker's tidy now goes **all levels** down (`clear_tree`, eight deep; a link is neither followed nor removed), so even when the wrapper is not the one that ends the job, no file is left.
+* **At start** (`sweep`, under the lock, after `recover`): every job in the queue whose state is `done` is tidied as after a run, and every one that is `failed N` (a dead worker's `failed 255` included) loses `work/` only, its other files staying. A job with no state, or not in the queue, is never touched; a job that is running is not either (the worker is the only one that starts jobs, and it is not between jobs). Silent: no log line.
+
+**Left, stated.** The worker cannot remove a directory, so for a job that ended before this change, or one that failed, the empty `work/` tree remains (about 4 directories); only `scripts/media` removes `work/` itself, and only for a job it ran with the variable. A failed job's `work/` files stay until the next time a worker starts.
+
+**Checked** (`studio/check.sh`: 586 ok and the one failure that is also on main): a done job has no file in `work/` at any depth and its results stay; the log's count; a failed job keeps `work/` while it is the run that failed and loses it (and only it) at the next start; a done job from before the change is tidied; a job not in the queue is untouched; the job sees its `work/` while it runs; the wrapper keeps `work/` by default, removes it with the variable on success, keeps it on failure.

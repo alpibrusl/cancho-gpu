@@ -6,6 +6,20 @@ PY=${CANCHO_MEDIA_PY:-$HERE/.venv/bin/python}
 [ -x "$PY" ] || PY=$HOME/Workspace/alpibrusl/cancho/imgtest/.venv/bin/python
 [ -x "$PY" ] || PY=python3
 CACHE=${CANCHO_MEDIA_CACHE:-$HOME/.cache/cancho-media}
+# `-o DIR` (before any `--`): where the stages' intermediate files go, in DIR/work (1 to 7 GB for an edit or an image). They are kept unless CANCHO_MEDIA_CLEAN_WORK=1 (the studio's worker sets
+# it): then DIR/work is removed when the job exits 0. A job that fails keeps it, for looking at (the studio's worker removes it at its next start). cancho cannot remove a directory yet, hence `rm`.
+OUT=""; prev=""
+for a in "$@"; do
+  [ "$a" = -- ] && break
+  [ "$prev" = -o ] && OUT=$a
+  prev=$a
+done
+clean_work() {
+  if [ "$1" = 0 ] && [ "${CANCHO_MEDIA_CLEAN_WORK:-}" = 1 ] && [ -n "$OUT" ]; then
+    case "$OUT" in /*) ;; *) OUT=$(pwd -P)/$OUT ;; esac
+    if [ -d "$OUT/work" ] && [ ! -L "$OUT/work" ]; then rm -rf "$OUT/work"; fi
+  fi
+}
 ONLINE=""
 if [ "${1:-}" = "--online" ]; then ONLINE=1; shift; fi
 cho=0
@@ -22,7 +36,10 @@ for a in "$@"; do case "$a" in --segments|--then|--no-correct) [ "${1:-}" = vide
 [ "${CANCHO_MEDIA_IMPL:-}" = python ] && cho=0
 if [ $cho = 0 ]; then
   [ -n "$ONLINE" ] && set -- --online "$@"
-  exec "$PY" "$HERE/tools/media.py" "$@"
+  "$PY" "$HERE/tools/media.py" "$@"
+  rc=$?
+  clean_work $rc
+  exit $rc
 fi
 if [ "$1" = models ]; then exec "$HERE/build/media" models; fi
 # one GPU job at a time: the lock file holds this shell's pid, which tools/media.py reads too (`rewrite` uses no GPU and takes none)
@@ -51,4 +68,6 @@ FREE=$(df -k "$CACHE" 2>/dev/null | awk 'NR==2{print $4}')
 [ -n "${CANCHO_MEDIA_EDIT_TEXT_WEIGHTS:-}" ] && set -- --edit-text-weights "$CANCHO_MEDIA_EDIT_TEXT_WEIGHTS" "$@"
 [ -n "${CANCHO_MEDIA_EDIT_WEIGHTS:-}" ] && set -- --edit-weights "$CANCHO_MEDIA_EDIT_WEIGHTS" "$@"
 "$HERE/build/media" --root "$HERE" --cwd "$(pwd -P)" --home "$HOME" --py "$PY" --cache "$CACHE" "$@"
-exit $?
+rc=$?
+clean_work $rc
+exit $rc

@@ -172,10 +172,40 @@ fn clear[&h, &d](heap: &!h Heap, dir: &d Dir, all: bool) -> [heap, dir_read, dir
     return removed;
 }
 
+// Every regular file beneath `dir` at any depth (to `depth` levels of subdirectories), not only the ones `clear` takes: `media`'s `work/` holds `edit_work/` and `vae_work/` beside
+// its own files, and the weights it staged there are the gigabytes. A link is left and never followed (`dirs.kind` says link, not directory). The number removed.
+fn clear_tree[&h, &d](heap: &!h Heap, dir: &d Dir, depth: int) -> [heap, dir_read, dir_write] int {
+    var removed = clear(heap, dir, true);
+    if depth > 0 {
+        let names = dirs.list(heap, dir, 10000);
+        borrow names as &nr in {
+            var k = 0;
+            while k < dirs.count(nr) {
+                if dirs.kind(nr, k) == dirs.kind_directory() {
+                    match dir_enter(dir, dirs.name(nr, k)) {
+                        DirOpened::Ok(so) => {
+                            var sub = so;
+                            borrow sub as &sr in {
+                                removed = removed + clear_tree(heap, sr, depth - 1);
+                            }
+                            dir_close(sub);
+                        }
+                        DirOpened::Failed(e) => {
+                        }
+                    }
+                }
+                k = k + 1;
+            }
+        }
+        dirs.drop(heap, names);
+    }
+    return removed;
+}
+
 // After a job that is `done`: what `media` left in `<data>/out/<id>` that is not a result is removed (its session's work files: 1.1 GB in `vae/` and 0.2 GB beside the results for a 17-frame video,
-// measured on a real job). The results stay (`keep`), `frames/` stays, and every other subdirectory is emptied of its files (one level; a directory cannot be removed with `unlinkat` as it is
-// called here, so the empty one stays). Answers how many files were removed, -1 if the directory could not be opened. Beneath a `Dir` handle: a name is one component and a link is removed, never followed.
-fn tidy[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte]) -> [heap, fs_read(""), dir_read, dir_write] int {
+// measured on a real job). The results stay (`keep`), `frames/` stays, and every other subdirectory is emptied of its files at every depth (a directory cannot be removed with `unlinkat` as it is
+// called here, so the empty ones stay; `scripts/media` removes `work/` whole). Answers how many files were removed, -1 if the directory could not be opened. Beneath a `Dir` handle: a name is one component and a link is removed, never followed.
+fn tidy[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [byte], only_work: bool) -> [heap, fs_read(""), dir_read, dir_write] int {
     var removed = 0 - 1;
     var p = buffer.append(heap, buffer.empty(heap, 64), dir);
     p = buffer.append(heap, p, "/out/");
@@ -186,18 +216,21 @@ fn tidy[&h, &f, &d, &i](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], id: &i [b
                 DirOpened::Ok(o) => {
                     var handle = o;
                     borrow handle as &dr in {
-                        removed = clear(heap, dr, false);
+                        removed = 0;
+                        if only_work == false {
+                            removed = clear(heap, dr, false);
+                        }
                         let names = dirs.list(heap, dr, 10000);
                         borrow names as &nr in {
                             var k = 0;
                             while k < dirs.count(nr) {
                                 let nm = dirs.name(nr, k);
-                                if dirs.kind(nr, k) == dirs.kind_directory() && bytes.equal(nm, "frames") == false {
+                                if dirs.kind(nr, k) == dirs.kind_directory() && bytes.equal(nm, "frames") == false && (only_work == false || bytes.equal(nm, "work")) {
                                     match dir_enter(dr, nm) {
                                         DirOpened::Ok(so) => {
                                             var sub = so;
                                             borrow sub as &sr in {
-                                                removed = removed + clear(heap, sr, true);
+                                                removed = removed + clear_tree(heap, sr, 8);
                                             }
                                             dir_close(sub);
                                         }
@@ -255,7 +288,7 @@ fn job[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &i](heap: &!h Heap, fs: &
                     Opened::Ok(log) => {
                         var env = buffer.append(heap, buffer.empty(heap, 128), "HOME=");
                         env = buffer.append(heap, env, home);
-                        env = buffer.append(heap, env, "\0PATH=/usr/bin:/bin:/opt/homebrew/bin\0");
+                        env = buffer.append(heap, env, "\0PATH=/usr/bin:/bin:/opt/homebrew/bin\0CANCHO_MEDIA_CLEAN_WORK=1\0");
                         var code = 255;
                         borrow list as &lb in {
                             borrow fresh as &fb in {
@@ -301,7 +334,7 @@ fn job[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &i](heap: &!h Heap, fs: &
                         buffer.drop(heap, line);
                         status = code;
                         if code == 0 {
-                            let gone = tidy(heap, fs, dir, id);
+                            let gone = tidy(heap, fs, dir, id, false);
                             var note = buffer.append(heap, buffer.empty(heap, 48), "studio: removed ");
                             var shown = gone;
                             if shown < 0 {
@@ -424,6 +457,56 @@ fn recover[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, 
     return marked;
 }
 
+// With the lock held, once at start: the jobs that already ended and left files behind (a worker before this change kept `work/` of every job: 2 to 7 GB each). A job whose state is `done` is tidied
+// as after a run; one that is `failed N` loses its `work/` only (its results, if any, stay). A job with no state, or `running`, is not touched (`recover` has just turned the dead ones into `failed 255`).
+// Silent: nothing is added to a log. The number of jobs swept.
+fn sweep[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read, dir_read, dir_write] int {
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    var text = buffer.empty(heap, 8);
+    borrow qp as &q in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(q));
+        buffer.drop(heap, text);
+        text = b;
+    }
+    buffer.drop(heap, qp);
+    var swept = 0;
+    borrow text as &tb in {
+        let all = buffer.bytes(tb);
+        var at = 0;
+        while at < len(all) {
+            var stop = at;
+            while stop < len(all) && int_of(all[stop]) != 10 {
+                stop = stop + 1;
+            }
+            let id = all[at..stop];
+            if id_ok(id) {
+                let sp = named(heap, dir, id, "state");
+                var finished = 0;
+                borrow sp as &sb in {
+                    let (b, e) = files.read_all(heap, fs, buffer.bytes(sb));
+                    borrow b as &br in {
+                        if e == 0 && bytes.starts_with(buffer.bytes(br), "done") {
+                            finished = 1;
+                        }
+                        if e == 0 && bytes.starts_with(buffer.bytes(br), "failed") {
+                            finished = 2;
+                        }
+                    }
+                    buffer.drop(heap, b);
+                }
+                buffer.drop(heap, sp);
+                if finished > 0 {
+                    tidy(heap, fs, dir, id, finished == 2);
+                    swept = swept + 1;
+                }
+            }
+            at = stop + 1;
+        }
+    }
+    buffer.drop(heap, text);
+    return swept;
+}
+
 // Once, under the lock: 0, or 4 if another worker holds it (or the lock file cannot be opened).
 fn once[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d](heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &md [byte], pdir: &pd [byte], script: &s [byte], home: &m [byte], dir: &d [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, exec_under, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock, dir_read, dir_write] int {
     var status = 4;
@@ -441,6 +524,7 @@ fn once[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d](heap: &!h Heap, fs: &f F
                     }
                     if held {
                         recover(heap, fs, dir);
+                        sweep(heap, fs, dir);
                         drain(heap, fs, exec, sdir, net, clock, model, pdir, script, home, dir);
                         status = 0;
                     }
@@ -521,6 +605,7 @@ fn keep_going[&h, &f, &x, &y, &nt, &ck, &md, &pd, &s, &m, &d, &p, &w](heap: &!h 
                     if held {
                         status = 0;
                         recover(heap, fs, dir);
+                        sweep(heap, fs, dir);
                         var stop = false;
                         while stop == false {
                             drain(heap, fs, exec, sdir, net, clock, model, pdir, script, home, dir);
