@@ -60,8 +60,51 @@
     },
     "/cases": {
       "get": {
-        "parameters": [ { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 100 }, "description": "Words to find the pictures offered in the lists (a description, or an instruction)." } ],
-        "summary": "Ready-made two-picture edits (HTML, no JavaScript): try clothes on a person, redecorate a room, put an object in a room, put a person in another place, a hairstyle, a style. Each case is a form that posts to /edit with image, image2 and an instruction written in advance.",
+        "summary": "Moved: the cases are in four tabs, /styling, /decoration, /travel and /creative (docs/studio-sessions.md, section 19).",
+        "responses": {
+          "302": { "description": "Location: /styling" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/styling": {
+      "get": {
+        "parameters": [ { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 100 }, "description": "Words to find the pictures offered in the lists (a description, or an instruction)." }, { "name": "wide", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] }, "description": "1 offers every picture in every list, not only the pictures of the group each list needs." } ],
+        "summary": "Try several garments on one person, try clothes on a person, try a hairstyle (HTML, no JavaScript). Pictures are chosen from the gallery, never uploaded here; the instruction, the real sizes and the seed are under Advanced. Each case posts to /edit (or /batch) with pick1, pick2 (or pickm, pickg).",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/decoration": {
+      "get": {
+        "parameters": [ { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 100 }, "description": "Words to find the pictures offered in the lists (a description, or an instruction)." }, { "name": "wide", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] }, "description": "1 offers every picture in every list, not only the pictures of the group each list needs." } ],
+        "summary": "Redecorate a room in several styles, redecorate a room, put an object in a room (HTML, no JavaScript). Pictures are chosen from the gallery, never uploaded here; the instruction, the real sizes and the seed are under Advanced. Each case posts to /edit (or /batch) with pick1, pick2 (or pickm, pickg).",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/travel": {
+      "get": {
+        "parameters": [ { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 100 }, "description": "Words to find the pictures offered in the lists (a description, or an instruction)." }, { "name": "wide", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] }, "description": "1 offers every picture in every list, not only the pictures of the group each list needs." } ],
+        "summary": "Put a person in another place (HTML, no JavaScript). Pictures are chosen from the gallery, never uploaded here; the instruction, the real sizes and the seed are under Advanced. Each case posts to /edit (or /batch) with pick1, pick2 (or pickm, pickg).",
+        "responses": {
+          "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/creative": {
+      "get": {
+        "parameters": [ { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 100 }, "description": "Words to find the pictures offered in the lists (a description, or an instruction)." }, { "name": "wide", "in": "query", "required": false, "schema": { "type": "string", "enum": ["1"] }, "description": "1 offers every picture in every list, not only the pictures of the group each list needs." } ],
+        "summary": "Use the style of another picture (HTML, no JavaScript). Pictures are chosen from the gallery, never uploaded here; the instruction, the real sizes and the seed are under Advanced. Each case posts to /edit (or /batch) with pick1, pick2 (or pickm, pickg).",
         "responses": {
           "200": { "description": "HTML", "content": { "text/html": { "schema": { "type": "string" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -72,7 +115,7 @@
     "/batch": {
       "post": {
         "summary": "One picture and several others, one edit each (multipart/form-data): the first picture is `image` or `pick1`; the others are `image2` to `image6` (files) or `pick2` to `pick6` (a choice from the gallery), at least one; one two-picture edit is queued for each, with the same prompt, note, seed, steps, model and condition_area, all in one session (the first job's). Everything is checked before anything is made. Goes to /sessions/FIRST.",
-        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "note": { "type": "string", "maxLength": 200 }, "seed": { "type": "string" }, "steps": { "type": "string" }, "model": { "type": "string" }, "condition_area": { "type": "string" }, "image": { "type": "string", "format": "binary" }, "pick1": { "type": "string", "description": "j/JOB/NAME or l/LN, as for POST /edit." }, "image2": { "type": "string", "format": "binary" }, "image3": { "type": "string", "format": "binary" }, "image4": { "type": "string", "format": "binary" }, "image5": { "type": "string", "format": "binary" }, "image6": { "type": "string", "format": "binary" }, "pick2": { "type": "string" }, "pick3": { "type": "string" }, "pick4": { "type": "string" }, "pick5": { "type": "string" }, "pick6": { "type": "string" }, "pickm": { "type": "string", "description": "A picture of the gallery ticked in the grid (j/JOB/NAME or l/LN); the field is sent once for each one ticked." }, "images": { "type": "string", "format": "binary", "description": "Several files chosen together in one input; the field is sent once for each. At most 5 other pictures in all (image2..6, pick2..6, pickm, images)." } } } } } },
+        "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "minLength": 1, "maxLength": 1000 }, "note": { "type": "string", "maxLength": 200 }, "seed": { "type": "string" }, "steps": { "type": "string" }, "model": { "type": "string" }, "condition_area": { "type": "string" }, "image": { "type": "string", "format": "binary" }, "pick1": { "type": "string", "description": "j/JOB/NAME or l/LN, as for POST /edit." }, "image2": { "type": "string", "format": "binary" }, "image3": { "type": "string", "format": "binary" }, "image4": { "type": "string", "format": "binary" }, "image5": { "type": "string", "format": "binary" }, "image6": { "type": "string", "format": "binary" }, "pick2": { "type": "string" }, "pick3": { "type": "string" }, "pick4": { "type": "string" }, "pick5": { "type": "string" }, "pick6": { "type": "string" }, "pickm": { "type": "string", "description": "A picture of the gallery ticked in the grid (j/JOB/NAME or l/LN); the field is sent once for each one ticked." }, "pickg": { "type": "string", "enum": ["person", "garment", "furniture", "room", "place", "object", "animal", "other"], "description": "With no pickm ticked: the newest five library pictures of this group, one edit for each." }, "images": { "type": "string", "format": "binary", "description": "Several files chosen together in one input; the field is sent once for each. At most 5 other pictures in all (image2..6, pick2..6, pickm, images)." } } } } } },
         "responses": {
           "302": { "description": "The jobs are queued: Location /sessions/FIRST." },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -99,6 +142,7 @@
         "summary": "Every picture the studio holds, newest job first, 48 a page (HTML): each with a tag from the file it is: uploaded (upload-N.*), generated (out/N/image.png), edited (out/N/edited.png; a result is listed only when its job is done). A result offers Refine.",
         "parameters": [
           { "name": "tag", "in": "query", "required": false, "schema": { "type": "string", "enum": ["uploaded", "generated", "edited"] } },
+          { "name": "group", "in": "query", "required": false, "schema": { "type": "string", "enum": ["person", "garment", "furniture", "room", "place", "object", "animal", "other"] }, "description": "Only the library pictures the describer sorted into this group (job pictures have no group)." },
           { "name": "q", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 100 }, "description": "Words to find: in a library picture's description, or in the instruction a job's picture was made with (ignoring case). Empty finds everything." },
           { "name": "page", "in": "query", "required": false, "schema": { "type": "string", "description": "1 to 4 digits; a page past the end is empty." } }
         ],

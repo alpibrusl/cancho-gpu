@@ -24,6 +24,14 @@ fn question() -> [] &static [byte] {
     return "List what is in this picture as plain comma-separated words for a search index: each main object or garment with its colour or material, then the setting. Use common everyday nouns, no adjectives like serene or beautiful, no verbs, at most 20 words.";
 }
 
+fn kind_system() -> [] &static [byte] {
+    return "You sort pictures into groups for a personal picture library. Answer with exactly one word of the list and nothing else.";
+}
+
+fn kind_question() -> [] &static [byte] {
+    return "What is the main subject of this picture? Answer with exactly one word from this list and nothing else: person, garment, furniture, room, place, object, animal, other. Use person when a person is the main subject, even when they wear clothes; garment for clothing or shoes or a bag shown on their own or on a hanger; furniture for one piece of furniture or a lamp; room for a view of a whole room; place for a landscape, street or building; object for any other single thing.";
+}
+
 fn max_picture() -> [] int {
     return 12582912;
 }
@@ -92,26 +100,108 @@ fn picture_ext[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], nu
     return "";
 }
 
+// The bytes of library picture `number` and 0, or (empty, 1) when the file is gone, too small or too big.
+fn read_picture[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], number: &n [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+    let ext = picture_ext(heap, fs, dir, number);
+    var picture = buffer.empty(heap, 8);
+    var perr = 1;
+    if len(ext) > 0 {
+        let pp = path_of(heap, dir, number, ext);
+        borrow pp as &ppb in {
+            let size = files.size_of(fs, buffer.bytes(ppb));
+            if size >= 16 && size <= max_picture() {
+                let (b, e) = files.read_all(heap, fs, buffer.bytes(ppb));
+                buffer.drop(heap, picture);
+                picture = b;
+                perr = e;
+            }
+        }
+        buffer.drop(heap, pp);
+    }
+    return (picture, perr);
+}
+
+fn has_letter[&t](text: &t [byte]) -> [] bool {
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The group an answer names: its first word, in lower case, if it is one of the list; else `other`.
+fn kind_of_answer[&t](text: &t [byte]) -> [] &static [byte] {
+    var i = 0;
+    while i < len(text) && (int_of(text[i]) < 65 || (int_of(text[i]) > 90 && int_of(text[i]) < 97) || int_of(text[i]) > 122) {
+        i = i + 1;
+    }
+    var found = results.kind_count() - 1;
+    var w = 0;
+    while w < results.kind_count() {
+        let name = results.kind_name(w);
+        var m = 0;
+        var same = i + len(name) <= len(text);
+        while same && m < len(name) {
+            var c = int_of(text[i + m]);
+            if c >= 65 && c <= 90 {
+                c = c + 32;
+            }
+            if c != int_of(name[m]) {
+                same = false;
+            }
+            m = m + 1;
+        }
+        if same {
+            let after = i + len(name);
+            let letter = after < len(text) && ((int_of(text[after]) >= 65 && int_of(text[after]) <= 90) || (int_of(text[after]) >= 97 && int_of(text[after]) <= 122));
+            if letter == false {
+                found = w;
+                w = results.kind_count();
+            }
+        }
+        w = w + 1;
+    }
+    return results.kind_name(found);
+}
+
+// Sort one picture into its group: 0 written as `lib-N.kind`, 1 Ollama could not be reached (try again later), 2 this picture cannot be sorted (marked `lib-N.kindtried`).
+fn kind_one[&h, &f, &nt, &ck, &m, &d, &n](heap: &!h Heap, fs: &f Fs(""), net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &m [byte], dir: &d [byte], number: &n [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] int {
+    let (picture, perr) = read_picture(heap, fs, dir, number);
+    var result = 2;
+    if perr == 0 {
+        borrow picture as &pcb in {
+            let (code, text) = rewrite.ask(heap, net, clock, model, kind_system(), kind_question(), buffer.bytes(pcb), "", 180, true);
+            if code == 0 {
+                borrow text as &tx in {
+                    // an answer with no letter in it cannot be sorted
+                    if has_letter(buffer.bytes(tx)) && mark(heap, fs, dir, number, ".kind", kind_of_answer(buffer.bytes(tx))) == 0 {
+                        result = 0;
+                    }
+                }
+            } else if code == 1 || code == 2 || code == 3 || code == 4 || code == 7 || code == 8 {
+                result = 1;
+            }
+            buffer.drop(heap, text);
+        }
+    }
+    buffer.drop(heap, picture);
+    if result == 2 {
+        mark(heap, fs, dir, number, ".kindtried", "tried");
+    }
+    return result;
+}
+
 // Describe one picture: 0 written, 1 Ollama could not be reached or did not answer in time (try again later), 2 this picture cannot be described (marked tried).
 fn describe_one[&h, &f, &nt, &ck, &m, &d, &n](heap: &!h Heap, fs: &f Fs(""), net: &nt Net("127.0.0.1:11434"), clock: &ck Clock, model: &m [byte], dir: &d [byte], number: &n [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write, net_out("127.0.0.1:11434"), conn_read, conn_write, poll, clock] int {
-    let ext = picture_ext(heap, fs, dir, number);
-    if len(ext) == 0 {
+    if len(picture_ext(heap, fs, dir, number)) == 0 {
         mark(heap, fs, dir, number, ".tried", "gone");
         return 2;
     }
-    let pp = path_of(heap, dir, number, ext);
-    var picture = buffer.empty(heap, 8);
-    var perr = 1;
-    borrow pp as &ppb in {
-        let size = files.size_of(fs, buffer.bytes(ppb));
-        if size >= 16 && size <= max_picture() {
-            let (b, e) = files.read_all(heap, fs, buffer.bytes(ppb));
-            buffer.drop(heap, picture);
-            picture = b;
-            perr = e;
-        }
-    }
-    buffer.drop(heap, pp);
+    let (picture, perr) = read_picture(heap, fs, dir, number);
     var result = 2;
     if perr == 0 {
         borrow picture as &pcb in {
@@ -176,12 +266,27 @@ fn pass[&h, &f, &nt, &ck, &m, &d](heap: &!h Heap, fs: &f Fs(""), net: &nt Net("1
                     sp = sp + 1;
                 }
                 let number = all[start..sp];
-                if results.id_ok(number) && exists(heap, fs, dir, number, ".txt") == false && exists(heap, fs, dir, number, ".tried") == false {
-                    let r = describe_one(heap, fs, net, clock, model, dir, number);
-                    if r == 0 {
+                if results.id_ok(number) {
+                    var worked = false;
+                    // the group first, then the words (a picture whose words are typed still gets its group)
+                    if len(picture_ext(heap, fs, dir, number)) > 0 && exists(heap, fs, dir, number, ".kind") == false && exists(heap, fs, dir, number, ".kindtried") == false {
+                        let k = kind_one(heap, fs, net, clock, model, dir, number);
+                        if k == 0 {
+                            worked = true;
+                        } else if k == 1 {
+                            stop = true;
+                        }
+                    }
+                    if stop == false && exists(heap, fs, dir, number, ".txt") == false && exists(heap, fs, dir, number, ".tried") == false {
+                        let r = describe_one(heap, fs, net, clock, model, dir, number);
+                        if r == 0 {
+                            worked = true;
+                        } else if r == 1 {
+                            stop = true;
+                        }
+                    }
+                    if worked {
                         done = done + 1;
-                    } else if r == 1 {
-                        stop = true;
                     }
                 }
                 end = start;

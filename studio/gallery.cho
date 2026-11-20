@@ -62,7 +62,13 @@ fn tile[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), 
             p = buffer.append(heap, p, "Added to the library");
         }
         buffer.drop(heap, desc);
-        p = buffer.append(heap, p, "</p><span class=meta>library &middot; <a href=\"/edit?pick1=l/");
+        p = buffer.append(heap, p, "</p><span class=meta>library");
+        let gk = library.kind(heap, fs, dir, id[1..len(id)]);
+        if gk >= 0 {
+            p = buffer.append(heap, p, " &middot; ");
+            p = buffer.append(heap, p, results.kind_name(gk));
+        }
+        p = buffer.append(heap, p, " &middot; <a href=\"/edit?pick1=l/");
         p = buffer.append(heap, p, id);
         p = buffer.append(heap, p, "\">Edit this</a> &middot; <details style=\"display:inline\"><summary style=\"display:inline;cursor:pointer\">Delete</summary><form method=post action=/gallery/delete/");
         p = buffer.append(heap, p, id[1..len(id)]);
@@ -170,6 +176,11 @@ fn put_q[&h, &q](heap: &!h Heap, page: buffer.Buffer, q: &q [byte]) -> [heap] bu
 pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query: &q [byte]) -> [heap, fs_read(""), file_read] (int, buffer.Buffer) {
     let (tf, tt) = http.query_value(query, "tag");
     let (pf, pt) = http.query_value(query, "page");
+    let (gf, gt) = http.query_value(query, "group");
+    var grp = 0 - 1;
+    if gf >= 0 && gt > gf {
+        grp = results.kind_index(query[gf..gt]);
+    }
     var want = "";
     var bad = false;
     if tf >= 0 && tt > tf {
@@ -204,8 +215,11 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
             }
         }
     }
+    if gf >= 0 && gt > gf && grp < 0 {
+        bad = true;
+    }
     if bad {
-        return (422, buffer.append(heap, buffer.empty(heap, 64), "tag is uploaded, generated or edited; page is a number of 1 to 4 digits"));
+        return (422, buffer.append(heap, buffer.empty(heap, 96), "tag is uploaded, generated or edited; group is person, garment, furniture, room, place, object, animal or other; page is a number of 1 to 4 digits"));
     }
     let skip = (number - 1) * 48;
     let qb = picks.query_text(heap, query, "q");
@@ -218,7 +232,31 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
     page = filter_link(heap, page, "Uploaded", "/gallery?tag=uploaded", bytes.equal(want, "uploaded"));
     page = filter_link(heap, page, "Generated", "/gallery?tag=generated", bytes.equal(want, "generated"));
     page = filter_link(heap, page, "Edited", "/gallery?tag=edited", bytes.equal(want, "edited"));
+    page = buffer.append(heap, page, "</div><div class=acts><span class=meta>Groups of the library:</span>");
+    var gi = 0;
+    while gi < results.kind_count() {
+        let gc = library.count_kind(heap, fs, dir, gi);
+        if gc > 0 || gi == grp {
+            page = buffer.append(heap, page, "<a class=btn href=\"/gallery?group=");
+            page = buffer.append(heap, page, results.kind_name(gi));
+            page = buffer.append(heap, page, "\"");
+            if gi == grp {
+                page = buffer.append(heap, page, " aria-current=page style=\"border-color:var(--accent)\"");
+            }
+            page = buffer.append(heap, page, ">");
+            page = buffer.append(heap, page, results.kind_label(gi));
+            page = buffer.append(heap, page, " (");
+            page = buffer.push_nat(heap, page, gc);
+            page = buffer.append(heap, page, ")</a>");
+        }
+        gi = gi + 1;
+    }
     page = buffer.append(heap, page, "</div><form method=get action=/gallery style=\"max-width:none;flex-direction:row;align-items:flex-end;flex-wrap:wrap\">");
+    if grp >= 0 {
+        page = buffer.append(heap, page, "<input type=hidden name=group value=");
+        page = buffer.append(heap, page, results.kind_name(grp));
+        page = buffer.append(heap, page, ">");
+    }
     if len(want) > 0 {
         page = buffer.append(heap, page, "<input type=hidden name=tag value=");
         page = buffer.append(heap, page, want);
@@ -254,7 +292,7 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
                         sp = sp + 1;
                     }
                     let number = all[start..sp];
-                    if results.id_ok(number) {
+                    if results.id_ok(number) && (grp < 0 || library.kind(heap, fs, dir, number) == grp) {
                         let lname = picks.lib_name(heap, fs, dir, number);
                         let ref = buffer.append(heap, buffer.push(heap, buffer.empty(heap, 12), byte_of(76)), number);
                         borrow ref as &rb in {
@@ -275,9 +313,12 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
     var text = buffer.empty(heap, 8);
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     borrow qp as &qb in {
-        let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
-        buffer.drop(heap, text);
-        text = b;
+        // a group is a group of the library: the pictures of jobs are not in one
+        if grp < 0 {
+            let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
+            buffer.drop(heap, text);
+            text = b;
+        }
     }
     buffer.drop(heap, qp);
     borrow text as &tb in {
@@ -325,6 +366,11 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
         page = buffer.append(heap, page, "<div class=acts>");
         if number > 1 {
             page = buffer.append(heap, page, "<a class=btn href=\"/gallery?");
+            if grp >= 0 {
+                page = buffer.append(heap, page, "group=");
+                page = buffer.append(heap, page, results.kind_name(grp));
+                page = buffer.append(heap, page, "&amp;");
+            }
             if len(want) > 0 {
                 page = buffer.append(heap, page, "tag=");
                 page = buffer.append(heap, page, want);
@@ -341,6 +387,11 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
         }
         if more {
             page = buffer.append(heap, page, "<a class=btn href=\"/gallery?");
+            if grp >= 0 {
+                page = buffer.append(heap, page, "group=");
+                page = buffer.append(heap, page, results.kind_name(grp));
+                page = buffer.append(heap, page, "&amp;");
+            }
             if len(want) > 0 {
                 page = buffer.append(heap, page, "tag=");
                 page = buffer.append(heap, page, want);
@@ -392,6 +443,8 @@ pub fn remove[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: 
     rc = remove_one(heap, fs, dir, n, ".webp");
     rc = remove_one(heap, fs, dir, n, ".txt");
     rc = remove_one(heap, fs, dir, n, ".auto");
+    rc = remove_one(heap, fs, dir, n, ".kind");
+    rc = remove_one(heap, fs, dir, n, ".kindtried");
     let mark = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n);
     let tp = buffer.append(heap, mark, ".tried");
     borrow tp as &tb in {

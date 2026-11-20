@@ -6,6 +6,7 @@ import std.buffer;
 import std.bytes;
 import files;
 import upload;
+import results;
 
 // `library` -- pictures put in the gallery with no job (docs/studio-sessions.md, section 10.3). `POST /gallery` (multipart, the part `image`) keeps the picture as `<data>/lib-N.<jpg|png|webp>`
 // (the extension from the first bytes, never from the name the browser sends) and appends `N ext` to `<data>/lib.index`; the server is the only writer. The file is written before its line, so a crash
@@ -144,4 +145,89 @@ pub fn add[&h, &f, &d, &c, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], ct
         return (302, buffer.empty(heap, 8));
     }
     return (status, error_text(heap, why));
+}
+
+// The group of library picture `n` (digits) as an index of `results.kind_name`, or -1 when the describer has not sorted it yet (`lib-N.kind`).
+pub fn kind[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: &n [byte]) -> [heap, fs_read(""), file_read] int {
+    let p = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n), ".kind");
+    var k = 0 - 1;
+    borrow p as &pb in {
+        if files.exists(fs, buffer.bytes(pb)) {
+            let (b, e) = files.read_all(heap, fs, buffer.bytes(pb));
+            if e == 0 {
+                borrow b as &bb in {
+                    k = results.kind_index(buffer.bytes(bb));
+                }
+            }
+            buffer.drop(heap, b);
+        }
+    }
+    buffer.drop(heap, p);
+    return k;
+}
+
+// How many library pictures are in group `want` (an index of `results.kind_name`).
+pub fn count_kind[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], want: int) -> [heap, fs_read(""), file_read] int {
+    let idx = index(heap, fs, dir);
+    var total = 0;
+    borrow idx as &ib in {
+        let all = buffer.bytes(ib);
+        var start = 0;
+        while start < len(all) {
+            var stop = start;
+            while stop < len(all) && int_of(all[stop]) != 10 {
+                stop = stop + 1;
+            }
+            var sp = start;
+            while sp < stop && int_of(all[sp]) != 32 {
+                sp = sp + 1;
+            }
+            let number = all[start..sp];
+            if results.id_ok(number) && kind(heap, fs, dir, number) == want {
+                total = total + 1;
+            }
+            start = stop + 1;
+        }
+    }
+    buffer.drop(heap, idx);
+    return total;
+}
+
+// The number (digits) of the `nth` newest library picture of group `want` (`nth` counts from 0), or the empty text when the group has fewer.
+pub fn nth_of_kind[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], want: int, nth: int) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    let idx = index(heap, fs, dir);
+    var found = buffer.empty(heap, 12);
+    borrow idx as &ib in {
+        let all = buffer.bytes(ib);
+        var end = len(all);
+        var seen = 0;
+        while end > 0 && seen <= nth {
+            var stop = end;
+            while stop > 0 && int_of(all[stop - 1]) == 10 {
+                stop = stop - 1;
+            }
+            if stop == 0 {
+                end = 0;
+            } else {
+                var start = stop;
+                while start > 0 && int_of(all[start - 1]) != 10 {
+                    start = start - 1;
+                }
+                var sp = start;
+                while sp < stop && int_of(all[sp]) != 32 {
+                    sp = sp + 1;
+                }
+                let number = all[start..sp];
+                if results.id_ok(number) && kind(heap, fs, dir, number) == want {
+                    if seen == nth {
+                        found = buffer.append(heap, found, number);
+                    }
+                    seen = seen + 1;
+                }
+                end = start;
+            }
+        }
+    }
+    buffer.drop(heap, idx);
+    return found;
 }

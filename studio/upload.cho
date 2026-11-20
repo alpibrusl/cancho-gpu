@@ -88,7 +88,6 @@ pub fn form_page[&h, &f, &d, &s, &a, &k](heap: &!h Heap, fs: &f Fs(""), dir: &d 
     }
     page = buffer.append(heap, page, "<label>Second picture (optional: combine it with the first; the instruction can refer to both)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label>");
     page = picks.picker(heap, page, fs, dir, "pick2", 24);
-    page = buffer.append(heap, page, "<label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label>");
     // what to fill in, from the argument list of job `again` (a job the server made: the file is its own)
     var pid = again;
     if len(rname) > 0 || results.id_ok(again) == false {
@@ -107,7 +106,9 @@ pub fn form_page[&h, &f, &d, &s, &a, &k](heap: &!h Heap, fs: &f Fs(""), dir: &d 
             page = results.escape(heap, page, buffer.bytes(avr)[ps..pe]);
         }
     }
-    page = buffer.append(heap, page, "</textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647");
+    page = buffer.append(heap, page, "</textarea></label><details><summary>Advanced</summary>");
+    page = buffer.append(heap, page, "<label>Size of each picture when combining (pixels; 589824 = 768 x 768, the default; 1048576 = 1024 x 1024 is the largest measured)<select name=condition_area><option value=589824>589824<option value=262144>262144<option value=1048576>1048576</select></label>");
+    page = buffer.append(heap, page, "<label>Seed (optional)<input name=seed type=number min=0 max=2147483647");
     if has_av {
         borrow av as &avs in {
             let (sf, st) = flag_value(buffer.bytes(avs), "--seed");
@@ -139,7 +140,7 @@ pub fn form_page[&h, &f, &d, &s, &a, &k](heap: &!h Heap, fs: &f Fs(""), dir: &d 
             }
         }
     }
-    page = buffer.append(heap, page, "></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label><div><button>Edit</button></div></form>");
+    page = buffer.append(heap, page, "></label><label>Rewrite the prompt first (a local model; see docs/studio-rewrite.md)<select name=rewrite><option value=off>off<option value=on>on<option value=ab>ab (run both and compare blind)</select></label></details><div><button>Edit</button></div></form>");
     buffer.drop(heap, av);
     buffer.drop(heap, orig);
     return results.close(heap, page);

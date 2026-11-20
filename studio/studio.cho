@@ -338,7 +338,17 @@ fn serve[&h, &k, &l, &i, &f, &d, &y, &z](heap: &!h Heap, clock: &k Clock, listen
                                 }
                                 buffer.drop(heap, gpg);
                             } else if bytes.equal(path, "/cases") && bytes.equal(method, "GET") {
-                                let cpg = cases.page(heap, fs, dir, http.query(head, table));
+                                out = server.reply_as(heap, out, 302, "text/plain; charset=utf-8", "", keep, "Location: /styling\r\n");
+                            } else if (bytes.equal(path, "/styling") || bytes.equal(path, "/decoration") || bytes.equal(path, "/travel") || bytes.equal(path, "/creative")) && bytes.equal(method, "GET") {
+                                var tab = "styling";
+                                if bytes.equal(path, "/decoration") {
+                                    tab = "decoration";
+                                } else if bytes.equal(path, "/travel") {
+                                    tab = "travel";
+                                } else if bytes.equal(path, "/creative") {
+                                    tab = "creative";
+                                }
+                                let cpg = cases.page(heap, fs, dir, http.query(head, table), tab);
                                 borrow cpg as &cpb in {
                                     out = server.reply_as(heap, out, 200, "text/html; charset=utf-8", buffer.bytes(cpb), keep, "");
                                 }
