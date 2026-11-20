@@ -70,7 +70,21 @@ fn tile[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), 
         }
         p = buffer.append(heap, p, " &middot; <a href=\"/edit?pick1=l/");
         p = buffer.append(heap, p, id);
-        p = buffer.append(heap, p, "\">Edit this</a> &middot; <details style=\"display:inline\"><summary style=\"display:inline;cursor:pointer\">Delete</summary><form method=post action=/gallery/delete/");
+        p = buffer.append(heap, p, "\">Edit this</a> &middot; <details style=\"display:inline\"><summary style=\"display:inline;cursor:pointer\">Group</summary><form method=post action=/gallery/group/");
+        p = buffer.append(heap, p, id[1..len(id)]);
+        p = buffer.append(heap, p, " style=\"max-width:none\"><select name=group><option value=auto>let the model decide");
+        var gi = 0;
+        while gi < results.kind_count() {
+            p = buffer.append(heap, p, "<option value=");
+            p = buffer.append(heap, p, results.kind_name(gi));
+            if gi == gk {
+                p = buffer.append(heap, p, " selected");
+            }
+            p = buffer.append(heap, p, ">");
+            p = buffer.append(heap, p, results.kind_name(gi));
+            gi = gi + 1;
+        }
+        p = buffer.append(heap, p, "</select><button>Set</button></form></details> &middot; <details style=\"display:inline\"><summary style=\"display:inline;cursor:pointer\">Delete</summary><form method=post action=/gallery/delete/");
         p = buffer.append(heap, p, id[1..len(id)]);
         p = buffer.append(heap, p, " style=\"max-width:none\"><button>Yes, delete it for good</button></form></details></span></div></div>");
         return p;
@@ -454,5 +468,42 @@ pub fn remove[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: 
     if rc != 0 {
         return (500, buffer.append(heap, buffer.empty(heap, 64), "the picture could not be removed"));
     }
+    return (302, buffer.empty(heap, 8));
+}
+
+// `POST /gallery/group/N` with the body `group=WORD`: (status, text). WORD is a group of the list (written as `lib-N.kind`, which the describer never replaces) or `auto` (the group is taken away, and the describer sorts the picture
+// again). 302 when done; 422 for a number that is not 1 to 9 digits or a word that is neither; 404 for a picture that is not there.
+pub fn set_group[&h, &f, &d, &n, &b](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: &n [byte], body: &b [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+    if results.id_ok(n) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 64), "the picture number is 1 to 9 digits"));
+    }
+    let name = picks.lib_name(heap, fs, dir, n);
+    if len(name) == 0 {
+        return (404, buffer.append(heap, buffer.empty(heap, 64), "no such library picture"));
+    }
+    let (gf, gt) = http.query_value(body, "group");
+    let has = gf >= 0 && gt > gf;
+    var rc = 0 - 1;
+    if has && bytes.equal(body[gf..gt], "auto") {
+        rc = remove_one(heap, fs, dir, n, ".kind");
+        rc = remove_one(heap, fs, dir, n, ".kindtried");
+        return (302, buffer.empty(heap, 8));
+    }
+    var gi = 0 - 1;
+    if has {
+        gi = results.kind_index(body[gf..gt]);
+    }
+    if gi < 0 {
+        return (422, buffer.append(heap, buffer.empty(heap, 96), "group is auto, person, garment, furniture, room, place, object, animal or other"));
+    }
+    let kp = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n), ".kind");
+    borrow kp as &kb in {
+        rc = files.write_all(fs, buffer.bytes(kb), results.kind_name(gi));
+    }
+    buffer.drop(heap, kp);
+    if rc != 0 {
+        return (500, buffer.append(heap, buffer.empty(heap, 64), "the group could not be written"));
+    }
+    remove_one(heap, fs, dir, n, ".kindtried");
     return (302, buffer.empty(heap, 8));
 }
