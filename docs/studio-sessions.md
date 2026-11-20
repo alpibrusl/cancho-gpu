@@ -307,7 +307,7 @@ A) the menu and slice 3; B) the library upload and the picker. Each its own PR w
 | job | `out/N` | of it `work/` | `work/edit_work` | `work/vae_work` | files in `work/` |
 |---|---|---|---|---|---|
 | 512 x 512 | 1.1 GB | 1.1 GB | 589 MB | 536 MB | 248 |
-| 1024 x 1024 | 3.1 GB | 3.0 GB | not split | not split | not split |
+| 1024 x 1024 | 3.1 GB | 3.0 GB | 2.4 GB | 615 MB | not counted |
 
 Both before the change; the results are `image.png` (a few hundred KB) and `prompt.txt`. An edit job is in the 2 to 7 GB the studio's owner saw; I did not run one here.
 
