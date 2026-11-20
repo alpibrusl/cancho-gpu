@@ -3,32 +3,22 @@ edition 9;
 module cases;
 
 import std.buffer;
+import std.http;
+import std.bytes;
 import files;
 import results;
 import picks;
+import library;
 
-// `cases` -- ready-made two-picture edits (docs/studio-cases.md): GET /cases. Each case is a form that posts to `/edit` (studio/upload.cho) with two labelled pictures and an instruction written in advance, which
-// the person can change before starting. Nothing new on the server: the form's fields are the ones `/edit` already takes (`image`, `image2`, `prompt`, `seed`, `rewrite`), so the same checks apply and the job is a
+// `cases` -- ready-made two-picture edits (docs/studio-cases.md), in four tabs (docs/studio-sessions.md, section 19): GET /styling, /decoration, /travel and /creative (`/cases` redirects to /styling). Each case is a form that posts to `/edit` (studio/upload.cho) with two pictures **chosen from the gallery** (no file is offered here) and an instruction written in advance, which
+// the person can change in the Advanced part before starting. Nothing new on the server: the form's fields are the ones `/edit` already takes (`image`, `image2`, `prompt`, `seed`, `rewrite`), so the same checks apply and the job is a
 // two-picture edit (docs/two-images.md). The instructions name the pictures `image1` and `image2`, as the model's template does. No JavaScript.
 //
 // The texts have no `<`, `>`, `&` or quotation marks: they go into a `<textarea>` as they are.
 
-// One case: `slug` (the card's id), `title`, a line saying what it does, the label of each picture, the instruction, the note about real sizes and a tip (empty for none) shown above the instruction.
-fn card[&h, &f, &r, &z, &a, &b, &c, &d, &e, &g, &n, &t](heap: &!h Heap, fs: &f Fs(""), dir: &r [byte], q: &z [byte], page: buffer.Buffer, slug: &a [byte], title: &b [byte], what: &c [byte], first: &d [byte], second: &e [byte], prompt: &g [byte], sizes: &n [byte], tip: &t [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
-    var p = buffer.append(heap, page, "<form id=");
-    p = buffer.append(heap, p, slug);
-    p = buffer.append(heap, p, " method=post action=/edit enctype=multipart/form-data><h2>");
-    p = buffer.append(heap, p, title);
-    p = buffer.append(heap, p, "</h2><p>");
-    p = buffer.append(heap, p, what);
-    p = buffer.append(heap, p, "</p><label>");
-    p = buffer.append(heap, p, first);
-    p = buffer.append(heap, p, " (image1; JPEG, PNG or WebP)<input name=image type=file accept=image/jpeg,image/png,image/webp></label>");
-    p = picks.picker_q(heap, p, fs, dir, "pick1", 12, q, false);
-    p = buffer.append(heap, p, "<label>");
-    p = buffer.append(heap, p, second);
-    p = buffer.append(heap, p, " (image2)<input name=image2 type=file accept=image/jpeg,image/png,image/webp></label>");
-    p = picks.picker_q(heap, p, fs, dir, "pick2", 12, q, false);
+// The "Advanced" part of a card: the tip (if any), the instruction, the real sizes and the seed.
+fn advanced[&h](heap: &!h Heap, page: buffer.Buffer, prompt: &static [byte], sizes: &static [byte], tip: &static [byte], seed_note: &static [byte]) -> [heap] buffer.Buffer {
+    var p = buffer.append(heap, page, "<details><summary>Advanced</summary>");
     if len(tip) > 0 {
         p = buffer.append(heap, p, "<p class=tip style=\"color:var(--muted);font-size:13px\">");
         p = buffer.append(heap, p, tip);
@@ -38,8 +28,24 @@ fn card[&h, &f, &r, &z, &a, &b, &c, &d, &e, &g, &n, &t](heap: &!h Heap, fs: &f F
     p = buffer.append(heap, p, prompt);
     p = buffer.append(heap, p, "</textarea></label><label>Real sizes (optional; a hint for the scale, not a measurement: ");
     p = buffer.append(heap, p, sizes);
-    p = buffer.append(heap, p, ")<input name=note maxlength=200></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><div><button>Make it</button></div></form>");
-    return p;
+    p = buffer.append(heap, p, ")<input name=note maxlength=200></label><label>Seed (optional");
+    p = buffer.append(heap, p, seed_note);
+    return buffer.append(heap, p, ")<input name=seed type=number min=0 max=2147483647></label></details>");
+}
+
+// One case: two pictures from the gallery, a button, and the rest under Advanced. `k1` and `k2` are the groups offered for each picture (-1: every picture); `t1` and `t2` say what to choose.
+fn card[&h, &f, &r, &z](heap: &!h Heap, fs: &f Fs(""), dir: &r [byte], q: &z [byte], page: buffer.Buffer, slug: &static [byte], title: &static [byte], what: &static [byte], t1: &static [byte], t2: &static [byte], k1: int, k2: int, prompt: &static [byte], sizes: &static [byte], tip: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    var p = buffer.append(heap, page, "<form id=");
+    p = buffer.append(heap, p, slug);
+    p = buffer.append(heap, p, " method=post action=/edit enctype=multipart/form-data><h2>");
+    p = buffer.append(heap, p, title);
+    p = buffer.append(heap, p, "</h2><p>");
+    p = buffer.append(heap, p, what);
+    p = buffer.append(heap, p, "</p>");
+    p = picks.picker_k(heap, p, fs, dir, "pick1", 12, q, false, k1, true, t1, true);
+    p = picks.picker_k(heap, p, fs, dir, "pick2", 12, q, false, k2, true, t2, true);
+    p = advanced(heap, p, prompt, sizes, tip, "");
+    return buffer.append(heap, p, "<div><button>Make it</button></div></form>");
 }
 
 // The instructions of the try-on and the room cases, shared by their cards and the batch cards.
@@ -51,47 +57,132 @@ fn room_text() -> [] &static [byte] {
     return "Redecorate the room in image1 with the furniture, colours, materials and decoration of image2. Keep the room's shape, walls, windows, doors and the camera view of image1, and replace only what is inside it and its colours. The result is a realistic photograph with consistent light.";
 }
 
-// A card for one picture and several others, one edit each (docs/studio-sessions.md, section 14): posts to `/batch`. `others` names the several ones ("garment", "style").
-fn batch_card[&h, &f, &r, &z, &a, &b, &c, &d, &e, &g, &n](heap: &!h Heap, fs: &f Fs(""), dir: &r [byte], q: &z [byte], page: buffer.Buffer, slug: &a [byte], title: &b [byte], what: &c [byte], first: &d [byte], others: &e [byte], prompt: &g [byte], sizes: &n [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+// A card for one picture and several others, one edit each (docs/studio-sessions.md, section 14): posts to `/batch`. `k2` is the group of the several ones; a second button takes the newest five of that group.
+fn batch_card[&h, &f, &r, &z](heap: &!h Heap, fs: &f Fs(""), dir: &r [byte], q: &z [byte], page: buffer.Buffer, slug: &static [byte], title: &static [byte], what: &static [byte], t1: &static [byte], t2: &static [byte], k1: int, k2: int, prompt: &static [byte], sizes: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
     var p = buffer.append(heap, page, "<form id=");
     p = buffer.append(heap, p, slug);
     p = buffer.append(heap, p, " method=post action=/batch enctype=multipart/form-data><h2>");
     p = buffer.append(heap, p, title);
     p = buffer.append(heap, p, "</h2><p>");
     p = buffer.append(heap, p, what);
-    p = buffer.append(heap, p, "</p><label>");
-    p = buffer.append(heap, p, first);
-    p = buffer.append(heap, p, " (image1; JPEG, PNG or WebP)<input name=image type=file accept=image/jpeg,image/png,image/webp></label>");
-    p = picks.picker_q(heap, p, fs, dir, "pick1", 8, q, false);
-    p = buffer.append(heap, p, "<h2 style=\"margin-top:8px\">");
-    p = buffer.append(heap, p, others);
-    p = buffer.append(heap, p, "s (up to 5 in all)</h2>");
-    p = picks.picker_q(heap, p, fs, dir, "pickm", 24, q, true);
-    p = buffer.append(heap, p, "<label>Or choose several files from your computer, one picture each (counted with the ones ticked)<input name=images type=file multiple accept=image/jpeg,image/png,image/webp></label>");
-    p = buffer.append(heap, p, "<label>The instruction (the same for every one; change it if you like)<textarea name=prompt required maxlength=1000 rows=4>");
-    p = buffer.append(heap, p, prompt);
-    p = buffer.append(heap, p, "</textarea></label><label>Real sizes (optional; a hint for the scale, not a measurement: ");
-    p = buffer.append(heap, p, sizes);
-    p = buffer.append(heap, p, ")<input name=note maxlength=200></label><label>Seed (optional; the same seed for every one)<input name=seed type=number min=0 max=2147483647></label><div><button>Make one edit for each</button></div></form>");
-    return p;
+    p = buffer.append(heap, p, "</p>");
+    p = picks.picker_k(heap, p, fs, dir, "pick1", 8, q, false, k1, true, t1, true);
+    p = picks.picker_k(heap, p, fs, dir, "pickm", 24, q, true, k2, true, t2, false);
+    p = advanced(heap, p, prompt, sizes, "", "; the same seed for every one");
+    p = buffer.append(heap, p, "<div class=acts><button>Make one edit for each ticked picture</button>");
+    if k2 >= 0 {
+        p = buffer.append(heap, p, "<button name=pickg value=");
+        p = buffer.append(heap, p, results.kind_name(k2));
+        p = buffer.append(heap, p, " formnovalidate>Use the whole group (the newest five)</button>");
+    }
+    return buffer.append(heap, p, "</div></form>");
 }
 
-pub fn page[&h, &f, &d, &w](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query: &w [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
+// The pictures of a group are offered where the card needs them; `wide` offers every picture instead.
+fn wanted(want: int, wide: bool) -> [] int {
+    if wide {
+        return 0 - 1;
+    }
+    return want;
+}
+
+// Whether the gallery holds nothing yet: no library picture and no job.
+fn gallery_empty[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]) -> [heap, fs_read(""), file_read] bool {
+    let idx = library.index(heap, fs, dir);
+    var empty = true;
+    borrow idx as &ib in {
+        empty = len(buffer.bytes(ib)) == 0;
+    }
+    buffer.drop(heap, idx);
+    let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
+    borrow qp as &qb in {
+        let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
+        borrow b as &b2 in {
+            if len(buffer.bytes(b2)) > 0 {
+                empty = false;
+            }
+        }
+        buffer.drop(heap, b);
+    }
+    buffer.drop(heap, qp);
+    return empty;
+}
+
+// A tab: `which` is `styling`, `decoration`, `travel` or `creative`; `?wide=1` offers every picture in every place and `?q=` finds pictures by words.
+pub fn page[&h, &f, &d, &w](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query: &w [byte], which: &static [byte]) -> [heap, fs_read(""), file_read] buffer.Buffer {
     let qb = picks.query_text(heap, query, "q");
-    var p = results.open(heap, fs, dir, "cases", "cases", false);
-    p = buffer.append(heap, p, "<div class=row><h1>Cases</h1></div><p>Two pictures and an instruction written for you: choose the case, give the two pictures, press the button. Each one is a two-picture edit (about two minutes and a half on this machine); the result is on the job page. The pictures stay on this machine. A picture that is clear, well lit and shows the whole thing works best; the model does not always keep a face or a pattern exactly, so look at the result.</p>");
+    let (wf, wt) = http.query_value(query, "wide");
+    let wide = wf >= 0 && wt > wf && bytes.equal(query[wf..wt], "1");
+    let person = results.kind_index("person");
+    let garment = results.kind_index("garment");
+    let room = results.kind_index("room");
+    let place = results.kind_index("place");
+    var p = results.open(heap, fs, dir, "cases", which, false);
+    var title = "Styling";
+    var line = "Try clothes and hairstyles on a person.";
+    if bytes.equal(which, "decoration") {
+        title = "Decoration";
+        line = "Redecorate a room, or put a piece of furniture in it.";
+    } else if bytes.equal(which, "travel") {
+        title = "Travel";
+        line = "Put a person in another place.";
+    } else if bytes.equal(which, "creative") {
+        title = "Creative";
+        line = "Draw a picture in the style of another.";
+    }
+    p = buffer.append(heap, p, "<div class=row><h1>");
+    p = buffer.append(heap, p, title);
+    p = buffer.append(heap, p, "</h1><span class=meta>");
+    p = buffer.append(heap, p, line);
+    p = buffer.append(heap, p, " Pictures come from the <a href=/gallery>gallery</a>; each edit takes about two minutes and a half.</span></div>");
+    if gallery_empty(heap, fs, dir) {
+        p = buffer.append(heap, p, "<p>Add pictures to the <a href=/gallery>gallery</a> first: they are chosen from there, not uploaded here.</p>");
+        buffer.drop(heap, qb);
+        return results.close(heap, p);
+    }
+    p = buffer.append(heap, p, "<div class=acts>");
+    var base = buffer.append(heap, buffer.empty(heap, 32), "/");
+    base = buffer.append(heap, base, which);
+    borrow base as &bb in {
+        p = buffer.append(heap, p, "<a class=btn href=\"");
+        p = buffer.append(heap, p, buffer.bytes(bb));
+        p = buffer.append(heap, p, "\"");
+        if wide == false {
+            p = buffer.append(heap, p, " aria-current=page style=\"border-color:var(--accent)\"");
+        }
+        p = buffer.append(heap, p, ">By group</a><a class=btn href=\"");
+        p = buffer.append(heap, p, buffer.bytes(bb));
+        p = buffer.append(heap, p, "?wide=1\"");
+        if wide {
+            p = buffer.append(heap, p, " aria-current=page style=\"border-color:var(--accent)\"");
+        }
+        p = buffer.append(heap, p, ">Every picture</a>");
+    }
+    buffer.drop(heap, base);
+    p = buffer.append(heap, p, "</div>");
     borrow qb as &qbb in {
-        p = buffer.append(heap, p, "<form method=get action=/cases style=\"max-width:none;flex-direction:row;align-items:flex-end;flex-wrap:wrap\"><label style=\"flex:1 1 260px\">Find pictures in the lists below (words of a library picture's description, or of the instruction a job's picture was made with)<input name=q maxlength=100 value=\"");
+        p = buffer.append(heap, p, "<details><summary>Find pictures by words</summary><form method=get action=/");
+        p = buffer.append(heap, p, which);
+        p = buffer.append(heap, p, " style=\"max-width:none;flex-direction:row;align-items:flex-end;flex-wrap:wrap\">");
+        if wide {
+            p = buffer.append(heap, p, "<input type=hidden name=wide value=1>");
+        }
+        p = buffer.append(heap, p, "<label style=\"flex:1 1 260px\">Words of a picture's description, or of the instruction a job's picture was made with<input name=q maxlength=100 value=\"");
         p = results.escape(heap, p, buffer.bytes(qbb));
-        p = buffer.append(heap, p, "\"></label><div><button>Find</button></div></form>");
-        p = batch_card(heap, fs, dir, buffer.bytes(qbb), p, "tryon-many", "Try several garments on one person", "One person and up to five garments: one edit for each garment, made one after the other (about two minutes and a half each) and shown together in a session.", "A picture of the person (the whole body, or the part the clothes cover)", "Garment", tryon_text(), "for example: the person is 1.70 m tall");
-        p = batch_card(heap, fs, dir, buffer.bytes(qbb), p, "room-many", "Redecorate one room in several styles", "One room and up to five styles (another room, a mood board, a piece of furniture): one edit for each style, shown together in a session.", "A picture of the room", "Style", room_text(), "for example: the room is 4 m by 5 m");
-        p = card(heap, fs, dir, buffer.bytes(qbb), p, "tryon", "Try clothes on a person", "The person in the first picture wears the clothes of the second.", "A picture of the person (the whole body, or the part the clothes cover)", "A picture of the clothes (a garment on its own, laid flat or on a hanger, or worn by someone else)", tryon_text(), "for example: the person is 1.70 m tall, the jacket is size M", "Tip: when the person already wears a matching set (pyjamas, a suit, a tracksuit), the instruction below can leave the outfit unchanged. Say which garments to swap, for example: replace the pink long-sleeved top with the white t-shirt worn in image2, and the floral pyjama trousers with the black jeans worn in image2. Measured: two pictures came back unchanged with the standard text, with another seed too, and worked once the garments were named.");
-        p = card(heap, fs, dir, buffer.bytes(qbb), p, "room", "Redecorate a room", "The room in the first picture, furnished and decorated as the second picture shows.", "A picture of the room", "A picture of the style (another room, a mood board, a piece of furniture)", room_text(), "for example: the room is 4 m by 5 m, the ceiling is 2.5 m", "Tip: if the room is already furnished, name what to replace, for example: replace the blue sofa and the white chair with the cream sofa and the oval coffee table of image2. Measured once on a furnished room: the new pieces were added and the old sofa stayed.");
-        p = card(heap, fs, dir, buffer.bytes(qbb), p, "object", "Put an object in a room", "A lamp, a sofa, a painting, a plant: the object of the second picture, placed in the room of the first.", "A picture of the room", "A picture of the object (on its own is best)", "Add the object shown in image2 to the room in image1, standing naturally on the floor or hanging where it makes sense. Keep everything else in image1 as it is. Do not resize or reshape the object: it keeps its shape, colour and proportions, and its size relative to the room follows the real sizes given, if any. Its perspective, shadow and reflection match the room.", "for example: the sofa is 2.2 m wide and 0.9 m deep, the door is 2 m high", "");
-        p = card(heap, fs, dir, buffer.bytes(qbb), p, "scene", "Put a person in another place", "The person of the first picture, in the place shown in the second.", "A picture of the person", "A picture of the place", "Place the person from image1 into the scene of image2, standing naturally in it. Keep the person's face, hair, clothes and pose from image1, and the place of image2 as it is. Match the light, the colour and the scale so that it looks like one photograph.", "for example: the person is 1.75 m tall, the door is 2 m high", "");
-        p = card(heap, fs, dir, buffer.bytes(qbb), p, "hair", "Try a hairstyle", "The person of the first picture, with the hairstyle of the second.", "A picture of the person (the face)", "A picture of the hairstyle (someone with the hair you want)", "Give the person in image1 the hairstyle, hair colour and length of the person in image2. Keep the face, expression, skin, clothes and background of image1 unchanged, and make the hair fit the head naturally.", "for example: shoulder-length hair, about 30 cm", "");
-        p = card(heap, fs, dir, buffer.bytes(qbb), p, "style", "Use the style of another picture", "The first picture drawn or painted in the style of the second.", "A picture to restyle", "A picture in the style you want", "Redraw image1 in the artistic style of image2: its brush work or line, its colours, its textures and its mood. Keep the subject, the composition and the shapes of image1 recognisable.", "for example: the subject is life size", "");
+        p = buffer.append(heap, p, "\"></label><div><button>Find</button></div></form></details>");
+        if bytes.equal(which, "styling") {
+            p = batch_card(heap, fs, dir, buffer.bytes(qbb), p, "tryon-many", "Try several garments on one person", "One person and up to five garments: one edit for each, shown together in a session.", "Choose the person", "Tick the garments", wanted(person, wide), wanted(garment, wide), tryon_text(), "for example: the person is 1.70 m tall");
+            p = card(heap, fs, dir, buffer.bytes(qbb), p, "tryon", "Try clothes on a person", "The person in the first picture wears the clothes of the second.", "Choose the person", "Choose the clothes", wanted(person, wide), wanted(garment, wide), tryon_text(), "for example: the person is 1.70 m tall, the jacket is size M", "Tip: when the person already wears a matching set (pyjamas, a suit, a tracksuit), the instruction can leave the outfit unchanged. Say which garments to swap, for example: replace the pink long-sleeved top with the white t-shirt worn in image2, and the floral pyjama trousers with the black jeans worn in image2. Measured: two pictures came back unchanged with the standard text, with another seed too, and worked once the garments were named.");
+            p = card(heap, fs, dir, buffer.bytes(qbb), p, "hair", "Try a hairstyle", "The person of the first picture, with the hairstyle of the second.", "Choose the person", "Choose the hairstyle (someone with the hair you want)", wanted(person, wide), wanted(person, wide), "Give the person in image1 the hairstyle, hair colour and length of the person in image2. Keep the face, expression, skin, clothes and background of image1 unchanged, and make the hair fit the head naturally.", "for example: shoulder-length hair, about 30 cm", "");
+        } else if bytes.equal(which, "decoration") {
+            p = batch_card(heap, fs, dir, buffer.bytes(qbb), p, "room-many", "Redecorate one room in several styles", "One room and up to five styles (another room, a mood board, a piece of furniture): one edit for each, shown together in a session.", "Choose the room", "Tick the styles", wanted(room, wide), 0 - 1, room_text(), "for example: the room is 4 m by 5 m");
+            p = card(heap, fs, dir, buffer.bytes(qbb), p, "room", "Redecorate a room", "The room in the first picture, furnished and decorated as the second picture shows.", "Choose the room", "Choose the style (another room, a mood board, a piece of furniture)", wanted(room, wide), 0 - 1, room_text(), "for example: the room is 4 m by 5 m, the ceiling is 2.5 m", "Tip: if the room is already furnished, name what to replace, for example: replace the blue sofa and the white chair with the cream sofa and the oval coffee table of image2. Measured once on a furnished room: the new pieces were added and the old sofa stayed.");
+            p = card(heap, fs, dir, buffer.bytes(qbb), p, "object", "Put an object in a room", "A lamp, a sofa, a painting, a plant: the object of the second picture, placed in the room of the first.", "Choose the room", "Choose the object (on its own is best)", wanted(room, wide), 0 - 1, "Add the object shown in image2 to the room in image1, standing naturally on the floor or hanging where it makes sense. Keep everything else in image1 as it is. Do not resize or reshape the object: it keeps its shape, colour and proportions, and its size relative to the room follows the real sizes given, if any. Its perspective, shadow and reflection match the room.", "for example: the sofa is 2.2 m wide and 0.9 m deep, the door is 2 m high", "");
+        } else if bytes.equal(which, "travel") {
+            p = card(heap, fs, dir, buffer.bytes(qbb), p, "scene", "Put a person in another place", "The person of the first picture, in the place shown in the second.", "Choose the person", "Choose the place", wanted(person, wide), wanted(place, wide), "Place the person from image1 into the scene of image2, standing naturally in it. Keep the person's face, hair, clothes and pose from image1, and the place of image2 as it is. Match the light, the colour and the scale so that it looks like one photograph.", "for example: the person is 1.75 m tall, the door is 2 m high", "");
+        } else {
+            p = card(heap, fs, dir, buffer.bytes(qbb), p, "style", "Use the style of another picture", "The first picture drawn or painted in the style of the second.", "Choose the picture to restyle", "Choose the picture in the style you want", 0 - 1, 0 - 1, "Redraw image1 in the artistic style of image2: its brush work or line, its colours, its textures and its mood. Keep the subject, the composition and the shapes of image1 recognisable.", "for example: the subject is life size", "");
+        }
     }
     buffer.drop(heap, qb);
     return results.close(heap, p);

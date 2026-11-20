@@ -20,6 +20,9 @@ import files;
 //   empty     200, content `""`
 //   long      200, content of 1,001 bytes
 //   mid       200, content of 300 bytes: the word `red` seventy-five times (for the describer's cut to 200 bytes)
+//   garment   200, content `Garment.` (a group's name, capitalised, with a full stop: the describer's kind question)
+//   rooms     200, content `room, furniture` (a list: the first word counts)
+//   plural    200, content `Garments` (not a word of the list: the group is `other`)
 //   control   200, content with a bell character in it
 //   badjson   200, a body that is not JSON
 //   nomessage 200, JSON without `message`
@@ -149,6 +152,15 @@ fn serve[&h, &k, &l, &f, &r, &m](heap: &!h Heap, clock: &k Clock, listener: &!l 
                                         w = w + 1;
                                     }
                                     text = buffer.push(heap, text, byte_of(34));
+                                } else if bytes.equal(mode, "garment") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 16), "\"Garment.\"");
+                                } else if bytes.equal(mode, "rooms") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 24), "\"room, furniture\"");
+                                } else if bytes.equal(mode, "plural") {
+                                    buffer.drop(heap, text);
+                                    text = buffer.append(heap, buffer.empty(heap, 16), "\"Garments\"");
                                 } else if bytes.equal(mode, "control") {
                                     buffer.drop(heap, text);
                                     text = buffer.append(heap, buffer.empty(heap, 32), "\"bell\\u0007here\"");

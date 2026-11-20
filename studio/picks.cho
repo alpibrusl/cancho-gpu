@@ -377,14 +377,18 @@ pub fn matches[&h, &f, &d, &i, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte]
     return yes;
 }
 
-fn tile[&h, &v, &i, &n, &t](heap: &!h Heap, page: buffer.Buffer, field: &static [byte], kind: &static [byte], value: &v [byte], ref: &i [byte], name: &n [byte], tag: &static [byte], label: &t [byte]) -> [heap] buffer.Buffer {
+fn tile[&h, &v, &i, &n, &t](heap: &!h Heap, page: buffer.Buffer, field: &static [byte], kind: &static [byte], value: &v [byte], ref: &i [byte], name: &n [byte], tag: &static [byte], label: &t [byte], req: bool) -> [heap] buffer.Buffer {
     var p = buffer.append(heap, page, "<label style=\"position:relative;display:block;width:96px;height:96px;flex-direction:row\"><input type=");
     p = buffer.append(heap, p, kind);
     p = buffer.append(heap, p, " name=");
     p = buffer.append(heap, p, field);
     p = buffer.append(heap, p, " value=\"");
     p = buffer.append(heap, p, value);
-    p = buffer.append(heap, p, "\" style=\"position:absolute;top:6px;left:6px;z-index:1;width:auto;min-height:0\"><img loading=lazy alt=\"");
+    p = buffer.append(heap, p, "\"");
+    if req {
+        p = buffer.append(heap, p, " required");
+    }
+    p = buffer.append(heap, p, " style=\"position:absolute;top:6px;left:6px;z-index:1;width:auto;min-height:0\"><img loading=lazy alt=\"");
     p = buffer.append(heap, p, tag);
     p = buffer.append(heap, p, "\" title=\"");
     p = buffer.append(heap, p, tag);
@@ -407,22 +411,30 @@ pub fn picker[&h, &f, &d](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), di
 
 // The same, found by `q` (a picture's description or its job's prompt, ignoring case; empty for all), and with checkboxes when `multi` (several can be ticked: one text each, the same field name).
 pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], field: &static [byte], limit: int, q: &q [byte], multi: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
+    return picker_k(heap, page, fs, dir, field, limit, q, multi, 0 - 1, false, "", false);
+}
+
+// The picker of a tab (docs/studio-sessions.md, section 19). `want` is a group (an index of `results.kind_name`) or -1 for every picture: with a group only the library pictures sorted into it are offered (a job's picture has no group).
+// `open_it` shows the tiles without a click, `title` (if any) is the heading, and `need` makes a choice required (no "none" tile). Nothing here takes a file: only pictures of the gallery.
+pub fn picker_k[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), dir: &d [byte], field: &static [byte], limit: int, q: &q [byte], multi: bool, want: int, open_it: bool, title: &static [byte], need: bool) -> [heap, fs_read(""), file_read] buffer.Buffer {
     var kind = "radio";
     if multi {
         kind = "checkbox";
     }
     var p = buffer.append(heap, page, "<details");
-    if multi {
+    if multi || open_it {
         p = buffer.append(heap, p, " open");
     }
     p = buffer.append(heap, p, "><summary>");
-    if multi {
+    if len(title) > 0 {
+        p = buffer.append(heap, p, title);
+    } else if multi {
         p = buffer.append(heap, p, "tick the pictures to use, from the gallery");
     } else {
         p = buffer.append(heap, p, "or choose from the gallery");
     }
     p = buffer.append(heap, p, "</summary><div style=\"display:flex;flex-wrap:wrap;gap:6px;margin-top:8px\">");
-    if multi == false {
+    if multi == false && need == false {
         p = buffer.append(heap, p, "<label style=\"flex-direction:row;align-items:center;gap:6px;width:96px\"><input type=radio name=");
         p = buffer.append(heap, p, field);
         p = buffer.append(heap, p, " value=\"\" checked style=\"width:auto;min-height:0\"> none</label>");
@@ -451,7 +463,7 @@ pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs("
                 let number = all[start..sp];
                 if results.id_ok(number) {
                     let name = lib_name(heap, fs, dir, number);
-                    if len(name) > 0 && matches(heap, fs, dir, true, number, q) {
+                    if len(name) > 0 && (want < 0 || library.kind(heap, fs, dir, number) == want) && matches(heap, fs, dir, true, number, q) {
                         let ref = buffer.append(heap, buffer.push(heap, buffer.empty(heap, 12), byte_of(76)), number);
                         var value = buffer.append(heap, buffer.empty(heap, 16), "l/");
                         let (desc, has_desc) = library.description(heap, fs, dir, number);
@@ -459,7 +471,7 @@ pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs("
                             value = buffer.append(heap, value, buffer.bytes(rb));
                             borrow value as &vb in {
                                 borrow desc as &db in {
-                                    p = tile(heap, p, field, kind, buffer.bytes(vb), buffer.bytes(rb), name, "library", buffer.bytes(db));
+                                    p = tile(heap, p, field, kind, buffer.bytes(vb), buffer.bytes(rb), name, "library", buffer.bytes(db), need && multi == false);
                                 }
                             }
                         }
@@ -477,9 +489,11 @@ pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs("
     var text = buffer.empty(heap, 8);
     let qp = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 64), dir), "/queue");
     borrow qp as &qb in {
-        let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
-        buffer.drop(heap, text);
-        text = b;
+        if want < 0 {
+            let (b, e) = files.read_all(heap, fs, buffer.bytes(qb));
+            buffer.drop(heap, text);
+            text = b;
+        }
     }
     buffer.drop(heap, qp);
     borrow text as &tb in {
@@ -521,7 +535,7 @@ pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs("
                             let label = search_text(heap, fs, dir, false, id);
                             borrow value as &vb2 in {
                                 borrow label as &lb in {
-                                    p = tile(heap, p, field, kind, buffer.bytes(vb2), id, name, tag, buffer.bytes(lb));
+                                    p = tile(heap, p, field, kind, buffer.bytes(vb2), id, name, tag, buffer.bytes(lb), need && multi == false);
                                 }
                             }
                             buffer.drop(heap, label);
@@ -536,7 +550,9 @@ pub fn picker_q[&h, &f, &d, &q](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs("
         }
     }
     buffer.drop(heap, text);
-    if shown == 0 {
+    if shown == 0 && want >= 0 {
+        p = buffer.append(heap, p, "<span class=meta>No picture of this group yet: add some in the gallery (they are sorted a few seconds after), or show every picture.</span>");
+    } else if shown == 0 {
         p = buffer.append(heap, p, "<span class=meta>No pictures found.</span>");
     }
     return buffer.append(heap, p, "</div></details>");

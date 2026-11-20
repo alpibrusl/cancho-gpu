@@ -348,7 +348,7 @@ pub fn page[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], root:
     }
     borrow choices as &cb in {
         if len(buffer.bytes(cb)) > 0 {
-            page = buffer.append(heap, page, "<form method=post action=/edit enctype=multipart/form-data><h2>Continue the session: refine a result</h2><p>Choose the result to refine, then say what to change in it.</p>");
+            page = buffer.append(heap, page, "<details><summary>Refine a result (advanced)</summary><form method=post action=/edit enctype=multipart/form-data><h2>Continue the session: refine a result</h2><p>Choose the result to refine, then say what to change in it.</p>");
             // the newest finished result is the one that is checked
             borrow last_done as &ld in {
                 let want = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 40), "value="), buffer.bytes(ld)), ">");
@@ -361,7 +361,7 @@ pub fn page[&h, &f, &d, &r](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], root:
                 }
                 buffer.drop(heap, want);
             }
-            page = buffer.append(heap, page, "<label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><div><button>Refine</button></div></form>");
+            page = buffer.append(heap, page, "<label>What to change<textarea name=prompt required maxlength=1000 rows=3></textarea></label><label>Seed (optional)<input name=seed type=number min=0 max=2147483647></label><div><button>Refine</button></div></form></details>");
         }
     }
     buffer.drop(heap, choices);

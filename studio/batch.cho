@@ -9,6 +9,7 @@ import jobs;
 import results;
 import upload;
 import picks;
+import library;
 
 // `batch` -- one picture and several others, one edit each (docs/studio-sessions.md, section 14): `POST /batch`, the form of "try these clothes on this person" and "redecorate this room in
 // these styles". The first picture (`image` or `pick1`) is combined with each of up to five others (`image2` .. `image6`, or `pick2` .. `pick6`), or the several ticked in the grid (`pickm`, one part each) and the several files chosen in one input (`images`): one two-picture edit per other picture, all with
@@ -81,6 +82,40 @@ fn slot[&h, &f, &d, &b, &l](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], body:
         let (a, c) = upload.part_nth(body, dl, "pickm", k - 7);
         pf = a;
         pt = c;
+    }
+    // `pickg=GROUP` with nothing ticked: the newest library pictures of that group, one for each of the slots 7 to 11 (docs/studio-sessions.md, section 19)
+    if pf < 0 && k >= 7 && k <= 11 {
+        let (t0, t1) = upload.part_nth(body, dl, "pickm", 0);
+        let (gf, gt) = upload.part(body, dl, "pickg");
+        if t0 < 0 && gf >= 0 && gt > gf {
+            let ki = results.kind_index(body[gf..gt]);
+            if ki >= 0 {
+                let num = library.nth_of_kind(heap, fs, dir, ki, k - 7);
+                var gpath = buffer.empty(heap, 8);
+                var gline = buffer.empty(heap, 8);
+                var gok = false;
+                borrow num as &nb in {
+                    if len(buffer.bytes(nb)) > 0 {
+                        let text = buffer.append(heap, buffer.append(heap, buffer.empty(heap, 16), "l/L"), buffer.bytes(nb));
+                        borrow text as &tb in {
+                            let (path, line, is_result, ok) = picks.resolve(heap, fs, dir, buffer.bytes(tb));
+                            buffer.drop(heap, gpath);
+                            buffer.drop(heap, gline);
+                            gpath = path;
+                            gline = line;
+                            gok = ok;
+                        }
+                        buffer.drop(heap, text);
+                    }
+                }
+                buffer.drop(heap, num);
+                if gok {
+                    return (2, 0, 0, 0, gpath, gline);
+                }
+                buffer.drop(heap, gpath);
+                buffer.drop(heap, gline);
+            }
+        }
     }
     if pf >= 0 && pt > pf {
         let (path, line, is_result, ok) = picks.resolve(heap, fs, dir, body[pf..pt]);

@@ -95,6 +95,39 @@ newdir; addpic png; rm "$D/lib-1.png"; echo 'x png' >> "$D/lib.index"; stub ok; 
 check "gone: a listed picture whose file is gone is marked tried, a bad line is skipped" "$(files 1) $(ls "$D" | grep -c '^lib-x')" "lib-1.tried  0"
 unstub
 
+# 10. the group of a picture (docs/studio-sessions.md, section 19)
+kind() { cat "$D/lib-$1.kind" 2>/dev/null; }
+newdir; addpic png; addpic jpg; echo 'my own words' > "$D/lib-2.txt"
+stub garment; describe_for 3
+check "kind: a group's name with a capital and a full stop is the group; a typed description does not stop it being sorted; the description is untouched" "$(kind 1) $(kind 2) / $(cat "$D/lib-2.txt")" "garment garment / my own words"
+unstub
+newdir; addpic png; stub rooms; describe_for 3
+check "kind: the first word of a list counts" "$(kind 1)" "room"
+unstub
+newdir; addpic png; stub plural; describe_for 3
+check "kind: a word that is not in the list (a plural) is other" "$(kind 1)" "other"
+unstub
+newdir; addpic png; stub ok; describe_for 3
+check "kind: an answer that is no group (words) is other" "$(kind 1)" "other"
+check "kind: the question in the program holds the closed list and the rule for a person wearing clothes (the words measured on eight pictures)" "$(grep -c 'one word from this list and nothing else: person, garment, furniture, room, place, object, animal, other' studio/describer.cho) $(grep -c 'Use person when a person is the main subject, even when they wear clothes' studio/describer.cho)" "1 1"
+unstub
+newdir; addpic png; stub empty; describe_for 3
+check "kind: an empty answer: no group, marked kindtried, and not asked again" "$(ls "$D" | grep -c '^lib-1.kind$') $(ls "$D" | grep -c '^lib-1.kindtried$')" "0 1"
+unstub; stub garment; describe_for 3
+check "kind: ...a good stand-in later changes nothing" "$(ls "$D" | grep -c '^lib-1.kind$')" "0"
+unstub
+newdir; addpic png; stub err500; describe_for 3
+check "kind: an error from Ollama writes nothing, neither a group nor a mark" "$(ls "$D" | grep -c '^lib-1.kind')" "0"
+unstub; stub garment; describe_for 3
+check "kind: ...and the next pass sorts it" "$(kind 1)" "garment"
+unstub
+newdir; addpic png; echo room > "$D/lib-1.kind"; stub garment; describe_for 3
+check "kind: a picture that has a group keeps it" "$(kind 1)" "room"
+unstub
+newdir; addpic png; rm "$D/lib-1.png"; stub garment; describe_for 3
+check "kind: a picture whose file is gone is not sorted" "$(ls "$D" | grep -c '^lib-1.kind')" "0"
+unstub
+
 # 9. a mutant: the typed description is overwritten
 mkdir -p "$T/mut"; sed -e 's/exists(heap, fs, dir, number, ".txt") == false \&\& //' "$T/src/describer.cho" > "$T/mut/describer.cho"; cp "$T/src/files.cho" "$T/src/rewrite.cho" "$T/src/results.cho" "$T/mut/"
 build "$T/mut/d" "$T/mut/describer.cho" "$T/mut/files.cho" "$T/mut/rewrite.cho" "$T/mut/results.cho"
