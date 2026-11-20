@@ -64,7 +64,9 @@ fn tile[&h, &f, &d, &i, &n](heap: &!h Heap, page: buffer.Buffer, fs: &f Fs(""), 
         buffer.drop(heap, desc);
         p = buffer.append(heap, p, "</p><span class=meta>library &middot; <a href=\"/edit?pick1=l/");
         p = buffer.append(heap, p, id);
-        p = buffer.append(heap, p, "\">Edit this</a></span></div></div>");
+        p = buffer.append(heap, p, "\">Edit this</a> &middot; <details style=\"display:inline\"><summary style=\"display:inline;cursor:pointer\">Delete</summary><form method=post action=/gallery/delete/");
+        p = buffer.append(heap, p, id[1..len(id)]);
+        p = buffer.append(heap, p, " style=\"max-width:none\"><button>Yes, delete it for good</button></form></details></span></div></div>");
         return p;
     }
     p = buffer.append(heap, p, "</span><span class=idn>job ");
@@ -358,4 +360,46 @@ pub fn page[&h, &f, &d, &q](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], query
     }
     buffer.drop(heap, qb);
     return (200, results.close(heap, page));
+}
+
+// Remove the file `lib-N<tail>` if there is one.
+fn remove_one[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: &n [byte], tail: &static [byte]) -> [heap, fs_write("")] int {
+    let p = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n), tail);
+    var rc = 0 - 1;
+    borrow p as &pb in {
+        rc = files.remove(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return rc;
+}
+
+// `POST /gallery/delete/N`: (status, text). 302 when the library picture N, its description and its marks are gone; 422 for a number that is not 1 to 9 digits; 404 for a picture that is not there; 409
+// while a job is queued or running (it may be using the picture; nothing is removed). The index keeps its line, so a number is never given twice; `lib-N.tried` is written so the describer passes it by.
+pub fn remove[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], n: &n [byte]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] (int, buffer.Buffer) {
+    if results.id_ok(n) == false {
+        return (422, buffer.append(heap, buffer.empty(heap, 64), "the picture number is 1 to 9 digits"));
+    }
+    let name = picks.lib_name(heap, fs, dir, n);
+    if len(name) == 0 {
+        return (404, buffer.append(heap, buffer.empty(heap, 64), "no such library picture"));
+    }
+    let (running, queued) = results.counts(heap, fs, dir);
+    if running + queued > 0 {
+        return (409, buffer.append(heap, buffer.empty(heap, 96), "a job is queued or running and may be using the picture; try again when the queue is empty"));
+    }
+    var rc = remove_one(heap, fs, dir, n, ".jpg");
+    rc = remove_one(heap, fs, dir, n, ".png");
+    rc = remove_one(heap, fs, dir, n, ".webp");
+    rc = remove_one(heap, fs, dir, n, ".txt");
+    rc = remove_one(heap, fs, dir, n, ".auto");
+    let mark = buffer.append(heap, buffer.append(heap, buffer.append(heap, buffer.empty(heap, 96), dir), "/lib-"), n);
+    let tp = buffer.append(heap, mark, ".tried");
+    borrow tp as &tb in {
+        rc = files.write_all(fs, buffer.bytes(tb), "deleted\n");
+    }
+    buffer.drop(heap, tp);
+    if rc != 0 {
+        return (500, buffer.append(heap, buffer.empty(heap, 64), "the picture could not be removed"));
+    }
+    return (302, buffer.empty(heap, 8));
 }

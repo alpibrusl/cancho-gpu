@@ -893,4 +893,15 @@ check "words: several words in any order each have to be there (and an order tha
 check "words: spaces around and between words do not matter" "$(libhits '++sofa++rug++')/$(libhits 'sofa%20%20rug')" "L$SYF /L$SYF "
 check "synonyms: the search of a job's picture by its instruction uses them too (an instruction with fill finds fills; padded with synonyms it finds nothing else)" "$(sq 'q=fill%2017' | grep -o 'badge uploaded\"' | wc -l | tr -d ' ') $(sq 'q=bicycle%20fill' | grep -o 'badge uploaded\"' | wc -l | tr -d ' ')" "1 0"
 check "synonyms: /cases pickers use them (bike shows the bicycle, and not the sofa)" "$(curl -s -H "$(hdr)" 'localhost:18097/cases?q=bike' | grep -o "value=\"l/L$SYB\"" | head -1) $(curl -s -H "$(hdr)" 'localhost:18097/cases?q=bike' | grep -c "value=\"l/L$SYF\"")" "value=\"l/L$SYB\" 0"
+# deleting a library picture (docs/studio-sessions.md, section 18)
+DL() { curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H "$(hdr)" -XPOST -H 'Content-Type: application/x-www-form-urlencoded' "$@"; }
+LD "$R/pic.png" 'a picture to delete' >/dev/null; DX=$(lastlib)
+: > "$D/lib-$DX.auto"
+check "delete: refused while a job is queued (409), and nothing is removed" "$(DL localhost:18097/gallery/delete/$DX | cut -c1-3) $(ls "$D" | grep -c "^lib-$DX\.")" "409 3"
+mv "$D/queue" "$D/queue.hold"
+check "delete: the page offers it for a library picture only (once for each, behind a confirmation)" "$(sq "q=to%20delete" | grep -c "action=/gallery/delete/$DX ") $(sq 'tag=generated' | grep -c 'gallery/delete/')" "1 0"
+check "delete: the picture, its description and its marks go; the person returns to the gallery" "$(DL localhost:18097/gallery/delete/$DX | sed 's#//[^/]*/#//H/#') $(ls "$D" | grep "^lib-$DX\." | tr '\n' ' ')" "302 http://H/gallery lib-$DX.tried "
+check "delete: it is gone from the gallery, the picker and the file route; the index keeps its line, so the number is not given again" "$(sq 'q=to%20delete' | grep -c "L$DX/") $(curl -s -H "$(hdr)" localhost:18097/cases | grep -c "l/L$DX\"") $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/files/L$DX/picture.png) $(grep -c "^$DX " "$D/lib.index") $(LD "$R/pic.png" next >/dev/null; lastlib | awk -v n=$DX '{print $1 - n}')" "0 0 404 1 1"
+check "delete: a number twice 404, no such 404, not digits 422, GET 404, JSON 415 or 404, no token 401, a foreign page 403" "$(DL localhost:18097/gallery/delete/$DX | cut -c1-3) $(DL localhost:18097/gallery/delete/9999 | cut -c1-3) $(DL localhost:18097/gallery/delete/x1 | cut -c1-3) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" localhost:18097/gallery/delete/$DX) $(curl -s -o /dev/null -w '%{http_code}' -H "$(hdr)" -XPOST -H 'Content-Type: text/plain' localhost:18097/gallery/delete/1) $(curl -s -o /dev/null -w '%{http_code}' -XPOST -H 'Content-Type: application/x-www-form-urlencoded' localhost:18097/gallery/delete/1) $(DL -H 'Origin: http://evil.example' localhost:18097/gallery/delete/1 | cut -c1-3)" "404 404 422 404 415 401 403"
+mv "$D/queue.hold" "$D/queue"
 exit $fail
