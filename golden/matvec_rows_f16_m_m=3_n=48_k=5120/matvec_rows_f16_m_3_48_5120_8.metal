@@ -2,7 +2,7 @@
 // kernel : matvec_rows_f16_m_3_48_5120_8
 // target : apple-m-series
 // launch : 6 threadgroups x 256 threads
-// tg mem : 0 B tiles + 96 B scratch of 32768 B
+// tg mem : 0 B tiles + 768 B scratch of 32768 B
 
 #include <metal_stdlib>
 using namespace metal;
@@ -15,33 +15,57 @@ kernel void matvec_rows_f16_m_3_48_5120_8(
     uint3 tgpos [[threadgroup_position_in_grid]])
 {
     const uint gid = tgpos.x;
-    threadgroup float scratch[24];
+    threadgroup float scratch[192];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     {
+        constexpr uint KD = 5120u, MM = 3u, NN = 8u;
+        constexpr uint F = 1u, Q = 1u, NS = 8u;
+        constexpr uint OUTS = 24u;
         const uint sgid = tid / 32u, lane = tid % 32u;
-        float s[1][3];
-        s[0][0] = 0.0f; s[0][1] = 0.0f; s[0][2] = 0.0f;
-        for (uint p0 = lane * 8u; p0 < 5120u; p0 += 256u) {
-            for (uint u = 0; u < 8u; u += 1u) {
-                const uint p = p0 + u;
-                float xa[3][1];
-                xa[0][0] = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((p + 0u))]));
-                xa[1][0] = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((p + 5120u))]));
-                xa[2][0] = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((p + 10240u))]));
-                {
-                    const uint j = min(sgid * 1u + 0u, 7u);
-                    const float w0 = float(half(p1_w[(uint)(0 + 8 * gid) * 5120u + (uint)(0) * 1u + ((j * 5120u + p))]));
-                    s[0][0] += xa[0][0] * w0;
-                    s[0][1] += xa[1][0] * w0;
-                    s[0][2] += xa[2][0] * w0;
+        const uint qid = lane / 4u;
+        const uint fm = (qid & 4u) + ((lane / 2u) % 4u);
+        const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;
+        const uint g4 = fn / 2u;
+        simdgroup_float8x8 C[F][Q];
+        for (uint u = 0; u < F; ++u) for (uint q = 0; q < Q; ++q) C[u][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        for (uint blk = sgid * (KD / 32u / NS); blk < (sgid + 1u) * (KD / 32u / NS); ++blk) {
+            uint4 wv[F];
+            for (uint u = 0; u < F; ++u) {
+                const uint j = u * 8u + fm;
+                wv[u] = *(const device uint4 *)(&p1_w[(uint)(0 + 8 * gid) * 5120u + (uint)(0) * 1u + ((j * KD + blk * 32u + g4 * 8u))]);
+            }
+            for (uint s = 0; s < 4u; ++s) {
+                const uint p = blk * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;
+                simdgroup_matrix<float, 8, 8> B[Q];
+                for (uint q = 0; q < Q; ++q) {
+                    float b0 = float(0.0f), b1 = float(0.0f);
+                    const uint i0 = q * 8u + fn;
+                    if (i0 < MM) { const uint i = i0; b0 = float(float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((i * KD + p))]))); }
+                    if (i0 + 1u < MM) { const uint i = i0 + 1u; b1 = float(float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((i * KD + p))]))); }
+                    B[q].thread_elements()[0] = b0; B[q].thread_elements()[1] = b1;
+                }
+                for (uint u = 0; u < F; ++u) {
+                    const half2 hh = as_type<half2>(wv[u][s]);
+                    simdgroup_matrix<float, 8, 8> A;
+                    A.thread_elements()[0] = float(hh.x); A.thread_elements()[1] = float(hh.y);
+                    for (uint q = 0; q < Q; ++q) simdgroup_multiply_accumulate(C[u][q], A, B[q], C[u][q]);
                 }
             }
         }
-        for (uint d = 16u; d > 0; d /= 2) s[0][0] += simd_shuffle_down(s[0][0], d);
-        for (uint d = 16u; d > 0; d /= 2) s[0][1] += simd_shuffle_down(s[0][1], d);
-        for (uint d = 16u; d > 0; d /= 2) s[0][2] += simd_shuffle_down(s[0][2], d);
-        if (lane == 0) {
-            { const uint j = sgid * 1u + 0u; if (j < 8u) { scratch[0 + 0u + j] = s[0][0]; scratch[0 + 8u + j] = s[0][1]; scratch[0 + 16u + j] = s[0][2]; } }
+        for (uint u = 0; u < F; ++u) {
+            const uint j = u * 8u + fm;
+            for (uint q = 0; q < Q; ++q) {
+                const uint i0 = q * 8u + fn;
+                if (i0 < MM) scratch[0 + sgid * OUTS + i0 * NN + j] = C[u][q].thread_elements()[0];
+                if (i0 + 1u < MM) scratch[0 + sgid * OUTS + (i0 + 1u) * NN + j] = C[u][q].thread_elements()[1];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        {
+            for (uint e0 = tid; e0 < OUTS; e0 += 256u) {
+                float sum = 0.0f; for (uint r = 0; r < NS; ++r) sum += scratch[0 + r * OUTS + e0];
+                scratch[0 + e0] = sum;
+            }
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);

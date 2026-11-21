@@ -574,3 +574,60 @@ shared system message, 0.16 s against 2.06 s); every other row is behind, by 1.4
   0.35 s for 15 tokens, where 16 took 0.16 s). A 4-row and a 2-row set would bound it at about 150 ms.
 * C (`--reuse-decode`) is now the largest lever on a warm turn that is not a kernel study: the turns above re-feed
   the answer the server itself generated.
+
+## 9. Toward Ollama's prefill: where the time is now, and the steps (2026-11-21; step 1 built)
+
+> **Not built except step 1.** The user's decision, the same day: 16-bit activations may be used if that is what
+> reaches Ollama's rate. Marks as in section 7.
+
+### 9.1 Where a prefill goes now [measured]
+
+`cancho-gpu-run35`, 689 tokens, after `docs/kernels.md` 9.7: 3.90 s, 5.66 ms a token. Each family of kernels made a
+no-op in turn (`CANCHOGPU_NOOP`, one run each; the outputs are wrong, the time left is what the family does not
+cost):
+
+| family | prefill without it | so it costs | ms a token |
+|---|---|---|---|
+| nothing removed | 3.90 s | | 5.66 |
+| the NVFP4 products (`matvec_fp4`) | 0.91 s | 3.00 s | 4.35 |
+| the delta layers' step (`delta_step16`) | 3.51 | 0.39 | 0.57 |
+| the delta layers' two f16 projections (`matvec_rows_f16_m`) | 3.70 | 0.20 | 0.30 |
+| attention (scores and weighted sum) | 3.74 | 0.16 | 0.23 |
+| `rmsnorm_rows` | 3.87 | 0.04 | 0.05 |
+| rope, `kv_row`, `conv_step16`, `qk_norm_rows`, `gates_rows`, `gated_norm` | 3.89 to 3.91 | nothing measurable | |
+| not accounted for (host work, launch latency) | | about 0.12 | 0.17 |
+
+`CANCHOGPU_PROFILE=2` times every launch on its own and overstates the small kernels by about two; it is not the
+source of this table. **Section 8.7's guess that the 1.3 ms outside the products was per-token launches was wrong:**
+the per-token kernels of an attention layer (rope, `kv_row`) cost nothing measurable, and two thirds of it is three
+kernels.
+
+Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
+
+### 9.2 The steps, each with what it was measured or estimated to give
+
+1. **The two f16 projections on the matrix unit. Built.** `matvec_rows_f16_m` took the generic lowering: 32 lanes an
+   output whatever the schedule, a chain of 2,560 multiply-adds a lane, 60 us a launch at 16 rows alone. With
+   `frag 1` in its Apple schedule it takes `frag_rows_f16_ks`: 12 us at 16 rows, 7 at 8, and 9 and 11 at 2 and 3
+   where it was 8. **Prefill 3.72 s against 3.92, 185 tok/s, the same tokens on the three prompts of 8.7**;
+   `spec-check.sh` and `serve_check.py` pass; the order of the sum changes.
+2. **The delta step with a state row a simdgroup.** The emitted `delta_step16` is the generic lowering: a row's 128
+   columns are spread over 128 threads, so each of its 96 row sums goes through threadgroup memory and three
+   barriers; 189 us a launch in the model. Written by hand with one simdgroup a row (a `float4` a lane, `simd_sum`,
+   no threadgroup memory) the same step takes **62 us alone [measured, throwaway, its output not checked against the
+   emitted kernel's]**, which is about the 6 MB it reads and writes at memory speed. [estimate] 0.26 s of the
+   prefill. What it needs is a lowering in which a tile whose rows each fit a simdgroup reduces and broadcasts by
+   shuffles; that is a change to the generic lowering and has no design yet.
+3. **16-bit activations in the batch products.** The 16-row kernel with `x` read as f16: 217 us against 236
+   [measured, on the kernel alone], which is MLX's 219. [estimate] 0.24 s. The residual stream would be stored f16
+   (or bf16, as the model's own embeddings are) between kernels; every kernel that reads or writes it changes
+   type, and the answers change: an activation keeps 11 bits (8 in bf16).
+4. **A long pass and a staged kernel.** MLX's `fp_qmm_t` does 12.1 us a row from 64 rows up against 13.6 for the
+   16-row kernel with f16 activations (`docs/kernels.md` 9.6). [estimate] 0.3 s more, and it is the only step that
+   needs the prefill restructured: kernels for a number of rows not known when they are compiled, the delta and
+   attention layers over a whole prompt, the cache's cut. No design yet.
+5. **Attention for a chunk's rows in one launch**, 0.16 s today.
+
+[estimate] Steps 2, 3 and 5 on top of step 1: about 3.1 s, 220 tok/s. With step 4, about 2.8 s, 245. **The sum of
+what is listed does not reach Ollama's 2.5 s**; the rest is in the 0.17 ms a token not accounted for and in the
+products' rate between our kernel and theirs, and neither has a step here.
