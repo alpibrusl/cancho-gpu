@@ -1189,6 +1189,72 @@ pub fn snap_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalg
     return 0;
 }
 
+// The attention layers' key and value caches (and the draft head's), for a cache slot that is not the engine's
+// own conversation (docs/serving.md section 8): a list of buffers the size of the engine's, in the order `kv_copy` walks.
+pub fn kv_size() -> [] int {
+    return 4 * 4 * tmax() * 256;
+}
+
+pub fn kv_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
+    let a = mem.list(m);
+    var l = 0;
+    while l < layers() {
+        if is_attention(l) {
+            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        }
+        l = l + 1;
+    }
+    if m[eng + 114] == 1 {
+        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+    }
+    return a;
+}
+
+fn kv_one[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), e: int, s: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
+    var from = e;
+    var to = s;
+    if to_store == 0 {
+        from = s;
+        to = e;
+    }
+    if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + kv_size()]) < 0 {
+        return device_fail(m, t, ffi, "copying a cache");
+    }
+    if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + kv_size()]) < 0 {
+        return device_fail(m, t, ffi, "copying a cache");
+    }
+    return 0;
+}
+
+// Whole buffers through the host: `to_store` 1 is engine to store, 0 the way back. `scr` is `kv_size()` bytes in `t`.
+pub fn kv_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, store: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
+    var l = 0;
+    var i = 0;
+    while l < layers() {
+        if is_attention(l) {
+            if kv_one(m, t, ffi, mem.get(m, m[eng + 93], l), mem.get(m, store, i), scr, to_store) < 0 {
+                return 0 - 1;
+            }
+            if kv_one(m, t, ffi, mem.get(m, m[eng + 94], l), mem.get(m, store, i + 1), scr, to_store) < 0 {
+                return 0 - 1;
+            }
+            i = i + 2;
+        }
+        l = l + 1;
+    }
+    if m[eng + 114] == 1 {
+        if kv_one(m, t, ffi, m[eng + 111], mem.get(m, store, i), scr, to_store) < 0 {
+            return 0 - 1;
+        }
+        if kv_one(m, t, ffi, m[eng + 112], mem.get(m, store, i + 1), scr, to_store) < 0 {
+            return 0 - 1;
+        }
+    }
+    return 0;
+}
+
 // Resume a conversation at position `c`: the masks (the engine's and the draft head's) let positions [0, c) be
 // read and close the rest, which is what `reset` and `c` feeds would have left. The key and value rows of [0, c)
 // are the ones in the engine.
