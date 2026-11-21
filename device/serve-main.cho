@@ -332,11 +332,13 @@ fn cache_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, n: int)
 }
 
 fn round_cut(b: int, n: int) -> [] int {
-    var c = 8 * (b / 8);
+    // a multiple of the prefill chunk, so that what follows is fed in the chunks a fresh prefill takes
+    let w = qwen35.mb();
+    var c = w * (b / w);
     if c >= n {
-        c = c - 8;
+        c = c - w;
     }
-    if c < 8 {
+    if c < w {
         return 0;
     }
     return c;

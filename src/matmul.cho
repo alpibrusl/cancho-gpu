@@ -155,6 +155,10 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
         if fr != 0 - 2 {
             return fr;
         }
+        let frw = frag_rows_wide(m, t, g, x, acc, mm, nn, kd, b, ops);
+        if frw != 0 - 2 {
+            return frw;
+        }
         let f16r = frag_rows_f16(m, t, g, x, acc, mm, nn, kd, ops, ta, tb);
         if f16r != 0 - 2 {
             return f16r;
@@ -386,6 +390,111 @@ fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: 
     }
     gen.line(m, t, g, text.f3(m, t, "if (fn < $u) scratch[$ + fn * $u + j] = C[t].thread_elements()[0] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
     gen.line(m, t, g, text.f3(m, t, "if (fn + 1u < $u) scratch[$ + (fn + 1u) * $u + j] = C[t].thread_elements()[1] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    let name = gen.declare_reg(m, t, g, x, ir.tile(m, acc, mem.of2(m, mm, nn), kinds.reg()));
+    let cv = dialect.convert(m, t, gen.dia(m, g), acc, text.f1(m, t, "scratch[$ + e]", n(m, t, resv)));
+    return gen.owned1(m, t, g, outs, text.f2(m, t, "$[k] = $;", name, cv));
+}
+
+// `frag_rows` for 9 to 32 rows of the activations (docs/serving.md section 8): the same lanes, loads and order of the
+// reduction, with `ceil(m / 8)` fragments of activations (eight tokens each) sharing each weight fragment, as
+// `frag_rows_f16` does. A separate lowering so that the kernels of up to eight rows are emitted as they were.
+fn frag_rows_wide[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, b: int, ops: int) -> [] int {
+    let frag = gen.frag(m, g);
+    let threads = gen.threads(m, g);
+    let d = gen.dq_of(m, g, ir.var_of(b));
+    if d == 0 || !dialect.fragments(gen.dia(m, g)) || mm <= 8 || mm > 32 || kd % 32 != 0 {
+        return 0 - 2;
+    }
+    if nn % (8 * frag) != 0 || nn / (8 * frag) > threads / 32 {
+        return 0 - 2;
+    }
+    if m[d + 4] != 16 || m[d + 3] != kd || m[d + 7] != kd / 2 {
+        return 0 - 2;
+    }
+    let oa = mem.get(m, ops, 0);
+    if m[oa] != gen.a_lazy() || gen.lvalue(t, m[d + 6]) < 0 {
+        return 0 - 2;
+    }
+    let outs = mm * nn;
+    let resv = gen.staged(m, g);
+    gen.need_scratch(m, g, resv + outs);
+    if gen.staged(m, g) == 0 {
+        gen.barrier(m, t, g);
+    }
+    var unroll = 2;
+    while unroll > 1 && kd / 32 % unroll != 0 {
+        unroll = unroll / 2;
+    }
+    gen.line_lit(m, t, g, "{");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f3(m, t, "constexpr uint KD = $u, MM = $u, NN = $u;", n(m, t, kd), n(m, t, mm), n(m, t, nn)));
+    gen.line(m, t, g, text.f4(m, t, "constexpr uint F = $u, Q = $u, NS = $u, U = $u;", n(m, t, frag), n(m, t, (mm + 7) / 8), n(m, t, nn / (8 * frag)), n(m, t, unroll)));
+    gen.line_lit(m, t, g, "const uint sgid = tid / 32u, lane = tid % 32u;");
+    gen.line_lit(m, t, g, "if (sgid < NS) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint qid = lane / 4u;");
+    gen.line_lit(m, t, g, "const uint fm = (qid & 4u) + ((lane / 2u) % 4u);");
+    gen.line_lit(m, t, g, "const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;");
+    gen.line_lit(m, t, g, "const uint g4 = fn / 2u;");
+    gen.line_lit(m, t, g, "simdgroup_float8x8 C[F][Q];");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f) for (uint q = 0; q < Q; ++q) C[f][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);");
+    gen.line_lit(m, t, g, "for (uint blk0 = 0; blk0 < KD / 32u; blk0 += U) {");
+    gen.depth_in(m, g);
+    let av = gen.read(m, t, oa, text.lit(m, t, "i * KD + p"));
+    gen.line_lit(m, t, g, "float xs[Q][U][4][2];");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) for (uint u = 0; u < U; ++u) for (uint s = 0; s < 4u; ++s) for (uint c = 0; c < 2u; ++c) {");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f1(m, t, "float xv = 0.0f; if (q * 8u + fn + c < MM) { const uint i = q * 8u + fn + c; const uint p = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s; xv = $; }", av));
+    gen.line_lit(m, t, g, "xs[q][u][s][c] = xv;");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = sgid * (8u * F) + f * 8u + fm;");
+    gen.line_lit(m, t, g, "uint wb[U]; float sgv[U];");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < U; ++u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint blk = blk0 + u;");
+    let wl = gen.at_index(m, t, gen.lvalue(t, m[d + 6]), text.f1(m, t, "j * $u + blk * 16u + g4 * 4u", n(m, t, m[d + 7])));
+    gen.line(m, t, g, text.f1(m, t, "wb[u] = $;", dialect.vector_load(m, t, gen.dia(m, g), text.lit(m, t, "uint"), wl)));
+    gen.line(m, t, g, text.f1(m, t, "const uint grp = j * $u + blk * 2u + g4 / 2u;", n(m, t, kd / 16)));
+    gen.line(m, t, g, text.f1(m, t, "sgv[u] = $;", gen.at_index_lit(m, t, m[d + 1], "grp")));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint u = 0; u < U; ++u) for (uint s = 0; s < 4u; ++s) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "simdgroup_float8x8 A, B;");
+    gen.line_lit(m, t, g, "const float2 w = fp4_pair((wb[u] >> (8u * s)) & 0xFFu);");
+    gen.line_lit(m, t, g, "A.thread_elements()[0] = w.x * sgv[u]; A.thread_elements()[1] = w.y * sgv[u];");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) { B.thread_elements()[0] = xs[q][u][s][0]; B.thread_elements()[1] = xs[q][u][s][1]; simdgroup_multiply_accumulate(C[f][q], A, B, C[f][q]); }");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = sgid * (8u * F) + f * 8u + fm;");
+    if m[d + 2] >= 0 {
+        gen.line(m, t, g, text.f1(m, t, "const float rsc = float($) * 16384.0f;", gen.at_index_lit(m, t, m[d + 2], "j")));
+    } else {
+        gen.line_lit(m, t, g, "const float rsc = 16384.0f;");
+    }
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint i0 = q * 8u + fn;");
+    gen.line(m, t, g, text.f1(m, t, "if (i0 < MM) scratch[$ + i0 * NN + j] = C[f][q].thread_elements()[0] * rsc;", n(m, t, resv)));
+    gen.line(m, t, g, text.f1(m, t, "if (i0 + 1u < MM) scratch[$ + (i0 + 1u) * NN + j] = C[f][q].thread_elements()[1] * rsc;", n(m, t, resv)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
     gen.depth_out(m, g);
     gen.line_lit(m, t, g, "}");
     gen.depth_out(m, g);

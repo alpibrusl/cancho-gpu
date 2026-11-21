@@ -623,6 +623,38 @@ def attention_pvl(nkv, g, t, d, tmax):
     return out
 
 
+def conv_step_m(mrows, c):
+    """conv_step8.chx / conv_step16.chx: the window carried through the chunk's rows, only the last one written."""
+    x, cs, cw = lcg([mrows * c, 3 * c, 4 * c])
+    seq = [cs[0:c], cs[c:2 * c], cs[2 * c:3 * c]] + [x[t * c:(t + 1) * c] for t in range(mrows)]
+    y = []
+    for t in range(mrows):
+        y += [silu_(sum(seq[t + k][j] * cw[k * c + j] for k in range(4))) for j in range(c)]
+    return y, seq[mrows] + seq[mrows + 1] + seq[mrows + 2]
+
+
+def delta_step_m(mrows, nk):
+    """delta_step8.chx / delta_step16.chx: the state carried through the chunk's rows, written once."""
+    s, q, k, v, g, bt = lcg([nk * 384 * 128, mrows * nk * 128, mrows * nk * 128, mrows * 10240, mrows * nk * 3 * 128, mrows * nk * 384])
+    so = [0.0] * len(s)
+    y = [0.0] * (mrows * nk * 384)
+    for i in range(nk):
+        for j in range(3):
+            for r in range(128):
+                row = i * 384 + j * 128 + r
+                state = s[row * 128:(row + 1) * 128]
+                for t in range(mrows):
+                    kb = k[(t * nk + i) * 128:(t * nk + i + 1) * 128]
+                    qb = q[(t * nk + i) * 128:(t * nk + i + 1) * 128]
+                    gj = g[(t * nk * 3 + i * 3 + j) * 128:(t * nk * 3 + i * 3 + j + 1) * 128]
+                    sg = [state[c] * gj[c] for c in range(128)]
+                    e = (v[t * 10240 + 4096 + row] - sum(sg[c] * kb[c] for c in range(128))) * bt[t * nk * 384 + row]
+                    state = [sg[c] + kb[c] * e for c in range(128)]
+                    y[t * nk * 384 + row] = sum(state[c] * qb[c] for c in range(128))
+                so[row * 128:(row + 1) * 128] = state
+    return so, y
+
+
 def delta_step3(nk):
     s, q, k, v, g, bt = lcg([nk * 384 * 128, 3 * nk * 128, 3 * nk * 128, 30720, 3 * nk * 3 * 128, 3 * nk * 384])
     so = [[0.0] * len(s) for _ in range(3)]
@@ -776,6 +808,17 @@ def new_checks():
     for t in range(3):
         ok &= check(f"delta_step3 so{t + 1} nk=2", got[f"so{t + 1}"], want_so[t])
     ok &= check("delta_step3 y nk=2", got["y"], want_y)
+    for mrows in (8, 16):
+        got = run(f"conv_step{mrows}", ["c=512"])
+        want_y, want_n = conv_step_m(mrows, 512)
+        ok &= check(f"conv_step{mrows} y c=512", got["y"], want_y)
+        ok &= check(f"conv_step{mrows} ns c=512", got["ns"], want_n)
+        got = run(f"delta_step{mrows}", ["nk=2"])
+        want_so, want_y = delta_step_m(mrows, 2)
+        ok &= check(f"delta_step{mrows} so nk=2", got["so"], want_so)
+        ok &= check(f"delta_step{mrows} y nk=2", got["y"], want_y)
+    ok &= check("matvec_fp4_batch m=16 n=64 k=128", run("matvec_fp4_batch", ["m=16", "n=64", "k=128"])["y"], matvec_fp4_batch(16, 64, 128))
+    ok &= check("matvec_fp4_batch m=13 n=64 k=128", run("matvec_fp4_batch", ["m=13", "n=64", "k=128"])["y"], matvec_fp4_batch(13, 64, 128))
     ok &= check("attention_scores nkv=2 g=6 t=64 ts=16", run("attention_scores", ["nkv=2", "g=6", "t=64", "ts=16", "d=256", "tmax=96"])["sc"], attention_scores(2, 6, 64, 256, 96))
     ok &= check("attention_pv nkv=2 g=6 t=64 dw=32", run("attention_pv", ["nkv=2", "g=6", "t=64", "dw=32", "d=256", "tmax=96"])["o"], attention_pv(2, 6, 64, 256, 96))
     got = run("attention_stats", ["nkv=2", "g=4", "t=96", "cs=16"])
