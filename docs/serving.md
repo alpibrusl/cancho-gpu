@@ -19,6 +19,7 @@ curl localhost:8080/v1/chat/completions -H 'Authorization: Bearer secret' -H 'Co
 | `--model NAME` | the id in answers and `/v1/models` (default `qwen3.8:27b-mlx`) |
 | `--think` | the model reasons first unless the request says otherwise |
 | `--no-prefix-cache` | turn off the prefix cache, which is on by default: it keeps the delta state at the end of each conversation's history and reuses it on the next turn (section 7) |
+| `--cache-slots N` | conversations the prefix cache keeps, 1 to 16 (default 4; section 8). Each slot is 468 MB of device memory, touched as it is used |
 | `--no-spec` | no draft head: one token a pass (about 27 tok/s) and 2.7 GB less memory; by default the model's draft head is used (a chain of two drafts, three rows checked a pass): streaming a 128-token reply measured 35 tok/s with it against 24 without (one request; prose, code and a sampled answer at temperature 1 each 34.7-35.6 with it; 20.6-25 without; the machine had other jobs, load average 14) |
 
 **It listens on every address of the host** (`tcp_listen` binds them all; there is no way to ask for loopback),
@@ -57,8 +58,7 @@ one token; `max_tokens` is cut to the room left and the answer then ends with `f
 Longer needs attention split across threadgroups, which the surface language cannot say yet (`docs/kernels.md`
 section 4).
 
-Each request starts from nothing: the conversation is prefilled again, eight tokens at a time. There is no
-prefix cache (a design for one is section 7). Measured on an M4 Max (one run, the machine otherwise quiet): a short prompt's first token
+A request that does not continue the last conversation starts from nothing: the conversation is prefilled, sixteen tokens at a time and then eight (section 8.7; the prefix cache of section 7 keeps the last conversation's state; Ollama on the same requests is section 8). Measured on an M4 Max (one run, the machine otherwise quiet): a short prompt's first token
 arrives in about 0.35 s and the stream runs at 23.5 tokens a second; a 330-token prompt takes about 5 s before
 its first token.
 
@@ -95,7 +95,7 @@ sends only what section 1 lists should work.
 
 ## 6. Not here
 
-Concurrent requests and batching them (one GPU conversation at a time), a prefix cache across turns (designed in section 7), tools,
+Concurrent requests and batching them (one GPU conversation at a time), more than one cached conversation (one slot, section 7; several are designed in section 8), tools,
 images, stop sequences, log-probabilities, a read timeout on a connection (a client that connects and sends
 nothing holds the server), TLS, and a smaller memory footprint (14.6 GB of weights).
 
@@ -160,7 +160,7 @@ The snapshot is taken at a position `c` that a later request is likely to share.
 
 **Rule:** `b` is the index just after the last `<|im_start|>assistant\n` in the prompt's ids (the special token's id,
 then `assistant` and `\n`: three tokens, `248045 74455 198` **[measured, 7.9]**), and the
-cut is `c = 8 * floor(b / 8)`, a multiple of `qwen35.mb()`. Two reasons for the multiple of 8:
+cut is `c = 8 * floor(b / 8)`, a multiple of `qwen35.mb()`. (Since 8.7 the chunk is 16 and so is the multiple; the reasons are the same.) Two reasons for the multiple of 8:
 
 1. A fresh prefill feeds chunks of 8 tokens from position 0 (`qwen35spec.feed`), and the chunks use the
    matrix-unit kernels while single steps use another set. A resumed prefill that starts at a multiple of 8 forms the
@@ -225,7 +225,7 @@ new kernel buys nothing and the cache needs no change to the device library or t
   **[read]**, less for a short prefix), so an LRU of two to four slots costs 0.3 GB each. Not first: one chat at a
   time is what this server does today.
 * **A shared system prompt** (a second cut at the end of the system message) for many conversations with one long
-  instruction. It needs several slots.
+  instruction. It needs several slots (section 8).
 * **Contexts above 1,024** (`kernels.md` section 4) and **prefill speed** (the matrix-unit prefill of section 3).
   Both are separate, and a cache helps the second regardless: it makes the prefill happen once per token rather than
   once per turn.
@@ -238,7 +238,7 @@ new kernel buys nothing and the cache needs no change to the device library or t
 2. **The slot. Done (7.10)** behind `--prefix-cache`: snapshot, restore, resume, the failure flag, `cached_tokens`; the
    checks of 7.6 in `tests/prefix_check.py`. Exit: equal tokens, and the decode rate measured.
 3. **Measure and decide the default. Done:** on by default, because 7.10 met every bar of 7.6 (hit 8-15% of the miss time, miss cost zero within noise, same tokens, same decode rate); the open items (bit-equal logits, decode on prose, one slot) are listed there. Correcting 7.1's estimates in place where they are wrong.
-4. Later, on its own design: several slots.
+4. Later, on its own design: several slots (section 8).
 
 ### 7.9 Step 1: the probe (measured)
 
@@ -327,4 +327,242 @@ tokens of history (the 0.2 s fixed cost and the new tokens at about 110 tok/s: t
 and the up to 7 tokens re-fed). It guessed 4 ms for a copy (7.9) and a miss pays one; that held.
 
 **Not settled.** The logits were not compared bit for bit (only the tokens they produce). The slot holds one
-conversation (7.7). Step 3 decides the default.
+conversation (7.7; several are designed in section 8). Step 3 made it the default.
+
+## 8. Several slots, and Ollama on this machine (design, written before the code; steps 1 to 3 built)
+
+> **Status: steps 1 to 3 of 8.6 are built and measured (8.7): the slots meet their bar; the prefill went from 119 to
+> 153 tok/s and does not meet its bar of 235. Steps 4 and 5 are not started.** Marks as in section 7. The aim is stated as a comparison: the same
+> requests to Ollama 0.40.16 (its MLX runner, the same NVFP4 weights from the same store) and to `cancho-gpu-serve`
+> on this machine (M4 Max, 64 GB), one at a time, with `tests/ollama_compare.py`.
+
+### 8.1 Where we are, measured
+
+`tests/ollama_compare.py both` **[measured, one run, 2026-11-21, thinking off, temperature 0, Ollama unloaded before
+our server starts]**. First token is wall clock, streamed.
+
+| case | prompt tokens | Ollama | ours | ours / Ollama |
+|---|---|---|---|---|
+| cold prompt, first token | 131 | 0.72 s | 1.20 s | 1.7 |
+| cold prompt, first token | 403 | 1.65 s | 3.51 s | 2.1 |
+| cold prompt, first token | 743 | 2.80 s | 6.57 s | 2.3 |
+| decode, 256 tokens of a story | 44 | 47.1, 48.8 tok/s | 40.2, 40.3 tok/s | 0.84 |
+| conversation, turns 2 to 4 (112 new tokens a turn), first token | 312 to 536 | 0.45 to 0.57 s | 1.24 to 1.26 s | 2.5 |
+| conversation, decode of a 24-token answer | | 56 to 79 tok/s | 48 to 54 tok/s | 0.7 to 0.9 |
+| two chats taking turns, turns 2 and 3, first token | 302, 369 | 0.33 to 0.45 s | 2.73 to 3.17 s | 7 to 8 |
+| a 540-token system message, three different questions, first token | 545 | 2.07, 2.13, **0.16 s** | 4.68, 4.68, 4.85 s | 2.2, 2.2, 30 |
+
+What the rows say:
+
+* **Cold prefill is the largest gap and it is in every row.** Ollama prefills 743 tokens in 2.64 s by its own counter,
+  281 tok/s; ours runs at 113 to 119. Our warm turn is slow for the same reason: the cache leaves 120 tokens to
+  prefill and they take a second.
+* **Ollama keeps more than one conversation.** Both of two interleaved chats hit; ours has one slot and both miss.
+* **Ollama does not reuse a shared system message at once.** The first two questions each pay the whole prompt; the
+  third takes 0.16 s. (Its runner seems to learn the branch point from the second request **[open: its source not
+  read]**.) A snapshot taken at the end of the system message on the first request would hit on the second: this is
+  the one row where a design can be ahead of it without being faster.
+* **Decode is 84% of Ollama's on prose**, as `docs/native.md` N4c measured (88% there); on short predictable answers
+  Ollama's depth controller takes it further ahead.
+* Not in the table, and a larger difference than any row: **our context is 1,024 tokens; Ollama's is whatever
+  `num_ctx` says, up to 262,144.**
+
+### 8.2 Where our prefill goes
+
+`CANCHOGPU_PROFILE=2 build/cancho-gpu-run35 ~/.ollama/models tests/chx "<681 tokens>" 1 --timing`
+**[measured: 85 chunks of 8 tokens; each kernel timed alone, which overstates the small ones by their launch
+overhead, so the shares are right and the sum, 78 ms a chunk, is above the 67 ms of the pipelined run]**:
+
+| part | launches a chunk | ms a chunk | share |
+|---|---|---|---|
+| NVFP4 products through the matrix unit (`matvec_fp4*_batch`, 8 rows) | 336 | 53.8 | 69% |
+| gated-delta work done **a token at a time**: `matvec_rows_f16` (a/b), `delta_step`, `qk_norm`, `gates`, `conv_step` | 2,309 | 19.2 | 24% |
+| everything else: norms, RoPE, cache rows, attention | about 900 | 5.3 | 7% |
+
+* The 48 delta layers run their five small kernels once a token, 2,309 launches a chunk, though the speculative
+  round already has the batched forms (`conv_step3`, `delta_step3`, the a/b projections, gates and `qk_norm` over
+  three rows: `docs/native.md` N4c, 18 launches a layer down to 6). The same over the chunk's rows is 288 launches.
+* The weight products read 14.4 GB in about 50 ms, 270 to 290 GB/s: the 8-row matrix-unit kernel costs the same for
+  1 row as for 8 (`docs/kernels.md` section 6), so it is bound by its own work per weight byte and not by the
+  matrix unit. The f16 counterpart keeps that cost up to 16 rows and pays 2.3 times for 32 (`docs/kernels.md`
+  section 7), with `ceil(m / 8)` activation fragments sharing each weight fragment. NVFP4 has no such kernel.
+* **The roof [estimate].** A token is 2 x 26 x 10^9 multiply-adds, so Ollama's 281 tok/s is 14.6 x 10^12 a second and
+  our 8-row pass is 6.6 x 10^12. Ollama is compute-bound and near what this GPU does; nobody passes it by much on a
+  cold prompt. Sixteen rows at today's cost of a pass would be 16 / (0.054 + 0.008) = 258 tok/s, and 32 rows at 2.3
+  times, 32 / (0.124 + 0.012) = 235: **parity on cold prefill needs the 16-row pass to cost what the 8-row one does,
+  and that is not known until the kernel exists [open].**
+
+### 8.3 The design, in four parts
+
+**A. Several slots (the cache).** A slot is what section 7's one slot is, plus the rows of the attention caches
+it needs, because another conversation will write over them:
+
+* `ids[0, c)`, the delta and convolution snapshot at `c` (162.8 MB), and room for the K and V rows `[0, c)` of the 16
+  attention layers (134 MB at `c` = 1,024 **[read: 7.7]**) and of the draft head's one layer. `--cache-slots N`, 4 by default:
+  1.87 GB at most (4 x 468 MB: two snapshots of 162.8 MB and whole key and value buffers, 142.6 MB; this said
+  "about 1.2 GB" before the second cut and the whole-buffer copy were counted), on a server that holds 16.7 GB.
+* One slot is **resident**: its K and V rows are the engine's own, not a copy. Continuing the resident conversation
+  is exactly section 7: no row is copied.
+* A request picks the slot with the longest cut whose `ids[0, c)` are its first tokens and `c < n`. If that slot is
+  not the resident one, the resident's rows `[0, c_res)` are copied out to its slot (they are still intact: decode
+  only writes above the cut), the chosen slot's rows are copied in, its snapshot restored, and it becomes resident.
+  Two copies of at most 134 MB and one of 163: under 15 ms at the 3 to 5 ms per 163 MB of 7.9 **[estimate]**.
+* After the prefill passes the new cut, the snapshot goes to the slot that was hit (the conversation moved on), or on
+  a miss to the least recently used one. Validity is section 7.4's rule per slot: invalid when written, valid when
+  complete; a slot whose rows were never copied out is only ever read as the resident.
+* **A second cut in each slot: the end of the system message.** While prefilling, a snapshot is also kept at
+  the chunk-multiple below `b0`, for `b0` the index after the opener of the second message (the first
+  `<|im_start|>` past token 0, its role and the newline: the end of the system message when there is one), when
+  that is at least 64 tokens in. (As built: the rule does not read the role, so a conversation with no system
+  message gets its second cut after its first user message, which is harmless.)
+  It costs one more 163 MB copy and no rows (they are a prefix of the slot's). A request that shares the system
+  message and nothing after it hits there on its first appearance: the row where Ollama pays twice.
+* Held to what 7.6 holds one slot to, with the interleaved case now expecting a hit, plus: five conversations over
+  four slots (the least recent one misses, the others hit), and a shared system message (the second request reuses it).
+
+**B. Prefill twice as fast.** In order of what the profile says:
+
+1. The delta layers' small kernels over the chunk's rows, the state carried through the tokens inside one launch
+   (`conv_step` and `delta_step` over `m` rows, as `conv_step3` and `delta_step3` do for 3). 2,309 launches a
+   chunk to 288. Worth up to 24% of a chunk **[estimate from the shares above]**: about 113 to 140 tok/s.
+   **Measured in 8.7: 6.5%. The estimate was wrong:** it took the shares of kernels timed alone, where each small
+   launch carries its overhead; in the pipelined run they overlap the weight products.
+2. NVFP4 through the matrix unit for 16 rows (two activation fragments a weight fragment, `frag_rows` of
+   `src/matmul.cho` taught what `frag_rows_f16` does), and the chunk raised to 16. This is the step that decides
+   parity; the estimate of 8.2 says 235 to 258 tok/s if a 16-row pass costs what an 8-row one does.
+   **Measured in 8.7: it costs 1.7 times as much, so 153 tok/s.**
+3. Thirty-two rows only if step 2's kernel shows the cost growing slower than the rows.
+
+Each is held to the tokens of the build before it on the golden check and `tests/prefix_check.py` (the cut becomes
+a multiple of the chunk, whatever the chunk is).
+
+**C. Keep what decode already computed.** When an answer ends, the engine holds the state after its last token,
+and with thinking off the next turn's prompt starts with exactly those tokens. Section 7 throws that away and
+prefills the answer again, because the state after a prefill in chunks and after a decode token by token are not
+bit for bit the same (different kernels, 1e-6 apart). Keeping it makes the first token of the next turn cost only
+the new user message, however long the answer was: a 500-token answer is 2 s of prefill today and would be none.
+The price is the bar: "the same tokens as a server without the cache" becomes "the same tokens on the check set",
+since a near tie could fall the other way. **This is a decision, not an engineering step: it is in the design as
+optional, off by default (`--reuse-decode`), measured before anything is said about it.** The generated ids are
+compared with the next prompt's like any other prefix, so a client that edits the answer simply misses.
+
+**D. Decode: the round's 11 ms, and depth.** `docs/native.md` N4b and N4c measured it: Ollama's round costs about
+44 ms and ours 51, of which the three-row weight kernels are 40 (at their optimum, and at Ollama's rate for the same
+bytes) and the rest 11; and Ollama drafts deeper where drafts are accepted. So:
+
+1. A depth controller: draft 1 to 4 tokens from the acceptance measured in this answer so far (N4c's table: +10 to
+   +12% on code and predictable text, -5% on prose at a fixed depth of 3, hence a controller and not a constant).
+2. Fewer launches in a round (about 8.7 us each, 8 ms of the 11): the fusions `docs/qwen35.md` section 5 lists and
+   did not make. Worth 3 to 4 ms of 51 **[read]**; parity on prose needs 7.
+
+Parity on prose is **not promised**: after both, the estimate is 43 to 45 tok/s against 47 to 49.
+
+### 8.4 What to expect, and the bars
+
+| case | today | after A | after A and B | Ollama |
+|---|---|---|---|---|
+| cold 743 tokens | 6.57 s | 6.57 | 2.9 to 3.2 s **[estimate]** | 2.80 s |
+| warm turn, 112 new tokens | 1.25 s | 1.25 | 0.5 to 0.6 s **[estimate]** | 0.45 to 0.57 s |
+| two chats taking turns | 2.7 to 3.2 s | 1.3 s **[estimate]** | 0.5 to 0.6 s | 0.33 to 0.45 s |
+| shared system message, second question | 4.68 s | 0.3 s **[estimate]** | 0.2 s | 2.13 s |
+| the same, third question | 4.85 s | 0.3 s | 0.2 s | 0.16 s |
+
+The bars, on `tests/ollama_compare.py`: **A** is done when two chats taking turns and the shared system message hit
+on their second request, with the tokens of a server without the cache. **B** is done at 235 tok/s on the 743-token
+cold prompt, and is called parity only at 270. **Ahead of Ollama** is claimed for a row only when that row's
+measured number is lower, which the estimates give for one row (the second question after a shared system
+message) and, with C, for turns that follow long answers **[open: Ollama not measured there]**.
+
+### 8.5 Not in this design
+
+* **A context above 1,024.** The largest difference from Ollama for real use, and a kernel matter
+  (`docs/kernels.md` section 4 and its later route to 16,640 positions). It changes the slots' sizes (the rows
+  grow with the context, the snapshot does not) and needs its own design.
+* Requests in parallel (one at a time, as section 4), and slots on disk.
+* Snapshots at every turn boundary of a conversation (an edit of an old message restarts from the system cut or
+  from nothing).
+
+### 8.6 Steps
+
+1. **A: the slots**, `--cache-slots`, the second cut, the checks. No kernel changes. **Done (8.7).**
+2. **B1: the delta layers a chunk at a time. Done (8.7).**
+3. **B2: the 16-row NVFP4 matrix-unit kernel**, measured alone first (`scripts/metal-kernels.sh`), then the chunk.
+   **Built (8.7); its bar is not met.**
+4. **D1: the depth controller.**
+5. Then, each on a decision: C (`--reuse-decode`), D2 (fusions), and the context.
+
+### 8.7 Steps 1 to 3, built and measured
+
+**What was built.**
+
+* **Slots** (`device/serve-main.cho`: `cache_new`, `victim`, `park`, `prefill_cached`; `device/qwen35.cho`: `kv_new`,
+  `kv_copy`). As 8.3 A, with one simplification: a slot's keys and values are copied as whole buffers (34 of 4.19 MB),
+  not as the rows below the cut, because a cache buffer is laid out by head and the rows of a prefix are not one range.
+  A conversation that shares only the earlier cut of a slot is written to another slot, so the one it branched from
+  can still continue.
+* **The delta layers a chunk at a time** (`conv_step8.chx`, `delta_step8.chx` and the 16-row pair, with
+  `matvec_rows_f16_m`, `gates_rows` and `qk_norm_rows` at the chunk's rows): the window and the state are carried
+  through the chunk's tokens inside one launch and written once.
+* **Nine to 32 rows of activations on the NVFP4 matrix-unit path** (`frag_rows_wide` in `src/matmul.cho`): the lanes,
+  loads and order of `frag_rows`, with `ceil(m / 8)` fragments of activations sharing each weight fragment. Kernels of
+  up to eight rows are emitted as before (no golden moved).
+* **The chunk is 16 tokens, then one of 8** if that much is left before single tokens (`qwen35.mb()`, `feed_half`,
+  `qwen35spec.feed`). The cache's cuts are multiples of 16.
+
+**Held to.** `tests/prefix_check.py`: **109 checks ok** on the final build: every answer equal to the server without
+the cache (greedy, and sampled with a seed), the interleaved chat now reusing its slot, five conversations over four
+slots (the least recently used misses, four hit), a shared system message (the second and third questions reuse it,
+the first conversation continues past it from its own slot). The new kernels against float64 references
+(`tests/kernels.py`, 305 ok) and, on the Metal GPU, against the interpreter (`scripts/metal-kernels.sh`: 13 and 16
+rows, 1.05e-6 and 9.2e-7). `cancho-gpu-run35` gives the tokens of the build before on three prompts of about 685
+tokens (24 to 48 tokens each). `tests/serve_check.py`, `tests/chat.sh` and 458 of 458 goldens agree; `scripts/spec-check.sh` (seven prompts, speculative
+against plain) and `scripts/gate.sh` pass.
+
+**The cost of a miss** (`tests/prefix_check.py miss`, 8 requests of about 330 tokens): +20, +16 and +26 ms with the
+cache in three runs, and -10 ms in the control where neither server has it (`miss control`): about 30 ms, the copy of
+the resident slot's keys and values, under the bar of 100. (One full run printed +239 ms while the goldens were being
+recorded on the same machine; it did not repeat.)
+
+**Prefill** (`cancho-gpu-run35`, 689 tokens, alternating builds, four runs each within 0.5%):
+
+| build | prefill | tok/s |
+|---|---|---|
+| before | 5.81 s | 119 |
+| delta layers a chunk at a time | 5.43 s | 127 |
+| and 16 rows (with the 8-row half chunk) | 4.51 s | 153 |
+
+* With the weight products made no-ops (`CANCHOGPU_NOOP=matvec_fp4`) the same prefill takes 1.02 s at 8 rows and
+  0.92 s at 16: **the weight products are 81% of the prefill, not the 69% of 8.2's table**, and everything else is
+  1.3 to 1.5 ms a token.
+* A 16-row pass of the weight products costs 88 ms against 51 for 8 rows: 1.7 times, not the 1.0 the estimate
+  needed. That is 9.5 x 10^12 multiply-adds a second against 8.2 at 8 rows and Ollama's 14.6 for its whole prefill.
+  The cost of this lowering is in the matrix-unit steps and the activations, not in decoding the weights, so more
+  rows a pass buy little.
+* The emitted kernel is sensitive to how many blocks a lane holds at once: with 4 or 8 (the 8-row kernel uses 8) a
+  16-row prefill took 9 to 15 s, with 1 or 2, 4.7 s. Thirty-two rows took 11 s at 2. `frag_rows_wide` uses 2.
+  **[open: why; the Metal compiler's register allocation is the suspect and was not examined.]**
+
+**Against Ollama** (`tests/ollama_compare.py both`, one run, after the changes; first token):
+
+| case | before (8.1) | now | Ollama |
+|---|---|---|---|
+| cold prompt, 131 / 403 / 743 tokens | 1.20 / 3.51 / 6.57 s | 1.00 / 2.90 / 5.43 s | 0.68 / 1.61 / 2.93 s |
+| conversation, turns 2 to 4 | 1.24 to 1.26 s | 1.07 to 1.08 s | 0.43 to 0.58 s |
+| two chats taking turns, turns 2 and 3 | 2.73 to 3.17 s | 0.74, 0.61 s | 0.33, 0.43 s |
+| shared system message, second question | 4.68 s | **0.16 s** | 2.06 s |
+| the same, third question | 4.85 s | 0.35 s | 0.12 s |
+| decode, 256 tokens of a story | 40.2 tok/s | 42.0 tok/s | 47.3, 49.2 tok/s |
+
+**Against the bars of 8.4.** A is met: both cases hit on their second request with the tokens of a server without
+the cache. **B is not met: 153 tok/s against a bar of 235.** One row is ahead of Ollama (the second question after a
+shared system message, 0.16 s against 2.06 s); every other row is behind, by 1.4 to 2.9 times.
+
+**What this says about the rest.**
+
+* The remaining prefill gap is the weight products' compute rate. The routes not tried: half-precision fragments
+  (`simdgroup_half8x8`; the weights are 4-bit and the activations could be f16), and a product that does not go
+  through per-lane `thread_elements` at all. Either is a kernel study with its own measurements before a design.
+* The tail of a prompt still costs 37 ms a token for up to 7 tokens after the half chunk (the third question above:
+  0.35 s for 15 tokens, where 16 took 0.16 s). A 4-row and a 2-row set would bound it at about 150 ms.
+* C (`--reuse-decode`) is now the largest lever on a warm turn that is not a kernel study: the turns above re-feed
+  the answer the server itself generated.

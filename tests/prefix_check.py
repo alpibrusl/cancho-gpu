@@ -185,15 +185,15 @@ try:
     conversation(off, on, "plain", None, 4, 12)
     conversation(off, on, "system message", "You answer in at most ten words.", 3, 14)
     conversation(off, on, "thinking on", None, 3, 10, think=True)
-    conversation(off, on, "sampled (temperature 1, seed 7)", None, 3, 12, sampled=True)
+    conversation(off, on, "sampled (temperature 1, seed 7)", None, 3, 13, sampled=True)
 
-    # An interleaved second conversation takes the slot: the first one's next turn reuses nothing, the one after it does.
+    # An interleaved second conversation takes another slot: the first one's next turn still reuses its own.
     a1 = [user(1, 14)]
     ra, _, _ = run_pair(off, on, "interleave A1", a1, none)
     b1 = [{"role": "user", "content": "A different chat. " + filler * 10}]
     run_pair(off, on, "interleave B1", b1, none)
     a2 = a1 + [{"role": "assistant", "content": ra["content"]}, user(2, 14)]
-    ra2, _, _ = run_pair(off, on, "interleave A2 (the slot is B's)", a2, none)
+    ra2, _, _ = run_pair(off, on, "interleave A2 (B came between)", a2, some)
     a3 = a2 + [{"role": "assistant", "content": ra2["content"]}, user(3, 14)]
     run_pair(off, on, "interleave A3", a3, some)
 
@@ -215,6 +215,23 @@ try:
     sk.recv(256)
     sk.close()
     run_pair(off, on, "after a client left mid-stream", a3, lambda c, n: 0 <= c < n)
+
+    # Five conversations over four slots: the least recently used one is gone, the other four are kept.
+    five = [[{"role": "user", "content": f"Chat number {k}. " + filler * 9 + "Reply with one short sentence."}] for k in range(5)]
+    firsts = [run_pair(off, on, f"five chats, {k} turn 1", five[k], none)[0] for k in range(5)]
+    for k in (1, 2, 3, 4, 0):
+        five[k] += [{"role": "assistant", "content": firsts[k]["content"]}, user(2, 6)]
+        run_pair(off, on, f"five chats, {k} turn 2" + (" (evicted)" if k == 0 else ""), five[k], none if k == 0 else some)
+
+    # One long system message, different questions: the second reuses the system message, and the first
+    # conversation still continues from its own slot, further in.
+    system = {"role": "system", "content": "Rules of the harbour. " + filler * 12}
+    q1 = [system, {"role": "user", "content": "How many animals are named? One short sentence."}]
+    r1, _, _ = run_pair(off, on, "shared system, question 1", q1, none)
+    _, shared, _ = run_pair(off, on, "shared system, question 2", [system, {"role": "user", "content": "Which animal jumps? One short sentence."}], some)
+    q1 += [{"role": "assistant", "content": r1["content"]}, {"role": "user", "content": "And where is it? One short sentence."}]
+    run_pair(off, on, "shared system, question 1 turn 2 (past the system message)", q1, lambda c, n: shared < c < n and c % 8 == 0)
+    run_pair(off, on, "shared system, question 3", [system, {"role": "user", "content": "Is the dog lazy? One short sentence."}], lambda c, n: c == shared)
 finally:
     off.stop()
     if on:

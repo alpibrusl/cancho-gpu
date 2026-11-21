@@ -37,27 +37,42 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     if lg >= 0 {
         limit = to - 1;
     }
-    if batched && limit - pos >= qwen35.mb() {
+    if batched && limit - pos >= qwen35.mb() / 2 {
         if qwen35.ensure_batch(m, t, ffi, fs, eng) < 0 {
             return 0 - 1;
         }
-        while pos + qwen35.mb() <= limit {
-            if qwen35.feed_chunk(m, t, ffi, fs, eng, ids, pos) < 0 {
+        // Whole chunks, then half a chunk if that much is left.
+        var more = true;
+        while more {
+            var rows = qwen35.mb();
+            var k_rms = m[eng + 29];
+            if pos + rows > limit {
+                rows = rows / 2;
+                k_rms = m[eng + 177];
+                more = false;
+            }
+            if pos + rows > limit {
+                rows = 0;
+            } else if more {
+                if qwen35.feed_chunk(m, t, ffi, fs, eng, ids, pos) < 0 {
+                    return 0 - 1;
+                }
+            } else if qwen35.feed_half(m, t, ffi, fs, eng, ids, pos) < 0 {
                 return 0 - 1;
             }
-            if warm {
-                // The chunk's last row pairs with ids[pos + qwen35.mb()], which exists: a chunk stops short of `to`.
+            if warm && rows > 0 {
+                // The chunk's last row pairs with ids[pos + rows], which exists: a chunk stops short of `to`.
                 let h = qwen35.hidden();
-                qwen35.go(m, ffi, m[eng + 29], m[eng + 62], m[eng + 90], m[eng + 64], 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                qwen35.go(m, ffi, k_rms, m[eng + 62], m[eng + 90], m[eng + 64], 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 var r = 0;
-                while r < qwen35.mb() {
+                while r < rows {
                     if mtp_step(m, t, ffi, fs, eng, qwen35.at(m[eng + 64], 4 * h * r), mem.get(m, ids, pos + r + 1), pos + r, 0 - 1) < 0 {
                         return 0 - 1;
                     }
                     r = r + 1;
                 }
             }
-            pos = pos + qwen35.mb();
+            pos = pos + rows;
         }
     }
     while pos < to {

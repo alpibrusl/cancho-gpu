@@ -6,12 +6,15 @@ gemm_fp4_res_m=512_n=5120_k=17408|noref|the interpreter's memory cannot hold the
 matvec_fp4_batch_m=1_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_batch_m=2_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_batch_m=8_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_batch_m=16_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_res_batch_m=4_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_res_batch_m=16_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_res_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_rows_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_rows_n=248320_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_rows_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_batch_m=4_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_swiglu_batch_m=16_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_rows_n=151936_k=896|noref|the interpreter's memory cannot hold the tensors
 matvec_rows_f16_n=248320_k=1024|noref|the interpreter's memory cannot hold the tensors (the 0.8B's tied head)

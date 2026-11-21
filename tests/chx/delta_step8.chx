@@ -1,0 +1,439 @@
+// delta_step.chx for the 8 tokens of a prefill chunk, in one launch (docs/serving.md section 8): the state of a
+// head is read once, carried through the tokens in registers and written once, after the last (so may be the
+// buffer s is read from). Per token, as delta_step.chx does:
+//
+//     S = S g;   S += (v - S k) beta  k^T;   y = S q
+//
+// q and k are the tokens' rows of qk_norm (nk each), v is the value part of each token's convolution output
+// (a 10240-wide row, the value part from 4096), g and bt the gates of gates_rows.chx, y 8 rows of nk * 384.
+// Every value is loaded where it is used, so each is used once. (Written by a script; edit the result.)
+algo delta_step8(nk)
+  in  s:  f32[nk * 384, 128]
+  in  q:  f32[8 * nk, 128]
+  in  k:  f32[8 * nk, 128]
+  in  v:  f32[81920]
+  in  g:  f32[8 * nk * 3, 128]
+  in  bt: f32[8 * nk * 384]
+  out so: f32[nk * 384, 128]
+  out y:  f32[8 * nk * 384]
+  tile br
+{
+  grid i over nk, r over 128 / br
+  let s0_0 = load s[i * 384 + 0 + r * br, 0 ; br, 128]
+  let g0_0 = load g[0*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_0 = s0_0 * g0_0
+  let kp0_0 = load k[0*nk + i, 0 ; 1, 128]
+  let p0_0 = &sg0_0 * kp0_0
+  let m0_0 = rowsum p0_0
+  let v0_0 = load v[4096 + i * 384 + 0 + r * br ; br]
+  let d0_0 = v0_0 - m0_0
+  let b0_0 = load bt[0*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_0 = d0_0 * b0_0
+  let z0_0 = zeros f32[br, 128]
+  let kk0_0 = load k[0*nk + i, 0 ; 1, 128]
+  let k00_0 = z0_0 + kk0_0
+  let u0_0 = k00_0 * e0_0
+  let sn0_0 = sg0_0 + u0_0
+  let qb0_0 = load q[0*nk + i, 0 ; 1, 128]
+  let y0_0 = &sn0_0 * qb0_0
+  store rowsum y0_0 -> y[0*nk*384 + i * 384 + 0 + r * br]
+  let g0_1 = load g[1*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_1 = sn0_0 * g0_1
+  let kp0_1 = load k[1*nk + i, 0 ; 1, 128]
+  let p0_1 = &sg0_1 * kp0_1
+  let m0_1 = rowsum p0_1
+  let v0_1 = load v[14336 + i * 384 + 0 + r * br ; br]
+  let d0_1 = v0_1 - m0_1
+  let b0_1 = load bt[1*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_1 = d0_1 * b0_1
+  let z0_1 = zeros f32[br, 128]
+  let kk0_1 = load k[1*nk + i, 0 ; 1, 128]
+  let k00_1 = z0_1 + kk0_1
+  let u0_1 = k00_1 * e0_1
+  let sn0_1 = sg0_1 + u0_1
+  let qb0_1 = load q[1*nk + i, 0 ; 1, 128]
+  let y0_1 = &sn0_1 * qb0_1
+  store rowsum y0_1 -> y[1*nk*384 + i * 384 + 0 + r * br]
+  let g0_2 = load g[2*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_2 = sn0_1 * g0_2
+  let kp0_2 = load k[2*nk + i, 0 ; 1, 128]
+  let p0_2 = &sg0_2 * kp0_2
+  let m0_2 = rowsum p0_2
+  let v0_2 = load v[24576 + i * 384 + 0 + r * br ; br]
+  let d0_2 = v0_2 - m0_2
+  let b0_2 = load bt[2*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_2 = d0_2 * b0_2
+  let z0_2 = zeros f32[br, 128]
+  let kk0_2 = load k[2*nk + i, 0 ; 1, 128]
+  let k00_2 = z0_2 + kk0_2
+  let u0_2 = k00_2 * e0_2
+  let sn0_2 = sg0_2 + u0_2
+  let qb0_2 = load q[2*nk + i, 0 ; 1, 128]
+  let y0_2 = &sn0_2 * qb0_2
+  store rowsum y0_2 -> y[2*nk*384 + i * 384 + 0 + r * br]
+  let g0_3 = load g[3*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_3 = sn0_2 * g0_3
+  let kp0_3 = load k[3*nk + i, 0 ; 1, 128]
+  let p0_3 = &sg0_3 * kp0_3
+  let m0_3 = rowsum p0_3
+  let v0_3 = load v[34816 + i * 384 + 0 + r * br ; br]
+  let d0_3 = v0_3 - m0_3
+  let b0_3 = load bt[3*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_3 = d0_3 * b0_3
+  let z0_3 = zeros f32[br, 128]
+  let kk0_3 = load k[3*nk + i, 0 ; 1, 128]
+  let k00_3 = z0_3 + kk0_3
+  let u0_3 = k00_3 * e0_3
+  let sn0_3 = sg0_3 + u0_3
+  let qb0_3 = load q[3*nk + i, 0 ; 1, 128]
+  let y0_3 = &sn0_3 * qb0_3
+  store rowsum y0_3 -> y[3*nk*384 + i * 384 + 0 + r * br]
+  let g0_4 = load g[4*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_4 = sn0_3 * g0_4
+  let kp0_4 = load k[4*nk + i, 0 ; 1, 128]
+  let p0_4 = &sg0_4 * kp0_4
+  let m0_4 = rowsum p0_4
+  let v0_4 = load v[45056 + i * 384 + 0 + r * br ; br]
+  let d0_4 = v0_4 - m0_4
+  let b0_4 = load bt[4*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_4 = d0_4 * b0_4
+  let z0_4 = zeros f32[br, 128]
+  let kk0_4 = load k[4*nk + i, 0 ; 1, 128]
+  let k00_4 = z0_4 + kk0_4
+  let u0_4 = k00_4 * e0_4
+  let sn0_4 = sg0_4 + u0_4
+  let qb0_4 = load q[4*nk + i, 0 ; 1, 128]
+  let y0_4 = &sn0_4 * qb0_4
+  store rowsum y0_4 -> y[4*nk*384 + i * 384 + 0 + r * br]
+  let g0_5 = load g[5*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_5 = sn0_4 * g0_5
+  let kp0_5 = load k[5*nk + i, 0 ; 1, 128]
+  let p0_5 = &sg0_5 * kp0_5
+  let m0_5 = rowsum p0_5
+  let v0_5 = load v[55296 + i * 384 + 0 + r * br ; br]
+  let d0_5 = v0_5 - m0_5
+  let b0_5 = load bt[5*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_5 = d0_5 * b0_5
+  let z0_5 = zeros f32[br, 128]
+  let kk0_5 = load k[5*nk + i, 0 ; 1, 128]
+  let k00_5 = z0_5 + kk0_5
+  let u0_5 = k00_5 * e0_5
+  let sn0_5 = sg0_5 + u0_5
+  let qb0_5 = load q[5*nk + i, 0 ; 1, 128]
+  let y0_5 = &sn0_5 * qb0_5
+  store rowsum y0_5 -> y[5*nk*384 + i * 384 + 0 + r * br]
+  let g0_6 = load g[6*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_6 = sn0_5 * g0_6
+  let kp0_6 = load k[6*nk + i, 0 ; 1, 128]
+  let p0_6 = &sg0_6 * kp0_6
+  let m0_6 = rowsum p0_6
+  let v0_6 = load v[65536 + i * 384 + 0 + r * br ; br]
+  let d0_6 = v0_6 - m0_6
+  let b0_6 = load bt[6*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_6 = d0_6 * b0_6
+  let z0_6 = zeros f32[br, 128]
+  let kk0_6 = load k[6*nk + i, 0 ; 1, 128]
+  let k00_6 = z0_6 + kk0_6
+  let u0_6 = k00_6 * e0_6
+  let sn0_6 = sg0_6 + u0_6
+  let qb0_6 = load q[6*nk + i, 0 ; 1, 128]
+  let y0_6 = &sn0_6 * qb0_6
+  store rowsum y0_6 -> y[6*nk*384 + i * 384 + 0 + r * br]
+  let g0_7 = load g[7*nk*3 + i * 3 + 0, 0 ; 1, 128]
+  let sg0_7 = sn0_6 * g0_7
+  let kp0_7 = load k[7*nk + i, 0 ; 1, 128]
+  let p0_7 = &sg0_7 * kp0_7
+  let m0_7 = rowsum p0_7
+  let v0_7 = load v[75776 + i * 384 + 0 + r * br ; br]
+  let d0_7 = v0_7 - m0_7
+  let b0_7 = load bt[7*nk*384 + i * 384 + 0 + r * br ; br]
+  let e0_7 = d0_7 * b0_7
+  let z0_7 = zeros f32[br, 128]
+  let kk0_7 = load k[7*nk + i, 0 ; 1, 128]
+  let k00_7 = z0_7 + kk0_7
+  let u0_7 = k00_7 * e0_7
+  let sn0_7 = sg0_7 + u0_7
+  let qb0_7 = load q[7*nk + i, 0 ; 1, 128]
+  let y0_7 = &sn0_7 * qb0_7
+  store rowsum y0_7 -> y[7*nk*384 + i * 384 + 0 + r * br]
+  store sn0_7 -> so[i * 384 + 0 + r * br, 0]
+  let s1_0 = load s[i * 384 + 128 + r * br, 0 ; br, 128]
+  let g1_0 = load g[0*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_0 = s1_0 * g1_0
+  let kp1_0 = load k[0*nk + i, 0 ; 1, 128]
+  let p1_0 = &sg1_0 * kp1_0
+  let m1_0 = rowsum p1_0
+  let v1_0 = load v[4096 + i * 384 + 128 + r * br ; br]
+  let d1_0 = v1_0 - m1_0
+  let b1_0 = load bt[0*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_0 = d1_0 * b1_0
+  let z1_0 = zeros f32[br, 128]
+  let kk1_0 = load k[0*nk + i, 0 ; 1, 128]
+  let k01_0 = z1_0 + kk1_0
+  let u1_0 = k01_0 * e1_0
+  let sn1_0 = sg1_0 + u1_0
+  let qb1_0 = load q[0*nk + i, 0 ; 1, 128]
+  let y1_0 = &sn1_0 * qb1_0
+  store rowsum y1_0 -> y[0*nk*384 + i * 384 + 128 + r * br]
+  let g1_1 = load g[1*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_1 = sn1_0 * g1_1
+  let kp1_1 = load k[1*nk + i, 0 ; 1, 128]
+  let p1_1 = &sg1_1 * kp1_1
+  let m1_1 = rowsum p1_1
+  let v1_1 = load v[14336 + i * 384 + 128 + r * br ; br]
+  let d1_1 = v1_1 - m1_1
+  let b1_1 = load bt[1*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_1 = d1_1 * b1_1
+  let z1_1 = zeros f32[br, 128]
+  let kk1_1 = load k[1*nk + i, 0 ; 1, 128]
+  let k01_1 = z1_1 + kk1_1
+  let u1_1 = k01_1 * e1_1
+  let sn1_1 = sg1_1 + u1_1
+  let qb1_1 = load q[1*nk + i, 0 ; 1, 128]
+  let y1_1 = &sn1_1 * qb1_1
+  store rowsum y1_1 -> y[1*nk*384 + i * 384 + 128 + r * br]
+  let g1_2 = load g[2*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_2 = sn1_1 * g1_2
+  let kp1_2 = load k[2*nk + i, 0 ; 1, 128]
+  let p1_2 = &sg1_2 * kp1_2
+  let m1_2 = rowsum p1_2
+  let v1_2 = load v[24576 + i * 384 + 128 + r * br ; br]
+  let d1_2 = v1_2 - m1_2
+  let b1_2 = load bt[2*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_2 = d1_2 * b1_2
+  let z1_2 = zeros f32[br, 128]
+  let kk1_2 = load k[2*nk + i, 0 ; 1, 128]
+  let k01_2 = z1_2 + kk1_2
+  let u1_2 = k01_2 * e1_2
+  let sn1_2 = sg1_2 + u1_2
+  let qb1_2 = load q[2*nk + i, 0 ; 1, 128]
+  let y1_2 = &sn1_2 * qb1_2
+  store rowsum y1_2 -> y[2*nk*384 + i * 384 + 128 + r * br]
+  let g1_3 = load g[3*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_3 = sn1_2 * g1_3
+  let kp1_3 = load k[3*nk + i, 0 ; 1, 128]
+  let p1_3 = &sg1_3 * kp1_3
+  let m1_3 = rowsum p1_3
+  let v1_3 = load v[34816 + i * 384 + 128 + r * br ; br]
+  let d1_3 = v1_3 - m1_3
+  let b1_3 = load bt[3*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_3 = d1_3 * b1_3
+  let z1_3 = zeros f32[br, 128]
+  let kk1_3 = load k[3*nk + i, 0 ; 1, 128]
+  let k01_3 = z1_3 + kk1_3
+  let u1_3 = k01_3 * e1_3
+  let sn1_3 = sg1_3 + u1_3
+  let qb1_3 = load q[3*nk + i, 0 ; 1, 128]
+  let y1_3 = &sn1_3 * qb1_3
+  store rowsum y1_3 -> y[3*nk*384 + i * 384 + 128 + r * br]
+  let g1_4 = load g[4*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_4 = sn1_3 * g1_4
+  let kp1_4 = load k[4*nk + i, 0 ; 1, 128]
+  let p1_4 = &sg1_4 * kp1_4
+  let m1_4 = rowsum p1_4
+  let v1_4 = load v[45056 + i * 384 + 128 + r * br ; br]
+  let d1_4 = v1_4 - m1_4
+  let b1_4 = load bt[4*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_4 = d1_4 * b1_4
+  let z1_4 = zeros f32[br, 128]
+  let kk1_4 = load k[4*nk + i, 0 ; 1, 128]
+  let k01_4 = z1_4 + kk1_4
+  let u1_4 = k01_4 * e1_4
+  let sn1_4 = sg1_4 + u1_4
+  let qb1_4 = load q[4*nk + i, 0 ; 1, 128]
+  let y1_4 = &sn1_4 * qb1_4
+  store rowsum y1_4 -> y[4*nk*384 + i * 384 + 128 + r * br]
+  let g1_5 = load g[5*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_5 = sn1_4 * g1_5
+  let kp1_5 = load k[5*nk + i, 0 ; 1, 128]
+  let p1_5 = &sg1_5 * kp1_5
+  let m1_5 = rowsum p1_5
+  let v1_5 = load v[55296 + i * 384 + 128 + r * br ; br]
+  let d1_5 = v1_5 - m1_5
+  let b1_5 = load bt[5*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_5 = d1_5 * b1_5
+  let z1_5 = zeros f32[br, 128]
+  let kk1_5 = load k[5*nk + i, 0 ; 1, 128]
+  let k01_5 = z1_5 + kk1_5
+  let u1_5 = k01_5 * e1_5
+  let sn1_5 = sg1_5 + u1_5
+  let qb1_5 = load q[5*nk + i, 0 ; 1, 128]
+  let y1_5 = &sn1_5 * qb1_5
+  store rowsum y1_5 -> y[5*nk*384 + i * 384 + 128 + r * br]
+  let g1_6 = load g[6*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_6 = sn1_5 * g1_6
+  let kp1_6 = load k[6*nk + i, 0 ; 1, 128]
+  let p1_6 = &sg1_6 * kp1_6
+  let m1_6 = rowsum p1_6
+  let v1_6 = load v[65536 + i * 384 + 128 + r * br ; br]
+  let d1_6 = v1_6 - m1_6
+  let b1_6 = load bt[6*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_6 = d1_6 * b1_6
+  let z1_6 = zeros f32[br, 128]
+  let kk1_6 = load k[6*nk + i, 0 ; 1, 128]
+  let k01_6 = z1_6 + kk1_6
+  let u1_6 = k01_6 * e1_6
+  let sn1_6 = sg1_6 + u1_6
+  let qb1_6 = load q[6*nk + i, 0 ; 1, 128]
+  let y1_6 = &sn1_6 * qb1_6
+  store rowsum y1_6 -> y[6*nk*384 + i * 384 + 128 + r * br]
+  let g1_7 = load g[7*nk*3 + i * 3 + 1, 0 ; 1, 128]
+  let sg1_7 = sn1_6 * g1_7
+  let kp1_7 = load k[7*nk + i, 0 ; 1, 128]
+  let p1_7 = &sg1_7 * kp1_7
+  let m1_7 = rowsum p1_7
+  let v1_7 = load v[75776 + i * 384 + 128 + r * br ; br]
+  let d1_7 = v1_7 - m1_7
+  let b1_7 = load bt[7*nk*384 + i * 384 + 128 + r * br ; br]
+  let e1_7 = d1_7 * b1_7
+  let z1_7 = zeros f32[br, 128]
+  let kk1_7 = load k[7*nk + i, 0 ; 1, 128]
+  let k01_7 = z1_7 + kk1_7
+  let u1_7 = k01_7 * e1_7
+  let sn1_7 = sg1_7 + u1_7
+  let qb1_7 = load q[7*nk + i, 0 ; 1, 128]
+  let y1_7 = &sn1_7 * qb1_7
+  store rowsum y1_7 -> y[7*nk*384 + i * 384 + 128 + r * br]
+  store sn1_7 -> so[i * 384 + 128 + r * br, 0]
+  let s2_0 = load s[i * 384 + 256 + r * br, 0 ; br, 128]
+  let g2_0 = load g[0*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_0 = s2_0 * g2_0
+  let kp2_0 = load k[0*nk + i, 0 ; 1, 128]
+  let p2_0 = &sg2_0 * kp2_0
+  let m2_0 = rowsum p2_0
+  let v2_0 = load v[4096 + i * 384 + 256 + r * br ; br]
+  let d2_0 = v2_0 - m2_0
+  let b2_0 = load bt[0*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_0 = d2_0 * b2_0
+  let z2_0 = zeros f32[br, 128]
+  let kk2_0 = load k[0*nk + i, 0 ; 1, 128]
+  let k02_0 = z2_0 + kk2_0
+  let u2_0 = k02_0 * e2_0
+  let sn2_0 = sg2_0 + u2_0
+  let qb2_0 = load q[0*nk + i, 0 ; 1, 128]
+  let y2_0 = &sn2_0 * qb2_0
+  store rowsum y2_0 -> y[0*nk*384 + i * 384 + 256 + r * br]
+  let g2_1 = load g[1*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_1 = sn2_0 * g2_1
+  let kp2_1 = load k[1*nk + i, 0 ; 1, 128]
+  let p2_1 = &sg2_1 * kp2_1
+  let m2_1 = rowsum p2_1
+  let v2_1 = load v[14336 + i * 384 + 256 + r * br ; br]
+  let d2_1 = v2_1 - m2_1
+  let b2_1 = load bt[1*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_1 = d2_1 * b2_1
+  let z2_1 = zeros f32[br, 128]
+  let kk2_1 = load k[1*nk + i, 0 ; 1, 128]
+  let k02_1 = z2_1 + kk2_1
+  let u2_1 = k02_1 * e2_1
+  let sn2_1 = sg2_1 + u2_1
+  let qb2_1 = load q[1*nk + i, 0 ; 1, 128]
+  let y2_1 = &sn2_1 * qb2_1
+  store rowsum y2_1 -> y[1*nk*384 + i * 384 + 256 + r * br]
+  let g2_2 = load g[2*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_2 = sn2_1 * g2_2
+  let kp2_2 = load k[2*nk + i, 0 ; 1, 128]
+  let p2_2 = &sg2_2 * kp2_2
+  let m2_2 = rowsum p2_2
+  let v2_2 = load v[24576 + i * 384 + 256 + r * br ; br]
+  let d2_2 = v2_2 - m2_2
+  let b2_2 = load bt[2*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_2 = d2_2 * b2_2
+  let z2_2 = zeros f32[br, 128]
+  let kk2_2 = load k[2*nk + i, 0 ; 1, 128]
+  let k02_2 = z2_2 + kk2_2
+  let u2_2 = k02_2 * e2_2
+  let sn2_2 = sg2_2 + u2_2
+  let qb2_2 = load q[2*nk + i, 0 ; 1, 128]
+  let y2_2 = &sn2_2 * qb2_2
+  store rowsum y2_2 -> y[2*nk*384 + i * 384 + 256 + r * br]
+  let g2_3 = load g[3*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_3 = sn2_2 * g2_3
+  let kp2_3 = load k[3*nk + i, 0 ; 1, 128]
+  let p2_3 = &sg2_3 * kp2_3
+  let m2_3 = rowsum p2_3
+  let v2_3 = load v[34816 + i * 384 + 256 + r * br ; br]
+  let d2_3 = v2_3 - m2_3
+  let b2_3 = load bt[3*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_3 = d2_3 * b2_3
+  let z2_3 = zeros f32[br, 128]
+  let kk2_3 = load k[3*nk + i, 0 ; 1, 128]
+  let k02_3 = z2_3 + kk2_3
+  let u2_3 = k02_3 * e2_3
+  let sn2_3 = sg2_3 + u2_3
+  let qb2_3 = load q[3*nk + i, 0 ; 1, 128]
+  let y2_3 = &sn2_3 * qb2_3
+  store rowsum y2_3 -> y[3*nk*384 + i * 384 + 256 + r * br]
+  let g2_4 = load g[4*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_4 = sn2_3 * g2_4
+  let kp2_4 = load k[4*nk + i, 0 ; 1, 128]
+  let p2_4 = &sg2_4 * kp2_4
+  let m2_4 = rowsum p2_4
+  let v2_4 = load v[45056 + i * 384 + 256 + r * br ; br]
+  let d2_4 = v2_4 - m2_4
+  let b2_4 = load bt[4*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_4 = d2_4 * b2_4
+  let z2_4 = zeros f32[br, 128]
+  let kk2_4 = load k[4*nk + i, 0 ; 1, 128]
+  let k02_4 = z2_4 + kk2_4
+  let u2_4 = k02_4 * e2_4
+  let sn2_4 = sg2_4 + u2_4
+  let qb2_4 = load q[4*nk + i, 0 ; 1, 128]
+  let y2_4 = &sn2_4 * qb2_4
+  store rowsum y2_4 -> y[4*nk*384 + i * 384 + 256 + r * br]
+  let g2_5 = load g[5*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_5 = sn2_4 * g2_5
+  let kp2_5 = load k[5*nk + i, 0 ; 1, 128]
+  let p2_5 = &sg2_5 * kp2_5
+  let m2_5 = rowsum p2_5
+  let v2_5 = load v[55296 + i * 384 + 256 + r * br ; br]
+  let d2_5 = v2_5 - m2_5
+  let b2_5 = load bt[5*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_5 = d2_5 * b2_5
+  let z2_5 = zeros f32[br, 128]
+  let kk2_5 = load k[5*nk + i, 0 ; 1, 128]
+  let k02_5 = z2_5 + kk2_5
+  let u2_5 = k02_5 * e2_5
+  let sn2_5 = sg2_5 + u2_5
+  let qb2_5 = load q[5*nk + i, 0 ; 1, 128]
+  let y2_5 = &sn2_5 * qb2_5
+  store rowsum y2_5 -> y[5*nk*384 + i * 384 + 256 + r * br]
+  let g2_6 = load g[6*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_6 = sn2_5 * g2_6
+  let kp2_6 = load k[6*nk + i, 0 ; 1, 128]
+  let p2_6 = &sg2_6 * kp2_6
+  let m2_6 = rowsum p2_6
+  let v2_6 = load v[65536 + i * 384 + 256 + r * br ; br]
+  let d2_6 = v2_6 - m2_6
+  let b2_6 = load bt[6*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_6 = d2_6 * b2_6
+  let z2_6 = zeros f32[br, 128]
+  let kk2_6 = load k[6*nk + i, 0 ; 1, 128]
+  let k02_6 = z2_6 + kk2_6
+  let u2_6 = k02_6 * e2_6
+  let sn2_6 = sg2_6 + u2_6
+  let qb2_6 = load q[6*nk + i, 0 ; 1, 128]
+  let y2_6 = &sn2_6 * qb2_6
+  store rowsum y2_6 -> y[6*nk*384 + i * 384 + 256 + r * br]
+  let g2_7 = load g[7*nk*3 + i * 3 + 2, 0 ; 1, 128]
+  let sg2_7 = sn2_6 * g2_7
+  let kp2_7 = load k[7*nk + i, 0 ; 1, 128]
+  let p2_7 = &sg2_7 * kp2_7
+  let m2_7 = rowsum p2_7
+  let v2_7 = load v[75776 + i * 384 + 256 + r * br ; br]
+  let d2_7 = v2_7 - m2_7
+  let b2_7 = load bt[7*nk*384 + i * 384 + 256 + r * br ; br]
+  let e2_7 = d2_7 * b2_7
+  let z2_7 = zeros f32[br, 128]
+  let kk2_7 = load k[7*nk + i, 0 ; 1, 128]
+  let k02_7 = z2_7 + kk2_7
+  let u2_7 = k02_7 * e2_7
+  let sn2_7 = sg2_7 + u2_7
+  let qb2_7 = load q[7*nk + i, 0 ; 1, 128]
+  let y2_7 = &sn2_7 * qb2_7
+  store rowsum y2_7 -> y[7*nk*384 + i * 384 + 256 + r * br]
+  store sn2_7 -> so[i * 384 + 256 + r * br, 0]
+}
+
+schedule delta_step8 for apple-m-series { threads 256 br 8 }
+schedule delta_step8 for nvidia-ada     { threads 128 br 32 }

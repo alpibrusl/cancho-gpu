@@ -53,7 +53,7 @@ pub fn vocab() -> [] int {
 // The context the caches and the mask hold.
 // Tokens a prefill chunk takes at once (the batch kernels are compiled for this many rows).
 pub fn mb() -> [] int {
-    return 8;
+    return 16;
 }
 
 pub fn tmax() -> [] int {
@@ -904,7 +904,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 160);
+    let eng = mem.grab(m, 192);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -1089,6 +1089,32 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     m[eng + 31] = k_knormb;
     m[eng + 32] = k_attn_gateb;
     m[eng + 33] = k_gnormb;
+    // The gated-delta layers' small kernels for the chunk's rows at once (docs/serving.md section 8).
+    m[eng + 160] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_m.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nb));
+    m[eng + 161] = compile_kernel(m, t, ffi, fs, kdir, "gates_rows.chx", c2(m, t, "m", mb(), "h", 48));
+    m[eng + 162] = compile_kernel(m, t, ffi, fs, kdir, "qk_norm_rows.chx", cv(m, t, c2(m, t, "nk", 16, "rows", 80), "m", nb));
+    m[eng + 163] = compile_kernel(m, t, ffi, fs, kdir, "conv_step16.chx", c1(m, t, "c", 10240));
+    m[eng + 164] = compile_kernel(m, t, ffi, fs, kdir, "delta_step16.chx", c1(m, t, "nk", 16));
+    // The same for half a chunk (`set` 2 of `feed_rows`): what is left of a prompt after its whole chunks.
+    let hb = mb() / 2;
+    let nh = float_of(hb);
+    m[eng + 170] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nh));
+    m[eng + 171] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nh));
+    m[eng + 172] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nh));
+    m[eng + 173] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nh));
+    m[eng + 174] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nh));
+    m[eng + 175] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nh));
+    m[eng + 176] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_batch.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nh));
+    m[eng + 177] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", hb, "n", h), "eps", f32.round(0.000001)));
+    m[eng + 178] = compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", cv(m, t, c2(m, t, "r", 24 * hb, "n", 256), "eps", f32.round(0.000001)));
+    m[eng + 179] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", 4 * hb, "n", 256), "eps", f32.round(0.000001)));
+    m[eng + 180] = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24 * hb, "n", 256));
+    m[eng + 181] = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", cv(m, t, c2(m, t, "h", 48 * hb, "n", 128), "eps", f32.round(0.000001)));
+    m[eng + 187] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_m.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nh));
+    m[eng + 188] = compile_kernel(m, t, ffi, fs, kdir, "gates_rows.chx", c2(m, t, "m", hb, "h", 48));
+    m[eng + 189] = compile_kernel(m, t, ffi, fs, kdir, "qk_norm_rows.chx", cv(m, t, c2(m, t, "nk", 16, "rows", 80), "m", nh));
+    m[eng + 190] = compile_kernel(m, t, ffi, fs, kdir, "conv_step8.chx", c1(m, t, "c", 10240));
+    m[eng + 191] = compile_kernel(m, t, ffi, fs, kdir, "delta_step8.chx", c1(m, t, "nk", 16));
     if err.failed(m) {
         return 0 - 1;
     }
@@ -1189,6 +1215,72 @@ pub fn snap_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalg
     return 0;
 }
 
+// The attention layers' key and value caches (and the draft head's), for a cache slot that is not the engine's
+// own conversation (docs/serving.md section 8): a list of buffers the size of the engine's, in the order `kv_copy` walks.
+pub fn kv_size() -> [] int {
+    return 4 * 4 * tmax() * 256;
+}
+
+pub fn kv_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
+    let a = mem.list(m);
+    var l = 0;
+    while l < layers() {
+        if is_attention(l) {
+            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        }
+        l = l + 1;
+    }
+    if m[eng + 114] == 1 {
+        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+    }
+    return a;
+}
+
+fn kv_one[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), e: int, s: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
+    var from = e;
+    var to = s;
+    if to_store == 0 {
+        from = s;
+        to = e;
+    }
+    if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + kv_size()]) < 0 {
+        return device_fail(m, t, ffi, "copying a cache");
+    }
+    if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + kv_size()]) < 0 {
+        return device_fail(m, t, ffi, "copying a cache");
+    }
+    return 0;
+}
+
+// Whole buffers through the host: `to_store` 1 is engine to store, 0 the way back. `scr` is `kv_size()` bytes in `t`.
+pub fn kv_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, store: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
+    var l = 0;
+    var i = 0;
+    while l < layers() {
+        if is_attention(l) {
+            if kv_one(m, t, ffi, mem.get(m, m[eng + 93], l), mem.get(m, store, i), scr, to_store) < 0 {
+                return 0 - 1;
+            }
+            if kv_one(m, t, ffi, mem.get(m, m[eng + 94], l), mem.get(m, store, i + 1), scr, to_store) < 0 {
+                return 0 - 1;
+            }
+            i = i + 2;
+        }
+        l = l + 1;
+    }
+    if m[eng + 114] == 1 {
+        if kv_one(m, t, ffi, m[eng + 111], mem.get(m, store, i), scr, to_store) < 0 {
+            return 0 - 1;
+        }
+        if kv_one(m, t, ffi, m[eng + 112], mem.get(m, store, i + 1), scr, to_store) < 0 {
+            return 0 - 1;
+        }
+    }
+    return 0;
+}
+
 // Resume a conversation at position `c`: the masks (the engine's and the draft head's) let positions [0, c) be
 // read and close the rest, which is what `reset` and `c` feeds would have left. The key and value rows of [0, c)
 // are the ones in the engine.
@@ -1233,8 +1325,13 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     let k_ropek = m[eng + 18];
     let k_kvw = m[eng + 19];
     var kb = 22;
+    var kd = 160;
     if set == 1 {
         kb = 116;
+    }
+    if set == 2 {
+        kb = 170;
+        kd = 187;
     }
     let k_qkvb = m[eng + kb];
     let k_zb = m[eng + kb + 1];
@@ -1393,46 +1490,22 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 go(m, ffi, m[eng + 148], b_as, b_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
                 go12(m, ffi, m[eng + 151], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3b, l), mem.get(m, st3c, l), mem.get(m, st3d, l), b_ys, 0 - 1, 0 - 1);
             } else {
-                var tt = 0;
-                while tt < rows {
-                    ov(ffi);
-                    go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 3), at(b_as, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    ov(ffi);
-                    go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 4), at(b_bs, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    tt = tt + 1;
+                // the chunk's rows: one launch for each step, the window and the state carried through them in the kernel
+                ov(ffi);
+                go(m, ffi, m[eng + kd], b_ns, mem.get(m, w, 3), b_as, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
+                go(m, ffi, m[eng + kd], b_ns, mem.get(m, w, 4), b_bs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                // a token at an even position reads its window from the first buffer and leaves it in the second: after an
+                // even number of rows the window is back where it was read
+                var cs_w = mem.get(m, st1, l);
+                if pos % 2 == 1 {
+                    cs_w = mem.get(m, st2, l);
                 }
-                tt = 0;
-                while tt < rows {
-                    var cs_now = mem.get(m, st1, l);
-                    var cs_next = mem.get(m, st2, l);
-                    if (pos + tt) % 2 == 1 {
-                        cs_now = mem.get(m, st2, l);
-                        cs_next = mem.get(m, st1, l);
-                    }
-                    if set == 1 && tt == 2 {
-                        // the window two tokens ago must survive a rejection, so the third row writes aside
-                        cs_next = mem.get(m, stx, l);
-                    }
-                    go(m, ffi, k_conv, at(b_qkvs, 4 * 10240 * tt), cs_now, mem.get(m, w, 5), at(b_convs, 4 * 10240 * tt), cs_next, 0 - 1, 0 - 1, 0 - 1);
-                    go(m, ffi, k_qknorm, at(b_convs, 4 * 10240 * tt), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    ov(ffi);
-                    go(m, ffi, k_gates, at(b_as, 4 * 48 * tt), at(b_bs, 4 * 48 * tt), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), 0 - 1, 0 - 1);
-                    var s_in = mem.get(m, st3, l);
-                    var s_out = s_in;
-                    if set == 1 {
-                        if tt == 0 {
-                            s_out = mem.get(m, st3b, l);
-                        } else if tt == 1 {
-                            s_in = mem.get(m, st3b, l);
-                            s_out = mem.get(m, st3c, l);
-                        } else {
-                            s_in = mem.get(m, st3c, l);
-                            s_out = mem.get(m, st3d, l);
-                        }
-                    }
-                    go(m, ffi, k_delta, s_in, at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), s_out, at(b_ys, 4 * 6144 * tt));
-                    tt = tt + 1;
-                }
+                go(m, ffi, m[eng + kd + 3], b_qkvs, cs_w, mem.get(m, w, 5), b_convs, cs_w, 0 - 1, 0 - 1, 0 - 1);
+                go(m, ffi, m[eng + kd + 2], b_convs, b_qns, b_kns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
+                go(m, ffi, m[eng + kd + 1], b_as, b_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
+                go(m, ffi, m[eng + kd + 4], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3, l), b_ys);
             }
             go(m, ffi, k_gnormb, b_ys, b_zs, mem.get(m, w, 8), b_gns, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             fp4_res(m, ffi, k_outb, b_gns, mem.get(m, w, 9), cur, nxt);
@@ -1479,6 +1552,11 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     metal.cgpu_upload_at(ffi, b_mask, 4 * pos, t[open..open + 4 * nopen]);
     m[mem.text_slot()] = chunk_mark;
     return 0;
+}
+
+// Half a chunk, with the kernels compiled for that many rows.
+pub fn feed_half[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, pos: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    return feed_rows(m, t, ffi, fs, eng, ids, pos, pos, mb() / 2, 2, 0 - 1, 0);
 }
 
 // A prefill chunk: `mb()` tokens, no logits.

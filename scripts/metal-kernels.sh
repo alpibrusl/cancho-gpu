@@ -39,6 +39,8 @@ attn_gate r=3 n=7
 matvec_fp4_batch m=1 n=128 k=256
 matvec_fp4_batch m=3 n=128 k=256
 matvec_fp4_batch m=8 n=128 k=1024
+matvec_fp4_batch m=13 n=128 k=1024
+matvec_fp4_batch m=16 n=128 k=1024
 matvec_fp4_res_batch m=4 n=128 k=512
 matvec_fp4_swiglu_batch m=4 n=128 k=512
 matvec_rows_f16_frag m=1 n=256 k=64

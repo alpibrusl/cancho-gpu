@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-serve` -- an OpenAI-compatible chat endpoint over Qwen3.8-27B on a Metal GPU
 // (`docs/serving.md`).
 //
-//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache]
+//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N]
 //
 //     GET  /health                 {"status":"ok"}
 //     GET  /v1/models              the one model
@@ -45,7 +45,7 @@ fn max_request() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache]\n");
+    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N]\n");
     return 2;
 }
 
@@ -291,10 +291,59 @@ fn take[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, st: int, tok: int
     return 0;
 }
 
-// The prefix cache (`docs/serving.md` section 7). The slot is a record: 0 valid (1 when it describes the engine's
-// keys and values of [0, c) and the snapshot), 1 c, 2 the address in `m` of its ids (1,024 words, allocated at
-// start: the bump allocator is rewound after each request), 3 the snapshot (`qwen35.snap_new`), 4 a scratch
-// in `t`, 5 the tokens the latest request reused.
+// The prefix cache (`docs/serving.md` sections 7 and 8). The cache is a record: 0 the number of slots, 1 the
+// resident slot (the one whose keys and values are the engine's own; -1 for none), 2 a scratch in `t`, 3 a
+// counter for "least recently used", 4 the first slot's address, 5 the tokens the latest request reused.
+// A slot is nine words: 0 valid, 1 c (the cut at the last assistant opener), 2 the address in `m` of its ids
+// (1,024 words, allocated at start: the bump allocator is rewound after each request), 3 the snapshot at c,
+// 4 c0 (a second, earlier cut; 0 for none), 5 the snapshot at c0, 6 its copy of the key and value caches,
+// 7 whether that copy holds the rows of [0, c), 8 when it was last used.
+fn slot_words() -> [] int {
+    return 9;
+}
+
+fn slot_at[&m](m: &!m [int], ca: int, i: int) -> [] int {
+    return m[ca + 4] + slot_words() * i;
+}
+
+fn cache_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, n: int) -> [ffi("libmetalgpu")] int {
+    let ca = mem.grab(m, 6);
+    m[ca] = n;
+    m[ca + 1] = 0 - 1;
+    m[ca + 2] = qwen35.reserve(m, qwen35.kv_size());
+    m[ca + 3] = 0;
+    m[ca + 4] = mem.grab(m, slot_words() * n);
+    m[ca + 5] = 0;
+    var i = 0;
+    while i < n {
+        let sl = slot_at(m, ca, i);
+        m[sl] = 0;
+        m[sl + 1] = 0;
+        m[sl + 2] = mem.grab(m, qwen35.tmax());
+        m[sl + 3] = qwen35.snap_new(m, ffi);
+        m[sl + 4] = 0;
+        m[sl + 5] = qwen35.snap_new(m, ffi);
+        m[sl + 6] = qwen35.kv_new(m, ffi, eng);
+        m[sl + 7] = 0;
+        m[sl + 8] = 0;
+        i = i + 1;
+    }
+    return ca;
+}
+
+fn round_cut(b: int, n: int) -> [] int {
+    // a multiple of the prefill chunk, so that what follows is fed in the chunks a fresh prefill takes
+    let w = qwen35.mb();
+    var c = w * (b / w);
+    if c >= n {
+        c = c - w;
+    }
+    if c < w {
+        return 0;
+    }
+    return c;
+}
+
 fn cut_of[&m](m: &!m [int], ids: int, n: int) -> [] int {
     // The marker `<|im_start|>assistant\n` is the three tokens 248045 74455 198 (section 7.9).
     var i = n - 3;
@@ -305,14 +354,24 @@ fn cut_of[&m](m: &!m [int], ids: int, n: int) -> [] int {
         }
         i = i - 1;
     }
-    var c = 8 * (b / 8);
-    if c >= n {
-        c = c - 8;
+    return round_cut(b, n);
+}
+
+// The earlier cut: after the opener of the second message (`<|im_start|>`, a role, a newline), which is the end
+// of a system message when there is one. 0 when that is under 64 tokens in.
+fn first_cut_of[&m](m: &!m [int], ids: int, n: int) -> [] int {
+    var i = 1;
+    while i + 3 <= n {
+        if mem.get(m, ids, i) == 248045 {
+            let c = round_cut(i + 3, n);
+            if c < 64 {
+                return 0;
+            }
+            return c;
+        }
+        i = i + 1;
     }
-    if c < 8 {
-        return 0;
-    }
-    return c;
+    return 0;
 }
 
 fn same_prefix[&m](m: &!m [int], sl: int, ids: int, c: int) -> [] bool {
@@ -326,47 +385,164 @@ fn same_prefix[&m](m: &!m [int], sl: int, ids: int, c: int) -> [] bool {
     return true;
 }
 
+// The slot to write a conversation that continues none: not `keep`, an invalid one if there is one, else the
+// least recently used.
+fn victim[&m](m: &!m [int], ca: int, keep: int) -> [] int {
+    var best = 0 - 1;
+    var i = 0;
+    while i < m[ca] {
+        if i != keep {
+            let sl = slot_at(m, ca, i);
+            if best < 0 {
+                best = i;
+            } else {
+                let bs = slot_at(m, ca, best);
+                if m[bs] == 1 && (m[sl] == 0 || m[sl + 8] < m[bs + 8]) {
+                    best = i;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if best < 0 {
+        return keep;
+    }
+    return best;
+}
+
+// The engine is about to hold another conversation than the resident slot's: keep the resident's keys and values.
+fn park[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, ca: int, but: int) -> [ffi("libmetalgpu")] int {
+    let r = m[ca + 1];
+    if r >= 0 && r != but {
+        let rs = slot_at(m, ca, r);
+        if m[rs] == 1 && m[rs + 7] == 0 {
+            if qwen35.kv_copy(m, t, ffi, eng, m[rs + 6], m[ca + 2], 1) < 0 {
+                return 0 - 1;
+            }
+            m[rs + 7] = 1;
+        }
+    }
+    return 0;
+}
+
 // The prompt in, with the cache: answers the tokens reused (0 on a miss), or -1.
-fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, sl: int, ids: int, n_prompt: int, lg: int, warm: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    let was_valid = m[sl] == 1;
-    let old_c = m[sl + 1];
-    // Not valid while the engine is being changed: a request that fails cannot leave a slot a later one trusts.
-    m[sl] = 0;
+fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ca: int, ids: int, n_prompt: int, lg: int, warm: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    // The longest cut of any slot that is a prefix of this prompt.
+    var hit = 0 - 1;
     var from = 0;
-    var cached = 0;
-    if was_valid && old_c > 0 && old_c < n_prompt && same_prefix(m, sl, ids, old_c) {
-        if qwen35.snap_copy(m, t, ffi, eng, m[sl + 3], m[sl + 4], 0) < 0 {
+    var at_c = false;
+    var i = 0;
+    while i < m[ca] {
+        let sl = slot_at(m, ca, i);
+        if m[sl] == 1 {
+            if m[sl + 1] > from && m[sl + 1] < n_prompt && same_prefix(m, sl, ids, m[sl + 1]) {
+                hit = i;
+                from = m[sl + 1];
+                at_c = true;
+            } else if m[sl + 4] > from && m[sl + 4] < n_prompt && same_prefix(m, sl, ids, m[sl + 4]) {
+                hit = i;
+                from = m[sl + 4];
+                at_c = false;
+            }
+        }
+        i = i + 1;
+    }
+    // Where this conversation is written: the slot it continues, or another when it only shares the earlier cut.
+    var target = hit;
+    if !at_c {
+        target = victim(m, ca, hit);
+    }
+    let ts = slot_at(m, ca, target);
+    if hit < 0 {
+        if park(m, t, ffi, eng, ca, target) < 0 {
             return 0 - 1;
         }
-        qwen35.open_prefix(m, t, ffi, eng, old_c);
-        from = old_c;
-        cached = old_c;
-    } else {
+        m[ts] = 0;
+        m[ca + 1] = target;
         qwen35.reset(m, t, ffi, eng);
+    } else {
+        let hs = slot_at(m, ca, hit);
+        if hit != m[ca + 1] {
+            if park(m, t, ffi, eng, ca, target) < 0 {
+                return 0 - 1;
+            }
+            m[ca + 1] = 0 - 1;
+            if qwen35.kv_copy(m, t, ffi, eng, m[hs + 6], m[ca + 2], 0) < 0 {
+                return 0 - 1;
+            }
+        } else if target != hit {
+            if park(m, t, ffi, eng, ca, 0 - 1) < 0 {
+                return 0 - 1;
+            }
+        }
+        // Not valid while the engine is being changed: a request that fails cannot leave a slot a later one trusts.
+        m[ts] = 0;
+        m[ca + 1] = target;
+        var snap = m[hs + 3];
+        if !at_c {
+            snap = m[hs + 5];
+        }
+        if qwen35.snap_copy(m, t, ffi, eng, snap, m[ca + 2], 0) < 0 {
+            return 0 - 1;
+        }
+        if target != hit {
+            // the new conversation shares the earlier cut: its slot gets the same snapshot there
+            if qwen35.snap_copy(m, t, ffi, eng, m[ts + 5], m[ca + 2], 1) < 0 {
+                return 0 - 1;
+            }
+            m[ts + 4] = from;
+        }
+        if !at_c {
+            m[ts + 1] = 0;
+        }
+        qwen35.open_prefix(m, t, ffi, eng, from);
     }
+    m[ts + 7] = 0;
+    let cached = from;
     let c2 = cut_of(m, ids, n_prompt);
-    var keep = cached > 0;
+    if hit < 0 {
+        m[ts + 1] = 0;
+        m[ts + 4] = 0;
+        let c0 = first_cut_of(m, ids, n_prompt);
+        if c0 > 0 && c0 < c2 {
+            if qwen35spec.feed(m, t, ffi, fs, eng, ids, 0, c0, 0 - 1, true, warm) < 0 {
+                return 0 - 1;
+            }
+            if qwen35.snap_copy(m, t, ffi, eng, m[ts + 5], m[ca + 2], 1) < 0 {
+                return 0 - 1;
+            }
+            m[ts + 4] = c0;
+            from = c0;
+        }
+    }
     if c2 > from {
         if qwen35spec.feed(m, t, ffi, fs, eng, ids, from, c2, 0 - 1, true, warm) < 0 {
             return 0 - 1;
         }
-        if qwen35.snap_copy(m, t, ffi, eng, m[sl + 3], m[sl + 4], 1) < 0 {
+        if qwen35.snap_copy(m, t, ffi, eng, m[ts + 3], m[ca + 2], 1) < 0 {
             return 0 - 1;
         }
-        var i = 0;
-        while i < c2 {
-            m[m[sl + 2] + i] = mem.get(m, ids, i);
-            i = i + 1;
-        }
-        m[sl + 1] = c2;
+        m[ts + 1] = c2;
         from = c2;
-        keep = true;
+    }
+    var top = m[ts + 1];
+    if m[ts + 4] > top {
+        top = m[ts + 4];
+    }
+    i = 0;
+    while i < top {
+        m[m[ts + 2] + i] = mem.get(m, ids, i);
+        i = i + 1;
     }
     if qwen35spec.feed(m, t, ffi, fs, eng, ids, from, n_prompt, lg, true, warm) < 0 {
         return 0 - 1;
     }
-    if keep {
-        m[sl] = 1;
+    if top > 0 {
+        m[ts] = 1;
+        m[ca + 3] = m[ca + 3] + 1;
+        m[ts + 8] = m[ca + 3];
+    } else {
+        m[ca + 1] = 0 - 1;
     }
     return cached;
 }
@@ -695,14 +871,7 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     }
     if m[cfg + 5] == 1 {
         // Allocated here, before `serve` takes its mark, so it outlives every request.
-        let sl = mem.grab(m, 6);
-        m[sl] = 0;
-        m[sl + 1] = 0;
-        m[sl + 2] = mem.grab(m, qwen35.tmax());
-        m[sl + 3] = qwen35.snap_new(m, ffi);
-        m[sl + 4] = qwen35.reserve(m, qwen35.snap_size(2));
-        m[sl + 5] = 0;
-        m[cfg + 6] = sl;
+        m[cfg + 6] = cache_new(m, ffi, eng, m[cfg + 7]);
     }
     io.error_all(io, text.bytes(t, text.f2(m, t, "ready on port $ (loaded in $ ms)\n", text.num(m, t, port), text.num(m, t, clock_ms(clock) - t0))));
     if m[cfg + 3] < 0 {
@@ -727,8 +896,9 @@ fn main(world: World) -> [] int {
                 let t = contents(tr);
                 mem.init(m);
                 // cfg: 0 port, 1 model name, 2 think by default, 3 API key (a text handle, or -1), 4 draft head, 5 the
-                // prefix cache is on, 6 its slot (-1 when off)
-                let cfg = mem.grab(m, 7);
+                // prefix cache is on, 6 the cache (-1 when off), 7 its number of slots
+                let cfg = mem.grab(m, 8);
+                m[cfg + 7] = 4;
                 m[cfg + 4] = 1;
                 m[cfg + 5] = 1;
                 m[cfg + 6] = 0 - 1;
@@ -748,6 +918,12 @@ fn main(world: World) -> [] int {
                             m[cfg + 4] = 0;
                         } else if text.is(t, flag, "--no-prefix-cache") {
                             m[cfg + 5] = 0;
+                        } else if ai + 1 < arg_count(a) && text.is(t, flag, "--cache-slots") {
+                            m[cfg + 7] = number_of(t, text.from_bytes(m, t, arg(a, ai + 1)));
+                            if m[cfg + 7] < 1 || m[cfg + 7] > 16 {
+                                ok = false;
+                            }
+                            ai = ai + 1;
                         } else if ai + 1 < arg_count(a) && text.is(t, flag, "--port") {
                             port = number_of(t, text.from_bytes(m, t, arg(a, ai + 1)));
                             ai = ai + 1;
