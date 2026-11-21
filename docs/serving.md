@@ -515,11 +515,13 @@ slots (the least recently used misses, four hit), a shared system message (the s
 the first conversation continues past it from its own slot). The new kernels against float64 references
 (`tests/kernels.py`, 305 ok) and, on the Metal GPU, against the interpreter (`scripts/metal-kernels.sh`: 13 and 16
 rows, 1.05e-6 and 9.2e-7). `cancho-gpu-run35` gives the tokens of the build before on three prompts of about 685
-tokens (24 to 48 tokens each). `tests/serve_check.py`, `tests/chat.sh` and 458 of 458 goldens agree.
+tokens (24 to 48 tokens each). `tests/serve_check.py`, `tests/chat.sh` and 458 of 458 goldens agree; `scripts/spec-check.sh` (seven prompts, speculative
+against plain) and `scripts/gate.sh` pass.
 
-**The cost of a miss** (`tests/prefix_check.py miss`, 8 requests of about 330 tokens): +20 ms with the cache, and
-+16 ms in the control where neither server has it: nothing measurable. (One full run printed +239 ms while the
-goldens were being recorded on the same machine; it did not repeat.)
+**The cost of a miss** (`tests/prefix_check.py miss`, 8 requests of about 330 tokens): +20, +16 and +26 ms with the
+cache in three runs, and -10 ms in the control where neither server has it (`miss control`): about 30 ms, the copy of
+the resident slot's keys and values, under the bar of 100. (One full run printed +239 ms while the goldens were being
+recorded on the same machine; it did not repeat.)
 
 **Prefill** (`cancho-gpu-run35`, 689 tokens, alternating builds, four runs each within 0.5%):
 
