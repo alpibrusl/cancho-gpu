@@ -18,7 +18,7 @@ curl localhost:8080/v1/chat/completions -H 'Authorization: Bearer secret' -H 'Co
 | `--api-key KEY` | every route but `/health` needs `Authorization: Bearer KEY` |
 | `--model NAME` | the id in answers and `/v1/models` (default `qwen3.8:27b-mlx`) |
 | `--think` | the model reasons first unless the request says otherwise |
-| `--prefix-cache` | keep the delta state at the end of each conversation's history and reuse it on the next turn (section 7; off by default until step 3 of 7.8) |
+| `--no-prefix-cache` | turn off the prefix cache, which is on by default: it keeps the delta state at the end of each conversation's history and reuses it on the next turn (section 7) |
 | `--no-spec` | no draft head: one token a pass (about 27 tok/s) and 2.7 GB less memory; by default the model's draft head is used (a chain of two drafts, three rows checked a pass): streaming a 128-token reply measured 35 tok/s with it against 24 without (one request; prose, code and a sampled answer at temperature 1 each 34.7-35.6 with it; 20.6-25 without; the machine had other jobs, load average 14) |
 
 **It listens on every address of the host** (`tcp_listen` binds them all; there is no way to ask for loopback),
@@ -101,7 +101,7 @@ nothing holds the server), TLS, and a smaller memory footprint (14.6 GB of weigh
 
 ## 7. A prefix cache (design, written before the code)
 
-> **Status: a design, step 1 (the probe, 7.9) and step 2 (built behind `--prefix-cache`, off by default; held to 7.6 and measured in 7.10) are done; step 3, the default, is not.** Marks as elsewhere: **[measured]** (a command is
+> **Status: a design, step 1 (the probe, 7.9) and step 2 (built, held to 7.6 and measured in 7.10) and step 3 (on by default; `--no-prefix-cache` turns it off) are done.** Marks as elsewhere: **[measured]** (a command is
 > named), **[read]** (from the source or a document, not run), **[estimate]** (arithmetic from measured numbers),
 > **[open]**.
 
@@ -229,7 +229,7 @@ new kernel buys nothing and the cache needs no change to the device library or t
 * **Contexts above 1,024** (`kernels.md` section 4) and **prefill speed** (the matrix-unit prefill of section 3).
   Both are separate, and a cache helps the second regardless: it makes the prefill happen once per token rather than
   once per turn.
-* The cache is **off by default until step 3 passes**, behind `--prefix-cache`.
+* The cache was built off by default behind `--prefix-cache`; after step 3 it is **on by default** and `--no-prefix-cache` turns it off.
 
 ### 7.8 Steps
 
@@ -237,7 +237,7 @@ new kernel buys nothing and the cache needs no change to the device library or t
    timed; the primitive chosen. No server change.
 2. **The slot. Done (7.10)** behind `--prefix-cache`: snapshot, restore, resume, the failure flag, `cached_tokens`; the
    checks of 7.6 in `tests/prefix_check.py`. Exit: equal tokens, and the decode rate measured.
-3. **Measure and decide the default**, correcting 7.1's estimates in place where they are wrong.
+3. **Measure and decide the default. Done:** on by default, because 7.10 met every bar of 7.6 (hit 8-15% of the miss time, miss cost zero within noise, same tokens, same decode rate); the open items (bit-equal logits, decode on prose, one slot) are listed there. Correcting 7.1's estimates in place where they are wrong.
 4. Later, on its own design: several slots.
 
 ### 7.9 Step 1: the probe (measured)
@@ -277,7 +277,7 @@ What the probe does not settle: whether a resumed prefill equals a fresh one bit
 
 ### 7.10 Step 2: the slot, built and measured
 
-**What was built.** `--prefix-cache` on `cancho-gpu-serve` (off by default). `device/qwen35.cho`: `snap_new`, `snap_copy` (the
+**What was built.** the prefix cache on `cancho-gpu-serve` (built behind `--prefix-cache`; on by default since step 3, `--no-prefix-cache` turns it off). `device/qwen35.cho`: `snap_new`, `snap_copy` (the
 through-host copy of 7.9) and `open_prefix` (the masks of the engine and of the draft head, open for `[0, c)` and
 closed above). `device/serve-main.cho`: the slot record (valid, `c`, its ids in 1,024 words allocated at start, the
 snapshot, a scratch, the tokens reused), `cut_of` (the rule of 7.3: the last `248045 74455 198`, rounded down to a

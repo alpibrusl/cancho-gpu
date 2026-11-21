@@ -5,7 +5,7 @@ the model in Ollama's store and a built `cancho-gpu-serve`; not in the gate.
     tests/prefix_check.py [ollama store]
     tests/prefix_check.py miss [ollama store]      only the cost of a miss (a request that reuses nothing)
 
-Two servers are started one after the other, one without `--prefix-cache` and one with it. Every conversation is
+Two servers are started one after the other, one with `--no-prefix-cache` and one without it (the default). Every conversation is
 sent to both with the same history (the answers of the server without the cache), and for each turn:
 
 1. the answer is the same, greedy and with a fixed seed at temperature 1 (the cache must not change a token);
@@ -173,11 +173,11 @@ def miss_cost(off, on, n=8):
     check("a miss costs at most 100 ms more than without the cache", mn - mo <= 0.1, f"{(mn - mo) * 1000:.0f} ms")
 
 
-off = Server(18070, [])
+off = Server(18070, ["--no-prefix-cache"])
 on = None
 try:
     # The servers are started one after the other only to keep memory and timing apart: both are up for the checks.
-    on = Server(18071, [] if CONTROL else ["--prefix-cache"])
+    on = Server(18071, ["--no-prefix-cache"] if CONTROL else [])
     if MISS_ONLY:
         miss_cost(off, on)
         sys.exit(1 if failed else 0)

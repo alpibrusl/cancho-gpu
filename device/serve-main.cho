@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-serve` -- an OpenAI-compatible chat endpoint over Qwen3.8-27B on a Metal GPU
 // (`docs/serving.md`).
 //
-//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--prefix-cache]
+//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache]
 //
 //     GET  /health                 {"status":"ok"}
 //     GET  /v1/models              the one model
@@ -45,7 +45,7 @@ fn max_request() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--prefix-cache]\n");
+    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache]\n");
     return 2;
 }
 
@@ -730,7 +730,7 @@ fn main(world: World) -> [] int {
                 // prefix cache is on, 6 its slot (-1 when off)
                 let cfg = mem.grab(m, 7);
                 m[cfg + 4] = 1;
-                m[cfg + 5] = 0;
+                m[cfg + 5] = 1;
                 m[cfg + 6] = 0 - 1;
                 m[cfg + 1] = text.lit(m, t, "qwen3.8:27b-mlx");
                 m[cfg + 3] = 0 - 1;
@@ -746,8 +746,8 @@ fn main(world: World) -> [] int {
                             m[cfg + 2] = 1;
                         } else if text.is(t, flag, "--no-spec") {
                             m[cfg + 4] = 0;
-                        } else if text.is(t, flag, "--prefix-cache") {
-                            m[cfg + 5] = 1;
+                        } else if text.is(t, flag, "--no-prefix-cache") {
+                            m[cfg + 5] = 0;
                         } else if ai + 1 < arg_count(a) && text.is(t, flag, "--port") {
                             port = number_of(t, text.from_bytes(m, t, arg(a, ai + 1)));
                             ai = ai + 1;
