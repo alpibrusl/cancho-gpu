@@ -41,7 +41,13 @@ matvec_fp4_batch m=3 n=128 k=256
 matvec_fp4_batch m=8 n=128 k=1024
 matvec_fp4_batch m=13 n=128 k=1024
 matvec_fp4_batch m=16 n=128 k=1024
+matvec_fp4_batch m=16 n=64 k=1280
+matvec_fp4_batch m=32 n=64 k=384
+matvec_fp4_batch m=24 n=96 k=2048
+matvec_fp4_batch m=5 n=32 k=160
 matvec_fp4_res_batch m=4 n=128 k=512
+matvec_fp4_res_batch m=16 n=128 k=2176
+matvec_fp4_swiglu_batch m=16 n=64 k=1280
 matvec_fp4_swiglu_batch m=4 n=128 k=512
 matvec_rows_f16_frag m=1 n=256 k=64
 matvec_rows_f16_frag m=5 n=256 k=512

@@ -20,5 +20,5 @@ algo matvec_fp4_res_batch(m, n, k)
   store p + rt -> y[0, i * bn]
 }
 
-schedule matvec_fp4_res_batch for apple-m-series { threads 256 bn 64 frag 1 }
+schedule matvec_fp4_res_batch for apple-m-series { threads 256 bn 32 frag 4 }
 schedule matvec_fp4_res_batch for nvidia-ada     { threads 256 bn 8 }

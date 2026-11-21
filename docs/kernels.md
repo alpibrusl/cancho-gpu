@@ -148,7 +148,9 @@ should cost about what one does. It did not:
   1.4x a plain token's at 2 rows, 2x at 3 and 3x at 4 (31 ms for one; 43, 62, 96): compute-bound, so
   checking four tokens would cost more than decoding three.
 * `matvec_fp4_batch.chx`, `matvec_fp4_res_batch.chx` and `matvec_fp4_swiglu_batch.chx` take `frag` in their
-  Apple schedule (`threads 256 bn 64 frag 1`), which selects a different lowering (`frag_rows` in
+  Apple schedule (`threads 256 bn 64 frag 1`; since 9.7 `threads 256 bn 32 frag 4`, which selects
+  `frag_rows_split` and leaves what follows to reductions that are not a multiple of 128), which selects a
+  different lowering (`frag_rows` in
   `src/matmul.cho`): the matrix unit, fed from registers. A lane of an 8x8 simdgroup fragment holds two
   neighbouring columns of one row, which for the weights is one packed byte, so the codes go from memory to
   the fragment with no threadgroup memory, and the activations are the other operand (up to eight tokens, the
@@ -359,5 +361,55 @@ f16 activations time as bf16. Ours is 301 us at 16 rows (18.8 a row), f32.
   weights at this one shape's rate), against Ollama's 3.6 to 3.7 for everything. So **its everything-else is a few
   tenths of a millisecond a token where ours is 1.3**; one pass over the prompt launches each kernel once, not once
   a chunk or a token. With MLX's kernel rate and our 1.3 ms we would be at about 210 tok/s, not 281.
-* **Not done:** none of this is built. Not measured: `fp_qmv_mma`'s loads put into our lowering; what our 1.3 ms is
-  made of launch by launch.
+* `fp_qmv_mma`'s loads put into our lowering are 9.7, built. Not done: the staged kernel, one pass over the prompt,
+  16-bit activations. Not measured: what our 1.3 ms is made of launch by launch.
+
+### 9.7 `frag_rows_split`: the 16-row kernel after `fp_qmv_mma`, built (2026-11-21)
+
+**What it is.** A lowering in `src/matmul.cho` for 1 to 32 rows, taken when the schedule makes a threadgroup one
+tile of `8 frag` weight rows (`nn == 8 frag`) and the reduction is a multiple of 128. The three batch products'
+Apple schedules are now `threads 256 bn 32 frag 4`. From `fp_qmv_mma`: blocks of 128 with fragment `f` standing for
+index `16 c + f`, so a lane reads 32 codes of a row as four words and 16 activations of each of its two tokens as
+four `float4` (written as scalar reads; the compiler makes the same loads); the shifts that decode two codes at a
+time; every simdgroup on the same outputs, taking every eighth block, the partial sums added through threadgroup
+memory. Ours: four weight tiles a simdgroup (32 outputs a threadgroup; MLX has two), rows past `m` read row `m - 1`
+and are zeroed by a `select` (a branch there cost 30% at 12 rows), and every loop is under
+`#pragma clang loop unroll(full)`, without which the same text ran at 357 to 505 us.
+
+**What was measured on the kernel alone** (9's harness, `n=17408 k=5120`, GPU time, the emitted kernel):
+
+| rows | before | now | TFLOPS now |
+|---|---|---|---|
+| 1 | 194 us | 128 us | |
+| 8 | 177 | 131 | 10.9 |
+| 13 | | 242 | 9.6 |
+| 16 | 304 | 234 | 12.2 |
+| 32 | 597 | 502 | 11.4 |
+
+MLX's `fp_qmv_mma` at 16 rows and f32 activations is 251 us by wall clock (9.6). Variants, 16 rows: two tiles a
+simdgroup 269 to 271 us with or without the split; four tiles without the split (128 outputs a threadgroup) 314;
+eight tiles 333; the scale applied in float 250.
+
+**The order of the sum changes.** A product is now eight partial sums over interleaved blocks, each in a new order
+within its block. Against the interpreter on a GPU the worst relative difference is 2.1e-6 (it was 2.4e-6 at most
+before). The model gives the tokens of the build before on the three 680-token prompts used in `docs/serving.md`
+8.7, 24 tokens each; a near tie can still fall the other way.
+
+**A wrong answer on the way, and what it says about the tests.** The first version scaled in half as MLX does,
+`(code * 16384) * scale`. It passed `tests/kernels.py` (which runs the interpreter, not the emitted text) and
+all of `scripts/metal-kernels.sh`, and gave NaN on the model: the Metal compiler regroups the product into
+`code * (16384 * scale)`, which overflows half for any scale of 4 or more times a zero code. The built form
+multiplies the undecoded half (the value over 16384) by the scale in half, which has no other grouping, and puts
+the 16384 back with the row's scale in float; over random scale bytes of the whole range its output is the same
+bits as scaling in float, at 237 us against 250. **`metal-kernels.sh` could not have caught it:** the made-up
+inputs of a run give every i8 tensor the bytes `0x30` to `0x37` (`interp.inputs`), so every scale is 0.5 to 0.94
+and no code is negative. **[open: inputs that cover the scales' and the codes' range. They are shared by every
+`--run` golden and by `tests/kernels.py`'s references, so it is a change of its own; until then the model's own
+tokens are the only check of a weight kernel on real scales.]**
+
+**Prefill** (`cancho-gpu-run35`, alternating builds, three runs each within 0.3%): 689 tokens in 3.95 s against
+4.48, **174 tok/s against 154**; 682 tokens in 3.94 s against 4.47. Decode is unchanged (it does not use these
+kernels). Ollama: 272 to 281.
+
+**Left as it was:** a reduction that is not a multiple of 128 falls to `frag_rows`, where with this schedule one
+simdgroup of eight works. No product of the model is one (5,120, 6,144, 17,408).

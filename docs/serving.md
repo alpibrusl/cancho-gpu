@@ -564,11 +564,12 @@ shared system message, 0.16 s against 2.06 s); every other row is behind, by 1.4
 * The remaining prefill gap is the weight products' compute rate. The routes not tried: half-precision fragments
   (`simdgroup_half8x8`; the weights are 4-bit and the activations could be f16), and a product that does not go
   through per-lane `thread_elements` at all. Either is a kernel study with its own measurements before a design.
-  **The study is `docs/kernels.md` section 9:** the matrix unit's ceiling on this GPU is about 14 x 10^12 (float) and
-  Ollama's prefill runs at 13.2 to 13.7, so nobody passes it on a cold prompt; half-precision fragments and Metal's
-  tensor ops do not help here; storing the activations `[k, m]` does (20% less time a row at 64 rows, same bits),
-  which by estimate is 153 to about 182 tok/s. This document's "14.6" for Ollama took 26 x 10^9 weights a token;
-  the profile's sum is 24.3.
+  **The study is `docs/kernels.md` section 9.** It first said the matrix unit's ceiling here is about 14 x 10^12
+  and that Ollama runs at it; **that was wrong and is corrected there (9.6)**: MLX's kernels, timed alone, do 13.0
+  at 16 rows and 14.8 on a long prompt. Half-precision fragments and Metal's tensor ops do not help here. This
+  document's "14.6" for Ollama took 26 x 10^9 weights a token; the profile's sum is 24.3.
+  **Built since (`docs/kernels.md` 9.7): the 16-row kernel after MLX's, 234 us a launch against 304, and the
+  prefill above is 3.95 s, 174 tok/s, with the same tokens.** Bar B (235) is still not met.
 * The tail of a prompt still costs 37 ms a token for up to 7 tokens after the half chunk (the third question above:
   0.35 s for 15 tokens, where 16 took 0.16 s). A 4-row and a 2-row set would bound it at about 150 ms.
 * C (`--reuse-decode`) is now the largest lever on a warm turn that is not a kernel study: the turns above re-feed

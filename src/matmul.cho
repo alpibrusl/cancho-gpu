@@ -151,6 +151,10 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
     let threads = gen.threads(m, g);
     let weight = gen.lazy(m, g, b) >= 0;
     if nt && weight && gen.frag(m, g) > 0 {
+        let frs = frag_rows_split(m, t, g, x, acc, mm, nn, kd, b, ops);
+        if frs != 0 - 2 {
+            return frs;
+        }
         let fr = frag_rows(m, t, g, x, acc, mm, nn, kd, b, ops);
         if fr != 0 - 2 {
             return fr;
@@ -390,6 +394,177 @@ fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: 
     }
     gen.line(m, t, g, text.f3(m, t, "if (fn < $u) scratch[$ + fn * $u + j] = C[t].thread_elements()[0] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
     gen.line(m, t, g, text.f3(m, t, "if (fn + 1u < $u) scratch[$ + (fn + 1u) * $u + j] = C[t].thread_elements()[1] * rsc;", n(m, t, mm), n(m, t, resv), n(m, t, nn)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    let name = gen.declare_reg(m, t, g, x, ir.tile(m, acc, mem.of2(m, mm, nn), kinds.reg()));
+    let cv = dialect.convert(m, t, gen.dia(m, g), acc, text.f1(m, t, "scratch[$ + e]", n(m, t, resv)));
+    return gen.owned1(m, t, g, outs, text.f2(m, t, "$[k] = $;", name, cv));
+}
+
+// `frag_rows` and `frag_rows_wide` for 1 to 32 rows when a threadgroup is one tile of `8 frag` weight rows and the
+// reduction is in blocks of 128 (docs/kernels.md 9.7, after MLX's `fp_qmv_mma`). Every simdgroup holds the same
+// `frag x ceil(m / 8)` accumulators and takes every `threads / 32`-th block; the partial sums meet in threadgroup
+// memory. Within a block, fragment `f` of 16 stands for p = 16 c + f at column (or row) c, so a lane's weights are 32
+// consecutive codes of one row (four word loads for sixteen 8x8 steps) and its activations 16 consecutive values of
+// each of its two tokens. The codes are decoded two at a time by shifts into halves that hold the value over 16384,
+// and scaled in half: exact, since a code has two significant bits and an e4m3 scale four, and the smallest product
+// is a whole number of half's smallest step. The 16384 is put back with the row's scale at the end and never in
+// half: the Metal compiler regroups `(code * 16384) * scale` into `code * (16384 * scale)`, which is infinite for a
+// scale of 4 or more and gave NaN on the model's weights (docs/kernels.md 9.7). Answers -2 when the schedule or the
+// shapes do not fit, and the lowerings below take it.
+fn frag_rows_split[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: int, nn: int, kd: int, b: int, ops: int) -> [] int {
+    let frag = gen.frag(m, g);
+    let ns = gen.threads(m, g) / 32;
+    let d = gen.dq_of(m, g, ir.var_of(b));
+    if d == 0 || !dialect.fragments(gen.dia(m, g)) || mm > 32 || kd % 128 != 0 {
+        return 0 - 2;
+    }
+    if frag < 1 || nn != 8 * frag || ns < 2 {
+        return 0 - 2;
+    }
+    if m[d + 4] != 16 || m[d + 3] != kd || m[d + 7] != kd / 2 || !text.starts_with(t, m[d + 1], "fp8_e4m3(") {
+        return 0 - 2;
+    }
+    let oa = mem.get(m, ops, 0);
+    if m[oa] != gen.a_lazy() || gen.lvalue(t, m[d + 6]) < 0 {
+        return 0 - 2;
+    }
+    let outs = mm * nn;
+    let resv = gen.staged(m, g);
+    gen.need_scratch(m, g, resv + (ns - 1) * outs);
+    if gen.staged(m, g) == 0 {
+        gen.barrier(m, t, g);
+    }
+    gen.line_lit(m, t, g, "{");
+    gen.depth_in(m, g);
+    gen.line(m, t, g, text.f4(m, t, "constexpr uint KD = $u, MM = $u, NN = $u, OUTS = $u;", n(m, t, kd), n(m, t, mm), n(m, t, nn), n(m, t, outs)));
+    gen.line(m, t, g, text.f3(m, t, "constexpr uint F = $u, Q = $u, NS = $u;", n(m, t, frag), n(m, t, (mm + 7) / 8), n(m, t, ns)));
+    gen.line_lit(m, t, g, "const uint sgid = tid / 32u, lane = tid % 32u;");
+    gen.line_lit(m, t, g, "const uint qid = lane / 4u;");
+    gen.line_lit(m, t, g, "const uint fm = (qid & 4u) + ((lane / 2u) % 4u);");
+    gen.line_lit(m, t, g, "const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;");
+    gen.line_lit(m, t, g, "simdgroup_float8x8 C[F][Q];");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) C[f][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);");
+    gen.line_lit(m, t, g, "if (sgid < NS) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "for (uint blk = sgid; blk < KD / 128u; blk += NS) {");
+    gen.depth_in(m, g);
+    let x0 = gen.read(m, t, oa, text.lit(m, t, "b0"));
+    let x1 = gen.read(m, t, oa, text.lit(m, t, "b0 + 1u"));
+    let x2 = gen.read(m, t, oa, text.lit(m, t, "b0 + 2u"));
+    let x3 = gen.read(m, t, oa, text.lit(m, t, "b0 + 3u"));
+    gen.line_lit(m, t, g, "float4 xv[Q][2][4];");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint c = 0; c < 2u; ++c)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint h = 0; h < 4u; ++h) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint i = q * 8u + fn + c;");
+    gen.line_lit(m, t, g, "const uint b0 = min(i, MM - 1u) * KD + blk * 128u + 16u * fm + 4u * h;");
+    gen.line(m, t, g, text.f4(m, t, "xv[q][c][h] = select(float4(0.0f), float4($, $, $, $), bool4(i < MM));", x0, x1, x2, x3));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "uint4 wv[F]; half2 sc[F];");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = f * 8u + fm;");
+    let wt = gen.lvalue(t, m[d + 6]);
+    let u = text.lit(m, t, "uint");
+    let w0 = dialect.vector_load(m, t, gen.dia(m, g), u, gen.at_index(m, t, wt, text.f1(m, t, "j * $u + blk * 64u + fn * 8u + 0u", n(m, t, m[d + 7]))));
+    let w1 = dialect.vector_load(m, t, gen.dia(m, g), u, gen.at_index(m, t, wt, text.f1(m, t, "j * $u + blk * 64u + fn * 8u + 4u", n(m, t, m[d + 7]))));
+    let w2 = dialect.vector_load(m, t, gen.dia(m, g), u, gen.at_index(m, t, wt, text.f1(m, t, "j * $u + blk * 64u + fn * 8u + 8u", n(m, t, m[d + 7]))));
+    let w3 = dialect.vector_load(m, t, gen.dia(m, g), u, gen.at_index(m, t, wt, text.f1(m, t, "j * $u + blk * 64u + fn * 8u + 12u", n(m, t, m[d + 7]))));
+    gen.line(m, t, g, text.f4(m, t, "wv[f] = uint4($, $, $, $);", w0, w1, w2, w3));
+    gen.line(m, t, g, text.f1(m, t, "const uint grp = j * $u + blk * 8u + fn;", n(m, t, kd / 16)));
+    gen.line(m, t, g, text.f2(m, t, "sc[f] = half2(float2($, $));", gen.at_index_lit(m, t, m[d + 1], "grp"), gen.at_index_lit(m, t, m[d + 1], "grp + 1u")));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint s = 0; s < 4u; ++s)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint lo = wv[f][s / 2u], hi = wv[f][2u + s / 2u];");
+    gen.line_lit(m, t, g, "const uint cw = (s % 2u) == 0u ? (lo & 0xffffu) | (hi << 16u) : (lo >> 16u) | (hi & 0xffff0000u);");
+    gen.line_lit(m, t, g, "uint pr[4];");
+    gen.line_lit(m, t, g, "pr[0] = ((cw & 0x00070007u) << 9u) | ((cw & 0x00080008u) << 12u);");
+    gen.line_lit(m, t, g, "pr[1] = ((cw & 0x00700070u) << 5u) | ((cw & 0x00800080u) << 8u);");
+    gen.line_lit(m, t, g, "pr[2] = ((cw & 0x07000700u) << 1u) | ((cw & 0x08000800u) << 4u);");
+    gen.line_lit(m, t, g, "pr[3] = ((cw & 0x70007000u) >> 3u) | (cw & 0x80008000u);");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint e = 0; e < 4u; ++e) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "simdgroup_float8x8 A, B;");
+    gen.line_lit(m, t, g, "const float2 w = float2(as_type<half2>(pr[e]) * sc[f]);");
+    gen.line_lit(m, t, g, "A.thread_elements()[0] = w.x; A.thread_elements()[1] = w.y;");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "B.thread_elements()[0] = xv[q][0][s][e]; B.thread_elements()[1] = xv[q][1][s][e];");
+    gen.line_lit(m, t, g, "simdgroup_multiply_accumulate(C[f][q], A, B, C[f][q]);");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.line_lit(m, t, g, "if (sgid > 0u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint c = 0; c < 2u; ++c) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint i = q * 8u + fn + c;");
+    gen.line(m, t, g, text.f1(m, t, "if (i < MM) scratch[$ + (sgid - 1u) * OUTS + i * NN + f * 8u + fm] = C[f][q].thread_elements()[c];", n(m, t, resv)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.barrier(m, t, g);
+    gen.line_lit(m, t, g, "if (sgid == 0u) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint f = 0; f < F; ++f) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint j = f * 8u + fm;");
+    if m[d + 2] >= 0 {
+        gen.line(m, t, g, text.f1(m, t, "const float rsc = float($) * 16384.0f;", gen.at_index_lit(m, t, m[d + 2], "j")));
+    } else {
+        gen.line_lit(m, t, g, "const float rsc = 16384.0f;");
+    }
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint q = 0; q < Q; ++q)");
+    gen.line_lit(m, t, g, "#pragma clang loop unroll(full)");
+    gen.line_lit(m, t, g, "for (uint c = 0; c < 2u; ++c) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "const uint i = q * 8u + fn + c;");
+    gen.line_lit(m, t, g, "if (i < MM) {");
+    gen.depth_in(m, g);
+    gen.line_lit(m, t, g, "float a = C[f][q].thread_elements()[c];");
+    gen.line(m, t, g, text.f1(m, t, "for (uint sg = 1u; sg < NS; ++sg) a += scratch[$ + (sg - 1u) * OUTS + i * NN + j];", n(m, t, resv)));
+    gen.line(m, t, g, text.f1(m, t, "scratch[$ + i * NN + j] = a * rsc;", n(m, t, resv)));
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
+    gen.depth_out(m, g);
+    gen.line_lit(m, t, g, "}");
     gen.depth_out(m, g);
     gen.line_lit(m, t, g, "}");
     gen.depth_out(m, g);
