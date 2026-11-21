@@ -12,5 +12,5 @@ algo matvec_rows_f16_m(m, n, k)
   store matmul_nt xt wt -> y[0, i * bn]
 }
 
-schedule matvec_rows_f16_m for apple-m-series { threads 256 bn 8 }
+schedule matvec_rows_f16_m for apple-m-series { threads 256 bn 8 frag 1 }
 schedule matvec_rows_f16_m for nvidia-ada     { threads 128 bn 4 }
