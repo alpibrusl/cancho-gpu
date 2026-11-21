@@ -904,7 +904,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 160);
+    let eng = mem.grab(m, 168);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -1089,6 +1089,12 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     m[eng + 31] = k_knormb;
     m[eng + 32] = k_attn_gateb;
     m[eng + 33] = k_gnormb;
+    // The gated-delta layers' small kernels for the chunk's rows at once (docs/serving.md section 8).
+    m[eng + 160] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_m.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nb));
+    m[eng + 161] = compile_kernel(m, t, ffi, fs, kdir, "gates_rows.chx", c2(m, t, "m", mb(), "h", 48));
+    m[eng + 162] = compile_kernel(m, t, ffi, fs, kdir, "qk_norm_rows.chx", cv(m, t, c2(m, t, "nk", 16, "rows", 80), "m", nb));
+    m[eng + 163] = compile_kernel(m, t, ffi, fs, kdir, "conv_step8.chx", c1(m, t, "c", 10240));
+    m[eng + 164] = compile_kernel(m, t, ffi, fs, kdir, "delta_step8.chx", c1(m, t, "nk", 16));
     if err.failed(m) {
         return 0 - 1;
     }
@@ -1459,46 +1465,22 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 go(m, ffi, m[eng + 148], b_as, b_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
                 go12(m, ffi, m[eng + 151], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3b, l), mem.get(m, st3c, l), mem.get(m, st3d, l), b_ys, 0 - 1, 0 - 1);
             } else {
-                var tt = 0;
-                while tt < rows {
-                    ov(ffi);
-                    go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 3), at(b_as, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    ov(ffi);
-                    go(m, ffi, k_ab, at(b_ns, 4 * h * tt), mem.get(m, w, 4), at(b_bs, 4 * 48 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    tt = tt + 1;
+                // the chunk's rows: one launch for each step, the window and the state carried through them in the kernel
+                ov(ffi);
+                go(m, ffi, m[eng + 160], b_ns, mem.get(m, w, 3), b_as, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
+                go(m, ffi, m[eng + 160], b_ns, mem.get(m, w, 4), b_bs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                // a token at an even position reads its window from the first buffer and leaves it in the second: after an
+                // even number of rows the window is back where it was read
+                var cs_w = mem.get(m, st1, l);
+                if pos % 2 == 1 {
+                    cs_w = mem.get(m, st2, l);
                 }
-                tt = 0;
-                while tt < rows {
-                    var cs_now = mem.get(m, st1, l);
-                    var cs_next = mem.get(m, st2, l);
-                    if (pos + tt) % 2 == 1 {
-                        cs_now = mem.get(m, st2, l);
-                        cs_next = mem.get(m, st1, l);
-                    }
-                    if set == 1 && tt == 2 {
-                        // the window two tokens ago must survive a rejection, so the third row writes aside
-                        cs_next = mem.get(m, stx, l);
-                    }
-                    go(m, ffi, k_conv, at(b_qkvs, 4 * 10240 * tt), cs_now, mem.get(m, w, 5), at(b_convs, 4 * 10240 * tt), cs_next, 0 - 1, 0 - 1, 0 - 1);
-                    go(m, ffi, k_qknorm, at(b_convs, 4 * 10240 * tt), at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    ov(ffi);
-                    go(m, ffi, k_gates, at(b_as, 4 * 48 * tt), at(b_bs, 4 * 48 * tt), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), 0 - 1, 0 - 1);
-                    var s_in = mem.get(m, st3, l);
-                    var s_out = s_in;
-                    if set == 1 {
-                        if tt == 0 {
-                            s_out = mem.get(m, st3b, l);
-                        } else if tt == 1 {
-                            s_in = mem.get(m, st3b, l);
-                            s_out = mem.get(m, st3c, l);
-                        } else {
-                            s_in = mem.get(m, st3c, l);
-                            s_out = mem.get(m, st3d, l);
-                        }
-                    }
-                    go(m, ffi, k_delta, s_in, at(b_qns, 4 * 2048 * tt), at(b_kns, 4 * 2048 * tt), at(b_convs, 4 * 10240 * tt + 4 * 4096), at(b_gs, 4 * 6144 * tt), at(b_bts, 4 * 6144 * tt), s_out, at(b_ys, 4 * 6144 * tt));
-                    tt = tt + 1;
-                }
+                go(m, ffi, m[eng + 163], b_qkvs, cs_w, mem.get(m, w, 5), b_convs, cs_w, 0 - 1, 0 - 1, 0 - 1);
+                go(m, ffi, m[eng + 162], b_convs, b_qns, b_kns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
+                go(m, ffi, m[eng + 161], b_as, b_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
+                go(m, ffi, m[eng + 164], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3, l), b_ys);
             }
             go(m, ffi, k_gnormb, b_ys, b_zs, mem.get(m, w, 8), b_gns, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             fp4_res(m, ffi, k_outb, b_gns, mem.get(m, w, 9), cur, nxt);
