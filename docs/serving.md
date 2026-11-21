@@ -100,7 +100,7 @@ nothing holds the server), TLS, and a smaller memory footprint (14.6 GB of weigh
 
 ## 7. A prefix cache (design, written before the code)
 
-> **Status: a design with measured starting points; nothing built.** Marks as elsewhere: **[measured]** (a command is
+> **Status: a design with measured starting points; step 1 (the probe, 7.9) is done; the server is unchanged.** Marks as elsewhere: **[measured]** (a command is
 > named), **[read]** (from the source or a document, not run), **[estimate]** (arithmetic from measured numbers),
 > **[open]**.
 
@@ -158,7 +158,7 @@ The snapshot is taken at a position `c` that a later request is likely to share.
   including **`<|im_start|>assistant\n`** of the last turn; what follows depends on the mode and on the client.
 
 **Rule:** `b` is the index just after the last `<|im_start|>assistant\n` in the prompt's ids (the special token's id,
-then `assistant` and `\n`; **[open]** that these are three tokens, which step 1 reads off the tokenizer), and the
+then `assistant` and `\n`: three tokens, `248045 74455 198` **[measured, 7.9]**), and the
 cut is `c = 8 * floor(b / 8)`, a multiple of `qwen35.mb()`. Two reasons for the multiple of 8:
 
 1. A fresh prefill feeds chunks of 8 tokens from position 0 (`qwen35spec.feed`), and the chunks use the
@@ -199,9 +199,8 @@ convolution state at `c`, and a flag. Decisions:
 The device library has no device-to-device copy **[read: `device/metal.cho` lists `cgpu_alloc`, `cgpu_upload(_at)`,
 `cgpu_download(_at)`, `cgpu_zero` and the launch calls]**. Three ways, in order of effort: through the host (download
 then upload; two crossings of 163 MB), a copy kernel in `.chx` compiled at start, or a blit in `shim/canchogpu-metal.mm`.
-**[open]** which: step 1 times the first two. Unified memory suggests a few milliseconds for a kernel
-**[estimate, unmeasured]**; the through-host path is the fallback and must stay under about 100 ms to be worth it
-(compared with the 0.5 to 8 s a hit saves).
+**Decided by step 1 (7.9): through the host.** Saving or restoring all 48 layers takes 3 to 5 ms either way, so a
+new kernel buys nothing and the cache needs no change to the device library or to `tests/chx/`.
 
 ### 7.6 What it is held to
 
@@ -233,9 +232,44 @@ then upload; two crossings of 163 MB), a copy kernel in `.chx` compiled at start
 
 ### 7.8 Steps
 
-1. **Probe.** Read the ids of `<|im_start|>assistant\n`; time the through-host copy and a `.chx` copy kernel of
-   163 MB; choose the primitive. No server change. Exit: the table of those times in this section.
+1. **Probe. Done (7.9).** The ids of the turn markers; the through-host copy and a `.chx` copy kernel of 162.8 MB
+   timed; the primitive chosen. No server change.
 2. **The slot** behind `--prefix-cache`: snapshot, restore, resume, the failure flag, `cached_tokens`; the checks of
    7.6 in `tests/serve_check.py`. Exit: equal tokens (and, if met, equal logits), and the acceptance measured.
 3. **Measure and decide the default**, correcting 7.1's estimates in place where they are wrong.
 4. Later, on its own design: several slots.
+
+### 7.9 Step 1: the probe (measured)
+
+`scripts/build-probe-copy.sh` builds `cancho-gpu-probe-copy` (`device/probe-copy-main.cho`, with `tests/chx/copy_rows.chx`
+as the one kernel it needs), and `cancho-gpu-probe-copy ~/.ollama/models tests/chx` loads the 27B and prints the
+following **[measured]** (M4 Max, one run of four passes, the machine otherwise quiet).
+
+**Token ids.** The marker `<|im_start|>assistant\n` is **3 tokens**, `248045 74455 198` (`<|im_start|>` is one token,
+not spelled out). On the two-turn dialogue of 7.3:
+
+* thinking off: turn 1 is 16 tokens and turn 2 is 37; **the 16 of turn 1 are exactly the first 16 of turn 2**.
+* thinking on, with `reasoning_content` sent back: turn 1 is 14 tokens; **the 14 are the first 14 of turn 2**
+  (turn 2 goes on `248068 198 43518 198 248069 271 ...`, the think block with the reasoning in it).
+
+So the rule of 7.3 gives, for turn 1, `b = 12` and `c = 8`. On a short prompt rounding to 8 gives up a third of it; on a
+real history it is 7 tokens out of hundreds.
+
+**Copying the 48 delta layers' states (162.8 MB, 144 buffers) between two sets of buffers:**
+
+| | save (engine to snapshot) | restore |
+|---|---|---|
+| through the host (a download, then an upload, of each buffer) | 4 to 5 ms | 3 to 5 ms |
+| a copy kernel, `copy_rows.chx` (all launches encoded, one wait) | 3 to 4 ms (GPU 2.7 ms, first pass 4.3) | 3 to 5 ms (GPU 2.6 ms, first pass 4.6) |
+
+Both were checked by a round trip: a pattern of valid floats written into the buffers of layer 0 and layer 62,
+copied to the snapshot, the engine's buffers zeroed, copied back, and read: **0 differing bytes** by each path.
+
+**Decision: through the host.** The two take the same time to the millisecond, because the memory is unified; the
+kernel would be a new file in `tests/chx/` for nothing. The server will use `cgpu_download_at` and `cgpu_upload_at`,
+which exist. This is under the 100 ms bar of 7.6 by a factor of 20, and 0.2 to 0.3% of the 1.5 to 5 s a hit saves at
+158 to 578 tokens. The 7.6 bar for a miss (at most 100 ms slower than today) is therefore met by the copy alone:
+a miss pays one save, about 5 ms.
+
+What the probe does not settle: whether a resumed prefill equals a fresh one bit for bit, and the head's acceptance
+(step 2).

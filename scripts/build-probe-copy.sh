@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build `cancho-gpu-probe-copy` (docs/qwen35.md): the Qwen3.8-27B runner for Metal.
+# Build `cancho-gpu-probe-copy` (docs/serving.md section 7.8, step 1): the prefix cache probe.
 #
 #     CANCHO=<pinned cancho> scripts/build-probe-copy.sh
 set -eu
