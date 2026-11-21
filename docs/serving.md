@@ -18,6 +18,7 @@ curl localhost:8080/v1/chat/completions -H 'Authorization: Bearer secret' -H 'Co
 | `--api-key KEY` | every route but `/health` needs `Authorization: Bearer KEY` |
 | `--model NAME` | the id in answers and `/v1/models` (default `qwen3.8:27b-mlx`) |
 | `--think` | the model reasons first unless the request says otherwise |
+| `--prefix-cache` | keep the delta state at the end of each conversation's history and reuse it on the next turn (section 7; off by default until step 3 of 7.8) |
 | `--no-spec` | no draft head: one token a pass (about 27 tok/s) and 2.7 GB less memory; by default the model's draft head is used (a chain of two drafts, three rows checked a pass): streaming a 128-token reply measured 35 tok/s with it against 24 without (one request; prose, code and a sampled answer at temperature 1 each 34.7-35.6 with it; 20.6-25 without; the machine had other jobs, load average 14) |
 
 **It listens on every address of the host** (`tcp_listen` binds them all; there is no way to ask for loopback),
@@ -100,7 +101,7 @@ nothing holds the server), TLS, and a smaller memory footprint (14.6 GB of weigh
 
 ## 7. A prefix cache (design, written before the code)
 
-> **Status: a design with measured starting points; step 1 (the probe, 7.9) is done; the server is unchanged.** Marks as elsewhere: **[measured]** (a command is
+> **Status: a design, step 1 (the probe, 7.9) and step 2 (built behind `--prefix-cache`, off by default; held to 7.6 and measured in 7.10) are done; step 3, the default, is not.** Marks as elsewhere: **[measured]** (a command is
 > named), **[read]** (from the source or a document, not run), **[estimate]** (arithmetic from measured numbers),
 > **[open]**.
 
@@ -234,8 +235,8 @@ new kernel buys nothing and the cache needs no change to the device library or t
 
 1. **Probe. Done (7.9).** The ids of the turn markers; the through-host copy and a `.chx` copy kernel of 162.8 MB
    timed; the primitive chosen. No server change.
-2. **The slot** behind `--prefix-cache`: snapshot, restore, resume, the failure flag, `cached_tokens`; the checks of
-   7.6 in `tests/serve_check.py`. Exit: equal tokens (and, if met, equal logits), and the acceptance measured.
+2. **The slot. Done (7.10)** behind `--prefix-cache`: snapshot, restore, resume, the failure flag, `cached_tokens`; the
+   checks of 7.6 in `tests/prefix_check.py`. Exit: equal tokens, and the decode rate measured.
 3. **Measure and decide the default**, correcting 7.1's estimates in place where they are wrong.
 4. Later, on its own design: several slots.
 
@@ -273,3 +274,57 @@ a miss pays one save, about 5 ms.
 
 What the probe does not settle: whether a resumed prefill equals a fresh one bit for bit, and the head's acceptance
 (step 2).
+
+### 7.10 Step 2: the slot, built and measured
+
+**What was built.** `--prefix-cache` on `cancho-gpu-serve` (off by default). `device/qwen35.cho`: `snap_new`, `snap_copy` (the
+through-host copy of 7.9) and `open_prefix` (the masks of the engine and of the draft head, open for `[0, c)` and
+closed above). `device/serve-main.cho`: the slot record (valid, `c`, its ids in 1,024 words allocated at start, the
+snapshot, a scratch, the tokens reused), `cut_of` (the rule of 7.3: the last `248045 74455 198`, rounded down to a
+multiple of 8, and never the whole prompt), `prefill_cached` (hit or miss as in 7.4; the slot is marked invalid when a
+request starts and valid only after its snapshot is complete, or, on a hit that needs no new snapshot, after its
+prefill). `src/chat.cho`: `usage.prompt_tokens_details.cached_tokens` in the whole answer and in the streamed usage
+chunk (always present, 0 without the cache, as OpenAI's API has it); the server's log line gains ` cached=N` with the
+flag. Without the flag nothing else changes: `tests/serve_check.py` (22 checks) passes, and `tests/chat.sh` (23
+requests) passes.
+
+**Held to** `tests/prefix_check.py` (a Mac and the model; not in the gate): two servers, one without the cache and one
+with it, are sent the same requests with the same history; **all 78 checks passed** on the final run:
+
+* **The same tokens.** Four conversations (3 to 4 turns of 190 to 800 tokens: plain; with a system message; thinking
+  on with `reasoning_content` sent back; sampled at temperature 1 with seed 7), an interleaved second conversation,
+  a repeated request, an edit of the first message, a request after a refusal and one after a client left mid-stream:
+  **every answer is the same, token for token**, including the sampled ones (not a comparison of logits, but with a
+  fixed seed at temperature 1 a difference in the last bits would show as a different token sooner or later; it did
+  not in these ~40 tokens times 25 answers).
+* **The expected reuse.** Turn 1 reuses 0; a later turn reuses the previous prompt up to the cut (for example 184 of 399,
+  392 of 605, 600 of 811 tokens: the cut leaves out the last assistant opener and rounds down to a multiple of 8);
+  a second conversation in between takes the slot, so the first one's next turn reuses 0 and the one after reuses;
+  a repeat reuses 680 of 688; an edited first message reuses 0; a refused request leaves the slot alone.
+
+**First token, and the decode rate** (one run each; the history is the conversation so far and the request ends with a
+new user message; the first token is `max_tokens: 1`; the rate is tokens from the first to the last streamed chunk of a
+128-token answer, median of three):
+
+| case | first token without | with the cache | reused | decode tok/s without | with |
+|---|---|---|---|---|---|
+| plain, turn 5, 811 tokens of history | 7.57 s | **0.61 s** | 800 | 54.7 | 55.3 |
+| system message, turn 4, 700 | 6.59 s | **0.54 s** | 696 | 54.7 | 55.3 |
+| thinking on, turn 4, 604 | 6.06 s | **0.89 s** | 600 | 55.9 | 56.6 |
+| sampled, turn 4, 605 | 5.81 s | **0.61 s** | 600 | 56.0 | 56.6 |
+
+**The bars of 7.6.** (1) A hit's first token in at most 25% of the miss time at about 600 tokens of history: **8 to
+15%** (0.54 to 0.89 s against 5.8 to 7.6 s). Met. (2) A miss at most 100 ms slower: eight requests of about 330 tokens
+each, the servers taking turns to go first, measured **188 ms faster** with the cache. That is not the cache: with both servers
+started *without* it the second server is also faster, by 166 ms (a control, `prefix_check.py miss control`), so the
+process started second is, for a reason not looked into, faster and the cache's own cost is about **-22 ms, which is
+zero within the noise**. Met. (3) The decode rate is the same to 1%, so the draft head's one divergent pair (7.3)
+costs nothing that this measures; the counting answer it was measured on is predictable text, where a draft head
+accepts most of its guesses, so a loss on prose would show less here than there **[open]**.
+
+**Corrections to the design.** 7.1 estimated a first token of "0.3 to 1 s" for a hit; measured 0.54 to 0.89 s at 600 to 800
+tokens of history (the 0.2 s fixed cost and the new tokens at about 110 tok/s: the last answer, the new user message
+and the up to 7 tokens re-fed). It guessed 4 ms for a copy (7.9) and a miss pays one; that held.
+
+**Not settled.** The logits were not compared bit for bit (only the tokens they produce). The slot holds one
+conversation (7.7). Step 3 decides the default.

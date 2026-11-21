@@ -482,7 +482,7 @@ pub fn error_json[&m, &t](m: &!m [int], t: &!t [byte], message: int, kind: &stat
 }
 
 // A non-streaming answer. `reasoning` is -1 when the model did not reason.
-pub fn completion_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int, model: int, reasoning: int, content: int, finish: int, prompt_tokens: int, completion_tokens: int) -> [] int {
+pub fn completion_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int, model: int, reasoning: int, content: int, finish: int, prompt_tokens: int, completion_tokens: int, cached_tokens: int) -> [] int {
     var think = text.empty();
     if reasoning >= 0 {
         think = text.f1(m, t, ",\"reasoning_content\":\"$\"", escape(m, t, reasoning));
@@ -490,7 +490,7 @@ pub fn completion_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: in
     let message = text.f2(m, t, "{\"role\":\"assistant\",\"content\":\"$\"$}", escape(m, t, content), think);
     let head = text.f3(m, t, "{\"id\":\"$\",\"object\":\"chat.completion\",\"created\":$,\"model\":\"$\"", id, text.num(m, t, created), escape(m, t, model));
     let choice = text.f2(m, t, ",\"choices\":[{\"index\":0,\"message\":$,\"finish_reason\":\"$\"}]", message, finish);
-    let usage = text.f3(m, t, ",\"usage\":{\"prompt_tokens\":$,\"completion_tokens\":$,\"total_tokens\":$}}", text.num(m, t, prompt_tokens), text.num(m, t, completion_tokens), text.num(m, t, prompt_tokens + completion_tokens));
+    let usage = text.f4(m, t, ",\"usage\":{\"prompt_tokens\":$,\"completion_tokens\":$,\"total_tokens\":$,\"prompt_tokens_details\":{\"cached_tokens\":$}}}", text.num(m, t, prompt_tokens), text.num(m, t, completion_tokens), text.num(m, t, prompt_tokens + completion_tokens), text.num(m, t, cached_tokens));
     return text.cat3(m, t, head, choice, usage);
 }
 

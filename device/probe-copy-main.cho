@@ -132,7 +132,7 @@ fn fill_pattern[&t](t: &!t [byte], at: int, n: int, salt: int) -> [] int {
     while p < n {
         t[at + p] = byte_of((p / 4 * 7 + salt) % 251);
         t[at + p + 1] = byte_of((p / 4 * 13 + salt) % 251);
-        t[at + p + 2] = byte_of((p / 4) % 128);
+        t[at + p + 2] = byte_of(p / 4 % 128);
         t[at + p + 3] = byte_of(63);
         p = p + 4;
     }
