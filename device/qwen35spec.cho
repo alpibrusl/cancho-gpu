@@ -45,10 +45,10 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         var more = true;
         while more {
             var rows = qwen35.mb();
-            var k_rms = m[eng + 29];
+            var k_rms = m[eng + 192];
             if pos + rows > limit {
                 rows = rows / 2;
-                k_rms = m[eng + 177];
+                k_rms = m[eng + 193];
                 more = false;
             }
             if pos + rows > limit {

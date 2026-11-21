@@ -575,9 +575,9 @@ shared system message, 0.16 s against 2.06 s); every other row is behind, by 1.4
 * C (`--reuse-decode`) is now the largest lever on a warm turn that is not a kernel study: the turns above re-feed
   the answer the server itself generated.
 
-## 9. Toward Ollama's prefill: where the time is now, and the steps (2026-11-21; step 1 built)
+## 9. Toward Ollama's prefill: where the time is now, and the steps (2026-11-21; steps 1 and 3 built)
 
-> **Not built except step 1.** The user's decision, the same day: 16-bit activations may be used if that is what
+> **Built: steps 1 and 3. Not built: 2, 4 and 5.** The user's decision, the same day: 16-bit activations may be used if that is what
 > reaches Ollama's rate. Marks as in section 7.
 
 ### 9.1 Where a prefill goes now [measured]
@@ -618,16 +618,23 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    emitted kernel's]**, which is about the 6 MB it reads and writes at memory speed. [estimate] 0.26 s of the
    prefill. What it needs is a lowering in which a tile whose rows each fit a simdgroup reduces and broadcasts by
    shuffles; that is a change to the generic lowering and has no design yet.
-3. **16-bit activations in the batch products.** The 16-row kernel with `x` read as f16: 217 us against 236
-   [measured, on the kernel alone], which is MLX's 219. [estimate] 0.24 s. The residual stream would be stored f16
-   (or bf16, as the model's own embeddings are) between kernels; every kernel that reads or writes it changes
-   type, and the answers change: an activation keeps 11 bits (8 in bf16).
+3. **16-bit activations in the batch products. Built**, narrower than first written here: only what a weight
+   product reads is f16. The chunk's and the half chunk's products read `x` as f16
+   (`matvec_fp4_batch_h`, `_res_batch_h`, `_swiglu_batch_h`, `matvec_rows_f16_mh`), and the kernels that write what
+   they read round to f16 with `stage f16` (`rmsnorm_rows_h`, `attn_gate_q_h`, `gated_norm_h`, and the SwiGLU
+   product's own output). The residual stream, the caches, the delta states and the logits stay f32, and so do the
+   single-token path and a speculative check's few-row kernels: **a token fed in a chunk and the same token fed
+   alone no longer go through the same arithmetic** (they already differed in the order of the sums). An
+   activation a product reads keeps 11 bits. The 16-row kernel alone: 217 us against 233 [measured], MLX's 219.
+   **Prefill 3.49 s against 3.74 (alternating builds, three runs each within 0.5%), 197 tok/s, and the same
+   tokens on the three prompts of 8.7, 24 each.** That the tokens are the same there says nothing about a near
+   tie elsewhere.
 4. **A long pass and a staged kernel.** MLX's `fp_qmm_t` does 12.1 us a row from 64 rows up against 13.6 for the
    16-row kernel with f16 activations (`docs/kernels.md` 9.6). [estimate] 0.3 s more, and it is the only step that
    needs the prefill restructured: kernels for a number of rows not known when they are compiled, the delta and
    attention layers over a whole prompt, the cache's cut. No design yet.
 5. **Attention for a chunk's rows in one launch**, 0.16 s today.
 
-[estimate] Steps 2, 3 and 5 on top of step 1: about 3.1 s, 220 tok/s. With step 4, about 2.8 s, 245. **The sum of
+[estimate] Steps 2 and 5 on top of steps 1 and 3 (3.49 s): about 3.1 s, 220 tok/s. With step 4, about 2.8 s, 245. **The sum of
 what is listed does not reach Ollama's 2.5 s**; the rest is in the 0.17 ms a token not accounted for and in the
 products' rate between our kernel and theirs, and neither has a step here.

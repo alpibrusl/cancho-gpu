@@ -530,3 +530,20 @@ tests/chx/vae_s2d.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run
 tests/chx/vae_avg2.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run
 tests/chx/dit_cat.chx s=4160 n=4096 bn=1024
 tests/chx/dit_cat.chx s=4 n=256 bn=128 --run
+
+# The chunk's kernels with 16-bit activations (docs/serving.md section 9, step 3): the products read `x` as f16, and what
+# feeds them writes f16.
+tests/chx/matvec_fp4_batch_h.chx m=16 n=17408 k=5120
+tests/chx/matvec_fp4_batch_h.chx m=3 n=64 k=128 --run
+tests/chx/matvec_fp4_res_batch_h.chx m=16 n=5120 k=17408
+tests/chx/matvec_fp4_res_batch_h.chx m=2 n=64 k=128 --run
+tests/chx/matvec_fp4_swiglu_batch_h.chx m=16 n=17408 k=5120
+tests/chx/matvec_fp4_swiglu_batch_h.chx m=2 n=64 k=128 --run
+tests/chx/matvec_rows_f16_mh.chx m=16 n=48 k=5120
+tests/chx/matvec_rows_f16_mh.chx m=3 n=64 k=96 --run
+tests/chx/rmsnorm_rows_h.chx r=16 n=5120 eps=0.000001
+tests/chx/rmsnorm_rows_h.chx r=2 n=64 eps=0.000001 --run
+tests/chx/attn_gate_q_h.chx r=384 n=256
+tests/chx/attn_gate_q_h.chx r=4 n=16 --run
+tests/chx/gated_norm_h.chx h=768 n=128 eps=0.000001
+tests/chx/gated_norm_h.chx h=4 n=16 eps=0.000001 --run
