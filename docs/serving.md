@@ -541,6 +541,8 @@ recorded on the same machine; it did not repeat.)
 * The emitted kernel is sensitive to how many blocks a lane holds at once: with 4 or 8 (the 8-row kernel uses 8) a
   16-row prefill took 9 to 15 s, with 1 or 2, 4.7 s. Thirty-two rows took 11 s at 2. `frag_rows_wide` uses 2.
   **[open: why; the Metal compiler's register allocation is the suspect and was not examined.]**
+  **Since examined (`docs/kernels.md` section 9): it is the array of activations the kernel itself loads ahead of
+  use; loaded where they are used, every unroll costs the same and 32 rows run.**
 
 **Against Ollama** (`tests/ollama_compare.py both`, one run, after the changes; first token):
 
@@ -562,6 +564,11 @@ shared system message, 0.16 s against 2.06 s); every other row is behind, by 1.4
 * The remaining prefill gap is the weight products' compute rate. The routes not tried: half-precision fragments
   (`simdgroup_half8x8`; the weights are 4-bit and the activations could be f16), and a product that does not go
   through per-lane `thread_elements` at all. Either is a kernel study with its own measurements before a design.
+  **The study is `docs/kernels.md` section 9:** the matrix unit's ceiling on this GPU is about 14 x 10^12 (float) and
+  Ollama's prefill runs at 13.2 to 13.7, so nobody passes it on a cold prompt; half-precision fragments and Metal's
+  tensor ops do not help here; storing the activations `[k, m]` does (20% less time a row at 64 rows, same bits),
+  which by estimate is 153 to about 182 tok/s. This document's "14.6" for Ollama took 26 x 10^9 weights a token;
+  the profile's sum is 24.3.
 * The tail of a prompt still costs 37 ms a token for up to 7 tokens after the half chunk (the third question above:
   0.35 s for 15 tokens, where 16 took 0.16 s). A 4-row and a 2-row set would bound it at about 150 ms.
 * C (`--reuse-decode`) is now the largest lever on a warm turn that is not a kernel study: the turns above re-feed

@@ -186,3 +186,113 @@ A batched decode step (cancho-rl `docs/design.md` sections 34 and 35) multiplies
 
 * **Held to** the CPU interpreter and a float64 reference (`tests/kernels.py`, both targets) and, on a Metal GPU, to the interpreter (`scripts/metal-kernels.sh`, four cases up to 4 sequences of 1,152 positions): worst relative difference **1.7e-6** (1.9e-7 for the scores). Goldens for the emitted Metal and CUDA at a small shape.
 * **Measured** (cancho-rl `scripts/r3_attention.py`, Apple M4 Max, 28 layers of scores and product on random f32 caches, the caches read in full whatever the lengths, `ts` 64, `dw` 16): **8 sequences of 1,152 positions 1.73 ms a step (305 GB/s), 32 sequences 6.77 ms (312 GB/s)** for the 2.11 GB of keys and values. That is close to the bandwidth the products reach (section 7), so no further kernel work is indicated for the decode attention; f16 caches would halve it.
+
+## 9. What limits the NVFP4 batch product, measured on the kernel alone (2026-11-21)
+
+`docs/serving.md` 8.7 left the 16-row product at 9.5 x 10^12 multiply-adds a second against the 14.6 it took Ollama's
+whole prefill to be, with two open points: why the emitted kernel collapses past a certain unroll, and what the
+ceiling is. This section is the study. **Nothing here is built into the compiler yet; 9.5 is the design it leads to.**
+
+**How it was measured.** The emitted Metal of `matvec_fp4_batch` at `m=16 n=17408 k=5120` (the golden), edited by
+hand into variants and timed alone: 200 launches in a command buffer, GPU time from the command buffer's own clock,
+best of four, random inputs, Apple M4 Max (40 cores), nothing else on the GPU. Every variant that computes the product
+was held to the unedited kernel's output on the same inputs (checksum and three elements to six digits). **The harness
+was a throwaway and is not in the repository** (a Swift driver and text edits of the golden); the numbers are one
+session's. TFLOPS below is 2 x rows x n x k over the time.
+
+**The ceiling of the matrix unit [measured].** A loop of `simdgroup_multiply_accumulate` on 8x8 fragments that stay in
+registers, no memory, no decoding:
+
+| operands | float | half |
+|---|---|---|
+| 1 weight fragment x 2 activation fragments | 13.0 to 13.6 | 14.6 |
+| 2 x 2 | 13.9 | 15.0 |
+| 2 x 4, 4 x 2 | 13.3 to 13.5 | 14.4 to 14.5 |
+| 4 x 4 (16 accumulators) | 2.4 | 3.1 |
+
+A plain `fma` loop in registers reaches 8.8 (float) and 13.4 (half). So **this GPU does about 14 x 10^12 float
+multiply-adds a second through the matrix unit and 15 in half**, the thread count per threadgroup does not matter from
+64 to 256, and a simdgroup that holds 16 accumulators falls off a cliff. Ollama's prefill on this machine is 272 to
+281 tok/s x 2 x 24.3 x 10^9 weights a token (the sum of `n k` over the products of a pass, read from the profile) =
+13.2 to 13.7: **it runs at the ceiling. Nothing passes it on a cold prompt by more than a few percent; what is open is
+how close we get.**
+
+**Where the 16-row kernel's time goes [measured, by ablation of the emitted kernel].**
+
+| variant | us a launch | TFLOPS |
+|---|---|---|
+| as emitted (16 rows) | 301 to 304 | 9.4 |
+| activations a constant (no loads of `x`) | 260 | 11.0 |
+| no loads at all, the decoding kept | 242 | 11.8 |
+| the matrix unit with trivially computed operands (the loop above, operands rewritten each step) | 239 | 11.9 |
+| the matrix unit with operands left in registers | 210 to 219 | 13.0 to 13.6 |
+
+The matrix unit is 71% of the launch. The rest is delivering operands: the activations' loads 41 us, the weights'
+loads 18, decoding and writing the fragments 27.
+
+**The unroll cliff, explained [measured].** With 4 or 8 blocks in flight the 16-row kernel took 878 us (3.3 TFLOPS)
+where 2 take 304. The cause is the array of activations a lane loads ahead of use (`xs[Q][U][4][2]`: 64 floats a
+thread at `U` = 4), not the weights and not the Metal compiler's scheduling: **loading each pair of activations where
+it is used, with no array, takes 303 to 316 us at every unroll from 1 to 8**, and 32 rows then run at 9.6 to 9.8
+TFLOPS (583 us) where they took 11 s a prefill before. `docs/serving.md` 8.7 named the compiler's register allocation
+as the suspect; it is the registers, and the kernel's own array is what fills them.
+
+**What was tried, on the product alone.** Us a row is the launch over its rows, the figure a prefill pays.
+
+| variant | rows | us | TFLOPS | us a row |
+|---|---|---|---|---|
+| as emitted | 16 | 301 | 9.4 | 18.8 |
+| loads at use, two weight tiles a simdgroup (`frag 2`, 128 threads) | 16 | 285 | 10.0 | 17.8 |
+| the same | 24 | 395 | 10.8 | 16.5 |
+| loads at use, one tile | 32 | 583 | 9.8 | 18.2 |
+| the activations' fragments from device memory with `simdgroup_load` | 16 | 323 to 337 | 8.5 to 8.8 | |
+| several activation fragments held and shared by the weight tiles | 16 | 334 to 349 | 8.2 to 8.5 | |
+| the operands' roles swapped (a lane holds two columns of one token) | 16 | 303 | 9.4 | 18.9 |
+| the same | 64 | 2,081 | 5.5 | 32.5 |
+| **activations stored `[k, m]`, a lane's two tokens one `float2` load** | 16 | 265 | 10.8 | 16.6 |
+| **the same** | 24 | 376 | 11.4 | 15.7 |
+| **the same** | 32 | 517 | 11.0 | 16.2 |
+| **the same** | 48 | 730 | 11.7 | 15.2 |
+| **the same** | 64 | 963 | 11.9 | 15.0 |
+| the same, activations f16 in memory, float fragments | 32 | 455 | 12.5 | 14.2 |
+| the same | 48 | 667 | 12.8 | 13.9 |
+| all half: f16 activations, half fragments and accumulators, added to float every 32 products | 32 | 484 | 11.8 | 15.1 |
+| the same | 64 | 944 | 12.1 | 14.8 |
+| Metal 4 tensor ops (`mpp::tensor_ops::matmul2d`, 16 x 32 x 16), half weights, float accumulator | 16 | 430 | 6.6 | 26.9 |
+| the same | 64 | 1,252 to 1,610 | 7.1 to 9.1 | 19.6 to 25.2 |
+
+* **The transposed store is the one that pays without changing a number.** A lane of an activation fragment holds two
+  neighbouring tokens at one reduction index; row-major `[m, k]` puts them `k` apart, two loads, and `[k, m]` puts them
+  side by side, one. The order of the sum is the emitted kernel's, so the result is the same bits. It also has no
+  cliff up to 64 rows. **20% less time a row at 64 rows, 12% at 16.**
+* **f16 activations in memory buy another 6 to 8% and are a decision**, not a step: each activation is rounded to 11
+  bits, about 1e-4 of a product's value against the 1e-6 two orders of the sum differ by today. The weights and the
+  accumulators stay float. All-half fragments are no faster than that and worse numerically.
+* **The tensor ops are not a way past the ceiling here.** MLX uses them (`steel/gemm/nax.h`, read at dc5ea6e) only on
+  GPU architecture generation 17 and later; this M4 Max is not, the API reports a lane layout of four 8x8 fragments
+  (so it is the same matrix unit underneath), the same loop in registers reaches the same 13.6 to 14.9, and a real
+  kernel through it is slower than ours because the accumulators are copied in and out of the operation's own tensors
+  every call.
+* **Not measured:** MLX's own kernel for this product (`fp_qmm_t`: tiles of weights and activations staged in
+  threadgroup memory, 2 x 2 fragments a simdgroup, 128 threads, float accumulators, per its source), which is what
+  Ollama runs here and what holds 13.2 to 13.7 for a whole prefill of up to 2,048 tokens a pass. This compiler's
+  staged path (`gemm_mma`, section 7) is far from that, and why is **[open]**.
+
+### 9.5 What this leads to (design, not built)
+
+1. **`frag_rows_wide` loads activations where they are used.** No array, any unroll, 32 rows no longer collapse. Same
+   bits. Worth nothing at 16 rows on its own; it is what the rest stands on.
+2. **A product whose activations are stored `[k, m]`.** The language has `matmul` and `matmul_nt` only, so this is a
+   new spelling (`matmul_tt`: the left operand stored the other way round, as `mma_tn` and `mma_tt` already say for
+   accumulations) with its rule in `docs/chx.md`, the interpreter, both targets' generic lowering, and the fragment
+   lowering that makes the one `float2` load. What feeds a product (the norms, the output gate, the SwiGLU product
+   itself) writes its rows transposed, or a small kernel transposes them (four launches a layer, 4.4 MB at most).
+3. **A chunk of 32 or 64 rows** with those kernels: 15.0 to 16.2 us a row against 18.8, and half or a quarter of the
+   launches a token of everything else. The delta layers' chunk kernels are generated straight-line code and grow
+   with the rows. The cache's cut would become a multiple of the chunk, which costs a warm turn up to 63 tokens
+   re-fed unless a prompt's remainder gets its own smaller sets: this is the part that needs designing, not typing.
+
+**What it would give [estimate from the table and `docs/serving.md` 8.7's 81%].** Weight products 20% cheaper a row
+and everything else unchanged: 153 to about 182 tok/s on a cold prompt; with f16 activations, about 192. **Ollama's
+281 is not reached by any variant measured here.** The remaining distance is 71% against about 93% of the ceiling in
+the product, and 1.3 ms a token of everything else, which at Ollama's rate would be a third of the budget.
