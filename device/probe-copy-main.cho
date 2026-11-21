@@ -1,0 +1,292 @@
+edition 5;
+
+// `cancho-gpu-probe-copy` -- step 1 of the prefix cache design (`docs/serving.md` section 7.8): what the cache
+// needs to know before any server change.
+//
+//     cancho-gpu-probe-copy <ollama store> <kernel dir>
+//
+// 1. The token ids of the chat template's turn markers, and whether one turn's prompt is a prefix of the next.
+// 2. How long it takes to copy the 48 delta layers' states (162.8 MB) into a second set of buffers and back:
+//    through the host (download, upload) and with a copy kernel (`tests/chx/copy_rows.chx`), each checked by a
+//    round trip through a pattern.
+//
+// Linked with `shim/canchogpu-metal.mm` (`scripts/build-probe-copy.sh`).
+
+import std.io;
+import mem;
+import text;
+import err;
+import cli;
+import bpe;
+import metal;
+import qwen35;
+import qwen35spec;
+
+fn words() -> [] int {
+    return 100000000;
+}
+
+fn bytes_cap() -> [] int {
+    return 536870912;
+}
+
+// Size in bytes of buffer `j` (0, 1: a convolution window; 2: the delta state) of a delta layer.
+fn size_of(j: int) -> [] int {
+    if j == 2 {
+        return 3145728;
+    }
+    return 122880;
+}
+
+fn say[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, line: int) -> [io_write] int {
+    io.write_all(io, text.bytes(t, line));
+    return 0;
+}
+
+// A second set of buffers shaped like the engine's delta states: a record of three lists indexed by layer.
+fn snap_alloc[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
+    let a = mem.list(m);
+    let b = mem.list(m);
+    let c = mem.list(m);
+    var l = 0;
+    while l < qwen35.layers() {
+        if qwen35.is_attention(l) {
+            mem.push(m, a, 0 - 1);
+            mem.push(m, b, 0 - 1);
+            mem.push(m, c, 0 - 1);
+        } else {
+            mem.push(m, a, metal.cgpu_alloc(ffi, size_of(0)));
+            mem.push(m, b, metal.cgpu_alloc(ffi, size_of(1)));
+            mem.push(m, c, metal.cgpu_alloc(ffi, size_of(2)));
+        }
+        l = l + 1;
+    }
+    return mem.rec3(m, a, b, c);
+}
+
+// Through the host: each delta layer's three buffers downloaded and uploaded to their twin. `to_snap` 1 is
+// engine -> snapshot, 0 the other way.
+fn host_pass[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, snap: int, scr: int, to_snap: int) -> [ffi("libmetalgpu")] int {
+    var l = 0;
+    while l < qwen35.layers() {
+        if !qwen35.is_attention(l) {
+            var j = 0;
+            while j < 3 {
+                let e = mem.get(m, m[eng + 93 + j], l);
+                let s = mem.get(m, m[snap + j], l);
+                let n = size_of(j);
+                var from = e;
+                var to = s;
+                if to_snap == 0 {
+                    from = s;
+                    to = e;
+                }
+                if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + n]) < 0 {
+                    return 0 - 1;
+                }
+                if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + n]) < 0 {
+                    return 0 - 1;
+                }
+                j = j + 1;
+            }
+        }
+        l = l + 1;
+    }
+    return 0;
+}
+
+// With the copy kernel: every copy encoded, then one wait. Answers the GPU time in nanoseconds.
+fn kern_pass[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, snap: int, kc: int, ks: int, to_snap: int) -> [ffi("libmetalgpu")] int {
+    var l = 0;
+    while l < qwen35.layers() {
+        if !qwen35.is_attention(l) {
+            var j = 0;
+            while j < 3 {
+                let e = mem.get(m, m[eng + 93 + j], l);
+                let s = mem.get(m, m[snap + j], l);
+                var k = kc;
+                if j == 2 {
+                    k = ks;
+                }
+                var ok = 0;
+                if to_snap == 1 {
+                    ok = qwen35.go(m, ffi, k, e, s, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                } else {
+                    ok = qwen35.go(m, ffi, k, s, e, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                }
+                if ok < 0 {
+                    return 0 - 1;
+                }
+                j = j + 1;
+            }
+        }
+        l = l + 1;
+    }
+    return metal.cgpu_sync(ffi);
+}
+
+// Valid, distinct f32 values (exponent fixed, mantissa from the position), so a copy that drops or moves a
+// word shows.
+fn fill_pattern[&t](t: &!t [byte], at: int, n: int, salt: int) -> [] int {
+    var p = 0;
+    while p < n {
+        t[at + p] = byte_of((p / 4 * 7 + salt) % 251);
+        t[at + p + 1] = byte_of((p / 4 * 13 + salt) % 251);
+        t[at + p + 2] = byte_of((p / 4) % 128);
+        t[at + p + 3] = byte_of(63);
+        p = p + 4;
+    }
+    return 0;
+}
+
+fn same_bytes[&t](t: &!t [byte], a: int, b: int, n: int) -> [] int {
+    var bad = 0;
+    var p = 0;
+    while p < n {
+        if t[a + p] != t[b + p] {
+            bad = bad + 1;
+        }
+        p = p + 1;
+    }
+    return bad;
+}
+
+// Put a pattern into layer `l`'s three buffers, copy them to the snapshot (`use_kernel` or through the host),
+// zero the engine's, copy back, and count the bytes that differ from the pattern. Layers `l` only (the copy
+// functions do every layer; the other layers are zeros copied to zeros).
+fn round_trip[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, snap: int, scr: int, kc: int, ks: int, l: int, use_kernel: int) -> [ffi("libmetalgpu")] int {
+    let pat = qwen35.reserve(m, 3145728);
+    let back = qwen35.reserve(m, 3145728);
+    var j = 0;
+    while j < 3 {
+        fill_pattern(t, pat, size_of(j), 5 * j + l);
+        metal.cgpu_upload_at(ffi, mem.get(m, m[eng + 93 + j], l), 0, t[pat..pat + size_of(j)]);
+        j = j + 1;
+    }
+    if use_kernel == 1 {
+        kern_pass(m, ffi, eng, snap, kc, ks, 1);
+    } else {
+        host_pass(m, t, ffi, eng, snap, scr, 1);
+    }
+    j = 0;
+    while j < 3 {
+        metal.cgpu_zero(ffi, mem.get(m, m[eng + 93 + j], l));
+        j = j + 1;
+    }
+    if use_kernel == 1 {
+        kern_pass(m, ffi, eng, snap, kc, ks, 0);
+    } else {
+        host_pass(m, t, ffi, eng, snap, scr, 0);
+    }
+    var bad = 0;
+    j = 0;
+    while j < 3 {
+        fill_pattern(t, pat, size_of(j), 5 * j + l);
+        metal.cgpu_download_at(ffi, mem.get(m, m[eng + 93 + j], l), 0, t[back..back + size_of(j)]);
+        bad = bad + same_bytes(t, pat, back, size_of(j));
+        j = j + 1;
+    }
+    return bad;
+}
+
+fn ids_line[&m, &t](m: &!m [int], t: &!t [byte], tk: int, label: &static [byte], s: &static [byte]) -> [] int {
+    let x = text.lit(m, t, s);
+    let ids = bpe.encode(m, t, tk, text.start(x), text.start(x) + text.size(x));
+    if ids < 0 {
+        return text.lit(m, t, "encode failed\n");
+    }
+    let numbers = mem.list(m);
+    var q = 0;
+    while q < mem.size(m, ids) {
+        mem.push(m, numbers, text.num(m, t, mem.get(m, ids, q)));
+        q = q + 1;
+    }
+    return text.f3(m, t, "$ ($ tokens): $\n", text.lit(m, t, label), text.num(m, t, mem.size(m, ids)), text.joined(m, t, numbers, " "));
+}
+
+fn run[&m, &t, &i, &f, &a, &g, &c](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args, ffi: &g Ffi("libmetalgpu"), clock: &c Clock) -> [io_write, err_write, fs_read(""), file_read, args, ffi("libmetalgpu"), clock] int {
+    if arg_count(args) < 3 {
+        io.error_all(io, "usage: cancho-gpu-probe-copy <ollama store> <kernel dir>\n");
+        return 2;
+    }
+    let store = text.from_bytes(m, t, arg(args, 1));
+    let kdir = text.from_bytes(m, t, arg(args, 2));
+    if metal.cgpu_open(ffi) < 0 {
+        qwen35.device_fail(m, t, ffi, "opening the device");
+        return cli.report(m, t, io);
+    }
+    let eng = qwen35.load(m, t, ffi, fs, store, kdir, true);
+    if eng < 0 {
+        return cli.report(m, t, io);
+    }
+    let tk = qwen35spec.tokenizer(m, eng);
+    say(m, t, io, ids_line(m, t, tk, "marker", "<|im_start|>assistant\n"));
+    say(m, t, io, ids_line(m, t, tk, "turn 1, thinking off", "<|im_start|>user\n2+2?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"));
+    say(m, t, io, ids_line(m, t, tk, "turn 2, thinking off", "<|im_start|>user\n2+2?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n4<|im_end|>\n<|im_start|>user\nand 3+3?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"));
+    say(m, t, io, ids_line(m, t, tk, "turn 1, thinking on", "<|im_start|>user\n2+2?<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+    say(m, t, io, ids_line(m, t, tk, "turn 2, thinking on", "<|im_start|>user\n2+2?<|im_end|>\n<|im_start|>assistant\n<think>\neasy\n</think>\n\n4<|im_end|>\n<|im_start|>user\nand 3+3?<|im_end|>\n<|im_start|>assistant\n<think>\n"));
+    let snap = snap_alloc(m, ffi);
+    let scr = qwen35.reserve(m, 3145728);
+    let kc = qwen35.compile_kernel(m, t, ffi, fs, kdir, "copy_rows.chx", qwen35.c2(m, t, "n", 240, "d", 128));
+    let ks = qwen35.compile_kernel(m, t, ffi, fs, kdir, "copy_rows.chx", qwen35.c2(m, t, "n", 6144, "d", 128));
+    if kc < 0 || ks < 0 {
+        return cli.report(m, t, io);
+    }
+    let bad_k = round_trip(m, t, ffi, eng, snap, scr, kc, ks, 0, 1) + round_trip(m, t, ffi, eng, snap, scr, kc, ks, 62, 1);
+    let bad_h = round_trip(m, t, ffi, eng, snap, scr, kc, ks, 0, 0) + round_trip(m, t, ffi, eng, snap, scr, kc, ks, 62, 0);
+    say(m, t, io, text.f2(m, t, "round trip, differing bytes: kernel $, host $\n", text.num(m, t, bad_k), text.num(m, t, bad_h)));
+    var rep = 0;
+    while rep < 4 {
+        let t0 = clock_ms(clock);
+        host_pass(m, t, ffi, eng, snap, scr, 1);
+        let t1 = clock_ms(clock);
+        host_pass(m, t, ffi, eng, snap, scr, 0);
+        let t2 = clock_ms(clock);
+        let g1 = kern_pass(m, ffi, eng, snap, kc, ks, 1);
+        let t3 = clock_ms(clock);
+        let g2 = kern_pass(m, ffi, eng, snap, kc, ks, 0);
+        let t4 = clock_ms(clock);
+        say(m, t, io, text.fmt(m, t, "pass $: host save $ ms, restore $ ms; kernel save $ ms (gpu $ us), restore $ ms (gpu $ us)\n", mem.of7(m, text.num(m, t, rep), text.num(m, t, t1 - t0), text.num(m, t, t2 - t1), text.num(m, t, t3 - t2), text.num(m, t, g1 / 1000), text.num(m, t, t4 - t3), text.num(m, t, g2 / 1000))));
+        rep = rep + 1;
+    }
+    metal.cgpu_close(ffi);
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(net);
+    let gpu = narrow(ffi, "libmetalgpu");
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                borrow mut io as &!i in {
+                    borrow fs as &f in {
+                        borrow args as &a in {
+                            borrow gpu as &g in {
+                                borrow clock as &c in {
+                                    status = run(m, t, i, f, a, g, c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    release(gpu);
+    release(clock);
+    return status;
+}

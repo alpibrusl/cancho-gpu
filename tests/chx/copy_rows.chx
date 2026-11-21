@@ -1,0 +1,15 @@
+// A copy of n rows of d f32 from x to y, one row to a threadgroup. The prefix cache's probe (docs/serving.md
+// section 7.5): the delta states and convolution windows of 48 layers are copied between two sets of buffers
+// without crossing to the host. n = 6144, d = 128 is one delta state (4 x 48 x 128 x 128 bytes); n = 240 is one
+// convolution window (4 x 3 x 10240 bytes).
+algo copy_rows(n, d)
+  in  x: f32[n, d]
+  out y: f32[n, d]
+{
+  grid i over n
+  let a = load x[i, 0 ; 1, d]
+  store a -> y[i, 0]
+}
+
+schedule copy_rows for apple-m-series { threads 256 }
+schedule copy_rows for nvidia-ada     { threads 256 }
