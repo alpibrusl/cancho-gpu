@@ -191,7 +191,7 @@ A batched decode step (cancho-rl `docs/design.md` sections 34 and 35) multiplies
 
 `docs/serving.md` 8.7 left the 16-row product at 9.5 x 10^12 multiply-adds a second against the 14.6 it took Ollama's
 whole prefill to be, with two open points: why the emitted kernel collapses past a certain unroll, and what the
-ceiling is. This section is the study. **Nothing here is built into the compiler yet; 9.5 is the design it leads to.**
+ceiling is. This section is the study. **Only step 1 of 9.5 is built; the rest of 9.5 is the design this leads to.**
 
 **How it was measured.** The emitted Metal of `matvec_fp4_batch` at `m=16 n=17408 k=5120` (the golden), edited by
 hand into variants and timed alone: 200 launches in a command buffer, GPU time from the command buffer's own clock,
@@ -282,6 +282,9 @@ as the suspect; it is the registers, and the kernel's own array is what fills th
 
 1. **`frag_rows_wide` loads activations where they are used.** No array, any unroll, 32 rows no longer collapse. Same
    bits. Worth nothing at 16 rows on its own; it is what the rest stands on.
+   **Built** (`src/matmul.cho`): the four goldens of more than eight rows moved and no other; a 651-token prefill
+   gives the tokens of the build before in 4.30 s against 4.31 (alternating runs); the emitted 32-row kernel takes
+   597 us alone (9.6 TFLOPS).
 2. **A product whose activations are stored `[k, m]`.** The language has `matmul` and `matmul_nt` only, so this is a
    new spelling (`matmul_tt`: the left operand stored the other way round, as `mma_tn` and `mma_tt` already say for
    accumulations) with its rule in `docs/chx.md`, the interpreter, both targets' generic lowering, and the fragment

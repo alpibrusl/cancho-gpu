@@ -49,11 +49,6 @@ kernel void matvec_fp4_swiglu_batch_16_17408_5120_64(
             simdgroup_float8x8 C[F][Q];
             for (uint f = 0; f < F; ++f) for (uint q = 0; q < Q; ++q) C[f][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
             for (uint blk0 = 0; blk0 < KD / 32u; blk0 += U) {
-                float xs[Q][U][4][2];
-                for (uint q = 0; q < Q; ++q) for (uint u = 0; u < U; ++u) for (uint s = 0; s < 4u; ++s) for (uint c = 0; c < 2u; ++c) {
-                    float xv = 0.0f; if (q * 8u + fn + c < MM) { const uint i = q * 8u + fn + c; const uint p = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s; xv = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((i * KD + p))])); }
-                    xs[q][u][s][c] = xv;
-                }
                 for (uint f = 0; f < F; ++f) {
                     const uint j = sgid * (8u * F) + f * 8u + fm;
                     uint wb[U]; float sgv[U];
@@ -67,7 +62,13 @@ kernel void matvec_fp4_swiglu_batch_16_17408_5120_64(
                         simdgroup_float8x8 A, B;
                         const float2 w = fp4_pair((wb[u] >> (8u * s)) & 0xFFu);
                         A.thread_elements()[0] = w.x * sgv[u]; A.thread_elements()[1] = w.y * sgv[u];
-                        for (uint q = 0; q < Q; ++q) { B.thread_elements()[0] = xs[q][u][s][0]; B.thread_elements()[1] = xs[q][u][s][1]; simdgroup_multiply_accumulate(C[f][q], A, B, C[f][q]); }
+                        const uint p = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;
+                        for (uint q = 0; q < Q; ++q) {
+                            const uint i0 = q * 8u + fn;
+                            float x0 = 0.0f, x1 = 0.0f; if (i0 < MM) x0 = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((i0 * KD + p))])); if (i0 + 1u < MM) x1 = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + (((i0 + 1u) * KD + p))]));
+                            B.thread_elements()[0] = x0; B.thread_elements()[1] = x1;
+                            simdgroup_multiply_accumulate(C[f][q], A, B, C[f][q]);
+                        }
                     }
                 }
             }
@@ -103,11 +104,6 @@ kernel void matvec_fp4_swiglu_batch_16_17408_5120_64(
             simdgroup_float8x8 C[F][Q];
             for (uint f = 0; f < F; ++f) for (uint q = 0; q < Q; ++q) C[f][q] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
             for (uint blk0 = 0; blk0 < KD / 32u; blk0 += U) {
-                float xs[Q][U][4][2];
-                for (uint q = 0; q < Q; ++q) for (uint u = 0; u < U; ++u) for (uint s = 0; s < 4u; ++s) for (uint c = 0; c < 2u; ++c) {
-                    float xv = 0.0f; if (q * 8u + fn + c < MM) { const uint i = q * 8u + fn + c; const uint p = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s; xv = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((i * KD + p))])); }
-                    xs[q][u][s][c] = xv;
-                }
                 for (uint f = 0; f < F; ++f) {
                     const uint j = sgid * (8u * F) + f * 8u + fm;
                     uint wb[U]; float sgv[U];
@@ -121,7 +117,13 @@ kernel void matvec_fp4_swiglu_batch_16_17408_5120_64(
                         simdgroup_float8x8 A, B;
                         const float2 w = fp4_pair((wb[u] >> (8u * s)) & 0xFFu);
                         A.thread_elements()[0] = w.x * sgv[u]; A.thread_elements()[1] = w.y * sgv[u];
-                        for (uint q = 0; q < Q; ++q) { B.thread_elements()[0] = xs[q][u][s][0]; B.thread_elements()[1] = xs[q][u][s][1]; simdgroup_multiply_accumulate(C[f][q], A, B, C[f][q]); }
+                        const uint p = (blk0 + u) * 32u + (fm / 2u) * 8u + (fm % 2u) + 2u * s;
+                        for (uint q = 0; q < Q; ++q) {
+                            const uint i0 = q * 8u + fn;
+                            float x0 = 0.0f, x1 = 0.0f; if (i0 < MM) x0 = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + ((i0 * KD + p))])); if (i0 + 1u < MM) x1 = float(float(p0_x[(uint)(0) * 5120u + (uint)(0) * 1u + (((i0 + 1u) * KD + p))]));
+                            B.thread_elements()[0] = x0; B.thread_elements()[1] = x1;
+                            simdgroup_multiply_accumulate(C[f][q], A, B, C[f][q]);
+                        }
                     }
                 }
             }
