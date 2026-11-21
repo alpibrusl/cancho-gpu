@@ -289,14 +289,14 @@ flag. Without the flag nothing else changes: `tests/serve_check.py` (22 checks) 
 requests) passes.
 
 **Held to** `tests/prefix_check.py` (a Mac and the model; not in the gate): two servers, one without the cache and one
-with it, are sent the same requests with the same history; **all 78 checks passed** on the final run:
+with it, are sent the same requests with the same history; **all 68 checks passed** on the final run (also the table below, to within 0.02 s):
 
 * **The same tokens.** Four conversations (3 to 4 turns of 190 to 800 tokens: plain; with a system message; thinking
   on with `reasoning_content` sent back; sampled at temperature 1 with seed 7), an interleaved second conversation,
   a repeated request, an edit of the first message, a request after a refusal and one after a client left mid-stream:
   **every answer is the same, token for token**, including the sampled ones (not a comparison of logits, but with a
   fixed seed at temperature 1 a difference in the last bits would show as a different token sooner or later; it did
-  not in these ~40 tokens times 25 answers).
+  not in the 22 answers of up to 40 tokens compared).
 * **The expected reuse.** Turn 1 reuses 0; a later turn reuses the previous prompt up to the cut (for example 184 of 399,
   392 of 605, 600 of 811 tokens: the cut leaves out the last assistant opener and rounds down to a multiple of 8);
   a second conversation in between takes the slot, so the first one's next turn reuses 0 and the one after reuses;
