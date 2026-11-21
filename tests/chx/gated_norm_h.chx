@@ -1,0 +1,30 @@
+// gated_norm.chx with its output written as f16 (docs/serving.md section 9, step 3): it feeds a weight product that reads its activations in 16 bits.
+// The norm inside a gated-delta layer, per value head: y = rmsnorm(x) * w * silu(z),
+// x the delta step's output and z the in_proj_z projection, both as h heads of n.
+algo gated_norm_h(h, n, eps)
+  in  x: f32[h, n]
+  in  z: f32[h, n]
+  in  w: f32[1, n]
+  out y: f16[h, n]
+  tile br
+{
+  grid i over h / br
+  let x  = load x[i * br, 0 ; br, n]
+  let sq = &x * &x
+  let ss = rowsum sq
+  let ms = ss * (1 / n)
+  let t  = ms + eps
+  let rs = rsqrt t
+  let xn = x * rs
+  let w  = load w
+  let xw = xn * w
+  let zt = load z[i * br, 0 ; br, n]
+  let sg = sigmoid &zt
+  let sz = zt * sg
+  let yf = xw * sz
+  let yh = stage f16 yf
+  store yh -> y[i * br, 0]
+}
+
+schedule gated_norm_h for apple-m-series { threads 128 br 1 }
+schedule gated_norm_h for nvidia-ada     { threads 128 br 1 }

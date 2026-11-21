@@ -1,0 +1,20 @@
+// attn_gate_q.chx with its output written as f16 (docs/serving.md section 9, step 3): it feeds a weight product that reads its activations in 16 bits.
+// y = o * sigmoid(gate) where the gate is the second half of each head's row of
+// q_proj's output (a [q, gate] pair of n a head): the output gate of an attention layer.
+algo attn_gate_q_h(r, n)
+  in  o:  f32[r, n]
+  in  qg: f32[r, 2 * n]
+  out y:  f16[r, n]
+  tile br
+{
+  grid i over r / br
+  let ot = load o[i * br, 0 ; br, n]
+  let gt = load qg[i * br, n ; br, n]
+  let sg = sigmoid gt
+  let yf = ot * sg
+  let yh = stage f16 yf
+  store yh -> y[i * br, 0]
+}
+
+schedule attn_gate_q_h for apple-m-series { threads 256 br 1 }
+schedule attn_gate_q_h for nvidia-ada     { threads 256 br 1 }

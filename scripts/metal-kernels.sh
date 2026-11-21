@@ -16,6 +16,8 @@ while read -r kernel rest; do
   # a case written `f16:name` has an f16 output: a one-bit difference of the f32 result can flip an f16 rounding (half a step is 4.9e-4 of the value), so its bound is 5e-4
   tol=1e-5
   case "$kernel" in f16:*) kernel=${kernel#f16:}; tol=5e-4 ;; esac
+  # `f16x:name`: an f16 output of values of every size (not a product's sums): a flipped rounding is a whole step, 9.8e-4 of a value just above a power of two
+  case "$kernel" in f16x:*) kernel=${kernel#f16x:}; tol=1e-3 ;; esac
   # shellcheck disable=SC2086
   "$BIN" run "$ROOT/tests/chx/$kernel.chx" $rest > "${TMPDIR:-/tmp}/metal-kernels.out" 2>&1 || { echo "$kernel $rest: failed: $(tail -1 "${TMPDIR:-/tmp}/metal-kernels.out")"; fail=1; continue; }
   worst=$(grep '^compare:' "${TMPDIR:-/tmp}/metal-kernels.out" | awk '{d=$(NF-3); p=$NF; r=(p>0)?d/p:d; if (r>m) m=r} END {printf "%.2e", m}')
@@ -52,6 +54,15 @@ matvec_fp4_swiglu_batch m=4 n=128 k=512
 matvec_rows_f16_m m=16 n=48 k=5120
 matvec_rows_f16_m m=8 n=48 k=5120
 matvec_rows_f16_m m=3 n=48 k=5120
+matvec_fp4_batch_h m=16 n=128 k=1024
+matvec_fp4_batch_h m=8 n=64 k=1280
+matvec_fp4_res_batch_h m=16 n=128 k=2176
+f16x:matvec_fp4_swiglu_batch_h m=16 n=64 k=1280
+matvec_rows_f16_mh m=16 n=48 k=5120
+matvec_rows_f16_mh m=8 n=48 k=5120
+f16x:rmsnorm_rows_h r=16 n=5120 eps=0.000001
+f16x:attn_gate_q_h r=384 n=256
+f16x:gated_norm_h h=768 n=128 eps=0.000001
 matvec_rows_f16_frag m=1 n=256 k=64
 matvec_rows_f16_frag m=5 n=256 k=512
 matvec_rows_f16_frag m=13 n=256 k=1024

@@ -904,7 +904,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 192);
+    let eng = mem.grab(m, 194);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -1058,6 +1058,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
 
 // Compile the batch kernels (seconds: only when a prompt is long enough to use them).
 // A kernel is a record in `m`: a caller that gives memory back after a task (the server) calls this first.
+// The chunk's and the half chunk's weight products read their activations as f16 (docs/serving.md section 9, step 3): the
+// kernels that write what a product reads (the norms, the two gates, the SwiGLU product) round to f16, and the residual
+// stream, the caches and the states stay f32. The few-row kernels of a speculative check and the single-token path are f32.
 pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     if m[eng + 98] == 1 {
         return 0;
@@ -1065,18 +1068,18 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     let kdir = m[eng + 97];
     let h = hidden();
     let nb = float_of(mb());
-    let k_qkvb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nb));
-    let k_zb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nb));
-    let k_qgb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nb));
-    let k_kvb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nb));
-    let k_outb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nb));
-    let k_downb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nb));
-    let k_gateupb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_batch.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nb));
-    let k_rmsb = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", mb(), "n", h), "eps", f32.round(0.000001)));
+    let k_qkvb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nb));
+    let k_zb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nb));
+    let k_qgb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nb));
+    let k_kvb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nb));
+    let k_outb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch_h.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nb));
+    let k_downb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch_h.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nb));
+    let k_gateupb = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_batch_h.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nb));
+    let k_rmsb = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows_h.chx", cv(m, t, c2(m, t, "r", mb(), "n", h), "eps", f32.round(0.000001)));
     let k_qnormb = compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", cv(m, t, c2(m, t, "r", 24 * mb(), "n", 256), "eps", f32.round(0.000001)));
     let k_knormb = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", 4 * mb(), "n", 256), "eps", f32.round(0.000001)));
-    let k_attn_gateb = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24 * mb(), "n", 256));
-    let k_gnormb = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", cv(m, t, c2(m, t, "h", 48 * mb(), "n", 128), "eps", f32.round(0.000001)));
+    let k_attn_gateb = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q_h.chx", c2(m, t, "r", 24 * mb(), "n", 256));
+    let k_gnormb = compile_kernel(m, t, ffi, fs, kdir, "gated_norm_h.chx", cv(m, t, c2(m, t, "h", 48 * mb(), "n", 128), "eps", f32.round(0.000001)));
     m[eng + 22] = k_qkvb;
     m[eng + 23] = k_zb;
     m[eng + 24] = k_qgb;
@@ -1090,7 +1093,7 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     m[eng + 32] = k_attn_gateb;
     m[eng + 33] = k_gnormb;
     // The gated-delta layers' small kernels for the chunk's rows at once (docs/serving.md section 8).
-    m[eng + 160] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_m.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nb));
+    m[eng + 160] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_mh.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nb));
     m[eng + 161] = compile_kernel(m, t, ffi, fs, kdir, "gates_rows.chx", c2(m, t, "m", mb(), "h", 48));
     m[eng + 162] = compile_kernel(m, t, ffi, fs, kdir, "qk_norm_rows.chx", cv(m, t, c2(m, t, "nk", 16, "rows", 80), "m", nb));
     m[eng + 163] = compile_kernel(m, t, ffi, fs, kdir, "conv_step16.chx", c1(m, t, "c", 10240));
@@ -1098,23 +1101,26 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     // The same for half a chunk (`set` 2 of `feed_rows`): what is left of a prompt after its whole chunks.
     let hb = mb() / 2;
     let nh = float_of(hb);
-    m[eng + 170] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nh));
-    m[eng + 171] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nh));
-    m[eng + 172] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nh));
-    m[eng + 173] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nh));
-    m[eng + 174] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nh));
-    m[eng + 175] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nh));
-    m[eng + 176] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_batch.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nh));
-    m[eng + 177] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", hb, "n", h), "eps", f32.round(0.000001)));
+    m[eng + 170] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 10240, "k", h), "m", nh));
+    m[eng + 171] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 6144, "k", h), "m", nh));
+    m[eng + 172] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 12288, "k", h), "m", nh));
+    m[eng + 173] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_batch_h.chx", cv(m, t, c2(m, t, "n", 1024, "k", h), "m", nh));
+    m[eng + 174] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch_h.chx", cv(m, t, c2(m, t, "n", h, "k", 6144), "m", nh));
+    m[eng + 175] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_batch_h.chx", cv(m, t, c2(m, t, "n", h, "k", inter()), "m", nh));
+    m[eng + 176] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_batch_h.chx", cv(m, t, c2(m, t, "n", inter(), "k", h), "m", nh));
+    m[eng + 177] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows_h.chx", cv(m, t, c2(m, t, "r", hb, "n", h), "eps", f32.round(0.000001)));
     m[eng + 178] = compile_kernel(m, t, ffi, fs, kdir, "qnorm.chx", cv(m, t, c2(m, t, "r", 24 * hb, "n", 256), "eps", f32.round(0.000001)));
     m[eng + 179] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", 4 * hb, "n", 256), "eps", f32.round(0.000001)));
-    m[eng + 180] = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q.chx", c2(m, t, "r", 24 * hb, "n", 256));
-    m[eng + 181] = compile_kernel(m, t, ffi, fs, kdir, "gated_norm.chx", cv(m, t, c2(m, t, "h", 48 * hb, "n", 128), "eps", f32.round(0.000001)));
-    m[eng + 187] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_m.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nh));
+    m[eng + 180] = compile_kernel(m, t, ffi, fs, kdir, "attn_gate_q_h.chx", c2(m, t, "r", 24 * hb, "n", 256));
+    m[eng + 181] = compile_kernel(m, t, ffi, fs, kdir, "gated_norm_h.chx", cv(m, t, c2(m, t, "h", 48 * hb, "n", 128), "eps", f32.round(0.000001)));
+    m[eng + 187] = compile_kernel(m, t, ffi, fs, kdir, "matvec_rows_f16_mh.chx", cv(m, t, c2(m, t, "n", 48, "k", h), "m", nh));
     m[eng + 188] = compile_kernel(m, t, ffi, fs, kdir, "gates_rows.chx", c2(m, t, "m", hb, "h", 48));
     m[eng + 189] = compile_kernel(m, t, ffi, fs, kdir, "qk_norm_rows.chx", cv(m, t, c2(m, t, "nk", 16, "rows", 80), "m", nh));
     m[eng + 190] = compile_kernel(m, t, ffi, fs, kdir, "conv_step8.chx", c1(m, t, "c", 10240));
     m[eng + 191] = compile_kernel(m, t, ffi, fs, kdir, "delta_step8.chx", c1(m, t, "nk", 16));
+    // The final norm of a chunk that asks for logits feeds the head, which reads f32.
+    m[eng + 192] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", mb(), "n", h), "eps", f32.round(0.000001)));
+    m[eng + 193] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", hb, "n", h), "eps", f32.round(0.000001)));
     if err.failed(m) {
         return 0 - 1;
     }
@@ -1517,7 +1523,14 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
         l = l + 1;
     }
     if final_lg >= 0 || final_lg == 0 - 2 {
-        go(m, ffi, k_rmsb, cur, final_norm, b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+        var k_rmsf = k_rmsb;
+        if set == 0 {
+            k_rmsf = m[eng + 192];
+        }
+        if set == 2 {
+            k_rmsf = m[eng + 193];
+        }
+        go(m, ffi, k_rmsf, cur, final_norm, b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
         fp4(m, ffi, k_headb, b_ns, head, b_logitsb);
     }
     if final_lg == 0 - 2 {
