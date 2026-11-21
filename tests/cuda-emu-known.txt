@@ -51,3 +51,6 @@ dit_stats_o_nh=32_nq=4160_t=8320_qs=16_cs=64|noref|the interpreter's memory cann
 dit_attn_fused_nh=32_nq=4160_t=8320_d=128|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, D15)
 dit_wan_lnmod_s=4352_n=3072|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, V1)
 dit_wan_gate_res_s=4352_n=3072|noref|the interpreter's memory cannot hold the tensors (a diffusion-sized case, V1)
+matvec_fp4_batch_h_m=16_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_res_batch_h_m=16_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_swiglu_batch_h_m=16_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
