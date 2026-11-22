@@ -63,6 +63,10 @@ matvec_rows_f16_mh m=8 n=48 k=5120
 f16x:rmsnorm_rows_h r=16 n=5120 eps=0.000001
 f16x:attn_gate_q_h r=384 n=256
 f16x:gated_norm_h h=768 n=128 eps=0.000001
+delta_step16 nk=16
+delta_step16 nk=2
+delta_step8 nk=16
+delta_step8 nk=2
 matvec_rows_f16_frag m=1 n=256 k=64
 matvec_rows_f16_frag m=5 n=256 k=512
 matvec_rows_f16_frag m=13 n=256 k=1024

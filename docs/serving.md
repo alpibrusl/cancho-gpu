@@ -575,9 +575,9 @@ shared system message, 0.16 s against 2.06 s); every other row is behind, by 1.4
 * C (`--reuse-decode`) is now the largest lever on a warm turn that is not a kernel study: the turns above re-feed
   the answer the server itself generated.
 
-## 9. Toward Ollama's prefill: where the time is now, and the steps (2026-11-21; steps 1 and 3 built)
+## 9. Toward Ollama's prefill: where the time is now, and the steps (2026-11-21; steps 1 to 3 built)
 
-> **Built: steps 1 and 3. Not built: 2, 4 and 5.** The user's decision, the same day: 16-bit activations may be used if that is what
+> **Built: steps 1 to 3. Not built: 4 and 5.** The user's decision, the same day: 16-bit activations may be used if that is what
 > reaches Ollama's rate. Marks as in section 7.
 
 ### 9.1 Where a prefill goes now [measured]
@@ -611,13 +611,29 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    `frag 1` in its Apple schedule it takes `frag_rows_f16_ks`: 12 us at 16 rows, 7 at 8, and 9 and 11 at 2 and 3
    where it was 8. **Prefill 3.72 s against 3.92, 185 tok/s, the same tokens on the three prompts of 8.7**;
    `spec-check.sh` and `serve_check.py` pass; the order of the sum changes.
-2. **The delta step with a state row a simdgroup.** The emitted `delta_step16` is the generic lowering: a row's 128
-   columns are spread over 128 threads, so each of its 96 row sums goes through threadgroup memory and three
-   barriers; 189 us a launch in the model. Written by hand with one simdgroup a row (a `float4` a lane, `simd_sum`,
-   no threadgroup memory) the same step takes **62 us alone [measured, throwaway, its output not checked against the
-   emitted kernel's]**, which is about the 6 MB it reads and writes at memory speed. [estimate] 0.26 s of the
-   prefill. What it needs is a lowering in which a tile whose rows each fit a simdgroup reduces and broadcasts by
-   shuffles; that is a change to the generic lowering and has no design yet.
+2. **The delta step without threadgroup memory. Built.** The emitted `delta_step16` was the generic lowering at
+   256 threads: a row's 128 columns spread over 128 threads, so each of its 96 row sums and 48 broadcasts went
+   through threadgroup memory, 384 barriers, 162 us a launch alone (189 in the model). Three changes:
+   * **The lowering** (`src/gen.cho`, `src/lower.cho`): in a threadgroup that is one simdgroup (`threads 32`, the
+     Metal dialect) a register tile lies in its 32 lanes only, so `rowsum` and `rowmax` of one are a lane's own
+     elements and `simd_sum` or `simd_max`, and a register tile of at most 32 elements is read at another index by
+     `simd_shuffle`. No threadgroup memory, no barrier. Nothing else in the repository has a `threads 32` schedule,
+     and no other golden moved.
+   * **The schedule**: `delta_step16` and `delta_step8` are `threads 32 br 1` on Apple. That alone: 143 us.
+   * **The program**: the kernel is bound by what it reads (a hand-written one took 43 us loading a token's `k` and
+     `q` once and 63 loading them for each of the three blocks of the state). The two files are regenerated in
+     token order, a token's `k` and `q` rows put in registers once (`zeros + load`) and borrowed by the three
+     blocks. **77 us a launch alone, no barrier** [measured]. The hand-written 43 is not reached, and why is
+     **[open]**.
+
+   **Prefill 3.29 s against 3.49 (alternating builds, three runs each within 0.4%), 209 tok/s, the same tokens on
+   the three prompts of 8.7.** The order of the row sums changes.
+
+   **Found on the way: the interpreter trapped.** With one row a tile the reference run of `delta_step16` at
+   `nk=16` has 2,048 instances of a 700-statement body, and the interpreter gave back an instance's floats but not
+   its records: the pool ran out, which is a trap in `mem.grab`, not an error (the old program does the same under
+   this schedule). `interp.execute` now gives back both. `tests/kernels.py` and every `--run` golden are
+   unchanged by it.
 3. **16-bit activations in the batch products. Built**, narrower than first written here: only what a weight
    product reads is f16. The chunk's and the half chunk's products read `x` as f16
    (`matvec_fp4_batch_h`, `_res_batch_h`, `_swiglu_batch_h`, `matvec_rows_f16_mh`), and the kernels that write what
@@ -635,6 +651,6 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    attention layers over a whole prompt, the cache's cut. No design yet.
 5. **Attention for a chunk's rows in one launch**, 0.16 s today.
 
-[estimate] Steps 2 and 5 on top of steps 1 and 3 (3.49 s): about 3.1 s, 220 tok/s. With step 4, about 2.8 s, 245. **The sum of
+[estimate] Step 5 on top of steps 1 to 3 (3.29 s): about 3.15 s, 219 tok/s. With step 4, about 2.85 s, 242. **The sum of
 what is listed does not reach Ollama's 2.5 s**; the rest is in the 0.17 ms a token not accounted for and in the
 products' rate between our kernel and theirs, and neither has a step here.

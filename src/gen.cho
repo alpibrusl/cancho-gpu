@@ -60,6 +60,11 @@ pub fn a_lazy() -> [] int {
     return 2;
 }
 
+// a register tile of at most 32 elements in a one-simdgroup threadgroup, read at any index by a shuffle
+pub fn a_simd() -> [] int {
+    return 3;
+}
+
 // --- The record
 
 pub fn prog[&m](m: &!m [int], g: int) -> [] int {
@@ -640,6 +645,21 @@ pub fn access[&m](m: &!m [int], kind: int, s: int, ty: int) -> [] int {
     return mem.rec3(m, kind, s, ty);
 }
 
+// A threadgroup that is one simdgroup of the matrix-unit dialect (docs/serving.md section 9, step 2): a register tile is spread over
+// its 32 lanes only, so a reduction of it and a read of another lane's element need no threadgroup memory.
+pub fn one_simdgroup[&m](m: &!m [int], g: int) -> [] bool {
+    return threads(m, g) == 32 && dialect.fragments(dia(m, g));
+}
+
+// The name of the registers a tile operand lives in, or -1 if it is not in registers.
+pub fn reg_name[&m, &t](m: &!m [int], t: &!t [byte], g: int, a: int) -> [] int {
+    let l = loc_or_none(m, g, ir.var_of(a));
+    if l != 0 && m[l] == l_reg() {
+        return m[l + 1];
+    }
+    return 0 - 1;
+}
+
 // Read an operand at a flat element index.
 pub fn read[&m, &t](m: &!m [int], t: &!t [byte], a: int, at: int) -> [] int {
     let k = m[a];
@@ -648,6 +668,9 @@ pub fn read[&m, &t](m: &!m [int], t: &!t [byte], a: int, at: int) -> [] int {
     }
     if k == a_shared() {
         return text.f2(m, t, "float($[$])", m[a + 1], at);
+    }
+    if k == a_simd() {
+        return text.f2(m, t, "simd_shuffle(float($[0]), (ushort)($))", m[a + 1], at);
     }
     return text.f1(m, t, "float($)", at_index(m, t, m[a + 1], at));
 }
@@ -680,6 +703,9 @@ pub fn operands[&m, &t](m: &!m [int], t: &!t [byte], g: int, args: int, local: i
         } else if k == l_reg() {
             if mem.get(m, local, i) == 1 && ir.elems(m, ty) == out_elems {
                 mem.push(m, out, access(m, a_local(), m[l + 1], ty));
+            } else if one_simdgroup(m, g) && ir.elems(m, ty) <= 32 && out_elems % 32 == 0 {
+                // every element of the tile is in this simdgroup, element i with lane i: a shuffle reads it
+                mem.push(m, out, access(m, a_simd(), m[l + 1], ty));
             } else {
                 let base = text.n1(m, t, "(scratch + $)", off);
                 mem.push(m, stage, mem.rec3(m, m[l + 1], ir.elems(m, ty), off));
