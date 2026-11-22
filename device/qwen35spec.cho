@@ -46,6 +46,10 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         while more {
             var rows = qwen35.mb();
             var k_rms = m[eng + 192];
+            var tiles = (limit - pos) / qwen35.mb();
+            if tiles > qwen35.pt() {
+                tiles = qwen35.pt();
+            }
             if pos + rows > limit {
                 rows = rows / 2;
                 k_rms = m[eng + 193];
@@ -54,7 +58,9 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             if pos + rows > limit {
                 rows = 0;
             } else if more {
-                if qwen35.feed_chunk(m, t, ffi, fs, eng, ids, pos) < 0 {
+                // As many whole chunks as are left, through each layer together (docs/serving.md 9.3).
+                rows = qwen35.mb() * tiles;
+                if qwen35.feed_pass(m, t, ffi, fs, eng, ids, pos, tiles) < 0 {
                     return 0 - 1;
                 }
             } else if qwen35.feed_half(m, t, ffi, fs, eng, ids, pos) < 0 {
@@ -63,7 +69,14 @@ pub fn feed[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             if warm && rows > 0 {
                 // The chunk's last row pairs with ids[pos + rows], which exists: a chunk stops short of `to`.
                 let h = qwen35.hidden();
-                qwen35.go(m, ffi, k_rms, m[eng + 62], m[eng + 90], m[eng + 64], 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                var wt = 0;
+                while more && wt < tiles {
+                    qwen35.go(m, ffi, k_rms, qwen35.at(m[eng + 62], 4 * h * wt * qwen35.mb()), m[eng + 90], qwen35.at(m[eng + 64], 4 * h * wt * qwen35.mb()), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    wt = wt + 1;
+                }
+                if !more {
+                    qwen35.go(m, ffi, k_rms, m[eng + 62], m[eng + 90], m[eng + 64], 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                }
                 var r = 0;
                 while r < rows {
                     if mtp_step(m, t, ffi, fs, eng, qwen35.at(m[eng + 64], 4 * h * r), mem.get(m, ids, pos + r + 1), pos + r, 0 - 1) < 0 {

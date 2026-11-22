@@ -544,6 +544,13 @@ tests/chx/matvec_fp4_res_batch_h.chx m=16 n=5120 k=17408
 tests/chx/matvec_fp4_res_batch_h.chx m=2 n=64 k=128 --run
 tests/chx/matvec_fp4_swiglu_batch_h.chx m=16 n=17408 k=5120
 tests/chx/matvec_fp4_swiglu_batch_h.chx m=2 n=64 k=128 --run
+# The same three with the rows as a grid axis: a prefill pass, launched over as many row tiles as it has (docs/serving.md 9.3).
+tests/chx/matvec_fp4_pass_h.chx m=128 n=17408 k=5120 bm=16
+tests/chx/matvec_fp4_pass_h.chx m=6 n=64 k=128 bm=3 --run
+tests/chx/matvec_fp4_res_pass_h.chx m=128 n=5120 k=17408 bm=16
+tests/chx/matvec_fp4_res_pass_h.chx m=4 n=64 k=128 bm=2 --run
+tests/chx/matvec_fp4_swiglu_pass_h.chx m=128 n=17408 k=5120 bm=16
+tests/chx/matvec_fp4_swiglu_pass_h.chx m=4 n=64 k=128 bm=2 --run
 tests/chx/matvec_rows_f16_mh.chx m=16 n=48 k=5120
 tests/chx/matvec_rows_f16_mh.chx m=3 n=64 k=96 --run
 tests/chx/rmsnorm_rows_h.chx r=16 n=5120 eps=0.000001

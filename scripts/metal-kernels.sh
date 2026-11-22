@@ -58,6 +58,9 @@ matvec_fp4_batch_h m=16 n=128 k=1024
 matvec_fp4_batch_h m=8 n=64 k=1280
 matvec_fp4_res_batch_h m=16 n=128 k=2176
 f16x:matvec_fp4_swiglu_batch_h m=16 n=64 k=1280
+matvec_fp4_pass_h m=48 n=128 k=1024 bm=16
+matvec_fp4_res_pass_h m=32 n=128 k=2176 bm=16
+f16x:matvec_fp4_swiglu_pass_h m=32 n=64 k=1280 bm=16
 matvec_rows_f16_mh m=16 n=48 k=5120
 matvec_rows_f16_mh m=8 n=48 k=5120
 f16x:rmsnorm_rows_h r=16 n=5120 eps=0.000001
