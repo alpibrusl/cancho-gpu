@@ -23,35 +23,35 @@ kernel void delta_step16_16_1(
     float v5[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v5[k] = float(0.0f);
         }
     }
     float v7[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v7[k] = float(float(v5[k]) + float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v8[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v8[k] = float(0.0f);
         }
     }
     float v10[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v10[k] = float(float(v8[k]) + float(float(p1_q[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v13[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v13[k] = float(float(float((float(float(p0_s[(uint)(0 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(0 + 3 * gid) * 128u + (uint)(0) * 1u + ((e))]))))) * float(v7[k]));
         }
     }
@@ -74,21 +74,21 @@ kernel void delta_step16_16_1(
     float v19[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v19[k] = float(float(v7[k]) * simd_shuffle(float(v18[0]), (ushort)(e / 128u)));
+        {
+            v19[k] = float(float(v7[k]) * simd_broadcast_first(float(v18[0])));
         }
     }
     float v20[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v20[k] = float(float(float((float(float(p0_s[(uint)(0 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(0 + 3 * gid) * 128u + (uint)(0) * 1u + ((e))]))))) + float(v19[k]));
         }
     }
     float v21[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v21[k] = float(float(v20[k]) * float(v10[k]));
         }
     }
@@ -103,7 +103,7 @@ kernel void delta_step16_16_1(
     float v25[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v25[k] = float(float(float((float(float(p0_s[(uint)(128 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(1 + 3 * gid) * 128u + (uint)(0) * 1u + ((e))]))))) * float(v7[k]));
         }
     }
@@ -126,21 +126,21 @@ kernel void delta_step16_16_1(
     float v31[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v31[k] = float(float(v7[k]) * simd_shuffle(float(v30[0]), (ushort)(e / 128u)));
+        {
+            v31[k] = float(float(v7[k]) * simd_broadcast_first(float(v30[0])));
         }
     }
     float v32[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v32[k] = float(float(float((float(float(p0_s[(uint)(128 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(1 + 3 * gid) * 128u + (uint)(0) * 1u + ((e))]))))) + float(v31[k]));
         }
     }
     float v33[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v33[k] = float(float(v32[k]) * float(v10[k]));
         }
     }
@@ -155,7 +155,7 @@ kernel void delta_step16_16_1(
     float v37[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v37[k] = float(float(float((float(float(p0_s[(uint)(256 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(2 + 3 * gid) * 128u + (uint)(0) * 1u + ((e))]))))) * float(v7[k]));
         }
     }
@@ -178,21 +178,21 @@ kernel void delta_step16_16_1(
     float v43[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v43[k] = float(float(v7[k]) * simd_shuffle(float(v42[0]), (ushort)(e / 128u)));
+        {
+            v43[k] = float(float(v7[k]) * simd_broadcast_first(float(v42[0])));
         }
     }
     float v44[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v44[k] = float(float(float((float(float(p0_s[(uint)(256 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(2 + 3 * gid) * 128u + (uint)(0) * 1u + ((e))]))))) + float(v43[k]));
         }
     }
     float v45[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v45[k] = float(float(v44[k]) * float(v10[k]));
         }
     }
@@ -207,42 +207,42 @@ kernel void delta_step16_16_1(
     float v47[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v47[k] = float(0.0f);
         }
     }
     float v49[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v49[k] = float(float(v47[k]) + float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v50[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v50[k] = float(0.0f);
         }
     }
     float v52[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v52[k] = float(float(v50[k]) + float(float(p1_q[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v54[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v54[k] = float(float(v20[k]) * float(float(p4_g[(uint)(48 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v55[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v55[k] = float(float(v54[k]) * float(v49[k]));
         }
     }
@@ -265,21 +265,21 @@ kernel void delta_step16_16_1(
     float v61[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v61[k] = float(float(v49[k]) * simd_shuffle(float(v60[0]), (ushort)(e / 128u)));
+        {
+            v61[k] = float(float(v49[k]) * simd_broadcast_first(float(v60[0])));
         }
     }
     float v62[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v62[k] = float(float(v54[k]) + float(v61[k]));
         }
     }
     float v63[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v63[k] = float(float(v62[k]) * float(v52[k]));
         }
     }
@@ -294,14 +294,14 @@ kernel void delta_step16_16_1(
     float v66[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v66[k] = float(float(v32[k]) * float(float(p4_g[(uint)(49 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v67[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v67[k] = float(float(v66[k]) * float(v49[k]));
         }
     }
@@ -324,21 +324,21 @@ kernel void delta_step16_16_1(
     float v73[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v73[k] = float(float(v49[k]) * simd_shuffle(float(v72[0]), (ushort)(e / 128u)));
+        {
+            v73[k] = float(float(v49[k]) * simd_broadcast_first(float(v72[0])));
         }
     }
     float v74[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v74[k] = float(float(v66[k]) + float(v73[k]));
         }
     }
     float v75[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v75[k] = float(float(v74[k]) * float(v52[k]));
         }
     }
@@ -353,14 +353,14 @@ kernel void delta_step16_16_1(
     float v78[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v78[k] = float(float(v44[k]) * float(float(p4_g[(uint)(50 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v79[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v79[k] = float(float(v78[k]) * float(v49[k]));
         }
     }
@@ -383,21 +383,21 @@ kernel void delta_step16_16_1(
     float v85[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v85[k] = float(float(v49[k]) * simd_shuffle(float(v84[0]), (ushort)(e / 128u)));
+        {
+            v85[k] = float(float(v49[k]) * simd_broadcast_first(float(v84[0])));
         }
     }
     float v86[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v86[k] = float(float(v78[k]) + float(v85[k]));
         }
     }
     float v87[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v87[k] = float(float(v86[k]) * float(v52[k]));
         }
     }
@@ -412,42 +412,42 @@ kernel void delta_step16_16_1(
     float v89[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v89[k] = float(0.0f);
         }
     }
     float v91[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v91[k] = float(float(v89[k]) + float(float(p2_k[(uint)(32 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v92[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v92[k] = float(0.0f);
         }
     }
     float v94[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v94[k] = float(float(v92[k]) + float(float(p1_q[(uint)(32 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v96[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v96[k] = float(float(v62[k]) * float(float(p4_g[(uint)(96 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v97[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v97[k] = float(float(v96[k]) * float(v91[k]));
         }
     }
@@ -470,21 +470,21 @@ kernel void delta_step16_16_1(
     float v103[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v103[k] = float(float(v91[k]) * simd_shuffle(float(v102[0]), (ushort)(e / 128u)));
+        {
+            v103[k] = float(float(v91[k]) * simd_broadcast_first(float(v102[0])));
         }
     }
     float v104[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v104[k] = float(float(v96[k]) + float(v103[k]));
         }
     }
     float v105[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v105[k] = float(float(v104[k]) * float(v94[k]));
         }
     }
@@ -499,14 +499,14 @@ kernel void delta_step16_16_1(
     float v108[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v108[k] = float(float(v74[k]) * float(float(p4_g[(uint)(97 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v109[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v109[k] = float(float(v108[k]) * float(v91[k]));
         }
     }
@@ -529,21 +529,21 @@ kernel void delta_step16_16_1(
     float v115[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v115[k] = float(float(v91[k]) * simd_shuffle(float(v114[0]), (ushort)(e / 128u)));
+        {
+            v115[k] = float(float(v91[k]) * simd_broadcast_first(float(v114[0])));
         }
     }
     float v116[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v116[k] = float(float(v108[k]) + float(v115[k]));
         }
     }
     float v117[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v117[k] = float(float(v116[k]) * float(v94[k]));
         }
     }
@@ -558,14 +558,14 @@ kernel void delta_step16_16_1(
     float v120[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v120[k] = float(float(v86[k]) * float(float(p4_g[(uint)(98 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v121[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v121[k] = float(float(v120[k]) * float(v91[k]));
         }
     }
@@ -588,21 +588,21 @@ kernel void delta_step16_16_1(
     float v127[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v127[k] = float(float(v91[k]) * simd_shuffle(float(v126[0]), (ushort)(e / 128u)));
+        {
+            v127[k] = float(float(v91[k]) * simd_broadcast_first(float(v126[0])));
         }
     }
     float v128[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v128[k] = float(float(v120[k]) + float(v127[k]));
         }
     }
     float v129[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v129[k] = float(float(v128[k]) * float(v94[k]));
         }
     }
@@ -617,42 +617,42 @@ kernel void delta_step16_16_1(
     float v131[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v131[k] = float(0.0f);
         }
     }
     float v133[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v133[k] = float(float(v131[k]) + float(float(p2_k[(uint)(48 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v134[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v134[k] = float(0.0f);
         }
     }
     float v136[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v136[k] = float(float(v134[k]) + float(float(p1_q[(uint)(48 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v138[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v138[k] = float(float(v104[k]) * float(float(p4_g[(uint)(144 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v139[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v139[k] = float(float(v138[k]) * float(v133[k]));
         }
     }
@@ -675,21 +675,21 @@ kernel void delta_step16_16_1(
     float v145[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v145[k] = float(float(v133[k]) * simd_shuffle(float(v144[0]), (ushort)(e / 128u)));
+        {
+            v145[k] = float(float(v133[k]) * simd_broadcast_first(float(v144[0])));
         }
     }
     float v146[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v146[k] = float(float(v138[k]) + float(v145[k]));
         }
     }
     float v147[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v147[k] = float(float(v146[k]) * float(v136[k]));
         }
     }
@@ -704,14 +704,14 @@ kernel void delta_step16_16_1(
     float v150[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v150[k] = float(float(v116[k]) * float(float(p4_g[(uint)(145 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v151[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v151[k] = float(float(v150[k]) * float(v133[k]));
         }
     }
@@ -734,21 +734,21 @@ kernel void delta_step16_16_1(
     float v157[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v157[k] = float(float(v133[k]) * simd_shuffle(float(v156[0]), (ushort)(e / 128u)));
+        {
+            v157[k] = float(float(v133[k]) * simd_broadcast_first(float(v156[0])));
         }
     }
     float v158[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v158[k] = float(float(v150[k]) + float(v157[k]));
         }
     }
     float v159[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v159[k] = float(float(v158[k]) * float(v136[k]));
         }
     }
@@ -763,14 +763,14 @@ kernel void delta_step16_16_1(
     float v162[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v162[k] = float(float(v128[k]) * float(float(p4_g[(uint)(146 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v163[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v163[k] = float(float(v162[k]) * float(v133[k]));
         }
     }
@@ -793,21 +793,21 @@ kernel void delta_step16_16_1(
     float v169[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v169[k] = float(float(v133[k]) * simd_shuffle(float(v168[0]), (ushort)(e / 128u)));
+        {
+            v169[k] = float(float(v133[k]) * simd_broadcast_first(float(v168[0])));
         }
     }
     float v170[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v170[k] = float(float(v162[k]) + float(v169[k]));
         }
     }
     float v171[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v171[k] = float(float(v170[k]) * float(v136[k]));
         }
     }
@@ -822,42 +822,42 @@ kernel void delta_step16_16_1(
     float v173[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v173[k] = float(0.0f);
         }
     }
     float v175[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v175[k] = float(float(v173[k]) + float(float(p2_k[(uint)(64 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v176[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v176[k] = float(0.0f);
         }
     }
     float v178[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v178[k] = float(float(v176[k]) + float(float(p1_q[(uint)(64 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v180[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v180[k] = float(float(v146[k]) * float(float(p4_g[(uint)(192 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v181[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v181[k] = float(float(v180[k]) * float(v175[k]));
         }
     }
@@ -880,21 +880,21 @@ kernel void delta_step16_16_1(
     float v187[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v187[k] = float(float(v175[k]) * simd_shuffle(float(v186[0]), (ushort)(e / 128u)));
+        {
+            v187[k] = float(float(v175[k]) * simd_broadcast_first(float(v186[0])));
         }
     }
     float v188[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v188[k] = float(float(v180[k]) + float(v187[k]));
         }
     }
     float v189[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v189[k] = float(float(v188[k]) * float(v178[k]));
         }
     }
@@ -909,14 +909,14 @@ kernel void delta_step16_16_1(
     float v192[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v192[k] = float(float(v158[k]) * float(float(p4_g[(uint)(193 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v193[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v193[k] = float(float(v192[k]) * float(v175[k]));
         }
     }
@@ -939,21 +939,21 @@ kernel void delta_step16_16_1(
     float v199[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v199[k] = float(float(v175[k]) * simd_shuffle(float(v198[0]), (ushort)(e / 128u)));
+        {
+            v199[k] = float(float(v175[k]) * simd_broadcast_first(float(v198[0])));
         }
     }
     float v200[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v200[k] = float(float(v192[k]) + float(v199[k]));
         }
     }
     float v201[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v201[k] = float(float(v200[k]) * float(v178[k]));
         }
     }
@@ -968,14 +968,14 @@ kernel void delta_step16_16_1(
     float v204[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v204[k] = float(float(v170[k]) * float(float(p4_g[(uint)(194 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v205[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v205[k] = float(float(v204[k]) * float(v175[k]));
         }
     }
@@ -998,21 +998,21 @@ kernel void delta_step16_16_1(
     float v211[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v211[k] = float(float(v175[k]) * simd_shuffle(float(v210[0]), (ushort)(e / 128u)));
+        {
+            v211[k] = float(float(v175[k]) * simd_broadcast_first(float(v210[0])));
         }
     }
     float v212[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v212[k] = float(float(v204[k]) + float(v211[k]));
         }
     }
     float v213[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v213[k] = float(float(v212[k]) * float(v178[k]));
         }
     }
@@ -1027,42 +1027,42 @@ kernel void delta_step16_16_1(
     float v215[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v215[k] = float(0.0f);
         }
     }
     float v217[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v217[k] = float(float(v215[k]) + float(float(p2_k[(uint)(80 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v218[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v218[k] = float(0.0f);
         }
     }
     float v220[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v220[k] = float(float(v218[k]) + float(float(p1_q[(uint)(80 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v222[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v222[k] = float(float(v188[k]) * float(float(p4_g[(uint)(240 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v223[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v223[k] = float(float(v222[k]) * float(v217[k]));
         }
     }
@@ -1085,21 +1085,21 @@ kernel void delta_step16_16_1(
     float v229[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v229[k] = float(float(v217[k]) * simd_shuffle(float(v228[0]), (ushort)(e / 128u)));
+        {
+            v229[k] = float(float(v217[k]) * simd_broadcast_first(float(v228[0])));
         }
     }
     float v230[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v230[k] = float(float(v222[k]) + float(v229[k]));
         }
     }
     float v231[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v231[k] = float(float(v230[k]) * float(v220[k]));
         }
     }
@@ -1114,14 +1114,14 @@ kernel void delta_step16_16_1(
     float v234[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v234[k] = float(float(v200[k]) * float(float(p4_g[(uint)(241 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v235[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v235[k] = float(float(v234[k]) * float(v217[k]));
         }
     }
@@ -1144,21 +1144,21 @@ kernel void delta_step16_16_1(
     float v241[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v241[k] = float(float(v217[k]) * simd_shuffle(float(v240[0]), (ushort)(e / 128u)));
+        {
+            v241[k] = float(float(v217[k]) * simd_broadcast_first(float(v240[0])));
         }
     }
     float v242[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v242[k] = float(float(v234[k]) + float(v241[k]));
         }
     }
     float v243[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v243[k] = float(float(v242[k]) * float(v220[k]));
         }
     }
@@ -1173,14 +1173,14 @@ kernel void delta_step16_16_1(
     float v246[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v246[k] = float(float(v212[k]) * float(float(p4_g[(uint)(242 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v247[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v247[k] = float(float(v246[k]) * float(v217[k]));
         }
     }
@@ -1203,21 +1203,21 @@ kernel void delta_step16_16_1(
     float v253[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v253[k] = float(float(v217[k]) * simd_shuffle(float(v252[0]), (ushort)(e / 128u)));
+        {
+            v253[k] = float(float(v217[k]) * simd_broadcast_first(float(v252[0])));
         }
     }
     float v254[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v254[k] = float(float(v246[k]) + float(v253[k]));
         }
     }
     float v255[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v255[k] = float(float(v254[k]) * float(v220[k]));
         }
     }
@@ -1232,42 +1232,42 @@ kernel void delta_step16_16_1(
     float v257[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v257[k] = float(0.0f);
         }
     }
     float v259[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v259[k] = float(float(v257[k]) + float(float(p2_k[(uint)(96 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v260[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v260[k] = float(0.0f);
         }
     }
     float v262[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v262[k] = float(float(v260[k]) + float(float(p1_q[(uint)(96 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v264[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v264[k] = float(float(v230[k]) * float(float(p4_g[(uint)(288 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v265[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v265[k] = float(float(v264[k]) * float(v259[k]));
         }
     }
@@ -1290,21 +1290,21 @@ kernel void delta_step16_16_1(
     float v271[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v271[k] = float(float(v259[k]) * simd_shuffle(float(v270[0]), (ushort)(e / 128u)));
+        {
+            v271[k] = float(float(v259[k]) * simd_broadcast_first(float(v270[0])));
         }
     }
     float v272[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v272[k] = float(float(v264[k]) + float(v271[k]));
         }
     }
     float v273[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v273[k] = float(float(v272[k]) * float(v262[k]));
         }
     }
@@ -1319,14 +1319,14 @@ kernel void delta_step16_16_1(
     float v276[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v276[k] = float(float(v242[k]) * float(float(p4_g[(uint)(289 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v277[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v277[k] = float(float(v276[k]) * float(v259[k]));
         }
     }
@@ -1349,21 +1349,21 @@ kernel void delta_step16_16_1(
     float v283[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v283[k] = float(float(v259[k]) * simd_shuffle(float(v282[0]), (ushort)(e / 128u)));
+        {
+            v283[k] = float(float(v259[k]) * simd_broadcast_first(float(v282[0])));
         }
     }
     float v284[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v284[k] = float(float(v276[k]) + float(v283[k]));
         }
     }
     float v285[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v285[k] = float(float(v284[k]) * float(v262[k]));
         }
     }
@@ -1378,14 +1378,14 @@ kernel void delta_step16_16_1(
     float v288[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v288[k] = float(float(v254[k]) * float(float(p4_g[(uint)(290 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v289[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v289[k] = float(float(v288[k]) * float(v259[k]));
         }
     }
@@ -1408,21 +1408,21 @@ kernel void delta_step16_16_1(
     float v295[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v295[k] = float(float(v259[k]) * simd_shuffle(float(v294[0]), (ushort)(e / 128u)));
+        {
+            v295[k] = float(float(v259[k]) * simd_broadcast_first(float(v294[0])));
         }
     }
     float v296[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v296[k] = float(float(v288[k]) + float(v295[k]));
         }
     }
     float v297[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v297[k] = float(float(v296[k]) * float(v262[k]));
         }
     }
@@ -1437,42 +1437,42 @@ kernel void delta_step16_16_1(
     float v299[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v299[k] = float(0.0f);
         }
     }
     float v301[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v301[k] = float(float(v299[k]) + float(float(p2_k[(uint)(112 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v302[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v302[k] = float(0.0f);
         }
     }
     float v304[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v304[k] = float(float(v302[k]) + float(float(p1_q[(uint)(112 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v306[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v306[k] = float(float(v272[k]) * float(float(p4_g[(uint)(336 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v307[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v307[k] = float(float(v306[k]) * float(v301[k]));
         }
     }
@@ -1495,21 +1495,21 @@ kernel void delta_step16_16_1(
     float v313[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v313[k] = float(float(v301[k]) * simd_shuffle(float(v312[0]), (ushort)(e / 128u)));
+        {
+            v313[k] = float(float(v301[k]) * simd_broadcast_first(float(v312[0])));
         }
     }
     float v314[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v314[k] = float(float(v306[k]) + float(v313[k]));
         }
     }
     float v315[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v315[k] = float(float(v314[k]) * float(v304[k]));
         }
     }
@@ -1524,14 +1524,14 @@ kernel void delta_step16_16_1(
     float v318[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v318[k] = float(float(v284[k]) * float(float(p4_g[(uint)(337 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v319[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v319[k] = float(float(v318[k]) * float(v301[k]));
         }
     }
@@ -1554,21 +1554,21 @@ kernel void delta_step16_16_1(
     float v325[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v325[k] = float(float(v301[k]) * simd_shuffle(float(v324[0]), (ushort)(e / 128u)));
+        {
+            v325[k] = float(float(v301[k]) * simd_broadcast_first(float(v324[0])));
         }
     }
     float v326[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v326[k] = float(float(v318[k]) + float(v325[k]));
         }
     }
     float v327[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v327[k] = float(float(v326[k]) * float(v304[k]));
         }
     }
@@ -1583,14 +1583,14 @@ kernel void delta_step16_16_1(
     float v330[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v330[k] = float(float(v296[k]) * float(float(p4_g[(uint)(338 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v331[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v331[k] = float(float(v330[k]) * float(v301[k]));
         }
     }
@@ -1613,21 +1613,21 @@ kernel void delta_step16_16_1(
     float v337[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v337[k] = float(float(v301[k]) * simd_shuffle(float(v336[0]), (ushort)(e / 128u)));
+        {
+            v337[k] = float(float(v301[k]) * simd_broadcast_first(float(v336[0])));
         }
     }
     float v338[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v338[k] = float(float(v330[k]) + float(v337[k]));
         }
     }
     float v339[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v339[k] = float(float(v338[k]) * float(v304[k]));
         }
     }
@@ -1642,42 +1642,42 @@ kernel void delta_step16_16_1(
     float v341[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v341[k] = float(0.0f);
         }
     }
     float v343[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v343[k] = float(float(v341[k]) + float(float(p2_k[(uint)(128 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v344[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v344[k] = float(0.0f);
         }
     }
     float v346[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v346[k] = float(float(v344[k]) + float(float(p1_q[(uint)(128 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v348[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v348[k] = float(float(v314[k]) * float(float(p4_g[(uint)(384 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v349[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v349[k] = float(float(v348[k]) * float(v343[k]));
         }
     }
@@ -1700,21 +1700,21 @@ kernel void delta_step16_16_1(
     float v355[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v355[k] = float(float(v343[k]) * simd_shuffle(float(v354[0]), (ushort)(e / 128u)));
+        {
+            v355[k] = float(float(v343[k]) * simd_broadcast_first(float(v354[0])));
         }
     }
     float v356[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v356[k] = float(float(v348[k]) + float(v355[k]));
         }
     }
     float v357[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v357[k] = float(float(v356[k]) * float(v346[k]));
         }
     }
@@ -1729,14 +1729,14 @@ kernel void delta_step16_16_1(
     float v360[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v360[k] = float(float(v326[k]) * float(float(p4_g[(uint)(385 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v361[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v361[k] = float(float(v360[k]) * float(v343[k]));
         }
     }
@@ -1759,21 +1759,21 @@ kernel void delta_step16_16_1(
     float v367[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v367[k] = float(float(v343[k]) * simd_shuffle(float(v366[0]), (ushort)(e / 128u)));
+        {
+            v367[k] = float(float(v343[k]) * simd_broadcast_first(float(v366[0])));
         }
     }
     float v368[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v368[k] = float(float(v360[k]) + float(v367[k]));
         }
     }
     float v369[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v369[k] = float(float(v368[k]) * float(v346[k]));
         }
     }
@@ -1788,14 +1788,14 @@ kernel void delta_step16_16_1(
     float v372[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v372[k] = float(float(v338[k]) * float(float(p4_g[(uint)(386 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v373[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v373[k] = float(float(v372[k]) * float(v343[k]));
         }
     }
@@ -1818,21 +1818,21 @@ kernel void delta_step16_16_1(
     float v379[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v379[k] = float(float(v343[k]) * simd_shuffle(float(v378[0]), (ushort)(e / 128u)));
+        {
+            v379[k] = float(float(v343[k]) * simd_broadcast_first(float(v378[0])));
         }
     }
     float v380[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v380[k] = float(float(v372[k]) + float(v379[k]));
         }
     }
     float v381[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v381[k] = float(float(v380[k]) * float(v346[k]));
         }
     }
@@ -1847,42 +1847,42 @@ kernel void delta_step16_16_1(
     float v383[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v383[k] = float(0.0f);
         }
     }
     float v385[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v385[k] = float(float(v383[k]) + float(float(p2_k[(uint)(144 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v386[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v386[k] = float(0.0f);
         }
     }
     float v388[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v388[k] = float(float(v386[k]) + float(float(p1_q[(uint)(144 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v390[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v390[k] = float(float(v356[k]) * float(float(p4_g[(uint)(432 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v391[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v391[k] = float(float(v390[k]) * float(v385[k]));
         }
     }
@@ -1905,21 +1905,21 @@ kernel void delta_step16_16_1(
     float v397[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v397[k] = float(float(v385[k]) * simd_shuffle(float(v396[0]), (ushort)(e / 128u)));
+        {
+            v397[k] = float(float(v385[k]) * simd_broadcast_first(float(v396[0])));
         }
     }
     float v398[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v398[k] = float(float(v390[k]) + float(v397[k]));
         }
     }
     float v399[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v399[k] = float(float(v398[k]) * float(v388[k]));
         }
     }
@@ -1934,14 +1934,14 @@ kernel void delta_step16_16_1(
     float v402[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v402[k] = float(float(v368[k]) * float(float(p4_g[(uint)(433 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v403[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v403[k] = float(float(v402[k]) * float(v385[k]));
         }
     }
@@ -1964,21 +1964,21 @@ kernel void delta_step16_16_1(
     float v409[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v409[k] = float(float(v385[k]) * simd_shuffle(float(v408[0]), (ushort)(e / 128u)));
+        {
+            v409[k] = float(float(v385[k]) * simd_broadcast_first(float(v408[0])));
         }
     }
     float v410[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v410[k] = float(float(v402[k]) + float(v409[k]));
         }
     }
     float v411[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v411[k] = float(float(v410[k]) * float(v388[k]));
         }
     }
@@ -1993,14 +1993,14 @@ kernel void delta_step16_16_1(
     float v414[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v414[k] = float(float(v380[k]) * float(float(p4_g[(uint)(434 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v415[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v415[k] = float(float(v414[k]) * float(v385[k]));
         }
     }
@@ -2023,21 +2023,21 @@ kernel void delta_step16_16_1(
     float v421[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v421[k] = float(float(v385[k]) * simd_shuffle(float(v420[0]), (ushort)(e / 128u)));
+        {
+            v421[k] = float(float(v385[k]) * simd_broadcast_first(float(v420[0])));
         }
     }
     float v422[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v422[k] = float(float(v414[k]) + float(v421[k]));
         }
     }
     float v423[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v423[k] = float(float(v422[k]) * float(v388[k]));
         }
     }
@@ -2052,42 +2052,42 @@ kernel void delta_step16_16_1(
     float v425[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v425[k] = float(0.0f);
         }
     }
     float v427[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v427[k] = float(float(v425[k]) + float(float(p2_k[(uint)(160 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v428[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v428[k] = float(0.0f);
         }
     }
     float v430[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v430[k] = float(float(v428[k]) + float(float(p1_q[(uint)(160 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v432[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v432[k] = float(float(v398[k]) * float(float(p4_g[(uint)(480 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v433[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v433[k] = float(float(v432[k]) * float(v427[k]));
         }
     }
@@ -2110,21 +2110,21 @@ kernel void delta_step16_16_1(
     float v439[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v439[k] = float(float(v427[k]) * simd_shuffle(float(v438[0]), (ushort)(e / 128u)));
+        {
+            v439[k] = float(float(v427[k]) * simd_broadcast_first(float(v438[0])));
         }
     }
     float v440[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v440[k] = float(float(v432[k]) + float(v439[k]));
         }
     }
     float v441[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v441[k] = float(float(v440[k]) * float(v430[k]));
         }
     }
@@ -2139,14 +2139,14 @@ kernel void delta_step16_16_1(
     float v444[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v444[k] = float(float(v410[k]) * float(float(p4_g[(uint)(481 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v445[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v445[k] = float(float(v444[k]) * float(v427[k]));
         }
     }
@@ -2169,21 +2169,21 @@ kernel void delta_step16_16_1(
     float v451[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v451[k] = float(float(v427[k]) * simd_shuffle(float(v450[0]), (ushort)(e / 128u)));
+        {
+            v451[k] = float(float(v427[k]) * simd_broadcast_first(float(v450[0])));
         }
     }
     float v452[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v452[k] = float(float(v444[k]) + float(v451[k]));
         }
     }
     float v453[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v453[k] = float(float(v452[k]) * float(v430[k]));
         }
     }
@@ -2198,14 +2198,14 @@ kernel void delta_step16_16_1(
     float v456[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v456[k] = float(float(v422[k]) * float(float(p4_g[(uint)(482 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v457[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v457[k] = float(float(v456[k]) * float(v427[k]));
         }
     }
@@ -2228,21 +2228,21 @@ kernel void delta_step16_16_1(
     float v463[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v463[k] = float(float(v427[k]) * simd_shuffle(float(v462[0]), (ushort)(e / 128u)));
+        {
+            v463[k] = float(float(v427[k]) * simd_broadcast_first(float(v462[0])));
         }
     }
     float v464[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v464[k] = float(float(v456[k]) + float(v463[k]));
         }
     }
     float v465[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v465[k] = float(float(v464[k]) * float(v430[k]));
         }
     }
@@ -2257,42 +2257,42 @@ kernel void delta_step16_16_1(
     float v467[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v467[k] = float(0.0f);
         }
     }
     float v469[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v469[k] = float(float(v467[k]) + float(float(p2_k[(uint)(176 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v470[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v470[k] = float(0.0f);
         }
     }
     float v472[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v472[k] = float(float(v470[k]) + float(float(p1_q[(uint)(176 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v474[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v474[k] = float(float(v440[k]) * float(float(p4_g[(uint)(528 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v475[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v475[k] = float(float(v474[k]) * float(v469[k]));
         }
     }
@@ -2315,21 +2315,21 @@ kernel void delta_step16_16_1(
     float v481[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v481[k] = float(float(v469[k]) * simd_shuffle(float(v480[0]), (ushort)(e / 128u)));
+        {
+            v481[k] = float(float(v469[k]) * simd_broadcast_first(float(v480[0])));
         }
     }
     float v482[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v482[k] = float(float(v474[k]) + float(v481[k]));
         }
     }
     float v483[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v483[k] = float(float(v482[k]) * float(v472[k]));
         }
     }
@@ -2344,14 +2344,14 @@ kernel void delta_step16_16_1(
     float v486[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v486[k] = float(float(v452[k]) * float(float(p4_g[(uint)(529 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v487[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v487[k] = float(float(v486[k]) * float(v469[k]));
         }
     }
@@ -2374,21 +2374,21 @@ kernel void delta_step16_16_1(
     float v493[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v493[k] = float(float(v469[k]) * simd_shuffle(float(v492[0]), (ushort)(e / 128u)));
+        {
+            v493[k] = float(float(v469[k]) * simd_broadcast_first(float(v492[0])));
         }
     }
     float v494[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v494[k] = float(float(v486[k]) + float(v493[k]));
         }
     }
     float v495[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v495[k] = float(float(v494[k]) * float(v472[k]));
         }
     }
@@ -2403,14 +2403,14 @@ kernel void delta_step16_16_1(
     float v498[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v498[k] = float(float(v464[k]) * float(float(p4_g[(uint)(530 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v499[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v499[k] = float(float(v498[k]) * float(v469[k]));
         }
     }
@@ -2433,21 +2433,21 @@ kernel void delta_step16_16_1(
     float v505[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v505[k] = float(float(v469[k]) * simd_shuffle(float(v504[0]), (ushort)(e / 128u)));
+        {
+            v505[k] = float(float(v469[k]) * simd_broadcast_first(float(v504[0])));
         }
     }
     float v506[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v506[k] = float(float(v498[k]) + float(v505[k]));
         }
     }
     float v507[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v507[k] = float(float(v506[k]) * float(v472[k]));
         }
     }
@@ -2462,42 +2462,42 @@ kernel void delta_step16_16_1(
     float v509[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v509[k] = float(0.0f);
         }
     }
     float v511[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v511[k] = float(float(v509[k]) + float(float(p2_k[(uint)(192 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v512[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v512[k] = float(0.0f);
         }
     }
     float v514[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v514[k] = float(float(v512[k]) + float(float(p1_q[(uint)(192 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v516[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v516[k] = float(float(v482[k]) * float(float(p4_g[(uint)(576 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v517[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v517[k] = float(float(v516[k]) * float(v511[k]));
         }
     }
@@ -2520,21 +2520,21 @@ kernel void delta_step16_16_1(
     float v523[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v523[k] = float(float(v511[k]) * simd_shuffle(float(v522[0]), (ushort)(e / 128u)));
+        {
+            v523[k] = float(float(v511[k]) * simd_broadcast_first(float(v522[0])));
         }
     }
     float v524[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v524[k] = float(float(v516[k]) + float(v523[k]));
         }
     }
     float v525[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v525[k] = float(float(v524[k]) * float(v514[k]));
         }
     }
@@ -2549,14 +2549,14 @@ kernel void delta_step16_16_1(
     float v528[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v528[k] = float(float(v494[k]) * float(float(p4_g[(uint)(577 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v529[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v529[k] = float(float(v528[k]) * float(v511[k]));
         }
     }
@@ -2579,21 +2579,21 @@ kernel void delta_step16_16_1(
     float v535[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v535[k] = float(float(v511[k]) * simd_shuffle(float(v534[0]), (ushort)(e / 128u)));
+        {
+            v535[k] = float(float(v511[k]) * simd_broadcast_first(float(v534[0])));
         }
     }
     float v536[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v536[k] = float(float(v528[k]) + float(v535[k]));
         }
     }
     float v537[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v537[k] = float(float(v536[k]) * float(v514[k]));
         }
     }
@@ -2608,14 +2608,14 @@ kernel void delta_step16_16_1(
     float v540[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v540[k] = float(float(v506[k]) * float(float(p4_g[(uint)(578 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v541[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v541[k] = float(float(v540[k]) * float(v511[k]));
         }
     }
@@ -2638,21 +2638,21 @@ kernel void delta_step16_16_1(
     float v547[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v547[k] = float(float(v511[k]) * simd_shuffle(float(v546[0]), (ushort)(e / 128u)));
+        {
+            v547[k] = float(float(v511[k]) * simd_broadcast_first(float(v546[0])));
         }
     }
     float v548[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v548[k] = float(float(v540[k]) + float(v547[k]));
         }
     }
     float v549[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v549[k] = float(float(v548[k]) * float(v514[k]));
         }
     }
@@ -2667,42 +2667,42 @@ kernel void delta_step16_16_1(
     float v551[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v551[k] = float(0.0f);
         }
     }
     float v553[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v553[k] = float(float(v551[k]) + float(float(p2_k[(uint)(208 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v554[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v554[k] = float(0.0f);
         }
     }
     float v556[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v556[k] = float(float(v554[k]) + float(float(p1_q[(uint)(208 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v558[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v558[k] = float(float(v524[k]) * float(float(p4_g[(uint)(624 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v559[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v559[k] = float(float(v558[k]) * float(v553[k]));
         }
     }
@@ -2725,21 +2725,21 @@ kernel void delta_step16_16_1(
     float v565[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v565[k] = float(float(v553[k]) * simd_shuffle(float(v564[0]), (ushort)(e / 128u)));
+        {
+            v565[k] = float(float(v553[k]) * simd_broadcast_first(float(v564[0])));
         }
     }
     float v566[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v566[k] = float(float(v558[k]) + float(v565[k]));
         }
     }
     float v567[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v567[k] = float(float(v566[k]) * float(v556[k]));
         }
     }
@@ -2754,14 +2754,14 @@ kernel void delta_step16_16_1(
     float v570[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v570[k] = float(float(v536[k]) * float(float(p4_g[(uint)(625 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v571[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v571[k] = float(float(v570[k]) * float(v553[k]));
         }
     }
@@ -2784,21 +2784,21 @@ kernel void delta_step16_16_1(
     float v577[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v577[k] = float(float(v553[k]) * simd_shuffle(float(v576[0]), (ushort)(e / 128u)));
+        {
+            v577[k] = float(float(v553[k]) * simd_broadcast_first(float(v576[0])));
         }
     }
     float v578[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v578[k] = float(float(v570[k]) + float(v577[k]));
         }
     }
     float v579[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v579[k] = float(float(v578[k]) * float(v556[k]));
         }
     }
@@ -2813,14 +2813,14 @@ kernel void delta_step16_16_1(
     float v582[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v582[k] = float(float(v548[k]) * float(float(p4_g[(uint)(626 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v583[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v583[k] = float(float(v582[k]) * float(v553[k]));
         }
     }
@@ -2843,21 +2843,21 @@ kernel void delta_step16_16_1(
     float v589[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v589[k] = float(float(v553[k]) * simd_shuffle(float(v588[0]), (ushort)(e / 128u)));
+        {
+            v589[k] = float(float(v553[k]) * simd_broadcast_first(float(v588[0])));
         }
     }
     float v590[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v590[k] = float(float(v582[k]) + float(v589[k]));
         }
     }
     float v591[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v591[k] = float(float(v590[k]) * float(v556[k]));
         }
     }
@@ -2872,42 +2872,42 @@ kernel void delta_step16_16_1(
     float v593[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v593[k] = float(0.0f);
         }
     }
     float v595[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v595[k] = float(float(v593[k]) + float(float(p2_k[(uint)(224 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v596[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v596[k] = float(0.0f);
         }
     }
     float v598[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v598[k] = float(float(v596[k]) + float(float(p1_q[(uint)(224 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v600[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v600[k] = float(float(v566[k]) * float(float(p4_g[(uint)(672 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v601[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v601[k] = float(float(v600[k]) * float(v595[k]));
         }
     }
@@ -2930,21 +2930,21 @@ kernel void delta_step16_16_1(
     float v607[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v607[k] = float(float(v595[k]) * simd_shuffle(float(v606[0]), (ushort)(e / 128u)));
+        {
+            v607[k] = float(float(v595[k]) * simd_broadcast_first(float(v606[0])));
         }
     }
     float v608[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v608[k] = float(float(v600[k]) + float(v607[k]));
         }
     }
     float v609[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v609[k] = float(float(v608[k]) * float(v598[k]));
         }
     }
@@ -2959,14 +2959,14 @@ kernel void delta_step16_16_1(
     float v612[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v612[k] = float(float(v578[k]) * float(float(p4_g[(uint)(673 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v613[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v613[k] = float(float(v612[k]) * float(v595[k]));
         }
     }
@@ -2989,21 +2989,21 @@ kernel void delta_step16_16_1(
     float v619[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v619[k] = float(float(v595[k]) * simd_shuffle(float(v618[0]), (ushort)(e / 128u)));
+        {
+            v619[k] = float(float(v595[k]) * simd_broadcast_first(float(v618[0])));
         }
     }
     float v620[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v620[k] = float(float(v612[k]) + float(v619[k]));
         }
     }
     float v621[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v621[k] = float(float(v620[k]) * float(v598[k]));
         }
     }
@@ -3018,14 +3018,14 @@ kernel void delta_step16_16_1(
     float v624[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v624[k] = float(float(v590[k]) * float(float(p4_g[(uint)(674 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v625[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v625[k] = float(float(v624[k]) * float(v595[k]));
         }
     }
@@ -3048,21 +3048,21 @@ kernel void delta_step16_16_1(
     float v631[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v631[k] = float(float(v595[k]) * simd_shuffle(float(v630[0]), (ushort)(e / 128u)));
+        {
+            v631[k] = float(float(v595[k]) * simd_broadcast_first(float(v630[0])));
         }
     }
     float v632[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v632[k] = float(float(v624[k]) + float(v631[k]));
         }
     }
     float v633[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v633[k] = float(float(v632[k]) * float(v598[k]));
         }
     }
@@ -3077,42 +3077,42 @@ kernel void delta_step16_16_1(
     float v635[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v635[k] = float(0.0f);
         }
     }
     float v637[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v637[k] = float(float(v635[k]) + float(float(p2_k[(uint)(240 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v638[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v638[k] = float(0.0f);
         }
     }
     float v640[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v640[k] = float(float(v638[k]) + float(float(p1_q[(uint)(240 + 1 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v642[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v642[k] = float(float(v608[k]) * float(float(p4_g[(uint)(720 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v643[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v643[k] = float(float(v642[k]) * float(v637[k]));
         }
     }
@@ -3135,21 +3135,21 @@ kernel void delta_step16_16_1(
     float v649[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v649[k] = float(float(v637[k]) * simd_shuffle(float(v648[0]), (ushort)(e / 128u)));
+        {
+            v649[k] = float(float(v637[k]) * simd_broadcast_first(float(v648[0])));
         }
     }
     float v650[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v650[k] = float(float(v642[k]) + float(v649[k]));
         }
     }
     float v651[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v651[k] = float(float(v650[k]) * float(v640[k]));
         }
     }
@@ -3164,14 +3164,14 @@ kernel void delta_step16_16_1(
     float v654[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v654[k] = float(float(v620[k]) * float(float(p4_g[(uint)(721 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v655[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v655[k] = float(float(v654[k]) * float(v637[k]));
         }
     }
@@ -3194,21 +3194,21 @@ kernel void delta_step16_16_1(
     float v661[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v661[k] = float(float(v637[k]) * simd_shuffle(float(v660[0]), (ushort)(e / 128u)));
+        {
+            v661[k] = float(float(v637[k]) * simd_broadcast_first(float(v660[0])));
         }
     }
     float v662[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v662[k] = float(float(v654[k]) + float(v661[k]));
         }
     }
     float v663[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v663[k] = float(float(v662[k]) * float(v640[k]));
         }
     }
@@ -3223,14 +3223,14 @@ kernel void delta_step16_16_1(
     float v666[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v666[k] = float(float(v632[k]) * float(float(p4_g[(uint)(722 + 3 * gid) * 128u + (uint)(0) * 1u + ((e / 1u))])));
         }
     }
     float v667[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v667[k] = float(float(v666[k]) * float(v637[k]));
         }
     }
@@ -3253,21 +3253,21 @@ kernel void delta_step16_16_1(
     float v673[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
-            v673[k] = float(float(v637[k]) * simd_shuffle(float(v672[0]), (ushort)(e / 128u)));
+        {
+            v673[k] = float(float(v637[k]) * simd_broadcast_first(float(v672[0])));
         }
     }
     float v674[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v674[k] = float(float(v666[k]) + float(v673[k]));
         }
     }
     float v675[4];
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             v675[k] = float(float(v674[k]) * float(v640[k]));
         }
     }
@@ -3281,19 +3281,19 @@ kernel void delta_step16_16_1(
     }
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             p6_so[(uint)(0 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v650[k]));
         }
     }
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             p6_so[(uint)(128 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v662[k]));
         }
     }
     for (uint k = 0; k < 4u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 128u) {
+        {
             p6_so[(uint)(256 + 384 * gid + 1 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v674[k]));
         }
     }

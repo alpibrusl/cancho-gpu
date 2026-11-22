@@ -617,14 +617,14 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    * **The lowering** (`src/gen.cho`, `src/lower.cho`): in a threadgroup that is one simdgroup (`threads 32`, the
      Metal dialect) a register tile lies in its 32 lanes only, so `rowsum` and `rowmax` of one are a lane's own
      elements and `simd_sum` or `simd_max`, and a register tile of at most 32 elements is read at another index by
-     `simd_shuffle`. No threadgroup memory, no barrier. Nothing else in the repository has a `threads 32` schedule,
-     and no other golden moved.
+     `simd_shuffle`. No threadgroup memory, no barrier. No other golden moved (`bn_fin` is `threads 32` too, which this said nothing else was, and has no such
+     reduction).
    * **The schedule**: `delta_step16` and `delta_step8` are `threads 32 br 1` on Apple. That alone: 143 us.
    * **The program**: the kernel is bound by what it reads (a hand-written one took 43 us loading a token's `k` and
      `q` once and 63 loading them for each of the three blocks of the state). The two files are regenerated in
      token order, a token's `k` and `q` rows put in registers once (`zeros + load`) and borrowed by the three
-     blocks. **77 us a launch alone, no barrier** [measured]. The hand-written 43 is not reached, and why is
-     **[open]**.
+     blocks. **77 us a launch alone, no barrier** [measured]. The hand-written 43 was not reached; why, and 50 us,
+     are section 9.5.
 
    **Prefill 3.29 s against 3.49 (alternating builds, three runs each within 0.4%), 209 tok/s, the same tokens on
    the three prompts of 8.7.** The order of the row sums changes.
@@ -721,3 +721,56 @@ are still a launch a chunk. The speculative check and the single-token path are 
 at MLX's measured rate, so most of what is left is outside them: the 0.47 s of everything that is not a product,
 which in one pass over a prompt Ollama spends a few tenths of a millisecond a token on (`docs/kernels.md` 9.6).
 No step for that is designed here.
+
+### 9.4 What the 0.47 s outside the products is, and one step that gave nothing (2026-11-22)
+
+**Launch and host work is 0.10 s, not most of it.** With every kernel a no-op (`CANCHOGPU_NOOP=""`: each grid is
+still launched) a 689-token prefill takes 0.10 s [measured, two runs]. So of the 0.47 s outside the products
+0.36 s is work the kernels do: the delta step 0.16, attention 0.08, `rmsnorm_rows` 0.05, and rope, `kv_row`, the
+f16 projections, the convolution, the gates and the small norms about 0.06 together (0.01 or less each).
+**Section 9.3's table called 0.19 s "host and launch latency"; 0.10 of it is, and the rest is those small
+kernels' work.**
+
+**Built and taken out: the row-grid kernels once a pass.** The norm, `qnorm`, the keys' norm, the attention gate,
+the gated norm, the gates, the q/k norm and attention's two kernels all have the rows as their grid's first
+extent, so each was compiled for 128 rows and launched once a pass over the rows it had, as the products are.
+**2.86 s against 2.87, the same tokens on the three prompts** [measured, two runs a prompt, alternating builds]:
+nothing, for thirteen more kernels and 12.6 MB of scores. Not kept. These kernels cost what they compute, and a
+launch a chunk was not what they cost.
+
+**What would move it:** the delta step (section 9.5, built); attention's weighted sum, which redoes a head's
+softmax in each of its four threadgroups (0.05 s of the 0.08); the norm, 8 us a launch for 16 rows of 5,120. The
+last two have no design.
+
+### 9.5 Why the emitted delta step took 77 us and the hand-written one 43 (2026-11-22)
+
+Section 9.2 left this open. The two kernels do the same loads and the same arithmetic; the emitted text was edited
+by hand until the time moved (`delta_step16`, `nk=16`, alone, best of the harness's runs):
+
+| emitted kernel | us |
+|---|---|
+| as emitted | 78 to 80 |
+| row sums written to every lane, not lane 0 only | 78 |
+| every local array initialised | 84 |
+| `simd_broadcast_first` for `simd_shuffle(x, 0)` | 78 |
+| **no `if (e < 128u)` around an element's statement** | **61 to 62** |
+| that, and `simd_broadcast_first` | **48** |
+| those, and the lane-0 scalars under `if (tid == 0u)` | 51 |
+| those, and the four-wide loops unrolled | 48 |
+| written by hand | 44 |
+
+Two things, and the second only shows once the first is gone:
+
+* **The bound of `owned`.** A lane owns elements `k * 32 + tid`, and the lowering guards each with `if (e < n)`.
+  With `n` a multiple of the 32 lanes the guard always holds, and the Metal compiler does not see it: 17 us of 78.
+  In a one-simdgroup threadgroup `gen.owned` now writes a plain block when `n % threads == 0`.
+* **One value read by every lane.** A one-element register tile was read as `simd_shuffle(x, (ushort)(e / 128u))`,
+  an index that is always 0. `gen.read` writes `simd_broadcast_first(x)` for a tile of one element: 13 us more.
+
+**The emitted `delta_step16`: 50 us alone against 80** [measured]. Goldens that moved: the four of `delta_step16`
+and `delta_step8`, and `bn_fin` (`threads 32`: its guards only). The same guard is in every kernel the generic
+lowering emits at other thread counts, where it is not always true as written; whether it costs there was not
+measured.
+
+**Prefill 2.82 s against 2.88 (alternating builds, three runs a prompt, within 0.2%), 244 tok/s, the same tokens
+on the three prompts of 8.7.** Ollama: about 2.5 s.
