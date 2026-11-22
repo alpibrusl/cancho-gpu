@@ -362,7 +362,10 @@ f16 activations time as bf16. Ours is 301 us at 16 rows (18.8 a row), f32.
   tenths of a millisecond a token where ours is 1.3**; one pass over the prompt launches each kernel once, not once
   a chunk or a token. With MLX's kernel rate and our 1.3 ms we would be at about 210 tok/s, not 281.
 * `fp_qmv_mma`'s loads put into our lowering are 9.7, built. Not done: the staged kernel, one pass over the prompt,
-  16-bit activations. Not measured: what our 1.3 ms is made of launch by launch.
+  16-bit activations.
+  **Corrected 2026-11-22:** the staged kernel is not what a long product gains. Our 16-row kernel launched once over
+  eight row tiles does 12.5 us a row, and a staged kernel written by hand after `fp_qmm_t` 12.6 to 12.8
+  (`docs/serving.md` 9.3). Not measured: what our 1.3 ms is made of launch by launch.
 
 ### 9.7 `frag_rows_split`: the 16-row kernel after `fp_qmv_mma`, built (2026-11-21)
 

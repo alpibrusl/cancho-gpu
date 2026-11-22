@@ -645,10 +645,10 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    **Prefill 3.49 s against 3.74 (alternating builds, three runs each within 0.5%), 197 tok/s, and the same
    tokens on the three prompts of 8.7, 24 each.** That the tokens are the same there says nothing about a near
    tie elsewhere.
-4. **A long pass and a staged kernel.** MLX's `fp_qmm_t` does 12.1 us a row from 64 rows up against 13.6 for the
-   16-row kernel with f16 activations (`docs/kernels.md` 9.6). [estimate] 0.3 s more, and it is the only step that
-   needs the prefill restructured: kernels for a number of rows not known when they are compiled, the delta and
-   attention layers over a whole prompt, the cache's cut. No design yet.
+4. **A pass of several chunks, each weight product one launch. Built** (section 9.3). What was written here first,
+   a staged kernel after MLX's `fp_qmm_t` worth 0.3 s and a prefill restructured around a row count not known at
+   compile time, **was wrong about the kernel**: the 16-row kernel launched once over many row tiles is as fast as
+   a staged one, and the row count is the launch's grid, not the kernel's.
 5. **Attention for a chunk's rows in one launch. Built.** A chunk ran `attention_scores` and `attention_pv` once a
    token: 32 launches an attention layer, of 32 threadgroups each. `attention_scores_rows` and `attention_pv_rows`
    are the same two programs with the row of the chunk as one more grid axis: one cache, a mask a row (the engine's
@@ -662,7 +662,62 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    What attention still costs, each kernel a no-op in turn: the scores 0.03 s, the weighted sum 0.07 s
    [measured, two runs each]. Every threadgroup of the weighted sum redoes its head's softmax, 4 times a head now.
 
-[estimate] Step 4 on top of steps 1 to 3 and 5 (3.20 s): about 2.9 s, 237 tok/s. **The sum of what is listed does
-not reach Ollama's 2.5 s**; the rest is in the 0.17 ms a token not accounted for and in the products' rate between
-our kernel and theirs, and neither has a step here. The estimate written here before step 5 was built said 0.14 s
-for it; it gave 0.10.
+The estimate written here before step 5 was built said 0.14 s for it; it gave 0.10. The one for step 4 said 0.3 s
+and 2.9 s after it; it gave 0.33 and 2.87.
+
+### 9.3 A pass: several chunks through a layer together (2026-11-22)
+
+**What was measured first, on the kernel alone** (`n=17408 k=5120`, f16 activations, the throwaway harness of
+`docs/kernels.md` 9.6; us a row):
+
+| kernel | one launch of | us a row |
+|---|---|---|
+| ours (`frag_rows_split`), 16 rows | 16 rows | 13.5 to 13.7 |
+| ours, 32 rows | 32 rows | 13.4 |
+| ours, 16 rows a threadgroup, 8 row tiles in the launch's grid | 128 rows | **12.5 to 12.6** |
+| a hand-written staged kernel after `fp_qmm_t`, 64 x 64 tile, 128 threads | 64 / 128 / 256 rows | 13.8 / 13.1 / 12.8 |
+| the same, 32 x 64 tile, 64 threads | 64 / 256 rows | 14.1 / 12.6 |
+| MLX (`docs/kernels.md` 9.6) | 64 / 256 / 651 rows | 12.8 / 12.2 / 13.0 |
+
+So what a long product gains is not the staged tiles: it is the launch. The same register kernel does 12.5 us a
+row once a launch has eight times the threadgroups, and the staged kernel written by hand does no better. **No new
+lowering**: `matvec_fp4_pass_h`, `matvec_fp4_res_pass_h` and `matvec_fp4_swiglu_pass_h` are the three chunk
+programs with the rows as a second grid axis (`grid i over n / bn, j over m / bm`), which the compiler already
+takes through `frag_rows_split`.
+
+**The pass.** `feed_pass` feeds `tiles` chunks of 16 tokens (`pt()` = 8 at most, 128 rows) through each layer
+together. In a layer:
+
+* each of the seven weight products is one launch over the pass's rows. The kernel is compiled for 128 rows and
+  16 a threadgroup; a shorter pass launches it over fewer row tiles (the grid's second extent, set in the kernel's
+  record before the layer loop). Nothing is compiled for a row count;
+* every other kernel is the chunk's, launched once a chunk in order at an offset into the pass's buffers. The delta
+  state and the convolution window go from chunk to chunk as they did; an attention layer writes the pass's keys
+  and values and then attends chunk by chunk under each row's own mask.
+
+The chunk buffers hold a pass: 8 times what they were, about 67 MB. `feed` takes as many whole chunks as are left,
+up to `pt()`; the half chunk and the single tokens after them are unchanged. A row goes through the arithmetic it
+went through in a chunk.
+
+**Measured.** 689 tokens, alternating builds, three runs a prompt: **2.87 s against 3.20 (240 tok/s), the same 24
+tokens on the three prompts of 8.7.** Passes of 8, 16 and 32 chunks: 2.86 to 2.87 s each; 64 (the whole prompt):
+2.94. So 8.
+
+What is left, each family a no-op in turn (one run each):
+
+| family | costs, before the pass | after |
+|---|---|---|
+| the NVFP4 products | 2.64 s | 2.40 s |
+| the delta step | 0.19 | 0.16 |
+| attention | 0.09 | 0.08 |
+| `rmsnorm_rows` | 0.05 | 0.04 |
+| everything else, host and launch latency | 0.25 | 0.19 |
+
+**Not done, not tested.** A launch over fewer row tiles than the kernel was compiled for is covered only by the
+model's tokens, not by a kernel test: `metal-kernels.sh` launches a kernel over its whole grid. The other kernels
+are still a launch a chunk. The speculative check and the single-token path are untouched.
+
+**Against Ollama's 2.5 s:** 0.37 s. The products are 3.48 ms a token against the 3.3 to 3.5 its kernel would give
+at MLX's measured rate, so most of what is left is outside them: the 0.47 s of everything that is not a product,
+which in one pass over a prompt Ollama spends a few tenths of a millisecond a token on (`docs/kernels.md` 9.6).
+No step for that is designed here.

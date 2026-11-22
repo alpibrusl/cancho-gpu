@@ -56,6 +56,11 @@ pub fn mb() -> [] int {
     return 16;
 }
 
+// The row tiles (of `mb()` rows) of a prefill pass at most: 128 rows a launch of a weight product (docs/serving.md 9.3).
+pub fn pt() -> [] int {
+    return 8;
+}
+
 pub fn tmax() -> [] int {
     return 1024;
 }
@@ -802,33 +807,33 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     let b_sin = metal.cgpu_alloc(ffi, 4 * 32);
     let b_mask = metal.cgpu_alloc(ffi, 4 * tmax());
     // Batch buffers: `mb()` rows of each activation.
-    let b_xs = metal.cgpu_alloc(ffi, 4 * mb() * h);
-    let b_xs2 = metal.cgpu_alloc(ffi, 4 * mb() * h);
-    let b_ns = metal.cgpu_alloc(ffi, 4 * mb() * h);
-    let b_qkvs = metal.cgpu_alloc(ffi, 4 * mb() * 10240);
-    let b_zs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_as = metal.cgpu_alloc(ffi, 4 * mb() * 48);
-    let b_bs = metal.cgpu_alloc(ffi, 4 * mb() * 48);
-    let b_convs = metal.cgpu_alloc(ffi, 4 * mb() * 10240);
-    let b_qns = metal.cgpu_alloc(ffi, 4 * mb() * 2048);
-    let b_kns = metal.cgpu_alloc(ffi, 4 * mb() * 2048);
-    let b_gs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_bts = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_ys = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_gns = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_qgs = metal.cgpu_alloc(ffi, 4 * mb() * 12288);
-    let b_ks = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
-    let b_vs = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
-    let b_q2s = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_k2s = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
-    let b_qrs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_krs = metal.cgpu_alloc(ffi, 4 * mb() * 1024);
-    let b_os = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_ogs = metal.cgpu_alloc(ffi, 4 * mb() * 6144);
-    let b_acts = metal.cgpu_alloc(ffi, 4 * mb() * inter());
-    let b_coss = metal.cgpu_alloc(ffi, 4 * mb() * 32);
-    let b_sins = metal.cgpu_alloc(ffi, 4 * mb() * 32);
-    let b_masks = metal.cgpu_alloc(ffi, 4 * mb() * tmax());
+    let b_xs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * h);
+    let b_xs2 = metal.cgpu_alloc(ffi, 4 * pt() * mb() * h);
+    let b_ns = metal.cgpu_alloc(ffi, 4 * pt() * mb() * h);
+    let b_qkvs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 10240);
+    let b_zs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_as = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 48);
+    let b_bs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 48);
+    let b_convs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 10240);
+    let b_qns = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 2048);
+    let b_kns = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 2048);
+    let b_gs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_bts = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_ys = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_gns = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_qgs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 12288);
+    let b_ks = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 1024);
+    let b_vs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 1024);
+    let b_q2s = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_k2s = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 1024);
+    let b_qrs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_krs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 1024);
+    let b_os = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_ogs = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 6144);
+    let b_acts = metal.cgpu_alloc(ffi, 4 * pt() * mb() * inter());
+    let b_coss = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 32);
+    let b_sins = metal.cgpu_alloc(ffi, 4 * pt() * mb() * 32);
+    let b_masks = metal.cgpu_alloc(ffi, 4 * pt() * mb() * tmax());
     // Per layer: a linear layer's convolution window (two, taken in turn) and its
     // delta state; an attention layer's key and value caches. All start at zero.
     let st1 = mem.list(m);
@@ -904,7 +909,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 207);
+    let eng = mem.grab(m, 214);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -1135,6 +1140,16 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
         ai = ai + 1;
     }
     m[eng + 206] = metal.cgpu_alloc(ffi, 4 * 24 * 1024 * mb());
+    // The chunk's weight products with the rows as a grid axis, compiled for a whole pass and launched over as many row
+    // tiles as a pass has (docs/serving.md 9.3): 207.. in the order of 22..28.
+    let np = float_of(pt() * mb());
+    m[eng + 207] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", 10240, "k", h), "m", np), "bm", nb));
+    m[eng + 208] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", 6144, "k", h), "m", np), "bm", nb));
+    m[eng + 209] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", 12288, "k", h), "m", np), "bm", nb));
+    m[eng + 210] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", 1024, "k", h), "m", np), "bm", nb));
+    m[eng + 211] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", h, "k", 6144), "m", np), "bm", nb));
+    m[eng + 212] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_res_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", h, "k", inter()), "m", np), "bm", nb));
+    m[eng + 213] = compile_kernel(m, t, ffi, fs, kdir, "matvec_fp4_swiglu_pass_h.chx", cv(m, t, cv(m, t, c2(m, t, "n", inter(), "k", h), "m", np), "bm", nb));
     if err.failed(m) {
         return 0 - 1;
     }
@@ -1353,13 +1368,29 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
         kb = 170;
         kd = 187;
     }
-    let k_qkvb = m[eng + kb];
-    let k_zb = m[eng + kb + 1];
-    let k_qgb = m[eng + kb + 2];
-    let k_kvb = m[eng + kb + 3];
-    let k_outb = m[eng + kb + 4];
-    let k_downb = m[eng + kb + 5];
-    let k_gateupb = m[eng + kb + 6];
+    // `g` row tiles of `tr` rows: a prefill pass is several chunks through a layer together, each weight product one launch
+    // over the pass's rows and each of the other kernels a launch a chunk, in order (docs/serving.md 9.3).
+    var g = 1;
+    var tr = rows;
+    var kp = kb;
+    if set == 0 && rows > mb() {
+        g = rows / mb();
+        tr = mb();
+        kp = 207;
+        var pk = 0;
+        while pk < 7 {
+            let rec = m[eng + 207 + pk];
+            m[rec + 2] = g;
+            pk = pk + 1;
+        }
+    }
+    let k_qkvb = m[eng + kp];
+    let k_zb = m[eng + kp + 1];
+    let k_qgb = m[eng + kp + 2];
+    let k_kvb = m[eng + kp + 3];
+    let k_outb = m[eng + kp + 4];
+    let k_downb = m[eng + kp + 5];
+    let k_gateupb = m[eng + kp + 6];
     let k_rmsb = m[eng + kb + 7];
     let k_qnormb = m[eng + kb + 8];
     let k_knormb = m[eng + kb + 9];
@@ -1449,6 +1480,7 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
             zc = zc + 1;
         }
         metal.cgpu_upload_at(ffi, b_masks, 4 * tmax() * tk_i, t[mrow..mrow + 4 * tmax()]);
+        m[mem.text_slot()] = chunk_mark;
         tk_i = tk_i + 1;
     }
     var cur = b_xs;
@@ -1456,16 +1488,25 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     l = 0;
     while l < layers() {
         let w = mem.get(m, lw, l);
-        go(m, ffi, k_rmsb, cur, mem.get(m, w, 0), b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+        var c0 = 0;
+        while c0 < g {
+            go(m, ffi, k_rmsb, at(cur, 4 * h * c0 * tr), mem.get(m, w, 0), at(b_ns, 2 * h * c0 * tr), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            c0 = c0 + 1;
+        }
         if is_attention(l) {
             fp4(m, ffi, k_qgb, b_ns, mem.get(m, w, 1), b_qgs);
             ov(ffi);
             fp4(m, ffi, k_kvb, b_ns, mem.get(m, w, 2), b_ks);
             ov(ffi);
             fp4(m, ffi, k_kvb, b_ns, mem.get(m, w, 3), b_vs);
-            go(m, ffi, k_qnormb, b_qgs, mem.get(m, w, 4), b_q2s, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-            ov(ffi);
-            go(m, ffi, k_knormb, b_ks, mem.get(m, w, 5), b_k2s, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            var c = 0;
+            while c < g {
+                let o = c * tr;
+                go(m, ffi, k_qnormb, at(b_qgs, 4 * 12288 * o), mem.get(m, w, 4), at(b_q2s, 4 * 6144 * o), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                ov(ffi);
+                go(m, ffi, k_knormb, at(b_ks, 4 * 1024 * o), mem.get(m, w, 5), at(b_k2s, 4 * 1024 * o), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                c = c + 1;
+            }
             var tt = 0;
             while tt < rows {
                 go(m, ffi, k_ropeq, at(b_q2s, 4 * 6144 * tt), at(b_coss, 128 * tt), at(b_sins, 128 * tt), at(b_qrs, 4 * 6144 * tt), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
@@ -1497,10 +1538,20 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 if pos + rows > 512 {
                     sl = sl + 2;
                 }
-                go(m, ffi, m[eng + sl], b_qrs, mem.get(m, st1, l), b_masks, m[eng + 206], 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                go(m, ffi, m[eng + sl + 1], m[eng + 206], mem.get(m, st2, l), b_os, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                var ca = 0;
+                while ca < g {
+                    let oa = ca * tr;
+                    go(m, ffi, m[eng + sl], at(b_qrs, 4 * 6144 * oa), mem.get(m, st1, l), at(b_masks, 4 * tmax() * oa), m[eng + 206], 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + sl + 1], m[eng + 206], mem.get(m, st2, l), at(b_os, 4 * 6144 * oa), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ca = ca + 1;
+                }
             }
-            go(m, ffi, k_attn_gateb, b_os, b_qgs, b_ogs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            var cg = 0;
+            while cg < g {
+                let og = cg * tr;
+                go(m, ffi, k_attn_gateb, at(b_os, 4 * 6144 * og), at(b_qgs, 4 * 12288 * og), at(b_ogs, 2 * 6144 * og), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                cg = cg + 1;
+            }
             fp4_res(m, ffi, k_outb, b_ogs, mem.get(m, w, 6), cur, nxt);
         } else {
             fp4(m, ffi, k_qkvb, b_ns, mem.get(m, w, 1), b_qkvs);
@@ -1526,26 +1577,45 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 go12(m, ffi, m[eng + 151], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3b, l), mem.get(m, st3c, l), mem.get(m, st3d, l), b_ys, 0 - 1, 0 - 1);
             } else {
                 // the chunk's rows: one launch for each step, the window and the state carried through them in the kernel
-                ov(ffi);
-                go(m, ffi, m[eng + kd], b_ns, mem.get(m, w, 3), b_as, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                ov(ffi);
-                go(m, ffi, m[eng + kd], b_ns, mem.get(m, w, 4), b_bs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                var cd = 0;
+                while cd < g {
+                    let od = cd * tr;
+                    ov(ffi);
+                    go(m, ffi, m[eng + kd], at(b_ns, 2 * h * od), mem.get(m, w, 3), at(b_as, 4 * 48 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ov(ffi);
+                    go(m, ffi, m[eng + kd], at(b_ns, 2 * h * od), mem.get(m, w, 4), at(b_bs, 4 * 48 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    cd = cd + 1;
+                }
                 // a token at an even position reads its window from the first buffer and leaves it in the second: after an
                 // even number of rows the window is back where it was read
                 var cs_w = mem.get(m, st1, l);
                 if pos % 2 == 1 {
                     cs_w = mem.get(m, st2, l);
                 }
-                go(m, ffi, m[eng + kd + 3], b_qkvs, cs_w, mem.get(m, w, 5), b_convs, cs_w, 0 - 1, 0 - 1, 0 - 1);
-                go(m, ffi, m[eng + kd + 2], b_convs, b_qns, b_kns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                ov(ffi);
-                go(m, ffi, m[eng + kd + 1], b_as, b_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
-                go(m, ffi, m[eng + kd + 4], mem.get(m, st3, l), b_qns, b_kns, b_convs, b_gs, b_bts, mem.get(m, st3, l), b_ys);
+                cd = 0;
+                while cd < g {
+                    let od = cd * tr;
+                    go(m, ffi, m[eng + kd + 3], at(b_qkvs, 4 * 10240 * od), cs_w, mem.get(m, w, 5), at(b_convs, 4 * 10240 * od), cs_w, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd + 2], at(b_convs, 4 * 10240 * od), at(b_qns, 4 * 2048 * od), at(b_kns, 4 * 2048 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    ov(ffi);
+                    go(m, ffi, m[eng + kd + 1], at(b_as, 4 * 48 * od), at(b_bs, 4 * 48 * od), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * od), at(b_bts, 4 * 6144 * od), 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd + 4], mem.get(m, st3, l), at(b_qns, 4 * 2048 * od), at(b_kns, 4 * 2048 * od), at(b_convs, 4 * 10240 * od), at(b_gs, 4 * 6144 * od), at(b_bts, 4 * 6144 * od), mem.get(m, st3, l), at(b_ys, 4 * 6144 * od));
+                    cd = cd + 1;
+                }
             }
-            go(m, ffi, k_gnormb, b_ys, b_zs, mem.get(m, w, 8), b_gns, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            var cn = 0;
+            while cn < g {
+                let on = cn * tr;
+                go(m, ffi, k_gnormb, at(b_ys, 4 * 6144 * on), at(b_zs, 4 * 6144 * on), mem.get(m, w, 8), at(b_gns, 2 * 6144 * on), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                cn = cn + 1;
+            }
             fp4_res(m, ffi, k_outb, b_gns, mem.get(m, w, 9), cur, nxt);
         }
-        go(m, ffi, k_rmsb, nxt, mem.get(m, w, 10), b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+        c0 = 0;
+        while c0 < g {
+            go(m, ffi, k_rmsb, at(nxt, 4 * h * c0 * tr), mem.get(m, w, 10), at(b_ns, 2 * h * c0 * tr), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            c0 = c0 + 1;
+        }
         fp4_swiglu(m, ffi, k_gateupb, b_ns, mem.get(m, w, 11), mem.get(m, w, 12), b_acts);
         fp4_res(m, ffi, k_downb, b_acts, mem.get(m, w, 13), nxt, cur);
         metal.cgpu_flush(ffi);
@@ -1599,6 +1669,14 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
 // Half a chunk, with the kernels compiled for that many rows.
 pub fn feed_half[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, pos: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     return feed_rows(m, t, ffi, fs, eng, ids, pos, pos, mb() / 2, 2, 0 - 1, 0);
+}
+
+// A prefill pass: `tiles` chunks of `mb()` tokens through each layer together (`pt()` at most), no logits.
+pub fn feed_pass[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ids: int, pos: int, tiles: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    if tiles < 1 || tiles > pt() {
+        return err.fail(m, t, "device", text.f2(m, t, "a prefill pass of $ chunks: 1 to $ can be fed together", text.num(m, t, tiles), text.num(m, t, pt())));
+    }
+    return feed_rows(m, t, ffi, fs, eng, ids, pos, pos, mb() * tiles, 0, 0 - 1, 0);
 }
 
 // A prefill chunk: `mb()` tokens, no logits.

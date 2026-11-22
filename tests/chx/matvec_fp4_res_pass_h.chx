@@ -1,0 +1,23 @@
+// matvec_fp4_res_batch_h.chx with the rows as a second grid axis: see matvec_fp4_pass_h.chx.
+algo matvec_fp4_res_pass_h(m, n, k, bm)
+  in  x:  f16[m, k]
+  in  wq: i8[n, k / 2]
+  in  ws: i8[n, k / 16]
+  in  wg: f32[n]
+  in  r:  f32[m, n]
+  out y:  f32[m, n]
+  tile bn
+{
+  grid i over n / bn, j over m / bm
+  let xt = load x[j * bm, 0 ; bm, k]
+  let q  = load wq[i * bn, 0 ; bn, k / 2]
+  let s  = load ws[i * bn, 0 ; bn, k / 16]
+  let g  = load wg[i * bn ; bn]
+  let rt = load r[j * bm, i * bn ; bm, bn]
+  let w  = dequant_fp4 q s g 16
+  let p  = matmul_nt xt w
+  store p + rt -> y[j * bm, i * bn]
+}
+
+schedule matvec_fp4_res_pass_h for apple-m-series { threads 256 bn 32 frag 4 }
+schedule matvec_fp4_res_pass_h for nvidia-ada     { threads 256 bn 8 }

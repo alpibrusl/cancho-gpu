@@ -54,3 +54,6 @@ dit_wan_gate_res_s=4352_n=3072|noref|the interpreter's memory cannot hold the te
 matvec_fp4_batch_h_m=16_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_res_batch_h_m=16_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_batch_h_m=16_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_pass_h_m=128_n=17408_k=5120_bm=16|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_res_pass_h_m=128_n=5120_k=17408_bm=16|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_swiglu_pass_h_m=128_n=17408_k=5120_bm=16|noref|the interpreter's memory cannot hold the tensors
