@@ -28,7 +28,7 @@ kernel void bn_fin_18_32_6_32_1024(
     float v1[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v1[k] = float(0.0f);
         }
     }
@@ -38,7 +38,7 @@ kernel void bn_fin_18_32_6_32_1024(
         float v6[1];
         for (uint k = 0; k < 1u; ++k) {
             const uint e = k * 32u + tid;
-            if (e < 32u) {
+            {
                 const uint i = e / 32u, j = e % 32u;
                 float s = 0.0f;
                 for (uint p = 0; p < 6u; ++p) s += float(float(p2_ones[(uint)(0) * 6u + (uint)(0) * 1u + ((i * 6u + p))])) * float(float(p0_s1[(uint)(0 + 6 * v2) * 32u + (uint)(0 + 32 * gid) * 1u + ((p * 32u + j))]));
@@ -48,7 +48,7 @@ kernel void bn_fin_18_32_6_32_1024(
         float v7[1];
         for (uint k = 0; k < 1u; ++k) {
             const uint e = k * 32u + tid;
-            if (e < 32u) {
+            {
                 v7[k] = float(float(v3[k]) + float(v6[k]));
             }
         }
@@ -57,7 +57,7 @@ kernel void bn_fin_18_32_6_32_1024(
     float v9[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v9[k] = float(0.0f);
         }
     }
@@ -67,7 +67,7 @@ kernel void bn_fin_18_32_6_32_1024(
         float v14[1];
         for (uint k = 0; k < 1u; ++k) {
             const uint e = k * 32u + tid;
-            if (e < 32u) {
+            {
                 const uint i = e / 32u, j = e % 32u;
                 float s = 0.0f;
                 for (uint p = 0; p < 6u; ++p) s += float(float(p2_ones[(uint)(0) * 6u + (uint)(0) * 1u + ((i * 6u + p))])) * float(float(p1_s2[(uint)(0 + 6 * v10) * 32u + (uint)(0 + 32 * gid) * 1u + ((p * 32u + j))]));
@@ -77,7 +77,7 @@ kernel void bn_fin_18_32_6_32_1024(
         float v15[1];
         for (uint k = 0; k < 1u; ++k) {
             const uint e = k * 32u + tid;
-            if (e < 32u) {
+            {
                 v15[k] = float(float(v11[k]) + float(v14[k]));
             }
         }
@@ -86,155 +86,155 @@ kernel void bn_fin_18_32_6_32_1024(
     float v17[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v17[k] = float(float(v3[k]) * 0.0009765625f);
         }
     }
     float v18[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v18[k] = float(float(v11[k]) * 0.0009765625f);
         }
     }
     float v19[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v19[k] = float(float(v17[k]) * float(v17[k]));
         }
     }
     float v20[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v20[k] = float(float(v18[k]) - float(v19[k]));
         }
     }
     float v21[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v21[k] = float(1e-5f);
         }
     }
     float v22[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v22[k] = float(float(v20[k]) + float(v21[k]));
         }
     }
     float v23[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v23[k] = float(precise::rsqrt(float(v22[k])));
         }
     }
     float v26[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v26[k] = float(float(float(p3_gamma[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + ((e))])) * float(v23[k]));
         }
     }
     float v27[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v27[k] = float(float(v26[k]) * 1.0f);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             p7_sc[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + (e)] = float(float(v27[k]));
         }
     }
     float v28[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v28[k] = float(float(v17[k]) * float(v26[k]));
         }
     }
     float v29[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v29[k] = float(float(float(p4_beta[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + ((e))])) - float(v28[k]));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             p8_sh[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + (e)] = float(float(v29[k]));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             p10_istd[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + (e)] = float(float(v23[k]));
         }
     }
     float v31[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v31[k] = float(float(float(p5_rm[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + ((e))])) * 0.9f);
         }
     }
     float v32[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v32[k] = float(float(v17[k]) * 0.1f);
         }
     }
     float v33[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v33[k] = float(float(v31[k]) + float(v32[k]));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             p11_rmo[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + (e)] = float(float(v33[k]));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             p9_mean[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + (e)] = float(float(v17[k]));
         }
     }
     float v35[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v35[k] = float(float(float(p6_rv[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + ((e))])) * 0.9f);
         }
     }
     float v36[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v36[k] = float(float(v20[k]) * 0.10009775f);
         }
     }
     float v37[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             v37[k] = float(float(v35[k]) + float(v36[k]));
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 32u + tid;
-        if (e < 32u) {
+        {
             p12_rvo[(uint)(0) * 32u + (uint)(0 + 32 * gid) * 1u + (e)] = float(float(v37[k]));
         }
     }
