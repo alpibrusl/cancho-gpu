@@ -26,107 +26,53 @@ extern "C" __global__ void delta_step16_2_32(
     const uint tid = threadIdx.x;
     const uint gid = blockIdx.x, gid2 = blockIdx.y;
     __shared__ float scratch[4128];
-    float v4[32];
+    float v5[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v4[k] = float(float(float(p0_s[(uint)(0 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(0 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v5[k] = float(0.0f);
         }
     }
-    float v6[32];
+    float v7[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v6[k] = float(float(v4[k]) * float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v7[k] = float(float(v5[k]) + float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
+    float v8[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v6[k]);
+            v8[k] = float(0.0f);
         }
     }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v7[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v10[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v7[k] = float(s);
-        }
-    }
-    float v9[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v9[k] = float(float(float(p3_v[(uint)(4096 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v7[k]));
-        }
-    }
-    float v11[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v11[k] = float(float(v9[k]) * float(float(p5_bt[(uint)(0 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v10[k] = float(float(v8[k]) + float(float(p1_q[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v12[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v12[k] = float(0.0f);
+            v12[k] = float(float(float(p0_s[(uint)(0 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(0 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v14[32];
+    float v13[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v14[k] = float(float(v12[k]) + float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v11[k]);
-        }
-    }
-    __syncthreads();
-    float v15[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v15[k] = float(float(v14[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v16[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v16[k] = float(float(v4[k]) + float(v15[k]));
-        }
-    }
-    float v18[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v18[k] = float(float(v16[k]) * float(float(p1_q[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v13[k] = float(float(v12[k]) * float(v7[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v18[k]);
+            scratch[0 + e] = float(v13[k]);
         }
     }
     __syncthreads();
@@ -138,40 +84,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v19[1];
+    float v14[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v19[k] = float(s);
+            v14[k] = float(s);
         }
     }
+    float v16[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(0 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v19[k]));
+            v16[k] = float(float(float(p3_v[(uint)(4096 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v14[k]));
+        }
+    }
+    float v18[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v18[k] = float(float(v16[k]) * float(float(p5_bt[(uint)(0 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v18[k]);
+        }
+    }
+    __syncthreads();
+    float v19[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v19[k] = float(float(v7[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v20[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v20[k] = float(float(v12[k]) + float(v19[k]));
         }
     }
     float v21[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v21[k] = float(float(v16[k]) * float(float(p4_g[(uint)(6 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v23[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v23[k] = float(float(v21[k]) * float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v21[k] = float(float(v20[k]) * float(v10[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v23[k]);
+            scratch[0 + e] = float(v21[k]);
         }
     }
     __syncthreads();
@@ -183,77 +152,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v24[1];
+    float v22[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v24[k] = float(s);
+            v22[k] = float(s);
         }
     }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(0 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v22[k]));
+        }
+    }
+    float v24[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v24[k] = float(float(float(p0_s[(uint)(128 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(1 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v25[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v25[k] = float(float(v24[k]) * float(v7[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v25[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v26[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v26[k] = float(float(float(p3_v[(uint)(14336 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v24[k]));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v26[k] = float(s);
         }
     }
     float v28[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v28[k] = float(float(v26[k]) * float(float(p5_bt[(uint)(768 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v28[k] = float(float(float(p3_v[(uint)(4224 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v26[k]));
         }
     }
-    float v29[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v30[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v29[k] = float(0.0f);
-        }
-    }
-    float v31[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v31[k] = float(float(v29[k]) + float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v30[k] = float(float(v28[k]) * float(float(p5_bt[(uint)(128 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v28[k]);
+            scratch[0 + e] = float(v30[k]);
         }
     }
     __syncthreads();
+    float v31[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v31[k] = float(float(v7[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
     float v32[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v32[k] = float(float(v31[k]) * float((scratch + 0)[e / 128u]));
+            v32[k] = float(float(v24[k]) + float(v31[k]));
         }
     }
     float v33[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v33[k] = float(float(v21[k]) + float(v32[k]));
-        }
-    }
-    float v35[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v35[k] = float(float(v33[k]) * float(float(p1_q[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v33[k] = float(float(v32[k]) * float(v10[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v35[k]);
+            scratch[0 + e] = float(v33[k]);
         }
     }
     __syncthreads();
@@ -265,40 +265,40 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v36[1];
+    float v34[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v36[k] = float(s);
+            v34[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(768 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v36[k]));
+            p7_y[(uint)(128 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v34[k]));
         }
     }
-    float v38[32];
+    float v36[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v38[k] = float(float(v33[k]) * float(float(p4_g[(uint)(12 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v36[k] = float(float(float(p0_s[(uint)(256 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(2 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v40[32];
+    float v37[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v40[k] = float(float(v38[k]) * float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v37[k] = float(float(v36[k]) * float(v7[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v40[k]);
+            scratch[0 + e] = float(v37[k]);
         }
     }
     __syncthreads();
@@ -310,122 +310,136 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v41[1];
+    float v38[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v41[k] = float(s);
+            v38[k] = float(s);
         }
     }
-    float v43[1];
+    float v40[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v43[k] = float(float(float(p3_v[(uint)(24576 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v41[k]));
+            v40[k] = float(float(float(p3_v[(uint)(4352 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v38[k]));
         }
     }
-    float v45[1];
+    float v42[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v45[k] = float(float(v43[k]) * float(float(p5_bt[(uint)(1536 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v46[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v46[k] = float(0.0f);
-        }
-    }
-    float v48[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v48[k] = float(float(v46[k]) + float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v42[k] = float(float(v40[k]) * float(float(p5_bt[(uint)(256 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
+            scratch[0 + e] = float(v42[k]);
+        }
+    }
+    __syncthreads();
+    float v43[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v43[k] = float(float(v7[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v44[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v44[k] = float(float(v36[k]) + float(v43[k]));
+        }
+    }
+    float v45[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v45[k] = float(float(v44[k]) * float(v10[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
             scratch[0 + e] = float(v45[k]);
         }
     }
     __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v46[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v46[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(256 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v46[k]));
+        }
+    }
+    float v47[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v47[k] = float(0.0f);
+        }
+    }
     float v49[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v49[k] = float(float(v48[k]) * float((scratch + 0)[e / 128u]));
+            v49[k] = float(float(v47[k]) + float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v50[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v50[k] = float(float(v38[k]) + float(v49[k]));
+            v50[k] = float(0.0f);
         }
     }
     float v52[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v52[k] = float(float(v50[k]) * float(float(p1_q[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v52[k] = float(float(v50[k]) + float(float(p1_q[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
+    float v54[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v52[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v53[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v53[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(1536 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v53[k]));
+            v54[k] = float(float(v20[k]) * float(float(p4_g[(uint)(6 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v55[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v55[k] = float(float(v50[k]) * float(float(p4_g[(uint)(18 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v57[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v57[k] = float(float(v55[k]) * float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v55[k] = float(float(v54[k]) * float(v49[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v57[k]);
+            scratch[0 + e] = float(v55[k]);
         }
     }
     __syncthreads();
@@ -437,77 +451,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v58[1];
+    float v56[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v58[k] = float(s);
+            v56[k] = float(s);
+        }
+    }
+    float v58[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v58[k] = float(float(float(p3_v[(uint)(14336 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v56[k]));
         }
     }
     float v60[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v60[k] = float(float(float(p3_v[(uint)(34816 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v58[k]));
+            v60[k] = float(float(v58[k]) * float(float(p5_bt[(uint)(768 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v62[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v62[k] = float(float(v60[k]) * float(float(p5_bt[(uint)(2304 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            scratch[0 + e] = float(v60[k]);
+        }
+    }
+    __syncthreads();
+    float v61[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v61[k] = float(float(v49[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v62[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v62[k] = float(float(v54[k]) + float(v61[k]));
         }
     }
     float v63[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v63[k] = float(0.0f);
+            v63[k] = float(float(v62[k]) * float(v52[k]));
         }
     }
-    float v65[32];
+    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v65[k] = float(float(v63[k]) + float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            scratch[0 + e] = float(v63[k]);
         }
     }
     __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v64[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v62[k]);
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v64[k] = float(s);
         }
     }
-    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(768 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v64[k]));
+        }
+    }
     float v66[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v66[k] = float(float(v65[k]) * float((scratch + 0)[e / 128u]));
+            v66[k] = float(float(v32[k]) * float(float(p4_g[(uint)(7 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v67[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v67[k] = float(float(v55[k]) + float(v66[k]));
-        }
-    }
-    float v69[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v69[k] = float(float(v67[k]) * float(float(p1_q[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v67[k] = float(float(v66[k]) * float(v49[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v69[k]);
+            scratch[0 + e] = float(v67[k]);
         }
     }
     __syncthreads();
@@ -519,40 +564,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v70[1];
+    float v68[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v70[k] = float(s);
+            v68[k] = float(s);
         }
     }
+    float v70[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(2304 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v70[k]));
+            v70[k] = float(float(float(p3_v[(uint)(14464 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v68[k]));
         }
     }
-    float v72[32];
+    float v72[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v72[k] = float(float(v70[k]) * float(float(p5_bt[(uint)(896 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v72[k]);
+        }
+    }
+    __syncthreads();
+    float v73[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v72[k] = float(float(v67[k]) * float(float(p4_g[(uint)(24 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v73[k] = float(float(v49[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v74[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v74[k] = float(float(v72[k]) * float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v74[k] = float(float(v66[k]) + float(v73[k]));
+        }
+    }
+    float v75[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v75[k] = float(float(v74[k]) * float(v52[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v74[k]);
+            scratch[0 + e] = float(v75[k]);
         }
     }
     __syncthreads();
@@ -564,77 +632,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v75[1];
+    float v76[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v75[k] = float(s);
+            v76[k] = float(s);
         }
     }
-    float v77[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v77[k] = float(float(float(p3_v[(uint)(45056 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v75[k]));
+            p7_y[(uint)(896 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v76[k]));
         }
     }
-    float v79[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v79[k] = float(float(v77[k]) * float(float(p5_bt[(uint)(3072 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v80[32];
+    float v78[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v80[k] = float(0.0f);
+            v78[k] = float(float(v44[k]) * float(float(p4_g[(uint)(8 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v82[32];
+    float v79[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v82[k] = float(float(v80[k]) + float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v79[k] = float(float(v78[k]) * float(v49[k]));
         }
     }
     __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
+        if (e < 4096u) {
             scratch[0 + e] = float(v79[k]);
         }
     }
     __syncthreads();
-    float v83[32];
-    for (uint k = 0; k < 32u; ++k) {
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v80[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v83[k] = float(float(v82[k]) * float((scratch + 0)[e / 128u]));
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v80[k] = float(s);
         }
     }
-    float v84[32];
+    float v82[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v82[k] = float(float(float(p3_v[(uint)(14592 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v80[k]));
+        }
+    }
+    float v84[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v84[k] = float(float(v82[k]) * float(float(p5_bt[(uint)(1024 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v84[k]);
+        }
+    }
+    __syncthreads();
+    float v85[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v84[k] = float(float(v72[k]) + float(v83[k]));
+            v85[k] = float(float(v49[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v86[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v86[k] = float(float(v84[k]) * float(float(p1_q[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v86[k] = float(float(v78[k]) + float(v85[k]));
+        }
+    }
+    float v87[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v87[k] = float(float(v86[k]) * float(v52[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v86[k]);
+            scratch[0 + e] = float(v87[k]);
         }
     }
     __syncthreads();
@@ -646,122 +745,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v87[1];
+    float v88[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v87[k] = float(s);
+            v88[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(3072 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v87[k]));
+            p7_y[(uint)(1024 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v88[k]));
         }
     }
     float v89[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v89[k] = float(float(v84[k]) * float(float(p4_g[(uint)(30 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v89[k] = float(0.0f);
         }
     }
     float v91[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v91[k] = float(float(v89[k]) * float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v91[k] = float(float(v89[k]) + float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
+    float v92[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v91[k]);
+            v92[k] = float(0.0f);
         }
     }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v92[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v94[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v92[k] = float(s);
+        if (e < 4096u) {
+            v94[k] = float(float(v92[k]) + float(float(p1_q[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v94[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v96[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v94[k] = float(float(float(p3_v[(uint)(55296 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v92[k]));
-        }
-    }
-    float v96[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v96[k] = float(float(v94[k]) * float(float(p5_bt[(uint)(3840 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v96[k] = float(float(v62[k]) * float(float(p4_g[(uint)(12 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v97[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v97[k] = float(0.0f);
-        }
-    }
-    float v99[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v99[k] = float(float(v97[k]) + float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v96[k]);
-        }
-    }
-    __syncthreads();
-    float v100[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v100[k] = float(float(v99[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v101[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v101[k] = float(float(v89[k]) + float(v100[k]));
-        }
-    }
-    float v103[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v103[k] = float(float(v101[k]) * float(float(p1_q[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v97[k] = float(float(v96[k]) * float(v91[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v103[k]);
+            scratch[0 + e] = float(v97[k]);
         }
     }
     __syncthreads();
@@ -773,40 +818,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v104[1];
+    float v98[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v104[k] = float(s);
+            v98[k] = float(s);
+        }
+    }
+    float v100[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v100[k] = float(float(float(p3_v[(uint)(24576 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v98[k]));
+        }
+    }
+    float v102[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v102[k] = float(float(v100[k]) * float(float(p5_bt[(uint)(1536 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v102[k]);
+        }
+    }
+    __syncthreads();
+    float v103[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v103[k] = float(float(v91[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v104[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v104[k] = float(float(v96[k]) + float(v103[k]));
+        }
+    }
+    float v105[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v105[k] = float(float(v104[k]) * float(v94[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v105[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v106[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v106[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(3840 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v104[k]));
-        }
-    }
-    float v106[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v106[k] = float(float(v101[k]) * float(float(p4_g[(uint)(36 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            p7_y[(uint)(1536 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v106[k]));
         }
     }
     float v108[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v108[k] = float(float(v106[k]) * float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v108[k] = float(float(v74[k]) * float(float(p4_g[(uint)(13 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v109[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v109[k] = float(float(v108[k]) * float(v91[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v108[k]);
+            scratch[0 + e] = float(v109[k]);
         }
     }
     __syncthreads();
@@ -818,77 +931,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v109[1];
+    float v110[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v109[k] = float(s);
+            v110[k] = float(s);
         }
     }
-    float v111[1];
+    float v112[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v111[k] = float(float(float(p3_v[(uint)(65536 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v109[k]));
+            v112[k] = float(float(float(p3_v[(uint)(24704 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v110[k]));
         }
     }
-    float v113[1];
+    float v114[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v113[k] = float(float(v111[k]) * float(float(p5_bt[(uint)(4608 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v114[k] = float(float(v112[k]) * float(float(p5_bt[(uint)(1664 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v114[32];
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v114[k]);
+        }
+    }
+    __syncthreads();
+    float v115[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v114[k] = float(0.0f);
+            v115[k] = float(float(v91[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v116[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v116[k] = float(float(v114[k]) + float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v116[k] = float(float(v108[k]) + float(v115[k]));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v113[k]);
-        }
-    }
-    __syncthreads();
     float v117[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v117[k] = float(float(v116[k]) * float((scratch + 0)[e / 128u]));
+            v117[k] = float(float(v116[k]) * float(v94[k]));
         }
     }
-    float v118[32];
+    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v118[k] = float(float(v106[k]) + float(v117[k]));
+            scratch[0 + e] = float(v117[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v118[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v118[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(1664 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v118[k]));
         }
     }
     float v120[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v120[k] = float(float(v118[k]) * float(float(p1_q[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v120[k] = float(float(v86[k]) * float(float(p4_g[(uint)(14 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v121[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v121[k] = float(float(v120[k]) * float(v91[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v120[k]);
+            scratch[0 + e] = float(v121[k]);
         }
     }
     __syncthreads();
@@ -900,72 +1044,87 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v121[1];
+    float v122[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v121[k] = float(s);
+            v122[k] = float(s);
         }
     }
+    float v124[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(4608 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v121[k]));
+            v124[k] = float(float(float(p3_v[(uint)(24832 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v122[k]));
         }
     }
-    float v123[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v123[k] = float(float(v118[k]) * float(float(p4_g[(uint)(42 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v125[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v125[k] = float(float(v123[k]) * float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v125[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
     float v126[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v126[k] = float(s);
+            v126[k] = float(float(v124[k]) * float(float(p5_bt[(uint)(1792 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v128[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v128[k] = float(float(float(p3_v[(uint)(75776 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v126[k]));
+            scratch[0 + e] = float(v126[k]);
         }
     }
+    __syncthreads();
+    float v127[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v127[k] = float(float(v91[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v128[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v128[k] = float(float(v120[k]) + float(v127[k]));
+        }
+    }
+    float v129[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v129[k] = float(float(v128[k]) * float(v94[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v129[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v130[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v130[k] = float(float(v128[k]) * float(float(p5_bt[(uint)(5376 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v130[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(1792 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v130[k]));
         }
     }
     float v131[32];
@@ -979,88 +1138,42 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v133[k] = float(float(v131[k]) + float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v133[k] = float(float(v131[k]) + float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v130[k]);
-        }
-    }
-    __syncthreads();
     float v134[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v134[k] = float(float(v133[k]) * float((scratch + 0)[e / 128u]));
+            v134[k] = float(0.0f);
         }
     }
-    float v135[32];
+    float v136[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v135[k] = float(float(v123[k]) + float(v134[k]));
+            v136[k] = float(float(v134[k]) + float(float(p1_q[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v137[32];
+    float v138[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v137[k] = float(float(v135[k]) * float(float(p1_q[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v138[k] = float(float(v104[k]) * float(float(p4_g[(uint)(18 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v139[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v139[k] = float(float(v138[k]) * float(v133[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v137[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v138[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v138[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(5376 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v138[k]));
-        }
-    }
-    float v140[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v140[k] = float(float(v135[k]) * float(float(p4_g[(uint)(48 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v142[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v142[k] = float(float(v140[k]) * float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v142[k]);
+            scratch[0 + e] = float(v139[k]);
         }
     }
     __syncthreads();
@@ -1072,77 +1185,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v143[1];
+    float v140[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v143[k] = float(s);
+            v140[k] = float(s);
         }
     }
-    float v145[1];
+    float v142[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v145[k] = float(float(float(p3_v[(uint)(86016 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v143[k]));
+            v142[k] = float(float(float(p3_v[(uint)(34816 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v140[k]));
         }
     }
-    float v147[1];
+    float v144[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v147[k] = float(float(v145[k]) * float(float(p5_bt[(uint)(6144 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v144[k] = float(float(v142[k]) * float(float(p5_bt[(uint)(2304 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v148[32];
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v144[k]);
+        }
+    }
+    __syncthreads();
+    float v145[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v148[k] = float(0.0f);
+            v145[k] = float(float(v133[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v146[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v146[k] = float(float(v138[k]) + float(v145[k]));
+        }
+    }
+    float v147[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v147[k] = float(float(v146[k]) * float(v136[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v147[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v148[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v148[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(2304 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v148[k]));
         }
     }
     float v150[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v150[k] = float(float(v148[k]) + float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v150[k] = float(float(v116[k]) * float(float(p4_g[(uint)(19 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v147[k]);
-        }
-    }
-    __syncthreads();
     float v151[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v151[k] = float(float(v150[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v152[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v152[k] = float(float(v140[k]) + float(v151[k]));
-        }
-    }
-    float v154[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v154[k] = float(float(v152[k]) * float(float(p1_q[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v151[k] = float(float(v150[k]) * float(v133[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v154[k]);
+            scratch[0 + e] = float(v151[k]);
         }
     }
     __syncthreads();
@@ -1154,33 +1298,56 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v155[1];
+    float v152[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v155[k] = float(s);
+            v152[k] = float(s);
         }
     }
+    float v154[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(6144 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v155[k]));
+            v154[k] = float(float(float(p3_v[(uint)(34944 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v152[k]));
         }
     }
+    float v156[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v156[k] = float(float(v154[k]) * float(float(p5_bt[(uint)(2432 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v156[k]);
+        }
+    }
+    __syncthreads();
     float v157[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v157[k] = float(float(v152[k]) * float(float(p4_g[(uint)(54 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v157[k] = float(float(v133[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v158[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v158[k] = float(float(v150[k]) + float(v157[k]));
         }
     }
     float v159[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v159[k] = float(float(v157[k]) * float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v159[k] = float(float(v158[k]) * float(v136[k]));
         }
     }
     __syncthreads();
@@ -1208,61 +1375,92 @@ extern "C" __global__ void delta_step16_2_32(
             v160[k] = float(s);
         }
     }
-    float v162[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v162[k] = float(float(float(p3_v[(uint)(96256 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v160[k]));
+            p7_y[(uint)(2432 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v160[k]));
         }
     }
+    float v162[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v162[k] = float(float(v128[k]) * float(float(p4_g[(uint)(20 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v163[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v163[k] = float(float(v162[k]) * float(v133[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v163[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v164[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v164[k] = float(float(v162[k]) * float(float(p5_bt[(uint)(6912 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v164[k] = float(s);
         }
     }
-    float v165[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v166[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v165[k] = float(0.0f);
+        if (e < 32u) {
+            v166[k] = float(float(float(p3_v[(uint)(35072 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v164[k]));
         }
     }
-    float v167[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v168[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v167[k] = float(float(v165[k]) + float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v168[k] = float(float(v166[k]) * float(float(p5_bt[(uint)(2560 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v164[k]);
+            scratch[0 + e] = float(v168[k]);
         }
     }
     __syncthreads();
-    float v168[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v168[k] = float(float(v167[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
     float v169[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v169[k] = float(float(v157[k]) + float(v168[k]));
+            v169[k] = float(float(v133[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v170[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v170[k] = float(float(v162[k]) + float(v169[k]));
         }
     }
     float v171[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v171[k] = float(float(v169[k]) * float(float(p1_q[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v171[k] = float(float(v170[k]) * float(v136[k]));
         }
     }
     __syncthreads();
@@ -1293,28 +1491,56 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(6912 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v172[k]));
+            p7_y[(uint)(2560 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v172[k]));
         }
     }
-    float v174[32];
+    float v173[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v174[k] = float(float(v169[k]) * float(float(p4_g[(uint)(60 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v173[k] = float(0.0f);
+        }
+    }
+    float v175[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v175[k] = float(float(v173[k]) + float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v176[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v176[k] = float(float(v174[k]) * float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v176[k] = float(0.0f);
+        }
+    }
+    float v178[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v178[k] = float(float(v176[k]) + float(float(p1_q[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v180[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v180[k] = float(float(v146[k]) * float(float(p4_g[(uint)(24 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v181[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v181[k] = float(float(v180[k]) * float(v175[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v176[k]);
+            scratch[0 + e] = float(v181[k]);
         }
     }
     __syncthreads();
@@ -1326,77 +1552,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v177[1];
+    float v182[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v177[k] = float(s);
+            v182[k] = float(s);
         }
     }
-    float v179[1];
+    float v184[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v179[k] = float(float(float(p3_v[(uint)(106496 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v177[k]));
+            v184[k] = float(float(float(p3_v[(uint)(45056 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v182[k]));
         }
     }
-    float v181[1];
+    float v186[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v181[k] = float(float(v179[k]) * float(float(p5_bt[(uint)(7680 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v182[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v182[k] = float(0.0f);
-        }
-    }
-    float v184[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v184[k] = float(float(v182[k]) + float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v186[k] = float(float(v184[k]) * float(float(p5_bt[(uint)(3072 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v181[k]);
+            scratch[0 + e] = float(v186[k]);
         }
     }
     __syncthreads();
-    float v185[32];
+    float v187[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v185[k] = float(float(v184[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v186[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v186[k] = float(float(v174[k]) + float(v185[k]));
+            v187[k] = float(float(v175[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v188[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v188[k] = float(float(v186[k]) * float(float(p1_q[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v188[k] = float(float(v180[k]) + float(v187[k]));
+        }
+    }
+    float v189[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v189[k] = float(float(v188[k]) * float(v178[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v188[k]);
+            scratch[0 + e] = float(v189[k]);
         }
     }
     __syncthreads();
@@ -1408,33 +1620,33 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v189[1];
+    float v190[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v189[k] = float(s);
+            v190[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(7680 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v189[k]));
+            p7_y[(uint)(3072 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v190[k]));
         }
     }
-    float v191[32];
+    float v192[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v191[k] = float(float(v186[k]) * float(float(p4_g[(uint)(66 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v192[k] = float(float(v158[k]) * float(float(p4_g[(uint)(25 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v193[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v193[k] = float(float(v191[k]) * float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v193[k] = float(float(v192[k]) * float(v175[k]));
         }
     }
     __syncthreads();
@@ -1466,28 +1678,14 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v196[k] = float(float(float(p3_v[(uint)(116736 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v194[k]));
+            v196[k] = float(float(float(p3_v[(uint)(45184 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v194[k]));
         }
     }
     float v198[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v198[k] = float(float(v196[k]) * float(float(p5_bt[(uint)(8448 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v199[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v199[k] = float(0.0f);
-        }
-    }
-    float v201[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v201[k] = float(float(v199[k]) + float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v198[k] = float(float(v196[k]) * float(float(p5_bt[(uint)(3200 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
@@ -1498,25 +1696,70 @@ extern "C" __global__ void delta_step16_2_32(
         }
     }
     __syncthreads();
-    float v202[32];
+    float v199[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v202[k] = float(float(v201[k]) * float((scratch + 0)[e / 128u]));
+            v199[k] = float(float(v175[k]) * float((scratch + 0)[e / 128u]));
         }
     }
-    float v203[32];
+    float v200[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v203[k] = float(float(v191[k]) + float(v202[k]));
+            v200[k] = float(float(v192[k]) + float(v199[k]));
+        }
+    }
+    float v201[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v201[k] = float(float(v200[k]) * float(v178[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v201[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v202[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v202[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(3200 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v202[k]));
+        }
+    }
+    float v204[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v204[k] = float(float(v170[k]) * float(float(p4_g[(uint)(26 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v205[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v205[k] = float(float(v203[k]) * float(float(p1_q[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v205[k] = float(float(v204[k]) * float(v175[k]));
         }
     }
     __syncthreads();
@@ -1544,31 +1787,54 @@ extern "C" __global__ void delta_step16_2_32(
             v206[k] = float(s);
         }
     }
+    float v208[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(8448 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v206[k]));
+            v208[k] = float(float(float(p3_v[(uint)(45312 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v206[k]));
         }
     }
-    float v208[32];
+    float v210[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v210[k] = float(float(v208[k]) * float(float(p5_bt[(uint)(3328 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v210[k]);
+        }
+    }
+    __syncthreads();
+    float v211[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v208[k] = float(float(v203[k]) * float(float(p4_g[(uint)(72 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v211[k] = float(float(v175[k]) * float((scratch + 0)[e / 128u]));
         }
     }
-    float v210[32];
+    float v212[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v210[k] = float(float(v208[k]) * float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v212[k] = float(float(v204[k]) + float(v211[k]));
+        }
+    }
+    float v213[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v213[k] = float(float(v212[k]) * float(v178[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v210[k]);
+            scratch[0 + e] = float(v213[k]);
         }
     }
     __syncthreads();
@@ -1580,77 +1846,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v211[1];
+    float v214[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v211[k] = float(s);
+            v214[k] = float(s);
         }
     }
-    float v213[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v213[k] = float(float(float(p3_v[(uint)(126976 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v211[k]));
+            p7_y[(uint)(3328 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v214[k]));
         }
     }
-    float v215[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v215[k] = float(float(v213[k]) * float(float(p5_bt[(uint)(9216 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v216[32];
+    float v215[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v216[k] = float(0.0f);
+            v215[k] = float(0.0f);
+        }
+    }
+    float v217[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v217[k] = float(float(v215[k]) + float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v218[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v218[k] = float(float(v216[k]) + float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v215[k]);
-        }
-    }
-    __syncthreads();
-    float v219[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v219[k] = float(float(v218[k]) * float((scratch + 0)[e / 128u]));
+            v218[k] = float(0.0f);
         }
     }
     float v220[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v220[k] = float(float(v208[k]) + float(v219[k]));
+            v220[k] = float(float(v218[k]) + float(float(p1_q[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v222[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v222[k] = float(float(v220[k]) * float(float(p1_q[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v222[k] = float(float(v188[k]) * float(float(p4_g[(uint)(30 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v223[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v223[k] = float(float(v222[k]) * float(v217[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v222[k]);
+            scratch[0 + e] = float(v223[k]);
         }
     }
     __syncthreads();
@@ -1662,122 +1919,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v223[1];
+    float v224[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v223[k] = float(s);
+            v224[k] = float(s);
         }
     }
+    float v226[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(9216 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v223[k]));
+            v226[k] = float(float(float(p3_v[(uint)(55296 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v224[k]));
         }
     }
-    float v225[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v225[k] = float(float(v220[k]) * float(float(p4_g[(uint)(78 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v227[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v227[k] = float(float(v225[k]) * float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v227[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
     float v228[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v228[k] = float(s);
+            v228[k] = float(float(v226[k]) * float(float(p5_bt[(uint)(3840 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v230[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v230[k] = float(float(float(p3_v[(uint)(137216 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v228[k]));
+            scratch[0 + e] = float(v228[k]);
         }
     }
+    __syncthreads();
+    float v229[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v229[k] = float(float(v217[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v230[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v230[k] = float(float(v222[k]) + float(v229[k]));
+        }
+    }
+    float v231[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v231[k] = float(float(v230[k]) * float(v220[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v231[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v232[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v232[k] = float(float(v230[k]) * float(float(p5_bt[(uint)(9984 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v232[k] = float(s);
         }
     }
-    float v233[32];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(3840 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v232[k]));
+        }
+    }
+    float v234[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v233[k] = float(0.0f);
+            v234[k] = float(float(v200[k]) * float(float(p4_g[(uint)(31 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v235[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v235[k] = float(float(v233[k]) + float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v232[k]);
-        }
-    }
-    __syncthreads();
-    float v236[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v236[k] = float(float(v235[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v237[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v237[k] = float(float(v225[k]) + float(v236[k]));
-        }
-    }
-    float v239[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v239[k] = float(float(v237[k]) * float(float(p1_q[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v235[k] = float(float(v234[k]) * float(v217[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v239[k]);
+            scratch[0 + e] = float(v235[k]);
         }
     }
     __syncthreads();
@@ -1789,40 +2032,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v240[1];
+    float v236[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v240[k] = float(s);
+            v236[k] = float(s);
         }
     }
+    float v238[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(9984 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v240[k]));
+            v238[k] = float(float(float(p3_v[(uint)(55424 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v236[k]));
+        }
+    }
+    float v240[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v240[k] = float(float(v238[k]) * float(float(p5_bt[(uint)(3968 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v240[k]);
+        }
+    }
+    __syncthreads();
+    float v241[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v241[k] = float(float(v217[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v242[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v242[k] = float(float(v237[k]) * float(float(p4_g[(uint)(84 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v242[k] = float(float(v234[k]) + float(v241[k]));
         }
     }
-    float v244[32];
+    float v243[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v244[k] = float(float(v242[k]) * float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v243[k] = float(float(v242[k]) * float(v220[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v244[k]);
+            scratch[0 + e] = float(v243[k]);
         }
     }
     __syncthreads();
@@ -1834,48 +2100,79 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v245[1];
+    float v244[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v245[k] = float(s);
+            v244[k] = float(s);
         }
     }
-    float v247[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v247[k] = float(float(float(p3_v[(uint)(147456 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v245[k]));
+            p7_y[(uint)(3968 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v244[k]));
         }
     }
-    float v249[1];
+    float v246[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v246[k] = float(float(v212[k]) * float(float(p4_g[(uint)(32 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v247[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v247[k] = float(float(v246[k]) * float(v217[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v247[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v248[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v249[k] = float(float(v247[k]) * float(float(p5_bt[(uint)(10752 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v248[k] = float(s);
         }
     }
-    float v250[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v250[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v250[k] = float(0.0f);
+        if (e < 32u) {
+            v250[k] = float(float(float(p3_v[(uint)(55552 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v248[k]));
         }
     }
-    float v252[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v252[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v252[k] = float(float(v250[k]) + float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v252[k] = float(float(v250[k]) * float(float(p5_bt[(uint)(4096 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v249[k]);
+            scratch[0 + e] = float(v252[k]);
         }
     }
     __syncthreads();
@@ -1883,28 +2180,28 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v253[k] = float(float(v252[k]) * float((scratch + 0)[e / 128u]));
+            v253[k] = float(float(v217[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v254[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v254[k] = float(float(v242[k]) + float(v253[k]));
+            v254[k] = float(float(v246[k]) + float(v253[k]));
         }
     }
-    float v256[32];
+    float v255[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v256[k] = float(float(v254[k]) * float(float(p1_q[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v255[k] = float(float(v254[k]) * float(v220[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v256[k]);
+            scratch[0 + e] = float(v255[k]);
         }
     }
     __syncthreads();
@@ -1916,40 +2213,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v257[1];
+    float v256[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v257[k] = float(s);
+            v256[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(10752 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v257[k]));
+            p7_y[(uint)(4096 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v256[k]));
+        }
+    }
+    float v257[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v257[k] = float(0.0f);
         }
     }
     float v259[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v259[k] = float(float(v254[k]) * float(float(p4_g[(uint)(90 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v259[k] = float(float(v257[k]) + float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v261[32];
+    float v260[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v261[k] = float(float(v259[k]) * float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v260[k] = float(0.0f);
+        }
+    }
+    float v262[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v262[k] = float(float(v260[k]) + float(float(p1_q[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v264[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v264[k] = float(float(v230[k]) * float(float(p4_g[(uint)(36 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v265[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v265[k] = float(float(v264[k]) * float(v259[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v261[k]);
+            scratch[0 + e] = float(v265[k]);
         }
     }
     __syncthreads();
@@ -1961,70 +2286,56 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v262[1];
+    float v266[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v262[k] = float(s);
+            v266[k] = float(s);
         }
     }
-    float v264[1];
+    float v268[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v264[k] = float(float(float(p3_v[(uint)(157696 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v262[k]));
+            v268[k] = float(float(float(p3_v[(uint)(65536 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v266[k]));
         }
     }
-    float v266[1];
+    float v270[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v266[k] = float(float(v264[k]) * float(float(p5_bt[(uint)(11520 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v267[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v267[k] = float(0.0f);
-        }
-    }
-    float v269[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v269[k] = float(float(v267[k]) + float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v270[k] = float(float(v268[k]) * float(float(p5_bt[(uint)(4608 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v266[k]);
+            scratch[0 + e] = float(v270[k]);
         }
     }
     __syncthreads();
-    float v270[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v270[k] = float(float(v269[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
     float v271[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v271[k] = float(float(v259[k]) + float(v270[k]));
+            v271[k] = float(float(v259[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v272[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v272[k] = float(float(v264[k]) + float(v271[k]));
         }
     }
     float v273[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v273[k] = float(float(v271[k]) * float(float(p1_q[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v273[k] = float(float(v272[k]) * float(v262[k]));
         }
     }
     __syncthreads();
@@ -2055,34 +2366,28 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(11520 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v274[k]));
+            p7_y[(uint)(4608 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v274[k]));
         }
     }
+    float v276[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            p6_so[(uint)(0 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v271[k]));
+            v276[k] = float(float(v242[k]) * float(float(p4_g[(uint)(37 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v277[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v277[k] = float(float(float(p0_s[(uint)(128 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(1 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v279[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v279[k] = float(float(v277[k]) * float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v277[k] = float(float(v276[k]) * float(v259[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v279[k]);
+            scratch[0 + e] = float(v277[k]);
         }
     }
     __syncthreads();
@@ -2094,77 +2399,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v280[1];
+    float v278[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v280[k] = float(s);
+            v278[k] = float(s);
+        }
+    }
+    float v280[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v280[k] = float(float(float(p3_v[(uint)(65664 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v278[k]));
         }
     }
     float v282[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v282[k] = float(float(float(p3_v[(uint)(4224 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v280[k]));
+            v282[k] = float(float(v280[k]) * float(float(p5_bt[(uint)(4736 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v284[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v284[k] = float(float(v282[k]) * float(float(p5_bt[(uint)(128 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            scratch[0 + e] = float(v282[k]);
+        }
+    }
+    __syncthreads();
+    float v283[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v283[k] = float(float(v259[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v284[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v284[k] = float(float(v276[k]) + float(v283[k]));
         }
     }
     float v285[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v285[k] = float(0.0f);
+            v285[k] = float(float(v284[k]) * float(v262[k]));
         }
     }
-    float v287[32];
+    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v287[k] = float(float(v285[k]) + float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            scratch[0 + e] = float(v285[k]);
         }
     }
     __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v286[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v284[k]);
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v286[k] = float(s);
         }
     }
-    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(4736 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v286[k]));
+        }
+    }
     float v288[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v288[k] = float(float(v287[k]) * float((scratch + 0)[e / 128u]));
+            v288[k] = float(float(v254[k]) * float(float(p4_g[(uint)(38 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v289[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v289[k] = float(float(v277[k]) + float(v288[k]));
-        }
-    }
-    float v291[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v291[k] = float(float(v289[k]) * float(float(p1_q[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v289[k] = float(float(v288[k]) * float(v259[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v291[k]);
+            scratch[0 + e] = float(v289[k]);
         }
     }
     __syncthreads();
@@ -2176,40 +2512,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v292[1];
+    float v290[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v292[k] = float(s);
+            v290[k] = float(s);
         }
     }
+    float v292[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(128 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v292[k]));
+            v292[k] = float(float(float(p3_v[(uint)(65792 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v290[k]));
         }
     }
-    float v294[32];
+    float v294[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v294[k] = float(float(v292[k]) * float(float(p5_bt[(uint)(4864 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v294[k]);
+        }
+    }
+    __syncthreads();
+    float v295[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v294[k] = float(float(v289[k]) * float(float(p4_g[(uint)(7 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v295[k] = float(float(v259[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v296[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v296[k] = float(float(v294[k]) * float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v296[k] = float(float(v288[k]) + float(v295[k]));
+        }
+    }
+    float v297[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v297[k] = float(float(v296[k]) * float(v262[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v296[k]);
+            scratch[0 + e] = float(v297[k]);
         }
     }
     __syncthreads();
@@ -2221,27 +2580,33 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v297[1];
+    float v298[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v297[k] = float(s);
+            v298[k] = float(s);
         }
     }
-    float v299[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v299[k] = float(float(float(p3_v[(uint)(14464 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v297[k]));
+            p7_y[(uint)(4864 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v298[k]));
         }
     }
-    float v301[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v299[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v301[k] = float(float(v299[k]) * float(float(p5_bt[(uint)(896 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v299[k] = float(0.0f);
+        }
+    }
+    float v301[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v301[k] = float(float(v299[k]) + float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v302[32];
@@ -2255,43 +2620,28 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v304[k] = float(float(v302[k]) + float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v301[k]);
-        }
-    }
-    __syncthreads();
-    float v305[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v305[k] = float(float(v304[k]) * float((scratch + 0)[e / 128u]));
+            v304[k] = float(float(v302[k]) + float(float(p1_q[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v306[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v306[k] = float(float(v294[k]) + float(v305[k]));
+            v306[k] = float(float(v272[k]) * float(float(p4_g[(uint)(42 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v308[32];
+    float v307[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v308[k] = float(float(v306[k]) * float(float(p1_q[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v307[k] = float(float(v306[k]) * float(v301[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v308[k]);
+            scratch[0 + e] = float(v307[k]);
         }
     }
     __syncthreads();
@@ -2303,40 +2653,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v309[1];
+    float v308[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v309[k] = float(s);
+            v308[k] = float(s);
         }
     }
+    float v310[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(896 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v309[k]));
+            v310[k] = float(float(float(p3_v[(uint)(75776 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v308[k]));
         }
     }
-    float v311[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v312[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v311[k] = float(float(v306[k]) * float(float(p4_g[(uint)(13 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v312[k] = float(float(v310[k]) * float(float(p5_bt[(uint)(5376 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v312[k]);
+        }
+    }
+    __syncthreads();
     float v313[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v313[k] = float(float(v311[k]) * float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v313[k] = float(float(v301[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v314[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v314[k] = float(float(v306[k]) + float(v313[k]));
+        }
+    }
+    float v315[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v315[k] = float(float(v314[k]) * float(v304[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v313[k]);
+            scratch[0 + e] = float(v315[k]);
         }
     }
     __syncthreads();
@@ -2348,77 +2721,40 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v314[1];
+    float v316[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v314[k] = float(s);
+            v316[k] = float(s);
         }
     }
-    float v316[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v316[k] = float(float(float(p3_v[(uint)(24704 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v314[k]));
+            p7_y[(uint)(5376 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v316[k]));
         }
     }
-    float v318[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v318[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v318[k] = float(float(v316[k]) * float(float(p5_bt[(uint)(1664 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v318[k] = float(float(v284[k]) * float(float(p4_g[(uint)(43 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v319[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v319[k] = float(0.0f);
-        }
-    }
-    float v321[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v321[k] = float(float(v319[k]) + float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v318[k]);
-        }
-    }
-    __syncthreads();
-    float v322[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v322[k] = float(float(v321[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v323[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v323[k] = float(float(v311[k]) + float(v322[k]));
-        }
-    }
-    float v325[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v325[k] = float(float(v323[k]) * float(float(p1_q[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v319[k] = float(float(v318[k]) * float(v301[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v325[k]);
+            scratch[0 + e] = float(v319[k]);
         }
     }
     __syncthreads();
@@ -2430,40 +2766,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v326[1];
+    float v320[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v326[k] = float(s);
+            v320[k] = float(s);
+        }
+    }
+    float v322[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v322[k] = float(float(float(p3_v[(uint)(75904 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v320[k]));
+        }
+    }
+    float v324[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v324[k] = float(float(v322[k]) * float(float(p5_bt[(uint)(5504 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v324[k]);
+        }
+    }
+    __syncthreads();
+    float v325[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v325[k] = float(float(v301[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v326[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v326[k] = float(float(v318[k]) + float(v325[k]));
+        }
+    }
+    float v327[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v327[k] = float(float(v326[k]) * float(v304[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v327[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v328[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v328[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(1664 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v326[k]));
-        }
-    }
-    float v328[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v328[k] = float(float(v323[k]) * float(float(p4_g[(uint)(19 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            p7_y[(uint)(5504 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v328[k]));
         }
     }
     float v330[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v330[k] = float(float(v328[k]) * float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v330[k] = float(float(v296[k]) * float(float(p4_g[(uint)(44 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v331[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v331[k] = float(float(v330[k]) * float(v301[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v330[k]);
+            scratch[0 + e] = float(v331[k]);
         }
     }
     __syncthreads();
@@ -2475,77 +2879,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v331[1];
+    float v332[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v331[k] = float(s);
+            v332[k] = float(s);
         }
     }
-    float v333[1];
+    float v334[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v333[k] = float(float(float(p3_v[(uint)(34944 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v331[k]));
+            v334[k] = float(float(float(p3_v[(uint)(76032 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v332[k]));
         }
     }
-    float v335[1];
+    float v336[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v335[k] = float(float(v333[k]) * float(float(p5_bt[(uint)(2432 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v336[k] = float(float(v334[k]) * float(float(p5_bt[(uint)(5632 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v336[32];
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v336[k]);
+        }
+    }
+    __syncthreads();
+    float v337[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v336[k] = float(0.0f);
+            v337[k] = float(float(v301[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v338[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v338[k] = float(float(v336[k]) + float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v338[k] = float(float(v330[k]) + float(v337[k]));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v335[k]);
-        }
-    }
-    __syncthreads();
     float v339[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v339[k] = float(float(v338[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v340[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v340[k] = float(float(v328[k]) + float(v339[k]));
-        }
-    }
-    float v342[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v342[k] = float(float(v340[k]) * float(float(p1_q[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v339[k] = float(float(v338[k]) * float(v304[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v342[k]);
+            scratch[0 + e] = float(v339[k]);
         }
     }
     __syncthreads();
@@ -2557,40 +2947,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v343[1];
+    float v340[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v343[k] = float(s);
+            v340[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(2432 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v343[k]));
+            p7_y[(uint)(5632 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v340[k]));
         }
     }
-    float v345[32];
+    float v341[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v345[k] = float(float(v340[k]) * float(float(p4_g[(uint)(25 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v341[k] = float(0.0f);
         }
     }
-    float v347[32];
+    float v343[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v347[k] = float(float(v345[k]) * float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v343[k] = float(float(v341[k]) + float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v344[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v344[k] = float(0.0f);
+        }
+    }
+    float v346[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v346[k] = float(float(v344[k]) + float(float(p1_q[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v348[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v348[k] = float(float(v314[k]) * float(float(p4_g[(uint)(48 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v349[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v349[k] = float(float(v348[k]) * float(v343[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v347[k]);
+            scratch[0 + e] = float(v349[k]);
         }
     }
     __syncthreads();
@@ -2602,77 +3020,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v348[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v348[k] = float(s);
-        }
-    }
     float v350[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v350[k] = float(float(float(p3_v[(uint)(45184 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v348[k]));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v350[k] = float(s);
         }
     }
     float v352[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v352[k] = float(float(v350[k]) * float(float(p5_bt[(uint)(3200 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v352[k] = float(float(float(p3_v[(uint)(86016 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v350[k]));
         }
     }
-    float v353[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v354[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v353[k] = float(0.0f);
-        }
-    }
-    float v355[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v355[k] = float(float(v353[k]) + float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v354[k] = float(float(v352[k]) * float(float(p5_bt[(uint)(6144 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v352[k]);
+            scratch[0 + e] = float(v354[k]);
         }
     }
     __syncthreads();
+    float v355[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v355[k] = float(float(v343[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
     float v356[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v356[k] = float(float(v355[k]) * float((scratch + 0)[e / 128u]));
+            v356[k] = float(float(v348[k]) + float(v355[k]));
         }
     }
     float v357[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v357[k] = float(float(v345[k]) + float(v356[k]));
-        }
-    }
-    float v359[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v359[k] = float(float(v357[k]) * float(float(p1_q[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v357[k] = float(float(v356[k]) * float(v346[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v359[k]);
+            scratch[0 + e] = float(v357[k]);
         }
     }
     __syncthreads();
@@ -2684,40 +3088,40 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v360[1];
+    float v358[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v360[k] = float(s);
+            v358[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(3200 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v360[k]));
+            p7_y[(uint)(6144 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v358[k]));
         }
     }
-    float v362[32];
+    float v360[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v362[k] = float(float(v357[k]) * float(float(p4_g[(uint)(31 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v360[k] = float(float(v326[k]) * float(float(p4_g[(uint)(49 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v364[32];
+    float v361[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v364[k] = float(float(v362[k]) * float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v361[k] = float(float(v360[k]) * float(v343[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v364[k]);
+            scratch[0 + e] = float(v361[k]);
         }
     }
     __syncthreads();
@@ -2729,77 +3133,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v365[1];
+    float v362[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v365[k] = float(s);
+            v362[k] = float(s);
         }
     }
-    float v367[1];
+    float v364[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v367[k] = float(float(float(p3_v[(uint)(55424 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v365[k]));
+            v364[k] = float(float(float(p3_v[(uint)(86144 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v362[k]));
         }
     }
-    float v369[1];
+    float v366[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v369[k] = float(float(v367[k]) * float(float(p5_bt[(uint)(3968 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v366[k] = float(float(v364[k]) * float(float(p5_bt[(uint)(6272 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v370[32];
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v366[k]);
+        }
+    }
+    __syncthreads();
+    float v367[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v370[k] = float(0.0f);
+            v367[k] = float(float(v343[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v368[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v368[k] = float(float(v360[k]) + float(v367[k]));
+        }
+    }
+    float v369[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v369[k] = float(float(v368[k]) * float(v346[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v369[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v370[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v370[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(6272 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v370[k]));
         }
     }
     float v372[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v372[k] = float(float(v370[k]) + float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v372[k] = float(float(v338[k]) * float(float(p4_g[(uint)(50 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v369[k]);
-        }
-    }
-    __syncthreads();
     float v373[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v373[k] = float(float(v372[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v374[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v374[k] = float(float(v362[k]) + float(v373[k]));
-        }
-    }
-    float v376[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v376[k] = float(float(v374[k]) * float(float(p1_q[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v373[k] = float(float(v372[k]) * float(v343[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v376[k]);
+            scratch[0 + e] = float(v373[k]);
         }
     }
     __syncthreads();
@@ -2811,33 +3246,56 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v377[1];
+    float v374[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v377[k] = float(s);
+            v374[k] = float(s);
         }
     }
+    float v376[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(3968 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v377[k]));
+            v376[k] = float(float(float(p3_v[(uint)(86272 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v374[k]));
         }
     }
+    float v378[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v378[k] = float(float(v376[k]) * float(float(p5_bt[(uint)(6400 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v378[k]);
+        }
+    }
+    __syncthreads();
     float v379[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v379[k] = float(float(v374[k]) * float(float(p4_g[(uint)(37 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v379[k] = float(float(v343[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v380[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v380[k] = float(float(v372[k]) + float(v379[k]));
         }
     }
     float v381[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v381[k] = float(float(v379[k]) * float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v381[k] = float(float(v380[k]) * float(v346[k]));
         }
     }
     __syncthreads();
@@ -2865,68 +3323,59 @@ extern "C" __global__ void delta_step16_2_32(
             v382[k] = float(s);
         }
     }
-    float v384[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v384[k] = float(float(float(p3_v[(uint)(65664 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v382[k]));
+            p7_y[(uint)(6400 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v382[k]));
         }
     }
-    float v386[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v386[k] = float(float(v384[k]) * float(float(p5_bt[(uint)(4736 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v387[32];
+    float v383[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v387[k] = float(0.0f);
+            v383[k] = float(0.0f);
         }
     }
-    float v389[32];
+    float v385[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v389[k] = float(float(v387[k]) + float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v385[k] = float(float(v383[k]) + float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
+    float v386[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v386[k]);
+        if (e < 4096u) {
+            v386[k] = float(0.0f);
         }
     }
-    __syncthreads();
+    float v388[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v388[k] = float(float(v386[k]) + float(float(p1_q[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
     float v390[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v390[k] = float(float(v389[k]) * float((scratch + 0)[e / 128u]));
+            v390[k] = float(float(v356[k]) * float(float(p4_g[(uint)(54 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v391[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v391[k] = float(float(v379[k]) + float(v390[k]));
-        }
-    }
-    float v393[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v393[k] = float(float(v391[k]) * float(float(p1_q[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v391[k] = float(float(v390[k]) * float(v385[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v393[k]);
+            scratch[0 + e] = float(v391[k]);
         }
     }
     __syncthreads();
@@ -2938,40 +3387,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v394[1];
+    float v392[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v394[k] = float(s);
+            v392[k] = float(s);
         }
     }
+    float v394[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(4736 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v394[k]));
+            v394[k] = float(float(float(p3_v[(uint)(96256 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v392[k]));
         }
     }
-    float v396[32];
+    float v396[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v396[k] = float(float(v394[k]) * float(float(p5_bt[(uint)(6912 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v396[k]);
+        }
+    }
+    __syncthreads();
+    float v397[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v396[k] = float(float(v391[k]) * float(float(p4_g[(uint)(43 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v397[k] = float(float(v385[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v398[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v398[k] = float(float(v396[k]) * float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v398[k] = float(float(v390[k]) + float(v397[k]));
+        }
+    }
+    float v399[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v399[k] = float(float(v398[k]) * float(v388[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v398[k]);
+            scratch[0 + e] = float(v399[k]);
         }
     }
     __syncthreads();
@@ -2983,77 +3455,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v399[1];
+    float v400[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v399[k] = float(s);
+            v400[k] = float(s);
         }
     }
-    float v401[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v401[k] = float(float(float(p3_v[(uint)(75904 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v399[k]));
+            p7_y[(uint)(6912 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v400[k]));
         }
     }
-    float v403[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v403[k] = float(float(v401[k]) * float(float(p5_bt[(uint)(5504 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v404[32];
+    float v402[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v404[k] = float(0.0f);
+            v402[k] = float(float(v368[k]) * float(float(p4_g[(uint)(55 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v406[32];
+    float v403[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v406[k] = float(float(v404[k]) + float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v403[k] = float(float(v402[k]) * float(v385[k]));
         }
     }
     __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
+        if (e < 4096u) {
             scratch[0 + e] = float(v403[k]);
         }
     }
     __syncthreads();
-    float v407[32];
-    for (uint k = 0; k < 32u; ++k) {
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v404[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v407[k] = float(float(v406[k]) * float((scratch + 0)[e / 128u]));
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v404[k] = float(s);
         }
     }
-    float v408[32];
+    float v406[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v406[k] = float(float(float(p3_v[(uint)(96384 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v404[k]));
+        }
+    }
+    float v408[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v408[k] = float(float(v406[k]) * float(float(p5_bt[(uint)(7040 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v408[k]);
+        }
+    }
+    __syncthreads();
+    float v409[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v408[k] = float(float(v396[k]) + float(v407[k]));
+            v409[k] = float(float(v385[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v410[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v410[k] = float(float(v408[k]) * float(float(p1_q[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v410[k] = float(float(v402[k]) + float(v409[k]));
+        }
+    }
+    float v411[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v411[k] = float(float(v410[k]) * float(v388[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v410[k]);
+            scratch[0 + e] = float(v411[k]);
         }
     }
     __syncthreads();
@@ -3065,33 +3568,33 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v411[1];
+    float v412[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v411[k] = float(s);
+            v412[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(5504 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v411[k]));
+            p7_y[(uint)(7040 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v412[k]));
         }
     }
-    float v413[32];
+    float v414[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v413[k] = float(float(v408[k]) * float(float(p4_g[(uint)(49 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v414[k] = float(float(v380[k]) * float(float(p4_g[(uint)(56 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v415[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v415[k] = float(float(v413[k]) * float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v415[k] = float(float(v414[k]) * float(v385[k]));
         }
     }
     __syncthreads();
@@ -3123,28 +3626,14 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v418[k] = float(float(float(p3_v[(uint)(86144 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v416[k]));
+            v418[k] = float(float(float(p3_v[(uint)(96512 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v416[k]));
         }
     }
     float v420[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v420[k] = float(float(v418[k]) * float(float(p5_bt[(uint)(6272 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v421[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v421[k] = float(0.0f);
-        }
-    }
-    float v423[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v423[k] = float(float(v421[k]) + float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v420[k] = float(float(v418[k]) * float(float(p5_bt[(uint)(7168 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
@@ -3155,77 +3644,105 @@ extern "C" __global__ void delta_step16_2_32(
         }
     }
     __syncthreads();
-    float v424[32];
+    float v421[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v424[k] = float(float(v423[k]) * float((scratch + 0)[e / 128u]));
+            v421[k] = float(float(v385[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v422[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v422[k] = float(float(v414[k]) + float(v421[k]));
+        }
+    }
+    float v423[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v423[k] = float(float(v422[k]) * float(v388[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v423[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v424[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v424[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(7168 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v424[k]));
         }
     }
     float v425[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v425[k] = float(float(v413[k]) + float(v424[k]));
+            v425[k] = float(0.0f);
         }
     }
     float v427[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v427[k] = float(float(v425[k]) * float(float(p1_q[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v427[k] = float(float(v425[k]) + float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
+    float v428[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v427[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v428[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v428[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(6272 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v428[k]));
+            v428[k] = float(0.0f);
         }
     }
     float v430[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v430[k] = float(float(v425[k]) * float(float(p4_g[(uint)(55 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v430[k] = float(float(v428[k]) + float(float(p1_q[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v432[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v432[k] = float(float(v430[k]) * float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v432[k] = float(float(v398[k]) * float(float(p4_g[(uint)(60 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v433[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v433[k] = float(float(v432[k]) * float(v427[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v432[k]);
+            scratch[0 + e] = float(v433[k]);
         }
     }
     __syncthreads();
@@ -3237,77 +3754,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v433[1];
+    float v434[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v433[k] = float(s);
+            v434[k] = float(s);
         }
     }
-    float v435[1];
+    float v436[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v435[k] = float(float(float(p3_v[(uint)(96384 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v433[k]));
+            v436[k] = float(float(float(p3_v[(uint)(106496 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v434[k]));
         }
     }
-    float v437[1];
+    float v438[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v437[k] = float(float(v435[k]) * float(float(p5_bt[(uint)(7040 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v438[k] = float(float(v436[k]) * float(float(p5_bt[(uint)(7680 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v438[32];
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v438[k]);
+        }
+    }
+    __syncthreads();
+    float v439[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v438[k] = float(0.0f);
+            v439[k] = float(float(v427[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v440[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v440[k] = float(float(v438[k]) + float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v440[k] = float(float(v432[k]) + float(v439[k]));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v437[k]);
-        }
-    }
-    __syncthreads();
     float v441[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v441[k] = float(float(v440[k]) * float((scratch + 0)[e / 128u]));
+            v441[k] = float(float(v440[k]) * float(v430[k]));
         }
     }
-    float v442[32];
+    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v442[k] = float(float(v430[k]) + float(v441[k]));
+            scratch[0 + e] = float(v441[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v442[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v442[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(7680 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v442[k]));
         }
     }
     float v444[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v444[k] = float(float(v442[k]) * float(float(p1_q[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v444[k] = float(float(v410[k]) * float(float(p4_g[(uint)(61 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v445[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v445[k] = float(float(v444[k]) * float(v427[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v444[k]);
+            scratch[0 + e] = float(v445[k]);
         }
     }
     __syncthreads();
@@ -3319,122 +3867,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v445[1];
+    float v446[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v445[k] = float(s);
+            v446[k] = float(s);
         }
     }
+    float v448[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(7040 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v445[k]));
+            v448[k] = float(float(float(p3_v[(uint)(106624 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v446[k]));
         }
     }
-    float v447[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v447[k] = float(float(v442[k]) * float(float(p4_g[(uint)(61 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v449[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v449[k] = float(float(v447[k]) * float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v449[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
     float v450[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v450[k] = float(s);
+            v450[k] = float(float(v448[k]) * float(float(p5_bt[(uint)(7808 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v452[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v452[k] = float(float(float(p3_v[(uint)(106624 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v450[k]));
+            scratch[0 + e] = float(v450[k]);
         }
     }
+    __syncthreads();
+    float v451[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v451[k] = float(float(v427[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v452[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v452[k] = float(float(v444[k]) + float(v451[k]));
+        }
+    }
+    float v453[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v453[k] = float(float(v452[k]) * float(v430[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v453[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v454[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v454[k] = float(float(v452[k]) * float(float(p5_bt[(uint)(7808 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v454[k] = float(s);
         }
     }
-    float v455[32];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(7808 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v454[k]));
+        }
+    }
+    float v456[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v455[k] = float(0.0f);
+            v456[k] = float(float(v422[k]) * float(float(p4_g[(uint)(62 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v457[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v457[k] = float(float(v455[k]) + float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v454[k]);
-        }
-    }
-    __syncthreads();
-    float v458[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v458[k] = float(float(v457[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v459[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v459[k] = float(float(v447[k]) + float(v458[k]));
-        }
-    }
-    float v461[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v461[k] = float(float(v459[k]) * float(float(p1_q[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v457[k] = float(float(v456[k]) * float(v427[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v461[k]);
+            scratch[0 + e] = float(v457[k]);
         }
     }
     __syncthreads();
@@ -3446,40 +3980,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v462[1];
+    float v458[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v462[k] = float(s);
+            v458[k] = float(s);
         }
     }
+    float v460[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(7808 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v462[k]));
+            v460[k] = float(float(float(p3_v[(uint)(106752 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v458[k]));
+        }
+    }
+    float v462[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v462[k] = float(float(v460[k]) * float(float(p5_bt[(uint)(7936 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v462[k]);
+        }
+    }
+    __syncthreads();
+    float v463[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v463[k] = float(float(v427[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v464[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v464[k] = float(float(v459[k]) * float(float(p4_g[(uint)(67 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v464[k] = float(float(v456[k]) + float(v463[k]));
         }
     }
-    float v466[32];
+    float v465[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v466[k] = float(float(v464[k]) * float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v465[k] = float(float(v464[k]) * float(v430[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v466[k]);
+            scratch[0 + e] = float(v465[k]);
         }
     }
     __syncthreads();
@@ -3491,77 +4048,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v467[1];
+    float v466[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v467[k] = float(s);
+            v466[k] = float(s);
         }
     }
-    float v469[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v469[k] = float(float(float(p3_v[(uint)(116864 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v467[k]));
+            p7_y[(uint)(7936 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v466[k]));
         }
     }
-    float v471[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v467[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v471[k] = float(float(v469[k]) * float(float(p5_bt[(uint)(8576 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v467[k] = float(0.0f);
+        }
+    }
+    float v469[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v469[k] = float(float(v467[k]) + float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v470[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v470[k] = float(0.0f);
         }
     }
     float v472[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v472[k] = float(0.0f);
+            v472[k] = float(float(v470[k]) + float(float(p1_q[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v474[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v474[k] = float(float(v472[k]) + float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v474[k] = float(float(v440[k]) * float(float(p4_g[(uint)(66 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v471[k]);
-        }
-    }
-    __syncthreads();
     float v475[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v475[k] = float(float(v474[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v476[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v476[k] = float(float(v464[k]) + float(v475[k]));
-        }
-    }
-    float v478[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v478[k] = float(float(v476[k]) * float(float(p1_q[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v475[k] = float(float(v474[k]) * float(v469[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v478[k]);
+            scratch[0 + e] = float(v475[k]);
         }
     }
     __syncthreads();
@@ -3573,33 +4121,56 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v479[1];
+    float v476[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v479[k] = float(s);
+            v476[k] = float(s);
         }
     }
+    float v478[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(8576 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v479[k]));
+            v478[k] = float(float(float(p3_v[(uint)(116736 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v476[k]));
         }
     }
+    float v480[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v480[k] = float(float(v478[k]) * float(float(p5_bt[(uint)(8448 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v480[k]);
+        }
+    }
+    __syncthreads();
     float v481[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v481[k] = float(float(v476[k]) * float(float(p4_g[(uint)(73 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v481[k] = float(float(v469[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v482[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v482[k] = float(float(v474[k]) + float(v481[k]));
         }
     }
     float v483[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v483[k] = float(float(v481[k]) * float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v483[k] = float(float(v482[k]) * float(v472[k]));
         }
     }
     __syncthreads();
@@ -3627,61 +4198,92 @@ extern "C" __global__ void delta_step16_2_32(
             v484[k] = float(s);
         }
     }
-    float v486[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v486[k] = float(float(float(p3_v[(uint)(127104 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v484[k]));
+            p7_y[(uint)(8448 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v484[k]));
         }
     }
+    float v486[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v486[k] = float(float(v452[k]) * float(float(p4_g[(uint)(67 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v487[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v487[k] = float(float(v486[k]) * float(v469[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v487[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v488[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v488[k] = float(float(v486[k]) * float(float(p5_bt[(uint)(9344 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v488[k] = float(s);
         }
     }
-    float v489[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v490[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v489[k] = float(0.0f);
+        if (e < 32u) {
+            v490[k] = float(float(float(p3_v[(uint)(116864 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v488[k]));
         }
     }
-    float v491[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v492[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v491[k] = float(float(v489[k]) + float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v492[k] = float(float(v490[k]) * float(float(p5_bt[(uint)(8576 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v488[k]);
+            scratch[0 + e] = float(v492[k]);
         }
     }
     __syncthreads();
-    float v492[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v492[k] = float(float(v491[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
     float v493[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v493[k] = float(float(v481[k]) + float(v492[k]));
+            v493[k] = float(float(v469[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v494[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v494[k] = float(float(v486[k]) + float(v493[k]));
         }
     }
     float v495[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v495[k] = float(float(v493[k]) * float(float(p1_q[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v495[k] = float(float(v494[k]) * float(v472[k]));
         }
     }
     __syncthreads();
@@ -3712,28 +4314,28 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(9344 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v496[k]));
+            p7_y[(uint)(8576 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v496[k]));
         }
     }
     float v498[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v498[k] = float(float(v493[k]) * float(float(p4_g[(uint)(79 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v498[k] = float(float(v464[k]) * float(float(p4_g[(uint)(68 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v500[32];
+    float v499[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v500[k] = float(float(v498[k]) * float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v499[k] = float(float(v498[k]) * float(v469[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v500[k]);
+            scratch[0 + e] = float(v499[k]);
         }
     }
     __syncthreads();
@@ -3745,77 +4347,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v501[1];
+    float v500[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v501[k] = float(s);
+            v500[k] = float(s);
         }
     }
-    float v503[1];
+    float v502[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v503[k] = float(float(float(p3_v[(uint)(137344 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v501[k]));
+            v502[k] = float(float(float(p3_v[(uint)(116992 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v500[k]));
         }
     }
-    float v505[1];
+    float v504[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v505[k] = float(float(v503[k]) * float(float(p5_bt[(uint)(10112 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v504[k] = float(float(v502[k]) * float(float(p5_bt[(uint)(8704 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v504[k]);
+        }
+    }
+    __syncthreads();
+    float v505[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v505[k] = float(float(v469[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v506[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v506[k] = float(0.0f);
+            v506[k] = float(float(v498[k]) + float(v505[k]));
         }
     }
-    float v508[32];
+    float v507[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v508[k] = float(float(v506[k]) + float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v505[k]);
-        }
-    }
-    __syncthreads();
-    float v509[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v509[k] = float(float(v508[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v510[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v510[k] = float(float(v498[k]) + float(v509[k]));
-        }
-    }
-    float v512[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v512[k] = float(float(v510[k]) * float(float(p1_q[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v507[k] = float(float(v506[k]) * float(v472[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v512[k]);
+            scratch[0 + e] = float(v507[k]);
         }
     }
     __syncthreads();
@@ -3827,33 +4415,61 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v513[1];
+    float v508[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v513[k] = float(s);
+            v508[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(10112 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v513[k]));
+            p7_y[(uint)(8704 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v508[k]));
         }
     }
-    float v515[32];
+    float v509[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v515[k] = float(float(v510[k]) * float(float(p4_g[(uint)(85 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v509[k] = float(0.0f);
+        }
+    }
+    float v511[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v511[k] = float(float(v509[k]) + float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v512[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v512[k] = float(0.0f);
+        }
+    }
+    float v514[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v514[k] = float(float(v512[k]) + float(float(p1_q[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v516[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v516[k] = float(float(v482[k]) * float(float(p4_g[(uint)(72 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v517[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v517[k] = float(float(v515[k]) * float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v517[k] = float(float(v516[k]) * float(v511[k]));
         }
     }
     __syncthreads();
@@ -3885,28 +4501,14 @@ extern "C" __global__ void delta_step16_2_32(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v520[k] = float(float(float(p3_v[(uint)(147584 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v518[k]));
+            v520[k] = float(float(float(p3_v[(uint)(126976 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v518[k]));
         }
     }
     float v522[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v522[k] = float(float(v520[k]) * float(float(p5_bt[(uint)(10880 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v523[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v523[k] = float(0.0f);
-        }
-    }
-    float v525[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v525[k] = float(float(v523[k]) + float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v522[k] = float(float(v520[k]) * float(float(p5_bt[(uint)(9216 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
@@ -3917,25 +4519,70 @@ extern "C" __global__ void delta_step16_2_32(
         }
     }
     __syncthreads();
-    float v526[32];
+    float v523[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v526[k] = float(float(v525[k]) * float((scratch + 0)[e / 128u]));
+            v523[k] = float(float(v511[k]) * float((scratch + 0)[e / 128u]));
         }
     }
-    float v527[32];
+    float v524[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v527[k] = float(float(v515[k]) + float(v526[k]));
+            v524[k] = float(float(v516[k]) + float(v523[k]));
+        }
+    }
+    float v525[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v525[k] = float(float(v524[k]) * float(v514[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v525[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v526[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v526[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(9216 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v526[k]));
+        }
+    }
+    float v528[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v528[k] = float(float(v494[k]) * float(float(p4_g[(uint)(73 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v529[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v529[k] = float(float(v527[k]) * float(float(p1_q[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v529[k] = float(float(v528[k]) * float(v511[k]));
         }
     }
     __syncthreads();
@@ -3963,31 +4610,54 @@ extern "C" __global__ void delta_step16_2_32(
             v530[k] = float(s);
         }
     }
+    float v532[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(10880 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v530[k]));
+            v532[k] = float(float(float(p3_v[(uint)(127104 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v530[k]));
         }
     }
-    float v532[32];
+    float v534[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v534[k] = float(float(v532[k]) * float(float(p5_bt[(uint)(9344 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v534[k]);
+        }
+    }
+    __syncthreads();
+    float v535[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v532[k] = float(float(v527[k]) * float(float(p4_g[(uint)(91 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v535[k] = float(float(v511[k]) * float((scratch + 0)[e / 128u]));
         }
     }
-    float v534[32];
+    float v536[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v534[k] = float(float(v532[k]) * float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v536[k] = float(float(v528[k]) + float(v535[k]));
+        }
+    }
+    float v537[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v537[k] = float(float(v536[k]) * float(v514[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v534[k]);
+            scratch[0 + e] = float(v537[k]);
         }
     }
     __syncthreads();
@@ -3999,128 +4669,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v535[1];
+    float v538[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v535[k] = float(s);
+            v538[k] = float(s);
         }
     }
-    float v537[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v537[k] = float(float(float(p3_v[(uint)(157824 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v535[k]));
-        }
-    }
-    float v539[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v539[k] = float(float(v537[k]) * float(float(p5_bt[(uint)(11648 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            p7_y[(uint)(9344 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v538[k]));
         }
     }
     float v540[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v540[k] = float(0.0f);
+            v540[k] = float(float(v506[k]) * float(float(p4_g[(uint)(74 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v542[32];
+    float v541[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v542[k] = float(float(v540[k]) + float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v541[k] = float(float(v540[k]) * float(v511[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v541[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v542[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v542[k] = float(s);
+        }
+    }
+    float v544[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v544[k] = float(float(float(p3_v[(uint)(127232 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v542[k]));
+        }
+    }
+    float v546[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v546[k] = float(float(v544[k]) * float(float(p5_bt[(uint)(9472 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v539[k]);
-        }
-    }
-    __syncthreads();
-    float v543[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v543[k] = float(float(v542[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v544[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v544[k] = float(float(v532[k]) + float(v543[k]));
-        }
-    }
-    float v546[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v546[k] = float(float(v544[k]) * float(float(p1_q[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
             scratch[0 + e] = float(v546[k]);
         }
     }
     __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v547[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v547[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(11648 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v547[k]));
-        }
-    }
+    float v547[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            p6_so[(uint)(128 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v544[k]));
+            v547[k] = float(float(v511[k]) * float((scratch + 0)[e / 128u]));
         }
     }
-    float v550[32];
+    float v548[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v550[k] = float(float(float(p0_s[(uint)(256 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + ((e))])) * float(float(p4_g[(uint)(2 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v548[k] = float(float(v540[k]) + float(v547[k]));
         }
     }
-    float v552[32];
+    float v549[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v552[k] = float(float(v550[k]) * float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v549[k] = float(float(v548[k]) * float(v514[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v552[k]);
+            scratch[0 + e] = float(v549[k]);
         }
     }
     __syncthreads();
@@ -4132,77 +4782,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v553[1];
+    float v550[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v553[k] = float(s);
+            v550[k] = float(s);
         }
     }
-    float v555[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v555[k] = float(float(float(p3_v[(uint)(4352 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v553[k]));
+            p7_y[(uint)(9472 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v550[k]));
         }
     }
-    float v557[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v551[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v557[k] = float(float(v555[k]) * float(float(p5_bt[(uint)(256 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v551[k] = float(0.0f);
+        }
+    }
+    float v553[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v553[k] = float(float(v551[k]) + float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v554[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v554[k] = float(0.0f);
+        }
+    }
+    float v556[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v556[k] = float(float(v554[k]) + float(float(p1_q[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v558[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v558[k] = float(0.0f);
+            v558[k] = float(float(v524[k]) * float(float(p4_g[(uint)(78 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v560[32];
+    float v559[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v560[k] = float(float(v558[k]) + float(float(p2_k[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v557[k]);
-        }
-    }
-    __syncthreads();
-    float v561[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v561[k] = float(float(v560[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v562[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v562[k] = float(float(v550[k]) + float(v561[k]));
-        }
-    }
-    float v564[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v564[k] = float(float(v562[k]) * float(float(p1_q[(uint)(0 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v559[k] = float(float(v558[k]) * float(v553[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v564[k]);
+            scratch[0 + e] = float(v559[k]);
         }
     }
     __syncthreads();
@@ -4214,40 +4855,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v565[1];
+    float v560[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v565[k] = float(s);
+            v560[k] = float(s);
         }
     }
+    float v562[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(256 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v565[k]));
+            v562[k] = float(float(float(p3_v[(uint)(137216 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v560[k]));
+        }
+    }
+    float v564[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v564[k] = float(float(v562[k]) * float(float(p5_bt[(uint)(9984 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v564[k]);
+        }
+    }
+    __syncthreads();
+    float v565[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v565[k] = float(float(v553[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v566[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v566[k] = float(float(v558[k]) + float(v565[k]));
         }
     }
     float v567[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v567[k] = float(float(v562[k]) * float(float(p4_g[(uint)(8 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v569[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v569[k] = float(float(v567[k]) * float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v567[k] = float(float(v566[k]) * float(v556[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v569[k]);
+            scratch[0 + e] = float(v567[k]);
         }
     }
     __syncthreads();
@@ -4259,77 +4923,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v570[1];
+    float v568[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v570[k] = float(s);
+            v568[k] = float(s);
         }
     }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(9984 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v568[k]));
+        }
+    }
+    float v570[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v570[k] = float(float(v536[k]) * float(float(p4_g[(uint)(79 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v571[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v571[k] = float(float(v570[k]) * float(v553[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v571[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v572[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v572[k] = float(float(float(p3_v[(uint)(14592 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v570[k]));
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v572[k] = float(s);
         }
     }
     float v574[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v574[k] = float(float(v572[k]) * float(float(p5_bt[(uint)(1024 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v574[k] = float(float(float(p3_v[(uint)(137344 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v572[k]));
         }
     }
-    float v575[32];
-    for (uint k = 0; k < 32u; ++k) {
+    float v576[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v575[k] = float(0.0f);
-        }
-    }
-    float v577[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v577[k] = float(float(v575[k]) + float(float(p2_k[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        if (e < 32u) {
+            v576[k] = float(float(v574[k]) * float(float(p5_bt[(uint)(10112 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v574[k]);
+            scratch[0 + e] = float(v576[k]);
         }
     }
     __syncthreads();
+    float v577[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v577[k] = float(float(v553[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
     float v578[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v578[k] = float(float(v577[k]) * float((scratch + 0)[e / 128u]));
+            v578[k] = float(float(v570[k]) + float(v577[k]));
         }
     }
     float v579[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v579[k] = float(float(v567[k]) + float(v578[k]));
-        }
-    }
-    float v581[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v581[k] = float(float(v579[k]) * float(float(p1_q[(uint)(2 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v579[k] = float(float(v578[k]) * float(v556[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v581[k]);
+            scratch[0 + e] = float(v579[k]);
         }
     }
     __syncthreads();
@@ -4341,40 +5036,40 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v582[1];
+    float v580[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v582[k] = float(s);
+            v580[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(1024 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v582[k]));
+            p7_y[(uint)(10112 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v580[k]));
         }
     }
-    float v584[32];
+    float v582[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v584[k] = float(float(v579[k]) * float(float(p4_g[(uint)(14 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v582[k] = float(float(v548[k]) * float(float(p4_g[(uint)(80 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v586[32];
+    float v583[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v586[k] = float(float(v584[k]) * float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v583[k] = float(float(v582[k]) * float(v553[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v586[k]);
+            scratch[0 + e] = float(v583[k]);
         }
     }
     __syncthreads();
@@ -4386,122 +5081,136 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v587[1];
+    float v584[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v587[k] = float(s);
+            v584[k] = float(s);
         }
     }
-    float v589[1];
+    float v586[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v589[k] = float(float(float(p3_v[(uint)(24832 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v587[k]));
+            v586[k] = float(float(float(p3_v[(uint)(137472 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v584[k]));
         }
     }
-    float v591[1];
+    float v588[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v591[k] = float(float(v589[k]) * float(float(p5_bt[(uint)(1792 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v592[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v592[k] = float(0.0f);
-        }
-    }
-    float v594[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v594[k] = float(float(v592[k]) + float(float(p2_k[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v588[k] = float(float(v586[k]) * float(float(p5_bt[(uint)(10240 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
+            scratch[0 + e] = float(v588[k]);
+        }
+    }
+    __syncthreads();
+    float v589[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v589[k] = float(float(v553[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v590[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v590[k] = float(float(v582[k]) + float(v589[k]));
+        }
+    }
+    float v591[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v591[k] = float(float(v590[k]) * float(v556[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
             scratch[0 + e] = float(v591[k]);
         }
     }
     __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v592[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v592[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(10240 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v592[k]));
+        }
+    }
+    float v593[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v593[k] = float(0.0f);
+        }
+    }
     float v595[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v595[k] = float(float(v594[k]) * float((scratch + 0)[e / 128u]));
+            v595[k] = float(float(v593[k]) + float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v596[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v596[k] = float(float(v584[k]) + float(v595[k]));
+            v596[k] = float(0.0f);
         }
     }
     float v598[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v598[k] = float(float(v596[k]) * float(float(p1_q[(uint)(4 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v598[k] = float(float(v596[k]) + float(float(p1_q[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
+    float v600[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v598[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v599[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v599[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(1792 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v599[k]));
+            v600[k] = float(float(v566[k]) * float(float(p4_g[(uint)(84 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v601[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v601[k] = float(float(v596[k]) * float(float(p4_g[(uint)(20 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v603[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v603[k] = float(float(v601[k]) * float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v601[k] = float(float(v600[k]) * float(v595[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v603[k]);
+            scratch[0 + e] = float(v601[k]);
         }
     }
     __syncthreads();
@@ -4513,77 +5222,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v604[1];
+    float v602[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v604[k] = float(s);
+            v602[k] = float(s);
+        }
+    }
+    float v604[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v604[k] = float(float(float(p3_v[(uint)(147456 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v602[k]));
         }
     }
     float v606[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v606[k] = float(float(float(p3_v[(uint)(35072 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v604[k]));
+            v606[k] = float(float(v604[k]) * float(float(p5_bt[(uint)(10752 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v608[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v608[k] = float(float(v606[k]) * float(float(p5_bt[(uint)(2560 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            scratch[0 + e] = float(v606[k]);
+        }
+    }
+    __syncthreads();
+    float v607[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v607[k] = float(float(v595[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v608[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v608[k] = float(float(v600[k]) + float(v607[k]));
         }
     }
     float v609[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v609[k] = float(0.0f);
+            v609[k] = float(float(v608[k]) * float(v598[k]));
         }
     }
-    float v611[32];
+    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v611[k] = float(float(v609[k]) + float(float(p2_k[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            scratch[0 + e] = float(v609[k]);
         }
     }
     __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v610[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            scratch[0 + e] = float(v608[k]);
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v610[k] = float(s);
         }
     }
-    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(10752 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v610[k]));
+        }
+    }
     float v612[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v612[k] = float(float(v611[k]) * float((scratch + 0)[e / 128u]));
+            v612[k] = float(float(v578[k]) * float(float(p4_g[(uint)(85 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v613[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v613[k] = float(float(v601[k]) + float(v612[k]));
-        }
-    }
-    float v615[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v615[k] = float(float(v613[k]) * float(float(p1_q[(uint)(6 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v613[k] = float(float(v612[k]) * float(v595[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v615[k]);
+            scratch[0 + e] = float(v613[k]);
         }
     }
     __syncthreads();
@@ -4595,40 +5335,63 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v616[1];
+    float v614[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v616[k] = float(s);
+            v614[k] = float(s);
         }
     }
+    float v616[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(2560 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v616[k]));
+            v616[k] = float(float(float(p3_v[(uint)(147584 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v614[k]));
         }
     }
-    float v618[32];
+    float v618[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v618[k] = float(float(v616[k]) * float(float(p5_bt[(uint)(10880 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v618[k]);
+        }
+    }
+    __syncthreads();
+    float v619[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v618[k] = float(float(v613[k]) * float(float(p4_g[(uint)(26 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v619[k] = float(float(v595[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v620[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v620[k] = float(float(v618[k]) * float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v620[k] = float(float(v612[k]) + float(v619[k]));
+        }
+    }
+    float v621[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v621[k] = float(float(v620[k]) * float(v598[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v620[k]);
+            scratch[0 + e] = float(v621[k]);
         }
     }
     __syncthreads();
@@ -4640,77 +5403,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v621[1];
+    float v622[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v621[k] = float(s);
+            v622[k] = float(s);
         }
     }
-    float v623[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v623[k] = float(float(float(p3_v[(uint)(45312 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v621[k]));
+            p7_y[(uint)(10880 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v622[k]));
         }
     }
-    float v625[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v625[k] = float(float(v623[k]) * float(float(p5_bt[(uint)(3328 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v626[32];
+    float v624[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v626[k] = float(0.0f);
+            v624[k] = float(float(v590[k]) * float(float(p4_g[(uint)(86 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v628[32];
+    float v625[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v628[k] = float(float(v626[k]) + float(float(p2_k[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v625[k] = float(float(v624[k]) * float(v595[k]));
         }
     }
     __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
+        if (e < 4096u) {
             scratch[0 + e] = float(v625[k]);
         }
     }
     __syncthreads();
-    float v629[32];
-    for (uint k = 0; k < 32u; ++k) {
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v626[1];
+    for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v629[k] = float(float(v628[k]) * float((scratch + 0)[e / 128u]));
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v626[k] = float(s);
         }
     }
-    float v630[32];
+    float v628[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v628[k] = float(float(float(p3_v[(uint)(147712 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v626[k]));
+        }
+    }
+    float v630[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v630[k] = float(float(v628[k]) * float(float(p5_bt[(uint)(11008 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v630[k]);
+        }
+    }
+    __syncthreads();
+    float v631[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v630[k] = float(float(v618[k]) + float(v629[k]));
+            v631[k] = float(float(v595[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v632[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v632[k] = float(float(v630[k]) * float(float(p1_q[(uint)(8 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v632[k] = float(float(v624[k]) + float(v631[k]));
+        }
+    }
+    float v633[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v633[k] = float(float(v632[k]) * float(v598[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v632[k]);
+            scratch[0 + e] = float(v633[k]);
         }
     }
     __syncthreads();
@@ -4722,122 +5516,68 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v633[1];
+    float v634[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v633[k] = float(s);
+            v634[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(3328 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v633[k]));
+            p7_y[(uint)(11008 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v634[k]));
         }
     }
     float v635[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v635[k] = float(float(v630[k]) * float(float(p4_g[(uint)(32 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v635[k] = float(0.0f);
         }
     }
     float v637[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v637[k] = float(float(v635[k]) * float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v637[k] = float(float(v635[k]) + float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    __syncthreads();
+    float v638[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v637[k]);
+            v638[k] = float(0.0f);
         }
     }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v638[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v640[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v638[k] = float(s);
+        if (e < 4096u) {
+            v640[k] = float(float(v638[k]) + float(float(p1_q[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
-    float v640[1];
-    for (uint k = 0; k < 1u; ++k) {
+    float v642[32];
+    for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v640[k] = float(float(float(p3_v[(uint)(55552 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v638[k]));
-        }
-    }
-    float v642[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v642[k] = float(float(v640[k]) * float(float(p5_bt[(uint)(4096 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        if (e < 4096u) {
+            v642[k] = float(float(v608[k]) * float(float(p4_g[(uint)(90 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
         }
     }
     float v643[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v643[k] = float(0.0f);
-        }
-    }
-    float v645[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v645[k] = float(float(v643[k]) + float(float(p2_k[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v642[k]);
-        }
-    }
-    __syncthreads();
-    float v646[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v646[k] = float(float(v645[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v647[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v647[k] = float(float(v635[k]) + float(v646[k]));
-        }
-    }
-    float v649[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v649[k] = float(float(v647[k]) * float(float(p1_q[(uint)(10 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v643[k] = float(float(v642[k]) * float(v637[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v649[k]);
+            scratch[0 + e] = float(v643[k]);
         }
     }
     __syncthreads();
@@ -4849,40 +5589,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v650[1];
+    float v644[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v650[k] = float(s);
+            v644[k] = float(s);
+        }
+    }
+    float v646[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v646[k] = float(float(float(p3_v[(uint)(157696 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v644[k]));
+        }
+    }
+    float v648[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            v648[k] = float(float(v646[k]) * float(float(p5_bt[(uint)(11520 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v648[k]);
+        }
+    }
+    __syncthreads();
+    float v649[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v649[k] = float(float(v637[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v650[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v650[k] = float(float(v642[k]) + float(v649[k]));
+        }
+    }
+    float v651[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v651[k] = float(float(v650[k]) * float(v640[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v651[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v652[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v652[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(4096 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v650[k]));
-        }
-    }
-    float v652[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v652[k] = float(float(v647[k]) * float(float(p4_g[(uint)(38 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            p7_y[(uint)(11520 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v652[k]));
         }
     }
     float v654[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v654[k] = float(float(v652[k]) * float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v654[k] = float(float(v620[k]) * float(float(p4_g[(uint)(91 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v655[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v655[k] = float(float(v654[k]) * float(v637[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v654[k]);
+            scratch[0 + e] = float(v655[k]);
         }
     }
     __syncthreads();
@@ -4894,77 +5702,108 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v655[1];
+    float v656[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v655[k] = float(s);
+            v656[k] = float(s);
         }
     }
-    float v657[1];
+    float v658[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v657[k] = float(float(float(p3_v[(uint)(65792 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v655[k]));
+            v658[k] = float(float(float(p3_v[(uint)(157824 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v656[k]));
         }
     }
-    float v659[1];
+    float v660[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v659[k] = float(float(v657[k]) * float(float(p5_bt[(uint)(4864 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
+            v660[k] = float(float(v658[k]) * float(float(p5_bt[(uint)(11648 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v660[32];
+    __syncthreads();
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            scratch[0 + e] = float(v660[k]);
+        }
+    }
+    __syncthreads();
+    float v661[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v660[k] = float(0.0f);
+            v661[k] = float(float(v637[k]) * float((scratch + 0)[e / 128u]));
         }
     }
     float v662[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v662[k] = float(float(v660[k]) + float(float(p2_k[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v662[k] = float(float(v654[k]) + float(v661[k]));
         }
     }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v659[k]);
-        }
-    }
-    __syncthreads();
     float v663[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v663[k] = float(float(v662[k]) * float((scratch + 0)[e / 128u]));
+            v663[k] = float(float(v662[k]) * float(v640[k]));
         }
     }
-    float v664[32];
+    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v664[k] = float(float(v652[k]) + float(v663[k]));
+            scratch[0 + e] = float(v663[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
+    float v664[1];
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            float s = 0.0f;
+            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
+            v664[k] = float(s);
+        }
+    }
+    for (uint k = 0; k < 1u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 32u) {
+            p7_y[(uint)(11648 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v664[k]));
         }
     }
     float v666[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v666[k] = float(float(v664[k]) * float(float(p1_q[(uint)(12 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            v666[k] = float(float(v632[k]) * float(float(p4_g[(uint)(92 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+        }
+    }
+    float v667[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v667[k] = float(float(v666[k]) * float(v637[k]));
         }
     }
     __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v666[k]);
+            scratch[0 + e] = float(v667[k]);
         }
     }
     __syncthreads();
@@ -4976,1168 +5815,105 @@ extern "C" __global__ void delta_step16_2_32(
         if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
     }
     __syncthreads();
-    float v667[1];
+    float v668[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v667[k] = float(s);
+            v668[k] = float(s);
         }
     }
+    float v670[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(4864 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v667[k]));
+            v670[k] = float(float(float(p3_v[(uint)(157952 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v668[k]));
         }
     }
-    float v669[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v669[k] = float(float(v664[k]) * float(float(p4_g[(uint)(44 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v671[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v671[k] = float(float(v669[k]) * float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v671[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
     float v672[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v672[k] = float(s);
+            v672[k] = float(float(v670[k]) * float(float(p5_bt[(uint)(11776 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
         }
     }
-    float v674[1];
+    __syncthreads();
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v674[k] = float(float(float(p3_v[(uint)(76032 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v672[k]));
+            scratch[0 + e] = float(v672[k]);
         }
     }
+    __syncthreads();
+    float v673[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v673[k] = float(float(v637[k]) * float((scratch + 0)[e / 128u]));
+        }
+    }
+    float v674[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v674[k] = float(float(v666[k]) + float(v673[k]));
+        }
+    }
+    float v675[32];
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            v675[k] = float(float(v674[k]) * float(v640[k]));
+        }
+    }
+    __syncthreads();
+    for (uint k = 0; k < 32u; ++k) {
+        const uint e = k * 128u + tid;
+        if (e < 4096u) {
+            scratch[0 + e] = float(v675[k]);
+        }
+    }
+    __syncthreads();
+    {
+        const uint o = tid / 4u, lane = tid % 4u;
+        float s = 0.0f;
+        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
+        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
+        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
+    }
+    __syncthreads();
     float v676[1];
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v676[k] = float(float(v674[k]) * float(float(p5_bt[(uint)(5632 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v677[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v677[k] = float(0.0f);
-        }
-    }
-    float v679[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v679[k] = float(float(v677[k]) + float(float(p2_k[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v676[k]);
-        }
-    }
-    __syncthreads();
-    float v680[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v680[k] = float(float(v679[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v681[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v681[k] = float(float(v669[k]) + float(v680[k]));
-        }
-    }
-    float v683[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v683[k] = float(float(v681[k]) * float(float(p1_q[(uint)(14 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v683[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v684[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
             float s = 0.0f;
             for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v684[k] = float(s);
+            v676[k] = float(s);
         }
     }
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            p7_y[(uint)(5632 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v684[k]));
+            p7_y[(uint)(11776 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v676[k]));
         }
     }
-    float v686[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v686[k] = float(float(v681[k]) * float(float(p4_g[(uint)(50 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            p6_so[(uint)(0 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v650[k]));
         }
     }
-    float v688[32];
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            v688[k] = float(float(v686[k]) * float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
+            p6_so[(uint)(128 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v662[k]));
         }
     }
-    __syncthreads();
     for (uint k = 0; k < 32u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 4096u) {
-            scratch[0 + e] = float(v688[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v689[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v689[k] = float(s);
-        }
-    }
-    float v691[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v691[k] = float(float(float(p3_v[(uint)(86272 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v689[k]));
-        }
-    }
-    float v693[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v693[k] = float(float(v691[k]) * float(float(p5_bt[(uint)(6400 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v694[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v694[k] = float(0.0f);
-        }
-    }
-    float v696[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v696[k] = float(float(v694[k]) + float(float(p2_k[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v693[k]);
-        }
-    }
-    __syncthreads();
-    float v697[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v697[k] = float(float(v696[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v698[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v698[k] = float(float(v686[k]) + float(v697[k]));
-        }
-    }
-    float v700[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v700[k] = float(float(v698[k]) * float(float(p1_q[(uint)(16 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v700[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v701[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v701[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(6400 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v701[k]));
-        }
-    }
-    float v703[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v703[k] = float(float(v698[k]) * float(float(p4_g[(uint)(56 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v705[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v705[k] = float(float(v703[k]) * float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v705[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v706[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v706[k] = float(s);
-        }
-    }
-    float v708[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v708[k] = float(float(float(p3_v[(uint)(96512 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v706[k]));
-        }
-    }
-    float v710[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v710[k] = float(float(v708[k]) * float(float(p5_bt[(uint)(7168 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v711[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v711[k] = float(0.0f);
-        }
-    }
-    float v713[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v713[k] = float(float(v711[k]) + float(float(p2_k[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v710[k]);
-        }
-    }
-    __syncthreads();
-    float v714[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v714[k] = float(float(v713[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v715[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v715[k] = float(float(v703[k]) + float(v714[k]));
-        }
-    }
-    float v717[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v717[k] = float(float(v715[k]) * float(float(p1_q[(uint)(18 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v717[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v718[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v718[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(7168 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v718[k]));
-        }
-    }
-    float v720[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v720[k] = float(float(v715[k]) * float(float(p4_g[(uint)(62 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v722[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v722[k] = float(float(v720[k]) * float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v722[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v723[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v723[k] = float(s);
-        }
-    }
-    float v725[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v725[k] = float(float(float(p3_v[(uint)(106752 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v723[k]));
-        }
-    }
-    float v727[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v727[k] = float(float(v725[k]) * float(float(p5_bt[(uint)(7936 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v728[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v728[k] = float(0.0f);
-        }
-    }
-    float v730[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v730[k] = float(float(v728[k]) + float(float(p2_k[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v727[k]);
-        }
-    }
-    __syncthreads();
-    float v731[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v731[k] = float(float(v730[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v732[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v732[k] = float(float(v720[k]) + float(v731[k]));
-        }
-    }
-    float v734[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v734[k] = float(float(v732[k]) * float(float(p1_q[(uint)(20 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v734[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v735[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v735[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(7936 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v735[k]));
-        }
-    }
-    float v737[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v737[k] = float(float(v732[k]) * float(float(p4_g[(uint)(68 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v739[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v739[k] = float(float(v737[k]) * float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v739[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v740[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v740[k] = float(s);
-        }
-    }
-    float v742[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v742[k] = float(float(float(p3_v[(uint)(116992 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v740[k]));
-        }
-    }
-    float v744[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v744[k] = float(float(v742[k]) * float(float(p5_bt[(uint)(8704 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v745[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v745[k] = float(0.0f);
-        }
-    }
-    float v747[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v747[k] = float(float(v745[k]) + float(float(p2_k[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v744[k]);
-        }
-    }
-    __syncthreads();
-    float v748[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v748[k] = float(float(v747[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v749[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v749[k] = float(float(v737[k]) + float(v748[k]));
-        }
-    }
-    float v751[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v751[k] = float(float(v749[k]) * float(float(p1_q[(uint)(22 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v751[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v752[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v752[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(8704 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v752[k]));
-        }
-    }
-    float v754[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v754[k] = float(float(v749[k]) * float(float(p4_g[(uint)(74 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v756[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v756[k] = float(float(v754[k]) * float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v756[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v757[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v757[k] = float(s);
-        }
-    }
-    float v759[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v759[k] = float(float(float(p3_v[(uint)(127232 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v757[k]));
-        }
-    }
-    float v761[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v761[k] = float(float(v759[k]) * float(float(p5_bt[(uint)(9472 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v762[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v762[k] = float(0.0f);
-        }
-    }
-    float v764[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v764[k] = float(float(v762[k]) + float(float(p2_k[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v761[k]);
-        }
-    }
-    __syncthreads();
-    float v765[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v765[k] = float(float(v764[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v766[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v766[k] = float(float(v754[k]) + float(v765[k]));
-        }
-    }
-    float v768[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v768[k] = float(float(v766[k]) * float(float(p1_q[(uint)(24 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v768[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v769[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v769[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(9472 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v769[k]));
-        }
-    }
-    float v771[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v771[k] = float(float(v766[k]) * float(float(p4_g[(uint)(80 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v773[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v773[k] = float(float(v771[k]) * float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v773[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v774[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v774[k] = float(s);
-        }
-    }
-    float v776[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v776[k] = float(float(float(p3_v[(uint)(137472 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v774[k]));
-        }
-    }
-    float v778[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v778[k] = float(float(v776[k]) * float(float(p5_bt[(uint)(10240 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v779[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v779[k] = float(0.0f);
-        }
-    }
-    float v781[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v781[k] = float(float(v779[k]) + float(float(p2_k[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v778[k]);
-        }
-    }
-    __syncthreads();
-    float v782[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v782[k] = float(float(v781[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v783[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v783[k] = float(float(v771[k]) + float(v782[k]));
-        }
-    }
-    float v785[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v785[k] = float(float(v783[k]) * float(float(p1_q[(uint)(26 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v785[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v786[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v786[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(10240 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v786[k]));
-        }
-    }
-    float v788[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v788[k] = float(float(v783[k]) * float(float(p4_g[(uint)(86 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v790[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v790[k] = float(float(v788[k]) * float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v790[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v791[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v791[k] = float(s);
-        }
-    }
-    float v793[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v793[k] = float(float(float(p3_v[(uint)(147712 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v791[k]));
-        }
-    }
-    float v795[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v795[k] = float(float(v793[k]) * float(float(p5_bt[(uint)(11008 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v796[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v796[k] = float(0.0f);
-        }
-    }
-    float v798[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v798[k] = float(float(v796[k]) + float(float(p2_k[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v795[k]);
-        }
-    }
-    __syncthreads();
-    float v799[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v799[k] = float(float(v798[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v800[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v800[k] = float(float(v788[k]) + float(v799[k]));
-        }
-    }
-    float v802[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v802[k] = float(float(v800[k]) * float(float(p1_q[(uint)(28 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v802[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v803[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v803[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(11008 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v803[k]));
-        }
-    }
-    float v805[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v805[k] = float(float(v800[k]) * float(float(p4_g[(uint)(92 + 3 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    float v807[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v807[k] = float(float(v805[k]) * float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v807[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v808[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v808[k] = float(s);
-        }
-    }
-    float v810[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v810[k] = float(float(float(p3_v[(uint)(157952 + 384 * gid + 32 * gid2) * 1u + ((e))])) - float(v808[k]));
-        }
-    }
-    float v812[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            v812[k] = float(float(v810[k]) * float(float(p5_bt[(uint)(11776 + 384 * gid + 32 * gid2) * 1u + ((e / 1u))])));
-        }
-    }
-    float v813[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v813[k] = float(0.0f);
-        }
-    }
-    float v815[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v815[k] = float(float(v813[k]) + float(float(p2_k[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            scratch[0 + e] = float(v812[k]);
-        }
-    }
-    __syncthreads();
-    float v816[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v816[k] = float(float(v815[k]) * float((scratch + 0)[e / 128u]));
-        }
-    }
-    float v817[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v817[k] = float(float(v805[k]) + float(v816[k]));
-        }
-    }
-    float v819[32];
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            v819[k] = float(float(v817[k]) * float(float(p1_q[(uint)(30 + 1 * gid) * 128u + (uint)(0) * 1u + ((e % 128u))])));
-        }
-    }
-    __syncthreads();
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            scratch[0 + e] = float(v819[k]);
-        }
-    }
-    __syncthreads();
-    {
-        const uint o = tid / 4u, lane = tid % 4u;
-        float s = 0.0f;
-        if (o < 32u) for (uint j = lane; j < 128u; j += 4u) s = s + float((scratch + 0)[o * 128u + j]);
-        for (uint d = 2u; d > 0; d /= 2) s = s + __shfl_down_sync(0xffffffffu, s, d);
-        if (o < 32u && lane % 32u == 0) scratch[4096 + o * 1u + lane / 32u] = s;
-    }
-    __syncthreads();
-    float v820[1];
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            float s = 0.0f;
-            for (uint q = 0; q < 1u; ++q) s = s + scratch[4096 + e * 1u + q];
-            v820[k] = float(s);
-        }
-    }
-    for (uint k = 0; k < 1u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 32u) {
-            p7_y[(uint)(11776 + 384 * gid + 32 * gid2) * 1u + (e)] = float(float(v820[k]));
-        }
-    }
-    for (uint k = 0; k < 32u; ++k) {
-        const uint e = k * 128u + tid;
-        if (e < 4096u) {
-            p6_so[(uint)(256 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v817[k]));
+            p6_so[(uint)(256 + 384 * gid + 32 * gid2) * 128u + (uint)(0) * 1u + (e)] = float(float(v674[k]));
         }
     }
 }

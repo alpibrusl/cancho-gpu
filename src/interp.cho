@@ -799,10 +799,20 @@ pub fn execute[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], prog: i
                 // Every instance's tiles are dead once it ends: give the
                 // memory back, so a large grid runs in the space of one.
                 let mark = m[mem.float_slot()];
+                // The records of its tiles too (an instance binds every name anew): without this a grid of many
+                // instances of a long body ran the pool out, which is a trap (delta_step16 at one row a tile).
+                let imark = m[mem.top_slot()];
                 if block(m, t, fm, it, ir.p_body(m, prog)) < 0 {
                     return 0 - 1;
                 }
                 m[mem.float_slot()] = mark;
+                var iw = imark;
+                let itop = m[mem.top_slot()];
+                while iw < itop {
+                    m[iw] = 0;
+                    iw = iw + 1;
+                }
+                m[mem.top_slot()] = imark;
                 g = g + 1;
             }
             g2 = g2 + 1;
