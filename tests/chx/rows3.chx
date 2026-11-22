@@ -1,0 +1,22 @@
+// Three rows of c numbers, each from a buffer of its own, written as one [3, c]: the convolution window of a
+// delta layer after a speculative check keeps a prefix of its rows (docs/serving.md 10.2). The window is the last
+// three inputs, so after `kept` rows it is rows kept .. kept + 2 of (the old window, the check's inputs), and the
+// caller passes each of the three where it lies. ns MUST NOT be a buffer a row is read from.
+algo rows3(c)
+  in  r0: f32[1, c]
+  in  r1: f32[1, c]
+  in  r2: f32[1, c]
+  out ns: f32[3, c]
+  tile bc
+{
+  grid i over c / bc
+  let a = load r0[0, i * bc ; 1, bc]
+  let b = load r1[0, i * bc ; 1, bc]
+  let d = load r2[0, i * bc ; 1, bc]
+  store a -> ns[0, i * bc]
+  store b -> ns[1, i * bc]
+  store d -> ns[2, i * bc]
+}
+
+schedule rows3 for apple-m-series { threads 256 bc 256 }
+schedule rows3 for nvidia-ada     { threads 256 bc 256 }
