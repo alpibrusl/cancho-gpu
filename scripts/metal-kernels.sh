@@ -89,6 +89,10 @@ attention_scores_b nb=2 nkv=2 g=6 t=64 ts=16 d=128 tmax=80
 attention_pv_b nb=2 nkv=2 g=6 t=64 dw=16 d=128 tmax=80
 attention_scores_b nb=4 nkv=2 g=6 t=1152 ts=64 d=128 tmax=1152
 attention_pv_b nb=4 nkv=2 g=6 t=1152 dw=16 d=128 tmax=1152
+attention_scores_rows nr=3 nkv=2 g=6 t=64 ts=16 d=256 tmax=96
+attention_pv_rows nr=3 nkv=2 g=6 t=64 dw=32 d=256 tmax=96
+attention_scores_rows nr=8 nkv=4 g=6 t=256 ts=32 d=256 tmax=1024
+attention_pv_rows nr=8 nkv=4 g=6 t=256 dw=64 d=256 tmax=1024
 dec_post r=4
 kv_write_b nb=2 nkv=2 tmax=64 ts=16 d=128
 ids_mix r=8

@@ -1,0 +1,26 @@
+// attention_scores.chx for the rows of a prefill chunk in one launch (docs/serving.md section 9, step 5): `nr`
+// tokens fed together attend over ONE cache, each with its own mask (row r's mask lets through the positions up to
+// its own, so the chunk is causal), where attention_scores_b.chx has a cache a sequence. The scores of row r's g
+// query heads of key/value head i against positions sp * ts .. (sp + 1) * ts,
+//
+//     sc = q k^T / 16 + mask        (1/16 = 1/sqrt(256); d MUST be 256, see attention.chx)
+//
+// written to an [nr * nkv * g, t] scratch for attention_pv_rows.chx. The mask is `tmax` wide, as the engine keeps
+// it, and the first t of a row are read.
+algo attention_scores_rows(nr, nkv, g, t, ts, d, tmax)
+  in  q:    f32[nr * nkv * g, d]
+  in  k:    f32[nkv * tmax, d]
+  in  mask: f32[nr, tmax]
+  out sc:   f32[nr * nkv * g, t]
+{
+  grid r over nr, i over nkv, sp over t / ts
+  let qt = load q[r * (nkv * g) + i * g, 0 ; g, d]
+  let kt = load k[i * tmax + sp * ts, 0 ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.0625
+  let mk = load mask[r, sp * ts ; 1, ts]
+  store sd + mk -> sc[r * (nkv * g) + i * g, sp * ts]
+}
+
+schedule attention_scores_rows for apple-m-series { threads 512 }
+schedule attention_scores_rows for nvidia-ada     { threads 128 }

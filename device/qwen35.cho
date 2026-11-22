@@ -904,7 +904,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 194);
+    let eng = mem.grab(m, 207);
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -1121,6 +1121,20 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     // The final norm of a chunk that asks for logits feeds the head, which reads f32.
     m[eng + 192] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", mb(), "n", h), "eps", f32.round(0.000001)));
     m[eng + 193] = compile_kernel(m, t, ffi, fs, kdir, "rmsnorm_rows.chx", cv(m, t, c2(m, t, "r", hb, "n", h), "eps", f32.round(0.000001)));
+    // Attention for the rows of a chunk in one launch each for the scores and the weighted sum (docs/serving.md section 9,
+    // step 5): 194.. the chunk's pairs for 256, 512 and 1024 positions of the cache, 200.. the half chunk's, 206 the scores.
+    var ai = 0;
+    var tn = 256;
+    while ai < 3 {
+        let ta = float_of(tn);
+        m[eng + 194 + 2 * ai] = compile_kernel(m, t, ffi, fs, kdir, "attention_scores_rows.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", nb), "t", ta), "ts", 32.0), "d", 256.0), "tmax", float_of(tmax())));
+        m[eng + 195 + 2 * ai] = compile_kernel(m, t, ffi, fs, kdir, "attention_pv_rows.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", nb), "t", ta), "dw", 64.0), "d", 256.0), "tmax", float_of(tmax())));
+        m[eng + 200 + 2 * ai] = compile_kernel(m, t, ffi, fs, kdir, "attention_scores_rows.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", nh), "t", ta), "ts", 32.0), "d", 256.0), "tmax", float_of(tmax())));
+        m[eng + 201 + 2 * ai] = compile_kernel(m, t, ffi, fs, kdir, "attention_pv_rows.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", nh), "t", ta), "dw", 64.0), "d", 256.0), "tmax", float_of(tmax())));
+        tn = tn * 2;
+        ai = ai + 1;
+    }
+    m[eng + 206] = metal.cgpu_alloc(ffi, 4 * 24 * 1024 * mb());
     if err.failed(m) {
         return 0 - 1;
     }
@@ -1466,10 +1480,25 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 go(m, ffi, k_kvw, at(b_vs, 4 * 1024 * tt), at(mem.get(m, st2, l), 1024 * (pos + tt)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                 tt = tt + 1;
             }
-            tt = 0;
-            while tt < rows {
-                attn_go(m, ffi, eng, pos + rows, at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt));
-                tt = tt + 1;
+            if set == 1 {
+                tt = 0;
+                while tt < rows {
+                    attn_go(m, ffi, eng, pos + rows, at(b_qrs, 4 * 6144 * tt), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * tt), at(b_os, 4 * 6144 * tt));
+                    tt = tt + 1;
+                }
+            } else {
+                var sl = 194;
+                if set == 2 {
+                    sl = 200;
+                }
+                if pos + rows > 256 {
+                    sl = sl + 2;
+                }
+                if pos + rows > 512 {
+                    sl = sl + 2;
+                }
+                go(m, ffi, m[eng + sl], b_qrs, mem.get(m, st1, l), b_masks, m[eng + 206], 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                go(m, ffi, m[eng + sl + 1], m[eng + 206], mem.get(m, st2, l), b_os, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             }
             go(m, ffi, k_attn_gateb, b_os, b_qgs, b_ogs, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             fp4_res(m, ffi, k_outb, b_ogs, mem.get(m, w, 6), cur, nxt);

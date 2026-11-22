@@ -649,8 +649,20 @@ Ollama: 272 to 281 tok/s, 3.6 to 3.7 ms a token for everything.
    16-row kernel with f16 activations (`docs/kernels.md` 9.6). [estimate] 0.3 s more, and it is the only step that
    needs the prefill restructured: kernels for a number of rows not known when they are compiled, the delta and
    attention layers over a whole prompt, the cache's cut. No design yet.
-5. **Attention for a chunk's rows in one launch**, 0.16 s today.
+5. **Attention for a chunk's rows in one launch. Built.** A chunk ran `attention_scores` and `attention_pv` once a
+   token: 32 launches an attention layer, of 32 threadgroups each. `attention_scores_rows` and `attention_pv_rows`
+   are the same two programs with the row of the chunk as one more grid axis: one cache, a mask a row (the engine's
+   `tmax`-wide masks as they are), the scores of the chunk in one `[rows * 24, t]` scratch. Two launches a layer.
+   The weighted sum is split over 64 columns of `v` where the single-token kernel takes 32 (3.19 s against 3.21;
+   16 columns: 3.21) [measured, three runs each]. The speculative check's two rows and the single-token path keep
+   the per-token kernels. **Prefill 3.20 s against 3.30 (alternating builds, three runs a prompt, within 0.4%),
+   215 tok/s, the same tokens on the three prompts of 8.7.** The programs of a row are what they were; whether
+   the sums of the wider weighted sum run in the same order was not checked.
 
-[estimate] Step 5 on top of steps 1 to 3 (3.29 s): about 3.15 s, 219 tok/s. With step 4, about 2.85 s, 242. **The sum of
-what is listed does not reach Ollama's 2.5 s**; the rest is in the 0.17 ms a token not accounted for and in the
-products' rate between our kernel and theirs, and neither has a step here.
+   What attention still costs, each kernel a no-op in turn: the scores 0.03 s, the weighted sum 0.07 s
+   [measured, two runs each]. Every threadgroup of the weighted sum redoes its head's softmax, 4 times a head now.
+
+[estimate] Step 4 on top of steps 1 to 3 and 5 (3.20 s): about 2.9 s, 237 tok/s. **The sum of what is listed does
+not reach Ollama's 2.5 s**; the rest is in the 0.17 ms a token not accounted for and in the products' rate between
+our kernel and theirs, and neither has a step here. The estimate written here before step 5 was built said 0.14 s
+for it; it gave 0.10.

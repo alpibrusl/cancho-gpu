@@ -1,0 +1,22 @@
+// attention_pv.chx for the rows of a prefill chunk in one launch: the softmax of the scores of row r's head i (from
+// attention_scores_rows.chx) and the product with the columns dc * dw .. (dc + 1) * dw of v, the one cache every
+// row of the chunk reads. The same arithmetic as attention_pv.chx.
+algo attention_pv_rows(nr, nkv, g, t, dw, d, tmax)
+  in  sc: f32[nr * nkv * g, t]
+  in  v:  f32[nkv * tmax, d]
+  out o:  f32[nr * nkv * g, d]
+{
+  grid r over nr, i over nkv, dc over d / dw
+  let sm = load sc[r * (nkv * g) + i * g, 0 ; g, t]
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / z
+  let vt = load v[i * tmax, dc * dw ; t, dw]
+  let r2 = matmul p vt
+  store r2 -> o[r * (nkv * g) + i * g, dc * dw]
+}
+
+schedule attention_pv_rows for apple-m-series { threads 1024 }
+schedule attention_pv_rows for nvidia-ada     { threads 128 }
