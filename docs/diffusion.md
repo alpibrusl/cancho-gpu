@@ -824,9 +824,11 @@ Image, 1024 x 1024 (of 76 s):
    TFLOPS and no tile schedule beat that (D8). torch's whole step is 4.99 s, so its products run faster than ours.
    `docs/kernels.md` 9.6 timed MLX's own product kernel at 14.7 to 14.8 on this machine: at that rate a step is 0.55
    s shorter, a run 4.4 s. Not tried on these shapes.
-2. **Step 0's 10.5 s above a step: 2 s more inside the sessions, 9 s outside them.** What the 9 s are (the
-   sessions' starts, the kernels' compiles, the upload of 13 GB) was not split. torch pays its counterpart once a
-   process; this pipeline pays it once a picture.
+2. **Step 0's 10.5 s above a step: 2 s more inside the step's sessions, and about 8 s for the prefix pass**
+   [read: `tests/t2i_pipeline_gpu.py`, whose "wall" of step 0 has `e.prefix` in it and whose total is prefix +
+   steps: 66 s = 8 + 9 + 7 x 7]. The prefix is the prompt's 26 rows, run through the 32 blocks **padded to the
+   target's 4,096 rows**, because the driver takes one padded size for both (`NP = max(...)`), which an edit's
+   prefix of 4,115 rows needs and a prompt's does not. Padded to 64 rows it would cost a few tenths of a second.
 3. **The attention of a step: 1.8 s (D8), 14 s a run.** The statistics (0.57 s) and the weighted sum (0.8 s; 0.5
    with D8b's schedule) read a 2.2 GB scratch of scores a block; an attention that never stores them is not
    expressible in the language (D8).
@@ -841,6 +843,20 @@ Video, 17 frames of 640 x 352 (of 28.5 s):
 2. **The text encoder on the host, 9 s**, most of it torch and the load of umT5 for 19 tokens. On the GPU as the
    image's is (D5), or kept loaded.
 3. The denoiser's first step, 2.9 s above a step.
+
+### 8.4 Engines to measure against [read: their pages; none installed or run]
+
+torch on MPS is the reference this document has used. For what Ollama was to the language model, an engine on MLX
+on the same GPU:
+
+* **Image: `mflux`** (github.com/filipstrand/mflux, MIT): MLX ports of image models; its 0.21.0 release adds
+  `mflux-generate-qwen-2.1` for Qwen-Image-2.1, with a 6-step turbo path through a third party's LoRA. Whether it
+  runs the official 8-step Turbo checkpoint this pipeline uses, and at which precision, was not established: a
+  comparison may have to be at the same step count on its checkpoint.
+* **Video: `mlx-video`** (Blaizzy): runs Wan2.2-TI2V-5B and a community MLX conversion of FastWan2.2-TI2V-5B (3
+  steps), the model of 8.2.
+
+Neither is installed here, and each needs its own copy of the weights (tens of GB).
 
 **Not done.** A per-kernel profile of the present builds (`CANCHOGPU_PROFILE=2`): the split of a step above is
 D8's, measured 2026-11 before the restart of `docs/serving.md` 11.6, and the walls here agree with it (7 s a step
