@@ -1,0 +1,14 @@
+// kv_row.chx for the m tokens of a chunk in one launch: token t's row for head i goes to row i * tmax + t of y,
+// which the host binds at the first token's position (docs/serving.md 11.2). The token is the grid's second
+// extent, so a launch over fewer tokens than the kernel was compiled for sets that extent.
+algo kv_rows(m, nkv, tmax, d)
+  in  nw: f32[m * nkv, d]
+  out y:  f32[nkv * tmax, d]
+{
+  grid i over nkv, t over m
+  let nt = load nw[t * nkv + i, 0 ; 1, d]
+  store nt -> y[i * tmax + t, 0]
+}
+
+schedule kv_rows for apple-m-series { threads 256 }
+schedule kv_rows for nvidia-ada     { threads 256 }

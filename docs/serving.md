@@ -933,6 +933,93 @@ gone.
 The same tokens as 10.4's build on each, and `spec-check.sh` holds them to plain decoding's. **The long prose
 prompt, which 10.4 made slower than the round of 2 alone (3,609 to 3,624 ms that day), is now 4% faster than it.
 The two short prompts where few drafts are accepted gain 3%, and stay behind Ollama**: what separates them is the
-14 ms a round above a token and its drafts, where Ollama's round has about 4, and no one part of ours is most of
-it (the check's products about 3 ms above a token's, the delta step 4, the host and the launches 4.7, the rest
-under 1 each).
+14 ms a round above a token and its drafts, where Ollama's round has about 4. **Corrected the next run of
+measurements (section 11): this paragraph said no one part is most of it, with the check's products about 3 ms
+above a token's. They are 9 ms above: the 49.3 ms of products was compared with a token's 39 ms whole, not with
+the 32 ms of products in it.**
+
+## 11. What a round costs above a token, kernel by kernel (2026-11-23)
+
+Measured the same day as 10.5 (the machine 9% slower than in 10.4), 10.5's build, greedy.
+
+### 11.1 Measured
+
+**A round by its drafts and its check** (a draft count forced, "rare words" and "Once upon a time", two runs each
+within 0.2 ms): a plain token 39.0 ms; 1 draft, check of 8 rows 55.6; 2 drafts 58.0; 3 drafts 60.4; 1 draft with
+the check of 3 rows (10.3's few-row kernels) 56.6; 2 drafts with it 59.3. **The check of 3 rows is no cheaper than
+the check of 8**, which 10.5 took from 10.4 (51 against 58) without measuring it the same day.
+
+**Each kernel's GPU time, every launch in a command buffer of its own** (`CANCHOGPU_PROFILE=2`; the sum is 38.3 ms
+for a token and about 58 for a round of 1 draft, so what overlaps in the real schedule is little):
+
+| | a plain token | the check of 8 rows | the check of 3 rows |
+|---|---|---|---|
+| the NVFP4 products of the layers | 32.2 | 41.5 | 44.8 |
+| the output head | 1.5 | 1.8 | 1.8 |
+| the delta step | 0.8 | 4.7 (2.3 the check's, 2.3 the rerun's) | 2.1 |
+| the gates, the two small f16 products | 1.3 | 1.8 | 1.9 |
+| the norms | 2.0 | 2.3 | 2.0 |
+| the convolution (and the window's copy) | 0.16 | 0.52 | 0.24 |
+| rotary and cache rows (launches) | 0.14 (64) | 1.2 (519) | 0.5 (206) |
+| attention | 0.25 | 0.7 | 0.7 |
+| the largest logit of each row | | 0.5 | 0.3 |
+
+A draft is 2.2 ms beside that, 1.5 of it the output head's product.
+
+**So of the 16.6 ms a round of 1 draft costs above a token, 9.3 are the check's products and 2.2 the draft**: the matrix-unit kernels
+cost 1.29 times the one-row kernels whatever the rows (2 to 8), and the few-row kernels of 10.3 cost 1.39 times.
+Every greedy round of fewer than 7 drafts also runs the delta step twice: the rows past the drafts are never kept,
+so the state after 8 rows is never the one committed.
+
+### 11.2 Built: the rotary and the cache rows of a pass in one launch each
+
+`rope_rows.chx` and `kv_rows.chx`: `rope.chx` and `kv_row.chx` with the token as the grid's second extent,
+compiled for 128 tokens and launched over the rows of the pass (the kernel record's second extent, as 9.3 does).
+Six launches an attention layer where a check of 8 rows had 32 and a pass of 128 rows 512. **Measured, alternating
+builds: a round 0.5 ms shorter (2,369 against 2,387 ms for 95 tokens on "rare words", the same tokens on six
+prompts), and a prefill of 690 tokens 3,069 ms against 3,104 (three runs each within 3 ms).** The launches
+were not where the time is.
+
+### 11.3 A check of few rows: measured on the kernel alone, not built
+
+One product alone (17408 x 5120, 200 launches in a command buffer, best of five, a throwaway harness that is not
+in the repository; each hand-written variant held to the generated kernel's checksum):
+
+| kernel | rows | us a launch |
+|---|---|---|
+| `matvec_fp4_rows` (a token's) | 1 | 112 to 114 |
+| `matvec_fp4_batch_h`, the matrix unit | 2, 3, 4, 8 | 143, 143, 144, 141 |
+| `matvec_fp4_few`, its schedule; the best of eight schedules | 3 | 157; 148 |
+| the same | 2 | 132; 125 |
+| hand-written after MLX's `fp_qmv_wide` (16 lanes an output row, each row of x loaded at every weight group) | 1, 2, 3, 5 | 129, 174, 240, 439 |
+| hand-written: a lane holds 2 weight rows, loads them 8 bytes at a time and x 4 values at a time | 1, 2, 3, 4 | 109, 111, 143, 182 |
+| the same, 4 weight rows a lane | 1, 2, 3, 4 | 103, 110, 132, 361 |
+| the same, x in f16 loaded 8 values at a time, the group's scale multiplied into the weights | 2, 3, 4, 5, 8 | 114, 130, 153, 175, 242 |
+| hand-written matrix unit, eight shapes | 8 | 144 to 191 |
+
+* **What a load of x costs is what separates these.** With the weight loads the same, the time follows the loads of
+  x a weight row: one row of x for one weight row 106, two for two 111, two for one 163, three for one 222.
+* **Two rows can cost what one costs (111 against 112), three rows 1.17 times, four 1.37 times**; from three rows
+  each further row costs about 20 us, which is the rate of a plain multiply-add loop in registers
+  (`docs/kernels.md` 9: 8.8 TFLOPS). From 4 rows the matrix unit is cheaper, and nothing tried made it cheaper than
+  141 at 8 rows.
+* **So a lowering of this shape would make a check of 2 or 3 rows cheaper, not the check of 8.** Reckoned from the
+  table of 11.1, not measured: a round of 2 drafts about 50 ms where it is 58 (products 37.6 for 41.5, the delta
+  step of 3 rows with no rerun), which on the two prompts of 10.5 where few drafts are accepted is 22.6 ms a token
+  where the depth chosen today gives 23.9. Ollama's 45 ms a round (10.5) is 49 on this day's machine, 20.4 a token.
+* A token's own kernel also has 7% in it by the same loads (103 to 109 against 112 to 114): plain decoding, not
+  measured in the engine.
+
+**How Ollama's round is that cheap is not explained by this.** MLX gives 2 to 5 rows to `fp_qmv_wide` and 6 to 16
+to its matrix-unit kernel **[read: `mlx/backend/metal/quantized.cpp`]**; my port of the first is the slowest
+kernel of the table. Whether its build runs that kernel on these products, and what its plain token spends outside
+its kernels, were not measured.
+
+### 11.4 Not done
+
+* The lowering of 11.3, and a round of 1 or 2 drafts on it.
+* One pass over a delta layer's state a round instead of two: the next round's step replaying the kept rows from
+  the committed state (the 16-row step costs what the 8-row one does, both bound by the 6 MB of state they read and
+  write). About 2.5 ms a round; the committed state is then a round behind and has to be brought up when the
+  request ends.
+* The largest logit only of the rows the round drafted (0.3 ms).
