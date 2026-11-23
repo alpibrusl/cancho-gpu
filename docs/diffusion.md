@@ -877,6 +877,9 @@ on the same GPU:
   | the VAE decoder | 10.8 s | 10.5, 10.0 s |
 
   **The decoders take the same time; ours loses 6 to 7 s in the text encoder and 2 to 4 s in the first step.**
+  **Corrected the same evening (8.5): the 28.5 s was one run, and it depends on what ran before it. Three runs of
+  ours one after another take 21.7, 19.3 and 19.4 s (the text encoder 4 s), which is ahead of `mlx-video`;
+  alternated with `mlx-video` ours takes 26.5 s every time (the text encoder 9 s) against 23.5 to 24.4.**
   Its frames were looked at beside ours: both are rough at this size, and its have blue patches ours do not, so
   whether it runs the distilled model's sampler as intended was not established. The times are of the same amount
   of work (three transformer calls and one decode); the pictures are not compared.
@@ -884,4 +887,32 @@ on the same GPU:
 **Not done.** A per-kernel profile of the present builds (`CANCHOGPU_PROFILE=2`): the split of a step above is
 D8's, measured 2026-11 before the restart of `docs/serving.md` 11.6, and the walls here agree with it (7 s a step
 against 6.67 of kernels). A baseline for the video. Anything of 8.3.
+
+### 8.5 The two engines alternated, and what a run costs after another engine's (2026-11-23, late)
+
+8.4's runs of the other engines were made after ours, not between them. Alternated, each a new process:
+
+| video, 17 frames of 640 x 352 | wall | text encoder | steps | decoder |
+|---|---|---|---|---|
+| `mlx-video`, three runs | 24.4, 23.5, 23.8 s | 2.6 to 2.7 s | 2.4 s | 10.8 to 11.0 s |
+| ours, between them, three runs | 26.5, 26.5, 26.5 s | 9 s | 5.9 s | 10.1 to 10.2 s |
+| ours, three runs one after another | 21.7, 19.3, 19.4 s | 4 s | 5.9, 4.7, 4.7 s | 10.1, 8.9, 8.9 s |
+
+| image, 1024 x 1024, 8 steps | wall |
+|---|---|
+| `mflux`, two runs | 53.1, 51.8 s |
+| ours, between them, two runs | 65.4, 65.1 s (the language model 4 s, prefix and steps 53 to 54, the decoder 3) |
+
+* **Our text encoder for video costs 4 s after a run of ours and 9 s after another engine's; `mlx-video`'s costs
+  2.7 s either way.** Its phases, timed alone [a throwaway copy of `tools/wan_text.py`]: the imports 1.4 s, the
+  tokeniser 0.5, `from_pretrained` 0.1, **`.to("mps")` 4.7 s on a first run and 1.0 on the next**, the encode 0.1
+  to 0.5. So it is the copy of 11 GB into torch's device memory, not the reading and not the arithmetic. The
+  driver also pads the prompt to 512 tokens and keeps 19.
+* **So 8.2's 28.5 s and 8.4's "5 s behind" were one condition of two**: ours is 3 s behind `mlx-video` after
+  another engine has run and 4 s ahead after itself.
+* **The image is 12 to 13 s behind `mflux` alternated** (8.4 had 8 from runs that were not).
+
+**Not done.** Why a run of another engine makes ours slower by that much (the page cache, or the device memory
+torch has to wire again) was not found; the text encoder on the GPU session, where the denoiser's 9 GB of weights
+upload in about 2 s (step 0 less a step, 8.2).
 
