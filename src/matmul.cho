@@ -61,8 +61,9 @@ fn split_k_vec(kd: int, lanes: int, want: int) -> [] int {
 // Whether an NVFP4 run can be loaded wide, and from what: answers
 // `[weight lvalue, input lvalue]`, or -1. Only when the dialect asks and
 // the alignment follows from the shape.
-fn wide_fp4[&m, &t](m: &!m [int], t: &!t [byte], g: int, qe: int, qc: int, kd: int, vec: int, x: int) -> [] int {
-    if !dialect.wide_loads(gen.dia(m, g)) || vec != 16 || qc % 8 != 0 || kd % 16 != 0 {
+fn wide_fp4[&m, &t](m: &!m [int], t: &!t [byte], g: int, qe: int, qc: int, kd: int, vec: int, x: int, rows: bool) -> [] int {
+    let asked = dialect.wide_loads(gen.dia(m, g)) || rows && dialect.wide_rows(gen.dia(m, g));
+    if !asked || vec != 16 || qc % 8 != 0 || kd % 16 != 0 {
         return 0 - 1;
     }
     if m[x] != gen.a_lazy() {
@@ -229,7 +230,7 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
         gen.line(m, t, g, text.f2(m, t, "    const uint grp = j * $u + p0 / $u;", n(m, t, kd / gsz), n(m, t, gsz)));
         gen.line(m, t, g, text.f2(m, t, "    const float sg = $$;", gen.at_index_lit(m, t, m[d + 1], "grp"), rs));
         let (qe, qc) = (m[d + 6], m[d + 7]);
-        let wide = wide_fp4(m, t, g, qe, qc, kd, vec, oa);
+        let wide = wide_fp4(m, t, g, qe, qc, kd, vec, oa, false);
         if wide >= 0 {
             let (wq, xa) = (m[wide], m[wide + 1]);
             let w = gen.at_index(m, t, wq, text.f1(m, t, "j * $u + p0 / 2u", n(m, t, qc)));
@@ -1020,7 +1021,7 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
     }
     var wide = 0 - 1;
     if d >= 0 && unroll {
-        wide = wide_fp4(m, t, g, m[d + 6], m[d + 7], kd, vec, oa);
+        wide = wide_fp4(m, t, g, m[d + 6], m[d + 7], kd, vec, oa, true);
     }
     if wide >= 0 {
         let (wq, xa, qc) = (m[wide], m[wide + 1], m[d + 7]);
@@ -1031,6 +1032,25 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
             let ld = dialect.vector_load(m, t, gen.dia(m, g), text.lit(m, t, "uint2"), w);
             gen.line(m, t, g, text.f5(m, t, "{ const uint j = min(sgid * $u + $u, $u); wq[$] = $; }", n(m, t, r), n(m, t, rr), n(m, t, nn - 1), n(m, t, rr), ld));
             rr = rr + 1;
+        }
+        // with few accumulators the group's scale is applied once a group, to the group's sums, not to every weight
+        // (on Metal, where it was measured: docs/serving.md 11.5; the CUDA kernel is as it was)
+        let dw = deferred && !dialect.wide_loads(gen.dia(m, g));
+        var accw = text.lit(m, t, "s");
+        if dw {
+            accw = text.lit(m, t, "run");
+            gen.line(m, t, g, text.f2(m, t, "float run[$][$];", n(m, t, r), n(m, t, mm)));
+            rr = 0;
+            while rr < r {
+                let parts = mem.list(m);
+                var i = 0;
+                while i < mm {
+                    mem.push(m, parts, text.f2(m, t, "run[$][$] = 0.0f;", n(m, t, rr), n(m, t, i)));
+                    i = i + 1;
+                }
+                gen.line(m, t, g, text.joined(m, t, parts, " "));
+                rr = rr + 1;
+            }
         }
         var q = 0;
         while q < 4 {
@@ -1061,12 +1081,16 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
                     let sums = mem.list(m);
                     i = 0;
                     while i < mm {
-                        let l = mem.of6(m, n(m, t, rr), n(m, t, i), n(m, t, i), c0, n(m, t, i), c1);
-                        mem.push(m, sums, text.fmt(m, t, "s[$][$] += x$.$ * w0 + x$.$ * w1;", l));
+                        let l = mem.of7(m, accw, n(m, t, rr), n(m, t, i), n(m, t, i), c0, n(m, t, i), c1);
+                        mem.push(m, sums, text.fmt(m, t, "$[$][$] += x$.$ * w0 + x$.$ * w1;", l));
                         i = i + 1;
                     }
-                    let l = mem.of6(m, n(m, t, rr), word, n(m, t, 8 * (byte % 4)), n(m, t, rr), n(m, t, rr), text.joined(m, t, sums, " "));
-                    gen.line(m, t, g, text.fmt(m, t, "{ const float2 w = fp4_pair((wq[$].$ >> $u) & 0xFFu); const float w0 = w.x * sgr[$], w1 = w.y * sgr[$]; $ }", l));
+                    if dw {
+                        gen.line(m, t, g, text.f4(m, t, "{ const float2 w = fp4_pair((wq[$].$ >> $u) & 0xFFu); const float w0 = w.x, w1 = w.y; $ }", n(m, t, rr), word, n(m, t, 8 * (byte % 4)), text.joined(m, t, sums, " ")));
+                    } else {
+                        let l = mem.of6(m, n(m, t, rr), word, n(m, t, 8 * (byte % 4)), n(m, t, rr), n(m, t, rr), text.joined(m, t, sums, " "));
+                        gen.line(m, t, g, text.fmt(m, t, "{ const float2 w = fp4_pair((wq[$].$ >> $u) & 0xFFu); const float w0 = w.x * sgr[$], w1 = w.y * sgr[$]; $ }", l));
+                    }
                     half = half + 1;
                 }
                 rr = rr + 1;
@@ -1074,6 +1098,18 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
             gen.depth_out(m, g);
             gen.line_lit(m, t, g, "}");
             q = q + 1;
+        }
+        rr = 0;
+        while dw && rr < r {
+            let parts = mem.list(m);
+            var i = 0;
+            while i < mm {
+                let l = mem.of5(m, n(m, t, rr), n(m, t, i), n(m, t, rr), n(m, t, i), n(m, t, rr));
+                mem.push(m, parts, text.fmt(m, t, "s[$][$] += run[$][$] * sgr[$];", l));
+                i = i + 1;
+            }
+            gen.line(m, t, g, text.joined(m, t, parts, " "));
+            rr = rr + 1;
         }
     } else {
         if deferred {

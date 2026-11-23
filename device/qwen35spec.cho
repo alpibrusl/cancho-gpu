@@ -674,10 +674,11 @@ fn round_n[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
     if greedy {
         want = 0 - 2;
     }
-    // a greedy round's check is the half chunk whatever it drafts: the rows past the drafts are checked and never kept
+    // a greedy round of 3 drafts or more has the half chunk for its check, whatever it drafts: the rows past the drafts
+    // are checked and never kept. Up to 2 drafts the few-row kernels are cheaper (docs/serving.md 11.5).
     var set = 1;
     var nrows = n + 1;
-    if greedy {
+    if greedy && n > 2 {
         set = 3;
         nrows = deep() + 1;
         while j < deep() {
@@ -728,6 +729,15 @@ fn round_n[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
 
 // The tokens a round of `d` drafts is expected to choose (x 1000): the one after `last`, and each draft while the
 // ones before it were accepted. A position past the deepest ever drafted has the acceptance of that one.
+// What a greedy round of `d` drafts costs, in tenths of a millisecond [measured on an M4 Max, docs/serving.md 11.5]:
+// the check of 3 rows up to 2 drafts, the check of 8 from 3.
+fn cost(d: int) -> [] int {
+    if d <= 2 {
+        return 470 + 25 * d;
+    }
+    return 530 + 24 * d;
+}
+
 fn expect[&m](m: &!m [int], sx: int, d: int) -> [] int {
     var e = 1000;
     var run = 1000;
@@ -747,7 +757,7 @@ fn expect[&m](m: &!m [int], sx: int, d: int) -> [] int {
 // One round of speculative decoding (docs/serving.md 10.5). A greedy request drafts the number of tokens, 1 to
 // `deep()`, that is expected to choose the most tokens for what the round costs: the engine keeps a running
 // acceptance of the draft at each position (given that the ones before it were accepted), and a round costs
-// `base` + `per` a draft [measured on an M4 Max, docs/serving.md 10.5]. The depth goes at most one past the deepest
+// `cost` of its drafts [measured on an M4 Max, docs/serving.md 10.5 and 11.5]. The depth goes at most one past the deepest
 // ever drafted, and every 8th round drafts one more than the best, so that the next position's acceptance is
 // measured and cannot go stale. A request that samples has the round of 2 and its own check.
 pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, sp: int, lgd: int, rows: int, smp: int, gsmp: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
@@ -755,8 +765,6 @@ pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         return 0 - 1;
     }
     let sx = m[eng + 214];
-    let base = 530;
-    let per = 24;
     var n = 2;
     let greedy = sampler.is_greedy(m, smp);
     if greedy && m[sp + 1] + deep() + 3 < qwen35.tmax() {
@@ -767,7 +775,7 @@ pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         n = 1;
         var d = 2;
         while d <= lim {
-            if expect(m, sx, d) * (base + per * n) > expect(m, sx, n) * (base + per * d) {
+            if expect(m, sx, d) * cost(n) > expect(m, sx, n) * cost(d) {
                 n = d;
             }
             d = d + 1;

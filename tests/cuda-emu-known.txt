@@ -57,3 +57,6 @@ matvec_fp4_swiglu_batch_h_m=16_n=17408_k=5120|noref|the interpreter's memory can
 matvec_fp4_pass_h_m=128_n=17408_k=5120_bm=16|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_res_pass_h_m=128_n=5120_k=17408_bm=16|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_pass_h_m=128_n=17408_k=5120_bm=16|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_few_m=3_n=10240_k=5120|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_res_few_m=3_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
+matvec_fp4_swiglu_few_m=3_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors

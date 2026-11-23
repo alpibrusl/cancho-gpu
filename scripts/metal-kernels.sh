@@ -66,6 +66,12 @@ rope_rows m=128 r=24 h=32 p=192
 rope_rows m=5 r=3 h=4 p=2
 kv_rows m=128 nkv=4 tmax=1024 d=256
 kv_rows m=5 nkv=2 tmax=8 d=4
+matvec_fp4_few m=3 n=64 k=128
+matvec_fp4_few m=2 n=64 k=160
+matvec_fp4_few m=3 n=256 k=1024
+matvec_fp4_res_few m=2 n=64 k=128
+matvec_fp4_swiglu_few m=3 n=64 k=128
+batch_fp4 b=4 n=64 k=512
 matvec_rows_f16_mh m=16 n=48 k=5120
 matvec_rows_f16_mh m=8 n=48 k=5120
 f16x:rmsnorm_rows_h r=16 n=5120 eps=0.000001
