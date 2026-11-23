@@ -217,6 +217,12 @@ pub fn wide_loads(d: int) -> [] bool {
     return is_cuda(d);
 }
 
+// Wide loads in the few-row product (`batched_rows` of src/matmul.cho): on Metal too, where a load of the
+// activations is what the kernel's time follows (docs/serving.md 11.3). The one-row product gains nothing by them there.
+pub fn wide_rows(d: int) -> [] bool {
+    return d == d;
+}
+
 pub fn vector_load[&m, &t](m: &!m [int], t: &!t [byte], d: int, ty: int, lvalue: int) -> [] int {
     if is_cuda(d) {
         return text.f2(m, t, "*reinterpret_cast<const $*>(&$)", ty, lvalue);

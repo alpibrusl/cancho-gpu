@@ -1017,9 +1017,49 @@ its kernels, were not measured.
 
 ### 11.4 Not done
 
-* The lowering of 11.3, and a round of 1 or 2 drafts on it.
+* ~~The lowering of 11.3, and a round of 1 or 2 drafts on it.~~ Built: 11.5.
 * One pass over a delta layer's state a round instead of two: the next round's step replaying the kept rows from
   the committed state (the 16-row step costs what the 8-row one does, both bound by the 6 MB of state they read and
   write). About 2.5 ms a round; the committed state is then a round behind and has to be brought up when the
   request ends.
 * The largest logit only of the rows the round drafted (0.3 ms).
+
+### 11.5 Built: the few-row product with wide loads, and the check of 3 rows for a round of 1 or 2 drafts
+
+**The compiler had most of 11.3's kernel already**: `batched_rows` of `src/matmul.cho` has a path that loads a
+group's codes as two words and the activations four at a time, taken on CUDA only (`dialect.wide_loads`). Two
+changes, both to the Metal kernel alone (the CUDA goldens do not change):
+
+* `dialect.wide_rows`: that path on Metal too, for the few-row product only. The one-row product gains nothing by
+  it (111 against 112 us).
+* With at most 16 accumulators a lane, the group's scale multiplies the group's sums, not every weight.
+
+The `_few` kernels' Apple schedule is `threads 64 bn 8` (4 weight rows a simdgroup). **One product alone, as
+11.3: 2 rows 110 us (was 132; 121 with the wide loads and the scale at every weight), 3 rows 125 to 128 (was
+157), 4 rows 163 to 180, against the matrix unit's 141 to 144.**
+
+**In the engine, a draft count forced, two prompts, ms a round:** 2 drafts on the check of 3 rows 52.0 (59.3
+before, 58.1 on the check of 8); 1 draft on it 49.4 (56.6 before, 55.8 on the check of 8). 11.3 reckoned 50 for
+the first.
+
+**`spec_round`** gives a greedy round of 1 or 2 drafts the check of 3 rows and a deeper one the check of 8, and
+weighs the depths by `470 + 25 d` up to 2 drafts and `530 + 24 d` from 3 (tenths of a millisecond). Against 10.5's
+build, 95 tokens, ms (rounds), one run each, the same tokens on each:
+
+| prompt | 10.5 | now |
+|---|---|---|
+| The capital of France is | 1,553 (23) | 1,591 (25) |
+| def quicksort(arr): | 1,362 (20) | 1,343 (20) |
+| Once upon a time, ... | 2,364 (37) | 2,285 (38) |
+| The three laws of thermodynamics, ... | 1,765 (27) | 1,741 (27) |
+| Q: Why is the sky blue? | 1,686 (25) | 1,664 (25) |
+| rare words: ... | 2,375 (37) | 2,253 (40) |
+
+**2% over the six, 5% on "rare words", 2% slower on the first.** Two drafts forced on every round does "Once upon a
+time" in 2,134 ms, so the chooser leaves 7% there: it still goes deep on rounds that do not pay. Four variants of
+its exploration (a probe every 16th round, a deeper position borrowing four fifths of the acceptance, both, and
+both with a lower first guess) were each slower over the six (11,029 to 11,412 ms against 10,877), on one run each
+of 95 tokens, which is too little to tune it by.
+
+**Not done.** A round of 1 draft still runs kernels compiled for 3 rows (2 rows alone are 110 us against 125).
+The chooser, as above. A request that samples has the same kernels and was not timed.

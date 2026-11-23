@@ -235,6 +235,13 @@ tests/chx/kv_rows.chx m=3 nkv=2 tmax=8 d=4 --run
 tests/chx/rope_rows.chx m=128 r=24 h=32 p=192
 tests/chx/rope_rows.chx m=128 r=4 h=32 p=192
 tests/chx/rope_rows.chx m=3 r=3 h=4 p=2 --run
+# The few-row NVFP4 products of a speculative check of up to 3 rows: wide loads and the group's scale applied once a group
+# on Metal (docs/serving.md 11.5).
+tests/chx/matvec_fp4_few.chx m=3 n=10240 k=5120
+tests/chx/matvec_fp4_few.chx m=2 n=64 k=160 --run
+tests/chx/matvec_fp4_res_few.chx m=3 n=5120 k=17408
+tests/chx/matvec_fp4_swiglu_few.chx m=3 n=17408 k=5120
+tests/chx/matvec_fp4_swiglu_few.chx m=3 n=64 k=128 --run
 tests/chx/attention.chx nkv=4 g=6 t=1024 d=256 tmax=1024
 tests/chx/qnorm.chx r=24 n=256 eps=1e-6
 tests/chx/qnorm.chx r=3 n=8 eps=1e-6 --run

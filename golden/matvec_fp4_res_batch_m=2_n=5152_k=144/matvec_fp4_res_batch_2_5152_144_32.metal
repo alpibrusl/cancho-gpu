@@ -48,42 +48,63 @@ kernel void matvec_fp4_res_batch_2_5152_144_32(
             { const uint j = min(sgid * 4u + 1u, 31u); const uint grp = j * 9u + p0 / 16u; sgr[1] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 32 * gid) * 9u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0 + 32 * gid) * 1u + ((j))])) * 16384.0f; mgr[1] = 0.0f; }
             { const uint j = min(sgid * 4u + 2u, 31u); const uint grp = j * 9u + p0 / 16u; sgr[2] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 32 * gid) * 9u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0 + 32 * gid) * 1u + ((j))])) * 16384.0f; mgr[2] = 0.0f; }
             { const uint j = min(sgid * 4u + 3u, 31u); const uint grp = j * 9u + p0 / 16u; sgr[3] = fp8_e4m3((uint)(uchar)(char(p2_ws[(uint)(0 + 32 * gid) * 9u + (uint)(0) * 1u + ((grp))])) & 0xFFu) * float(float(p3_wg[(uint)(0 + 32 * gid) * 1u + ((j))])) * 16384.0f; mgr[3] = 0.0f; }
+            uint2 wq[4];
+            { const uint j = min(sgid * 4u + 0u, 31u); wq[0] = *(const device uint2 *)(&p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u))]); }
+            { const uint j = min(sgid * 4u + 1u, 31u); wq[1] = *(const device uint2 *)(&p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u))]); }
+            { const uint j = min(sgid * 4u + 2u, 31u); wq[2] = *(const device uint2 *)(&p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u))]); }
+            { const uint j = min(sgid * 4u + 3u, 31u); wq[3] = *(const device uint2 *)(&p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u))]); }
             float run[4][2];
             run[0][0] = 0.0f; run[0][1] = 0.0f;
             run[1][0] = 0.0f; run[1][1] = 0.0f;
             run[2][0] = 0.0f; run[2][1] = 0.0f;
             run[3][0] = 0.0f; run[3][1] = 0.0f;
-            for (uint u = 0; u < 16u; u += 2u) {
-                const uint p = p0 + u;
-                float xa[2][2];
-                xa[0][0] = float(float(p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((p + 0u))]));
-                xa[1][0] = float(float(p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((p + 144u))]));
-                xa[0][1] = float(float(p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((p + 1u))]));
-                xa[1][1] = float(float(p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((p + 145u))]));
-                {
-                    const uint j = min(sgid * 4u + 0u, 31u);
-                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
-                    run[0][0] += xa[0][0] * w0 + xa[0][1] * w1;
-                    run[0][1] += xa[1][0] * w0 + xa[1][1] * w1;
-                }
-                {
-                    const uint j = min(sgid * 4u + 1u, 31u);
-                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
-                    run[1][0] += xa[0][0] * w0 + xa[0][1] * w1;
-                    run[1][1] += xa[1][0] * w0 + xa[1][1] * w1;
-                }
-                {
-                    const uint j = min(sgid * 4u + 2u, 31u);
-                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
-                    run[2][0] += xa[0][0] * w0 + xa[0][1] * w1;
-                    run[2][1] += xa[1][0] * w0 + xa[1][1] * w1;
-                }
-                {
-                    const uint j = min(sgid * 4u + 3u, 31u);
-                    const float2 bq = fp4_pair((uint)(uchar)(char(p1_wq[(uint)(0 + 32 * gid) * 72u + (uint)(0) * 1u + ((j * 72u + p0 / 2u + u / 2u))]))); const float w0 = (bq.x); const float w1 = (bq.y);
-                    run[3][0] += xa[0][0] * w0 + xa[0][1] * w1;
-                    run[3][1] += xa[1][0] * w0 + xa[1][1] * w1;
-                }
+            {
+                const float4 x0 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 0u))]);
+                const float4 x1 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 0u))]);
+                { const float2 w = fp4_pair((wq[0].x >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.x * w0 + x0.y * w1; run[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].x >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.z * w0 + x0.w * w1; run[0][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[1].x >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.x * w0 + x0.y * w1; run[1][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[1].x >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.z * w0 + x0.w * w1; run[1][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[2].x >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.x * w0 + x0.y * w1; run[2][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[2].x >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.z * w0 + x0.w * w1; run[2][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[3].x >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.x * w0 + x0.y * w1; run[3][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[3].x >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.z * w0 + x0.w * w1; run[3][1] += x1.z * w0 + x1.w * w1; }
+            }
+            {
+                const float4 x0 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 4u))]);
+                const float4 x1 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 4u))]);
+                { const float2 w = fp4_pair((wq[0].x >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.x * w0 + x0.y * w1; run[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].x >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.z * w0 + x0.w * w1; run[0][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[1].x >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.x * w0 + x0.y * w1; run[1][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[1].x >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.z * w0 + x0.w * w1; run[1][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[2].x >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.x * w0 + x0.y * w1; run[2][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[2].x >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.z * w0 + x0.w * w1; run[2][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[3].x >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.x * w0 + x0.y * w1; run[3][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[3].x >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.z * w0 + x0.w * w1; run[3][1] += x1.z * w0 + x1.w * w1; }
+            }
+            {
+                const float4 x0 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 8u))]);
+                const float4 x1 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 8u))]);
+                { const float2 w = fp4_pair((wq[0].y >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.x * w0 + x0.y * w1; run[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].y >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.z * w0 + x0.w * w1; run[0][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[1].y >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.x * w0 + x0.y * w1; run[1][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[1].y >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.z * w0 + x0.w * w1; run[1][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[2].y >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.x * w0 + x0.y * w1; run[2][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[2].y >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.z * w0 + x0.w * w1; run[2][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[3].y >> 0u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.x * w0 + x0.y * w1; run[3][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[3].y >> 8u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.z * w0 + x0.w * w1; run[3][1] += x1.z * w0 + x1.w * w1; }
+            }
+            {
+                const float4 x0 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((0u + p0 + 12u))]);
+                const float4 x1 = *(const device float4 *)(&p0_x[(uint)(0) * 144u + (uint)(0) * 1u + ((144u + p0 + 12u))]);
+                { const float2 w = fp4_pair((wq[0].y >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.x * w0 + x0.y * w1; run[0][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[0].y >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[0][0] += x0.z * w0 + x0.w * w1; run[0][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[1].y >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.x * w0 + x0.y * w1; run[1][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[1].y >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[1][0] += x0.z * w0 + x0.w * w1; run[1][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[2].y >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.x * w0 + x0.y * w1; run[2][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[2].y >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[2][0] += x0.z * w0 + x0.w * w1; run[2][1] += x1.z * w0 + x1.w * w1; }
+                { const float2 w = fp4_pair((wq[3].y >> 16u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.x * w0 + x0.y * w1; run[3][1] += x1.x * w0 + x1.y * w1; }
+                { const float2 w = fp4_pair((wq[3].y >> 24u) & 0xFFu); const float w0 = w.x, w1 = w.y; run[3][0] += x0.z * w0 + x0.w * w1; run[3][1] += x1.z * w0 + x1.w * w1; }
             }
             s[0][0] += run[0][0] * sgr[0]; s[0][1] += run[0][1] * sgr[0];
             s[1][0] += run[1][0] * sgr[1]; s[1][1] += run[1][1] * sgr[1];
