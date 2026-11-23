@@ -45,6 +45,7 @@ py() { (cd "$W" && PATH=$T/bin:$PATH HOME=${HOME2:-$H} CANCHO_MEDIA_CACHE=$K pyt
 real=subprocess.run
 subprocess.run=lambda cmd,cwd=None,**k:real(cmd,cwd=cwd,**k) if cmd[0].endswith("rewrite_cli") else [print("STAGE "+c) for c in cmd[1:]] and None or type("R",(),{"returncode":0})()
 sys.argv=["media"]+sys.argv[1:]
+sys.platform="darwin"
 runpy.run_path("'"$R"'/tools/media.py",run_name="__main__")' "$@"); }
 cho() { (cd "$W" && "$REPO/build/media" --root "$R" --cwd "$W" --home "${HOME2:-$H}" --py /bin/true --cache "$K" --ffmpeg ${FREEKB:+--free-kb $FREEKB} "$@"); }
 norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##; /^STAGE -c\$/d; s#^STAGE printf .* \(/[^ ]*\)\$#STAGE \1#"; }
