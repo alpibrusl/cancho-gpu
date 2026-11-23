@@ -1,0 +1,26 @@
+// The gated activation of a T5 feed-forward (docs/diffusion.md V3: umT5's `gated-gelu`), for s rows of n, bn columns to a threadgroup: y = gelu(g) * u, with g and u the two input projections (f32 outputs of
+// gemm_mma.chx) and gelu the tanh approximation, 0.5 v (1 + tanh(sqrt(2/pi) (v + 0.044715 v^3))) (`gelu_new`; dit_gelu.chx's); y is f16, the input of the output projection. dit_swiglu.chx is this with silu.
+algo dit_geglu(s, n, bn)
+  in  g: f32[s, n]
+  in  u: f32[s, n]
+  out y: f16[s, n]
+{
+  grid i over s, j over n / bn
+  let vv = load g[i, j * bn ; 1, bn]
+  let ut = load u[i, j * bn ; 1, bn]
+  let v2 = &vv * &vv
+  let v3 = v2 * &vv
+  let t1 = v3 * 0.044715
+  let t2 = &vv + t1
+  let t3 = t2 * 0.7978845608028654
+  let th = tanh t3
+  let t4 = th + 1
+  let t5 = vv * t4
+  let t6 = t5 * 0.5
+  let o  = t6 * ut
+  let oh = stage f16 o
+  store oh -> y[i, j * bn]
+}
+
+schedule dit_geglu for apple-m-series { threads 256 }
+schedule dit_geglu for nvidia-ada     { threads 256 }

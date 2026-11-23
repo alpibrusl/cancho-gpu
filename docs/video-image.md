@@ -12,7 +12,7 @@ The picture is the first frame; the prompt says what happens next. **It uses the
 
 1. **Picture to `[3, H, W]` floats in [-1, 1]** at the chosen `WxH`: resized to cover and cropped at the centre (no stretching), RGB, `x / 127.5 - 1`. This is the only new code, in `tools/media.py` (the wrapper that already imports PIL and numpy; no new file, no new language).
 2. `build/wan_vae_enc_gpu prepare` then `build/cancho-gpu-metal-session <work>/enc.session` then `build/wan_vae_enc_gpu latent`: the first frame's latent `cond.f32`.
-3. `tools/wan_text.py` twice: the prompt and the empty negative.
+3. `tests/wan_text_gpu.py` twice (umT5's encoder on the GPU, `docs/diffusion.md` V3; `tools/wan_text.py`, torch on the host, until 2026-11-23): the prompt and the empty negative.
 4. `tests/wan_video_gpu.py --base --cond cond.f32 --neg neg.npy --steps 30 --guidance 5`, with the base transformer, its own f16 directory (`~/.cache/cancho-media/wan-f16-base`) and `--size (h/16)x(w/16)`.
 5. The mp4 as for `video`.
 

@@ -30,7 +30,7 @@
 
 ## 4. Phase 3: the parts with no cancho equivalent yet (plan)
 
-1. **Text encoders and tokenizers on the host.** umT5 (`tools/wan_text.py`) and the Qwen text/vision encoder and processor run in torch. Removing torch means running them on the GPU in cancho kernels (the Qwen language model already has a GPU path: `tests/text_img_gpu.py`; umT5 has none) plus a tokenizer in cancho. This is new capability, the largest piece.
+1. **Text encoders and tokenizers on the host.** umT5 (`tools/wan_text.py`) and the Qwen text/vision encoder and processor run in torch. Removing torch means running them on the GPU in cancho kernels (the Qwen language model already has a GPU path: `tests/text_img_gpu.py`; **umT5 has one since 2026-11-23**, `tests/wan_text_gpu.py`, `docs/diffusion.md` V3: no torch in `media video`, the tokeniser still the `tokenizers` library) plus a tokenizer in cancho. This is new capability, the largest piece.
 2. **Image decode/encode (PIL).** PNG read/write and the resize-and-crop in cancho.
 3. **Torch oracles.** `tests/` compare against torch; without torch they become recorded goldens (the repo has `golden/`, 11 MB) checked by a cancho program. The cost is losing "regenerate the reference on demand"; docs/diffusion.md already records the torch numbers it cites.
 4. **The gate** names 43 Python tests (54 `python3` calls in `scripts/gate.sh`): each is ported or replaced by a golden check.

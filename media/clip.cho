@@ -305,20 +305,24 @@ fn steps_of[&i, &h, &f, &x, &y, &c, &e, &zc, &pi, &p, &n, &g, &t, &v, &wd, &o, &
         return status;
     }
     // the text and the negative text
-    var l4 = stage.add_arg(heap, buffer.empty(heap, 256), "tools/wan_text.py");
+    var l4 = stage.add_arg(heap, buffer.empty(heap, 256), "tests/wan_text_gpu.py");
     l4 = stage.add_arg(heap, l4, prompt);
     l4 = add_path(heap, l4, work, "text.npy");
-    status = run_list(io, heap, exec, sdir, clock, "stage", "text encoder (host, torch)", l4, env);
+    l4 = stage.add_arg(heap, l4, "--wdir");
+    l4 = add_path(heap, l4, ctx.cache, "umt5-f16");
+    status = run_list(io, heap, exec, sdir, clock, "stage", "text encoder (GPU)", l4, env);
     if status != 0 {
         return status;
     }
-    var l5 = stage.add_arg(heap, buffer.empty(heap, 1024), "tools/wan_text.py");
+    var l5 = stage.add_arg(heap, buffer.empty(heap, 1024), "tests/wan_text_gpu.py");
     if has_negative {
         l5 = stage.add_arg(heap, l5, negative_text);
     } else {
         l5 = stage.add_arg(heap, l5, negative.official());
     }
     l5 = add_path(heap, l5, work, "neg.npy");
+    l5 = stage.add_arg(heap, l5, "--wdir");
+    l5 = add_path(heap, l5, ctx.cache, "umt5-f16");
     status = run_list(io, heap, exec, sdir, clock, "stage", "negative text", l5, env);
     if status != 0 {
         return status;

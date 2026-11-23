@@ -456,6 +456,10 @@ tests/chx/dit_pv.chx nh=32 nq=4096 t=4096 qs=32 cs=64 dw=32 d=128
 tests/chx/dit_scores.chx nh=2 nq=32 t=32 qs=8 ts=16 d=128 --run
 tests/chx/dit_stats.chx nh=2 nq=32 t=32 qs=8 cs=16 --run
 tests/chx/dit_pv.chx nh=2 nq=32 t=32 qs=8 cs=16 dw=32 d=128 --run
+# V3 (docs/diffusion.md): umT5's attention, 64 heads of 64 over 64 rows: the scores with a bias per head and no scale, then dit_stats and dit_pv at d=64. tests/dit_attention.py holds the chain to float64.
+tests/chx/dit_scores_bias.chx nh=64 nq=64 t=64 qs=32 ts=64 d=64
+tests/chx/dit_pv.chx nh=64 nq=64 t=64 qs=32 cs=64 dw=32 d=64
+tests/chx/dit_scores_bias.chx nh=3 nq=32 t=32 qs=8 ts=16 d=64 --run
 
 # D2b (docs/diffusion.md): the pieces of a Qwen-Image-2.1 block that are not attention or a matrix product, at 1024 x 1024 (4,096 image tokens + 256 text) and hidden 4096 / MLP 12288;
 # tests/dit_block.py holds what they compute to a float64 reference, every element. dit_scores, dit_stats and dit_pv above are token-major since this slice.
@@ -471,6 +475,9 @@ tests/chx/dit_gate_res.chx s=12 n=256 --run
 tests/chx/dit_wan_lnmod.chx s=12 n=256 --run
 tests/chx/dit_wan_gate_res.chx s=12 n=256 --run
 tests/chx/dit_swiglu.chx s=6 n=384 bn=128 --run
+# V3 (docs/diffusion.md): umT5's gated GELU, 64 rows of 10,240. tests/dit_block.py holds it to float64.
+tests/chx/dit_geglu.chx s=64 n=10240 bn=1024
+tests/chx/dit_geglu.chx s=6 n=384 bn=128 --run
 
 # D2e (docs/diffusion.md): the front and back ends of a Qwen-Image-2.1 step: GELU and SiLU with f16 output, the joint sequence's sum, the modulation split, the first two rows. tests/dit_block.py holds them to references.
 tests/chx/dit_gelu.chx s=4352 n=4096 bn=1024

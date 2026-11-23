@@ -361,11 +361,18 @@ fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &
         let txt = pathx.under(heap, out, "text.npy");
         borrow txt as &xb in {
             borrow used as &ub in {
-                var l1 = stage.add_arg(heap, buffer.empty(heap, 128), "tools/wan_text.py");
+                // umT5's encoder as a GPU session (docs/diffusion.md V3); its f16 weights are the cache's umt5-f16, written by the stage on first use
+                var l1 = stage.add_arg(heap, buffer.empty(heap, 128), "tests/wan_text_gpu.py");
                 l1 = stage.add_arg(heap, l1, buffer.bytes(ub));
                 l1 = stage.add_arg(heap, l1, buffer.bytes(xb));
+                l1 = stage.add_arg(heap, l1, "--wdir");
+                let tw = pathx.under(heap, ctx.cache, "umt5-f16");
+                borrow tw as &twb in {
+                    l1 = stage.add_arg(heap, l1, buffer.bytes(twb));
+                }
+                buffer.drop(heap, tw);
                 borrow l1 as &l1b in {
-                    status = shared.step(io, heap, exec, sdir, clock, "text encoder (host, torch)", buffer.bytes(l1b), env);
+                    status = shared.step(io, heap, exec, sdir, clock, "text encoder (GPU)", buffer.bytes(l1b), env);
                 }
                 buffer.drop(heap, l1);
             }

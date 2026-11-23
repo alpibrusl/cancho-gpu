@@ -1,0 +1,23 @@
+// The scores of an attention whose bias differs by head and whose product is not scaled (docs/diffusion.md V3: umT5's encoder, where the bias is a learned function of the distance j - i, one table a block,
+// and the scores are q k^T with no 1/sqrt(d)): head h's rows qb * qs .. (qb + 1) * qs of q against positions sp * ts .. (sp + 1) * ts of its keys,
+//
+//     sc = q k^T + bias
+//
+// bias is [nh * nq, t], head-major as the scores are (row h * nq + i is head h's query i): the host expands it from the table and adds the key mask (a large negative number for a key that is padding)
+// into it. dit_scores.chx is this with one [nq, t] mask for every head and the scale 1/sqrt(128). q and k are token-major ([n, nh * d]); the scores go to dit_stats.chx and dit_pv.chx.
+algo dit_scores_bias(nh, nq, t, qs, ts, d)
+  in  q:    f32[nq, nh * d]
+  in  k:    f32[t, nh * d]
+  in  bias: f32[nh * nq, t]
+  out sc:   f32[nh * nq, t]
+{
+  grid h over nh, qb over nq / qs, sp over t / ts
+  let qt = load q[qb * qs, h * d ; qs, d]
+  let kt = load k[sp * ts, h * d ; ts, d]
+  let s  = matmul_nt qt kt
+  let bb = load bias[h * nq + qb * qs, sp * ts ; qs, ts]
+  store s + bb -> sc[h * nq + qb * qs, sp * ts]
+}
+
+schedule dit_scores_bias for apple-m-series { threads 512 }
+schedule dit_scores_bias for nvidia-ada     { threads 128 }

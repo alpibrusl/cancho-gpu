@@ -120,6 +120,8 @@ dit_gate_res s=12 n=256
 f16:dit_wan_lnmod s=12 n=256
 dit_wan_gate_res s=12 n=256
 f16:dit_swiglu s=6 n=384 bn=128
+f16:dit_geglu s=6 n=384 bn=128
+dit_scores_bias nh=3 nq=32 t=32 qs=8 ts=16 d=64
 f16:dit_gelu s=4 n=256 bn=128
 f16:dit_silu s=4 n=256 bn=128
 dit_add s=4 n=256 bn=128
