@@ -757,6 +757,66 @@ Facts below were read on 2026-11-14 from the model repositories' configuration f
 * **[measured] A first video**: the prompt "A red fox running through fresh snow in a pine forest at sunrise, cinematic, slow motion" (22 tokens, padded with zero rows to 512 as the pipelines do), a latent of 48 x 5 x 22 x 40 (1,100 tokens, padded to 1,152), **17 frames of 640 x 352**, seed 1. The transformer: **2.8 s for the first step** (the compile and the upload of 9.9 GB included) and **1.1 s for each of the other two**; the decoder 12.2 s (a second process, with the weights read again); **19.5 s of wall time** from the script's start to the last frame, the text encoder (host) and the one-time weight files not included. The frames show a fox on snow with pines, coherent from frame to frame (judged by eye on five of the 17).
 * **What this does not show:** it is **not compared with the real pipeline**: no output of torch's `WanDMDPipeline` on this machine, so the sampler's agreement with FastVideo's is by reading, not by measurement, and the noise is numpy's, so a torch run would not start from the same latents; the prompt asks for a running fox and the video shows one walking or standing (a three-step distilled model at 17 frames: not measured against anything); 1,100 tokens, not 27,280 (V1's attention in query blocks is still not built); **no time against torch** (V4b); the text encoder is torch's, not cancho-gpu's; no audio.
 
+### V3 (design, 2026-11-23, written before the code): umT5-XXL's encoder on the Metal session
+
+Claims are marked **[read]** (the model's files, or `transformers/models/umt5/modeling_umt5.py` 4.48 as installed), **[measured]** (on this machine, today, the command or the script named) or **[reckoned]**. What ran is in "V3 results" below.
+
+**Why.** 8.5: the text encoder is 4 s of a video after a run of ours and 9 s after another engine's, and the time is torch's copy of 11 GB into its device memory, not arithmetic. The session uploads the denoiser's 9 GB of f16 files in about 2 s.
+
+**What the encoder is [read: `text_encoder/config.json`, the three shards' headers, `UMT5Stack`, `UMT5Block`, `UMT5Attention`, `UMT5DenseGatedActDense`].** 242 tensors, all BF16: an embedding table `shared.weight` [256,384, 4,096], 24 blocks, `encoder.final_layer_norm.weight`. No absolute positions, no bias anywhere. A block, on the residual stream `x` [n, 4,096]:
+
+    y = norm1(x)                       T5's layer norm: y = x * rsqrt(mean(x^2) + 1e-6) * w   (an RMS norm with a weight and no bias)
+    q, k, v = y Wq^T, y Wk^T, y Wv^T   4,096 -> 4,096 = 64 heads of 64
+    s[h, i, j] = q[i, h] . k[j, h] + B[h, i, j]      NO 1/sqrt(d);  B = the block's own relative bias + the key mask
+    x = x + (softmax_j(s) v) Wo^T
+    y = norm2(x)
+    x = x + (gelu_new(y W0^T) * (y W1^T)) Wo2^T      W0, W1: 4,096 -> 10,240;  gelu_new is the tanh approximation
+
+and the output is `final_layer_norm(x)`. The relative bias is a table `relative_attention_bias.weight` [32, 64] (buckets, heads), **one in every block** (umT5; T5 shares the first block's), read at `bucket(j - i)`: 16 buckets a sign; offsets 0 to 7 a bucket each; 8 to 127 in 8 logarithmic buckets, `8 + int(log(r / 8) / log(128 / 8) * 8)` in float32; 15 from 128 on. `wan_text.py` asks for `last_hidden_state`, which is after the final norm.
+
+**Which kernel does each piece.**
+
+| piece | kernel | status |
+|---|---|---|
+| the two norms of a block, the final norm | `rmsnorm_rows` (r rows of n, a [1, n] weight, eps a constant) | exists (D5's layers use it the same way) |
+| f32 -> f16 before a product | `dit_to_f16` | exists |
+| q, k, v, o, W0, W1, Wo2 | `ported/gemm_mma` (f16 activation and weight, f32 accumulator and output) | exists |
+| the scores with a bias **per head** and **no scale** | **`dit_scores_bias`**: `dit_scores` with `bias: f32[nh * nq, t]` in place of the shared `mask: f32[nq, t]`, and without the literal 1/sqrt(128) | **new** |
+| softmax statistics, the weighted sum of v | `dit_stats`, `dit_pv` (d = 64, dw = 32) | exist |
+| the residual sums | `dit_add` | exists |
+| `gelu_new(g) * u`, f16 out | **`dit_geglu`**: `dit_swiglu` with `dit_gelu`'s activation | **new** |
+| the last rows out | `save` + `checkpoint`, a `dit_rows2` probe as the answer (D12) | exist |
+
+Two new kernels, both a few lines changed in an existing one. **Considered and not chosen for the scores [reckoned]:** `dit_scores` as it is with `d=64` (its 1/sqrt(128) undone by multiplying `Wq` by sqrt(128), which is not a power of two, so the f16 weights would no longer be the checkpoint's) followed by `dit_add` over the [nh * nq, t] scores with the bias as `b`: no new kernel, one more program and one more pass a block, and weights that are not the file's. `dit_scores_mma` (no scale, no mask) then `dit_add`: q and k rounded to f16 first, two more programs a block. For the gated GELU there is no existing pair: `dit_gelu` writes f16 and nothing multiplies two activations. Each new kernel gets the repository's due: cases in `tests/cases.txt`, a float64 reference with mutants (`tests/dit_attention.py`, `tests/dit_block.py`, both in the gate), a line in `scripts/metal-kernels.sh`, goldens.
+
+**On the host** (as D5's lookup and rotary tables are): the tokeniser (`tokenizers`, from the snapshot's `tokenizer.json`: **[measured]** it loads in 0.13 s and gives the ids of `AutoTokenizer` for the four prompts below), the n rows of the embedding table (read straight from the checkpoint's shard, BF16 widened: no copy of the 2.1 GB table is kept), and **B, expanded from the 24 tables to [64 * SP, SP] a block** (1 MB a block at SP = 64). A kernel cannot do that lookup: a tile of query rows needs a different shift of the table for each row. The bucket function is float32 arithmetic in torch; the driver's is numpy's, and the check compares the two for every offset from -511 to 511.
+
+**How many rows: the prompt's own, not 512. [measured]** `wan_text.py` pads to 512 tokens, passes the mask and keeps the first n rows. The mask adds the most negative float to the scores of padded keys, so a real row's softmax gives them exactly 0 and the n real rows do not depend on the padding. Shown in torch float32 on the CPU, the padded call against a call on the n tokens alone (`input_ids[:, :n]`, no mask):
+
+| prompt | n | max abs difference | mean abs | rms of the rows |
+|---|---|---|---|---|
+| the fox prompt of 8.2 | 19 | 5.8e-6 | 1.7e-7 | 0.074 |
+| "A cat" | 3 | 1.0e-6 | 1.2e-7 | 0.058 |
+| the empty prompt (base model's negative when none is given: one token) | 1 | 1.1e-6 | 3.2e-8 | 0.026 |
+| a harbour scene, with a sentence of Japanese | 102 | 1.1e-5 | 2.5e-7 | 0.081 |
+
+Float32's rounding (the sums are over different lengths), 2e-6 to 3e-6 of the rms on the mean. So the session runs **SP = n rounded up to a multiple of 64** (the matrix unit's tile): 64 rows for a usual prompt. Rows n to SP are zeros and are masked as keys in B; what they compute is not read. The relative bias depends on j - i only, so nothing else knows about 512.
+
+**The weights file.** `~/.cache/cancho-media/umt5-f16/` (beside `wan-f16`; `--wdir`), written by the driver on first use from the snapshot's `text_encoder/*.safetensors`, with no torch (the header is JSON; BF16 is the top half of a float32): per block `wq wk wv wo` [4096, 4096], `w0 w1` [10240, 4096], `w2` [4096, 10240] as f16, `n1 n2` [1, 4096] as f32 and the bias table `rb` [32, 64] as f32, plus `nf.f32`; **9.26 GB [reckoned: 24 x 385.9 MB]**. BF16 to f16 is exact but for values under f16's smallest normal: **[measured]** 6,021 of 16.8 M in block 0's `Wq`, 1,249 of 41.9 M in block 11's `W0`, 1,189 of 41.9 M in block 23's `Wo2`, each off by at most 3e-8; the norm weights and the bias tables are exact (largest bias 24). The driver refuses to write them when the disk has under 11 GB free.
+
+**Time [reckoned].** The arithmetic at 64 rows is 0.6 TFLOP (24 blocks of 24.7 GFLOP): about 0.05 s at the products' 13 TFLOPS. The upload of 9.26 GB at the denoiser's rate (9 GB in about 2 s, 8.2) is about 2 s, plus the interpreter, the tokeniser and the compile of 24 x 20 programs: **2.5 to 3 s a run, against torch's 4 to 9 and `mlx-video`'s 2.6 to 2.7.** Whether it also moves with what ran before is the question of check 3.
+
+**The pieces.** `models/umt5_enc.model` (a block, repeated; `SP`, `NL`, `WORK`, `WDIR`); `tests/wan_text_gpu.py PROMPT OUT.npy [--wdir DIR]`, the stage (numpy and `tokenizers`; no torch), which `media/video.cho`, `media/clip.cho` and `tools/media.py` call in place of `tools/wan_text.py`, the label "text encoder (GPU)"; `tools/wan_text.py` stays as torch's side of the checks.
+
+**Checks, written before the first run.**
+
+1. **The rows against torch's**, `tests/wan_text_gpu.py --check` over the four prompts above (1, 3, 19 and 102 tokens: SP 64 and 128). The reference is torch float32 on the CPU; torch's BF16 on MPS (today's stage) is the scale: **[measured]** it is 0.97% to 1.9% of the rms from float32 on the mean (mean abs error 2.5e-4, 6.7e-4, 8.5e-4, 1.6e-3 for 1, 3, 19 and 102 tokens), its worst row's max abs error 9.5e-3, 9.6e-3, 1.4e-2 and 0.116, its worst row's cosine 0.99990, 0.99984, 0.99957 and 0.99190. **The bound: on every row the GPU's max abs error is under BF16's for that row and its cosine above BF16's for that row, and the prompt's mean abs error is under a quarter of BF16's.** Mutants that must fail it: the relative bias dropped (the key mask kept), the bias transposed (bucket(i - j)), the token rows fed in reverse order. Also printed, not bounded: the GPU's rows at SP = 128 against SP = 64 for the 19-token prompt (the padding claim, on the GPU), and the bucket function against torch's.
+2. **The video from the GPU's rows against the video from torch's rows**, seed 1, the command of 8.2: PSNR of each of the 17 frames. No bound is set: three DMD steps from rows that differ by BF16's 1% need not land on the same pixels, and which of the two is nearer the float32 video is not established by this.
+3. **Time**: the command of 8.2 three times in a row, and three times alternated with `mlx-video`, a new process a run, no process in state `E` before, no session left after; the stage lines of each.
+4. `scripts/gate.sh`.
+
+**What would stop it:** an activation outside f16 (T5's known failure in half precision). Here the residual stream and every product's output are f32; only a product's *input* is f16: the normed rows, the attention's output and `gelu(g) * u`. If the last overflows, check 1 fails with infinities, and the answer is not a clamp in torch.
+
 ### 6.2 Audio: nothing is chosen, and the first candidate found is not usable
 
 * **Recognition is already planned and is not generation:** `docs/roadmap-models.md` M6 (Whisper: a log-mel spectrogram as a product with a precomputed cosine and sine matrix, the encoder, the decoder).
