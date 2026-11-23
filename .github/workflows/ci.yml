@@ -40,9 +40,10 @@ jobs:
           mkdir -p ~/cancho-bin
           cp target/release/cancho ~/cancho-bin/
 
-      # tests/chat.sh renders the model's chat template through jinja2 as its oracle.
-      - name: jinja2
-        run: sudo apt-get install -y python3-jinja2
+      # tests/chat.sh renders the model's chat template through jinja2 as its oracle;
+      # tests/media_video.sh's oracle (tools/media.py) resizes a picture with Pillow and numpy.
+      - name: The oracles' Python packages
+        run: sudo apt-get install -y python3-jinja2 python3-pil python3-numpy
 
       - name: Gate
         run: CANCHO=~/cancho-bin/cancho scripts/gate.sh
