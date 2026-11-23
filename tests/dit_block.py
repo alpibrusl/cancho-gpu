@@ -9,6 +9,7 @@ reference written from the mathematics of the block (tools/dit_block_ref.py has 
 * `rmsnorm_rows.chx` (existing) the per-head RMSNorm of q and k with a [1, 128] weight, eps 1e-6.
 * `dit_gate_res.chx` x + tanh(gate) * y, the gate row chosen as above.
 * `dit_swiglu.chx`  silu(g) * u, written as f16 (the input of the output projection).
+* `dit_geglu.chx`   gelu_new(g) * u, written as f16 (docs/diffusion.md V3: umT5's feed-forward).
 * `dit_to_f16.chx`  f32 to f16 (the attention output, before the output projection).
 * D2e: `dit_gelu` (tanh approximation, f16), `dit_silu` (f16), `dit_add`, `dit_modsplit` (the shared modulation's four blocks of [2, n]), `dit_rows2`; D3: `dit_euler` (the flow-matching Euler update of the image tokens).
 And the host's plan, as a pure-Python check (no kernel): the model rotates *interleaved* pairs (2j, 2j + 1) of a head; the kernel rotates halves (j, j + 64). Permuting the output
@@ -166,6 +167,16 @@ def t_swiglu(root, tmp):
     return (False, err) if o is None else close(o[0], want, True)
 
 
+def t_geglu(root, tmp):
+    s, n = 6, 384
+    g = rnd(40, s * n, -4, 4)
+    u = rnd(41, s * n, -2, 2)
+    g[5], u[5] = 30.0, 900.0  # a large gate: tanh saturates, the product is 27,000 (inside f16)
+    want = [0.5 * v * (1 + math.tanh(math.sqrt(2 / math.pi) * (v + 0.044715 * v ** 3))) * w for v, w in zip(g, u)]
+    o, err = run(root, "dit_geglu", [f"s={s}", f"n={n}", "bn=128"], {"g": g, "u": u}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, True)
+
+
 def t_cast(root, tmp):
     s, n = 5, 256
     x = rnd(16, s * n, -100, 100)
@@ -268,7 +279,7 @@ def permutation(bad=False):
 
 
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
-         ("dit_gate_res", t_gate), ("dit_wan_lnmod (shift and 1 + scale)", t_wan_lnmod), ("dit_wan_gate_res (no tanh)", t_wan_gate), ("dit_swiglu", t_swiglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
+         ("dit_gate_res", t_gate), ("dit_wan_lnmod (shift and 1 + scale)", t_wan_lnmod), ("dit_wan_gate_res (no tanh)", t_wan_gate), ("dit_swiglu", t_swiglu), ("dit_geglu (umT5's gated GELU)", t_geglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
          ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2),
          ("dit_euler", t_euler), ("dit_rows2h (f16 probe)", t_rows2h)]
 
@@ -305,6 +316,9 @@ EDITS = [
     ("dit_gate_res", "let th = tanh gt", "let th = gt", "no tanh on the gate"),
     ("dit_gate_res", "let a  = df * sl", "let a  = df * 0.5", "the selector is ignored in the gate"),
     ("dit_swiglu", "let sg = sigmoid &gt", "let sg = sigmoid &ut", "the sigmoid of u, not of g"),
+    ("dit_geglu", "let o  = t6 * ut", "let o  = t6 + ut", "gelu(g) + u"),
+    ("dit_geglu", "let vv = load g[i, j * bn ; 1, bn]", "let vv = load u[i, j * bn ; 1, bn]", "the GELU of u, not of g"),
+    ("dit_geglu", "let t1 = v3 * 0.044715", "let t1 = v3 * 0.04", "the cubic term's coefficient 0.04"),
     ("dit_to_f16", "load x[i, 0 ; 1, n]", "load x[0, 0 ; 1, n]", "row 0 for every row"),
     ("dit_gelu", "let t1 = v3 * 0.044715", "let t1 = v3 * 0.04", "the cubic term's coefficient 0.04"),
     ("dit_gelu", "let th = tanh t3", "let th = t3", "no tanh"),

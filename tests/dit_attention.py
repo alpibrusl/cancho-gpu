@@ -102,8 +102,47 @@ def case(root, name, nh, n, d, qs, ts, cs, dw, image_ids, key_valid, late_max=Fa
     return worst <= TOL, f"max abs error {worst:.3g} over {len(want)} elements"
 
 
+def bias_case(root, name, nh, n, d, qs, ts, cs, dw, n_real):
+    """V3 (docs/diffusion.md): `dit_scores_bias` chained with dit_stats and dit_pv, softmax(q k^T + bias[h]) v with NO scale and a bias that differs by head, d = 64: umT5's attention. The bias is a table of the
+    distance j - i for each head (random here) plus the key mask of n - n_real padded keys."""
+    rnd = random.Random(31 + n + nh)
+    q = [rnd.uniform(-1, 1) for _ in range(nh * n * d)]
+    k = [rnd.uniform(-1, 1) for _ in range(nh * n * d)]
+    v = [rnd.uniform(-1, 1) for _ in range(nh * n * d)]
+    table = [[rnd.uniform(-6, 6) for _ in range(2 * n - 1)] for _ in range(nh)]
+    bias = [table[h][j - i + n - 1] + (0.0 if j < n_real else NEG) for h in range(nh) for i in range(n) for j in range(n)]
+    want = [0.0] * (nh * n * d)
+    for h in range(nh):
+        for i in range(n):
+            s = [sum(q[(i * nh + h) * d + c] * k[(j * nh + h) * d + c] for c in range(d)) + bias[(h * n + i) * n + j] for j in range(n)]
+            mx = max(s)
+            e = [math.exp(x - mx) for x in s]
+            z = sum(e)
+            for col in range(d):
+                want[(i * nh + h) * d + col] = sum(e[j] / z * v[(j * nh + h) * d + col] for j in range(n))
+    with tempfile.TemporaryDirectory() as tmp:
+        sc, err = run(root, "dit_scores_bias", [f"nh={nh}", f"nq={n}", f"t={n}", f"qs={qs}", f"ts={ts}", f"d={d}"], {"q": q, "k": k, "bias": bias}, ["sc"], tmp)
+        if sc is None:
+            return False, f"dit_scores_bias: {err}"
+        mz, err = run(root, "dit_stats", [f"nh={nh}", f"nq={n}", f"t={n}", f"qs={qs}", f"cs={cs}"], {"sc": sc[0]}, ["m", "z"], tmp)
+        if mz is None:
+            return False, f"dit_stats: {err}"
+        o, err = run(root, "dit_pv", [f"nh={nh}", f"nq={n}", f"t={n}", f"qs={qs}", f"cs={cs}", f"dw={dw}", f"d={d}"], {"sc": sc[0], "m": mz[0], "z": mz[1], "v": v}, ["o"], tmp)
+        if o is None:
+            return False, f"dit_pv: {err}"
+    got = o[0]
+    if len(got) != len(want):
+        return False, f"{len(got)} outputs, expected {len(want)}"
+    worst = max(abs(a - b) for a, b in zip(got, want))
+    return worst <= TOL, f"max abs error {worst:.3g} over {len(want)} elements"
+
+
 def gate(root):
     ok = True
+    for name, nh, n, d, qs, ts, cs, dw, n_real in [("a bias per head, no scale, d=64: nh=3 n=32, 5 padded keys", 3, 32, 64, 8, 16, 16, 32, 27), ("a bias per head, no scale, d=64: nh=2 n=64, one query tile", 2, 64, 64, 32, 64, 32, 32, 64)]:
+        good, msg = bias_case(root, name, nh, n, d, qs, ts, cs, dw, n_real)
+        print(f"{'ok  ' if good else 'FAIL'} {name}: {msg}")
+        ok &= good
     cases = [
         ("text only, causal: nh=2 n=32 qs=8", 2, 32, 128, 8, 16, 16, 32, [-1] * 32, [True] * 32, False),
         ("text 5 + two image blocks, 2 padded keys: nh=3 n=48", 3, 48, 128, 16, 16, 16, 64, [-1] * 5 + [0] * 20 + [1] * 23, [True] * 3 + [False] * 2 + [True] * 43, False),
@@ -123,6 +162,10 @@ if not MUTANTS:
 EDITS = [
     ("dit_scores", "s * 0.08838834764831845", "s * 0.0625", "the scale is 1/16, not 1/sqrt(128)"),
     ("dit_scores", "load mask[qb * qs, sp * ts ; qs, ts]", "load mask[sp * ts, qb * qs ; qs, ts]", "the mask is read transposed"),
+    ("dit_scores_bias", "load bias[h * nq + qb * qs, sp * ts ; qs, ts]", "load bias[qb * qs, sp * ts ; qs, ts]", "the first head's bias for every head"),
+    ("dit_scores_bias", "store s + bb ->", "store s - bb ->", "the bias subtracted"),
+    ("dit_scores_bias", "store s + bb ->", "store s * 0.125 + bb ->", "the scores scaled by 1/sqrt(64)"),
+    ("dit_scores_bias", "load k[sp * ts, h * d ; ts, d]", "load k[sp * ts, 0 ; ts, d]", "the keys of the first head"),
     ("dit_stats", "yield m1 + relu (cm - &m1)", "yield m1", "the running maximum keeps the first chunk's"),
     ("dit_stats", "for c in 0 .. t / cs with z0", "for c in 0 .. t / cs - 1 with z0", "the normaliser skips the last chunk"),
     ("dit_pv", "load v[c * cs, h * d + dc * dw ; cs, dw]", "load v[c * cs, dc * dw ; cs, dw]", "v is read from the first head's columns"),

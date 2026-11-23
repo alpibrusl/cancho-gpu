@@ -689,7 +689,7 @@ The 256 x 256 image is 256 tokens, which is the §5 count (16 x 16 pixels a toke
    across steps ("prefix KV caching"). Whether D2 needs it to be fast, or only to be correct,
    is open; correctness comes first, so the first version recomputes.
 
-## 6. Video and audio (video: the transformer, the VAE decoder and a first video run on the GPU, V1 to V4a below; audio: design only)
+## 6. Video and audio (video: the transformer, the VAE decoder, a first video run and the text encoder on the GPU, V1 to V4a and V3 below; audio: design only)
 
 Facts below were read on 2026-11-14 from the model repositories' configuration files and cards (Hugging Face; the sizes from the repositories' file listings) and are marked **[read]**; the arithmetic on them is **[estimate]**. What ran is in the results sections V0 to V4a; the rest of this section is the design as it was written, corrected where a result contradicted it.
 
@@ -705,7 +705,7 @@ Facts below were read on 2026-11-14 from the model repositories' configuration f
   V0. The transformer **block** in float64 (adaLN modulation, self-attention with 3-D rotary positions and RMS-normed q and k, cross-attention to the text, the feed-forward), on small shapes, against `WanTransformer3DModel` in float32; needs the first shard (4.98 GB).
   V1. That block on the GPU with the attention in query blocks; then the 30 blocks in one session (model file, `docs/resident.md` section 31) and a step.
   V2. The VAE decoder: causal 3-D convolutions in float64 then on the GPU. **Corrected by the result below:** it needed nine new kernels, not none (a 27-tap convolution, a 3-tap temporal one, the temporal interleave, the two up-block epilogues, a frame-aware upsample, a masked copy, a block-diagonal mask), and no cache: the clip is stacked in one matrix and the guard rows are the zero frames in front of it.
-  V3. The text encoder: umT5-XXL's encoder (a T5: relative position bias, RMS norm, gated GELU; 11.4 GB), which is not a layout the existing runners have.
+  V3. The text encoder: umT5-XXL's encoder (a T5: relative position bias, RMS norm, gated GELU; 11.4 GB), which is not a layout the existing runners have. **Built 2026-11-23: "V3" below, the design and its results.**
   V4. The pipeline (scheduler, guidance, the noise, the unpatchify) and its time against torch on this machine.
 
 ### V0 results (measured): the front end and seven blocks in float64, against torch
@@ -752,7 +752,7 @@ Facts below were read on 2026-11-14 from the model repositories' configuration f
 
 ### V4a results (measured): a first video, from a prompt, on the Metal GPU
 
-`tests/wan_video_gpu.py` is FastVideo's `DmdDenoisingStage` for `FastWan2.2-TI2V-5B-FullAttn-Diffusers` (read from `fastvideo/pipelines/basic/wan/stages/dmd.py`, `models/utils.py`, and the scheduler: the training scheduler of shift 8): Gaussian latents; for t in (1000, 757, 522) the velocity v of the transformer, `x0 = x - sigma(t) v`, and, but after the last, new latents `(1 - sigma') x0 + sigma' n` with fresh noise; no guidance, no negative prompt. The 30 blocks and the output layer are **one session** whose weights stay on the device through the three steps (the step's patch embedding and modulation tables are `reload`ed: 183 files), then the decoder of V2. **On the host**: the umT5-XXL text encoder (`tools/wan_text.py`, torch bf16 on MPS: **not yet on the GPU**, the one stage that is not), the noise (numpy), the sampler's arithmetic, the patch embedding, the condition embedder, the text projection, the rotary tables, the weight files.
+`tests/wan_video_gpu.py` is FastVideo's `DmdDenoisingStage` for `FastWan2.2-TI2V-5B-FullAttn-Diffusers` (read from `fastvideo/pipelines/basic/wan/stages/dmd.py`, `models/utils.py`, and the scheduler: the training scheduler of shift 8): Gaussian latents; for t in (1000, 757, 522) the velocity v of the transformer, `x0 = x - sigma(t) v`, and, but after the last, new latents `(1 - sigma') x0 + sigma' n` with fresh noise; no guidance, no negative prompt. The 30 blocks and the output layer are **one session** whose weights stay on the device through the three steps (the step's patch embedding and modulation tables are `reload`ed: 183 files), then the decoder of V2. **On the host**: the umT5-XXL text encoder (`tools/wan_text.py`, torch bf16 on MPS: **not yet on the GPU**, the one stage that is not; **since V3, 2026-11-23, it is: `tests/wan_text_gpu.py`**), the noise (numpy), the sampler's arithmetic, the patch embedding, the condition embedder, the text projection, the rotary tables, the weight files.
 
 * **[measured] A first video**: the prompt "A red fox running through fresh snow in a pine forest at sunrise, cinematic, slow motion" (22 tokens, padded with zero rows to 512 as the pipelines do), a latent of 48 x 5 x 22 x 40 (1,100 tokens, padded to 1,152), **17 frames of 640 x 352**, seed 1. The transformer: **2.8 s for the first step** (the compile and the upload of 9.9 GB included) and **1.1 s for each of the other two**; the decoder 12.2 s (a second process, with the weights read again); **19.5 s of wall time** from the script's start to the last frame, the text encoder (host) and the one-time weight files not included. The frames show a fox on snow with pines, coherent from frame to frame (judged by eye on five of the 17).
 * **What this does not show:** it is **not compared with the real pipeline**: no output of torch's `WanDMDPipeline` on this machine, so the sampler's agreement with FastVideo's is by reading, not by measurement, and the noise is numpy's, so a torch run would not start from the same latents; the prompt asks for a running fox and the video shows one walking or standing (a three-step distilled model at 17 frames: not measured against anything); 1,100 tokens, not 27,280 (V1's attention in query blocks is still not built); **no time against torch** (V4b); the text encoder is torch's, not cancho-gpu's; no audio.
@@ -802,9 +802,9 @@ Two new kernels, both a few lines changed in an existing one. **Considered and n
 
 Float32's rounding (the sums are over different lengths), 2e-6 to 3e-6 of the rms on the mean. So the session runs **SP = n rounded up to a multiple of 64** (the matrix unit's tile): 64 rows for a usual prompt. Rows n to SP are zeros and are masked as keys in B; what they compute is not read. The relative bias depends on j - i only, so nothing else knows about 512.
 
-**The weights file.** `~/.cache/cancho-media/umt5-f16/` (beside `wan-f16`; `--wdir`), written by the driver on first use from the snapshot's `text_encoder/*.safetensors`, with no torch (the header is JSON; BF16 is the top half of a float32): per block `wq wk wv wo` [4096, 4096], `w0 w1` [10240, 4096], `w2` [4096, 10240] as f16, `n1 n2` [1, 4096] as f32 and the bias table `rb` [32, 64] as f32, plus `nf.f32`; **9.26 GB [reckoned: 24 x 385.9 MB]**. BF16 to f16 is exact but for values under f16's smallest normal: **[measured]** 6,021 of 16.8 M in block 0's `Wq`, 1,249 of 41.9 M in block 11's `W0`, 1,189 of 41.9 M in block 23's `Wo2`, each off by at most 3e-8; the norm weights and the bias tables are exact (largest bias 24). The driver refuses to write them when the disk has under 11 GB free.
+**The weights file.** `~/.cache/cancho-media/umt5-f16/` (beside `wan-f16`; `--wdir`), written by the driver on first use from the snapshot's `text_encoder/*.safetensors`, with no torch (the header is JSON; BF16 is the top half of a float32; **[measured] 6 s**): per block `wq wk wv wo` [4096, 4096], `w0 w1` [10240, 4096], `w2` [4096, 10240] as f16, `n1 n2` [1, 4096] as f32 and the bias table `rb` [32, 64] as f32, plus `nf.f32`; **9.26 GB [reckoned: 24 x 385.9 MB]**. BF16 to f16 is exact but for values under f16's smallest normal: **[measured]** 6,021 of 16.8 M in block 0's `Wq`, 1,249 of 41.9 M in block 11's `W0`, 1,189 of 41.9 M in block 23's `Wo2`, each off by at most 3e-8; the norm weights and the bias tables are exact (largest bias 24). The driver refuses to write them when the disk has under 11 GB free.
 
-**Time [reckoned].** The arithmetic at 64 rows is 0.6 TFLOP (24 blocks of 24.7 GFLOP): about 0.05 s at the products' 13 TFLOPS. The upload of 9.26 GB at the denoiser's rate (9 GB in about 2 s, 8.2) is about 2 s, plus the interpreter, the tokeniser and the compile of 24 x 20 programs: **2.5 to 3 s a run, against torch's 4 to 9 and `mlx-video`'s 2.6 to 2.7.** Whether it also moves with what ran before is the question of check 3.
+**Time [reckoned].** The arithmetic at 64 rows is 0.6 TFLOP (24 blocks of 24.7 GFLOP): about 0.05 s at the products' 13 TFLOPS. The upload of 9.26 GB at the denoiser's rate (9 GB in about 2 s, 8.2) is about 2 s, plus the interpreter, the tokeniser and the compile of 24 x 20 programs: **2.5 to 3 s a run, against torch's 4 to 9 and `mlx-video`'s 2.6 to 2.7.** Whether it also moves with what ran before is the question of check 3. **Corrected by the result: the stage is 1.5 s after a run of ours and 2.5 s after another engine's; the reckoning was too high after ours and it does move.**
 
 **The pieces.** `models/umt5_enc.model` (a block, repeated; `SP`, `NL`, `WORK`, `WDIR`); `tests/wan_text_gpu.py PROMPT OUT.npy [--wdir DIR]`, the stage (numpy and `tokenizers`; no torch), which `media/video.cho`, `media/clip.cho` and `tools/media.py` call in place of `tools/wan_text.py`, the label "text encoder (GPU)"; `tools/wan_text.py` stays as torch's side of the checks.
 
@@ -816,6 +816,42 @@ Float32's rounding (the sums are over different lengths), 2e-6 to 3e-6 of the rm
 4. `scripts/gate.sh`.
 
 **What would stop it:** an activation outside f16 (T5's known failure in half precision). Here the residual stream and every product's output are f32; only a product's *input* is f16: the normed rows, the attention's output and `gelu(g) * u`. If the last overflows, check 1 fails with infinities, and the answer is not a clamp in torch.
+
+### V3 results (measured, 2026-11-23): umT5's encoder is a session; a video's text costs 1.5 to about 2.5 s where it cost 4 to 9
+
+Built as designed: `models/umt5_enc.model` (434 programs at 24 blocks), the kernels `dit_scores_bias` and `dit_geglu`, the stage `tests/wan_text_gpu.py`, called by `media/video.cho`, `media/clip.cho` and `tools/media.py` with `--wdir <cache>/umt5-f16`. `scripts/media video` starts no torch. Nothing of the design had to be worked around; no activation left f16 (the rows are finite on every prompt run).
+
+* **[measured] The two kernels against float64, every element, in the gate.** `dit_scores_bias`, `dit_stats`, `dit_pv` chained at d = 64 with a random table of j - i for each head and padded keys (`tests/dit_attention.py`): max abs error 5.2e-7 (3 heads, 32 positions, 5 padded) and 9.9e-7 (2 heads, 64 positions), bound 2e-6; four mutants fail on the numbers (the first head's bias for every head, the bias subtracted, the scores scaled by 1/8, the first head's keys). `dit_geglu` (`tests/dit_block.py`, with a gate of 30 and a product of 27,000): 0.64 of the f16 tolerance; three mutants fail (`gelu(g) + u`, the GELU of u, the cubic coefficient 0.04). On the Metal GPU against the interpreter (`scripts/metal-kernels.sh`): `dit_geglu` 0, `dit_scores_bias` 2.0e-7 of the peak. Goldens recorded for five new cases and the model file's expansion (`tests/model.sh`).
+* **[measured] Check 1, the rows against torch float32 on the CPU** (`tests/wan_text_gpu.py --check`), the bound of the design met on every row of every prompt:
+
+  | prompt | tokens (rows run) | GPU: mean abs error (of the rms) | torch BF16 on MPS: mean abs error | BF16 / GPU | per-row max abs error, worst: GPU, BF16 | cosine, worst row: GPU, BF16 |
+  |---|---|---|---|---|---|---|
+  | the fox | 19 (64) | 3.22e-5 (4.4e-4) | 8.48e-4 | 26 | 6.0e-4, 1.4e-2 | 0.9999995, 0.99957 |
+  | "A cat" | 3 (64) | 2.49e-5 (4.3e-4) | 6.71e-4 | 27 | 3.7e-4, 9.6e-3 | 0.9999998, 0.99984 |
+  | empty | 1 (64) | 3.6e-6 (1.4e-4) | 2.47e-4 | 69 | 8.6e-5, 9.5e-3 | 1.0000000, 0.99990 |
+  | the harbour, with Japanese | 102 (128) | 5.24e-5 (6.5e-4) | 1.56e-3 | 30 | 1.5e-3, 0.116 | 0.9999941, 0.99190 |
+
+  No row is worse than BF16's by either measure. **The three mutants fail**, each with all 19 rows worse than BF16's: the relative bias dropped (mean abs error 0.0715, 0.97 of the rms, worst cosine -0.07), the bias at bucket(i - j) (0.0715, -0.01), the rows reversed (0.0803, -0.06). The bucket of every offset from -511 to 511 is transformers'; the ids of `tokenizers` are `AutoTokenizer`'s on the four prompts. **The 19-token prompt in 128 rows against 64 rows: the same bits** (max difference 0), which is the padding claim on the GPU.
+* **[measured] Check 2, the video (17 frames of 640 x 352, seed 1, `tests/wan_video_gpu.py` on each `text.npy`), and what it found: the three-step denoiser multiplies a difference in the text by several hundred.**
+
+  | the videos compared | text rows apart (rms of the difference over the rms) | final latents apart (of the rms) | PSNR of the 17 frames: min, median, max |
+  |---|---|---|---|
+  | GPU rows, run twice | 0 | 0 | identical |
+  | **GPU rows against torch BF16 rows (the stage replaced)** | about 1.6e-2 [reckoned from the two rows below] | 0.578 | **13.6, 16.5, 17.1 dB** |
+  | GPU rows against torch float32 rows | 6.1e-4 | 0.335 | 18.2, 21.5, 22.3 dB |
+  | torch BF16 rows against torch float32 rows | 1.6e-2 | 0.578 | 14.0, 16.6, 17.1 dB |
+
+  **The new video is not the old one pixel for pixel, and could not be**: rows 6e-4 apart give latents a third of their rms apart. The GPU's video is nearer the float32 rows' video than BF16's is (21.5 dB against 16.6), but 21.5 dB is not agreement either. Frames 0, 8 and 16 of the three looked at side by side: the same scene in each (a fox from behind on snow, pines, the same framing and light), the animal's outline and the branches differing in detail; none looks better or worse. **What this says and does not:** the run is deterministic (the same rows give the same bits), so this is the denoiser's sensitivity, not noise; it was measured on one prompt and one seed; where the factor of several hundred comes from (the first step from pure noise at sigma 1, the two re-noisings, or the 30 blocks) was not looked for; and, **[reckoned]** by the same arithmetic, the denoiser's own f16 rounding (3e-4 to 7e-4 of the rms a call, V1) moves the video as much as the text does, so "the float32 video" of this model is not something this pipeline, or torch's in BF16, computes.
+* **[measured] Check 3, time** (M4 Max, the command of 8.2, a new process a run, no process in state `E` before, no session left after any run):
+
+  | 17 frames of 640 x 352 | wall | text encoder | steps | decoder |
+  |---|---|---|---|---|
+  | ours, three in a row | **18.8, 17.2, 17.1 s** (8.5: 21.7, 19.3, 19.4) | session 1.7, 1.2, 1.2 s + 0.2 s of tokeniser and tables | 4.7, 4.8, 4.8 s (step 0 2.4 to 2.5) | 9.4, 9.0, 8.9 s |
+  | `mlx-video`, alternated with ours | 23.8, 23.5, 23.4 s | 2.6, 2.6, 2.6 s | 2.4 s | 10.4, 10.9, 10.8 s |
+  | ours, between them | **20.8, 20.7, 20.7 s** (8.5: 26.5) | session 2.2, 2.2, 2.2 s + 0.2 s | 5.8, 5.9, 5.9 s (step 0 3.6) | 10.2, 10.1, 10.1 s |
+
+  The stage alone, three times in a row: 7.8 s the first time (6 s of it writing the weight files, once), then **1.53 and 1.54 s** of wall (`time`), of which the session 1.2 s. **Alternated, ours is 2.7 to 3.0 s ahead of `mlx-video` where it was 2 to 3 s behind; in a row it is 2.1 to 2.9 s faster than it was.** The session still costs 1 s more after another engine's run (2.2 s against 1.2), as the denoiser's step 0 does (3.6 against 2.4) and the decoder (10.1 against 9.0): the same effect as 8.5, smaller, cause still not found.
+* **What this does not show.** Four prompts, none over 102 tokens; nothing at 512. The tokeniser is the `tokenizers` library, not cancho. The reference is torch float32, not a float64 encoder written from the mathematics (D5 had one): torch's float32 is taken as the model. `video --image` runs the same stage twice (prompt and negative, two sessions, two uploads): not timed, and one session with a `reload` between the two texts would save an upload. The first run on a machine writes 9.3 GB beside the 11.4 GB checkpoint. The stage's own disk refusal (under 11 GB free) is in the Python driver, not in `media/video.cho` with the other refusals, and has no fixture.
 
 ### 6.2 Audio: nothing is chosen, and the first candidate found is not usable
 
@@ -899,7 +935,7 @@ Video, 17 frames of 640 x 352 (of 28.5 s):
 
 1. **The decoder, 10.8 s.** How much of its session's 8.3 s is compile and upload and how much kernels was not
    split (V2b has the kernels alone at an earlier date).
-2. **The text encoder on the host, 9 s**, most of it torch and the load of umT5 for 19 tokens. On the GPU as the
+2. ~~**The text encoder on the host, 9 s**~~ **Built (V3 results, section 6): a session of its own, 1.5 s after a run of ours and 2.5 s after another engine's; a video is 17 to 21 s.** It was: most of it torch and the load of umT5 for 19 tokens. On the GPU as the
    image's is (D5), or kept loaded.
 3. The denoiser's first step, 2.9 s above a step.
 
@@ -973,6 +1009,6 @@ against 6.67 of kernels). A baseline for the video. Anything of 8.3.
 * **The image is 12 to 13 s behind `mflux` alternated** (8.4 had 8 from runs that were not).
 
 **Not done.** Why a run of another engine makes ours slower by that much (the page cache, or the device memory
-torch has to wire again) was not found; the text encoder on the GPU session, where the denoiser's 9 GB of weights
+torch has to wire again) was not found (**still not: V3 results**); the text encoder on the GPU session (**built: V3 results, section 6; alternated, ours is now 20.7 s against `mlx-video`'s 23.4 to 23.8**), where the denoiser's 9 GB of weights
 upload in about 2 s (step 0 less a step, 8.2).
 

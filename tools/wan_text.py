@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V3-to-be of docs/diffusion.md section 6: the text of a Wan2.2 prompt, on the **host** (torch): umT5-XXL's encoder, until it runs on the GPU.
+"""The text of a Wan2.2 prompt, on the **host** (torch): umT5-XXL's encoder. Since V3 of docs/diffusion.md section 6 the stage of `media video` is tests/wan_text_gpu.py (the encoder as a GPU session); this is kept as torch's side of its checks.
 
     wan_text.py "PROMPT" OUT.npy [--device mps|cpu]
 

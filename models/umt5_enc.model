@@ -1,0 +1,92 @@
+# The encoder of umT5-XXL, the text encoder of Wan2.2 (24 blocks of 4,096 wide, 64 heads of 64, a gated-GELU feed-forward of 10,240; docs/diffusion.md section 6, V3) over SP rows, as a model file (docs/resident.md section 31).
+# A block: T5's layer norm (an RMS norm with a weight, no bias), self-attention whose scores are q k^T with NO scale plus a bias per head (the block's own relative position bias and the key mask, expanded by the host to
+# [H * SP, SP]: rb<i>.f32), a residual; the norm again, gelu_new(y W0^T) * (y W1^T) through W2, a residual. After the last block the final norm, saved as last.f32 ([SP, 4096]: the encoder's `last_hidden_state`).
+# No positions are added to the input and no projection has a bias. The weights are the f16 and f32 files tests/wan_text_gpu.py writes in WDIR; x0.f32 (the tokens' embedding rows, zeros after them) and rb<i>.f32 are in WORK.
+#
+#     cancho-gpu model-expand models/umt5_enc.model CHX=<tests/chx> WORK=<inputs> WDIR=<weights> SP=<rows, a multiple of 64> NL=<blocks>
+text CHX = tests/chx
+text WORK = .
+text WDIR = .
+const SP = 64
+const NL = 24
+const D = 4096
+const FF = 10240
+const H = 64
+const HD = 64
+
+block layer(i)
+    program L${i}_n1 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+    if i == 0
+        resident L0_n1.x $WORK/x0.f32 f32
+    else
+        link L${i - 1}_ad2.z -> L${i}_n1.x
+    end
+    resident L${i}_n1.w $WDIR/n1_${i}.f32 f32
+    program L${i}_c1 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_n1.y -> L${i}_c1.x
+    program L${i}_gq $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gq.a
+    resident L${i}_gq.w $WDIR/wq${i}.f16 f16
+    program L${i}_gk $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gk.a
+    resident L${i}_gk.w $WDIR/wk${i}.f16 f16
+    program L${i}_gv $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gv.a
+    resident L${i}_gv.w $WDIR/wv${i}.f16 f16
+    program L${i}_sc $CHX/dit_scores_bias.chx nh=$H nq=$SP t=$SP qs=32 ts=64 d=$HD
+    link L${i}_gq.y -> L${i}_sc.q
+    link L${i}_gk.y -> L${i}_sc.k
+    resident L${i}_sc.bias $WORK/rb${i}.f32 f32
+    program L${i}_st $CHX/dit_stats.chx nh=$H nq=$SP t=$SP qs=32 cs=64
+    link L${i}_sc.sc -> L${i}_st.sc
+    program L${i}_pv $CHX/dit_pv.chx nh=$H nq=$SP t=$SP qs=32 cs=64 dw=32 d=$HD
+    link L${i}_sc.sc -> L${i}_pv.sc
+    link L${i}_st.m -> L${i}_pv.m
+    link L${i}_st.z -> L${i}_pv.z
+    link L${i}_gv.y -> L${i}_pv.v
+    program L${i}_c2 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_pv.o -> L${i}_c2.x
+    program L${i}_go $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c2.y -> L${i}_go.a
+    resident L${i}_go.w $WDIR/wo${i}.f16 f16
+    program L${i}_ad1 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    if i == 0
+        resident L0_ad1.a $WORK/x0.f32 f32
+    else
+        link L${i - 1}_ad2.z -> L${i}_ad1.a
+    end
+    link L${i}_go.y -> L${i}_ad1.b
+    program L${i}_n2 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+    link L${i}_ad1.z -> L${i}_n2.x
+    resident L${i}_n2.w $WDIR/n2_${i}.f32 f32
+    program L${i}_c3 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_n2.y -> L${i}_c3.x
+    program L${i}_g0 $CHX/ported/gemm_mma.chx m=$SP n=$FF k=$D
+    link L${i}_c3.y -> L${i}_g0.a
+    resident L${i}_g0.w $WDIR/w0_${i}.f16 f16
+    program L${i}_g1 $CHX/ported/gemm_mma.chx m=$SP n=$FF k=$D
+    link L${i}_c3.y -> L${i}_g1.a
+    resident L${i}_g1.w $WDIR/w1_${i}.f16 f16
+    program L${i}_ge $CHX/dit_geglu.chx s=$SP n=$FF bn=1024
+    link L${i}_g0.y -> L${i}_ge.g
+    link L${i}_g1.y -> L${i}_ge.u
+    program L${i}_g2 $CHX/ported/gemm_mma.chx m=$SP n=$D k=$FF
+    link L${i}_ge.y -> L${i}_g2.a
+    resident L${i}_g2.w $WDIR/w2_${i}.f16 f16
+    program L${i}_ad2 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    link L${i}_ad1.z -> L${i}_ad2.a
+    link L${i}_g2.y -> L${i}_ad2.b
+end
+
+repeat i in 0 .. NL
+    use layer(i)
+end
+
+program nf $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+link L${NL - 1}_ad2.z -> nf.x
+resident nf.w $WDIR/nf.f32 f32
+save nf.y $WORK/last.f32 f32
+program probe $CHX/dit_rows2.chx m=$SP n=$D bn=1024
+link nf.y -> probe.x
+steps
+answer probe.y

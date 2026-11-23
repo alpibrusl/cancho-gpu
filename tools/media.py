@@ -9,7 +9,7 @@
     scripts/media models                       (the supported models per task; `--model NAME` on each task)
     scripts/media doctor                       (what is installed and what is missing)
 
-It wraps the drivers that exist and does no GPU work itself: `video` is tools/wan_text.py (umT5 on the host) then tests/wan_video_gpu.py (FastWan2.2-TI2V-5B: three DMD steps and the VAE decoder, on the
+It wraps the drivers that exist and does no GPU work itself: `video` is tests/wan_text_gpu.py (umT5's encoder, a GPU session; docs/diffusion.md V3) then tests/wan_video_gpu.py (FastWan2.2-TI2V-5B: three DMD steps and the VAE decoder, on the
 Metal GPU), `edit` is tests/edit_pipeline_gpu.py (Qwen-Image-2.1-Turbo). Run it with the interpreter of the first image edits' venv (scripts/media does). One GPU job at a time: a lock file in the
 cache directory refuses a second run. Limits are the ones measured (docs/diffusion.md V1b/V2b/V4a), not the model's: `--force` goes past them at your own risk of ending the session."""
 import argparse
@@ -217,8 +217,9 @@ def video_segment(a, w, h, lf, sdir, image, prompt, seed, tdir, vae, enc, wdir):
     run([enc, "prepare", os.path.join(vae, "diffusion_pytorch_model.safetensors"), work, ROOT, pic, str(h), str(w)], "picture encoder: prepare")
     run(["sh", "-c", "printf '1\\ncheckpoint\\n' | %s %s" % (shlex.quote(SESSION), shlex.quote(os.path.join(work, "enc.session")))], "picture encoder: run (GPU)")
     run([enc, "latent", os.path.join(vae, "config.json"), work, str(h), str(w), cond], "picture encoder: latent")
-    run([sys.executable, "tools/wan_text.py", prompt, txt], "text encoder (host, torch)")
-    run([sys.executable, "tools/wan_text.py", NEG_OFFICIAL if a.negative is None else a.negative, neg], "negative text")
+    tw = os.path.join(CACHE, "umt5-f16")
+    run([sys.executable, "tests/wan_text_gpu.py", prompt, txt, "--wdir", tw], "text encoder (GPU)")
+    run([sys.executable, "tests/wan_text_gpu.py", NEG_OFFICIAL if a.negative is None else a.negative, neg, "--wdir", tw], "negative text")
     run([sys.executable, "tests/wan_video_gpu.py", sdir, "--weights", tdir, "--text", txt, "--neg", neg, "--cond", cond, "--base", "--steps", str(a.steps), "--guidance", str(a.guidance),
          "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16), "--seed", str(seed), "--wdir", wdir, "--fps", str(a.fps)], "base model, %d steps with guidance, and decoder (GPU)" % a.steps)
 
@@ -316,7 +317,7 @@ def cmd_video(a):
         if a.rewrite:
             a.prompt = rewrite_prompt("video", a.prompt, None, a.rewrite_model)
         txt = os.path.join(out, "text.npy")
-        run([sys.executable, "tools/wan_text.py", a.prompt, txt], "text encoder (host, torch)")
+        run([sys.executable, "tests/wan_text_gpu.py", a.prompt, txt, "--wdir", os.path.join(CACHE, "umt5-f16")], "text encoder (GPU)")
         run([sys.executable, "tests/wan_video_gpu.py", out, "--weights", tdir, "--text", txt, "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16),
              "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)], "denoiser and decoder (GPU)")
     open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")

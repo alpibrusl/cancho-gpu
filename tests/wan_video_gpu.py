@@ -3,8 +3,7 @@
 
     wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32] [--base [--steps N] [--guidance G] [--neg NEG.npy]] [--noise N.npy]
 
-F is the number of latent frames (the video has 1 + 4 (F - 1)), HxW the latent's size in pixels / 16 (22x40 is 640 x 352); `--text` is tools/wan_text.py's output (the umT5 encoder runs on the HOST, in torch: the one stage that
-does not run on the GPU); `--wdir` holds the f16 weight files of tests/wan_gpu.py's layout (written on first use, 10 GB); the output is WORK_DIR/video.gif and WORK_DIR/frames/.
+F is the number of latent frames (the video has 1 + 4 (F - 1)), HxW the latent's size in pixels / 16 (22x40 is 640 x 352); `--text` is tests/wan_text_gpu.py's output (umT5's encoder, a GPU session of its own: V3; tools/wan_text.py, torch on the host, writes the same file); `--wdir` holds the f16 weight files of tests/wan_gpu.py's layout (written on first use, 10 GB); the output is WORK_DIR/video.gif and WORK_DIR/frames/.
 
 The sampler is FastVideo's `DmdDenoisingStage` for this model (the distilled one needs no guidance and no negative prompt): the latents start as Gaussian noise; for t in (1000, 757, 522) the transformer gives the velocity v
 of the noisy latents x, the clean latents are x0 = x - sigma(t) v, and, but after the last step, the next noisy latents are (1 - sigma') x0 + sigma' n with fresh noise n and sigma' = sigma(next t); the last x0 is the video's latent.
