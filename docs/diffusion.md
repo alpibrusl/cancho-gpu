@@ -814,7 +814,7 @@ BF16 throughout and is 26 dB from the float64 pipeline where ours is 49 dB (D8).
 
 **The steps are a fifth of a video's time**; the decoder and an encoder that is not on the GPU are most of it. 33
 frames of 1280 x 704 (7,920 tokens) are refused by the command without `--force` (the attention is measured to
-about 1,100 tokens, V4a) and were not run. **No baseline: no other engine was timed on this model.**
+about 1,100 tokens, V4a) and were not run. A baseline, added the same day: 8.4.
 
 ### 8.3 What could be cut, largest first [reckoned from the tables above unless marked]
 
@@ -864,11 +864,22 @@ on the same GPU:
 
   **Ours is 8 s behind mflux a picture, and 6 s a step where mflux and torch are at 4.6 to 5.0.** The runs were not
   alternated with ours, and two of ours had a gate running beside them.
-* **Video: `mlx-video`** (Blaizzy): runs Wan2.2-TI2V-5B and a community MLX conversion of FastWan2.2-TI2V-5B (3
-  steps), the model of 8.2.
+* **Video: `mlx-video`** (github.com/Blaizzy/mlx-video, installed from the repository at 87db56a: the package of
+  that name on PyPI is another project), **run** with a community MLX conversion of the same distilled model
+  (`lBroth/FastWan2.2-TI2V-5B-MLX`, 24.2 GB, bf16, the sigmas 1.0, 0.757, 0.522 of ours). The prompt of 8.2, 17
+  frames of 640 x 352, `--steps 3 --guide-scale 1`, seed 1, a new process a run:
 
-`mlx-video` is installed from its repository (the package of that name on PyPI is another project); it needs a
-converted copy of the weights (`lBroth/FastWan2.2-TI2V-5B-MLX`, 24.2 GB), not run yet.
+  | | ours (8.2) | mlx-video, two runs |
+  |---|---|---|
+  | wall | 28.5 s | 24.2, 23.0 s |
+  | the text encoder | 9 s (torch, on the host) | 2.1, 2.6 s |
+  | the three steps | 6.4 s (4.0 + 1.1 + 1.1) | 4.3, 2.4 s |
+  | the VAE decoder | 10.8 s | 10.5, 10.0 s |
+
+  **The decoders take the same time; ours loses 6 to 7 s in the text encoder and 2 to 4 s in the first step.**
+  Its frames were looked at beside ours: both are rough at this size, and its have blue patches ours do not, so
+  whether it runs the distilled model's sampler as intended was not established. The times are of the same amount
+  of work (three transformer calls and one decode); the pictures are not compared.
 
 **Not done.** A per-kernel profile of the present builds (`CANCHOGPU_PROFILE=2`): the split of a step above is
 D8's, measured 2026-11 before the restart of `docs/serving.md` 11.6, and the walls here agree with it (7 s a step
