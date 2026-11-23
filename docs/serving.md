@@ -883,7 +883,56 @@ with the cache and without.
 * The rows of a check of 8 go through the half chunk's arithmetic (f16 activations into the products), the round
   of 2's and plain decoding through f32. The tokens are the same on the 7 prompts; that says nothing about a near
   tie elsewhere.
-* No depth between 2 and 7, none below 2, and no cost measured as it runs.
+* No depth between 2 and 7, none below 2 (**since built: 10.5**), and no cost measured as it runs (still so).
 * `commit8`'s rerun rests on `gates_rows` giving exactly 1 and 0 for inputs of -1e30. It is checked only through
   the model's tokens (every partial keep of the 7 prompts goes through it), not by a kernel test.
 * About 6 ms of a round of 2 and more of a round of 7 is the host's (encoding some 1,500 launches a round of 7).
+
+### 10.5 The depth follows the acceptance at each position (2026-11-23)
+
+**Why the two prompts of 10.4 where few drafts are accepted were behind** [Ollama's log, its third run of each]:
+on "rare words" it made 39 rounds of 2.4 drafts on average, 57 accepted, 45 ms a round; ours made 35 rounds, 62
+accepted, 62 ms a round. It chooses no more tokens a round than ours. Its rounds are cheaper, and of a depth
+between ours.
+
+**Every number of this section was measured on a day the machine ran 9% slower** (plain decoding 3.70 s for 95
+tokens where 10.4 has 3.40): they compare with one another, not with 10.4's.
+
+**What a round costs by its drafts**, the check of 8 rows whatever is drafted (a draft count forced, two prompts):
+55.5 ms at 1 draft, 60.7 at 3, 70.0 at 7: **53 + 2.45 a draft.** 10.4's 51 against 63 for 2 and 7 drafts had the
+check of 3 rows for the first; the check of 8 at 2 drafts is 58. Each kernel family a no-op in turn, 3 drafts
+(61.3 ms a round): the NVFP4 products 49.3 (the check's and the three drafts'), the delta step 4.0 (the check's and
+the rerun's), attention 1.3, every other family under 1, and 4.7 ms a round with every kernel a no-op (the host and
+the launches). A plain token is 39 ms that day, all but bound by reading the weights; so a round is a token, plus
+2.45 ms a draft, plus about 14 ms.
+
+**Tried and not kept as gains** [measured, d = 7, two prompts]: sending the drafts to the device before the
+check's rows are prepared (70.0 against 69.5 to 70.4 without), and letting the reruns of the layers overlap, each
+layer's gates in a buffer of its own (70.0 against 70.8 to 71.6). Both are in the code; neither is worth a
+millisecond.
+
+**Built: `spec_round` picks the depth.** The engine keeps a running acceptance of the draft at each position 1 to
+7, given that the ones before it were accepted (an eighth of each new round). A round of `d` drafts is expected to
+choose `1 + a1 + a1 a2 + ...` tokens and costs `530 + 24 d`; the depth is the one with the most tokens for the
+cost, at most one past the deepest ever drafted (whose acceptance a deeper position borrows), and every 8th round
+drafts one more than that, so that the next position is measured. A greedy round's check is always the 8 rows; the
+round of 2 with the check of 3 is what a request that samples has. The two rounds and the probe counter of 10.3 are
+gone.
+
+**Measured against 10.4's build, alternating, 95 tokens, ms (rounds):**
+
+| prompt | 10.4 | now |
+|---|---|---|
+| def quicksort(arr): | 1,350 (19) | 1,364 (20) |
+| Once upon a time, ... | 2,439 (37) | 2,365 (37) |
+| The three laws of thermodynamics, ... | 1,757 (25) | 1,772 (27) |
+| Q: Why is the sky blue? | 1,772 (25) | 1,698 (25) |
+| rare words: ... | 2,465 (35) | 2,387 (37) |
+| the 689-token prompt of 10.1, 128 tokens | 3,893 to 3,902 (61) | 3,458 to 3,465 (54) |
+
+The same tokens as 10.4's build on each, and `spec-check.sh` holds them to plain decoding's. **The long prose
+prompt, which 10.4 made slower than the round of 2 alone (3,609 to 3,624 ms that day), is now 4% faster than it.
+The two short prompts where few drafts are accepted gain 3%, and stay behind Ollama**: what separates them is the
+14 ms a round above a token and its drafts, where Ollama's round has about 4, and no one part of ours is most of
+it (the check's products about 3 ms above a token's, the delta step 4, the host and the launches 4.7, the rest
+under 1 each).

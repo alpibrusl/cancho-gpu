@@ -440,8 +440,8 @@ pub fn deep() -> [] int {
 // a task, the server, calls this first: it makes records); a record in the engine's slot 214:
 // 0..5 a delta layer's inputs kept a layer (the qkv product, the two gate inputs, the convolved row, the normalised
 // q and k), 6 the output head for 8 rows and 7 its logits, 8 the masks of drafts 2.., 9 the three-row copy,
-// 10 and 11 the running tokens a round of 2 and of 7 drafts (x 1000), 12 the rounds made, 13 the rounds between two
-// probes and 14 the rounds since the last.
+// 15 and 16 a layer's gates for a rerun and 17 what a rerun writes beside the state, 18..24 the running acceptance
+// of the drafts at positions 1 to 7 (x 1000), 25 the deepest position a draft has been made at, 26 the rounds made.
 pub fn ensure_deep[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     if m[eng + 214] != 0 {
         return 0;
@@ -451,7 +451,7 @@ pub fn ensure_deep[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("lib
     }
     let kdir = m[eng + 97];
     let lay = qwen35.layers();
-    let sx = mem.grab(m, 15);
+    let sx = mem.grab(m, 27);
     m[sx] = metal.cgpu_alloc(ffi, 4 * 10240 * 8 * lay);
     m[sx + 1] = metal.cgpu_alloc(ffi, 4 * 48 * 8 * lay);
     m[sx + 2] = metal.cgpu_alloc(ffi, 4 * 48 * 8 * lay);
@@ -462,17 +462,22 @@ pub fn ensure_deep[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("lib
     m[sx + 7] = metal.cgpu_alloc(ffi, 4 * 8 * qwen35.vocab());
     m[sx + 8] = metal.cgpu_alloc(ffi, 4 * qwen35.tmax() * 6);
     m[sx + 9] = qwen35.compile_kernel(m, t, ffi, fs, kdir, "rows3.chx", qwen35.c1(m, t, "c", 10240));
-    m[sx + 10] = 2000;
-    m[sx + 11] = 4000;
-    m[sx + 12] = 0;
-    m[sx + 13] = 8;
-    m[sx + 14] = 0;
+    m[sx + 15] = metal.cgpu_alloc(ffi, 4 * 6144 * 8 * lay);
+    m[sx + 16] = metal.cgpu_alloc(ffi, 4 * 6144 * 8 * lay);
+    m[sx + 17] = metal.cgpu_alloc(ffi, 4 * 6144 * 8 * lay);
+    var aj = 0;
+    while aj < 7 {
+        m[sx + 18 + aj] = 750;
+        aj = aj + 1;
+    }
+    m[sx + 25] = 1;
+    m[sx + 26] = 0;
     if err.failed(m) {
         return 0 - 1;
     }
     var i = 0;
     while i < 10 {
-        if i != 6 && i != 9 && m[sx + i] < 0 {
+        if i != 6 && i != 9 && (m[sx + i] < 0 || m[sx + 15] < 0 || m[sx + 16] < 0 || m[sx + 17] < 0) {
             return qwen35.device_fail(m, t, ffi, "allocating the buffers of a check of 8 rows");
         }
         i = i + 1;
@@ -494,9 +499,6 @@ pub fn commit8[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
     let st3b = m[eng + 130];
     let stx = m[eng + 139];
     let lw = m[eng + 92];
-    let b_gs = m[eng + 72];
-    let b_bts = m[eng + 73];
-    let b_ys = m[eng + 74];
     var src = st1;
     if p % 2 == 1 {
         src = st2;
@@ -511,30 +513,51 @@ pub fn commit8[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
         qwen35.put_f32(t, off + 4 * i, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
         i = i + 1;
     }
+    // The reruns of the layers do not depend on one another: the windows and the gates of every layer together, then
+    // the steps together (a step reads its layer's gates).
+    var first = true;
     var l = 0;
+    while kept < 8 && l < qwen35.layers() {
+        if !qwen35.is_attention(l) {
+            let w = mem.get(m, lw, l);
+            let cs = mem.get(m, src, l);
+            var r0 = qwen35.at(m[sx], 4 * 10240 * (8 * l + kept - 3));
+            var r1 = qwen35.at(m[sx], 4 * 10240 * (8 * l + kept - 2));
+            var r2 = qwen35.at(m[sx], 4 * 10240 * (8 * l + kept - 1));
+            if kept < 3 {
+                r0 = qwen35.at(cs, 4 * 10240 * kept);
+            }
+            if kept < 2 {
+                r1 = qwen35.at(cs, 4 * 10240 * (kept + 1));
+            }
+            if !first {
+                qwen35.ov(ffi);
+            }
+            first = false;
+            qwen35.go(m, ffi, m[sx + 9], r0, r1, r2, mem.get(m, stx, l), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            let n = 4 * 48 * (8 - kept);
+            metal.cgpu_upload_at(ffi, m[sx + 1], 4 * 48 * (8 * l + kept), t[off..off + n]);
+            metal.cgpu_upload_at(ffi, m[sx + 2], 4 * 48 * (8 * l + kept), t[off..off + n]);
+            qwen35.ov(ffi);
+            qwen35.go(m, ffi, m[eng + 188], qwen35.at(m[sx + 1], 4 * 48 * 8 * l), qwen35.at(m[sx + 2], 4 * 48 * 8 * l), mem.get(m, w, 6), mem.get(m, w, 7), qwen35.at(m[sx + 15], 4 * 6144 * 8 * l), qwen35.at(m[sx + 16], 4 * 6144 * 8 * l), 0 - 1, 0 - 1);
+        }
+        l = l + 1;
+    }
+    first = true;
+    l = 0;
+    while kept < 8 && l < qwen35.layers() {
+        if !qwen35.is_attention(l) {
+            if !first {
+                qwen35.ov(ffi);
+            }
+            first = false;
+            qwen35.go(m, ffi, m[eng + 191], mem.get(m, st3, l), qwen35.at(m[sx + 4], 4 * 2048 * 8 * l), qwen35.at(m[sx + 5], 4 * 2048 * 8 * l), qwen35.at(m[sx + 3], 4 * 10240 * 8 * l), qwen35.at(m[sx + 15], 4 * 6144 * 8 * l), qwen35.at(m[sx + 16], 4 * 6144 * 8 * l), mem.get(m, st3b, l), qwen35.at(m[sx + 17], 4 * 6144 * 8 * l));
+        }
+        l = l + 1;
+    }
+    l = 0;
     while l < qwen35.layers() {
         if !qwen35.is_attention(l) {
-            if kept < 8 {
-                let w = mem.get(m, lw, l);
-                let cs = mem.get(m, src, l);
-                var r0 = qwen35.at(m[sx], 4 * 10240 * (8 * l + kept - 3));
-                var r1 = qwen35.at(m[sx], 4 * 10240 * (8 * l + kept - 2));
-                var r2 = qwen35.at(m[sx], 4 * 10240 * (8 * l + kept - 1));
-                if kept < 3 {
-                    r0 = qwen35.at(cs, 4 * 10240 * kept);
-                }
-                if kept < 2 {
-                    r1 = qwen35.at(cs, 4 * 10240 * (kept + 1));
-                }
-                qwen35.go(m, ffi, m[sx + 9], r0, r1, r2, mem.get(m, stx, l), 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                let n = 4 * 48 * (8 - kept);
-                metal.cgpu_upload_at(ffi, m[sx + 1], 4 * 48 * (8 * l + kept), t[off..off + n]);
-                metal.cgpu_upload_at(ffi, m[sx + 2], 4 * 48 * (8 * l + kept), t[off..off + n]);
-                let x_as = qwen35.at(m[sx + 1], 4 * 48 * 8 * l);
-                let x_bs = qwen35.at(m[sx + 2], 4 * 48 * 8 * l);
-                qwen35.go(m, ffi, m[eng + 188], x_as, x_bs, mem.get(m, w, 6), mem.get(m, w, 7), b_gs, b_bts, 0 - 1, 0 - 1);
-                qwen35.go(m, ffi, m[eng + 191], mem.get(m, st3, l), qwen35.at(m[sx + 4], 4 * 2048 * 8 * l), qwen35.at(m[sx + 5], 4 * 2048 * 8 * l), qwen35.at(m[sx + 3], 4 * 10240 * 8 * l), b_gs, b_bts, mem.get(m, st3b, l), b_ys);
-            }
             let old = mem.get(m, st3, l);
             mem.set(m, st3, l, mem.get(m, st3b, l));
             mem.set(m, st3b, l, old);
@@ -637,6 +660,8 @@ fn round_n[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
         mtp_gpu(m, ffi, eng, head_hidden(m, eng, 0), j, pos + j, j, qwen35.at(m[sx + 8], 4 * qwen35.tmax() * (j - 1)), j + 1);
         j = j + 1;
     }
+    // the drafts start now, while the check's rows are prepared
+    metal.cgpu_flush(ffi);
     let ids = mem.list(m);
     mem.push(m, ids, last);
     j = 0;
@@ -649,11 +674,18 @@ fn round_n[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
     if greedy {
         want = 0 - 2;
     }
+    // a greedy round's check is the half chunk whatever it drafts: the rows past the drafts are checked and never kept
     var set = 1;
-    if n == deep() {
+    var nrows = n + 1;
+    if greedy {
         set = 3;
+        nrows = deep() + 1;
+        while j < deep() {
+            mem.push(m, ids, 0);
+            j = j + 1;
+        }
     }
-    if qwen35.feed_rows(m, t, ffi, fs, eng, ids, 0, pos + 1, n + 1, set, want, 1) < 0 {
+    if qwen35.feed_rows(m, t, ffi, fs, eng, ids, 0, pos + 1, nrows, set, want, 1) < 0 {
         return 0 - 1;
     }
     if metal.cgpu_download(ffi, b_toks, t[tk..tk + 128]) < 0 {
@@ -694,50 +726,75 @@ fn round_n[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu
     return kept;
 }
 
-// One round of speculative decoding (docs/serving.md 10.3): of 2 drafts, or of `deep()` when the request is greedy,
-// the context has room, and a round of that many has been choosing more tokens for what it costs. The engine keeps
-// a running mean of the tokens a round of each kind chooses (a round of 7 says what a round of 2 would have
-// chosen: at most 3 of its own); a round of 7 costs `cost7` to a round of 2's `cost2` [measured on an M4 Max,
-// docs/serving.md 10.4]. While the round of 2 is ahead, a round of 7 is still made every 8th round (a probe), so that its
-// mean cannot go stale; a probe that changes nothing doubles that wait.
+// The tokens a round of `d` drafts is expected to choose (x 1000): the one after `last`, and each draft while the
+// ones before it were accepted. A position past the deepest ever drafted has the acceptance of that one.
+fn expect[&m](m: &!m [int], sx: int, d: int) -> [] int {
+    var e = 1000;
+    var run = 1000;
+    var j = 1;
+    while j <= d {
+        var a = m[sx + 17 + j];
+        if j > m[sx + 25] {
+            a = m[sx + 17 + m[sx + 25]];
+        }
+        run = run * a / 1000;
+        e = e + run;
+        j = j + 1;
+    }
+    return e;
+}
+
+// One round of speculative decoding (docs/serving.md 10.5). A greedy request drafts the number of tokens, 1 to
+// `deep()`, that is expected to choose the most tokens for what the round costs: the engine keeps a running
+// acceptance of the draft at each position (given that the ones before it were accepted), and a round costs
+// `base` + `per` a draft [measured on an M4 Max, docs/serving.md 10.5]. The depth goes at most one past the deepest
+// ever drafted, and every 8th round drafts one more than the best, so that the next position's acceptance is
+// measured and cannot go stale. A request that samples has the round of 2 and its own check.
 pub fn spec_round[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, sp: int, lgd: int, rows: int, smp: int, gsmp: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
     if ensure_deep(m, t, ffi, fs, eng) < 0 {
         return 0 - 1;
     }
     let sx = m[eng + 214];
-    let cost2 = 51;
-    let cost7 = 63;
+    let base = 530;
+    let per = 24;
     var n = 2;
-    var probe = false;
-    if sampler.is_greedy(m, smp) && m[sp + 1] + deep() + 3 < qwen35.tmax() {
-        if m[sx + 11] * cost2 > m[sx + 10] * cost7 {
-            n = deep();
-        } else if m[sx + 14] + 1 >= m[sx + 13] {
-            n = deep();
-            probe = true;
+    let greedy = sampler.is_greedy(m, smp);
+    if greedy && m[sp + 1] + deep() + 3 < qwen35.tmax() {
+        var lim = m[sx + 25] + 1;
+        if lim > deep() {
+            lim = deep();
+        }
+        n = 1;
+        var d = 2;
+        while d <= lim {
+            if expect(m, sx, d) * (base + per * n) > expect(m, sx, n) * (base + per * d) {
+                n = d;
+            }
+            d = d + 1;
+        }
+        if m[sx + 26] % 8 == 7 && n < deep() {
+            n = n + 1;
         }
     }
     let kept = round_n(m, t, ffi, fs, eng, sp, rows, smp, n);
     if kept < 0 {
         return kept;
     }
-    m[sx + 12] = m[sx + 12] + 1;
-    var k2 = kept;
-    if k2 > 3 {
-        k2 = 3;
-    }
-    m[sx + 10] = (m[sx + 10] * 7 + 1000 * k2) / 8;
-    if n == deep() {
-        m[sx + 11] = (m[sx + 11] * 7 + 1000 * kept) / 8;
-    }
-    // a probe that changes nothing doubles the wait for the next (64 rounds at most); one that does starts it over
-    m[sx + 14] = m[sx + 14] + 1;
-    if probe {
-        m[sx + 14] = 0;
-        if m[sx + 11] * cost2 > m[sx + 10] * cost7 {
-            m[sx + 13] = 8;
-        } else if m[sx + 13] < 64 {
-            m[sx + 13] = m[sx + 13] * 2;
+    m[sx + 26] = m[sx + 26] + 1;
+    if greedy {
+        // draft j was accepted if a row past it was kept, refused if it is where the round stopped
+        var j = 1;
+        while j <= n && j <= kept {
+            var hit = 0;
+            if j < kept {
+                hit = 1000;
+            }
+            if j > m[sx + 25] {
+                m[sx + 17 + j] = m[sx + 17 + m[sx + 25]];
+                m[sx + 25] = j;
+            }
+            m[sx + 17 + j] = (m[sx + 17 + j] * 7 + hit) / 8;
+            j = j + 1;
         }
     }
     return kept;
