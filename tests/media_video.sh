@@ -48,7 +48,7 @@ sys.argv=["media"]+sys.argv[1:]
 sys.platform="darwin"
 runpy.run_path("'"$R"'/tools/media.py",run_name="__main__")' "$@"); }
 cho() { (cd "$W" && "$REPO/build/media" --root "$R" --cwd "$W" --home "${HOME2:-$H}" --py /bin/true --cache "$K" --ffmpeg ${FREEKB:+--free-kb $FREEKB} "$@"); }
-norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##; /^STAGE -c\$/d; s#^STAGE printf .* \(/[^ ]*\)\$#STAGE \1#"; }
+norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##; /^STAGE -c\$/d; s#^STAGE printf .* \([^ ]*\)\$#STAGE \1#"; }
 both() { # name, args...: the whole output (timings dropped), exit status, prompt.txt and errors
   name=$1; shift
   rm -rf "$W/o"
