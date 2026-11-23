@@ -1,0 +1,29 @@
+// rope.chx for the m tokens of a chunk in one launch: token t's heads are rows t * r .. of x and its position's
+// tables row t of cs and sn (docs/serving.md 11.2). The token is the grid's second extent, so a launch over
+// fewer tokens than the kernel was compiled for sets that extent and leaves the other rows alone.
+algo rope_rows(m, r, h, p)
+  in  x:  f32[m * r, 2 * h + p]
+  in  cs: f32[m, h]
+  in  sn: f32[m, h]
+  out y:  f32[m * r, 2 * h + p]
+  tile br
+{
+  grid i over r / br, t over m
+  let x1   = load x[t * r + i * br, 0 ; br, h]
+  let x2   = load x[t * r + i * br, h ; br, h]
+  let c    = load cs[t, 0 ; 1, h]
+  let s    = load sn[t, 0 ; 1, h]
+  let a    = &x1 * &c
+  let b    = &x2 * &s
+  let lo   = a - b
+  let d    = x2 * c
+  let e    = x1 * s
+  let hi   = d + e
+  let rest = load x[t * r + i * br, 2 * h ; br, p]
+  store lo   -> y[t * r + i * br, 0]
+  store hi   -> y[t * r + i * br, h]
+  store rest -> y[t * r + i * br, 2 * h]
+}
+
+schedule rope_rows for apple-m-series { threads 128 br 1 }
+schedule rope_rows for nvidia-ada     { threads 128 br 1 }
