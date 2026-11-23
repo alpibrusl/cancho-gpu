@@ -770,3 +770,79 @@ No speed against torch, MLX or ComfyUI; no statement that BF16, bidirectional at
 the vision tower will fit the existing kernels; no result on any model but the Qwen2.5 and
 Qwen3.8 ones the README reports. The stages are a plan, ordered so that each gate is cheap and
 a wrong guess is found early.
+
+## 8. Where the time goes now, end to end, and what could be cut (2026-11-23; measured, nothing built)
+
+The same exercise as `docs/serving.md` 9 to 11 for the language model: measure first. One machine (M4 Max, 64 GB),
+restarted that day (`docs/serving.md` 11.6), each engine alone on the GPU, the commands of `docs/cli.md`.
+
+### 8.1 An image, 1024 x 1024, from a prompt (`scripts/media image`, 8 steps, a new process each run)
+
+"A red fox sitting in fresh snow in a pine forest at sunrise, soft light, photograph", seed 1, two runs: **75.4 and
+77.6 s** of wall time.
+
+| part | s | of the run |
+|---|---|---|
+| steps 1 to 7, 7 s each (6.67 s of kernels a step, D8) | 49 | 64% |
+| step 0: 17 to 18 s, of which 9 s inside the sessions and 9 s outside them | 17.5 | 23% |
+| the language model over the prompt (26 rows), its 15 GB of weights read | 2 to 4 | 4% |
+| the VAE decoder (1.88 s of kernels, D8) | 3 | 4% |
+| the rest: the interpreter's start, torch imported for the noise, the files, the PNG | about 4 | 5% |
+
+At 512 x 512 the same run takes 28 s: steps 1 to 7 are 1 s each, step 0 is 8 s, the language model 4 s, the decoder
+2 s.
+
+**torch (diffusers, BF16, MPS), the same prompt and size, the weights resident** (`tools/diffusion_time.py --size
+1024 --reps 3`, one warm-up): the pipeline **41.4 s** (41.41 to 41.45); a transformer call 4.99 s, the eight 39.9 s;
+the text encoder 0.17 s; the VAE 1.30 s. The whole script, with the load and the warm-up, took 185 s, so the load is
+at most 20 s. **So a first image costs about 76 s here against about 60 s in torch, and a second one in the same
+process 41 s in torch, where this pipeline has no second one: every run is a new process.**
+
+**Not like for like:** torch's 41.4 s has neither a load nor a first call in it and ours has both; torch computes in
+BF16 throughout and is 26 dB from the float64 pipeline where ours is 49 dB (D8).
+
+### 8.2 A video, 17 frames of 640 x 352 (`scripts/media video`, 3 steps)
+
+"A red fox running through fresh snow in a pine forest at sunrise, cinematic", seed 1: **28.5 s** of wall time.
+
+| part | s | of the run |
+|---|---|---|
+| the VAE decoder (a session of 147 programs, 8.3 s with its compile and upload) | 10.8 | 38% |
+| the text encoder, umT5 in torch on the host | 9 | 32% |
+| the denoiser: step 0 4.0 s with the upload of the weights, steps 1 and 2 1.1 s each | 6.4 | 22% |
+| the rest | about 2 | 8% |
+
+**The steps are a fifth of a video's time**; the decoder and an encoder that is not on the GPU are most of it. 33
+frames of 1280 x 704 (7,920 tokens) are refused by the command without `--force` (the attention is measured to
+about 1,100 tokens, V4a) and were not run. **No baseline: no other engine was timed on this model.**
+
+### 8.3 What could be cut, largest first [reckoned from the tables above unless marked]
+
+Image, 1024 x 1024 (of 76 s):
+
+1. **The matrix products of a step: 4.6 s of 6.67 (D8), 37 s a run, half of it.** `gemm_mma` runs them at 13.0
+   TFLOPS and no tile schedule beat that (D8). torch's whole step is 4.99 s, so its products run faster than ours.
+   `docs/kernels.md` 9.6 timed MLX's own product kernel at 14.7 to 14.8 on this machine: at that rate a step is 0.55
+   s shorter, a run 4.4 s. Not tried on these shapes.
+2. **Step 0's 10.5 s above a step: 2 s more inside the sessions, 9 s outside them.** What the 9 s are (the
+   sessions' starts, the kernels' compiles, the upload of 13 GB) was not split. torch pays its counterpart once a
+   process; this pipeline pays it once a picture.
+3. **The attention of a step: 1.8 s (D8), 14 s a run.** The statistics (0.57 s) and the weighted sum (0.8 s; 0.5
+   with D8b's schedule) read a 2.2 GB scratch of scores a block; an attention that never stores them is not
+   expressible in the language (D8).
+4. **A process that stays up.** The language model's weights (2 to 4 s), step 0's 9 s outside the sessions and most
+   of the rest are paid by every picture: about 15 s of 76 that a second picture need not pay.
+5. The decoder, 3 s against torch's 1.3.
+
+Video, 17 frames of 640 x 352 (of 28.5 s):
+
+1. **The decoder, 10.8 s.** How much of its session's 8.3 s is compile and upload and how much kernels was not
+   split (V2b has the kernels alone at an earlier date).
+2. **The text encoder on the host, 9 s**, most of it torch and the load of umT5 for 19 tokens. On the GPU as the
+   image's is (D5), or kept loaded.
+3. The denoiser's first step, 2.9 s above a step.
+
+**Not done.** A per-kernel profile of the present builds (`CANCHOGPU_PROFILE=2`): the split of a step above is
+D8's, measured 2026-11 before the restart of `docs/serving.md` 11.6, and the walls here agree with it (7 s a step
+against 6.67 of kernels). A baseline for the video. Anything of 8.3.
+
