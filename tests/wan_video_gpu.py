@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V4a of docs/diffusion.md section 6: a video from a prompt, the denoiser and the decoder of FastWan2.2-TI2V-5B on a Metal GPU.
 
-    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32] [--base [--steps N] [--guidance G] [--neg NEG.npy]] [--noise N.npy]
+    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32] [--base [--steps N] [--guidance G] [--neg NEG.npy]] [--noise N.npy] [--dmd-steps T,T,...] [--blocks N] [--trace] [--no-decode]
 
 F is the number of latent frames (the video has 1 + 4 (F - 1)), HxW the latent's size in pixels / 16 (22x40 is 640 x 352); `--text` is tests/wan_text_gpu.py's output (umT5's encoder, a GPU session of its own: V3; tools/wan_text.py, torch on the host, writes the same file); `--wdir` holds the f16 weight files of tests/wan_gpu.py's layout (written on first use, 10 GB); the output is WORK_DIR/video.gif and WORK_DIR/frames/.
 
@@ -40,7 +40,8 @@ H, Wd = (int(v) for v in arg("--size", "22x40").split("x"))
 SEED = int(arg("--seed", 0))
 WDIR = arg("--wdir", os.path.join(work, "w"))
 FPS = int(arg("--fps", 16))
-STEPS = [1000, 757, 522]
+STEPS = [int(v) for v in arg("--dmd-steps", "1000,757,522").split(",")]  # `--dmd-steps 757` with `--noise`: one call at that timestep from given latents (V3b: where a difference grows)
+TRACE = "--trace" in sys.argv  # keep each call's input latents, velocity and last block's output as trace_lat<i>.npy, trace_v<i>.npy, trace_x<i>.f32
 BASE = "--base" in sys.argv
 D, NH, HD = wr.D, wr.NH, wr.HD
 T = 512
@@ -50,7 +51,7 @@ P = lambda n: os.path.join(work, n)
 f16 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f2")).tofile(path)
 f32 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f4")).tofile(path)
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
-NB = 30
+NB = int(arg("--blocks", 30))  # fewer: the head reads block NB - 1 (V3b)
 LH, LW = H, Wd  # the latent's size in pixels of the latent grid: [48, F, H, W]
 S = F * (H // 2) * (Wd // 2)
 SP = (S + 63) // 64 * 64
@@ -234,6 +235,10 @@ for i, t in enumerate([] if BASE else STEPS):
     ask("checkpoint")
     y = np.fromfile(P("head_out.f32"), dtype="<f4").reshape(SP, 192)[:S].astype(np.float64)
     v = y.reshape(F, H // 2, Wd // 2, 1, 2, 2, 48).transpose(6, 0, 3, 1, 4, 2, 5).reshape(48, F, H, Wd)
+    if TRACE:
+        np.save(P("trace_lat%d.npy" % i), lat)
+        np.save(P("trace_v%d.npy" % i), v)
+        os.replace(P("x_out.f32"), P("trace_x%d.f32" % i))
     sg = sigma_of(t)
     x0 = mix(lat - sg * v)
     print("step %d: t = %d, sigma = %.4f, velocity rms %.4g, x0 rms %.4g, %.1f s%s" % (i, t, sg, np.sqrt((v ** 2).mean()), np.sqrt((x0 ** 2).mean()), time.time() - t0, " (includes the upload of the weights)" if i == 0 else ""), flush=True)
@@ -243,6 +248,9 @@ for i, t in enumerate([] if BASE else STEPS):
 proc.stdin.close()
 proc.wait()
 print("denoiser: %.1f s in all" % (time.time() - t_start), flush=True)
+if "--no-decode" in sys.argv:
+    np.save(P("x0_latent.npy"), x0)
+    sys.exit(0)
 
 # ---- the decoder (V2) and the video
 import glob  # noqa: E402
