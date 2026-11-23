@@ -551,6 +551,9 @@ tests/chx/matvec_fp4_res_pass_h.chx m=128 n=5120 k=17408 bm=16
 tests/chx/matvec_fp4_res_pass_h.chx m=4 n=64 k=128 bm=2 --run
 tests/chx/matvec_fp4_swiglu_pass_h.chx m=128 n=17408 k=5120 bm=16
 tests/chx/matvec_fp4_swiglu_pass_h.chx m=4 n=64 k=128 bm=2 --run
+# Three rows from three buffers as one window: a speculative check that keeps a prefix of its rows (docs/serving.md 10.2).
+tests/chx/rows3.chx c=10240
+tests/chx/rows3.chx c=512 --run
 tests/chx/matvec_rows_f16_mh.chx m=16 n=48 k=5120
 tests/chx/matvec_rows_f16_mh.chx m=3 n=64 k=96 --run
 tests/chx/rmsnorm_rows_h.chx r=16 n=5120 eps=0.000001

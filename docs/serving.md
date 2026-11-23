@@ -774,3 +774,116 @@ measured.
 
 **Prefill 2.82 s against 2.88 (alternating builds, three runs a prompt, within 0.2%), 244 tok/s, the same tokens
 on the three prompts of 8.7.** Ollama: about 2.5 s.
+## 10. Deeper drafts (2026-11-22)
+
+### 10.1 What was measured, both engines, same machine
+
+689-token prompt of 8.7 and two variants, 128 tokens generated, greedy, engines in turn, cold:
+
+| | prefill tok/s | generation tok/s |
+|---|---|---|
+| ours, plain | 232 to 245 | 27.4 to 27.6 |
+| ours, `--spec` (2 drafts a round) | 219 to 232 | 38.7 to 41.3 |
+| Ollama 0.40.16 | 273 to 274 | 58.3 to 62.9 |
+| Ollama, a request with `logprobs` (it then does not draft **[read: `mlxrunner/speculate.go`]**) | | 27.5 to 28.6 |
+| Ollama, the same prompt a third and fourth time | (cached) | 79 to 84 |
+
+**This table does not compare like with like, found in 10.4:** on these prompts Ollama's continuation is the
+prompt's sentence again and ours is new prose, so its drafts are easy and ours are not. The plain rows stand.
+
+**Plain decoding is the same speed in both.** Everything Ollama gains in generation is its speculative decoder: a
+controller that picks the number of drafts each round from the measured cost of a check and the measured acceptance
+at each position, kept across requests **[read: `speculate_depth.go`]**. Its log for these runs: 42 rounds for 128
+tokens at 2.1 drafts a round on the first, 25 rounds at 6.1 drafts (up to 7) and 4.1 accepted a round on the fourth.
+Ours drafts 2, always: at most 3 tokens a round.
+
+**What a round of ours costs** (`CANCHOGPU_PROFILE=1`, 41 rounds): the device 45.0 ms a round, every round; the
+round 51 ms, so about 6 ms a round is the host. A plain token is 36.4 ms. Two drafts and two more rows in the check
+are 9 ms together: a draft is about 3 ms, and a check of 3 rows is hardly more than a token, because a token is
+bound by reading the weights and the rows after the first only add arithmetic. A prefill row in a chunk is 4.1 ms.
+
+### 10.2 Design: a check of 8 rows
+
+**The check is the half chunk.** 8 rows through `feed_rows` with the half chunk's kernels (set 3): [estimate] 37 to
+40 ms, what a token costs. So a round drafts 7 and checks [last, d1..d7]: [estimate] 7 x 3 + 40 + 6 = 67 ms a round
+whatever is accepted, against 51 for the round of 2. At the acceptance of 10.1's own run (57 of 82 drafts, 0.70 a
+position) [estimate] 1 + 2.1 = 3.1 tokens a round, 46 tok/s against 47: nothing; at 0.9 a position 5.7 tokens a
+round, 85 tok/s against 53. **So the depth has to follow the acceptance**, as Ollama's does; 10.3.
+
+The rows go through the chunk's arithmetic (f16 activations into the weight products, section 9 step 3), not the
+single token's or the 3-row check's: a near tie can fall differently from plain decoding.
+
+**Keeping a prefix of the rows.** After the check, `kept` of the 8 rows are kept (1 to 8). What a row changed:
+
+* an attention layer's cache rows, and the head's: rows past `kept` are behind the mask and are written again;
+* a delta layer's state. The check reads the committed state and writes the state after 8 rows to the spare
+  buffer; the committed one is not touched. All 8 kept: the two are swapped. Fewer: the step is run again for that
+  layer with the rows past `kept` made no-ops, from what the check left of its inputs. A row is a no-op when its
+  decay is 1 and its write strength 0, which `gates_rows` gives exactly for inputs of -1e30 (`exp(-(A softplus))`
+  with softplus 0, and a sigmoid of 0): so the check keeps each delta layer's two gate inputs (48 numbers a row), its
+  normalised q and k and its convolved row in buffers of their own a layer (50 MB for the 64 layers), and a rerun
+  is two launches a layer (`gates_rows`, `delta_step8`), 96 in all, [estimate] 3 ms;
+* a delta layer's convolution window, the last three inputs. The check writes the window after 8 rows aside. Fewer
+  kept: the window is rows `kept .. kept + 2` of (old window, the check's inputs), copied by a three-row kernel
+  (`rows3`) from the old window and the layer's kept inputs. Either way the result is swapped into the list the
+  next position's parity reads.
+
+Not in this design: sampling. With a sampler that is not greedy the round of 2 stays (the logits of 8 rows are
+8 MB to bring back a round).
+
+### 10.3 Design: which round
+
+Two rounds exist, of 2 drafts and of 7. Each keeps a running mean of its milliseconds a token over the rounds it
+ran (cost of the round over tokens it chose); the next round is the one with the lower mean, and every 8th round is
+the other one, so that a mean cannot go stale. The means live in the engine, across requests, as Ollama's do.
+
+### 10.4 Built and measured
+
+`qwen35spec.round_n` is the round for any number of drafts, `commit8` keeps a prefix of a check of 8, `spec_round`
+chooses. Nothing in the compiler; one new kernel (`rows3`), the 8-row output head (`matvec_fp4_batch` at 8 rows),
+60 MB of buffers made on the first round.
+
+**A round of 7 drafts: 62 to 63 ms** (19 rounds, 1,176 ms), the device's wait 42 ms of it; a round of 2: 51. The
+estimate was 67. So `cost7` = 63 to `cost2` = 51, constants in `spec_round` **measured on this M4 Max and nowhere
+else**: there is no clock in the round, so the cost is not measured as it runs, which Ollama's is.
+
+**The chooser** as 10.3, with one change: the other round is a probe only while the round of 2 is ahead, every 8th
+round, and a probe that changes nothing doubles the wait (64 at most). A round of 7 also says what a round of 2
+would have chosen (at most 3 of its tokens), so the round of 2's mean never goes stale.
+
+**`scripts/spec-check.sh`, 96 tokens, greedy: the same tokens as plain decoding on its 7 prompts.** Generation
+against the round of 2 alone (section 9's build) and against Ollama 0.40.16 (raw prompt, temperature 0, its third
+run of each prompt so that its depth is learned), tok/s:
+
+| prompt | plain | round of 2 | now | Ollama | same text as Ollama's |
+|---|---|---|---|---|---|
+| The capital of France is | 27.8 | 49.8 | 69.3 | 58.0 | all of it |
+| def quicksort(arr): | 27.4 | 54.1 | 80.7 | 78.4 | all of it |
+| Once upon a time, ... | 27.5 | 45.0 | 45.4 | 49.2 | the first third |
+| The three laws of thermodynamics, ... | 27.9 | 47.3 | 62.1 | 60.1 | the first fifth |
+| Q: Why is the sky blue? | 27.5 | 51.1 | 59.4 | 55.1 | the first half |
+| rare words: ... | 27.5 | 41.1 | 44.3 | 54.3 | the first third |
+
+One run each; where the texts part the two engines are drafting different text. **Where few drafts are accepted
+Ollama is ahead (49 and 54 against 45 and 44)**: its controller goes down to one draft and none, and ours has two
+rounds. On the 689-token prompt of 10.1 ours writes prose its head drafts badly (71 drafts accepted in 61 rounds)
+and takes 3.39 s for 128 tokens, 37.8 tok/s, where the round of 2 alone took 3.10: **slower there**, by the rounds
+of 7 made before the means settle and the probes after.
+
+**Found on the way.** A round's reruns were encoded and never sent when the round was the last: the process
+aborted at exit on three of the seven prompts. `commit8` flushes after a partial keep. And the server hung on its
+second request: the round's kernels were made on the first round, in the first request's memory, which the server
+gives back. `serve-main` makes them at start, where it makes the batch kernels (`ensure_deep`).
+
+**The server** (`tests/prefix_check.py`, 128 tokens a case): 67 to 73 tok/s where it was 55 to 56, the same tokens
+with the cache and without.
+
+**Not done.**
+* Sampling: a request that is not greedy has the round of 2 only.
+* The rows of a check of 8 go through the half chunk's arithmetic (f16 activations into the products), the round
+  of 2's and plain decoding through f32. The tokens are the same on the 7 prompts; that says nothing about a near
+  tie elsewhere.
+* No depth between 2 and 7, none below 2, and no cost measured as it runs.
+* `commit8`'s rerun rests on `gates_rows` giving exactly 1 and 0 for inputs of -1e30. It is checked only through
+  the model's tokens (every partial keep of the 7 prompts goes through it), not by a kernel test.
+* About 6 ms of a round of 2 and more of a round of 7 is the host's (encoding some 1,500 launches a round of 7).

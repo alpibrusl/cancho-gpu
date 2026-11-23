@@ -878,9 +878,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
         b_mmask = metal.cgpu_alloc(ffi, 4 * tmax());
         b_mmask2 = metal.cgpu_alloc(ffi, 4 * tmax());
         b_etab = metal.cgpu_alloc(ffi, 2 * vocab() * h);
-        b_toks = metal.cgpu_alloc(ffi, 32);
-        b_hcos = metal.cgpu_alloc(ffi, 4 * 32 * 8);
-        b_hsin = metal.cgpu_alloc(ffi, 4 * 32 * 8);
+        b_toks = metal.cgpu_alloc(ffi, 128);
+        b_hcos = metal.cgpu_alloc(ffi, 4 * 32 * 16);
+        b_hsin = metal.cgpu_alloc(ffi, 4 * 32 * 16);
         if b_mmask < 0 || mc2 < 0 || b_etab < 0 || b_hsin < 0 {
             device_fail(m, t, ffi, "allocating the draft head's cache");
             return 0 - 1;
@@ -909,7 +909,8 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 214);
+    let eng = mem.grab(m, 215);
+    m[eng + 214] = 0;
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
     m[eng + 103] = m_pre_h;
@@ -1364,7 +1365,9 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     if set == 1 {
         kb = 116;
     }
-    if set == 2 {
+    // set 3 is a speculative check of 8 rows (docs/serving.md 10.2): the half chunk's kernels, with a delta layer's state
+    // and window written aside and its step's inputs kept a layer, so that a prefix of the rows can be kept.
+    if set == 2 || set == 3 {
         kb = 170;
         kd = 187;
     }
@@ -1398,6 +1401,14 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
     let k_gnormb = m[eng + kb + 11];
     let k_headb = m[eng + 128];
     let b_logitsb = m[eng + 129];
+    var k_headf = k_headb;
+    var b_lgf = b_logitsb;
+    let arg0 = 8;
+    let sx = m[eng + 214];
+    if set == 3 {
+        k_headf = m[sx + 6];
+        b_lgf = m[sx + 7];
+    }
     let st3b = m[eng + 130];
     let st3c = m[eng + 131];
     let st3d = m[eng + 138];
@@ -1529,7 +1540,7 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 }
             } else {
                 var sl = 194;
-                if set == 2 {
+                if set == 2 || set == 3 {
                     sl = 200;
                 }
                 if pos + rows > 256 {
@@ -1554,7 +1565,21 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
             }
             fp4_res(m, ffi, k_outb, b_ogs, mem.get(m, w, 6), cur, nxt);
         } else {
-            fp4(m, ffi, k_qkvb, b_ns, mem.get(m, w, 1), b_qkvs);
+            var x_qkv = b_qkvs;
+            var x_as = b_as;
+            var x_bs = b_bs;
+            var x_conv = b_convs;
+            var x_qn = b_qns;
+            var x_kn = b_kns;
+            if set == 3 {
+                x_qkv = at(m[sx], 4 * 10240 * 8 * l);
+                x_as = at(m[sx + 1], 4 * 48 * 8 * l);
+                x_bs = at(m[sx + 2], 4 * 48 * 8 * l);
+                x_conv = at(m[sx + 3], 4 * 10240 * 8 * l);
+                x_qn = at(m[sx + 4], 4 * 2048 * 8 * l);
+                x_kn = at(m[sx + 5], 4 * 2048 * 8 * l);
+            }
+            fp4(m, ffi, k_qkvb, b_ns, mem.get(m, w, 1), x_qkv);
             ov(ffi);
             fp4(m, ffi, k_zb, b_ns, mem.get(m, w, 2), b_zs);
             if set == 1 {
@@ -1581,9 +1606,9 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 while cd < g {
                     let od = cd * tr;
                     ov(ffi);
-                    go(m, ffi, m[eng + kd], at(b_ns, 2 * h * od), mem.get(m, w, 3), at(b_as, 4 * 48 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd], at(b_ns, 2 * h * od), mem.get(m, w, 3), at(x_as, 4 * 48 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                     ov(ffi);
-                    go(m, ffi, m[eng + kd], at(b_ns, 2 * h * od), mem.get(m, w, 4), at(b_bs, 4 * 48 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd], at(b_ns, 2 * h * od), mem.get(m, w, 4), at(x_bs, 4 * 48 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                     cd = cd + 1;
                 }
                 // a token at an even position reads its window from the first buffer and leaves it in the second: after an
@@ -1592,14 +1617,20 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 if pos % 2 == 1 {
                     cs_w = mem.get(m, st2, l);
                 }
+                var w_out = cs_w;
+                var s_out = mem.get(m, st3, l);
+                if set == 3 {
+                    w_out = mem.get(m, stx, l);
+                    s_out = mem.get(m, st3b, l);
+                }
                 cd = 0;
                 while cd < g {
                     let od = cd * tr;
-                    go(m, ffi, m[eng + kd + 3], at(b_qkvs, 4 * 10240 * od), cs_w, mem.get(m, w, 5), at(b_convs, 4 * 10240 * od), cs_w, 0 - 1, 0 - 1, 0 - 1);
-                    go(m, ffi, m[eng + kd + 2], at(b_convs, 4 * 10240 * od), at(b_qns, 4 * 2048 * od), at(b_kns, 4 * 2048 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd + 3], at(x_qkv, 4 * 10240 * od), cs_w, mem.get(m, w, 5), at(x_conv, 4 * 10240 * od), w_out, 0 - 1, 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd + 2], at(x_conv, 4 * 10240 * od), at(x_qn, 4 * 2048 * od), at(x_kn, 4 * 2048 * od), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
                     ov(ffi);
-                    go(m, ffi, m[eng + kd + 1], at(b_as, 4 * 48 * od), at(b_bs, 4 * 48 * od), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * od), at(b_bts, 4 * 6144 * od), 0 - 1, 0 - 1);
-                    go(m, ffi, m[eng + kd + 4], mem.get(m, st3, l), at(b_qns, 4 * 2048 * od), at(b_kns, 4 * 2048 * od), at(b_convs, 4 * 10240 * od), at(b_gs, 4 * 6144 * od), at(b_bts, 4 * 6144 * od), mem.get(m, st3, l), at(b_ys, 4 * 6144 * od));
+                    go(m, ffi, m[eng + kd + 1], at(x_as, 4 * 48 * od), at(x_bs, 4 * 48 * od), mem.get(m, w, 6), mem.get(m, w, 7), at(b_gs, 4 * 6144 * od), at(b_bts, 4 * 6144 * od), 0 - 1, 0 - 1);
+                    go(m, ffi, m[eng + kd + 4], mem.get(m, st3, l), at(x_qn, 4 * 2048 * od), at(x_kn, 4 * 2048 * od), at(x_conv, 4 * 10240 * od), at(b_gs, 4 * 6144 * od), at(b_bts, 4 * 6144 * od), s_out, at(b_ys, 4 * 6144 * od));
                     cd = cd + 1;
                 }
             }
@@ -1626,33 +1657,33 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
         if set == 0 {
             k_rmsf = m[eng + 192];
         }
-        if set == 2 {
+        if set == 2 || set == 3 {
             k_rmsf = m[eng + 193];
         }
         go(m, ffi, k_rmsf, cur, final_norm, b_ns, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-        fp4(m, ffi, k_headb, b_ns, head, b_logitsb);
+        fp4(m, ffi, k_headf, b_ns, head, b_lgf);
     }
     if final_lg == 0 - 2 {
-        // the device picks each row's largest logit into the token buffer's slots 5.. (a greedy sampler)
+        // the device picks each row's largest logit into the token buffer's slots 8.. (a greedy sampler)
         var ar = 0;
         while ar < rows {
             if ar > 0 {
                 ov(ffi);
             }
-            go(m, ffi, m[eng + 146], at(b_logitsb, 4 * vocab() * ar), at(m[eng + 141], 4 * (5 + ar)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+            go(m, ffi, m[eng + 146], at(b_lgf, 4 * vocab() * ar), at(m[eng + 141], 4 * (arg0 + ar)), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
             ar = ar + 1;
         }
     }
     metal.cgpu_sync(ffi);
     if final_lg >= 0 {
-        if metal.cgpu_download(ffi, b_logitsb, t[final_lg..final_lg + 4 * rows * vocab()]) < 0 {
+        if metal.cgpu_download(ffi, b_lgf, t[final_lg..final_lg + 4 * rows * vocab()]) < 0 {
             return device_fail(m, t, ffi, "reading the logits back");
         }
     }
     // The single-token path opens one mask position a step; open this chunk's.
     // (A verify opens only its first: `commit` opens the ones it keeps.)
     var nopen = rows;
-    if set == 1 {
+    if set == 1 || set == 3 {
         nopen = 1;
     }
     let open = reserve(m, 4 * rows);

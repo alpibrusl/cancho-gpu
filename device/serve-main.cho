@@ -866,7 +866,8 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     }
     // The batch kernels are compiled on first use otherwise, and a kernel is a record in `m`: one made while
     // handling a request would be given back with the request's memory.
-    if qwen35.ensure_batch(m, t, ffi, fs, eng) < 0 {
+    // (the kernels and buffers of a round of 7 drafts are records too: made here, not in the first request's memory)
+    if qwen35spec.ensure_deep(m, t, ffi, fs, eng) < 0 {
         return cli.report(m, t, io);
     }
     if m[cfg + 5] == 1 {
