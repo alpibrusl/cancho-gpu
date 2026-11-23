@@ -79,3 +79,23 @@ The same pictures, side by side and as a difference: composition, subject, pose 
 **Refusals checked, each exits 2 with its reason and none reaches a crash:** no `--prompt`; a size that is not a multiple of 32; a size over 1024 x 1024 without `--force`; no `--weights`/`--text-weights`; a weights directory that does not exist; `--steps 0`; a bad `--mutate`; no work directory.
 
 **Not shown:** more than one prompt and seed; the text rows against torch's `_get_qwen_prompt_embeds` as a separate number (the check of section 3 was done on the picture, not on the rows); an empty prompt (the driver sends one space as the pipeline does, not run); a prompt over 512 tokens (refused, not run); the time includes neither the start of the interpreter nor the first read of the 28 GB of weights; text rendering and long prompts were not tried.
+
+## 8. The prefix pass on the text's own rows (measured, 2026-11-23)
+
+**What section 7 ran was not what section 2 planned.** Section 2 has "a prefix of about 20 rows (padded to 64)"; the driver gave `Edit` one padding for both, `NP = max(pad64(NPR), pad64(NTG))`, so the 26 text rows went through the 32 blocks as 4,096 rows at 1024 x 1024, and a step, whose target is not shorter than `NP`, concatenated its keys to `2 NP` = 8,192 (4,070 of the first half masked).
+
+**Built:** `Edit(..., npp=N)` (`tests/dit_edit_lib.py`): the rows of the prefix pass and of the cached keys and values, a multiple of 64 from `NPR` to `NP`; `NP` when it is not given, which is every caller but `tests/t2i_pipeline_gpu.py`, which passes `pad64(NPR)`. With `npp < NP` a step is the two-segment step of `docs/two-images.md` section 8 (`dit_scores_mma` twice, `dit_stats_o2`, `dit_pv_mma2`) with `t1 = npp` cached keys and `t2 = NS` of its own, whatever `NS` is; the masks are the same masks cut to those columns. Where that step cannot be used (`--unified`, `DIT_STATS` other than `online`, `DIT_STEP=padded`) `npp` is not used and the shapes are the old ones. An `npp` that is not such a multiple is refused (`edit: the prefix pass's rows ...`).
+
+The prompt and seed of section 7, `scripts/media image ... --size WxH --seed 1` (`--resident`), wall time of the whole command, M4 Max, another process running CPU tests beside it:
+
+| size | before | after | step 0 before, after | steps 1 to 7 | sessions (prefix + steps) |
+|---|---|---|---|---|---|
+| 1024 x 1024, two runs each | 77.1, 78.0 s | **61.1, 62.9 s** | 18 s (9 in the sessions), 10 s (8) | 7 s each, 6 s each | 67 and 66 s, 52 and 52 s |
+| 512 x 512, one run each | 28.9 s | **22.7 s** | 9 s (3), 5 s (3) | 1 s each | 18 s, 14 s |
+
+**The pictures are the same bytes:** the PNG after against the PNG before, 512 x 512 and 1024 x 1024 (both runs): maximum difference 0 of 255, 0 pixels differ. So is 512 x 512 without `--resident` (sessions of 4 and 2 blocks). **Two savings, not one:** the prefix pass (64 rows, not 4,096), and each step's attention over 4,160 keys, not 8,192, which is what takes a later step from 7 s to 6 s (the driver prints whole seconds).
+
+**The edit driver is not touched:** it does not pass `npp`. Checked without a GPU: every session file and static table `Edit` writes (the 32 blocks' programs, links, aliases, masks, rotary tables, selectors), hashed, for prefixes of 4,130 rows over targets of 1,024 and 4,096 rows and 1,050 over 4,096, plain, `--resident` and `--unified`, is the same before and after the change (and with `DIT_STEP=padded`, with `npp` given, the same as before too).
+
+**Not shown:** a full edit run after the change (none was run); `tests/dit_edit_gpu.py`'s comparison with float64 on the two-segment step with a short `t1` (the pictures being the same bytes as the concatenated step's is the evidence here); sizes other than these two; the times with nothing else running on the machine.
+

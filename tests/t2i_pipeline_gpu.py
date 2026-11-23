@@ -161,8 +161,9 @@ x, mod, temb, rope, sel, allowed, pad_exp = der.assemble(prompt, pad, cond, late
 pre, tgt = np.nonzero(~sel)[0], np.nonzero(sel)[0]
 NPR, NTG = len(pre), len(tgt)
 NP = max((NPR + 63) // 64 * 64, (NTG + 63) // 64 * 64)
-print("joint sequence %d: prefix %d rows (text), target %d rows, padded to %d" % (len(x), NPR, NTG, NP), flush=True)
-e = Edit(P("edit_work"), WDIR, NP, NPR, NTG, int(arg("--gp", 4)), int(arg("--gs", 2)), resident="--resident" in sys.argv, unified="--unified" in sys.argv)
+NPP = (NPR + 63) // 64 * 64  # the prefix pass on the text's own rows: at 1024 x 1024 its 26 rows padded to the target's 4,096 cost a pass of 8 s (docs/text-to-image.md)
+e = Edit(P("edit_work"), WDIR, NP, NPR, NTG, int(arg("--gp", 4)), int(arg("--gs", 2)), resident="--resident" in sys.argv, unified="--unified" in sys.argv, npp=NPP)
+print("joint sequence %d: prefix %d rows (text) padded to %d, target %d rows padded to %d" % (len(x), NPR, e.NPP, NTG, NP), flush=True)
 e.static(*statics(rope, allowed, pre, tgt, NP))
 timings["host: front end, step 0"] = time.time() - t0
 t_prefix = t_steps = 0.0

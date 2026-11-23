@@ -1,10 +1,10 @@
 """D9e/D9g of docs/diffusion.md: the transformer with a condition image on a Metal GPU as a prefix pass and a cached step, as a library (tests/dit_edit_gpu.py holds it to float64; tests/edit_pipeline_gpu.py runs eight
 steps of it). See dit_edit_gpu.py for the design.
 
-    e = Edit(work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None)
+    e = Edit(work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None, npp=None)   # npp: the rows the prefix pass runs on (a multiple of 64 from npr to np_; np_ when not given)
     e.static(cs_pre, sn_pre, cs_tgt, sn_tgt, mask_pre, mask_step)   # the tables that do not change between steps
     e.modulation(mod)                                                # mod [2, 16384]: row 0 the sampled timestep's, row 1 t = 0's; rewritten each step
-    e.prefix(x_pre)       # x_pre [NP, 4096]: the prefix rows after the front end; saves each block's keys and values
+    e.prefix(x_pre)       # x_pre [NP, 4096]: the prefix rows after the front end (the first NPP are run); saves each block's keys and values
     x = e.step(x_tgt)     # x_tgt [NP, 4096]: the target rows after the front end; returns [NP, 4096] after the 32 blocks
 """
 import math
@@ -89,7 +89,7 @@ class Session:
 
 
 class Edit:
-    def __init__(self, work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None, resident=False, unified=False):
+    def __init__(self, work, wdir, np_, npr, ntg, gp, gs, time=False, mut=None, resident=False, unified=False, npp=None):
         self.work, self.wdir, self.NP, self.NPR, self.NTG, self.GP, self.GS, self.timed, self.mut = work, wdir, np_, npr, ntg, gp, gs, time, mut
         os.makedirs(work, exist_ok=True)
         self.P = lambda n: os.path.join(work, n)
@@ -99,20 +99,26 @@ class Edit:
         # docs/two-images.md section 8: a step whose target has fewer rows than the prefix (NS = ntg padded to 64 < NP) runs every per-row program on NS rows and its attention over two segments of keys (the cached prefix's, then the target's):
         # the scores of 32 heads are then NS x (NP or NS) each, never NS x 2 NP (64 NP^2 elements overflowed a 32-bit index at NP > 8192), and nothing is computed for the padding of the target
         self.NS = (ntg + 63) // 64 * 64
-        self.fast = (not unified) and self.NS < self.NP and STATS == "online" and os.environ.get("DIT_STEP", "segments") != "padded"
+        segments = (not unified) and STATS == "online" and os.environ.get("DIT_STEP", "segments") != "padded"
+        # NPP, the rows of the prefix pass and of the cached keys and values: NP unless the caller gives fewer (a text-only prefix of 26 rows under a target of 4096 is run on 64 rows, not 4096). A step then reads the two segments
+        # (NPP cached keys, NS of its own) whatever NS is; where the two-segment step cannot be used (one session for both, the other statistics, DIT_STEP=padded) the keys are concatenated in halves of NP rows, so NPP stays NP
+        if npp is not None and (npp % 64 or not npr <= npp <= np_):
+            raise SystemExit("edit: the prefix pass's rows (npp = %d) must be a multiple of 64 from the prefix's %d rows to np = %d" % (npp, npr, np_))
+        self.NPP = npp if (npp is not None and segments) else np_
+        self.fast = segments and (self.NS < self.NP or self.NPP < self.NP)
         self.resident, self.proc = resident or unified, None  # resident: one session of all 32 blocks for the prefix and one that stays open for every step (docs/diffusion.md D9i)
 
     def static(self, cs_pre, sn_pre, cs_tgt, sn_tgt, mask_pre, mask_step):
         self.tab = {"prefix": (cs_pre, sn_pre), "step": (cs_tgt, sn_tgt)}
         self.mask_pre, self.mask_step = mask_pre, mask_step
-        P, NP, NS = self.P, self.NP, self.NS
+        P, NP, NS, NPP = self.P, self.NP, self.NS, self.NPP
         R = NS if self.fast else NP  # the rows of a step's per-row programs
-        f32(P("cs_pre.f32"), cs_pre); f32(P("sn_pre.f32"), sn_pre); f32(P("cs_tgt.f32"), cs_tgt[:R]); f32(P("sn_tgt.f32"), sn_tgt[:R])
-        f32(P("sel_pre.f32"), np.ones((NP, 1)) if self.mut == "prefix-sampled-t" else np.zeros((NP, 1)))  # the prefix reads the t = 0 row of the modulation
+        f32(P("cs_pre.f32"), cs_pre[:NPP]); f32(P("sn_pre.f32"), sn_pre[:NPP]); f32(P("cs_tgt.f32"), cs_tgt[:R]); f32(P("sn_tgt.f32"), sn_tgt[:R])
+        f32(P("sel_pre.f32"), np.ones((NPP, 1)) if self.mut == "prefix-sampled-t" else np.zeros((NPP, 1)))  # the prefix reads the t = 0 row of the modulation
         f32(P("sel_tgt.f32"), np.ones((R, 1)))
-        f32(P("mask_pre.f32"), mask_pre)
+        f32(P("mask_pre.f32"), mask_pre[:NPP, :NPP])  # rows and keys past NPP are padding: a padded query row below NPP still sees the whole prefix
         if self.fast:  # the step's mask [NP, 2 NP] cut into the two segments' masks, for the NS target rows
-            f32(P("mask_s1.f32"), mask_step[:NS, :NP])
+            f32(P("mask_s1.f32"), mask_step[:NS, :NPP])
             f32(P("mask_s2.f32"), mask_step[:NS, NP:NP + NS])
         else:
             f32(P("mask_step.f32"), mask_step)
@@ -122,9 +128,9 @@ class Edit:
             f32(self.P("ms_%s.bin" % nm), mod[:, i * D:(i + 1) * D])
 
     def _blocks(self, name, lo, hi, xfile, prefix, alias=False, keep_open=False, unified=False):
-        P, W, NP, mut = self.P, self.W, self.NP, self.mut
+        P, W, NP, NPP, mut = self.P, self.W, self.NP, self.NPP, self.mut
         fast = self.fast and not prefix and not unified
-        R = self.NS if fast else NP  # the rows of every per-row program of the blocks
+        R = self.NS if fast else (NPP if prefix else NP)  # the rows of every per-row program of the blocks
         s = Session(self.work, name, self.timed)
         suf = "u" if unified else ("pre" if prefix else "tgt")
         prev = None
@@ -152,7 +158,7 @@ class Edit:
             elif prefix:
                 s.save(n("rk") + ".y", P("kpre%d.f16" % b), "f16")
                 s.save(n("vh") + ".y", P("vpre%d.f16" % b), "f16")
-                kk, vv, t, maskf = n("rk") + ".y", n("vh") + ".y", NP, "mask_pre.f32"
+                kk, vv, t, maskf = n("rk") + ".y", n("vh") + ".y", R, "mask_pre.f32"
             else:
                 kk, vv, t, maskf = n("ck") + ".y", n("cv") + ".y", 2 * NP, "mask_u.f32" if unified else "mask_step.f32"
                 for cn, src, pf in (("ck", "rk", "kz" if unified else "kpre"), ("cv", "vh", "vz" if unified else "vpre")):
@@ -162,28 +168,28 @@ class Edit:
                     else:
                         s.res(n(cn) + ".a", P("%s%d.f16" % (pf, b)), "f16")
                     s.link(n(src) + ".y", n(cn) + ".b")
-            if fast:  # two segments of keys: the cached prefix's (resident, NP rows) and the target's own (NS rows); no concatenation
-                s.program(n("sc1"), "dit_scores_mma", f"nh={H} nq={R} t={NP} d={HD}")
+            if fast:  # two segments of keys: the cached prefix's (resident, NPP rows) and the target's own (NS rows); no concatenation
+                s.program(n("sc1"), "dit_scores_mma", f"nh={H} nq={R} t={NPP} d={HD}")
                 s.link(n("rq") + ".y", n("sc1") + ".q"); s.res(n("sc1") + ".k", P("kpre%d.f16" % b), "f16")
                 s.program(n("sc2"), "dit_scores_mma", f"nh={H} nq={R} t={R} d={HD}")
                 s.link(n("rq") + ".y", n("sc2") + ".q"); s.link(n("rk") + ".y", n("sc2") + ".k")
-                s.program(n("st"), "dit_stats_o2", f"nh={H} nq={R} t1={NP} t2={R} qs=16 cs=64")
+                s.program(n("st"), "dit_stats_o2", f"nh={H} nq={R} t1={NPP} t2={R} qs=16 cs=64")
                 s.link(n("sc1") + ".sc", n("st") + ".sc1"); s.link(n("sc2") + ".sc", n("st") + ".sc2"); s.res(n("st") + ".mask1", P("mask_s1.f32")); s.res(n("st") + ".mask2", P("mask_s2.f32"))
-                s.program(n("pv"), "dit_pv_mma2", f"nh={H} nq={R} t1={NP} t2={R} d={HD}")
+                s.program(n("pv"), "dit_pv_mma2", f"nh={H} nq={R} t1={NPP} t2={R} d={HD}")
                 s.link(n("sc1") + ".sc", n("pv") + ".sc1"); s.link(n("sc2") + ".sc", n("pv") + ".sc2"); s.res(n("pv") + ".mask1", P("mask_s1.f32")); s.res(n("pv") + ".mask2", P("mask_s2.f32"))
                 s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z")
                 s.res(n("pv") + ".v1", P("vpre%d.f16" % b), "f16"); s.link(n("vh") + ".y", n("pv") + ".v2")
             else:
-                s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={NP} t={t} d={HD}")
+                s.program(n("sc"), "dit_scores_mma", f"nh={H} nq={R} t={t} d={HD}")
                 s.link(n("rq") + ".y", n("sc") + ".q"); s.link(kk, n("sc") + ".k")
                 if STATS == "online":  # the statistics in one pass over the scores, one kernel carrying the maximum and the normaliser (D14)
-                    s.program(n("st"), "dit_stats_o", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
+                    s.program(n("st"), "dit_stats_o", f"nh={H} nq={R} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
                 elif ONE_PASS:  # the statistics in one pass over the scores, per chunk of 64 keys and then merged (D10); `DIT_STATS=two` runs D8's two-pass kernel instead
-                    s.program(n("stc"), "dit_stats_c", f"nh={H} nq={NP} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("stc") + ".sc"); s.res(n("stc") + ".mask", P(maskf))
-                    s.program(n("st"), "dit_stats_comb", f"nh={H} nq={NP} nc={t // 64} qs=32"); s.link(n("stc") + ".mc", n("st") + ".mc"); s.link(n("stc") + ".zc", n("st") + ".zc")
+                    s.program(n("stc"), "dit_stats_c", f"nh={H} nq={R} t={t} qs=16 cs=64"); s.link(n("sc") + ".sc", n("stc") + ".sc"); s.res(n("stc") + ".mask", P(maskf))
+                    s.program(n("st"), "dit_stats_comb", f"nh={H} nq={R} nc={t // 64} qs=32"); s.link(n("stc") + ".mc", n("st") + ".mc"); s.link(n("stc") + ".zc", n("st") + ".zc")
                 else:
-                    s.program(n("st"), "dit_stats_m", f"nh={H} nq={NP} t={t} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
-                s.program(n("pv"), "dit_pv_mma", f"nh={H} nq={NP} t={t} d={HD}")
+                    s.program(n("st"), "dit_stats_m", f"nh={H} nq={R} t={t} qs=32 cs=64"); s.link(n("sc") + ".sc", n("st") + ".sc"); s.res(n("st") + ".mask", P(maskf))
+                s.program(n("pv"), "dit_pv_mma", f"nh={H} nq={R} t={t} d={HD}")
                 s.link(n("sc") + ".sc", n("pv") + ".sc"); s.res(n("pv") + ".mask", P(maskf)); s.link(n("st") + ".m", n("pv") + ".m"); s.link(n("st") + ".z", n("pv") + ".z"); s.link(vv, n("pv") + ".v")
             s.program(n("c1"), "dit_to_f16", f"s={R} n={D}"); s.link(n("pv") + ".o", n("c1") + ".x")
             s.program(n("go"), "ported/gemm_mma", f"m={R} n={D} k={D}"); s.link(n("c1") + ".y", n("go") + ".a"); s.res(n("go") + ".w", W("wo%d.f16" % b), "f16")
@@ -268,7 +274,7 @@ class Edit:
     def prefix(self, x_pre):
         if self.unified:
             return self._prefix_unified(x_pre)
-        f32(self.P("xpre.f32"), x_pre)
+        f32(self.P("xpre.f32"), x_pre[:self.NPP])
         x = self.P("xpre.f32")
         self.secs["prefix"] = 0.0
         if self.resident:
