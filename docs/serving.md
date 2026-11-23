@@ -1135,16 +1135,27 @@ draft), and the delta step still the second (3.6).
 9,616 ms against 9,615, one prompt 4% faster and one 2% slower, so they were left.
 
 **Against Ollama 0.40.17, restarted, each engine alone, greedy, through each server's chat API, the fastest of
-three runs:**
+three runs, tok/s.** Two captures an hour apart; Ollama's depth controller keeps what it learns from one request
+to the next, and by the second it drafted deeper:
 
-| request | ours, tok/s | Ollama, tok/s |
-|---|---|---|
-| an LRU cache class, 500 tokens (the same text from both) | 85 | 64 |
-| a binary search tree class, 500 tokens (the same text) | 99 | 67 |
-| two paragraphs on a suspension bridge, 249 and 259 tokens (the texts differ) | 46 | 57 |
+| request | ours | Ollama, first capture | Ollama, an hour and some 40 requests later |
+|---|---|---|---|
+| an LRU cache class, 500 tokens | 85 | 64 | 81 |
+| a binary search tree class, 500 tokens | 99 to 100 | 67 | 101 |
+| three functions in cancho after one given, 347 tokens | 113 | | 112 |
+| two paragraphs on a suspension bridge, 249 and 259 tokens | 46 | 57 | |
 
-And "rare words" through the raw API as in 10.4: ours 47 tok/s, Ollama 52 to 56. **Ours is ahead where most
-drafts are accepted and behind where few are.**
+And "rare words" through the raw API as in 10.4: ours 47 tok/s, Ollama 52 to 56. **On code the two engines are
+level once Ollama has warmed; ours is behind where few drafts are accepted.** The first capture alone would have
+said ours is a third faster on code: it is not.
+
+**The texts.** Ours wrote the same text on all three runs of every request. Ollama's three runs of each Python
+request differed from one another at temperature 0 (a docstring's wording, a docstring left out), so the two
+engines' Python texts were identical in the first capture and differed in the second; the cancho answer was the
+same from both, and has one error the cancho compiler finds (a list returned as `[] [int]` where a list's handle is
+`[] int`; with that changed the three functions check). On the prose request the two engines' texts part after
+three words. Nothing here says which engine's text is the model's: each is held only to itself (`spec-check.sh`
+holds our drafting to our plain decoding).
 
 **Not done.** A test that fails when a server it started does not exit: the stuck processes went unnoticed for a
 day.
