@@ -814,7 +814,7 @@ BF16 throughout and is 26 dB from the float64 pipeline where ours is 49 dB (D8).
 
 **The steps are a fifth of a video's time**; the decoder and an encoder that is not on the GPU are most of it. 33
 frames of 1280 x 704 (7,920 tokens) are refused by the command without `--force` (the attention is measured to
-about 1,100 tokens, V4a) and were not run. **No baseline: no other engine was timed on this model.**
+about 1,100 tokens, V4a) and were not run. A baseline, added the same day: 8.4.
 
 ### 8.3 What could be cut, largest first [reckoned from the tables above unless marked]
 
@@ -824,11 +824,10 @@ Image, 1024 x 1024 (of 76 s):
    TFLOPS and no tile schedule beat that (D8). torch's whole step is 4.99 s, so its products run faster than ours.
    `docs/kernels.md` 9.6 timed MLX's own product kernel at 14.7 to 14.8 on this machine: at that rate a step is 0.55
    s shorter, a run 4.4 s. Not tried on these shapes.
-2. **Step 0's 10.5 s above a step: 2 s more inside the step's sessions, and about 8 s for the prefix pass**
-   [read: `tests/t2i_pipeline_gpu.py`, whose "wall" of step 0 has `e.prefix` in it and whose total is prefix +
-   steps: 66 s = 8 + 9 + 7 x 7]. The prefix is the prompt's 26 rows, run through the 32 blocks **padded to the
-   target's 4,096 rows**, because the driver takes one padded size for both (`NP = max(...)`), which an edit's
-   prefix of 4,115 rows needs and a prompt's does not. Padded to 64 rows it would cost a few tenths of a second.
+2. ~~Step 0's 10.5 s above a step: 2 s more inside the step's sessions, and about 8 s for the prefix pass, the
+   prompt's 26 rows padded to the target's 4,096.~~ **Built** (`docs/text-to-image.md` 8): the prefix on 64 rows,
+   and with it a step attends over 64 + 4,096 keys, not 2 x 4,096. **A run is 61 to 63 s where it was 77 to 78,
+   the pixels the same**: step 0 is 9 to 10 s and a later step 6 s.
 3. **The attention of a step: 1.8 s (D8), 14 s a run.** The statistics (0.57 s) and the weighted sum (0.8 s; 0.5
    with D8b's schedule) read a 2.2 GB scratch of scores a block; an attention that never stores them is not
    expressible in the language (D8).
@@ -849,14 +848,38 @@ Video, 17 frames of 640 x 352 (of 28.5 s):
 torch on MPS is the reference this document has used. For what Ollama was to the language model, an engine on MLX
 on the same GPU:
 
-* **Image: `mflux`** (github.com/filipstrand/mflux, MIT): MLX ports of image models; its 0.21.0 release adds
-  `mflux-generate-qwen-2.1` for Qwen-Image-2.1, with a 6-step turbo path through a third party's LoRA. Whether it
-  runs the official 8-step Turbo checkpoint this pipeline uses, and at which precision, was not established: a
-  comparison may have to be at the same step count on its checkpoint.
-* **Video: `mlx-video`** (Blaizzy): runs Wan2.2-TI2V-5B and a community MLX conversion of FastWan2.2-TI2V-5B (3
-  steps), the model of 8.2.
+* **Image: `mflux`** (github.com/filipstrand/mflux, MIT), **installed and run** (0.24.0, mlx 0.32.4, in an
+  environment of its own): it runs the official `Qwen/Qwen-Image-2.1-Turbo` checkpoint from the same files, 8
+  steps on the checkpoint's own sigmas, no quantisation. The prompt of 8.1, 1024 x 1024, seed 1, a new process a
+  run as ours is: **53.2 and 54.9 s** of wall time, the eight steps 38 to 39 s (4.6 to 4.9 s a step), 30.2 GB at
+  its peak; with `--compute-precision float16`, 49.8 s (one run). A fox in snow before pines, looked at; its noise
+  is not ours, so the pictures are not compared.
 
-Neither is installed here, and each needs its own copy of the weights (tens of GB).
+  | a first image, 1024 x 1024, 8 steps, a new process | s |
+  |---|---|
+  | ours, after 8.3's item 2 | 61 to 63 |
+  | mflux, bf16 | 53 to 55 |
+  | mflux, float16 inside the attention and the feed-forward | 50 |
+  | torch on MPS: 41.4 with the weights resident, its load at most 20 more | about 60 |
+
+  **Ours is 8 s behind mflux a picture, and 6 s a step where mflux and torch are at 4.6 to 5.0.** The runs were not
+  alternated with ours, and two of ours had a gate running beside them.
+* **Video: `mlx-video`** (github.com/Blaizzy/mlx-video, installed from the repository at 87db56a: the package of
+  that name on PyPI is another project), **run** with a community MLX conversion of the same distilled model
+  (`lBroth/FastWan2.2-TI2V-5B-MLX`, 24.2 GB, bf16, the sigmas 1.0, 0.757, 0.522 of ours). The prompt of 8.2, 17
+  frames of 640 x 352, `--steps 3 --guide-scale 1`, seed 1, a new process a run:
+
+  | | ours (8.2) | mlx-video, two runs |
+  |---|---|---|
+  | wall | 28.5 s | 24.2, 23.0 s |
+  | the text encoder | 9 s (torch, on the host) | 2.1, 2.6 s |
+  | the three steps | 6.4 s (4.0 + 1.1 + 1.1) | 4.3, 2.4 s |
+  | the VAE decoder | 10.8 s | 10.5, 10.0 s |
+
+  **The decoders take the same time; ours loses 6 to 7 s in the text encoder and 2 to 4 s in the first step.**
+  Its frames were looked at beside ours: both are rough at this size, and its have blue patches ours do not, so
+  whether it runs the distilled model's sampler as intended was not established. The times are of the same amount
+  of work (three transformer calls and one decode); the pictures are not compared.
 
 **Not done.** A per-kernel profile of the present builds (`CANCHOGPU_PROFILE=2`): the split of a step above is
 D8's, measured 2026-11 before the restart of `docs/serving.md` 11.6, and the walls here agree with it (7 s a step
