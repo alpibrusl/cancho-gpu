@@ -31,7 +31,7 @@ chmod +x "$R/build/rewrite_cli"
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "  got:    $2"; echo "  wanted: $3"; fail=1; fi; }
 # Python's list, one STAGE line per argument (the interpreter is not one)
-py() { (cd "$W" && HOME=$H CANCHO_MEDIA_CACHE=$K python3 -c 'import sys,subprocess,runpy
+py() { (cd "$W" && HOME=$H CANCHO_MEDIA_CACHE=$K "${MEDIA_ORACLE_PY:-python3}" -c 'import sys,subprocess,runpy
 real=subprocess.run
 subprocess.run=lambda cmd,cwd=None,**k:real(cmd,cwd=cwd,**k) if cmd[0].endswith("rewrite_cli") else [print("STAGE "+c) for c in cmd[1:]] and None or type("R",(),{"returncode":0})()
 sys.argv=["media"]+sys.argv[1:]
