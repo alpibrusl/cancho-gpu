@@ -896,7 +896,10 @@ accepted, 62 ms a round. It chooses no more tokens a round than ours. Its rounds
 between ours.
 
 **Every number of this section was measured on a day the machine ran 9% slower** (plain decoding 3.70 s for 95
-tokens where 10.4 has 3.40): they compare with one another, not with 10.4's.
+tokens where 10.4 has 3.40): they compare with one another, not with 10.4's. **Corrected (11.6): the machine was
+not 9% slower across the board. Two of this project's test servers had been stuck exiting since the night of 10.4,
+and a round was 15% slower where a plain token was 6%; restarted, the round of this section is 46.6 + 2.1 a
+draft, not 53 + 2.45, and it is 10 ms above a token and its draft, not 14.**
 
 **What a round costs by its drafts**, the check of 8 rows whatever is drafted (a draft count forced, two prompts):
 55.5 ms at 1 draft, 60.7 at 3, 70.0 at 7: **53 + 2.45 a draft.** 10.4's 51 against 63 for 2 and 7 drafts had the
@@ -940,7 +943,10 @@ the 32 ms of products in it.**
 
 ## 11. What a round costs above a token, kernel by kernel (2026-11-23)
 
-Measured the same day as 10.5 (the machine 9% slower than in 10.4), 10.5's build, greedy.
+Measured the same day as 10.5 (the machine 9% slower than in 10.4), 10.5's build, greedy. **Every time of 11.1 to
+11.5 is from the machine in the state 11.6 describes, which slowed the multi-row kernels more than the one-row
+ones: 11.6 has them again on the machine restarted, and the check's products are 5.7 ms above a token's there, not
+9.3.**
 
 ### 11.1 Measured
 
@@ -1063,3 +1069,93 @@ of 95 tokens, which is too little to tune it by.
 
 **Not done.** A round of 1 draft still runs kernels compiled for 3 rows (2 rows alone are 110 us against 125).
 The chooser, as above. A request that samples has the same kernels and was not timed.
+
+### 11.6 The slow day's cause, and the figures again on the machine restarted (2026-11-23, evening)
+
+**What was wrong.** Two `cancho-gpu-serve` processes had been in the exiting state since 2026-11-22 23:28 and
+23:37 (a build of 10.4's work that hung waiting for the GPU, killed by its test), unkillable, until the machine was
+restarted. Between those times and the restart both engines were slower, and unevenly:
+
+| | 22 Nov (before) | 23 Nov, the processes stuck | 23 Nov, restarted |
+|---|---|---|---|
+| ours, 95 plain tokens, "rare words" | 3.40 s | 3.70 to 3.80 s | 3.47 to 3.50 s |
+| Ollama, "rare words", tok/s **[its log and its API]** | 54 to 56 | 34 | 52 to 56 |
+| Ollama, ms a round of 2 drafts **[its log]** | 43 to 46 | 70 to 79 | not read |
+
+Ollama's plain token barely moved (38 ms against 36); its drafts went from about 4 ms each to about 18, and its
+depth controller stopped drafting deeper than 2 or 3. **That the stuck processes were the cause is inferred from
+the times and from both engines recovering at the restart; what they held was not found.** Ollama updated itself
+from 0.40.16 to 0.40.17 at the same restart, so its restarted figures are the new version's.
+
+**What stands of 10.5 and 11.1 to 11.5:** every comparison of two of our builds made alternating (both ran in the
+same state), the token-for-token checks, and the order of the kernels alone in 11.3 and 11.5 (not measured again:
+the harness was a throwaway and the restart removed it). **What does not:** the times themselves, the sizes of the
+gaps, and "Ollama's round is 45 ms where ours is 62".
+
+**Again, restarted** (the same builds rebuilt from their commits; two runs each within 0.4 ms a round):
+
+| | ms |
+|---|---|
+| a plain token | 36.6 |
+| a round of 1, 2, 3, 7 drafts, the check of 8 rows (10.5's build) | 48.5, 50.5, 52.7, 61.2 |
+| a round of 1, 2 drafts, the check of 3 rows, 10.5's kernels | 49.0, 51.5 |
+| the same, 11.5's kernels | 44.5, 47.0 |
+
+So a round on the check of 8 is 46.6 + 2.1 a draft, and 11.5's kernels take 4.5 ms off a round of 1 or 2 drafts
+(11.5 measured 7 in the slow state).
+
+**Each kernel's GPU time, as 11.1, restarted:**
+
+| | a plain token | the check of 8 rows | the check of 3 rows, 10.5's kernels |
+|---|---|---|---|
+| the NVFP4 products of the layers | 31.2 | 36.9 | 39.8 |
+| the delta step | 0.8 | 4.4 | 1.7 |
+| the gates, the two small f16 products | 1.3 | 1.8 | 1.9 |
+| the norms | 2.0 | 2.4 | 2.2 |
+| rotary and cache rows | 0.16 | 1.4 | 0.5 |
+| attention | 0.3 | 0.7 | 0.8 |
+
+**The matrix-unit products are 1.18 times a token's, not 1.29, and the few-row kernels of 10.3 were 1.27 times,
+not 1.39.** The products are still the largest part of what a round costs above a token (5.7 of 11.9 ms at 1
+draft), and the delta step still the second (3.6).
+
+**The six prompts, 95 tokens, ms (rounds), two runs each within 5 ms, the same tokens on every build:**
+
+| prompt | 10.5 | 11.5 |
+|---|---|---|
+| The capital of France is | 1,367 (23) | 1,404 (25) |
+| def quicksort(arr): | 1,198 (20) | 1,186 (20) |
+| Once upon a time, ... | 2,066 (37) | 2,016 (38) |
+| The three laws of thermodynamics, ... | 1,550 (27) | 1,532 (27) |
+| Q: Why is the sky blue? | 1,480 (25) | 1,467 (25) |
+| rare words: ... | 2,079 (37) | 2,012 (40) |
+
+**11.5's gain is 1.3% over the six and 3% on "rare words", not 2% and 5%.** The chooser's costs (`470 + 25 d`,
+`530 + 24 d`) were fitted in the slow state; with the restarted machine's (`420 + 25 d`, `466 + 21 d`) the six take
+9,616 ms against 9,615, one prompt 4% faster and one 2% slower, so they were left.
+
+**Against Ollama 0.40.17, restarted, each engine alone, greedy, through each server's chat API, the fastest of
+three runs, tok/s.** Two captures an hour apart; Ollama's depth controller keeps what it learns from one request
+to the next, and by the second it drafted deeper:
+
+| request | ours | Ollama, first capture | Ollama, an hour and some 40 requests later |
+|---|---|---|---|
+| an LRU cache class, 500 tokens | 85 | 64 | 81 |
+| a binary search tree class, 500 tokens | 99 to 100 | 67 | 101 |
+| three functions in cancho after one given, 347 tokens | 113 | | 112 |
+| two paragraphs on a suspension bridge, 249 and 259 tokens | 46 | 57 | |
+
+And "rare words" through the raw API as in 10.4: ours 47 tok/s, Ollama 52 to 56. **On code the two engines are
+level once Ollama has warmed; ours is behind where few drafts are accepted.** The first capture alone would have
+said ours is a third faster on code: it is not.
+
+**The texts.** Ours wrote the same text on all three runs of every request. Ollama's three runs of each Python
+request differed from one another at temperature 0 (a docstring's wording, a docstring left out), so the two
+engines' Python texts were identical in the first capture and differed in the second; the cancho answer was the
+same from both, and has one error the cancho compiler finds (a list returned as `[] [int]` where a list's handle is
+`[] int`; with that changed the three functions check). On the prose request the two engines' texts part after
+three words. Nothing here says which engine's text is the model's: each is held only to itself (`spec-check.sh`
+holds our drafting to our plain decoding).
+
+**Not done.** A test that fails when a server it started does not exit: the stuck processes went unnoticed for a
+day.
