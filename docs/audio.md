@@ -1,4 +1,4 @@
-# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token)
+# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token; A3 built: 11.5 ms a token)
 
 What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Sections 1 to 6 were written before anything was run or any weights downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors); section 7 is the two reference runs, made the same day once the downloads were agreed, and is **[measured]**. It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
 
@@ -199,7 +199,7 @@ A2 runs the whole sequence for every token: 0.63 s a token. A3 runs one row a st
 | scores (scaled there by 1/sqrt(128)) and the weighted sum, 2 query heads a key/value head | `attention_scores_b`, `attention_pv_b` | |
 | o, the residual, the norm, gate and up in one product of 12,288, SwiGLU, down, the residual | `cast_h`, `matvec_rows_f16h`, `res_add`, `rms_h`, `swiglu_h` | |
 | the final norm and the head: 151,936 logits | `rms_h`, `matvec_rows_f16h` | |
-| **the arg max, on the device**: the row's maximum (`samp_max`, `samp_gmax`, with a mask of zeros), then **`amax_cand`**: `(V + 1 - j) step(l_j - max + tiny)` for column j (1-based), whose maximum (the same two kernels again) is `V + 1 - id` of the **first** maximal column, as torch's arg max; **`amax_id`** turns it into the id | `amax_cand`, `amax_id` |
+| **the arg max, on the device**: the row's maximum (`samp_max`, `samp_gmax`, with a mask of zeros), then **`amax_cand`**: `(V - j) (1 - step(max - l_j))` for column j (0-based) **[corrected when built: the design had `step(l_j - max + tiny)`, which the Metal GPU gave 0 at the maximum too; see section 11]**, whose maximum (the same two kernels again) is `V + 1 - id` of the **first** maximal column, as torch's arg max; **`amax_id`** turns it into the id | `amax_cand`, `amax_id` |
 | the id into slot j of the request's answer, and carried to the next step's one-hot | `tok_acc`, `carry` | |
 
 **Four small kernels**, each a few lines, each to be held to float64 with mutants as the others are. **Tables, a block a step, written by the host:** the cos and sin of p, the cache's `sel` and `keep`, the attention's mask (positions up to p), the prompt's rows and their flag, the answer's `sel` and `keep`.
@@ -212,8 +212,43 @@ A2 runs the whole sequence for every token: 0.63 s a token. A3 runs one row a st
 
 1. **The four kernels against float64**, with mutants: for `dec_post_n` the norm's weight left out, q's weight used for k, the rotation's sign; for `amax_cand` and `amax_id` the last maximal column taken for the first; for `row_mix` the flag ignored.
 2. **The reference clip, teacher-forced** (all 103 rows from the table, the ids being the reference's): the arg max equal to the next id at 18 of 18 positions, as A2's bound; the ids the device wrote are those arg maxes. **And greedy** (the 85 prompt rows from the table, then the device's own ids for 24 steps): the reference's 18 ids, then whatever follows the end token, which the host cuts.
-3. **Mutants of the step, each to fail check 2:** the cache's `keep` read as `sel` (the row not written), the mask a position short (a row does not see itself), the rotary table a position late.
+3. **Mutants of the step, each to fail check 2:** the cache's `keep` read as `sel` (the row not written), the mask a position short (a row does not see itself), the rotary table a position late **[corrected when run: that one cannot fail, the rotation being relative, and it survived; it is 'every step at position 0' now]**.
 4. **Time:** the milliseconds of a step, from requests of 16 and 64 steps in one session, three times; the whole clip (85 + 18 steps) from a cold process. Bar: the clip in under 3 s where A2's loop took 11.3 s, and no bar on the step beyond reporting it against the 15 ms reckoned.
 5. `scripts/gate.sh`, with the host program's refusals and inputs held without a GPU as A1's and A2's are.
 
 **Not in A3:** sampling (speech needs it: S2), more than one sequence, the prefill pass (A3b, on the condition above), the prompt's tokens (A4). **A tie of two maximal logits** would be resolved as torch does, to the first; it was the reason for `V + 1 - j`.
+
+## 11. A3: a token a step **[measured, 2026-11-24, M4 Max]**
+
+`models/qwen3_asr_step.model` (131 lines, 1,526 expanded), the four kernels of section 10 (`row_mix`, `dec_post_n`, `amax_cand`, `amax_id`) and the host side `tests/qwen3_asr_step_gpu.cho` (cancho). The prompt's rows go through the same step; the arg max is on the device.
+
+```sh
+B=build/qwen3_asr_step_gpu; A=~/.cache/cancho-media/audio-ref; W=~/.cache/cancho-media/qwen3-asr-text-f16; K=<a work directory>
+$B weights <the snapshot's directory> $W                                  # once, after A2's: 2.3 GB more in 5 s
+$B inputs $W $K $A/a0_prompt.txt <A1's work directory>/rows.f32 109 128   # the prompt's 85 rows and 24 steps of answer; prints T=128 NS=109 rows 85
+printf '109\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_step.model CHX=$PWD/tests/chx QW=$PWD/examples/qwen TR=$PWD/examples/train WORK=$K WDIR=$W T=128 NS=109
+$B ids $K 84                                                              # the ids chosen from the prompt's last row on
+```
+
+| | the id chosen is the next id, of 18 |
+|---|---|
+| **teacher-forced** (the 103 rows of the reference's sequence from the table) | **18** |
+| **greedy** (the 85 rows of the prompt, then the device's own ids), three cold runs | **the reference's 18 ids**, each time, then what follows the end token (a newline, `<|endoftext|>`, a new turn), which the host cuts |
+| mutant 1: the caches' `sel` zeros (a row never written) | 0 |
+| mutant 2: the mask a position short | 1 |
+| mutant 3: every step at position 0 | 0 |
+
+**Time:**
+
+| | |
+|---|---|
+| a step, in one session: requests of 16 and of 64 steps, three times each | 11.8, 11.5, 11.6 ms and 11.6, 11.4, 11.4 ms a step (reckoned 15) |
+| the first step, with the session's compile and the upload of 6.3 GB | 0.47 s |
+| **the clip from a cold process: 85 rows of prompt and 24 steps** | **1.85, 1.81, 1.81 s** (A2's loop: 11.3 s for 18 tokens; the bar was 3 s); the tables are written in 0.02 s |
+
+* **30 s of audio would be about 405 rows of prompt: 4.7 s at this step [reckoned from the step, not run].** That is over the second section 10 set as the condition, so **A3b, the prefill in one pass, is to be built.** A2's pass over 128 rows took 0.93 s with its upload.
+* **Two things the design got wrong, both corrected there:**
+  * `step(l - max + 1e-30)` for "is this column the maximum": on the Metal GPU it was 0 everywhere, the maximum included (the first run chose no id at all; the interpreter and the kernel's GPU comparison on random data did not show it). The kernel now takes `1 - step(max - l)`, which is exact and needs no small number.
+  * the mutant "the rotary table a position late" survived with 18 of 18: a shift of every position changes no rotation between two rows. Replaced by "every step at position 0".
+* **Held in the gate without a GPU or the checkpoint:** the four kernels against float64 with seven mutants (`tests/kernels.py`; three first drafts of those mutants died of a refusal to compile and were replaced by ones that die on the numbers), their goldens, the model file's expansion, and `tests/qwen3_asr_step.sh`: the host program builds, refuses with its documented statuses, writes the tables of four steps with the right sizes and bytes, and reads a made-up answer of the device.
+* **Not done:** the step's time is from the host's clock around a request, not a profile of its kernels; one clip; the weights directory now holds some matrices twice (A2's files and the stacked ones: 6.3 GB for a 4.7 GB checkpoint); a tie of two maximal logits was not made to happen on the model; the ids past the end token are computed and thrown away (a request is a fixed number of steps).
