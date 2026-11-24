@@ -895,6 +895,11 @@ def new_checks():
     ok &= check("activations relu r=4 n=8", got["y"], [max(v, 0.0) for v in xs])
     ok &= check("activations step r=4 n=8", got["d"], [1.0 if v > 0.0 else 0.0 for v in xs])
     ok &= check("activations tanh r=4 n=8", got["t"], [math.tanh(v) for v in xs])
+    # S1a (docs/audio.md section 18): sin over [-64, 64), and the Snake activation x + sin^2(x a) ib
+    (xs,) = lcg([32])
+    ok &= check("sin_scaled r=4 n=8", run("sin_scaled", ["r=4", "n=8"])["y"], [math.sin(128.0 * v) for v in xs])
+    xs, sa, sb = lcg([4 * 16, 16, 16])
+    ok &= check("snake s=4 c=16 bn=8", run("snake", ["s=4", "c=16", "bn=8"])["y"], [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
     got = run("colbcast", ["r=8", "c=16"])
     x, sc, tt = lcg([128, 8, 16])
     ok &= check("colbcast r=8 c=16", got["y"], [x[i * 16 + j] * sc[i] + tt[j] for i in range(8) for j in range(16)])
@@ -1028,6 +1033,11 @@ MUTANTS = [
     ("attention_pvl.chx", "for c in 0 .. t / cs with a0", "for c in 1 .. t / cs with a0", "attention_pvl leaves out the first chunk"),
     ("activations.chx", "store relu &a -> y", "store step &a -> y", "relu is a step"),
     ("colbcast.chx", "let e = a * b", "let e = a + b", "colbcast adds the column where it multiplies"),
+    ("sin_scaled.chx", "store sin b -> y", "store tanh b -> y", "sin is a tanh"),
+    ("sin_scaled.chx", "let b = a * 128", "let b = a * 127", "sin_scaled scales by 127"),
+    ("snake.chx", "let u = &sn * bv", "let u = &v * bv", "snake has x sin where the square of the sine is"),
+    ("snake.chx", "store v + t -> y[i, j * bn]", "store v - t -> y[i, j * bn]", "snake subtracts the periodic part"),
+    ("snake.chx", "let w = &v * av", "let w = &v + av", "snake adds a where it multiplies"),
     ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
     ("qk_norm_rows.chx", "let qx = q * qr", "let qx = q + qr", "qk_norm_rows adds the reciprocal root"),

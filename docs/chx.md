@@ -57,7 +57,7 @@ atom      := '&' NAME                                          // a borrow: the 
            | 'dequant_fp4' atom atom atom NUMBER               // q scales g group
            | 'add_window' atom NAME '[' ce {',' ce} ']'
            | 'stage' ('f16'|'f32') atom
-           | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log'|'relu'|'step'|'tanh') atom
+           | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log'|'relu'|'step'|'tanh'|'sin') atom
            | 'for' NAME 'in' ce '..' ce [ 'with' NAME {',' NAME} ] '{' block '}'
 space     := '@' ('reg' | 'shared' | 'frag')
 
@@ -105,6 +105,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `sigmoid`, `softplus`, `exp`, `log`, `rsqrt` | elementwise: `1/(1+e^-x)`, `ln(1+e^x)`, `e^x`, `ln x`, `1/sqrt(x)`; accuracy is §7 |
 | `relu`, `step` | elementwise: `max(x, 0)` and `1 if x > 0 else 0` (the derivative of `relu`, with the value 0 at 0). Exact in f32, so no accuracy question |
 | `tanh` | elementwise hyperbolic tangent (GELU's tanh form is built from it); accuracy is §7 |
+| `sin` | elementwise sine, the argument in radians (the Snake activation of an audio decoder is built from it, `tests/chx/snake.chx`); accuracy is §7 |
 | `rowsum a`, `rowmax a` | the sum / maximum of each row of a 2-D tile: a 1-D tile of the row count |
 | `matmul a b` | `a b`, `[m,k] x [k,n]` to `[m,n]` |
 | `matmul_nt a b` | `a b^T`, `[m,k] x [n,k]` to `[m,n]` |
@@ -144,9 +145,9 @@ is by tag**: the message is for a person and is not part of the language.
   threadgroup row padding, `frag` the number of 8-row tiles a simdgroup owns in a register-fragment product); the
   budgets are the target's threadgroup memory and thread limits (`docs/kernels.md`, `docs/design.md`). A schedule affects
   performance and the order of reductions, never the mathematical result.
-* **Open: the accuracy of `exp`, `log`, `rsqrt`, `sigmoid` and `softplus`.** The interpreter computes them in binary64
+* **Open: the accuracy of `exp`, `log`, `rsqrt`, `sigmoid`, `softplus`, `tanh` and `sin`.** The interpreter computes them in binary64
   and rounds once to binary32; the GPU backends use their libraries' functions. This document specifies no ulp bound for
-  them; the references check results to 1e-5 relative. A bound should be chosen, written here, and measured.
+  them; the references check results to 1e-5 relative. A bound should be chosen, written here, and measured. Measured for `sin` (`docs/audio.md` section 19): over arguments in [-64, 64) the Metal GPU's `precise::sin` is within 1.2e-7 of the interpreter's value (one unit in the last place at 1); larger arguments were not tried.
 * **Open: NaN and infinity.** `rowmax` of a row with a NaN, and `exp` overflow, are as the implementations give them. Not specified.
 * **Open: the tie rule of `i8` rounding** (`stage`/`store` to `i8`): the implementation (`src/f32.cho` `round_i8`) uses `std.math.round`; whether
   that is half away from zero or to even has not been checked against a case, and the backends' behaviour is not specified.

@@ -118,6 +118,13 @@ pub fn tanh[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
     return text.f1(m, t, "precise::tanh($)", x);
 }
 
+pub fn sin[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
+    if is_cuda(d) {
+        return text.f1(m, t, "sinf($)", x);
+    }
+    return text.f1(m, t, "precise::sin($)", x);
+}
+
 pub fn rsqrt[&m, &t](m: &!m [int], t: &!t [byte], d: int, x: int) -> [] int {
     if is_cuda(d) {
         return text.f1(m, t, "rsqrtf($)", x);

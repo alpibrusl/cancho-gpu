@@ -873,6 +873,8 @@ fn unary[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int 
         expr = dialect.fmax(m, t, d, src, text.lit(m, t, "0.0f"));
     } else if m[o + 1] == kinds.tanh() {
         expr = dialect.tanh(m, t, d, src);
+    } else if m[o + 1] == kinds.sin() {
+        expr = dialect.sin(m, t, d, src);
     } else if m[o + 1] == kinds.step() {
         expr = text.f1(m, t, "($ > 0.0f ? 1.0f : 0.0f)", src);
     } else {

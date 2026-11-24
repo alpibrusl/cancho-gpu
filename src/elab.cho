@@ -561,6 +561,8 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
             u = kinds.step();
         } else if text.is(t, f, "tanh") {
             u = kinds.tanh();
+        } else if text.is(t, f, "sin") {
+            u = kinds.sin();
         } else {
             return bad(m, t, "unbound", text.f1(m, t, "`$` is not an operation here", f));
         }

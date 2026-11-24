@@ -136,6 +136,9 @@ f16:vit_bias_gelu_erf s=4 n=256 bn=128 m1=-1
 conv_bias_gelu_erf s=8 n=64 bn=32 m1=-1
 row_mix n=256 bn=128
 kv_export s=4 nkv=2 tmax=8
+sin_scaled r=64 n=1024
+snake s=64 c=1536 bn=256
+snake s=4 c=16 bn=8
 dec_post_n r=2
 amax_cand r=2 nq=4 G=2
 amax_id r=3 nq=4 v1=3

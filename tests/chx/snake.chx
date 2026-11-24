@@ -1,0 +1,21 @@
+// The Snake activation of Qwen3-TTS's codec decoder (docs/audio.md section 18, S1a; the reference's SnakeBeta): y = x + sin^2(x a) ib for s positions of c channels, bn channels to a threadgroup.
+// a = e^alpha and ib = 1 / (e^beta + 1e-9) are a channel each, written by the host from the checkpoint's alpha and beta.
+algo snake(s, c, bn)
+  in  x: f32[s, c]
+  in  a: f32[1, c]
+  in  ib: f32[1, c]
+  out y: f32[s, c]
+{
+  grid i over s, j over c / bn
+  let v = load x[i, j * bn ; 1, bn]
+  let av = load a[0, j * bn ; 1, bn]
+  let bv = load ib[0, j * bn ; 1, bn]
+  let w = &v * av
+  let sn = sin w
+  let u = &sn * bv
+  let t = u * sn
+  store v + t -> y[i, j * bn]
+}
+
+schedule snake for apple-m-series { threads 256 }
+schedule snake for nvidia-ada     { threads 256 }

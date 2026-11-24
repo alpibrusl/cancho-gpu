@@ -446,3 +446,39 @@ The script's own timing costs it about 0.3 s (a Python started for each lap), so
 **Held in the gate without a GPU or the checkpoint** (`tests/media_transcribe.sh`, stages that log their arguments and print the real stages' lines): the nine argument lists of a job, the budget and the positions from the frames and from `--most`, the clip after `--`, the two weights programs run first when `embt.f16` is not there and the disk check before them, ten refusals before any stage and the disk check (status 2, no stage run), ten after one (status 1, the stage's own line passed on, no transcript written: a file the mel refuses, a stage that fails, a session that fails, a stage whose line has no number, an answer with no end, a clip over 152 s, more positions than 4,032), the two bounds met exactly (152.00 s, 4,032 positions), and the wrapper's refusal when asked for the Python.
 
 **Not done:** a session that ends at the end token (the budget is paid in full, and an answer longer than it is refused, not continued); one session for the pass and the steps; the comma: a resampler that gives librosa's samples, or a statement of which filter the model was trained behind; clips of ordinary speech, other voices, other languages; any clip between 152 s and the reference's 20 minutes (the reference cuts long audio into pieces itself; that is not built); a context, a forced language, timestamps; `media models` does not list the command; the studio does not offer it; the weights' directory is trusted when its last file is there.
+
+## 18. S1 (design, 2026-11-24, written before its code): the codec's decoder, in three parts
+
+Section 3.3 set S1's bound: the waveform within 1e-3 of full scale of the reference's float32 at every sample, from the reference's codes. S1 is everything new in S (an operation, three kinds of convolution, a transformer with a window) and is built in three parts, each with its own check, so that a wrong waveform at the end has few places to come from.
+
+**[read, before this was written]** `SnakeBeta.forward` of the reference: `x + sin^2(x e^alpha) / (e^beta + 1e-9)`, `alpha` and `beta` a channel. The two exponentials are of the weights, not of the activations: the host writes `a = e^alpha` and `ib = 1 / (e^beta + 1e-9)` once, in float64 rounded to f32, and the kernel needs `sin` and nothing else new.
+
+### S1a: `sin`, and the Snake activation
+
+* **`sin` is an elementwise operation of the kernel language**, beside `tanh`: the parser's word, the elaborator's kind, the interpreter (binary64 `sin` rounded once to binary32, as `exp` and `tanh` are), and both lowerings (`sinf` on CUDA, `precise::sin` on Metal). No new rule tag: a misuse is the refusals an operation already has.
+* **Accuracy, stated as `docs/chx.md` section 7 states the others': open, and measured.** The float64 reference holds the interpreter to 1e-5 relative; on the Metal GPU, `sin` of arguments over [-64, 64) (`tests/chx/sin_scaled.chx`: `sin(128 x)`, x in [-0.5, 0.5)) is compared with the interpreter and the worst difference reported. What arguments the decoder's Snakes see is measured in S1c, and if they pass 64 the range here is widened.
+* **`tests/chx/snake.chx`**: `y = x + sin^2(x a) ib` for s rows (positions) of c channels, `a` and `ib` a channel.
+* **Held:** both kernels against float64 (`tests/kernels.py`), with mutants (`sin` a `tanh`; the square left out; `ib` left out), goldens for both targets (`tests/cases.txt`), and the Metal run by hand (`scripts/metal-kernels.sh`).
+
+### S1b: the three convolutions
+
+A causal 1-D convolution of k taps with a dilation (the taps a loop of products over shifted row windows, rows of zeros in front); a transposed one of stride r and 2r taps (r products, one an output phase, interleaved); a depthwise one of 7 taps (elementwise products of shifted rows with a `[7, c]` table). Each against float64 at a small shape, and against the reference's own layer at its real shape from tensors hooked by hand. Designed in detail when S1a is in.
+
+### S1c: the decoder
+
+The codebook sums, the 8 transformer layers with their window of 72, the two ConvNeXt stages, the four Snake blocks, the model file and the session; the reference's activations hooked at each stage by hand, so that the first stage past the bound is named. **The bound of 3.3 is S1c's.**
+
+## 19. S1a: `sin` and the Snake activation **[measured, 2026-11-24, M4 Max]**
+
+`sin` is an operation of the kernel language (`docs/chx.md` sections 3, 4 and 7; `src/parser.cho`, `elab.cho`, `kinds.cho`, `interp.cho`, `f32.cho`, `lower.cho`, `dialect.cho`: seven small additions beside `tanh`'s), and `tests/chx/snake.chx` is the decoder's activation, `x + sin^2(x a) ib`.
+
+| | against | |
+|---|---|---|
+| `sin(128 x)`, the interpreter, both targets | float64 (`tests/kernels.py`) | within its 1e-5 |
+| `snake`, the interpreter, both targets | float64 | within its 1e-5 |
+| `sin(128 x)` on the Metal GPU, 65,536 arguments over [-64, 64) | the interpreter | **worst difference 1.2e-7** (a unit in the last place at 1) |
+| `snake` on the Metal GPU, 64 x 1,536 (the decoder's widest) and 24,000 x 96 (a second of audio at its narrowest) | the interpreter | worst 6.0e-8 of a peak of 0.53 |
+
+* **Mutants, all killed by numbers** (run by hand; the gate runs `tests/kernels.py` without `--mutants`): `sin` a `tanh`; the argument scaled by 127; `x sin` where the square of the sine is; the periodic part subtracted; `a` added where it multiplies. A first mutant (the square left out) stopped on a refusal, not on a number (a tile left unconsumed), and was replaced.
+* **In the gate:** the two float64 references, and the goldens of five cases for both targets (`tests/cases.txt`).
+* **Not done:** the CUDA lowering writes `sinf` and was not run on a device (there is none here; the gate's emulator stage runs it on the host); arguments past 64 in magnitude; what arguments the decoder's Snakes see (S1c); the inputs of `snake`'s test are all under 0.5 in magnitude, so its sine is never past a quarter period there: the range is `sin_scaled`'s to hold.

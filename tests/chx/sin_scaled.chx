@@ -1,0 +1,13 @@
+// sin over a range of arguments (docs/audio.md section 18, S1a): y = sin(128 x). The interpreter's inputs are in [-0.5, 0.5), so the arguments cover [-64, 64): twenty periods, where a library's
+// argument reduction is at work.
+algo sin_scaled(r, n)
+  in  x: f32[r, n]
+  out y: f32[r, n]
+{
+  let a = load x
+  let b = a * 128
+  store sin b -> y
+}
+
+schedule sin_scaled for apple-m-series { threads 128 }
+schedule sin_scaled for nvidia-ada     { threads 128 }
