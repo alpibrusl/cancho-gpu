@@ -1,0 +1,25 @@
+// The first half of an arg max on the device (docs/audio.md section 10): c = rk * (1 - step(max - l)), where l is the row of logits seen as chunks of 64 ([r * nq, 64], as samp_max.chx reads it), gmb the row's
+// maximum written once a chunk (samp_gmax.chx) and rk a table the host writes, V - j for column j (0-based), so that the first column has the largest rank. A column that holds the maximum keeps its rank and every
+// other becomes 0: max - l is 0 there and positive elsewhere, exactly (a first form added 1e-30 to l - max and took its step; on the Metal GPU that was 0 at the maximum too). The maximum of c (samp_max.chx and samp_gmax.chx again) is then the rank of the FIRST maximal column: torch's arg max.
+algo amax_cand(r, nq, G)
+  in  l:   f32[r * nq, 64]
+  in  gmb: f32[r * nq, 1]
+  in  rk:  f32[nq, 64]
+  out c:   f32[r * nq, 64]
+{
+  grid i over r, qb over nq / G
+  let a  = load l[i * nq + qb * G, 0 ; G, 64]
+  let g0 = load gmb[i * nq + qb * G, 0 ; G, 1]
+  let z  = zeros f32[G, 64]
+  let gb = z + g0
+  let d  = gb - a
+  let st = step d
+  let o  = zeros f32[G, 64]
+  let on = o + 1.0
+  let eq = on - st
+  let k  = load rk[qb * G, 0 ; G, 64]
+  store k * eq -> c[i * nq + qb * G, 0]
+}
+
+schedule amax_cand for apple-m-series { threads 256 }
+schedule amax_cand for nvidia-ada     { threads 128 }

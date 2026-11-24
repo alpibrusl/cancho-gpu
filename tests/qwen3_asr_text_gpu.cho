@@ -31,84 +31,6 @@ import wenc_st;
 // Built with
 //   cancho build tests/qwen3_asr_text_gpu.cho tests/qwen_asr/host.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_asr_text_gpu
 
-fn vocab() -> [] int {
-    return 151936;
-}
-
-fn audio_token() -> [] int {
-    return 151676;
-}
-
-// the ids of a text file (decimal, separated by white space): how many were read into `ids`, or -1 for a byte that is neither, an id past the vocabulary or more ids than `ids` holds
-fn read_ids[&h, &f, &p, &v](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], ids: &!v [int]) -> [heap, fs_read(""), file_read] int {
-    let (text, status) = files.read_all(heap, fs, path);
-    var n = 0;
-    if status != 0 {
-        n = 0 - 1;
-    }
-    borrow text as &tb in {
-        let t = buffer.bytes(tb);
-        var i = 0;
-        var cur = 0 - 1;
-        while i <= len(t) && n >= 0 {
-            var c = 32;
-            if i < len(t) {
-                c = int_of(t[i]);
-            }
-            if c >= 48 && c <= 57 {
-                if cur < 0 {
-                    cur = 0;
-                }
-                cur = cur * 10 + (c - 48);
-                if cur >= vocab() {
-                    n = 0 - 1;
-                }
-            } else if c == 32 || c == 10 || c == 13 || c == 9 {
-                if cur >= 0 {
-                    if n >= len(ids) {
-                        n = 0 - 1;
-                    } else {
-                        ids[n] = cur;
-                        n = n + 1;
-                    }
-                    cur = 0 - 1;
-                }
-            } else {
-                n = 0 - 1;
-            }
-            i = i + 1;
-        }
-    }
-    buffer.drop(heap, text);
-    return n;
-}
-
-// the value of a half from its 16 bits
-fn half_value(w: int) -> [] float {
-    let e = w >> 10 & 31;
-    let m = w & 1023;
-    var v = 0.0;
-    if e == 0 {
-        v = float_of(m) / 16777216.0;
-    } else {
-        var p = 1.0;
-        var k = e;
-        while k > 15 {
-            p = p * 2.0;
-            k = k - 1;
-        }
-        while k < 15 {
-            p = p / 2.0;
-            k = k + 1;
-        }
-        v = (1.0 + float_of(m) / 1024.0) * p;
-    }
-    if w >> 15 & 1 == 1 {
-        return 0.0 - v;
-    }
-    return v;
-}
-
 // a projection of the 8 key/value heads `[1024, 2048]` as 16 heads `[2048, 2048]`: head h is head h / 2 (mutant 3: h % 8)
 fn copy_kv[&h, &f, &p, &w, &a, &c, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], layer: int, tail: &a [byte], wdir: &w [byte], out_first: &c [byte], mutant: int, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
     let v = qasr_host.tensor(heap, fs, snap, "thinker.model.layers.", "", layer, tail, 1024 * 2048, iv);
@@ -181,8 +103,8 @@ fn weights[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
             l = l + 1;
         }
         qasr_host.copy(heap, fs, snap, "thinker.model.", "norm", 0 - 1, ".weight", 2048, 1.0, wdir, "nf", 0 - 1, ".f32", false, q);
-        qasr_host.copy(heap, fs, snap, "thinker.", "lm_head", 0 - 1, ".weight", vocab() * 2048, 1.0, wdir, "head", 0 - 1, ".f16", true, q);
-        qasr_host.copy(heap, fs, snap, "thinker.model.", "embed_tokens", 0 - 1, ".weight", vocab() * 2048, 1.0, wdir, "emb", 0 - 1, ".f16", true, q);
+        qasr_host.copy(heap, fs, snap, "thinker.", "lm_head", 0 - 1, ".weight", qasr_host.vocab() * 2048, 1.0, wdir, "head", 0 - 1, ".f16", true, q);
+        qasr_host.copy(heap, fs, snap, "thinker.model.", "embed_tokens", 0 - 1, ".weight", qasr_host.vocab() * 2048, 1.0, wdir, "emb", 0 - 1, ".f16", true, q);
         if q[0] != 0 {
             qasr_host.put(io, "a tensor of the checkpoint was not found or a file could not be written: ");
             qasr_host.put_int(io, q[0]);
@@ -219,7 +141,7 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
     let ids = box_slice(heap, 8192, 0);
     var n = 0 - 1;
     borrow mut ids as &!iw in {
-        n = read_ids(heap, fs, arg(args, 4), contents(iw));
+        n = qasr_host.read_ids(heap, fs, arg(args, 4), contents(iw));
     }
     var status = 0;
     if n < 1 {
@@ -232,7 +154,7 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
         borrow ids as &ir in {
             var k = 0;
             while k < n {
-                if contents(ir)[k] == audio_token() {
+                if contents(ir)[k] == qasr_host.audio_token() {
                     audio = audio + 1;
                 }
                 k = k + 1;
@@ -247,42 +169,13 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
                 let q = contents(qb);
                 // x0 [SP, 2048]: the embedding of each token (a row of emb.f16), the audio tower's rows in the places of the audio token
                 let x0 = box_slice(heap, sp * 2048, 0.0);
-                let ep = qasr_host.path3(heap, wdir, "emb", 0 - 1, ".f16");
-                let raw = box_slice(heap, 4096, byte_of(0));
-                borrow ep as &epb in {
-                    borrow ids as &ir in {
-                        borrow rows as &rr in {
-                            borrow mut x0 as &!xw in {
-                                borrow mut raw as &!rw in {
-                                    var k = 0;
-                                    var a = 0;
-                                    while k < n {
-                                        let id = contents(ir)[k];
-                                        if id == audio_token() {
-                                            var c = 0;
-                                            while c < 2048 {
-                                                contents(xw)[k * 2048 + c] = contents(rr)[a * 2048 + c];
-                                                c = c + 1;
-                                            }
-                                            a = a + 1;
-                                        } else if files.read_at(fs, buffer.bytes(epb), id * 4096, contents(rw)) != 4096 {
-                                            q[0] = q[0] + 1;
-                                        } else {
-                                            var c = 0;
-                                            while c < 2048 {
-                                                contents(xw)[k * 2048 + c] = half_value(int_of(contents(rw)[2 * c]) | int_of(contents(rw)[2 * c + 1]) << 8);
-                                                c = c + 1;
-                                            }
-                                        }
-                                        k = k + 1;
-                                    }
-                                }
-                            }
+                borrow ids as &ir in {
+                    borrow rows as &rr in {
+                        borrow mut x0 as &!xw in {
+                            qasr_host.seq_rows(heap, fs, wdir, contents(ir), n, contents(rr), contents(xw), q);
                         }
                     }
                 }
-                buffer.drop(heap, ep);
-                unbox_slice(heap, raw);
                 borrow x0 as &xr in {
                     qasr_host.put_file(heap, fs, work, "x0", 0 - 1, ".f32", false, contents(xr), q);
                 }
@@ -359,12 +252,12 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
 fn arg_max[&v](logits: &v [float], r: int) -> [] int {
     var best = 0;
     var c = 0;
-    while c < vocab() {
-        let x = logits[r * vocab() + c];
+    while c < qasr_host.vocab() {
+        let x = logits[r * qasr_host.vocab() + c];
         if x >= x == false {
             return 0 - 1;
         }
-        if x > logits[r * vocab() + best] {
+        if x > logits[r * qasr_host.vocab() + best] {
             best = c;
         }
         c = c + 1;
@@ -382,7 +275,7 @@ fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Arg
     let ids = box_slice(heap, 8192, 0);
     var n = 0 - 1;
     borrow mut ids as &!iw in {
-        n = read_ids(heap, fs, arg(args, 3), contents(iw));
+        n = qasr_host.read_ids(heap, fs, arg(args, 3), contents(iw));
     }
     var status = 105;
     if n < 1 {
@@ -393,7 +286,7 @@ fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Arg
         let lp = qasr_host.path3(heap, arg(args, 2), "logits", 0 - 1, ".f32");
         borrow lp as &lpb in {
             let (got, m) = wenc_st.load_raw(heap, fs, buffer.bytes(lpb));
-            if m != sp * vocab() {
+            if m != sp * qasr_host.vocab() {
                 qasr_host.put(io, "the pass's logits are not SP x 151936 singles\n");
                 status = 106;
             } else if checking == false {
@@ -411,7 +304,7 @@ fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Arg
             } else {
                 let prompt = qasr_host.num(arg(args, 4));
                 let (want, w) = wenc_st.load_raw(heap, fs, arg(args, 5));
-                if prompt < 1 || prompt >= n || w != (n - prompt + 1) * vocab() {
+                if prompt < 1 || prompt >= n || w != (n - prompt + 1) * qasr_host.vocab() {
                     qasr_host.put(io, "the prompt's length is 1 to the sequence's less one, and the reference n - prompt + 1 rows of 151936 singles\n");
                     status = 101;
                 } else {
@@ -431,9 +324,9 @@ fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Arg
                                     var aa = 0.0;
                                     var bb = 0.0;
                                     var c = 0;
-                                    while c < vocab() {
-                                        let a = contents(gr)[p * vocab() + c];
-                                        let b = contents(wr)[(p - prompt + 1) * vocab() + c];
+                                    while c < qasr_host.vocab() {
+                                        let a = contents(gr)[p * qasr_host.vocab() + c];
+                                        let b = contents(wr)[(p - prompt + 1) * qasr_host.vocab() + c];
                                         ab = ab + a * b;
                                         aa = aa + a * a;
                                         bb = bb + b * b;

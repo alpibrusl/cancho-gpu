@@ -1,0 +1,67 @@
+// dec_post.chx for a model that norms q and k and has no biases (Qwen3: docs/audio.md section 10), r sequences of one token each, 16 query heads over 8 key/value heads of 128: the fused q/k/v product's output
+// y [r, 4096] is read as [r * 32, 128] (slots 0 .. 15 the query heads, 16 .. 23 the key heads, 24 .. 31 the value heads). Each q and k head is divided by its root mean square (eps 1e-6) and multiplied by the
+// weight of its kind (qw, kw: one row of 128 for all heads), then rotated (rotate_half: the halves of a head are (x1, x2), out = (x1 c - x2 s, x2 c + x1 s)) with the cos and sin of the row's own position
+// (cs, sn: [r, 64], tables read a block a step). The values are copied. Writes q [r * 16, 128] (the layout attention_scores_b.chx reads, which scales by 1/sqrt(128) itself), the new key rows kn and value rows vn.
+algo dec_post_n(r)
+  in  y:  f32[r * 32, 128]
+  in  qw: f32[1, 128]
+  in  kw: f32[1, 128]
+  in  cs: f32[r, 64]
+  in  sn: f32[r, 64]
+  out q:  f32[r * 16, 128]
+  out kn: f32[r * 8, 128]
+  out vn: f32[r * 8, 128]
+{
+  grid i over r
+  let c  = load cs[i, 0 ; 1, 64]
+  let s  = load sn[i, 0 ; 1, 64]
+  let q1 = load y[i * 32, 0 ; 16, 64]
+  let q2 = load y[i * 32, 64 ; 16, 64]
+  let qa = &q1 * &q1
+  let qb = &q2 * &q2
+  let qm = rowsum qa + rowsum qb
+  let qe = qm * (1 / 128)
+  let qt = qe + 0.000001
+  let qr = rsqrt qt
+  let w1 = load qw[0, 0 ; 1, 64]
+  let w2 = load qw[0, 64 ; 1, 64]
+  let n1 = q1 * &qr
+  let n2 = q2 * qr
+  let a1 = n1 * w1
+  let a2 = n2 * w2
+  let t1 = &a1 * &c
+  let t2 = &a2 * &s
+  let lo = t1 - t2
+  let t3 = a2 * &c
+  let t4 = a1 * &s
+  let hi = t3 + t4
+  store lo -> q[i * 16, 0]
+  store hi -> q[i * 16, 64]
+  let k1 = load y[i * 32 + 16, 0 ; 8, 64]
+  let k2 = load y[i * 32 + 16, 64 ; 8, 64]
+  let ka = &k1 * &k1
+  let kb = &k2 * &k2
+  let km = rowsum ka + rowsum kb
+  let ke = km * (1 / 128)
+  let kt = ke + 0.000001
+  let kr = rsqrt kt
+  let x1 = load kw[0, 0 ; 1, 64]
+  let x2 = load kw[0, 64 ; 1, 64]
+  let m1 = k1 * &kr
+  let m2 = k2 * kr
+  let e1 = m1 * x1
+  let e2 = m2 * x2
+  let u1 = &e1 * &c
+  let u2 = &e2 * &s
+  let klo = u1 - u2
+  let u3 = e2 * c
+  let u4 = e1 * s
+  let khi = u3 + u4
+  store klo -> kn[i * 8, 0]
+  store khi -> kn[i * 8, 64]
+  let v0 = load y[i * 32 + 24, 0 ; 8, 128]
+  store v0 -> vn[i * 8, 0]
+}
+
+schedule dec_post_n for apple-m-series { threads 128 }
+schedule dec_post_n for nvidia-ada     { threads 128 }

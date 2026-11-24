@@ -1,0 +1,131 @@
+# The language model of Qwen3-ASR-1.7B a token a step, with caches of the keys and values (docs/audio.md section 10, stage A3): the step of docs/decode.md at this model's shapes, for one sequence, as a model
+# file (docs/resident.md section 31) with tables (a block a step) and carries. A request of N runs N steps; the ids chosen (1-based) are in ids_out.f32 after a checkpoint, slot j the step j's.
+#
+#     cancho-gpu-metal-session models/qwen3_asr_step.model CHX=<tests/chx> QW=<examples/qwen> TR=<examples/train> WORK=<inputs and tables> WDIR=<weights> T=<the caches' positions, a multiple of 64> NS=<steps in the tables>
+#
+# The step's row is the prompt's own while it lasts (xtab, with mtab 1: the text embeddings and the audio tower's rows, written by tests/qwen3_asr_text_gpu.cho) and then the embedding of the id the step before
+# chose (the one-hot times the transposed table). The arg max is on the device: the row's maximum, the candidates' ranks (amax_cand.chx), their maximum, the id (amax_id.chx).
+text CHX = tests/chx
+text QW = examples/qwen
+text TR = examples/train
+text WORK = .
+text WDIR = .
+const T = 128
+const NS = 128
+const NL = 28
+const D = 2048
+const FF = 6144
+const V = 151936
+const NQ = 2374
+
+program oh $QW/onehot_h.chx r=1 c=$V bc=128
+resident oh.ids $WORK/ids0.f32 f32
+resident oh.jrow $WORK/jrow.f32 f32
+program emb $CHX/matvec_rows_f16h.chx m=1 n=$D k=$V
+link oh.y -> emb.x
+resident emb.w $WDIR/embt.f16 f16
+program xin $CHX/row_mix.chx n=$D bn=1024
+table xin.xt $WORK/xtab.f32 $NS f32
+link emb.y -> xin.xe
+table xin.m $WORK/mtab.f32 $NS f32
+
+block layer(i)
+    program rmsa${i} $QW/rms_h.chx r=1 c=$D bm=1 eps=0.000001
+    if i == 0
+        link xin.y -> rmsa0.x
+    else
+        link rb${i - 1}.y -> rmsa${i}.x
+    end
+    resident rmsa${i}.gain $WDIR/n1_${i}.f32 f32
+    program qkv${i} $CHX/matvec_rows_f16h.chx m=1 n=${2 * D} k=$D
+    link rmsa${i}.y -> qkv${i}.x
+    resident qkv${i}.w $WDIR/qkv${i}.f16 f16
+    program post${i} $CHX/dec_post_n.chx r=1
+    link qkv${i}.y -> post${i}.y
+    resident post${i}.qw $WDIR/nq${i}.f32 f32
+    resident post${i}.kw $WDIR/nk${i}.f32 f32
+    table post${i}.cs $WORK/cos.f32 $NS f32
+    table post${i}.sn $WORK/sin.f32 $NS f32
+    program kwk${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$T ts=64 d=128
+    resident kwk${i}.c $WORK/zcache.f32 f32
+    link post${i}.kn -> kwk${i}.nw
+    table kwk${i}.sel $WORK/sel.f32 $NS f32
+    table kwk${i}.keep $WORK/keep.f32 $NS f32
+    carry kwk${i}.y -> kwk${i}.c
+    program kwv${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$T ts=64 d=128
+    resident kwv${i}.c $WORK/zcache.f32 f32
+    link post${i}.vn -> kwv${i}.nw
+    table kwv${i}.sel $WORK/sel.f32 $NS f32
+    table kwv${i}.keep $WORK/keep.f32 $NS f32
+    carry kwv${i}.y -> kwv${i}.c
+    program as${i} $CHX/attention_scores_b.chx nb=1 nkv=8 g=2 t=$T ts=64 d=128 tmax=$T
+    link post${i}.q -> as${i}.q
+    link kwk${i}.y -> as${i}.k
+    table as${i}.mask $WORK/mask.f32 $NS f32
+    program ap${i} $CHX/attention_pv_b.chx nb=1 nkv=8 g=2 t=$T dw=16 d=128 tmax=$T
+    link as${i}.sc -> ap${i}.sc
+    link kwv${i}.y -> ap${i}.v
+    program ca${i} $TR/cast_h.chx r=1 c=$D bm=1
+    link ap${i}.o -> ca${i}.x
+    program op${i} $CHX/matvec_rows_f16h.chx m=1 n=$D k=$D
+    link ca${i}.y -> op${i}.x
+    resident op${i}.w $WDIR/wo${i}.f16 f16
+    program ra${i} $QW/res_add.chx r=1 c=$D bm=1
+    link op${i}.y -> ra${i}.z
+    if i == 0
+        link xin.y -> ra0.res
+    else
+        link rb${i - 1}.y -> ra${i}.res
+    end
+    program rmsb${i} $QW/rms_h.chx r=1 c=$D bm=1 eps=0.000001
+    link ra${i}.y -> rmsb${i}.x
+    resident rmsb${i}.gain $WDIR/n2_${i}.f32 f32
+    program gu${i} $CHX/matvec_rows_f16h.chx m=1 n=${2 * FF} k=$D
+    link rmsb${i}.y -> gu${i}.x
+    resident gu${i}.w $WDIR/gu${i}.f16 f16
+    program sw${i} $QW/swiglu_h.chx r=1 f=$FF bm=1 bc=256
+    link gu${i}.y -> sw${i}.gu
+    program dp${i} $CHX/matvec_rows_f16h.chx m=1 n=$D k=$FF
+    link sw${i}.y -> dp${i}.x
+    resident dp${i}.w $WDIR/wd${i}.f16 f16
+    program rb${i} $QW/res_add.chx r=1 c=$D bm=1
+    link dp${i}.y -> rb${i}.z
+    link ra${i}.y -> rb${i}.res
+end
+
+repeat i in 0 .. NL
+    use layer(i)
+end
+
+program rmsf $QW/rms_h.chx r=1 c=$D bm=1 eps=0.000001
+link rb${NL - 1}.y -> rmsf.x
+resident rmsf.gain $WDIR/nf.f32 f32
+program head $CHX/matvec_rows_f16h.chx m=1 n=$V k=$D
+link rmsf.y -> head.x
+resident head.w $WDIR/head.f16 f16
+program smx $CHX/samp_max.chx r=1 nq=$NQ G=2
+link head.y -> smx.l
+resident smx.mk $WORK/zmk.f32 f32
+program sgm $CHX/samp_gmax.chx r=1 nq=$NQ
+link smx.cm -> sgm.cm
+program cand $CHX/amax_cand.chx r=1 nq=$NQ G=2
+link head.y -> cand.l
+link sgm.gmb -> cand.gmb
+resident cand.rk $WORK/rank.f32 f32
+program smx2 $CHX/samp_max.chx r=1 nq=$NQ G=2
+link cand.c -> smx2.l
+resident smx2.mk $WORK/zmk.f32 f32
+program sgm2 $CHX/samp_gmax.chx r=1 nq=$NQ
+link smx2.cm -> sgm2.cm
+program aid $CHX/amax_id.chx r=1 nq=$NQ v1=${V + 1}
+link sgm2.gmb -> aid.gm
+program ac $CHX/tok_acc.chx r=1 s=$NS
+resident ac.acc $WORK/acc0.f32 f32
+link aid.id -> ac.ids
+table ac.sel $WORK/accsel.f32 $NS f32
+table ac.keep $WORK/acckeep.f32 $NS f32
+carry aid.id -> oh.ids
+carry ac.y -> ac.acc
+save ac.y $WORK/ids_out.f32 f32
+steps
+answer aid.id
