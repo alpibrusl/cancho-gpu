@@ -1,0 +1,655 @@
+edition 9;
+
+import std.buffer;
+import std.fmt;
+import std.io;
+import std.math;
+import files;
+import wenc_st;
+import wenc_codec;
+
+// qwen3_asr_audio_gpu -- stage A1 of docs/audio.md: the audio tower of Qwen3-ASR-1.7B as one session of kernel programs on the Metal GPU (models/qwen3_asr_audio.model), its host side written in cancho.
+//
+//   qwen3_asr_audio_gpu prepare <snapshot dir> <weights dir> <work dir> <mel.f32> <frames> [<mutant 1-4>]
+//   qwen3_asr_audio_gpu compare <work dir> <reference rows .f32> <yardstick rows .f32> <tokens>
+//
+// `prepare` writes the weights (halves, and singles for the norms and biases) into the weights directory and the inputs (the picture of the mel, the masks, the positions) into the work directory, and prints
+// `BP=<pieces> SP=<rows> tokens <T>`: the first two are the model file's definitions. Run it with
+//   printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_audio.model CHX=<repo>/tests/chx CONV3=<repo>/examples/cnn/conv3.chx WORK=<work> WDIR=<weights> BP=.. SP=..
+// which saves `<work>/rows.f32`, `[SP, 2048]` singles. `compare` holds its first T rows to the reference's (the model's own package in float32 on the CPU, docs/audio.md A0) and to the bound of A1: every row
+// nearer the reference than the yardstick's row is (the same package in BF16 on MPS), by mean absolute error; exit status 0 if so.
+//
+// The mel is `[128, frames]` singles, bin-major, as the package's feature extractor gives it. What the host does to the checkpoint (docs/audio.md 2.2, the model file's header): a stride-2 3 x 3 convolution with
+// padding 1 becomes a stride-1 3 x 3 convolution over the space-to-depth picture (original tap k of an axis is the pair (shift, half) = (0, 1), (1, 0), (1, 1) for k = 0, 1, 2; the third shift stays zero);
+// `conv_out`'s columns go from (channel, bin) to (bin, channel); q's weight and bias are multiplied by 1/8, which is 1/sqrt(64) and exact.
+// Mutants (each must fail `compare`): 1 the positions do not restart in every piece; 2 the taps of the convolutions' time axis are laid out as padding (0, 1), the VAE's; 3 q is not scaled; 4 the zeros between
+// pieces are not put back after the first convolution.
+//
+// Built with
+//   cancho build tests/qwen3_asr_audio_gpu.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_asr_audio_gpu
+
+fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+fn put_int[&i](io: &!i Io, n: int) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](24, byte_of(0));
+        var k = 0;
+        var x = n;
+        if x == 0 {
+            out[0] = byte_of(48);
+            k = 1;
+        }
+        while x > 0 {
+            out[k] = byte_of(48 + x % 10);
+            x = x / 10;
+            k = k + 1;
+        }
+        var l = 0;
+        var r = k - 1;
+        while l < r {
+            let tmp = out[l];
+            out[l] = out[r];
+            out[r] = tmp;
+            l = l + 1;
+            r = r - 1;
+        }
+        io.write_all(io, out[0..k]);
+    }
+    return 0;
+}
+
+fn put_float[&i](io: &!i Io, x: float) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](32, byte_of(0));
+        let n = fmt.float_into(out, x);
+        io.write_all(io, out[0..n]);
+    }
+    return 0;
+}
+
+fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 6 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---- paths and files: `iv[0]` counts errors
+
+fn path3[&h, &w, &a, &b](heap: &!h Heap, dir: &w [byte], first: &a [byte], n: int, tail: &b [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 128), dir);
+    b = buffer.push(heap, b, byte_of(47));
+    b = buffer.append(heap, b, first);
+    if n >= 0 {
+        b = buffer.push_nat(heap, b, n);
+    }
+    b = buffer.append(heap, b, tail);
+    return b;
+}
+
+// `dir/first<n>tail` as halves (`half`) or singles; `n` < 0 leaves the number out
+fn put_file[&h, &f, &w, &a, &b, &v, &q](heap: &!h Heap, fs: &f Fs(""), dir: &w [byte], first: &a [byte], n: int, tail: &b [byte], half: bool, values: &v [float], iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let p = path3(heap, dir, first, n, tail);
+    borrow p as &pb in {
+        var r = 0;
+        if half {
+            r = wenc_codec.write_f16(heap, fs, buffer.bytes(pb), values);
+        } else {
+            r = wenc_codec.write_f32(heap, fs, buffer.bytes(pb), values);
+        }
+        if r != 0 {
+            iv[0] = iv[0] + 1;
+        }
+    }
+    buffer.drop(heap, p);
+    return 0;
+}
+
+// ---- the checkpoint: two shards, every tensor BF16
+
+fn name3[&h, &a, &b](heap: &!h Heap, first: &a [byte], n: int, tail: &b [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 128), "thinker.audio_tower.");
+    out = buffer.append(heap, out, first);
+    if n >= 0 {
+        out = buffer.push_nat(heap, out, n);
+    }
+    out = buffer.append(heap, out, tail);
+    return out;
+}
+
+// the tensor `thinker.audio_tower.<first><n><tail>` as binary64 from whichever shard holds it: `expect` values, or an error counted in `iv[0]`
+fn tensor[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], first: &a [byte], n: int, tail: &b [byte], expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let name = name3(heap, first, n, tail);
+    var out = box_slice(heap, 1, 0.0);
+    var found = false;
+    var shard = 1;
+    while shard <= 2 && found == false {
+        let sp = path3(heap, snap, "model-0000", shard, "-of-00002.safetensors");
+        borrow sp as &spb in {
+            borrow name as &nb in {
+                let (v, cnt, ok) = wenc_st.load_bf16(heap, fs, buffer.bytes(spb), buffer.bytes(nb));
+                if ok == 0 && cnt == expect {
+                    unbox_slice(heap, out);
+                    out = v;
+                    found = true;
+                } else {
+                    unbox_slice(heap, v);
+                }
+            }
+        }
+        buffer.drop(heap, sp);
+        shard = shard + 1;
+    }
+    buffer.drop(heap, name);
+    if found == false {
+        iv[0] = iv[0] + 1;
+    }
+    return out;
+}
+
+// copy a tensor to a file, scaled
+fn copy[&h, &f, &p, &w, &a, &b, &c, &d, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], first: &a [byte], n: int, tail: &b [byte], expect: int, scale: float, wdir: &w [byte], out_first: &c [byte], out_n: int, out_tail: &d [byte], half: bool, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let v = tensor(heap, fs, snap, first, n, tail, expect, iv);
+    if scale != 1.0 {
+        borrow mut v as &!vw in {
+            var i = 0;
+            while i < len(contents(vw)) {
+                contents(vw)[i] = contents(vw)[i] * scale;
+                i = i + 1;
+            }
+        }
+    }
+    borrow v as &vr in {
+        put_file(heap, fs, wdir, out_first, out_n, out_tail, half, contents(vr), iv);
+    }
+    unbox_slice(heap, v);
+    return 0;
+}
+
+// the (shift, half) of an original tap k of a stride-2 axis with padding 1: output i reads 2i - 1 (the pair i - 1, its second half), 2i and 2i + 1 (the pair i)
+fn tap_shift(k: int, vae: bool) -> [] int {
+    if vae {
+        // padding (0, 1): output i reads 2i, 2i + 1 (the pair i) and 2i + 2 (the pair i + 1, its first half)
+        if k == 2 {
+            return 2;
+        }
+        return 1;
+    }
+    if k == 0 {
+        return 0;
+    }
+    return 1;
+}
+
+fn tap_half(k: int, vae: bool) -> [] int {
+    if vae {
+        if k == 1 {
+            return 1;
+        }
+        return 0;
+    }
+    if k == 1 {
+        return 0;
+    }
+    return 1;
+}
+
+// a stride-2 3 x 3 weight `[480, cin, 3, 3]` as a stride-1 3 x 3 convolution over 4 `cpad` channels `(a, b, channel)`: `[480, 9 * 4 * cpad]`, tap-major (conv3.chx: column (3 dy + dx) * 4 cpad + (2 a + b) * cpad + ch)
+fn conv_weights[&h, &f, &p, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], index: int, cin: int, cpad: int, mutant: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let w = tensor(heap, fs, snap, "conv2d", index, ".weight", 480 * cin * 9, iv);
+    let out = box_slice(heap, 480 * 9 * 4 * cpad, 0.0);
+    borrow w as &wr in {
+        borrow mut out as &!ow in {
+            if len(contents(wr)) == 480 * cin * 9 {
+                var o = 0;
+                while o < 480 {
+                    var ky = 0;
+                    while ky < 3 {
+                        var kx = 0;
+                        while kx < 3 {
+                            let dy = tap_shift(ky, false);
+                            let aa = tap_half(ky, false);
+                            let dx = tap_shift(kx, mutant == 2);
+                            let bb = tap_half(kx, mutant == 2);
+                            var ch = 0;
+                            while ch < cin {
+                                contents(ow)[(o * 9 + 3 * dy + dx) * 4 * cpad + (2 * aa + bb) * cpad + ch] = contents(wr)[((o * cin + ch) * 3 + ky) * 3 + kx];
+                                ch = ch + 1;
+                            }
+                            kx = kx + 1;
+                        }
+                        ky = ky + 1;
+                    }
+                    o = o + 1;
+                }
+            }
+        }
+    }
+    unbox_slice(heap, w);
+    return out;
+}
+
+fn round64(n: int) -> [] int {
+    return (n + 63) / 64 * 64;
+}
+
+// the rows of an h x w picture in the bordered layout, rounded up to 64
+fn rows_of(h: int, w: int) -> [] int {
+    return round64((h + 2) * (w + 2));
+}
+
+// the tokens a piece of `n` frames gives (three convolutions of stride 2 with padding 1)
+fn tokens_of(n: int) -> [] int {
+    let a = (n - 1) / 2 + 1;
+    let b = (a - 1) / 2 + 1;
+    return (b - 1) / 2 + 1;
+}
+
+// the mask of a convolution's output, h x (period * bp) with `valid` columns of every `period` kept: 1 on those pixels, 0 on the border, on the columns between pieces and on the rows of rounding
+fn put_cmask[&h, &f, &w, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], index: int, hh: int, period: int, valid: int, bp: int, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let ww = period * bp;
+    let m = box_slice(heap, rows_of(hh, ww), 0.0);
+    borrow mut m as &!mw in {
+        var y = 0;
+        while y < hh {
+            var x = 0;
+            while x < ww {
+                if x % period < valid {
+                    contents(mw)[(y + 1) * (ww + 2) + 1 + x] = 1.0;
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+    borrow m as &mr in {
+        put_file(heap, fs, work, "cmask", index, ".f32", false, contents(mr), iv);
+    }
+    unbox_slice(heap, m);
+    return 0;
+}
+
+fn weights[&i, &h, &f, &p, &w, &q](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], wdir: &w [byte], mutant: int, iv: &!q [int]) -> [io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    // the three convolutions: the first has one input channel, padded to 4 so that the space-to-depth picture has 16
+    var c = 0;
+    while c < 3 {
+        var cin = 480;
+        var cpad = 480;
+        if c == 0 {
+            cin = 1;
+            cpad = 4;
+        }
+        let cw = conv_weights(heap, fs, snap, c + 1, cin, cpad, mutant, iv);
+        borrow cw as &cr in {
+            put_file(heap, fs, wdir, "cv", c, ".f16", true, contents(cr), iv);
+        }
+        unbox_slice(heap, cw);
+        copy(heap, fs, snap, "conv2d", c + 1, ".bias", 480, 1.0, wdir, "cb", c, ".f32", false, iv);
+        c = c + 1;
+    }
+    // conv_out [1024, 480 * 16], column (channel, bin) -> (bin, channel)
+    let co = tensor(heap, fs, snap, "conv_out", 0 - 1, ".weight", 1024 * 7680, iv);
+    let cp = box_slice(heap, 1024 * 7680, 0.0);
+    borrow co as &cor in {
+        borrow mut cp as &!cpw in {
+            if len(contents(cor)) == 1024 * 7680 {
+                var o = 0;
+                while o < 1024 {
+                    var ch = 0;
+                    while ch < 480 {
+                        var fb = 0;
+                        while fb < 16 {
+                            contents(cpw)[o * 7680 + fb * 480 + ch] = contents(cor)[o * 7680 + ch * 16 + fb];
+                            fb = fb + 1;
+                        }
+                        ch = ch + 1;
+                    }
+                    o = o + 1;
+                }
+            }
+        }
+    }
+    borrow cp as &cpr in {
+        put_file(heap, fs, wdir, "conv_out", 0 - 1, ".f16", true, contents(cpr), iv);
+    }
+    unbox_slice(heap, co);
+    unbox_slice(heap, cp);
+    // the 24 layers: the products by the model file's counter u = 10 + 10 i + {0 q, 1 k, 2 v, 3 o, 4 fc2}
+    var qs = 0.125;
+    if mutant == 3 {
+        qs = 1.0;
+    }
+    var l = 0;
+    while l < 24 {
+        let u = 10 + 10 * l;
+        copy(heap, fs, snap, "layers.", l, ".self_attn.q_proj.weight", 1024 * 1024, qs, wdir, "w", u, ".f16", true, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.q_proj.bias", 1024, qs, wdir, "w", u, "_b.f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.k_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 1, ".f16", true, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.k_proj.bias", 1024, 1.0, wdir, "w", u + 1, "_b.f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.v_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 2, ".f16", true, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.v_proj.bias", 1024, 1.0, wdir, "w", u + 2, "_b.f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.out_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 3, ".f16", true, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn.out_proj.bias", 1024, 1.0, wdir, "w", u + 3, "_b.f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".fc2.weight", 1024 * 4096, 1.0, wdir, "w", u + 4, ".f16", true, iv);
+        copy(heap, fs, snap, "layers.", l, ".fc2.bias", 1024, 1.0, wdir, "w", u + 4, "_b.f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".fc1.weight", 4096 * 1024, 1.0, wdir, "f1_", l, ".f16", true, iv);
+        copy(heap, fs, snap, "layers.", l, ".fc1.bias", 4096, 1.0, wdir, "f1_", l, "_b.f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn_layer_norm.weight", 1024, 1.0, wdir, "n1w", l, ".f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".self_attn_layer_norm.bias", 1024, 1.0, wdir, "n1b", l, ".f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".final_layer_norm.weight", 1024, 1.0, wdir, "n2w", l, ".f32", false, iv);
+        copy(heap, fs, snap, "layers.", l, ".final_layer_norm.bias", 1024, 1.0, wdir, "n2b", l, ".f32", false, iv);
+        l = l + 1;
+    }
+    copy(heap, fs, snap, "ln_post", 0 - 1, ".weight", 1024, 1.0, wdir, "lnpw", 0 - 1, ".f32", false, iv);
+    copy(heap, fs, snap, "ln_post", 0 - 1, ".bias", 1024, 1.0, wdir, "lnpb", 0 - 1, ".f32", false, iv);
+    copy(heap, fs, snap, "proj1", 0 - 1, ".weight", 1024 * 1024, 1.0, wdir, "proj1", 0 - 1, ".f16", true, iv);
+    copy(heap, fs, snap, "proj1", 0 - 1, ".bias", 1024, 1.0, wdir, "proj1", 0 - 1, "_b.f32", false, iv);
+    copy(heap, fs, snap, "proj2", 0 - 1, ".weight", 2048 * 1024, 1.0, wdir, "w", 5, ".f16", true, iv);
+    copy(heap, fs, snap, "proj2", 0 - 1, ".bias", 2048, 1.0, wdir, "w", 5, "_b.f32", false, iv);
+    return 0;
+}
+
+fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if na != 7 && na != 8 {
+        put(io, "usage: qwen3_asr_audio_gpu prepare <snapshot dir> <weights dir> <work dir> <mel.f32> <frames> [<mutant 1-4>]\n");
+        return 100;
+    }
+    let snap = arg(args, 2);
+    let wdir = arg(args, 3);
+    let work = arg(args, 4);
+    let frames = num(arg(args, 6));
+    var mutant = 0;
+    if na == 8 {
+        mutant = num(arg(args, 7));
+    }
+    if frames < 1 || frames > 120000 || mutant < 0 || mutant > 4 {
+        put(io, "frames is 1 to 120000 (20 minutes) and a mutant 1 to 4\n");
+        return 101;
+    }
+    if files.path_ok(fs, snap) == false || files.path_ok(fs, wdir) == false || files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 5)) == false {
+        put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let pieces = (frames + 99) / 100;
+    var tail = frames % 100;
+    if tail == 0 {
+        tail = 100;
+    }
+    let tokens = (pieces - 1) * 13 + tokens_of(tail);
+    let sp = round64(tokens);
+    let bp = (sp + 12) / 13;
+    let iv = box_slice(heap, 1, 0);
+    var status = 0;
+    borrow mut iv as &!qb in {
+        let q = contents(qb);
+        // the picture: 128 bins high, 104 columns a piece (100 frames and 4 of zeros), 4 channels (the mel and three of zeros)
+        let (mel, n) = wenc_st.load_raw(heap, fs, arg(args, 5));
+        if n != 128 * frames {
+            put(io, "the mel is not 128 x frames singles\n");
+            status = 103;
+        } else {
+            let w0 = 104 * bp;
+            let pic = box_slice(heap, rows_of(128, w0) * 4, 0.0);
+            borrow mel as &mr in {
+                borrow mut pic as &!pw in {
+                    var y = 0;
+                    while y < 128 {
+                        var t = 0;
+                        while t < frames {
+                            let x = t / 100 * 104 + t % 100;
+                            contents(pw)[((y + 1) * (w0 + 2) + 1 + x) * 4] = contents(mr)[y * frames + t];
+                            t = t + 1;
+                        }
+                        y = y + 1;
+                    }
+                }
+            }
+            borrow pic as &pr in {
+                put_file(heap, fs, work, "mel", 0 - 1, ".f32", false, contents(pr), q);
+            }
+            unbox_slice(heap, pic);
+            // the masks of the three convolutions' outputs: 50 of 52, 25 of 26, 13 of 13 columns a piece
+            if mutant == 4 {
+                put_cmask(heap, fs, work, 0, 64, 52, 52, bp, q);
+            } else {
+                put_cmask(heap, fs, work, 0, 64, 52, 50, bp, q);
+            }
+            put_cmask(heap, fs, work, 1, 32, 26, 25, bp, q);
+            put_cmask(heap, fs, work, 2, 16, 13, 13, bp, q);
+            // the positions [SP, 1024]: Whisper's sinusoids (sin of the 512 scaled times, then cos), restarting in every piece of 13 tokens
+            let pos = box_slice(heap, sp * 1024, 0.0);
+            borrow mut pos as &!pw in {
+                var r = 0;
+                while r < sp {
+                    var p = r % 13;
+                    if mutant == 1 {
+                        p = r;
+                    }
+                    var k = 0;
+                    while k < 512 {
+                        let a = float_of(p) * math.exp(0.0 - 9.210340371976184 / 511.0 * float_of(k));
+                        contents(pw)[r * 1024 + k] = math.sin(a);
+                        contents(pw)[r * 1024 + 512 + k] = math.cos(a);
+                        k = k + 1;
+                    }
+                    r = r + 1;
+                }
+            }
+            borrow pos as &pr in {
+                put_file(heap, fs, work, "pos", 0 - 1, ".f32", false, contents(pr), q);
+            }
+            unbox_slice(heap, pos);
+            // the attention's mask as the per-head bias [16 * SP, SP]: 0 for a key that is audio and in the query's window of 104 tokens (8 s), -1e9 elsewhere
+            let am = box_slice(heap, 16 * sp * sp, 0.0 - 1000000000.0);
+            borrow mut am as &!aw in {
+                var hd = 0;
+                while hd < 16 {
+                    var r = 0;
+                    while r < sp {
+                        var k = 0;
+                        while k < tokens {
+                            if r / 104 == k / 104 {
+                                contents(aw)[(hd * sp + r) * sp + k] = 0.0;
+                            }
+                            k = k + 1;
+                        }
+                        r = r + 1;
+                    }
+                    hd = hd + 1;
+                }
+            }
+            borrow am as &ar in {
+                put_file(heap, fs, work, "amask", 0 - 1, ".f32", false, contents(ar), q);
+            }
+            unbox_slice(heap, am);
+            let ones = box_slice(heap, sp, 1.0);
+            borrow ones as &or in {
+                put_file(heap, fs, work, "ones", 0 - 1, ".f32", false, contents(or), q);
+            }
+            unbox_slice(heap, ones);
+            weights(io, heap, fs, snap, wdir, mutant, q);
+            if q[0] != 0 {
+                put(io, "a tensor of the checkpoint was not found or a file could not be written: ");
+                put_int(io, q[0]);
+                put(io, "\n");
+                status = 104;
+            } else {
+                put(io, "BP=");
+                put_int(io, bp);
+                put(io, " SP=");
+                put_int(io, sp);
+                put(io, " tokens ");
+                put_int(io, tokens);
+                put(io, "\n");
+            }
+        }
+        unbox_slice(heap, mel);
+    }
+    unbox_slice(heap, iv);
+    return status;
+}
+
+fn abs(x: float) -> [] float {
+    if x < 0.0 {
+        return 0.0 - x;
+    }
+    return x;
+}
+
+fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 6 {
+        put(io, "usage: qwen3_asr_audio_gpu compare <work dir> <reference rows .f32> <yardstick rows .f32> <tokens>\n");
+        return 100;
+    }
+    let tokens = num(arg(args, 5));
+    if tokens < 1 {
+        put(io, "tokens is a positive number\n");
+        return 101;
+    }
+    let sp = round64(tokens);
+    let rp = path3(heap, arg(args, 2), "rows", 0 - 1, ".f32");
+    var status = 105;
+    borrow rp as &rpb in {
+        let (got, n) = wenc_st.load_raw(heap, fs, buffer.bytes(rpb));
+        let (want, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
+        let (yard, y) = wenc_st.load_raw(heap, fs, arg(args, 4));
+        if n != sp * 2048 || m != tokens * 2048 || y != tokens * 2048 {
+            put(io, "the session's rows, the reference or the yardstick has the wrong size\n");
+            status = 106;
+        } else {
+            var sum_g = 0.0;
+            var sum_y = 0.0;
+            var max_g = 0.0;
+            var max_y = 0.0;
+            var ss = 0.0;
+            var nearer = 0;
+            var bad = false;
+            borrow got as &gr in {
+                borrow want as &wr in {
+                    borrow yard as &yr in {
+                        var r = 0;
+                        while r < tokens {
+                            var rg = 0.0;
+                            var ry = 0.0;
+                            var c = 0;
+                            while c < 2048 {
+                                let b = contents(wr)[r * 2048 + c];
+                                let dg = abs(contents(gr)[r * 2048 + c] - b);
+                                let dy = abs(contents(yr)[r * 2048 + c] - b);
+                                // a NaN fails every comparison: count it as far
+                                if dg >= 0.0 == false {
+                                    bad = true;
+                                }
+                                rg = rg + dg;
+                                ry = ry + dy;
+                                ss = ss + b * b;
+                                if dg > max_g {
+                                    max_g = dg;
+                                }
+                                if dy > max_y {
+                                    max_y = dy;
+                                }
+                                c = c + 1;
+                            }
+                            if rg < ry {
+                                nearer = nearer + 1;
+                            }
+                            sum_g = sum_g + rg;
+                            sum_y = sum_y + ry;
+                            r = r + 1;
+                        }
+                    }
+                }
+            }
+            let cnt = float_of(tokens * 2048);
+            put(io, "rows against the reference's float32 (rms ");
+            put_float(io, sqrt(ss / cnt));
+            put(io, "): mean abs error ");
+            put_float(io, sum_g / cnt);
+            put(io, ", the yardstick's (BF16 on MPS) ");
+            put_float(io, sum_y / cnt);
+            put(io, "; worst element ");
+            put_float(io, max_g);
+            put(io, ", the yardstick's ");
+            put_float(io, max_y);
+            put(io, "; rows nearer than the yardstick's: ");
+            put_int(io, nearer);
+            put(io, " of ");
+            put_int(io, tokens);
+            put(io, "\n");
+            status = 1;
+            if nearer == tokens && bad == false {
+                status = 0;
+            }
+        }
+        unbox_slice(heap, got);
+        unbox_slice(heap, want);
+        unbox_slice(heap, yard);
+    }
+    buffer.drop(heap, rp);
+    return status;
+}
+
+fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) >= 2 && is_text(arg(args, 1), "prepare") {
+        return prepare(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && is_text(arg(args, 1), "compare") {
+        return compare(io, heap, fs, args);
+    }
+    put(io, "usage: qwen3_asr_audio_gpu prepare ... | compare ...\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

@@ -601,3 +601,9 @@ tests/chx/attn_gate_q_h.chx r=384 n=256
 tests/chx/attn_gate_q_h.chx r=4 n=16 --run
 tests/chx/gated_norm_h.chx h=768 n=128 eps=0.000001
 tests/chx/gated_norm_h.chx h=4 n=16 eps=0.000001 --run
+# docs/audio.md, A1: the two kernels the audio tower of Qwen3-ASR adds to the VAE's and the vision tower's, at a clip of 30 s (BP = 30 pieces: 32 x 780 after the second convolution, 390 tokens in 448 rows) and small.
+# Held to float64 by tests/vit_pieces.py.
+tests/chx/conv_bias_gelu_erf.chx s=26624 n=480 bn=32 m1=-1
+tests/chx/conv_cols.chx t=448 f=16 c=480 wp=457 r=8256
+tests/chx/conv_bias_gelu_erf.chx s=8 n=64 bn=32 m1=-1 --run
+tests/chx/conv_cols.chx t=5 f=3 c=32 wp=8 r=40 --run

@@ -1,4 +1,4 @@
-# Audio: recognition, then speech, then music (design, 2026-11-24; the two reference runs made, nothing built)
+# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made and A1, the audio tower, built)
 
 What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Sections 1 to 6 were written before anything was run or any weights downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors); section 7 is the two reference runs, made the same day once the downloads were agreed, and is **[measured]**. It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
 
@@ -129,3 +129,29 @@ Both by hand, with scripts that are not in the repository; their outputs are the
 * **A0, on that clip** (resampled to 16 kHz by the package): **the transcript is the sentence, to the letter, in float32 on the CPU and in BF16 on MPS** (1.7 and 1.6 s a transcription, the model loaded). The mel is `[128, 536]`; the tower gives **70 rows** (5 seconds of 13 and a last piece of 36 frames, 5 rows: `_get_feat_extract_output_lengths`); the prompt is 85 ids; the answer 18: `language English<asr_text>The quick brown fox jumps over the lazy dog near the quiet river.<|im_end|>`. Teacher-forced, the arg max equals the generated id at 18 of 18 positions. Kept: the mel, the tower's rows in both precisions, the prompt's ids, the sequence, the 19 rows of logits.
 * **A1's yardstick:** the package's tower rows in BF16 on MPS are **1.59e-4 mean absolute error** from its float32 rows (the rows' rms is 0.0187; the worst element 9.0e-3).
 * The clip is under 8 s: one attention window, so 2.1's doubt is not met yet.
+
+## 8. A1: the audio tower on the GPU **[measured, 2026-11-24, M4 Max]**
+
+`models/qwen3_asr_audio.model` (144 lines, 1,689 lines expanded for the clip), its host side `tests/qwen3_asr_audio_gpu.cho` (cancho: the weights, the inputs, the comparison; no Python), two kernels (`conv_bias_gelu_erf`, `conv_cols`), and BF16 in the cancho safetensors reader (`tests/wan_enc/st.cho`, `load_bf16`).
+
+```sh
+B=build/qwen3_asr_audio_gpu; A=~/.cache/cancho-media/audio-ref; W=~/.cache/cancho-media/qwen3-asr-audio-f16; K=<a work directory>
+$B prepare <the snapshot's directory> $W $K $A/a0_mel.f32 536        # prints BP=10 SP=128 tokens 70
+printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_audio.model CHX=$PWD/tests/chx CONV3=$PWD/examples/cnn/conv3.chx WORK=$K WDIR=$W BP=10 SP=128
+$B compare $K $A/a0_f32_tower.f32 $A/a0_bf16mps_tower.f32 70
+```
+
+| the 70 rows of the clip against the reference's float32 (their rms 1.87e-2) | mean abs error | worst element | rows nearer than the yardstick's |
+|---|---|---|---|
+| **the GPU session (f16 operands, f32 sums)** | **7.98e-6** | 2.7e-4 | **70 of 70** |
+| the yardstick: the reference in BF16 on MPS | 1.59e-4 | 9.0e-3 | |
+| mutant 1: the positions do not restart in every piece | 8.8e-3 | | 0 |
+| mutant 2: the time axis's taps laid out as padding (0, 1) | 1.1e-2 | | 0 |
+| mutant 3: q not scaled by 1/8 | 1.0e-2 | | 0 |
+| mutant 4: the zeros between pieces not put back after the first convolution | 7.1e-4 | | 0 |
+
+* **The bound of 2.3 is met at the first run: every row is nearer float32's than BF16's is, 20 times nearer on average.** The four mutants fail with no row nearer.
+* **Time:** `prepare` 1.3 s (630 MB of weights written from the two BF16 shards, the 5 MB of inputs); the session 0.21 s a run, three runs, with its compile and upload; `compare` under 0.1 s.
+* **Held in the gate without a GPU or the checkpoint:** the two kernels against float64 with six mutants (`tests/vit_pieces.py`), their goldens, the model file's expansion (`tests/model.sh`), and `tests/qwen3_asr_audio.sh`: the host program builds, refuses with the status it documents (9 cases) and writes the session's inputs at their sizes for a clip of one second.
+* **What 2.2 got wrong:** "reckoned none" for the convolutions; two small kernels were needed (corrected there). The rest of the tower is existing kernels: `vae_s2d`, `conv3` and `conv3_k16`, `gemm_mma`, `vae_bias`, `vit_ln`, `vit_bias_gelu_erf`, `dit_scores_bias`, `dit_stats`, `dit_pv`, `dit_to_f16`, `dit_add`.
+* **Not done:** a clip longer than 8 s (more than one attention window: 2.1's doubt, and the mutant "the windows' mask dropped" that 2.3 named, which needs one); the mel is the reference's, not the host's (A4); the BF16 reader has no test of its own in the gate (it is exercised only when the checkpoint is there); one clip.

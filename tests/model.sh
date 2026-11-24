@@ -51,6 +51,7 @@ tag=s3;      check qwen3vl_vision CHX=/chx WORK=/w NP=4352 NAME=s3 LO=17 HI=25 F
 tag=s4;      check qwen3vl_vision CHX=/chx WORK=/w NP=4352 NAME=s4 LO=25 HI=27 FIRST=0 FINAL=1
 tag=enc;     check qwen_image_vae_encoder CHX=/chx CONV3=/conv3 WORK=/w IH=1376 IW=768
 tag=dec;     check qwen_image_vae_decoder CHX=/chx CONV3=/conv3 WORK=/w H0=86 W0=48
+tag=a5s;     check qwen3_asr_audio CHX=/chx CONV3=/conv3 WORK=/w WDIR=/wd BP=10 SP=128
 tag=sp64;    check umt5_enc CHX=/chx WORK=/w WDIR=/wd SP=64
 # The video transformer at 17 frames of 640 x 352: the f16 programs (the expansion models/wan_dit.model had before PREC existed) and the f32-operand ones (docs/diffusion.md section 6, V3c).
 tag=f16;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1

@@ -8,7 +8,7 @@ import std.json;
 // `wenc_st` -- tensors of a safetensors file as binary64, for the float64 reference of the Wan VAE encoder (docs/wan-vae-encoder.md, slice E1).
 //
 // A safetensors file is 8 bytes (the header's length, little endian), that many bytes of JSON (each tensor: `dtype`, `shape`, `data_offsets` [begin, end) in the bytes after the header) and the data.
-// Only F32 is read (the VAE's checkpoint is F32); a tensor of another dtype, one that is not there or one whose bytes do not fit the file is an error, never a guess. Nothing here traps on a file's
+// `load` reads F32 (the VAE's checkpoint is F32) and `load_bf16` BF16; a tensor of another dtype, one that is not there or one whose bytes do not fit the file is an error, never a guess. Nothing here traps on a file's
 // content: the header's length, the offsets and the sizes are checked against each other and against the file before a byte is asked for.
 
 // `n` bytes of the file at `path` from byte `at`, into `into` (which must hold `n`): `n` when all of them were read, else -1.
@@ -59,6 +59,19 @@ fn le32[&b](bytes: &b [byte], at: int) -> [] int {
 // The tensor `name` of the file at `path` as binary64 (every F32 is exact in binary64): the values, how many of them, and `ok` (0, or an error: 1 the file or its header cannot be read, 2 no such tensor,
 // 3 not F32, 4 the offsets do not fit). The shape is not returned: the caller knows it and checks `count`.
 pub fn load[&h, &f, &p, &n](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], name: &n [byte]) -> [heap, fs_read(""), file_read] (Box[[float]], int, int) {
+    return load_as(heap, fs, path, name, false);
+}
+
+// `load` for a BF16 tensor (the Qwen3-ASR checkpoint, docs/audio.md): a bfloat16 is the upper 16 bits of the float32 of the same value, so it is exact in binary64 too. Error 3 is then "not BF16".
+pub fn load_bf16[&h, &f, &p, &n](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], name: &n [byte]) -> [heap, fs_read(""), file_read] (Box[[float]], int, int) {
+    return load_as(heap, fs, path, name, true);
+}
+
+fn load_as[&h, &f, &p, &n](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], name: &n [byte], bf16: bool) -> [heap, fs_read(""), file_read] (Box[[float]], int, int) {
+    var width = 4;
+    if bf16 {
+        width = 2;
+    }
     var values = box_slice(heap, 1, 0.0);
     var count = 0;
     var ok = 1;
@@ -94,32 +107,36 @@ pub fn load[&h, &f, &p, &n](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], name
                         if node >= 0 {
                             let dt = json.get(contents(hr), contents(tw), node, "dtype");
                             let off = json.get(contents(hr), contents(tw), node, "data_offsets");
-                            if dt >= 0 && json.string_equals(contents(hr), contents(tw), dt, "F32") == false {
+                            if dt >= 0 && (bf16 == false && json.string_equals(contents(hr), contents(tw), dt, "F32") == false || bf16 && json.string_equals(contents(hr), contents(tw), dt, "BF16") == false) {
                                 ok = 3;
                             } else if dt >= 0 && off >= 0 && json.count(contents(tw), off) == 2 {
                                 let b = json.to_int(contents(hr), contents(tw), json.at(contents(tw), off, 0));
                                 let e = json.to_int(contents(hr), contents(tw), json.at(contents(tw), off, 1));
                                 ok = 4;
-                                if b >= 0 && e > b && (e - b) % 4 == 0 && e - b <= 2147483648 {
+                                if b >= 0 && e > b && (e - b) % width == 0 && e - b <= 2147483648 {
                                     let raw = box_slice(heap, e - b, byte_of(0));
                                     var read = 0 - 1;
                                     borrow mut raw as &!rw in {
                                         read = read_at(fs, path, 8 + hlen + b, e - b, contents(rw));
                                     }
                                     if read == e - b {
-                                        let vals = box_slice(heap, (e - b) / 4, 0.0);
+                                        let vals = box_slice(heap, (e - b) / width, 0.0);
                                         borrow raw as &rr in {
                                             borrow mut vals as &!vw in {
                                                 var i = 0;
-                                                while i < (e - b) / 4 {
-                                                    contents(vw)[i] = float_of32(f32_of_bits(le32(contents(rr), i * 4)));
+                                                while i < (e - b) / width {
+                                                    if bf16 {
+                                                        contents(vw)[i] = float_of32(f32_of_bits((int_of(contents(rr)[i * 2]) | int_of(contents(rr)[i * 2 + 1]) << 8) << 16));
+                                                    } else {
+                                                        contents(vw)[i] = float_of32(f32_of_bits(le32(contents(rr), i * 4)));
+                                                    }
                                                     i = i + 1;
                                                 }
                                             }
                                         }
                                         unbox_slice(heap, values);
                                         values = vals;
-                                        count = (e - b) / 4;
+                                        count = (e - b) / width;
                                         ok = 0;
                                     }
                                     unbox_slice(heap, raw);
