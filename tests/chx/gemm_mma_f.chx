@@ -1,0 +1,19 @@
+// y = a w^T on the matrix units with the activations in f32 (docs/diffusion.md section 6, V3c): gemm_mma.chx with `a` an f32 buffer and its window an f32 tile in threadgroup memory. The weights stay f16 (a BF16 checkpoint's weights are exact in
+// f16) and the accumulator f32, so nothing of the activation is rounded on the way into the product. Metal only: CUDA's `wmma` multiplies f16 tiles, and the lowering refuses an f32 operand there (`lowering`).
+algo gemm_mma_f(m, n, k)
+  in  a: f32[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[j * bn, p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule gemm_mma_f for apple-m-series { threads 256 warps 2 4 bm 64 bn 64 bk 32 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cancho-media: one command line for the image and video generators of this repository (docs/cli.md).
 
-    scripts/media video "PROMPT" -o DIR [--frames N] [--size WxH] [--seed S] [--fps N]
+    scripts/media video "PROMPT" -o DIR [--frames N] [--size WxH] [--seed S] [--fps N] [--precise]
     scripts/media video "PROMPT" --image PICTURE -o DIR   (the base model continues the picture: docs/video-image.md)
     scripts/media edit  IMAGE "INSTRUCTION" -o DIR [--seed S] [--steps N]
     scripts/media image "PROMPT" -o DIR [--size WxH] [--seed N] [--steps N]
@@ -280,6 +280,8 @@ def cmd_video(a):
         die("--segments, --then and --no-correct are for a video from a picture (--image): they chain clips (docs/video-chain.md)")
     if a.rewrite and a.image:
         die("--rewrite is not available for a video from a picture: the rewriter has no template for it (not measured)")
+    if a.precise and a.image:
+        die("--precise is for a video from a prompt: the products with f32 operands were measured on the distilled model's three steps, not on the base model's (docs/diffusion.md section 6, V3c)")
     need_gpu()
     model, info = pick("video", a.model or (BASE_VIDEO if a.image else None))
     if a.image and not info.get("i2v"):
@@ -319,7 +321,7 @@ def cmd_video(a):
         txt = os.path.join(out, "text.npy")
         run([sys.executable, "tests/wan_text_gpu.py", a.prompt, txt, "--wdir", os.path.join(CACHE, "umt5-f16")], "text encoder (GPU)")
         run([sys.executable, "tests/wan_video_gpu.py", out, "--weights", tdir, "--text", txt, "--frames", str(lf), "--size", "%dx%d" % (h // 16, w // 16),
-             "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)], "denoiser and decoder (GPU)")
+             "--seed", str(a.seed), "--wdir", wdir, "--fps", str(a.fps)] + (["--f32"] if a.precise else []), "denoiser and decoder (GPU)")
     open(os.path.join(out, "prompt.txt"), "w").write(a.prompt + "\n")
     if a.prompt != orig:
         open(os.path.join(out, "prompt.orig.txt"), "w").write(orig + "\n")
@@ -435,6 +437,7 @@ def main():
     v.add_argument("--model", help="model name (`media models`; default %s)" % DEFAULT["video"])
     v.add_argument("--seed", type=int, default=0)
     v.add_argument("--fps", type=int, default=16)
+    v.add_argument("--precise", action="store_true", help="the transformer's products with f32 operands: the latents are within a hundredth of float64's, 2 to 3 s more (docs/diffusion.md section 6, V3c)")
     v.add_argument("--weights", help="FastWan transformer directory (default: the Hugging Face cache)")
     v.add_argument("--wdir", default=None, help="where the 10 GB of f16 weight files are kept between runs")
     v.add_argument("--image", help="a picture to continue: the first frame (uses the base model, 30 steps; docs/video-image.md)")

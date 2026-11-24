@@ -596,7 +596,11 @@ fn mma[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     let cols = mem.get(m, ir.shape(m, ct), 1) / m[geom + 1];
     let a_row = text.n2(m, t, "(tid / $u) * $u", 32 * m[geom + 1], rows);
     let b_row = text.n2(m, t, "(tid / 32u % $u) * $u", m[geom + 1], cols);
-    let ls = dialect.frag_mma(m, t, gen.dia(m, g), cn, m[la + 1], m[lb + 1], k, lda, ldb, m[geom + 2], m[geom + 3], a_row, b_row, m[o + 4]);
+    let (a_f32, b_f32) = (ir.dtype(m, m[la + 2]) == kinds.f32(), ir.dtype(m, m[lb + 2]) == kinds.f32());
+    if (a_f32 || b_f32) && dialect.is_cuda(gen.dia(m, g)) {
+        return err.fail(m, t, "lowering", text.lit(m, t, "mma of an f32 operand is not on this target's matrix unit (wmma multiplies f16 tiles; its tf32 keeps 10 bits of an f32): round the operand with `stage f16`, or schedule the kernel for a Metal target"));
+    }
+    let ls = dialect.frag_mma(m, t, gen.dia(m, g), cn, m[la + 1], m[lb + 1], k, lda, ldb, m[geom + 2], m[geom + 3], a_row, b_row, m[o + 4], a_f32, b_f32);
     gen.emit_lines(m, t, g, ls);
     gen.set_loc(m, g, x, gen.mk_loc(m, gen.l_frag(), cn, ct, geom));
     return 0;

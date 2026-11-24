@@ -26,6 +26,7 @@ CHX_ROOT = os.environ.get("CHX_ROOT", "tests/chx")
 NEG = -1e9
 D = 128
 SCALE = 1.0 / math.sqrt(D)
+F32_TOL = 2e-6  # the f32 chain against the exact attention: f32 sums and exp (measured 1.1e-7 and 1.2e-7); the f16 chain is 4e-4 from it
 
 
 def f16r(v):
@@ -163,9 +164,33 @@ def case(root, name, nh, n, ids, valid, seed):
     ef = max(abs(a - b) for a, b in zip(fused, want2))
     ec = max(abs(a - b) for a, b in zip(fused, got))
     er = max(abs(a - b) for a, b in zip(relu_got, relu_want))
+    # the same attention with f32 operands (docs/diffusion.md section 6, V3c): dit_rope16_f, dit_scores_mma_f, the online statistics, dit_pv_mma_f with v as it is. Nothing is rounded to f16, so it is held to the exact reference.
+    with tempfile.TemporaryDirectory() as tmp:
+        o, err = run(root, "dit_rope16_f", [f"s={n}", f"nh={nh}", "h=64", f"sc={SCALE!r}"], {"x": q, "cs": cs, "sn": sn}, ["y"], tmp)
+        if o is None:
+            return False, "dit_rope16_f q: " + err
+        qf = o[0]
+        o, err = run(root, "dit_rope16_f", [f"s={n}", f"nh={nh}", "h=64", "sc=1.0"], {"x": k, "cs": cs, "sn": sn}, ["y"], tmp)
+        if o is None:
+            return False, "dit_rope16_f k: " + err
+        kf = o[0]
+        o, err = run(root, "dit_scores_mma_f", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"q": qf, "k": kf}, ["sc"], tmp)
+        if o is None:
+            return False, "dit_scores_mma_f: " + err
+        scf = o[0]
+        o, err = run(root, "dit_stats_o", [f"nh={nh}", f"nq={n}", f"t={n}", "qs=16", "cs=64"], {"sc": scf, "mask": mask}, ["m", "z"], tmp)
+        if o is None:
+            return False, "dit_stats_o (f32 scores): " + err
+        o, err = run(root, "dit_pv_mma_f", [f"nh={nh}", f"nq={n}", f"t={n}", f"d={D}"], {"sc": scf, "mask": mask, "m": o[0], "z": o[1], "v": v}, ["o"], tmp)
+        if o is None:
+            return False, "dit_pv_mma_f: " + err
+        gotf = o[0]
+    e3 = max(abs(a - b) for a, b in zip(gotf, want2))
+    if len(gotf) != len(want2) or not e3 <= F32_TOL:
+        return False, "the attention with f32 operands is %.3g from the exact one (tolerance %.0e)" % (e3, F32_TOL)
     if len(fused) != len(want2) or not (ef <= 5e-3 and ec <= 2e-3 and er <= 1e-4):  # written so that a NaN fails
         return False, "the fused attention is %.3g from the exact one (tolerance 5e-3) and %.3g from the three-kernel one (2e-3); spill_relu %.3g from relu(q k^T) (1e-4)" % (ef, ec, er)
-    return len(got) == len(want1) and e1 <= 1e-4 and e2 <= 5e-3, "max abs error %.3g against the f16-rounded reference (tolerance 1e-4), %.3g against the exact one (5e-3); the fused kernel %.3g from the exact one, spill_relu %.3g; over %d elements" % (e1, e2, ef, er, len(want1))
+    return len(got) == len(want1) and e1 <= 1e-4 and e2 <= 5e-3, "max abs error %.3g against the f16-rounded reference (tolerance 1e-4), %.3g against the exact one (5e-3); the fused kernel %.3g from the exact one, spill_relu %.3g; with f32 operands %.3g from the exact one (2e-6); over %d elements" % (e1, e2, ef, er, e3, len(want1))
 
 
 def gate(root):
@@ -204,7 +229,13 @@ EDITS = [
     ("dit_stats_comb", "yield m1 + relu (cm - &m1)", "yield m1 + (cm - &m1)", "the maximum free to fall as well as rise"),
     ("dit_pv_mma", "let s2 = sm + mk", "let s2 = sm + sm", "the mask replaced by the scores"),
     ("dit_pv_mma", "let ph = stage f16 pp", "let ph = stage f16 e", "the weights not divided by the normaliser"),
-    ("dit_pv_mma", "load v[p * bk, h * d + j * bn ; bk, bn] @shared", "load v[p * bk, j * bn ; bk, bn] @shared", "v always read from the first head"),
+    ("dit_pv_mma", "load v[p * bk, h * d + j * bn ; bk, bn] @shared", "load v[p * bk, j * bn ; bk, bn] @shared", "v always read from the first head"),    ("dit_rope16_f", "  store lo2 -> y[t * nh, 0]", "  let loh = stage f16 lo2\n  store loh -> y[t * nh, 0]", "the first half rounded to f16"),
+    ("dit_rope16_f", "let hi  = d + e", "let hi  = d - e", "the sign of the second half"),
+    ("dit_scores_mma_f", "    yield mma acc at wt", "    let ah = stage f16 at\n    yield mma acc ah wt", "q rounded to f16"),
+    ("dit_scores_mma_f", "load k[j * bn, h * d + p * bk ; bn, bk]", "load k[j * bn, p * bk ; bn, bk]", "k always read from the first head"),
+    ("dit_pv_mma_f", "let ph = stage f32 pp", "let ph = stage f16 pp", "the weights rounded to f16"),
+    ("dit_pv_mma_f", "    yield mma_nn acc ph vt", "    let vh = stage f16 vt\n    yield mma_nn acc ph vh", "v rounded to f16"),
+    ("dit_pv_mma_f", "let s2 = sm + mk", "let s2 = sm - mk", "the mask subtracted"),
 ]
 survived = 0
 for kernel, old, new, what in EDITS:

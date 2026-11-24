@@ -1,0 +1,26 @@
+// vit_ln.chx with an f32 output: LayerNorm with weight and bias (eps 1e-6, the biased variance), not rounded to f16, for gemm_mma_f.chx (docs/diffusion.md section 6, V3c). Metal only: the f32 product it feeds is not on CUDA's matrix unit.
+algo vit_ln_f(s, n)
+  in  x: f32[s, n]
+  in  w: f32[1, n]
+  in  b: f32[1, n]
+  out y: f32[s, n]
+{
+  grid i over s
+  let x  = load x[i, 0 ; 1, n]
+  let sm = rowsum &x
+  let mu = sm * (1 / n)
+  let xc = x - mu
+  let sq = &xc * &xc
+  let vs = rowsum sq
+  let vr = vs * (1 / n)
+  let t  = vr + 0.000001
+  let rs = rsqrt t
+  let xn = xc * rs
+  let ww = load w
+  let bb = load b
+  let o1 = xn * ww
+  let o2 = o1 + bb
+  store o2 -> y[i, 0]
+}
+
+schedule vit_ln_f for apple-m-series { threads 256 }
