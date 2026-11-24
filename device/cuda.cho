@@ -5,6 +5,9 @@ module cuda;
 // under `Ffi("libcanchogpu")`: integers in, an integer out, and at most one
 // byte buffer, last. A negative answer is a failure; `cgpu_error` copies
 // its text out.
+// 1 when the device this process would open is HIP's (docs/amd.md section 3.4), 0 when it is CUDA's. It starts nothing.
+extern fn cgpu_backend[&f](ffi: &f Ffi("libcanchogpu")) -> [ffi("libcanchogpu")] int;
+
 extern fn cgpu_open[&f](ffi: &f Ffi("libcanchogpu")) -> [ffi("libcanchogpu")] int;
 
 extern fn cgpu_compile[&f, &s](ffi: &f Ffi("libcanchogpu"), src: &s [byte]) -> [ffi("libcanchogpu")] int;

@@ -1,4 +1,4 @@
-# AMD: a HIP target (design, 2026-11-24; H1 built: `emit` writes HIP text for 156 cases, never compiled; nothing run on AMD hardware)
+# AMD: a HIP target (design, 2026-11-24; H1 built: `emit` writes HIP text for 156 cases, never compiled; H2 built: the shim drives a HIP runtime, held to a mock; nothing run on AMD hardware)
 
 Issue [#9](https://github.com/alpibrusl/cancho-gpu/issues/9), slice 11 of the roadmap. Today `amd-cdna3` is a row of `src/target.cho` (`simd_width` 64, 1,024 threads, 64 KiB of threadgroup memory) with no emitter, no shim and no case: a file with a schedule for it type-checks and `emit` writes nothing for it.
 
@@ -85,6 +85,24 @@ H1 to H5 need no AMD hardware and no credit. H6 is one script on the pattern of 
 
 **Not done in H1.** The text has not been through any compiler: no hipRTC is here, and the emulator learns HIP in H3. `cancho-gpu run --target` and a session still name only the two older targets.
 
-## 6. What this does not claim
+## 6. H2, built
 
-No AMD GPU has run a kernel of this project, and no compiler has read the HIP text of section 5. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.
+`shim/canchogpu.c` drives HIP through the entry points it already had (`docs/device.md` section 1), as 3.4 decided: HIP's functions are loaded into the driver's slots under their own names (`hipInit`, `hipModuleLoadData`, `hipModuleGetFunction`, `hipMalloc`, `hipFree`, `hipMemcpyHtoD`, `hipMemcpyDtoH`, `hipDeviceSynchronize`, `hipModuleLaunchKernel`; `hiprtcCreateProgram`, `hiprtcCompileProgram`, `hiprtcGetCodeSize`, `hiprtcGetCode`, the two log functions, `hiprtcDestroyProgram`). Where the shapes differ:
+
+| | CUDA | HIP |
+|---|---|---|
+| a context | `cuCtxCreate` | none (HIP's is deprecated): `hipSetDevice(0)` |
+| the architecture given to the compiler | the device's `compute_XY` | none; `CANCHOGPU_HIP_ARCH` names one for a machine without a supported GPU |
+| the include path | where `cuda_fp16.h` is, under `CUDA_HOME` and others | where `hip/hip_fp16.h` is, under `ROCM_PATH`, `HIP_PATH`, `/opt/rocm` |
+| an error's text | `cuGetErrorString(r, &s)` | `s = hipGetErrorString(r)` |
+| a launch's arguments | `kernelParams` | `kernelParams`, or one packed buffer through `extra` when `CANCHOGPU_HIP_ARGS=extra` (section 1's unconfirmed item: both are written, the first run chooses) |
+
+One entry point is new: `cgpu_backend()` answers 1 when the process would open HIP and 0 for CUDA, and starts nothing. HIP when `CANCHOGPU_LIBHIP` names a library; CUDA when `CANCHOGPU_LIBCUDA` does or a CUDA driver opens; else HIP if `libamdhip64.so` opens. `cancho-gpu-device` asks it and compiles the program for `amd-cdna3` in the HIP dialect, so the text and the runtime cannot disagree.
+
+**Checked** (`tests/device.sh`, in the gate), against `tests/mock/libamdhip64_mock.c` and `libhiprtc_mock.c`: 4 kernels, each with its arguments both ways. hipRTC is given a program named `kernel.hip` and no option; the runtime sees the golden `.hip`'s entry, the grid and threads `emit` reports, one argument a parameter, each buffer the upload's size; the mock's zeros are refused `error[device-mismatch]`. And: the architecture reaches hipRTC only when asked for; a shuffling kernel is refused `error[lowering]` before any library call; no runtime, and a runtime without hipRTC, are `error[device]`.
+
+**What the mock cannot say.** It has the signatures this document read, so it agrees with the shim by construction: a wrong signature, a missing symbol in the real `libamdhip64.so`, or a real refusal of `kernelParams` shows only on H6's card. Passing a device pointer as a 64-bit integer is right for x86-64 and AArch64 and is not what the C standard promises.
+
+## 7. What this does not claim
+
+No AMD GPU has run a kernel of this project, no compiler has read the HIP text of section 5, and the shim of section 6 has called only a mock. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.

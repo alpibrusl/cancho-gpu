@@ -16,7 +16,7 @@ CC=${CC:-cc}
 BIN=$ROOT/build/cancho-gpu-device
 MOCK=$ROOT/build/mock
 mkdir -p "$MOCK"
-for lib in libcuda_mock libnvrtc_mock; do
+for lib in libcuda_mock libnvrtc_mock libamdhip64_mock libhiprtc_mock; do
   "$CC" -std=c11 -Wall -Wextra -Werror -shared -fPIC "$ROOT/tests/mock/$lib.c" -o "$MOCK/$lib.so"
 done
 WORK=$(mktemp -d)
@@ -73,5 +73,70 @@ CANCHOGPU_LIBCUDA=$WORK/nothing.so "$BIN" run "$ROOT/tests/chx/ported/silu_mul.c
 if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]: opening the device: no CUDA driver' "$WORK/err"; then
   echo "no driver: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
 fi
+# The same through the mock HIP runtime and hipRTC (docs/amd.md sections 3.4 and 3.5): the program compiles for amd-cdna3,
+# the entry is the golden .hip's, hipRTC is given a program named kernel.hip and no architecture, and the arguments arrive
+# both ways hipModuleLaunchKernel takes them.
+hip_count=0
+hip_run() {
+  CANCHOGPU_LIBHIP=$MOCK/libamdhip64_mock.so CANCHOGPU_LIBHIPRTC=$MOCK/libhiprtc_mock.so CANCHOGPU_MOCK_LOG=$WORK/log "$@"
+}
+while read -r file rest; do
+  hip_count=$((hip_count + 1))
+  # shellcheck disable=SC2086
+  name=$("$ROOT/scripts/case-name.sh" "$file" $rest)
+  golden=$(ls "$ROOT/golden/$name/"*.hip)
+  entry=$(basename "$golden" .hip)
+  params=$(grep -c '__restrict__' "$golden")
+  # shellcheck disable=SC2086
+  launch=$("$ROOT/build/cancho-gpu" emit "$ROOT/$file" "$WORK/emit" $rest | grep '\.hip:')
+  threads=$(echo "$launch" | sed 's/.*: \([0-9]*\) threads.*/\1/')
+  grid=$(echo "$launch" | sed 's/.*grid \([0-9]*x[0-9]*\),.*/\1/')
+  want="launch $entry grid $grid block $threads args $params bytes"
+  for by in params extra; do
+    rm -f "$WORK/log"
+    status=0
+    # shellcheck disable=SC2086
+    CANCHOGPU_HIP_ARGS=$by hip_run "$BIN" run "$ROOT/$file" $rest >"$WORK/out" 2>"$WORK/err" || status=$?
+    if ! grep -q "^compile-hip kernel.hip\$" "$WORK/log"; then
+      echo "$name [hip, $by]: hipRTC was not given kernel.hip with no option: $(grep '^compile' "$WORK/log" || echo nothing)"; fail=1
+    elif ! grep -q "^$want " "$WORK/log"; then
+      echo "$name [hip, $by]: expected \`$want ...\`, the runtime saw: $(grep '^launch' "$WORK/log" || echo nothing)"; fail=1
+    elif ! grep -q "^args-by $by\$" "$WORK/log"; then
+      echo "$name [hip, $by]: the arguments did not arrive by $by"; fail=1
+    elif [ "$(grep '^launch' "$WORK/log" | sed 's/.* bytes //')" != "$(sed -n 's/^upload: [^ ]* \([0-9]*\) bytes$/\1/p' "$WORK/out" | paste -sd, -)" ]; then
+      echo "$name [hip, $by]: the runtime's argument sizes are not the uploads, in order:"; grep '^launch' "$WORK/log"; grep '^upload' "$WORK/out"; fail=1
+    elif [ "$status" -ne 1 ] || ! grep -q '^error\[device-mismatch\]' "$WORK/err"; then
+      echo "$name [hip, $by]: zeros from the mock were not refused as device-mismatch (exit $status)"; fail=1
+    fi
+  done
+done <<CASES
+tests/chx/ported/silu_mul.chx
+tests/chx/activations.chx r=4 n=8
+tests/chx/attn_gate.chx r=24 n=256
+tests/chx/amax_id.chx r=1 nq=2374 v1=151937
+CASES
+# The architecture reaches hipRTC only when asked for.
+rm -f "$WORK/log"
+CANCHOGPU_HIP_ARCH=gfx942 hip_run "$BIN" run "$ROOT/tests/chx/ported/silu_mul.chx" >/dev/null 2>&1 || true
+grep -q '^compile-hip kernel.hip --gpu-architecture=gfx942$' "$WORK/log" || { echo "hip: the architecture asked for did not reach hipRTC: $(cat "$WORK/log")"; fail=1; }
+# A kernel the HIP dialect cannot say yet is refused before the runtime is touched (docs/amd.md slice H4).
+rm -f "$WORK/log"
+status=0
+hip_run "$BIN" run "$ROOT/tests/reject/lowering-shuffle-hip.chx" n=4096 eps=1e-5 >/dev/null 2>"$WORK/err" || status=$?
+if [ "$status" -ne 1 ] || ! grep -q '^error\[lowering\]' "$WORK/err" || [ -e "$WORK/log" ]; then
+  echo "hip: a shuffling kernel: expected error[lowering] and no compile, exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
+fi
+# No runtime, and a runtime without hipRTC: refusals, not traps.
+status=0
+CANCHOGPU_LIBHIP=$WORK/nothing.so "$BIN" run "$ROOT/tests/chx/ported/silu_mul.chx" >/dev/null 2>"$WORK/err" || status=$?
+if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]: opening the device: no HIP runtime' "$WORK/err"; then
+  echo "no HIP runtime: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
+fi
+status=0
+CANCHOGPU_LIBHIP=$MOCK/libamdhip64_mock.so CANCHOGPU_LIBHIPRTC=$WORK/nothing.so "$BIN" run "$ROOT/tests/chx/ported/silu_mul.chx" >/dev/null 2>"$WORK/err" || status=$?
+if [ "$status" -ne 1 ] || ! grep -q '^error\[device\]: opening the device: no hipRTC' "$WORK/err"; then
+  echo "no hipRTC: expected error[device], exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
+fi
 echo "$count kernels through the mock driver, and the no-driver refusal"
+echo "$hip_count kernels through the mock HIP runtime, each with its arguments by params and by extra, and its refusals"
 exit $fail
