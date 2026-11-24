@@ -1,0 +1,15 @@
+// The second half of an arg max on the device (docs/audio.md section 10): the largest rank of amax_cand.chx's candidates (gm: the row's maximum written once a chunk, samp_gmax.chx) is V - j for the first maximal
+// column j (0-based), and the id written is 1-based, as onehot_h.chx and tok_acc.chx read it: id = v1 - gm with v1 = V + 1.
+algo amax_id(r, nq, v1)
+  in  gm: f32[r, nq]
+  out id: f32[r, 1]
+{
+  grid i over r
+  let a = load gm[i, 0 ; 1, 1]
+  let z = zeros f32[1, 1]
+  let o = z + v1
+  store o - a -> id[i, 0]
+}
+
+schedule amax_id for apple-m-series { threads 128 }
+schedule amax_id for nvidia-ada     { threads 128 }

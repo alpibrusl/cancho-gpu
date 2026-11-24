@@ -607,3 +607,12 @@ tests/chx/conv_bias_gelu_erf.chx s=26624 n=480 bn=32 m1=-1
 tests/chx/conv_cols.chx t=448 f=16 c=480 wp=457 r=8256
 tests/chx/conv_bias_gelu_erf.chx s=8 n=64 bn=32 m1=-1 --run
 tests/chx/conv_cols.chx t=5 f=3 c=32 wp=8 r=40 --run
+# docs/audio.md, A3: the four kernels the cached step of Qwen3-ASR adds to docs/decode.md's, at the model's sizes (a vocabulary of 151,936 is 2,374 chunks of 64) and small. Held to float64 by tests/kernels.py.
+tests/chx/row_mix.chx n=2048 bn=1024
+tests/chx/dec_post_n.chx r=1
+tests/chx/amax_cand.chx r=1 nq=2374 G=2
+tests/chx/amax_id.chx r=1 nq=2374 v1=151937
+tests/chx/row_mix.chx n=256 bn=128 --run
+tests/chx/dec_post_n.chx r=2 --run
+tests/chx/amax_cand.chx r=2 nq=4 G=2 --run
+tests/chx/amax_id.chx r=3 nq=4 v1=3 --run

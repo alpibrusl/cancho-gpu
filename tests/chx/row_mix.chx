@@ -1,0 +1,22 @@
+// The input row of a decode step when the prompt is rows and not tokens (docs/audio.md section 10: Qwen3-ASR's prompt holds the audio tower's rows): y = m xt + (1 - m) xe, where xt is the prompt's own row (a table
+// read a block a step), xe the embedding of the token the step before chose, and m (a table too) 1 while the step is still in the prompt. ids_mix.chx for rows of n, bn columns a threadgroup.
+algo row_mix(n, bn)
+  in  xt: f32[1, n]
+  in  xe: f32[1, n]
+  in  m:  f32[1, 1]
+  out y:  f32[1, n]
+{
+  grid j over n / bn
+  let t  = load xt[0, j * bn ; 1, bn]
+  let e  = load xe[0, j * bn ; 1, bn]
+  let mm = load m
+  let a  = t * &mm
+  let o  = zeros f32[1, 1]
+  let om = o + 1.0
+  let nm = om - mm
+  let b  = e * nm
+  store a + b -> y[0, j * bn]
+}
+
+schedule row_mix for apple-m-series { threads 128 }
+schedule row_mix for nvidia-ada     { threads 128 }

@@ -583,6 +583,40 @@ def ids_mix(r):
     return [m[i] * tf[i] + (1 - m[i]) * s[i] for i in range(r)]
 
 
+def row_mix(n):
+    xt, xe, m = lcg([n, n, 1])
+    return [m[0] * xt[j] + (1 - m[0]) * xe[j] for j in range(n)]
+
+
+def dec_post_n(r):
+    """Qwen3's dec_post (docs/audio.md section 10): 16 q, 8 k and 8 v slots of 128; q and k normed per head (eps 1e-6) with a weight of their kind, then rotated; v copied."""
+    y, qw, kw, cs, sn = lcg([r * 32 * 128, 128, 128, r * 64, r * 64])
+    q, kn, vn = [], [], []
+    for i in range(r):
+        def rot(slot, w):
+            row = y[(i * 32 + slot) * 128:(i * 32 + slot + 1) * 128]
+            rs = 1 / math.sqrt(sum(v * v for v in row) / 128 + 1e-6)
+            a = [row[c] * rs * w[c] for c in range(128)]
+            return ([a[c] * cs[i * 64 + c] - a[64 + c] * sn[i * 64 + c] for c in range(64)] + [a[64 + c] * cs[i * 64 + c] + a[c] * sn[i * 64 + c] for c in range(64)])
+        for h in range(16):
+            q += rot(h, qw)
+        for h in range(8):
+            kn += rot(16 + h, kw)
+        for h in range(8):
+            vn += y[(i * 32 + 24 + h) * 128:(i * 32 + 25 + h) * 128]
+    return q, kn, vn
+
+
+def amax_cand(r, nq):
+    l, gmb, rk = lcg([r * nq * 64, r * nq, nq * 64])
+    return [rk[q * 64 + c] * (0.0 if gmb[i * nq + q] - l[(i * nq + q) * 64 + c] > 0 else 1.0) for i in range(r) for q in range(nq) for c in range(64)]
+
+
+def amax_id(r, nq, v1):
+    (gm,) = lcg([r * nq])
+    return [v1 - gm[i * nq] for i in range(r)]
+
+
 def attention_scores_b(nb, nkv, g, t, d, tmax):
     q, k, mask = lcg([nb * nkv * g * d, nb * nkv * tmax * d, nb * t])
     out = []
@@ -833,6 +867,14 @@ def new_checks():
     ok &= check("dec_post vn r=3", got["vn"], want_v)
     ok &= check("kv_write_b nb=2 nkv=2 tmax=32 ts=16", run("kv_write_b", ["nb=2", "nkv=2", "tmax=32", "ts=16", "d=128"])["y"], kv_write_b(2, 2, 32, 128))
     ok &= check("ids_mix r=8", run("ids_mix", ["r=8"])["y"], ids_mix(8))
+    ok &= check("row_mix n=256", run("row_mix", ["n=256", "bn=128"])["y"], row_mix(256))
+    got = run("dec_post_n", ["r=2"])
+    want_q, want_k, want_v = dec_post_n(2)
+    ok &= check("dec_post_n q r=2", got["q"], want_q)
+    ok &= check("dec_post_n kn r=2", got["kn"], want_k)
+    ok &= check("dec_post_n vn r=2", got["vn"], want_v)
+    ok &= check("amax_cand r=2 nq=4", run("amax_cand", ["r=2", "nq=4", "G=2"])["c"], amax_cand(2, 4))
+    ok &= check("amax_id r=3 nq=4", run("amax_id", ["r=3", "nq=4", "v1=3"])["id"], amax_id(3, 4, 3))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -985,7 +1027,13 @@ MUTANTS = [
     ("delta_step1.chx", "let e0  = d0 * b0", "let e0  = d0 + b0", "delta_step1 adds beta to the error"),
     ("delta_step1.chx", "let sg0 = s0 * g0", "let sg0 = s0 + g0", "delta_step1 adds the decay to the state"),
     ("delta_step1.chx", "let g0  = load g[i, 0 ; 1, 128]", "let g0  = load g[0, 0 ; 1, 128]", "delta_step1 decays every head by the first head's gate"),
-    ("delta_step1.chx", "let v0  = load v[i * 128 + r * br ; br]", "let v0  = load v[r * br ; br]", "delta_step1 reads every head's values from the first head"),
+    ("delta_step1.chx", "let v0  = load v[i * 128 + r * br ; br]", "let v0  = load v[r * br ; br]", "delta_step1 reads every head's values from the first head"),    ("row_mix.chx", "store a + b -> y[0, j * bn]", "store a - b -> y[0, j * bn]", "row_mix subtracts the embedding"),
+    ("dec_post_n.chx", "let a1 = n1 * w1", "let a1 = n1 + w1", "dec_post_n adds the norm's weight to q's first half"),
+    ("dec_post_n.chx", "let x1 = load kw[0, 0 ; 1, 64]", "let x1 = load qw[0, 0 ; 1, 64]", "dec_post_n norms k with q's weight"),
+    ("dec_post_n.chx", "let lo = t1 - t2", "let lo = t1 + t2", "dec_post_n's rotation has the wrong sign"),
+    ("dec_post_n.chx", "let qe = qm * (1 / 128)", "let qe = qm * (1 / 64)", "dec_post_n takes q's mean square over 64"),
+    ("amax_cand.chx", "let eq = on - st", "let eq = on + st", "amax_cand keeps the ranks of the columns under the maximum, twice"),
+    ("amax_id.chx", "store o - a -> id[i, 0]", "store o + a -> id[i, 0]", "amax_id adds the rank"),
 ]
 
 
