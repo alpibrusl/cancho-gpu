@@ -933,7 +933,16 @@ def new_checks():
     (xs,) = lcg([32])
     ok &= check("sin_scaled r=4 n=8", run("sin_scaled", ["r=4", "n=8"])["y"], [math.sin(256.0 * v) for v in xs])
     xs, sa, sb = lcg([4 * 16, 16, 16])
-    ok &= check("snake s=4 c=16 bn=8", run("snake", ["s=4", "c=16", "bn=8"])["y"], [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
+    ok &= check("snake s=4 c=16 bn=8 g=0", run("snake", ["s=4", "c=16", "bn=8", "g=0"])["y"], [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
+    # S1c (docs/audio.md section 22): the rows in front that a kernel leaves as zeros, the bias that pads, SwiGLU in f32, and the clamp of the samples
+    ok &= check("snake s=4 c=16 bn=8 g=3", run("snake", ["s=4", "c=16", "bn=8", "g=3"])["y"], [0.0] * 48 + [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
+    xs, bs = lcg([4 * 16, 16])
+    ok &= check("bias_pad s=4 c=16 g=2 bn=8", run("bias_pad", ["s=4", "c=16", "g=2", "bn=8"])["y"], [0.0] * 32 + [xs[i * 16 + j] + bs[j] for i in range(4) for j in range(16)])
+    ok &= check("bias_pad s=4 c=16 g=0 bn=8", run("bias_pad", ["s=4", "c=16", "g=0", "bn=8"])["y"], [xs[i * 16 + j] + bs[j] for i in range(4) for j in range(16)])
+    gs, us = lcg([6 * 32, 6 * 32])
+    ok &= check("dit_swiglu_f s=6 n=32 bn=16", run("dit_swiglu_f", ["s=6", "n=32", "bn=16"])["y"], [g / (1.0 + math.exp(-g)) * u for g, u in zip(gs, us)])
+    xs, bs = lcg([16 * 4, 1])
+    ok &= check("wave s=16 c=4 bm=4 lim=0.25", run("wave", ["s=16", "c=4", "bm=4", "lim=0.25", "m1=-1"])["y"], [min(max(xs[i * 4] + bs[0], -0.25), 0.25) for i in range(16)])
     got = run("colbcast", ["r=8", "c=16"])
     x, sc, tt = lcg([128, 8, 16])
     ok &= check("colbcast r=8 c=16", got["y"], [x[i * 16 + j] * sc[i] + tt[j] for i in range(8) for j in range(16)])
@@ -1076,7 +1085,17 @@ MUTANTS = [
     ("sin_scaled.chx", "store sin b -> y", "store tanh b -> y", "sin is a tanh"),
     ("sin_scaled.chx", "let b = a * 256", "let b = a * 255", "sin_scaled scales by 255"),
     ("snake.chx", "let u = &sn * bv", "let u = &v * bv", "snake has x sin where the square of the sine is"),
-    ("snake.chx", "store v + t -> y[i, j * bn]", "store v - t -> y[i, j * bn]", "snake subtracts the periodic part"),
+    ("snake.chx", "store v + t -> y[i + g, j * bn]", "store v + t -> y[i, j * bn]", "snake writes over the rows in front"),
+    ("bias_pad.chx", "store v + bb -> y[i + g, j * bn]", "store v + bb -> y[i, j * bn]", "bias_pad writes over the rows in front"),
+    ("bias_pad.chx", "store v + bb -> y[i + g, j * bn]", "store v - bb -> y[i + g, j * bn]", "bias_pad subtracts the bias"),
+    ("bias_pad.chx", "let bb = load b[0, j * bn ; 1, bn]", "let bb = load b[0, 0 ; 1, bn]", "bias_pad reads every tile's bias from the first"),
+    ("dit_swiglu_f.chx", "let sg = sigmoid &gt", "let sg = sigmoid &ut", "dit_swiglu_f gates by the sigmoid of u"),
+    ("dit_swiglu_f.chx", "store a * ut -> y[i, j * bn]", "store a + ut -> y[i, j * bn]", "dit_swiglu_f adds u"),
+    ("wave.chx", "let hi = relu (t + 2 * lim)", "let hi = t + 2 * lim", "wave does not clamp at the top"),
+    ("wave.chx", "let lo = relu (w + lim)", "let lo = w + lim", "wave does not clamp at the bottom"),
+    ("wave.chx", "let w  = v + bb", "let w  = v - bb", "wave subtracts the bias"),
+    ("wave.chx", "load x[i * bm, 0 ; bm, 1]", "load x[i * bm, 1 ; bm, 1]", "wave reads the second column"),
+    ("snake.chx", "store v + t -> y[i + g, j * bn]", "store v - t -> y[i + g, j * bn]", "snake subtracts the periodic part"),
     ("snake.chx", "let w = &v * av", "let w = &v + av", "snake adds a where it multiplies"),
     ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),

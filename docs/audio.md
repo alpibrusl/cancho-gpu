@@ -98,7 +98,7 @@ Revision `0c0e3051`: `model.safetensors` 3.83 GB (404 tensors, 1,917 M values, B
 ### 3.3 Stages
 
 * **S0. The reference**, as A0: one sentence, one voice, a fixed seed; the 16 x T codes and the waveform kept.
-* **S1. The codec's decoder from the reference's codes**, the part with everything new and no sampling: `sin` first (the operation, its float64 test, its mutants), then the three convolutions, then the model file. **Bound, set now: the waveform within 1e-3 of full scale of the reference's float32 at every sample, and the kernels held to float64 as the others are.**
+* **S1. The codec's decoder from the reference's codes** **[done, sections 18 to 23: the worst sample 4.6e-6 from the reference's]**, the part with everything new and no sampling: `sin` first (the operation, its float64 test, its mutants), then the three convolutions, then the model file. **Bound, set now: the waveform within 1e-3 of full scale of the reference's float32 at every sample, and the kernels held to float64 as the others are.**
 * **S2. The talker and the predictor, teacher-forced** on the reference's codes: the logits of every draw. Bound: as A2's, the arg max equal wherever the reference's top two are clear.
 * **S3. Generation**, with the device's sampler. A sampled sequence cannot equal torch's; **the check is S2's logits and the predictor's draws given the reference's uniforms if they can be fed, else a listening check and A's recogniser on the result** (the two halves of this document test each other).
 * **S4. `scripts/media speak "TEXT" -o DIR --voice NAME --language L`**, and the real-time factor.
@@ -466,7 +466,7 @@ A causal 1-D convolution of k taps with a dilation (the taps a loop of products 
 
 ### S1c: the decoder
 
-The codebook sums, the 8 transformer layers with their window of 72, the two ConvNeXt stages, the four Snake blocks, the model file and the session; the reference's activations hooked at each stage by hand, so that the first stage past the bound is named. **The bound of 3.3 is S1c's.**
+The codebook sums, the 8 transformer layers with their window of 72, the two ConvNeXt stages, the four Snake blocks, the model file and the session; the reference's activations hooked at each stage by hand, so that the first stage past the bound is named. **The bound of 3.3 is S1c's.** **[done: sections 22 and 23]**
 
 ## 19. S1a: `sin` and the Snake activation **[measured, 2026-11-24, M4 Max]**
 
@@ -519,7 +519,7 @@ The codebook sums, the 8 transformer layers with their window of 72, the two Con
 | transposed, 1,024 to 1,024, stride 2, 2 taps | `conv1d_f k=1`, read as 2 rows a position | 67 positions (134 rows), 256 of the outputs | 1.0e-6 | 1.32 |
 | depthwise, 1,024 channels, 7 taps, with its bias | `dwconv_f` | 134 positions, all channels | 2.5e-6 | 26.6 |
 
-Every one is within 2.3e-6 of its peak. Where only some outputs are compared it is because the interpreter reads a tensor as text of at most 16 MiB: the weights of those outputs are whole (every input channel, every tap); a later position cannot change an earlier one in a causal layer, so a prefix is the layer's own output. **Not compared: the transposed convolution of stride 8 (1,536 to 768) and of stride 4**, whose layout is the one of strides 5 and 3.
+Every one is within 2.3e-6 of its peak. Where only some outputs are compared it is because the interpreter reads a tensor as text of at most 16 MiB: the weights of those outputs are whole (every input channel, every tap); a later position cannot change an earlier one in a causal layer, so a prefix is the layer's own output. **Not compared: the transposed convolution of stride 8 (1,536 to 768) and of stride 4**, whose layout is the one of strides 5 and 3. **[with S1c, section 23: both are in the whole decoder, whose activations after each block are compared]**
 
 | on the Metal GPU against the interpreter, the test's own inputs | worst difference, of the peak |
 |---|---|
@@ -533,3 +533,84 @@ Every one is within 2.3e-6 of its peak. Where only some outputs are compared it 
 * **Against float64, in the gate:** `conv1d_f` with 3 taps and a dilation of 2; the transposed convolution of stride 3 written as the reference computes it, against `conv1d_f` with 2 taps; `dwconv_f`. **Mutants, run by hand, all killed by numbers:** a tap shifted by one position where the dilation is 2; every tap's weights read from the first tap; the first tap left out; the depthwise bias left out; its taps' weights from the first; its taps all reading the position itself; and, of the reference's reading, the two taps of the transposed layout exchanged.
 * **Goldens** for seven cases; `conv1d_f` is refused on CUDA (`lowering`: an f32 operand of the matrix unit), as designed, and its goldens there are the refusal.
 * **Not done:** the kernels on the GPU with the reference's tensors (the device runner takes the test's inputs only; real tensors on the GPU are S1c's session); the bias of `conv1d_f` (S1c's kernel); the rows of zeros in front are the caller's to provide, and nothing here checks that a session's buffers have them; the widest transposed layer (6,144 outputs of 3,072 inputs) does not fit the interpreter, so it has a golden and no numeric run; no time was measured.
+
+## 22. S1c (design, 2026-11-24, written before its code): the decoder as one session
+
+**[read: `Qwen3TTSTokenizerV2Decoder.forward` and what it calls; the configuration: 512 wide, 16 heads of 64, MLP 1,024 (SiLU gate), no attention bias, RMS eps 1e-5, window 72, rotary base 10,000, layer scale 0.01 at initialisation, rates (2, 2) then (8, 5, 4, 3)]** `models/qwen3_tts_decoder.model` is the decoder for SP frames (a multiple of 64): SP rows through the transformer, 4 SP after the two stages, 1,920 SP samples. Every layer is causal, so the rows after a clip's last frame change nothing before them: a clip of T frames runs with SP = T rounded up and its first 1,920 T samples are the answer.
+
+**Everything is f32, weights and activations. [measured before this was written, by hand, the reference on S0's codes]** The reference with the transformer's products' weights rounded to f16 moves the waveform by 1.4e-3 at worst; with only their inputs rounded to f16, by 1.2e-3; the ConvNeXt blocks' two products the same way, 3.5e-4 and 1.4e-4. The bound is 1e-3, so the f16 kernels that the recognition's layers run on (`gemm_mma`, `dit_rope16`, `dit_scores_mma`, `dit_pv_mma`, `vit_ln`, `dit_swiglu`) cannot carry this model: section 20's "rounding them to f16 would be a change to the model" was reckoned for the convolutions and holds for the transformer too. A product is `conv1d_f` with one tap.
+
+| the reference | as |
+|---|---|
+| the codebooks (`embedding_sum / cluster_usage` clamped at 1e-5, 16 of 2,048 x 256), the first's sum through one 256 to 512 product and the other fifteen's through another | **the host**: it writes the divided tables once (the division of two singles rounded to a single, as torch's) and, for a clip, the sum of the two products of each frame in binary64, rounded once: `x0.f32`, `[2 + SP, 512]` with two rows of zeros in front |
+| `pre_conv`, `input_proj`, `output_proj`, the two stages' transposed convolutions, the decoder's convolutions | `conv1d_f`, then `bias_pad` (new) |
+| a transformer layer: RMS norm; q, k, v; rotary; attention over the last 72; o; the layer scale; RMS norm; gate, up, SiLU, down; the layer scale | `rmsnorm_rows`; `conv1d_f` three times; `dit_rope` (f32) on q and k; `dit_scores_bias`, `dit_stats`, `dit_pv` (the f32 attention of the recognition's audio tower, 16 heads of 64 as there); `conv1d_f`; `dit_add`; then `rmsnorm_rows`, `conv1d_f` twice, **`dit_swiglu_f` (new: `dit_swiglu` with an f32 output)**, `conv1d_f`, `dit_add` |
+| the window and the causal mask | one `[16 SP, SP]` bias the host writes: 0 where `i - 72 < j <= i`, -1e9 elsewhere |
+| the layer scales, the ConvNeXt block's `gamma` | **folded by the host** into the rows of `o_proj`, `down_proj`, `pwconv2` and into `pwconv2`'s bias, in binary64, rounded once: one more rounding of a weight (6e-8 of it) where the reference rounds the product |
+| 1 / sqrt(64) | q's weight times 0.125, exact |
+| a ConvNeXt block | `dwconv_f`, `vit_ln_f`, `conv1d_f`, `conv_bias_gelu_erf` (its mask all ones), `conv1d_f`, `bias_pad`, `dit_add` |
+| a block: Snake, the transposed convolution, three residual units | `snake`, `conv1d_f` with 2 taps read as r rows a position (section 20), `bias_pad`; a unit is `snake`, `conv1d_f` (7 taps), `bias_pad`, `snake`, `conv1d_f` (1 tap), `bias_pad`, `dit_add` |
+| the last Snake and convolution, the clamp | `snake`, `conv1d_f` to 32 outputs of which 31 have zero weights, **`wave` (new)**: the first column plus its bias, clamped to [-1, 1] |
+
+**The rows of zeros in front of a convolution's input** are the kernel before it writing its s rows after g rows it does not touch: `out y: f32[g + s, c]`, stored from row g. `snake` gets the constant `g` (0 is what it was), and **`bias_pad`** is `y[g + t] = x[t] + b`: the bias of a product, and with a bias of zeros the one copy that only pads (in front of the decoder's first convolution, whose input is a sum). **[read: `shim/canchogpu-metal.mm` makes a program's buffers with `newBufferWithLength`, which Metal fills with zeros, and nothing else writes those rows]** The check is the waveform itself: the first positions of every convolution read them.
+
+**The clamp** has no operation of its own: `1 - relu(2 - relu(v + 1))`, which is `v` rounded once at `v + 1` (6e-8 at worst) inside [-1, 1] and exactly the ends outside, for every finite v. **[as built: the kernel's bound is a constant, `lim`, 1 in the model; its test runs with 0.25, because a test's inputs are under 1 in magnitude and would never reach a clamp at 1]**
+
+**The rotary tables:** the reference computes the angle in singles (`inv_freq` a single, times the position, rounded). The host does the same with its `f32`, so the angle can differ from torch's only by `inv_freq`'s last place (torch's `pow` in singles against binary64 rounded).
+
+**New kernels: three small ones and a constant** (`bias_pad`, `dit_swiglu_f`, `wave`, `snake`'s `g`), each against float64 with mutants as the others.
+
+**The host, `tests/qwen3_tts_decoder_gpu.cho`** (cancho): `weights` (the checkpoint's `speech_tokenizer/model.safetensors` to the session's files, once), `prepare` (a clip's codes, a text file of 16 numbers a frame, to `x0.f32`, the rotary tables, the mask), `compare` (the session's `wave.f32` against the reference's samples: **every one of the first 1,920 T within 1e-3**, exit status 0 only then) and `stage` (a saved buffer against a reference activation: the worst difference and the peak, for the by-hand table). Mutants of the layout, each to fail `compare`: the window left out (on a clip longer than 72 frames), the window one short, q not scaled, the transposed convolutions' two taps exchanged, the layer scales left out.
+
+**Checks.** By hand (the checkpoint and a Metal GPU): S0's 67 frames (SP 128) and S1's 203 (SP 256, past the window) against the reference's waveforms; the reference's activations hooked after the transformer, after the two stages, after each block, so that the first stage past the bound is named if one is. In the gate: the kernels' float64 references and goldens, the model file's expansion (`tests/model.sh`), and the host's refusals without a checkpoint (`tests/qwen3_tts_decoder.sh`).
+
+**Not in S1c:** a clip longer than a session holds, which the reference cuts in pieces of 300 frames with 25 of context (`chunked_decode`: S4's), the wav file (S4's), and the time, reported and not bounded.
+
+## 23. S1c: the decoder on the GPU **[measured, 2026-11-24, M4 Max]**
+
+`models/qwen3_tts_decoder.model` (266 programs for any SP) with `tests/qwen3_tts_decoder_gpu.cho` as its host, from the reference's codes, against the reference's own samples (the model's package in float32 on the CPU; its decoder alone on a clip's codes gives the clip's kept waveform exactly):
+
+| clip | frames, SP | samples | worst difference at any sample | the reference's peak | the whole session process |
+|---|---|---|---|---|---|
+| S0 | 67, 128 | 128,640 (5.4 s) | **2.7e-6** | 0.415 | 0.36 s |
+| S1 | 203, 256 | 389,760 (16.2 s) | **2.6e-6** | 0.429 | 0.60 s |
+| S1, S0 and S1 again, cut at 384 frames (the most the host takes) | 384, 384 | 737,280 (30.7 s) | **4.6e-6** | 0.429 | 0.85 s |
+
+**The bound of 3.3 is 1e-3: it is met with more than two hundred times to spare**, on every sample of the three clips. The time is the session's process from start to exit, three runs each within 0.02 s: reading 435 MB of weights, compiling, the pass, writing the samples. `prepare` is 0.02 s and `weights`, once, 0.8 s (236 files).
+
+**The reference's activations, stage by stage** (hooked by hand, the session's buffers saved with `PROBE=1`, `stage`):
+
+| after | S0: worst difference | S1: worst difference | the reference's peak |
+|---|---|---|---|
+| the host's codebook sums (`x0`) | 3.4e-5 | | 89.8 |
+| the transformer and `output_proj` | 1.2e-7 | 1.9e-7 | 0.204 |
+| the first stage | 4.9e-6 | 6.4e-6 | 2.55 |
+| the second stage | 5.5e-5 | 6.5e-5 | 21.8 |
+| the decoder's first convolution | 4.0e-5 | 6.1e-5 | 14.5, 17.7 |
+| block 1 (rate 8) | 3.2e-5 | 3.5e-5 | 10.2, 10.0 |
+| block 2 (rate 5) | 3.9e-4 | 1.2e-4 | 4.6, 5.3 |
+| block 3 (rate 4) | 1.9e-4 | 1.7e-4 | 4.4, 4.1 |
+| block 4 (rate 3) | 8.3e-4 | 8.6e-4 | 135, 133 |
+| the samples | 2.7e-6 | 2.6e-6 | 0.415, 0.429 |
+
+No stage is the one where the two part: the differences are those of singles summed in another order, growing with the depth and with the Snakes' steep places (block 2's are 8e-5 of its peak, block 4's 6e-6 of its), and the last convolution and the clamp bring them back to 6e-6 of the peak.
+
+**Mutants of the layout, each run through the session and `compare`:**
+
+| mutant | S0 (67 frames) | S1 (203 frames) |
+|---|---|---|
+| 1 the window left out | passes, 2.7e-6: no query has more than 72 keys | **fails, 4.4e-2** |
+| 2 the window 71 | passes, the same | **fails, 3.4e-3** |
+| 3 q not scaled | **fails, 0.22** | |
+| 4 the transposed convolutions' two taps exchanged | **fails, 0.52** | |
+| 5 the layer scales left out | **fails, 0.59** | |
+
+The window is held only by a clip longer than 72 frames, as section 22 said: S1 is the check, and a window one frame short is caught at 3.4 times the bound.
+
+**The new kernels** (`bias_pad`, `dit_swiglu_f`, `wave`, and `snake`'s `g`): against float64 in the gate (`tests/kernels.py`, six checks); on the Metal GPU against the interpreter, by hand, worst 6.0e-8 (`snake` at 64 x 1,536) and 1.5e-8 (`dit_swiglu_f`), the others equal to the bit; **13 mutants, run by hand, all killed by numbers** (a kernel writing over the rows in front, the bias subtracted or read from the first tile, the gate's sigmoid of the wrong operand, the clamp left out at either end, the second column read, and S1a's three of `snake`). Goldens for eleven cases.
+
+* **In the gate, without a GPU or the checkpoint:** the model file's expansion at SP 128 and at SP 256 with the probes (`tests/model.sh`); `tests/qwen3_tts_decoder.sh`, 37 checks: the host's refusals with their statuses, the inputs' sizes from codebooks of zeros, the mask's window read from its bytes (row 100 sees keys 29 to 100), and `compare`'s bound from files written by hand (a sample off by 0.0009 passes, by 0.0011 fails, a value that is not a number fails, a difference after the clip's last sample is not counted).
+* **By hand** (the checkpoint and a Metal GPU; the reference's samples and activations are written by a script that is not in the repository): `build/qwen3_tts_decoder_gpu weights <speech_tokenizer/model.safetensors> W`, `prepare W K codes.txt`, `printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_tts_decoder.model CHX=$PWD/tests/chx WORK=K WDIR=W SP=..`, `compare K wave.f32 <frames>`.
+* **Corrected by this stage:** section 20 chose f32 for the convolutions by reckoning; measured (section 22), f16 in the transformer alone is past the bound, so the decoder has no f16 product at all.
+* **Not done:** a clip longer than 384 frames (the reference's pieces of 300 with 25 of context: S4); the rotary tables and the folded weights are not compared with the reference's one by one (the activation after the transformer, 1.2e-7, holds them together); the device's memory is not measured; the time is one machine's and is not split into loading, compiling and the pass; the CUDA lowering of the three new kernels has goldens and no run on a device (`conv1d_f`, which the model needs, is Metal's alone); nothing here writes a wav file (S4).
+
