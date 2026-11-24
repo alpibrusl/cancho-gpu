@@ -137,6 +137,11 @@ conv_bias_gelu_erf s=8 n=64 bn=32 m1=-1
 row_mix n=256 bn=128
 kv_export s=4 nkv=2 tmax=8
 sin_scaled r=64 n=1024
+conv1d_f s=64 cin=512 cout=1024 k=3 dl=1
+conv1d_f s=256 cin=1024 cout=1536 k=7 dl=1
+conv1d_f s=2048 cin=768 cout=1920 k=2 dl=1
+conv1d_f s=2432 cin=96 cout=96 k=7 dl=9
+dwconv_f s=128 c=1024 k=7 bm=8 bn=256
 snake s=64 c=1536 bn=256
 snake s=4 c=16 bn=8
 dec_post_n r=2

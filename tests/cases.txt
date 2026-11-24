@@ -625,3 +625,12 @@ tests/chx/sin_scaled.chx r=4 n=8 --run
 tests/chx/snake.chx s=64 c=1536 bn=256
 tests/chx/snake.chx s=24000 c=96 bn=96
 tests/chx/snake.chx s=4 c=16 bn=8 --run
+# S1b (docs/audio.md section 20): the codec decoder's convolutions at their shapes for 64 frames (a little over 5 s). conv1d_f: pre_conv, the decoder's first, a transposed one of stride 8 (1,536 to 768,
+# as 2 taps to 6,144 outputs), a residual unit's with dilation 9 at 96 channels (a tenth of a second), and a small one run. dwconv_f: the ConvNeXt block's at 1,024 channels.
+tests/chx/conv1d_f.chx s=64 cin=512 cout=1024 k=3 dl=1
+tests/chx/conv1d_f.chx s=256 cin=1024 cout=1536 k=7 dl=1
+tests/chx/conv1d_f.chx s=256 cin=1536 cout=6144 k=2 dl=1
+tests/chx/conv1d_f.chx s=2432 cin=96 cout=96 k=7 dl=9
+tests/chx/conv1d_f.chx s=64 cin=32 cout=32 k=3 dl=2 --run
+tests/chx/dwconv_f.chx s=128 c=1024 k=7 bm=8 bn=256
+tests/chx/dwconv_f.chx s=8 c=16 k=7 bm=4 bn=8 --run

@@ -147,7 +147,7 @@ is by tag**: the message is for a person and is not part of the language.
   performance and the order of reductions, never the mathematical result.
 * **Open: the accuracy of `exp`, `log`, `rsqrt`, `sigmoid`, `softplus`, `tanh` and `sin`.** The interpreter computes them in binary64
   and rounds once to binary32; the GPU backends use their libraries' functions. This document specifies no ulp bound for
-  them; the references check results to 1e-5 relative. A bound should be chosen, written here, and measured. Measured for `sin` (`docs/audio.md` section 19): over arguments in [-64, 64) the Metal GPU's `precise::sin` is within 1.2e-7 of the interpreter's value (one unit in the last place at 1); larger arguments were not tried.
+  them; the references check results to 1e-5 relative. A bound should be chosen, written here, and measured. Measured for `sin` (`docs/audio.md` section 19): over arguments in [-128, 128) the Metal GPU's `precise::sin` is within 1.2e-7 of the interpreter's value (one unit in the last place at 1); larger arguments were not tried.
 * **Open: NaN and infinity.** `rowmax` of a row with a NaN, and `exp` overflow, are as the implementations give them. Not specified.
 * **Open: the tie rule of `i8` rounding** (`stage`/`store` to `i8`): the implementation (`src/f32.cho` `round_i8`) uses `std.math.round`; whether
   that is half away from zero or to even has not been checked against a case, and the backends' behaviour is not specified.

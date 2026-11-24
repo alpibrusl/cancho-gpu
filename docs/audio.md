@@ -90,7 +90,7 @@ Revision `0c0e3051`: `model.safetensors` 3.83 GB (404 tensors, 1,917 M values, B
 |---|---|
 | **`sin`** (Snake) | **not in the language**: its elementwise functions are `rsqrt`, `exp`, `log`, `sigmoid`, `softplus`, `relu`, `step`, `tanh`. A new operation: parser, checker, interpreter, both lowerings, and its accuracy stated as `docs/chx.md` section 7 does for the others |
 | a 1-D causal convolution of 7 taps with a dilation | not built. As `conv3` is a loop of `mma` over the taps of shifted row windows (`docs/roadmap-models.md` G11), over one axis; the causal padding is rows of zeros in front |
-| a transposed 1-D convolution of stride r and 2r taps | not built. **[reckoned]** r convolutions of 2 taps, one for each output phase, each a product of the same input rows with a slice of the weight: no new operation, a kernel and an interleaving store |
+| a transposed 1-D convolution of stride r and 2r taps | not built. **[reckoned]** r convolutions of 2 taps, one for each output phase, each a product of the same input rows with a slice of the weight: no new operation, a kernel and an interleaving store. **[corrected with S1b, section 20: one convolution of 2 taps to r times the outputs, and no interleaving store: the buffer read with another shape]** |
 | a depthwise convolution of 7 taps | `conv_step.chx` is one of 4 taps for one token; the general one is elementwise products of shifted rows with a `[7, c]` table |
 | a sampler with top-k and a repetition penalty | `docs/sampler.md`'s kernels, to be read against these settings |
 | 16 sequential draws a frame | the caches of A3, for two models (the talker and the predictor) |
@@ -456,7 +456,7 @@ Section 3.3 set S1's bound: the waveform within 1e-3 of full scale of the refere
 ### S1a: `sin`, and the Snake activation
 
 * **`sin` is an elementwise operation of the kernel language**, beside `tanh`: the parser's word, the elaborator's kind, the interpreter (binary64 `sin` rounded once to binary32, as `exp` and `tanh` are), and both lowerings (`sinf` on CUDA, `precise::sin` on Metal). No new rule tag: a misuse is the refusals an operation already has.
-* **Accuracy, stated as `docs/chx.md` section 7 states the others': open, and measured.** The float64 reference holds the interpreter to 1e-5 relative; on the Metal GPU, `sin` of arguments over [-64, 64) (`tests/chx/sin_scaled.chx`: `sin(128 x)`, x in [-0.5, 0.5)) is compared with the interpreter and the worst difference reported. What arguments the decoder's Snakes see is measured in S1c, and if they pass 64 the range here is widened.
+* **Accuracy, stated as `docs/chx.md` section 7 states the others': open, and measured.** The float64 reference holds the interpreter to 1e-5 relative; on the Metal GPU, `sin` of arguments over [-64, 64) (`tests/chx/sin_scaled.chx`: `sin(128 x)`, x in [-0.5, 0.5)) is compared with the interpreter and the worst difference reported. What arguments the decoder's Snakes see is measured in S1c, and if they pass 64 the range here is widened. **[done with S1b, section 21: they reach 95, and the test is `sin(256 x)`, over [-128, 128)]**
 * **`tests/chx/snake.chx`**: `y = x + sin^2(x a) ib` for s rows (positions) of c channels, `a` and `ib` a channel.
 * **Held:** both kernels against float64 (`tests/kernels.py`), with mutants (`sin` a `tanh`; the square left out; `ib` left out), goldens for both targets (`tests/cases.txt`), and the Metal run by hand (`scripts/metal-kernels.sh`).
 
@@ -476,9 +476,60 @@ The codebook sums, the 8 transformer layers with their window of 72, the two Con
 |---|---|---|
 | `sin(128 x)`, the interpreter, both targets | float64 (`tests/kernels.py`) | within its 1e-5 |
 | `snake`, the interpreter, both targets | float64 | within its 1e-5 |
-| `sin(128 x)` on the Metal GPU, 65,536 arguments over [-64, 64) | the interpreter | **worst difference 1.2e-7** (a unit in the last place at 1) |
+| `sin(128 x)` on the Metal GPU, 65,536 arguments over [-64, 64) **[with S1b: `sin(256 x)`, over [-128, 128), the same worst difference]** | the interpreter | **worst difference 1.2e-7** (a unit in the last place at 1) |
 | `snake` on the Metal GPU, 64 x 1,536 (the decoder's widest) and 24,000 x 96 (a second of audio at its narrowest) | the interpreter | worst 6.0e-8 of a peak of 0.53 |
 
 * **Mutants, all killed by numbers** (run by hand; the gate runs `tests/kernels.py` without `--mutants`): `sin` a `tanh`; the argument scaled by 127; `x sin` where the square of the sine is; the periodic part subtracted; `a` added where it multiplies. A first mutant (the square left out) stopped on a refusal, not on a number (a tile left unconsumed), and was replaced.
 * **In the gate:** the two float64 references, and the goldens of five cases for both targets (`tests/cases.txt`).
 * **Not done:** the CUDA lowering writes `sinf` and was not run on a device (there is none here; the gate's emulator stage runs it on the host); arguments past 64 in magnitude; what arguments the decoder's Snakes see (S1c); the inputs of `snake`'s test are all under 0.5 in magnitude, so its sine is never past a quarter period there: the range is `sin_scaled`'s to hold.
+
+## 20. S1b (design, 2026-11-24): the decoder's convolutions
+
+**[read: `CausalConvNet`, `CausalTransConvNet`, `ConvNeXtBlock` and the decoder's `__init__` of the reference]** Every convolution of the decoder has stride 1 or is transposed. A position is a row and a channel a column, as everywhere in the sessions.
+
+| the reference's layer | where | as a kernel |
+|---|---|---|
+| `CausalConvNet(cin, cout, k, dilation)`: zeros in front for `(k - 1) dilation` positions, then `Conv1d` | `pre_conv` (512 to 1,024, 3 taps), the decoder's first (1,024 to 1,536, 7 taps) and last (96 to 1, 7 taps), each residual unit's first (7 taps, dilation 1, 3 or 9) and second (1 tap) | **`tests/chx/conv1d_f.chx`**: `y[t, co] = sum_j sum_ci w[co, j cin + ci] x[t + j dl, ci]` over an input with its rows of zeros in front, the taps a loop of matrix-unit products over shifted row windows (as `conv3.chx`). The bias is the next kernel's |
+| `CausalTransConvNet(cin, cout, 2r, r)`: `ConvTranspose1d` of 2r taps and stride r, the last r outputs cut | the four blocks (r = 8, 5, 4, 3) | **the same kernel, no new one.** The output at `u r + ph` (`ph < r`) is `x[u] W[ph] + x[u - 1] W[ph + r]`: a convolution of 2 taps to `r cout` outputs, tap 0 the weights `W[.., ph + r]` and tap 1 `W[.., ph]`, phase outermost in the output's columns. A row of `[s, r cout]` is then r rows of `[s r, cout]`: the interleaving is the buffer read with another shape. **[corrected: 3.2 reckoned "r convolutions of 2 taps, a kernel and an interleaving store"]** |
+| `CausalTransConvNet(c, c, r, r)`: taps equal to the stride | the two rate-doubling stages (r = 2) | the same with one tap: a product to `r c` outputs |
+| the ConvNeXt block's depthwise `CausalConvNet(c, c, 7, groups=c)` | the two stages (c = 1,024) | **`tests/chx/dwconv_f.chx`**: `y[t, ch] = b[ch] + sum_j w[j, ch] x[t + j, ch]`, elementwise over shifted rows |
+
+**Both operands of the products are f32.** The codec's weights are F32 in the checkpoint (3), unlike the language models' BF16, so rounding them to f16 would be a change to the model (4.9e-4 of a weight at worst), and the decoder is some thirty convolutions deep against a bound of 1e-3 of full scale. The matrix unit takes f32 operands on Metal since V3c (`docs/diffusion.md` section 6); on CUDA it is refused (`lowering`), so `conv1d_f` is Metal's alone, as `gemm_mma_f` is.
+
+**Checks.**
+
+* **Against float64, in the gate** (`tests/kernels.py`): `conv1d_f` with 3 taps and a dilation of 2; **the transposed convolution written as the reference writes it** (every input position adds its 2r weighted taps into the output, the last r cut) against `conv1d_f` with 2 taps and the weights laid out as above, read with the other shape; `dwconv_f`. Mutants: a tap's window not shifted by the dilation, the taps' weights in one tap's columns, the two taps of the transposed layout exchanged (a mutant of the reference's reading, since the kernel is the same), the depthwise bias left out, its taps read from one row.
+* **On the Metal GPU against the interpreter**, at the decoder's shapes (by hand, `scripts/metal-kernels.sh`).
+* **Against the reference's own layers, by hand:** the input and output of one layer of each kind hooked from the reference on S0's codes, the checkpoint's weights laid out by a script that is not in the repository, the kernel run on those tensors. This checks the layout and the padding against torch, which the float64 references (written from the same reading) cannot. The cancho host that writes the weights is S1c's, held there by the waveform.
+
+## 21. S1b: the decoder's convolutions **[measured, 2026-11-24, M4 Max]**
+
+`tests/chx/conv1d_f.chx` (the causal convolution with a dilation, and the transposed one as section 20 reads it) and `tests/chx/dwconv_f.chx` (the depthwise one with its bias). Two kernels for the five kinds of layer.
+
+**Against the reference's own layers on S0's codes**, by hand: the layer's input and output hooked from the reference (whose decoder alone, given S0's codes, gives S0's waveform exactly), the checkpoint's weights laid out by a script that is not in the repository, the kernel run in the interpreter on those tensors, the reference's bias taken off its output:
+
+| the reference's layer | as | compared | largest difference | the output's peak |
+|---|---|---|---|---|
+| `pre_conv`, 512 to 1,024, 3 taps | `conv1d_f k=3` | 67 positions, 128 of the outputs | 1.0e-6 | 0.92 |
+| the decoder's first, 1,024 to 1,536, 7 taps | `conv1d_f k=7` | 268 positions, 64 of the outputs | 3.0e-5 | 13.4 |
+| a residual unit's, 96 channels, 7 taps, dilation 9 | `conv1d_f k=7 dl=9` | the first 6,400 positions, all outputs | 4.3e-6 | 9.0 |
+| the decoder's last, 96 to 1, 7 taps | `conv1d_f k=7`, 31 rows of zero weights | the first 6,400 positions | 1.5e-8 | 0.072 |
+| transposed, 768 to 384, stride 5, 10 taps | `conv1d_f k=2`, read as 5 rows a position | 640 positions (3,200 rows), 64 of the outputs | 1.0e-6 | 1.21 |
+| transposed, 192 to 96, stride 3, 6 taps | the same | 640 positions (1,920 rows), all outputs | 3.8e-7 | 0.61 |
+| transposed, 1,024 to 1,024, stride 2, 2 taps | `conv1d_f k=1`, read as 2 rows a position | 67 positions (134 rows), 256 of the outputs | 1.0e-6 | 1.32 |
+| depthwise, 1,024 channels, 7 taps, with its bias | `dwconv_f` | 134 positions, all channels | 2.5e-6 | 26.6 |
+
+Every one is within 2.3e-6 of its peak. Where only some outputs are compared it is because the interpreter reads a tensor as text of at most 16 MiB: the weights of those outputs are whole (every input channel, every tap); a later position cannot change an earlier one in a causal layer, so a prefix is the layer's own output. **Not compared: the transposed convolution of stride 8 (1,536 to 768) and of stride 4**, whose layout is the one of strides 5 and 3.
+
+| on the Metal GPU against the interpreter, the test's own inputs | worst difference, of the peak |
+|---|---|
+| `conv1d_f` 512 to 1,024, 3 taps, 64 positions | 2.0e-6 |
+| `conv1d_f` 1,024 to 1,536, 7 taps, 256 positions | 3.5e-6 |
+| `conv1d_f` 768 to 1,920 (the transposed of stride 5), 2,048 positions | 1.5e-6 |
+| `conv1d_f` 96 to 96, 7 taps, dilation 9, 2,432 positions | 1.0e-6 |
+| `dwconv_f` 1,024 channels, 128 positions | 1.3e-7 |
+
+* **The Snakes' arguments reach 95** (`x e^alpha`, in the fifth block's; the largest activation entering one is 135), measured on S0's codes: past the 64 that S1a's test covered. `tests/chx/sin_scaled.chx` is now `sin(256 x)`, over [-128, 128), with the same worst difference on the GPU (1.2e-7); section 19's table is marked.
+* **Against float64, in the gate:** `conv1d_f` with 3 taps and a dilation of 2; the transposed convolution of stride 3 written as the reference computes it, against `conv1d_f` with 2 taps; `dwconv_f`. **Mutants, run by hand, all killed by numbers:** a tap shifted by one position where the dilation is 2; every tap's weights read from the first tap; the first tap left out; the depthwise bias left out; its taps' weights from the first; its taps all reading the position itself; and, of the reference's reading, the two taps of the transposed layout exchanged.
+* **Goldens** for seven cases; `conv1d_f` is refused on CUDA (`lowering`: an f32 operand of the matrix unit), as designed, and its goldens there are the refusal.
+* **Not done:** the kernels on the GPU with the reference's tensors (the device runner takes the test's inputs only; real tensors on the GPU are S1c's session); the bias of `conv1d_f` (S1c's kernel); the rows of zeros in front are the caller's to provide, and nothing here checks that a session's buffers have them; the widest transposed layer (6,144 outputs of 3,072 inputs) does not fit the interpreter, so it has a golden and no numeric run; no time was measured.
