@@ -160,5 +160,12 @@ dit_stats_o nh=2 nq=128 t=192 qs=16 cs=64
 spill_relu nh=2 nq=128 t=128 d=128
 f16:dit_attn_fused nh=2 nq=128 t=128 d=128
 dit_pv_mma nh=2 nq=128 t=128 d=128
+gemm_mma_f m=64 n=256 k=96
+dit_wan_lnmod_f s=12 n=256
+vit_ln_f s=4 n=256
+vit_bias_gelu_f s=4 n=256 bn=128
+dit_rope16_f s=128 nh=2 h=64 sc=0.08838834764831845
+dit_scores_mma_f nh=2 nq=128 t=128 d=128
+dit_pv_mma_f nh=2 nq=128 t=128 d=128
 CASES
 exit $fail

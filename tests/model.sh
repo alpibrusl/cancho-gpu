@@ -55,6 +55,9 @@ tag=a5s;     check qwen3_asr_audio CHX=/chx CONV3=/conv3 WORK=/w WDIR=/wd BP=10 
 tag=sp128;   check qwen3_asr_text CHX=/chx WORK=/w WDIR=/wd SP=128
 tag=t128;    check qwen3_asr_step CHX=/chx QW=/qw TR=/tr WORK=/w WDIR=/wd T=128 NS=109
 tag=sp64;    check umt5_enc CHX=/chx WORK=/w WDIR=/wd SP=64
+# The video transformer at 17 frames of 640 x 352: the f16 programs (the expansion models/wan_dit.model had before PREC existed) and the f32-operand ones (docs/diffusion.md section 6, V3c).
+tag=f16;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1
+tag=f32;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1 PREC=1 GEMM=gemm_mma_f LNM=dit_wan_lnmod_f LN=vit_ln_f GELU=vit_bias_gelu_f ROPE=dit_rope16_f SCO=dit_scores_mma_f PVM=dit_pv_mma_f AT=f32
 if [ -n "$SESSION" ]; then
   "$BIN" model-expand tests/model/chain.model CHX=tests/chx > "$WORK/chain.session"
   a=$(echo 1 | "$SESSION" "$WORK/chain.session")

@@ -1,0 +1,29 @@
+// dit_pv_mma.chx with the weights and v in f32: o = sum over key chunks of exp(s + mask - m) / z v, the weights staged in threadgroup memory as f32 (not rounded to f16) and v an f32 buffer (docs/diffusion.md section 6, V3c). Metal only: the f32 product it feeds is not on CUDA's matrix unit.
+algo dit_pv_mma_f(nh, nq, t, d)
+  in  sc:   f32[nh * nq, t]
+  in  mask: f32[nq, t]
+  in  m:    f32[nh * nq]
+  in  z:    f32[nh * nq]
+  in  v:    f32[t, nh * d]
+  out o:    f32[nq, nh * d]
+  tile bm, bn, bk
+{
+  grid h over nh, i over nq / bm, j over d / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. t / bk with acc {
+    let sm = load sc[h * nq + i * bm, p * bk ; bm, bk]
+    let mk = load mask[i * bm, p * bk ; bm, bk]
+    let s2 = sm + mk
+    let mm = load m[h * nq + i * bm ; bm]
+    let zz = load z[h * nq + i * bm ; bm]
+    let sh = s2 - mm
+    let e  = exp sh
+    let pp = e / zz
+    let ph = stage f32 pp
+    let vt = load v[p * bk, h * d + j * bn ; bk, bn] @shared
+    yield mma_nn acc ph vt
+  }
+  store acc -> o[i * bm, h * d + j * bn]
+}
+
+schedule dit_pv_mma_f for apple-m-series { threads 256 warps 8 1 bm 64 bn 64 bk 32 }

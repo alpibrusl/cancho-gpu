@@ -1,0 +1,20 @@
+// RULE lowering
+// ARGS m=128 n=128 k=64
+// An f32 operand of `mma` on a CUDA target: `wmma` multiplies f16 tiles (and its tf32 mode keeps 10 bits of an f32), so the lowering refuses it there; on Metal the same kernel is tests/chx/gemm_mma_f.chx (docs/diffusion.md section 6, V3c).
+algo gemm_mma_f32_cuda(m, n, k)
+  in  a: f32[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[j * bn, p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule gemm_mma_f32_cuda for nvidia-ada { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
