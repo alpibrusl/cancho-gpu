@@ -18,6 +18,7 @@ import stage;
 // Built with  cancho build media/media.cho --std -o build/media   Its authority is the point: it reads no file, starts nothing, reaches no network.
 
 import shared;
+import transcribe;
 import video;
 
 fn cmd_image[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
@@ -720,8 +721,12 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
                                 borrow ctx as &cx3 in {
                                     status = video.cmd_video(io, heap, fs, exec, sd, clock, cx3, buffer.bytes(eb), args, k + 1);
                                 }
+                            } else if shared.is_text(arg(args, k), "transcribe") {
+                                borrow ctx as &cx4 in {
+                                    status = transcribe.cmd_transcribe(io, heap, fs, exec, sd, clock, cx4, buffer.bytes(eb), args, k + 1);
+                                }
                             } else {
-                                io.error_all(io, "media: build/media runs image, edit, video and rewrite; the other commands are tools/media.py's\n");
+                                io.error_all(io, "media: build/media runs image, edit, video, transcribe and rewrite; the other commands are tools/media.py's\n");
                                 status = 2;
                             }
                         }

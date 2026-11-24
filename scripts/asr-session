@@ -1,0 +1,7 @@
+#!/bin/sh
+# A GPU step of the recognition (docs/audio.md section 16): the Metal session on a model file and its NAME=value arguments, given the two lines its protocol asks (the number of steps, `checkpoint`).
+#     asr-session STEPS MODEL [NAME=value]...
+# What the session prints is dropped; its errors are passed on.
+cd "$(dirname "$0")/.." || exit 1
+n=$1; shift
+printf '%s\ncheckpoint\n' "$n" | build/cancho-gpu-metal-session "$@" >/dev/null
