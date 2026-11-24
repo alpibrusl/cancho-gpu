@@ -1,0 +1,37 @@
+// dit_wan_lnmod.chx with an f32 output: y = layernorm(x) * (1 + scale) + shift per token, not rounded to f16, for gemm_mma_f.chx (docs/diffusion.md section 6, V3c). Metal only: the f32 product it feeds is not on CUDA's matrix unit.
+algo dit_wan_lnmod_f(s, n)
+  in  x:   f32[s, n]
+  in  sh:  f32[2, n]
+  in  sc:  f32[2, n]
+  in  sel: f32[s, 1]
+  out y:   f32[s, n]
+{
+  grid i over s
+  let x  = load x[i, 0 ; 1, n]
+  let sm = rowsum &x
+  let mu = sm * (1 / n)
+  let xc = x - mu
+  let sq = &xc * &xc
+  let vs = rowsum sq
+  let vr = vs * (1 / n)
+  let t  = vr + 0.000001
+  let rs = rsqrt t
+  let xn = xc * rs
+  let sl = load sel[i, 0 ; 1, 1]
+  let c0 = load sc[0, 0 ; 1, n]
+  let c1 = load sc[1, 0 ; 1, n]
+  let dc = c0 - &c1
+  let ac = dc * &sl
+  let cc = c1 + ac
+  let g  = cc + 1
+  let h0 = load sh[0, 0 ; 1, n]
+  let h1 = load sh[1, 0 ; 1, n]
+  let dh = h0 - &h1
+  let ah = dh * sl
+  let hh = h1 + ah
+  let o  = xn * g
+  let o2 = o + hh
+  store o2 -> y[i, 0]
+}
+
+schedule dit_wan_lnmod_f for apple-m-series { threads 256 }

@@ -79,15 +79,21 @@ def close_f16(got, want):  # an f16 result: half a unit in the last place of f16
     return len(got) == len(want) and worst <= 1.0, worst
 
 
+def close_f32(got, want):  # an f32 result (the `_f` kernels, docs/diffusion.md V3c): 1e-5 relative with a floor of 1e-5 (measured: at most 5e-6, f32 sums of 3,072 terms); an f16 rounding moves a value 2.4e-4 of itself on average. The row of mean 20 and spread 0.1 that the f16 test has is
+    # given a mean of 0.5 here: its subtraction loses 2e-4 in f32 arithmetic whatever the output's type is
+    worst = max(abs(a - b) / (1e-5 * max(1.0, abs(b))) for a, b in zip(got, want))
+    return len(got) == len(want) and worst <= 1.0, worst
+
+
 def rnd(seed, n, lo=-1.0, hi=1.0):
     r = random.Random(seed)
     return [r.uniform(lo, hi) for _ in range(n)]
 
 
-def t_ln(root, tmp, s, n, seed):
+def t_ln(root, tmp, s, n, seed, kernel="vit_ln", close=close_f16, offset=20.0):
     x = rnd(seed, s * n, -3, 3)
     for j in range(n):
-        x[0 * n + j] = 20.0 + x[0 * n + j] * 0.1  # a mean 70 times the spread: the variance is taken about the mean (an offset of 1000 over 0.017 is a stress of f32 rowsum itself, not of this kernel: 0.4% off, as torch float32 would be)
+        x[0 * n + j] = offset + x[0 * n + j] * 0.1  # a mean 70 times the spread: the variance is taken about the mean (an offset of 1000 over 0.017 is a stress of f32 rowsum itself, not of this kernel: 0.4% off, as torch float32 would be)
         x[1 * n + j] = 2.5  # a constant row: variance 0, eps decides, the result is the bias
     w, b = rnd(seed + 1, n, 0.5, 1.5), rnd(seed + 2, n)
     want = []
@@ -96,8 +102,8 @@ def t_ln(root, tmp, s, n, seed):
         mu = sum(row) / n
         var = sum((v - mu) ** 2 for v in row) / n
         want += [(v - mu) / math.sqrt(var + 1e-6) * w[j] + b[j] for j, v in enumerate(row)]
-    o, err = run(root, "vit_ln", [f"s={s}", f"n={n}"], {"x": x, "w": w, "b": b}, ["y"], tmp)
-    return (False, err) if o is None else close_f16(o[0], want)
+    o, err = run(root, kernel, [f"s={s}", f"n={n}"], {"x": x, "w": w, "b": b}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want)
 
 
 def gelu_tanh(v):
@@ -108,7 +114,7 @@ def gelu_erf(v):
     return 0.5 * v * (1 + math.erf(v / math.sqrt(2)))
 
 
-def t_gelu(root, tmp, kernel, fn, extra):
+def t_gelu(root, tmp, kernel, fn, extra, close=close_f16):
     s, n = 8, 128
     x, b = rnd(40, s * n, -9, 9), rnd(41, n, -1, 1)
     for j in range(n):
@@ -116,7 +122,7 @@ def t_gelu(root, tmp, kernel, fn, extra):
         x[n + j] = -b[j]  # exactly zero after the bias
     want = [fn(x[i * n + j] + b[j]) for i in range(s) for j in range(n)]
     o, err = run(root, kernel, [f"s={s}", f"n={n}", "bn=128"] + extra, {"x": x, "b": b}, ["y"], tmp)
-    return (False, err) if o is None else close_f16(o[0], want)
+    return (False, err) if o is None else close(o[0], want)
 
 
 TESTS = [
@@ -125,6 +131,9 @@ TESTS = [
     ("vit_ln n=4608", lambda r, t: t_ln(r, t, 3, 4608, 3)),
     ("vit_bias_gelu", lambda r, t: t_gelu(r, t, "vit_bias_gelu", gelu_tanh, [])),
     ("vit_bias_gelu_erf", lambda r, t: t_gelu(r, t, "vit_bias_gelu_erf", gelu_erf, ["m1=-1"])),
+    ("vit_ln_f n=64 (f32 out)", lambda r, t: t_ln(r, t, 4, 64, 1, "vit_ln_f", close_f32, 0.5)),
+    ("vit_ln_f n=3072 (f32 out)", lambda r, t: t_ln(r, t, 3, 3072, 4, "vit_ln_f", close_f32, 0.5)),
+    ("vit_bias_gelu_f (f32 out)", lambda r, t: t_gelu(r, t, "vit_bias_gelu_f", gelu_tanh, [], close_f32)),
 ]
 
 
@@ -153,6 +162,10 @@ EDITS = [
     ("vit_bias_gelu_erf", "let sg = s1 - 1", "let sg = s1", "the sign of erf lost (always +)"),
     ("vit_bias_gelu_erf", "let cd = cc + 0.254829592", "let cd = cc + 0.25", "a coefficient of the erf polynomial truncated"),
     ("vit_bias_gelu_erf", "let g1 = g0 * 0.5", "let g1 = g0", "no 0.5"),
+    ("vit_ln_f", "  store o2 -> y[i, 0]", "  let oh = stage f16 o2\n  store oh -> y[i, 0]", "the output rounded to f16"),
+    ("vit_ln_f", "let o2 = o1 + bb", "let o2 = o1", "no bias"),
+    ("vit_bias_gelu_f", "  store t6 -> y[i, j * bn]", "  let oh = stage f16 t6\n  store oh -> y[i, j * bn]", "the output rounded to f16"),
+    ("vit_bias_gelu_f", "let vv = xx + bb", "let vv = xx", "no bias"),
 ]
 survived = 0
 for kernel, old, new, what in EDITS + CONV_EDITS:

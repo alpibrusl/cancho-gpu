@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """V4a of docs/diffusion.md section 6: a video from a prompt, the denoiser and the decoder of FastWan2.2-TI2V-5B on a Metal GPU.
 
-    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--cond COND.f32] [--base [--steps N] [--guidance G] [--neg NEG.npy]] [--noise N.npy] [--dmd-steps T,T,...] [--blocks N] [--trace] [--no-decode]
+    wan_video_gpu.py WORK_DIR --weights FASTWAN_TRANSFORMER_DIR --text TEXT.npy [--frames F] [--size HxW] [--seed S] [--wdir DIR] [--fps N] [--f32] [--cond COND.f32] [--base [--steps N] [--guidance G] [--neg NEG.npy]] [--noise N.npy] [--dmd-steps T,T,...] [--blocks N] [--trace] [--no-decode]
 
 F is the number of latent frames (the video has 1 + 4 (F - 1)), HxW the latent's size in pixels / 16 (22x40 is 640 x 352); `--text` is tests/wan_text_gpu.py's output (umT5's encoder, a GPU session of its own: V3; tools/wan_text.py, torch on the host, writes the same file); `--wdir` holds the f16 weight files of tests/wan_gpu.py's layout (written on first use, 10 GB); the output is WORK_DIR/video.gif and WORK_DIR/frames/.
 
@@ -50,6 +50,9 @@ os.makedirs(WDIR, exist_ok=True)
 P = lambda n: os.path.join(work, n)
 f16 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f2")).tofile(path)
 f32 = lambda path, a: np.ascontiguousarray(np.asarray(a).astype("<f4")).tofile(path)
+F32 = "--f32" in sys.argv  # the products' operands in f32 (docs/diffusion.md section 6, V3c): models/wan_dit.model's PREC=1 and its eight kernel names
+F32_DEFS = ["PREC=1", "GEMM=gemm_mma_f", "LNM=dit_wan_lnmod_f", "LN=vit_ln_f", "GELU=vit_bias_gelu_f", "ROPE=dit_rope16_f", "SCO=dit_scores_mma_f", "PVM=dit_pv_mma_f", "AT=f32"]
+put_ctx = lambda c: f32(P("ctx.f32"), c) if F32 else f16(P("ctx.f16"), c)
 SESSION = os.path.join(ROOT, "build/cancho-gpu-metal-session")
 NB = int(arg("--blocks", 30))  # fewer: the head reads block NB - 1 (V3b)
 LH, LW = H, Wd  # the latent's size in pixels of the latent grid: [48, F, H, W]
@@ -128,7 +131,7 @@ assert text.shape[0] <= T and text.shape[1] == wr.CFG["text_dim"]
 txt = np.zeros((T, text.shape[1]))
 txt[: text.shape[0]] = text  # zero rows after the prompt's tokens, to 512, as the pipelines do
 ctx = wr.text_embed(txt)
-f16(P("ctx.f16"), ctx)
+put_ctx(ctx)
 cos, sin = wr.rope_tables(F, H // 2, Wd // 2)
 pad = lambda a, fill: np.concatenate([a, np.full((SP - S,) + a.shape[1:], fill)], 0)
 f32(P("cs.f32"), pad(cos, 1.0))
@@ -167,7 +170,7 @@ RELOAD = ["b0_lnm1.x", "hd_ln.sh", "hd_ln.sc"] + ["b%d_%s" % (b, n) for b in ran
 rng = np.random.default_rng(SEED)
 lat = mix(np.load(arg("--noise")).astype(np.float64) if arg("--noise") else rng.standard_normal((48, F, H, Wd)))
 write_step_inputs(lat, STEPS[0])
-defs = ["CHX=" + os.path.join(ROOT, "tests/chx"), "WORK=" + work, "WDIR=" + WDIR, "S=%d" % SP, "T=%d" % T, "NB=%d" % NB, "HEAD=1"]
+defs = ["CHX=" + os.path.join(ROOT, "tests/chx"), "WORK=" + work, "WDIR=" + WDIR, "S=%d" % SP, "T=%d" % T, "NB=%d" % NB, "HEAD=1"] + (F32_DEFS if F32 else [])
 print("latent [48, %d, %d, %d]: %d tokens (padded to %d), text %d tokens (padded to %d); video %d frames of %d x %d" % (F, H, Wd, S, SP, text.shape[0], T, 1 + 4 * (F - 1), 16 * H, 16 * Wd), flush=True)
 t_start = time.time()
 proc = subprocess.Popen([SESSION, os.path.join(ROOT, "models/wan_dit.model")] + defs, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(P("session.err"), "w"), text=True, bufsize=1)
@@ -203,7 +206,7 @@ if BASE:
         write_step_inputs(latn, t)
         names = list(RELOAD) if not state["first"] else []
         if which != state["ctx"]:
-            f16(P("ctx.f16"), ctx_text if which == "text" else ctx_neg)
+            put_ctx(ctx_text if which == "text" else ctx_neg)
             names += CTXN
             state["ctx"] = which
         if names:

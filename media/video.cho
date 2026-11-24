@@ -66,6 +66,7 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
     var negative = "";
     var force = false;
     var rewrite = false;
+    var precise = false;
     var rewrite_model = "qwen3.8:27b-mlx";
     var k = from;
     let n = arg_count(args);
@@ -163,6 +164,8 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
             force = true;
         } else if shared.is_text(t, "--rewrite") {
             rewrite = true;
+        } else if shared.is_text(t, "--precise") {
+            precise = true;
         } else if shared.is_text(t, "--rewrite-model") {
             k = k + 1;
             if k >= stop {
@@ -202,6 +205,9 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
     }
     if rewrite && with_image {
         return shared.refuse_text(io, "--rewrite is not available for a video from a picture: the rewriter has no template for it (not measured)");
+    }
+    if precise && with_image {
+        return shared.refuse_text(io, "--precise is for a video from a prompt: the products with f32 operands were measured on the distilled model's three steps, not on the base model's (docs/diffusion.md section 6, V3c)");
     }
     // need_gpu: the Metal session binary
     let sp = pathx.under(heap, ctx.root, "build/cancho-gpu-metal-session");
@@ -321,7 +327,7 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
         borrow out as &ob2 in {
             borrow tdir as &tb2 in {
                 borrow wdir as &wb in {
-                    status = generate(io, heap, fs, exec, sdir, clock, ctx, env, prompt, rewrite, rewrite_model, buffer.bytes(ob2), buffer.bytes(tb2), buffer.bytes(wb), lf, w, h2, seed, fps);
+                    status = generate(io, heap, fs, exec, sdir, clock, ctx, env, prompt, rewrite, rewrite_model, buffer.bytes(ob2), buffer.bytes(tb2), buffer.bytes(wb), lf, w, h2, seed, fps, precise);
                 }
             }
         }
@@ -333,7 +339,7 @@ pub fn cmd_video[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap
 }
 
 // After the refusals: the disk check, the rewriter, the two stages, prompt.txt, the mp4 and the report.
-fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], prompt: &p [byte], rewrite: bool, rewrite_model: &static [byte], out: &o [byte], tdir: &t [byte], wdir: &d [byte], lf: int, w: int, h2: int, seed: &static [byte], fps: &static [byte]) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_write, exec_under, clock, poll] int {
+fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], prompt: &p [byte], rewrite: bool, rewrite_model: &static [byte], out: &o [byte], tdir: &t [byte], wdir: &d [byte], lf: int, w: int, h2: int, seed: &static [byte], fps: &static [byte], precise: bool) -> [io_write, err_write, heap, fs_read(""), fs_write(""), file_write, exec_under, clock, poll] int {
     let pf = pathx.under(heap, wdir, "proj_out.f16");
     var have = false;
     borrow pf as &pfb in {
@@ -396,6 +402,10 @@ fn generate[&i, &h, &f, &x, &y, &c, &e, &zc, &p, &o, &t, &d](io: &!i Io, heap: &
                 l2 = stage.add_arg(heap, l2, wdir);
                 l2 = stage.add_arg(heap, l2, "--fps");
                 l2 = stage.add_arg(heap, l2, fps);
+                if precise {
+                    // the products' operands in f32 (docs/diffusion.md section 6, V3c): the latents are then the float64 ones of these rows to 1%, for 2 to 3 s more
+                    l2 = stage.add_arg(heap, l2, "--f32");
+                }
                 borrow l2 as &l2b in {
                     status = shared.step(io, heap, exec, sdir, clock, "denoiser and decoder (GPU)", buffer.bytes(l2b), env);
                 }
