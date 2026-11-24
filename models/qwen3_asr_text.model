@@ -1,0 +1,119 @@
+# The language model of Qwen3-ASR-1.7B over a whole sequence (docs/audio.md section 2, stage A2): 28 layers of 2,048 wide, 16 query heads over 8 key/value heads of 128, an RMS norm on q and on k of each head, the rotary
+# positions, a causal mask, SwiGLU of 6,144, then the final norm and the head: the logits of every row, SP x 151,936 singles. A model file (docs/resident.md section 31); the layer is the Qwen-Image transformer's
+# without its modulation (models/qwen_image_dit.model).
+#
+#     cancho-gpu-metal-session models/qwen3_asr_text.model CHX=<tests/chx> WORK=<inputs> WDIR=<weights> SP=<rows, a multiple of 64>
+#
+# The host (tests/qwen3_asr_text_gpu.cho) writes k_proj and v_proj with each of the 8 heads' 128 rows twice, so that the attention kernels see 16 heads (query head h reads key/value head h / 2); x0.f32, the rows
+# of the sequence (the embeddings of its tokens, the audio tower's rows in the places of the audio tokens); the rotary tables; and the causal mask, which also hides the rows after the sequence.
+# q is scaled by 1/sqrt(128) where it is rotated (dit_rope16.chx), so the scores leave the matrix unit scaled.
+text CHX = tests/chx
+text WORK = .
+text WDIR = .
+text RQSC = 0.08838834764831845
+const SP = 128
+const NL = 28
+const D = 2048
+const FF = 6144
+const H = 16
+const HD = 128
+const V = 151936
+
+block layer(i)
+    program L${i}_n1 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+    if i == 0
+        resident L0_n1.x $WORK/x0.f32 f32
+    else
+        link L${i - 1}_ad2.z -> L${i}_n1.x
+    end
+    resident L${i}_n1.w $WDIR/n1_${i}.f32 f32
+    program L${i}_c1 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_n1.y -> L${i}_c1.x
+    program L${i}_gq $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gq.a
+    resident L${i}_gq.w $WDIR/wq${i}.f16 f16
+    program L${i}_gk $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gk.a
+    resident L${i}_gk.w $WDIR/wk${i}.f16 f16
+    program L${i}_gv $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c1.y -> L${i}_gv.a
+    resident L${i}_gv.w $WDIR/wv${i}.f16 f16
+    program L${i}_nq $CHX/rmsnorm_rows.chx r=${SP * H} n=$HD eps=0.000001
+    link L${i}_gq.y -> L${i}_nq.x
+    resident L${i}_nq.w $WDIR/nq${i}.f32 f32
+    program L${i}_nk $CHX/rmsnorm_rows.chx r=${SP * H} n=$HD eps=0.000001
+    link L${i}_gk.y -> L${i}_nk.x
+    resident L${i}_nk.w $WDIR/nk${i}.f32 f32
+    program L${i}_rq $CHX/dit_rope16.chx s=$SP nh=$H h=64 sc=$RQSC
+    link L${i}_nq.y -> L${i}_rq.x
+    resident L${i}_rq.cs $WORK/cs.f32 f32
+    resident L${i}_rq.sn $WORK/sn.f32 f32
+    program L${i}_rk $CHX/dit_rope16.chx s=$SP nh=$H h=64 sc=1.0
+    link L${i}_nk.y -> L${i}_rk.x
+    resident L${i}_rk.cs $WORK/cs.f32 f32
+    resident L${i}_rk.sn $WORK/sn.f32 f32
+    program L${i}_vh $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_gv.y -> L${i}_vh.x
+    program L${i}_sc $CHX/dit_scores_mma.chx nh=$H nq=$SP t=$SP d=$HD
+    link L${i}_rq.y -> L${i}_sc.q
+    link L${i}_rk.y -> L${i}_sc.k
+    program L${i}_st $CHX/dit_stats_o.chx nh=$H nq=$SP t=$SP qs=16 cs=64
+    link L${i}_sc.sc -> L${i}_st.sc
+    resident L${i}_st.mask $WORK/mask.f32 f32
+    program L${i}_pv $CHX/dit_pv_mma.chx nh=$H nq=$SP t=$SP d=$HD
+    link L${i}_sc.sc -> L${i}_pv.sc
+    resident L${i}_pv.mask $WORK/mask.f32 f32
+    link L${i}_st.m -> L${i}_pv.m
+    link L${i}_st.z -> L${i}_pv.z
+    link L${i}_vh.y -> L${i}_pv.v
+    program L${i}_c2 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_pv.o -> L${i}_c2.x
+    program L${i}_go $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+    link L${i}_c2.y -> L${i}_go.a
+    resident L${i}_go.w $WDIR/wo${i}.f16 f16
+    program L${i}_ad1 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    if i == 0
+        resident L0_ad1.a $WORK/x0.f32 f32
+    else
+        link L${i - 1}_ad2.z -> L${i}_ad1.a
+    end
+    link L${i}_go.y -> L${i}_ad1.b
+    program L${i}_n2 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+    link L${i}_ad1.z -> L${i}_n2.x
+    resident L${i}_n2.w $WDIR/n2_${i}.f32 f32
+    program L${i}_c3 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_n2.y -> L${i}_c3.x
+    program L${i}_gg $CHX/ported/gemm_mma.chx m=$SP n=$FF k=$D
+    link L${i}_c3.y -> L${i}_gg.a
+    resident L${i}_gg.w $WDIR/wg${i}.f16 f16
+    program L${i}_gu $CHX/ported/gemm_mma.chx m=$SP n=$FF k=$D
+    link L${i}_c3.y -> L${i}_gu.a
+    resident L${i}_gu.w $WDIR/wu${i}.f16 f16
+    program L${i}_sw $CHX/dit_swiglu.chx s=$SP n=$FF bn=1024
+    link L${i}_gg.y -> L${i}_sw.g
+    link L${i}_gu.y -> L${i}_sw.u
+    program L${i}_gd $CHX/ported/gemm_mma.chx m=$SP n=$D k=$FF
+    link L${i}_sw.y -> L${i}_gd.a
+    resident L${i}_gd.w $WDIR/wd${i}.f16 f16
+    program L${i}_ad2 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    link L${i}_ad1.z -> L${i}_ad2.a
+    link L${i}_gd.y -> L${i}_ad2.b
+end
+
+repeat i in 0 .. NL
+    use layer(i)
+end
+
+program nf $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
+link L${NL - 1}_ad2.z -> nf.x
+resident nf.w $WDIR/nf.f32 f32
+program cf $CHX/dit_to_f16.chx s=$SP n=$D
+link nf.y -> cf.x
+program head $CHX/ported/gemm_mma.chx m=$SP n=$V k=$D
+link cf.y -> head.a
+resident head.w $WDIR/head.f16 f16
+save head.y $WORK/logits.f32 f32
+program probe $CHX/dit_rows2.chx m=$SP n=$D bn=1024
+link nf.y -> probe.x
+steps
+answer probe.y
