@@ -1,6 +1,6 @@
-# Audio: recognition, then speech, then music (design, 2026-11-24; nothing built)
+# Audio: recognition, then speech, then music (design, 2026-11-24; the two reference runs made, nothing built)
 
-What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Nothing here was run: no weights were downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors). It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
+What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Sections 1 to 6 were written before anything was run or any weights downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors); section 7 is the two reference runs, made the same day once the downloads were agreed, and is **[measured]**. It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
 
 The order, as asked: **A. recognition** with `Qwen/Qwen3-ASR-1.7B`, **S. speech** with `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, **M. music**, not chosen yet.
 
@@ -48,7 +48,7 @@ Revision `7278e1e7`, two safetensors files, 4.70 GB, 708 tensors, 2,349 M values
 |---|---|---|
 | reading a wav, resampling to 16 kHz | host, in cancho (`media/`, beside `png.cho`) | new host code; 16-bit PCM wav first, other containers through `ffmpeg` as `video` makes its mp4 |
 | log-mel | **first on the host in cancho** (a 400-point transform a frame is 400 x 201 products: 8 M a second of audio); as two products on the GPU (`docs/roadmap-models.md` G15) only if the host's time shows | new host code |
-| 3 x 3 stride-2 convolutions | `vae_s2d` (space to depth) + `conv3` + bias + GELU, the VAE encoder's way (`models/qwen_image_vae_encoder.model`); 480 channels are a multiple of 32; the first convolution's 4 input channels are padded to 16 | reckoned none; the erf GELU after a convolution may need `vit_bias_gelu_erf` over the bordered rows |
+| 3 x 3 stride-2 convolutions | `vae_s2d` (space to depth) + `conv3` + bias + GELU, the VAE encoder's way (`models/qwen_image_vae_encoder.model`); 480 channels are a multiple of 32; the first convolution's 4 input channels are padded to 16 | **[corrected the same day, before A1 was written] two small kernels**: the bias, the erf GELU and the border mask in one, f32 out (`vit_bias_gelu_erf` writes f16 and has no mask; `vae_s2d` reads f32), and the gather of a time column's 16 x 480 values into a row for `conv_out`. The pieces of a second are laid side by side in one picture, 104 columns each (100 and 4 of zeros), so that 104, 52, 26, 13 stay whole and the zeros between pieces are each convolution's padding |
 | `conv_out`, `proj1`, `proj2`, the layers' products | `gemm_mma` + `vae_bias` | none |
 | the tower's layers | `vit_ln`, the attention as umT5's (`dit_scores_mma`, `dit_stats_o`, `dit_pv_mma`) with the window mask from the host and **1/sqrt(64) = 1/8 folded into `q_proj`'s weight and bias, exactly**; `vit_bias_gelu_erf` | reckoned none |
 | the language model, a whole pass | `rmsnorm_rows`; `gemm_mma`; q and k normed per head by `rmsnorm_rows` over rows of 128 (as `tests/dit_block.py` holds it); `dit_rope16`; **the 8 key/value heads written twice by the host in the weight files** (16 x 128 rows of `k_proj` and `v_proj`), so the attention kernels see 16 heads; a causal mask; `dit_swiglu` | reckoned none |
@@ -120,3 +120,12 @@ A second of speech is 12.5 steps of the talker and 187.5 of the predictor. At `d
 ## 6. What this document does not claim
 
 That any kernel named in 2.2 fits without change; that the transcript will equal the reference's; any time. The tensor names and shapes are the files'; the forward passes are the reference code's as read, not as run.
+
+## 7. A0 and S0: the two reference runs **[measured, 2026-11-24, M4 Max]**
+
+Both by hand, with scripts that are not in the repository; their outputs are the fixtures, in `~/.cache/cancho-media/audio-ref/`. **The two packages could not share an environment, nor the benchmark's:** `qwen-asr` pins transformers 4.57.6, `qwen-tts` 4.57.3, and the benchmark environment has 5.24.0; each has its own (`~/.cache/cancho-media/qwen-asr-venv`, `qwen-tts-venv`, torch 2.15.0, 1.2 GB each). Both run offline from the local snapshot's path (given a repository name, `qwen-tts` asks the Hub).
+
+* **S0.** "The quick brown fox jumps over the lazy dog near the quiet river.", English, the voice Ryan, `torch.manual_seed(1)`, float32 on the CPU: **67 frames of 16 codes** (values 1 to 2,041), **128,640 samples at 24 kHz, 5.36 s** (1,920 a frame, as read), peak 0.415, generated in 8.5 s. Kept: `s0_codes.npy` `[67, 16]`, `s0_wav_f32.npy`, `s0.wav` (16-bit).
+* **A0, on that clip** (resampled to 16 kHz by the package): **the transcript is the sentence, to the letter, in float32 on the CPU and in BF16 on MPS** (1.7 and 1.6 s a transcription, the model loaded). The mel is `[128, 536]`; the tower gives **70 rows** (5 seconds of 13 and a last piece of 36 frames, 5 rows: `_get_feat_extract_output_lengths`); the prompt is 85 ids; the answer 18: `language English<asr_text>The quick brown fox jumps over the lazy dog near the quiet river.<|im_end|>`. Teacher-forced, the arg max equals the generated id at 18 of 18 positions. Kept: the mel, the tower's rows in both precisions, the prompt's ids, the sequence, the 19 rows of logits.
+* **A1's yardstick:** the package's tower rows in BF16 on MPS are **1.59e-4 mean absolute error** from its float32 rows (the rows' rms is 0.0187; the worst element 9.0e-3).
+* The clip is under 8 s: one attention window, so 2.1's doubt is not met yet.
