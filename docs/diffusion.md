@@ -904,6 +904,8 @@ In float64 the response is linear (a text change 1,000 times smaller gives a vel
 
 ### 6.2 Audio: nothing is chosen, and the first candidate found is not usable
 
+**Superseded 2026-11-24 by `docs/audio.md`:** two models are chosen (`Qwen/Qwen3-ASR-1.7B` for recognition, then `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` for speech; `docs/hf-survey.md` had named both on 2026-11-14), read to the level of their tensors and reference code, with stages and bounds. What follows is the search of 2026-11-14 as it stood; its last bullet (no `sin`, no 1-D convolution) is still true and is what speech needs first.
+
 * **Recognition is already planned and is not generation:** `docs/roadmap-models.md` M6 (Whisper: a log-mel spectrogram as a product with a precomputed cosine and sine matrix, the encoder, the decoder).
 * **FreyaTTS** (a 183.2 M flow-matching DiT, Apache-2.0, 32 Euler steps; found in a technical report, `arXiv 2607.09530`, read through a summary): **character-level for Turkish only** (92 symbols), the audio codec is a frozen AudioVAE2 from VoxCPM2 whose decoder architecture the report does not state, and **no weights repository was found on the Hub** (a search on 2026-11-14 returned nothing). Not a target.
 * **Stable Audio Open Small** (341 M, 1.68 GB of float32 weights **[read]**, the Stability AI Community Licence, **gated: the licence must be accepted on the Hub by whoever downloads it**): the repository's file listing shows an autoencoder, the conditioner (a text encoder) and a DiT as separate parts in its on-device export; its architecture was **not read** (a gated repository's files cannot be read without the licence). It is the candidate to read next, if the licence is accepted.
