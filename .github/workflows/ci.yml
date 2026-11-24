@@ -44,5 +44,13 @@ jobs:
       - name: jinja2
         run: sudo apt-get install -y python3-jinja2
 
+      # tests/media_video.sh's oracle (tools/media.py) resizes a picture with Pillow and numpy. They go in an
+      # environment of their own (MEDIA_ORACLE_PY), not the system's python3: with numpy there, tests/oracles.py
+      # runs tools/sampler_dump.py, whose exp is numpy's and on this runner moves a top_p = 1 cut (docs/native.md N2f).
+      - name: Pillow and numpy for the media oracle
+        run: |
+          python3 -m venv ~/media-oracle
+          ~/media-oracle/bin/pip install -q pillow numpy
+
       - name: Gate
-        run: CANCHO=~/cancho-bin/cancho scripts/gate.sh
+        run: CANCHO=~/cancho-bin/cancho MEDIA_ORACLE_PY=~/media-oracle/bin/python scripts/gate.sh

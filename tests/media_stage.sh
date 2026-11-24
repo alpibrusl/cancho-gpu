@@ -1,6 +1,6 @@
 #!/bin/sh
 # build/media's `image` and `edit` against tools/media.py, with the stage replaced by a program that prints its arguments (docs/media-cho.md section 4): the same stage argument list, the same prompt.txt, the same
-# refusals (message and exit status). No GPU, no weights: a temporary tree plays the repository's root, the Hugging Face cache and the weights.
+# refusals (message and exit status). No GPU, no weights: a temporary tree plays the repository's root, the Hugging Face cache and the weights. The oracle is told it is on a Mac (sys.platform), as the tree tells it the Metal session is built: the comparison is of argument lists and refusals, which do not depend on the machine, and CI runs on Linux.
 #
 #   CANCHO=<compiler> sh tests/media_stage.sh
 set -e
@@ -31,10 +31,11 @@ chmod +x "$R/build/rewrite_cli"
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "  got:    $2"; echo "  wanted: $3"; fail=1; fi; }
 # Python's list, one STAGE line per argument (the interpreter is not one)
-py() { (cd "$W" && HOME=$H CANCHO_MEDIA_CACHE=$K python3 -c 'import sys,subprocess,runpy
+py() { (cd "$W" && HOME=$H CANCHO_MEDIA_CACHE=$K "${MEDIA_ORACLE_PY:-python3}" -c 'import sys,subprocess,runpy
 real=subprocess.run
 subprocess.run=lambda cmd,cwd=None,**k:real(cmd,cwd=cwd,**k) if cmd[0].endswith("rewrite_cli") else [print("STAGE "+c) for c in cmd[1:]] and None or type("R",(),{"returncode":0})()
 sys.argv=["media"]+sys.argv[1:]
+sys.platform="darwin"
 runpy.run_path("'"$R"'/tools/media.py",run_name="__main__")' "$@"); }
 cho() { (cd "$W" && "$REPO/build/media" --root "$R" --cwd "$W" --home "$H" --py /bin/true --cache "$K" "$@"); }
 both() { # name, args...

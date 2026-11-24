@@ -2,7 +2,7 @@
 # build/media's `video` (from a prompt) against tools/media.py, with the stage replaced by a program that prints its arguments (docs/media-cho.md section 4): the same stage argument list, the same prompt.txt, the same
 # refusals (message and exit status). No GPU, no weights: a temporary tree plays the repository's root, the Hugging Face cache and the weights.
 #
-#   CANCHO=<compiler> sh tests/media_stage.sh
+#   CANCHO=<compiler> [MEDIA_ORACLE_PY=<a python3 with Pillow and numpy>] sh tests/media_video.sh
 set -e
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
@@ -41,13 +41,14 @@ chmod +x "$R/build/rewrite_cli"
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "  got:    $2"; echo "  wanted: $3"; fail=1; fi; }
 # Python's list, one STAGE line per argument (the interpreter is not one)
-py() { (cd "$W" && PATH=$T/bin:$PATH HOME=${HOME2:-$H} CANCHO_MEDIA_CACHE=$K python3 -c 'import sys,subprocess,runpy
+py() { (cd "$W" && PATH=$T/bin:$PATH HOME=${HOME2:-$H} CANCHO_MEDIA_CACHE=$K "${MEDIA_ORACLE_PY:-python3}" -c 'import sys,subprocess,runpy
 real=subprocess.run
 subprocess.run=lambda cmd,cwd=None,**k:real(cmd,cwd=cwd,**k) if cmd[0].endswith("rewrite_cli") else [print("STAGE "+c) for c in cmd[1:]] and None or type("R",(),{"returncode":0})()
 sys.argv=["media"]+sys.argv[1:]
+sys.platform="darwin"
 runpy.run_path("'"$R"'/tools/media.py",run_name="__main__")' "$@"); }
 cho() { (cd "$W" && "$REPO/build/media" --root "$R" --cwd "$W" --home "${HOME2:-$H}" --py /bin/true --cache "$K" --ffmpeg ${FREEKB:+--free-kb $FREEKB} "$@"); }
-norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##; /^STAGE -c\$/d; s#^STAGE printf .* \(/[^ ]*\)\$#STAGE \1#"; }
+norm() { sed "s#$T#TMP#g; s#: [0-9]* s\$##; /^STAGE -c\$/d; s#^STAGE printf .* \([^ ]*\)\$#STAGE \1#"; }
 both() { # name, args...: the whole output (timings dropped), exit status, prompt.txt and errors
   name=$1; shift
   rm -rf "$W/o"
