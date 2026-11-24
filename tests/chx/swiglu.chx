@@ -13,3 +13,4 @@ algo swiglu(n)
 
 schedule swiglu for apple-m-series { threads 256 }
 schedule swiglu for nvidia-ada     { threads 256 }
+schedule swiglu for amd-cdna3     { threads 256 }

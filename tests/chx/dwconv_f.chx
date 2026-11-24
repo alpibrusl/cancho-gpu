@@ -22,3 +22,4 @@ algo dwconv_f(s, c, k, bm, bn)
 
 schedule dwconv_f for apple-m-series { threads 256 }
 schedule dwconv_f for nvidia-ada     { threads 256 }
+schedule dwconv_f for amd-cdna3     { threads 256 }

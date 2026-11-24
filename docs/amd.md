@@ -1,4 +1,4 @@
-# AMD: a HIP target (design, 2026-11-24; nothing built, nothing run on AMD hardware)
+# AMD: a HIP target (design, 2026-11-24; H1 built: `emit` writes HIP text for 156 cases, never compiled; nothing run on AMD hardware)
 
 Issue [#9](https://github.com/alpibrusl/cancho-gpu/issues/9), slice 11 of the roadmap. Today `amd-cdna3` is a row of `src/target.cho` (`simd_width` 64, 1,024 threads, 64 KiB of threadgroup memory) with no emitter, no shim and no case: a file with a schedule for it type-checks and `emit` writes nothing for it.
 
@@ -75,6 +75,16 @@ Issue #9 offered two ways: reuse `nvidia-ada`'s CUDA C through ROCm's compatibil
 
 H1 to H5 need no AMD hardware and no credit. H6 is one script on the pattern of `scripts/gcp/cuda_test.sh` (`docs/cloud.md`), with its cost guard rails.
 
-## 5. What this does not claim
+## 5. H1, built
 
-No AMD GPU has run a kernel of this project. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.
+`cancho-gpu emit` lowers a file's `amd-cdna3` schedule to `<dir>/<kernel>.hip`, and `check` checks it. The dialect (`dialect.hip()` of `src/dialect.cho`) is CUDA's spelling with a different preamble: `#include <hip/hip_fp16.h>`, the infinity as clang's `__builtin_inff()` (hipRTC has no standard headers), and the NVFP4 table as `static const` where CUDA says `__constant__`. After lowering, `src/lower.cho` refuses for this target a kernel that uses `mma` and one whose text shuffles, each `error[lowering]` saying which slice lifts it (`tests/reject/lowering-mma-hip.chx`, `tests/reject/lowering-shuffle-hip.chx`).
+
+**Measured.** 76 kernel files of `tests/chx/` and `examples/` carry an `amd-cdna3` schedule, a copy of their `nvidia-ada` one, and their 156 cases of `tests/cases.txt` each record a `.hip` file in `golden/`: none names a shuffle or `wmma`, 42 name `__half`. The other goldens changed only by gaining the interpreter's `amd-cdna3:` lines in 70 `RUN.txt` files (92 lines added, none removed); no `.cu` or `.metal` file changed.
+
+**Correction to section 2's 169.** 156 of them are recorded, not 169. Section 2 counted cases; a schedule belongs to a kernel file, and `emit` refuses the whole file when one target is refused, so a file gets a schedule only if *every* one of its cases can be lowered. 12 of the 169 are cases of files that shuffle at other sizes, and one (`examples/cnn/bn_fin.chx`) has a schedule of 32 threads, which is less than one 64-lane wave. All 13 wait for H4.
+
+**Not done in H1.** The text has not been through any compiler: no hipRTC is here, and the emulator learns HIP in H3. `cancho-gpu run --target` and a session still name only the two older targets.
+
+## 6. What this does not claim
+
+No AMD GPU has run a kernel of this project, and no compiler has read the HIP text of section 5. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.

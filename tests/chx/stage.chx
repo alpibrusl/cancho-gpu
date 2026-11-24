@@ -16,3 +16,4 @@ algo stage(m, k)
 
 schedule stage for apple-m-series { threads 64 bk 16 }
 schedule stage for nvidia-ada     { threads 64 bk 32 }
+schedule stage for amd-cdna3     { threads 64 bk 32 }

@@ -15,3 +15,4 @@ algo attn_gate_q(r, n)
 
 schedule attn_gate_q for apple-m-series { threads 256 br 1 }
 schedule attn_gate_q for nvidia-ada     { threads 256 br 1 }
+schedule attn_gate_q for amd-cdna3     { threads 256 br 1 }

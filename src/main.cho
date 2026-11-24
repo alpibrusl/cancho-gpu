@@ -12,8 +12,9 @@ edition 5;
 //     cancho-gpu sample <logits.f32> <vocab> <temperature> <top_p> <top_k> <seed>
 //
 // `emit` checks the program, lowers it for every target it has a
-// schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal) and
-// writes `<dir>/<kernel>.cu` and `<dir>/<kernel>.metal`, which
+// schedule for (`nvidia-ada` to CUDA C, `apple-m-series` to Metal,
+// `amd-cdna3` to HIP, docs/amd.md) and writes `<dir>/<kernel>.cu`,
+// `<dir>/<kernel>.metal` and `<dir>/<kernel>.hip`, which
 // `tests/golden.sh` holds to the recorded goldens. `check` stops after the
 // checker. `--run` interprets the program on the CPU over made-up inputs first
 // and prints what it writes (`docs/design.md` §10). The directory must
@@ -282,7 +283,7 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
     }
     var k = 0;
     var any = false;
-    while k < 2 {
+    while k < 3 {
         var tg = target.nvidia_ada(m, t);
         var d = dialect.cuda();
         var ext = text.lit(m, t, "cu");
@@ -290,6 +291,11 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
             tg = target.apple_m_series(m, t);
             d = dialect.msl();
             ext = text.lit(m, t, "metal");
+        }
+        if k == 2 {
+            tg = target.amd_cdna3(m, t);
+            d = dialect.hip();
+            ext = text.lit(m, t, "hip");
         }
         let r = one_target(m, t, fm, unit, tg, d, vals, emit, run_it);
         if r < 0 {
@@ -329,7 +335,7 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
         k = k + 1;
     }
     if !any {
-        io.error_all(io, "error[no-schedule]: the file has no schedule for nvidia-ada or apple-m-series\n");
+        io.error_all(io, "error[no-schedule]: the file has no schedule for nvidia-ada, apple-m-series or amd-cdna3\n");
         return 1;
     }
     return 0;

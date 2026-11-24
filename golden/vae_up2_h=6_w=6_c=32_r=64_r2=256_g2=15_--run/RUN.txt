@@ -1,2 +1,3 @@
 nvidia-ada: y [286, 32] = mean -0.0030, peak 0.4998, first [0.0, 0.0, 0.0, 0.0]
 apple-m-series: y [286, 32] = mean -0.0030, peak 0.4998, first [0.0, 0.0, 0.0, 0.0]
+amd-cdna3: y [286, 32] = mean -0.0030, peak 0.4998, first [0.0, 0.0, 0.0, 0.0]

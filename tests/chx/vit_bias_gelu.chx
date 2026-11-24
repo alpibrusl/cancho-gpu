@@ -24,3 +24,4 @@ algo vit_bias_gelu(s, n, bn)
 
 schedule vit_bias_gelu for apple-m-series { threads 256 }
 schedule vit_bias_gelu for nvidia-ada     { threads 256 }
+schedule vit_bias_gelu for amd-cdna3     { threads 256 }

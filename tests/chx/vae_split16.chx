@@ -20,3 +20,4 @@ algo vae_split16(r, c, sc)
 
 schedule vae_split16 for apple-m-series { threads 256 }
 schedule vae_split16 for nvidia-ada     { threads 256 }
+schedule vae_split16 for amd-cdna3     { threads 256 }

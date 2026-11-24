@@ -18,3 +18,4 @@ algo vae_bias_res(r, c)
 
 schedule vae_bias_res for apple-m-series { threads 256 }
 schedule vae_bias_res for nvidia-ada     { threads 256 }
+schedule vae_bias_res for amd-cdna3     { threads 256 }

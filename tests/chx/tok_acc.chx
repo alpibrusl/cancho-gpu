@@ -22,3 +22,4 @@ algo tok_acc(r, s)
 
 schedule tok_acc for apple-m-series { threads 128 }
 schedule tok_acc for nvidia-ada     { threads 128 }
+schedule tok_acc for amd-cdna3     { threads 128 }

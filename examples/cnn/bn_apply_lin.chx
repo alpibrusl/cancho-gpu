@@ -23,3 +23,4 @@ algo bn_apply_lin(rp, c, bm, g)
 
 schedule bn_apply_lin for apple-m-series { threads 128 }
 schedule bn_apply_lin for nvidia-ada     { threads 128 }
+schedule bn_apply_lin for amd-cdna3     { threads 128 }

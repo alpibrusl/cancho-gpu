@@ -29,3 +29,4 @@ algo attention_pvl(nkv, g, t, cs, dw, d, tmax)
 
 schedule attention_pvl for apple-m-series { threads 256 }
 schedule attention_pvl for nvidia-ada     { threads 128 }
+schedule attention_pvl for amd-cdna3     { threads 128 }

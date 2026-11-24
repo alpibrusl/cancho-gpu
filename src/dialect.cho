@@ -17,8 +17,20 @@ pub fn cuda() -> [] int {
     return 1;
 }
 
+// HIP, AMD's kernel language (docs/amd.md): CUDA's spelling but for its preamble. It has no warp matrix interface and its
+// waves are 64 lanes wide on the cards `amd-cdna3` names, so a kernel that multiplies matrices or shuffles is refused by
+// `lower.lower` until slices H4 and H5.
+pub fn hip() -> [] int {
+    return 2;
+}
+
+// Whether the dialect is spelled as CUDA C is: CUDA itself and HIP.
 pub fn is_cuda(d: int) -> [] bool {
-    return d == 1;
+    return d >= 1;
+}
+
+pub fn is_hip(d: int) -> [] bool {
+    return d == 2;
 }
 
 pub fn barrier[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
@@ -154,6 +166,11 @@ pub fn convert[&m, &t](m: &!m [int], t: &!t [byte], d: int, dt: int, x: int) -> 
 }
 
 pub fn includes[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
+    if is_hip(d) {
+        // hipRTC compiles with clang and gives no standard headers: the infinity is the compiler's own builtin. That
+        // `hip/hip_fp16.h` supplies `__half` there is read from HIP's sources and not yet seen to compile (docs/amd.md section 1).
+        return text.lit(m, t, "\n#include <hip/hip_fp16.h>\n\ntypedef unsigned int uint;\ntypedef unsigned char uchar;\n#ifndef INFINITY\n#define INFINITY __builtin_inff()\n#endif\n\n");
+    }
     if is_cuda(d) {
         return text.lit(m, t, "\n#include <cuda_fp16.h>\n\ntypedef unsigned int uint;\ntypedef unsigned char uchar;\n#ifndef INFINITY\n#define INFINITY __int_as_float(0x7f800000)\n#endif\n\n");
     }
@@ -238,6 +255,10 @@ pub fn vector_load[&m, &t](m: &!m [int], t: &!t [byte], d: int, ty: int, lvalue:
 }
 
 pub fn fp4_preamble[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
+    if is_hip(d) {
+        // A constant table in plain C++: whether HIP has `__constant__` was not found in its documentation.
+        return text.lit(m, t, "static const float FP4_V[16] = {\n    0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,\n    -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};\n__device__ __forceinline__ float2 fp4_pair(uint b) {\n    const uint w = b | (b << 12u);\n    const uint bits = ((w & 0x00070007u) << 9u)\n                    | ((w & 0x00080008u) << 12u);\n    __half2 h;\n    memcpy(&h, &bits, sizeof(h));\n    return __half22float2(h);\n}\n__device__ __forceinline__ float fp8_e4m3(uint b) {\n    const uint e = (b >> 3u) & 0xFu, m = b & 7u;\n    const float sub = float(m) * 0.001953125f;\n    uint subbits;\n    memcpy(&subbits, &sub, sizeof(subbits));\n    const uint bits = (e == 0u) ? subbits : (((e + 120u) << 23u) | (m << 20u));\n    const uint out = bits | ((b & 0x80u) << 24u);\n    float r;\n    memcpy(&r, &out, sizeof(r));\n    return r;\n}\n\n");
+    }
     if is_cuda(d) {
         return text.lit(m, t, "__constant__ float FP4_V[16] = {\n    0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,\n    -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f};\n__device__ __forceinline__ float2 fp4_pair(uint b) {\n    const uint w = b | (b << 12u);\n    const uint bits = ((w & 0x00070007u) << 9u)\n                    | ((w & 0x00080008u) << 12u);\n    __half2 h;\n    memcpy(&h, &bits, sizeof(h));\n    return __half22float2(h);\n}\n__device__ __forceinline__ float fp8_e4m3(uint b) {\n    const uint e = (b >> 3u) & 0xFu, m = b & 7u;\n    const float sub = float(m) * 0.001953125f;\n    uint subbits;\n    memcpy(&subbits, &sub, sizeof(subbits));\n    const uint bits = (e == 0u) ? subbits : (((e + 120u) << 23u) | (m << 20u));\n    const uint out = bits | ((b & 0x80u) << 24u);\n    float r;\n    memcpy(&r, &out, sizeof(r));\n    return r;\n}\n\n");
     }

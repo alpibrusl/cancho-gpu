@@ -13,3 +13,4 @@ algo conv_cols(t, f, c, wp, r)
 
 schedule conv_cols for apple-m-series { threads 128 }
 schedule conv_cols for nvidia-ada     { threads 128 }
+schedule conv_cols for amd-cdna3     { threads 128 }

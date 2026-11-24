@@ -20,3 +20,4 @@ algo rows3(c)
 
 schedule rows3 for apple-m-series { threads 256 bc 256 }
 schedule rows3 for nvidia-ada     { threads 256 bc 256 }
+schedule rows3 for amd-cdna3     { threads 256 bc 256 }

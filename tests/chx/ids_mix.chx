@@ -20,3 +20,4 @@ algo ids_mix(r)
 
 schedule ids_mix for apple-m-series { threads 128 }
 schedule ids_mix for nvidia-ada     { threads 128 }
+schedule ids_mix for amd-cdna3     { threads 128 }

@@ -20,3 +20,4 @@ algo kv_append(nkv, tmax, d, pos)
 
 schedule kv_append for apple-m-series { threads 128 }
 schedule kv_append for nvidia-ada     { threads 128 }
+schedule kv_append for amd-cdna3     { threads 128 }

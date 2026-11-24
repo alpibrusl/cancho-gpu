@@ -22,3 +22,4 @@ algo vae_s2d(h, w, c, r, r2, g2)
 
 schedule vae_s2d for apple-m-series { threads 128 }
 schedule vae_s2d for nvidia-ada     { threads 128 }
+schedule vae_s2d for amd-cdna3     { threads 128 }

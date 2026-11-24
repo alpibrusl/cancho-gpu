@@ -30,3 +30,4 @@ algo s2d_fwd(n, h, w, c, g, wb)
 
 schedule s2d_fwd for apple-m-series { threads 128 }
 schedule s2d_fwd for nvidia-ada     { threads 128 }
+schedule s2d_fwd for amd-cdna3     { threads 128 }

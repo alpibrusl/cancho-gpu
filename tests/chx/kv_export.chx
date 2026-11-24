@@ -13,3 +13,4 @@ algo kv_export(s, nkv, tmax)
 
 schedule kv_export for apple-m-series { threads 128 }
 schedule kv_export for nvidia-ada     { threads 128 }
+schedule kv_export for amd-cdna3     { threads 128 }

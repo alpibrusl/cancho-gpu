@@ -20,3 +20,4 @@ algo pool_fwd(n, h, c, g)
 
 schedule pool_fwd for apple-m-series { threads 128 }
 schedule pool_fwd for nvidia-ada     { threads 128 }
+schedule pool_fwd for amd-cdna3     { threads 128 }

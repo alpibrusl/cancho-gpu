@@ -11,3 +11,4 @@ algo sin_scaled(r, n)
 
 schedule sin_scaled for apple-m-series { threads 128 }
 schedule sin_scaled for nvidia-ada     { threads 128 }
+schedule sin_scaled for amd-cdna3     { threads 128 }

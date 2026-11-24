@@ -29,3 +29,4 @@ algo gates(h)
 
 schedule gates for apple-m-series { threads 128 }
 schedule gates for nvidia-ada     { threads 128 }
+schedule gates for amd-cdna3     { threads 128 }

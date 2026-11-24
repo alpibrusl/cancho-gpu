@@ -1,0 +1,21 @@
+// RULE lowering
+// ARGS m=128 n=128 k=64
+// HIP names no matrix unit: mma is not lowered for amd-cdna3 yet (docs/amd.md, slice H5).
+
+algo gemm_mma(m, n, k)
+  in  a: f16[m, k]
+  in  w: f16[n, k]
+  out y: f32[m, n]
+  tile bm, bn, bk
+{
+  grid i over m / bm, j over n / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. k / bk with acc {
+    let at = load a[i * bm, p * bk ; bm, bk] @shared
+    let wt = load w[j * bn, p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule gemm_mma for amd-cdna3 { threads 256 warps 2 2 bm 128 bn 128 bk 64 }

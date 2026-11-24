@@ -13,3 +13,4 @@ algo amax_id(r, nq, v1)
 
 schedule amax_id for apple-m-series { threads 128 }
 schedule amax_id for nvidia-ada     { threads 128 }
+schedule amax_id for amd-cdna3     { threads 128 }

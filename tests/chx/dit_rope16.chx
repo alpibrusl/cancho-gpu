@@ -27,3 +27,4 @@ algo dit_rope16(s, nh, h, sc)
 
 schedule dit_rope16 for apple-m-series { threads 128 }
 schedule dit_rope16 for nvidia-ada     { threads 128 }
+schedule dit_rope16 for amd-cdna3     { threads 128 }

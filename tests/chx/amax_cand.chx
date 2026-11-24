@@ -23,3 +23,4 @@ algo amax_cand(r, nq, G)
 
 schedule amax_cand for apple-m-series { threads 256 }
 schedule amax_cand for nvidia-ada     { threads 128 }
+schedule amax_cand for amd-cdna3     { threads 128 }

@@ -13,3 +13,4 @@ algo activations(r, n)
 
 schedule activations for apple-m-series { threads 128 }
 schedule activations for nvidia-ada     { threads 128 }
+schedule activations for amd-cdna3     { threads 128 }

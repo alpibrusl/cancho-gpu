@@ -19,3 +19,4 @@ algo snake(s, c, bn)
 
 schedule snake for apple-m-series { threads 256 }
 schedule snake for nvidia-ada     { threads 256 }
+schedule snake for amd-cdna3     { threads 256 }

@@ -11,3 +11,4 @@ algo vae_pad16(r, c, g)
 
 schedule vae_pad16 for apple-m-series { threads 256 }
 schedule vae_pad16 for nvidia-ada     { threads 256 }
+schedule vae_pad16 for amd-cdna3     { threads 256 }

@@ -28,3 +28,4 @@ algo gates_rows(m, h)
 
 schedule gates_rows for apple-m-series { threads 128 }
 schedule gates_rows for nvidia-ada     { threads 128 }
+schedule gates_rows for amd-cdna3     { threads 128 }

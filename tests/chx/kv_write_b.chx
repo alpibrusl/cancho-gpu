@@ -22,3 +22,4 @@ algo kv_write_b(nb, nkv, tmax, ts, d)
 
 schedule kv_write_b for apple-m-series { threads 256 }
 schedule kv_write_b for nvidia-ada     { threads 256 }
+schedule kv_write_b for amd-cdna3     { threads 256 }
