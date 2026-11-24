@@ -1,0 +1,862 @@
+edition 9;
+
+import std.buffer;
+import std.fmt;
+import std.io;
+import std.math;
+import files;
+import qasr_host;
+import wenc_st;
+import wenc_codec;
+
+// qwen3_tts_decoder_gpu -- stage S1c of docs/audio.md (section 22): the codec decoder of Qwen3-TTS-12Hz-1.7B as one session of kernel programs on the Metal GPU (models/qwen3_tts_decoder.model), its host
+// side written in cancho.
+//
+//   qwen3_tts_decoder_gpu weights <speech_tokenizer/model.safetensors> <weights dir> [<mutant 3-5>]
+//   qwen3_tts_decoder_gpu prepare <weights dir> <work dir> <codes.txt> [<mutant 1-2>]
+//   qwen3_tts_decoder_gpu compare <work dir> <reference samples .f32> <frames>
+//   qwen3_tts_decoder_gpu stage <saved .f32> <reference .f32>
+//
+// `weights` writes the session's files, all singles, from the checkpoint's `decoder.*` tensors (F32). What it does to them (section 22): a convolution's [cout, cin, k] becomes [cout, k cin], taps outermost; a
+// transposed convolution's [cin, cout, 2r] becomes 2 taps to r cout outputs (tap 0 the weights of taps r .. 2r - 1, tap 1 those of 0 .. r - 1, the phase outermost in the rows; with r taps, one tap); q's
+// weight is multiplied by 1/8, which is 1/sqrt(64) and exact; the layer scales are multiplied into the rows of `o_proj` and `down_proj`, and a ConvNeXt block's `gamma` into the rows and the bias of
+// `pwconv2`; a Snake's `alpha` and `beta` become a = e^alpha and ib = 1 / (e^beta + 1e-9); the last convolution's one output is the first of 32 rows, the others zeros; each codebook is
+// `embedding_sum / max(cluster_usage, 1e-5)`, a single divided by a single and rounded to one, as torch computes it.
+// `prepare` reads a clip's codes (16 numbers under 2,048 a frame, decimal, separated by white space; T frames, at most 384) and writes the session's inputs: `x0.f32`, `[2 + SP, 512]`, the sum of the two
+// codebook products of each frame after two rows of zeros; the rotary tables `[SP, 32]`; the attention's mask `[16 SP, SP]` (0 where `i - 72 < j <= i`, -1e9 elsewhere); the ConvNeXt blocks' masks of ones. It
+// prints `SP=<frames rounded up to 64> frames <T> samples <1920 T>`. Run the session with
+//   printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_tts_decoder.model CHX=<repo>/tests/chx WORK=<work> WDIR=<weights> SP=..
+// which saves `<work>/wave.f32`, 1,920 SP singles. `compare` holds its first 1,920 T to the reference's samples: every one within 1e-3 (the bound of section 3.3), exit status 0 only then.
+// `stage` prints the worst difference between a buffer the session saved with PROBE=1 and a reference activation (the reference's values, row for row, are the buffer's first ones), and the reference's peak.
+// Mutants (each must fail `compare`): 1 the attention's window left out (it fails on a clip longer than 72 frames only); 2 the window one frame short (the same); 3 q not scaled; 4 the transposed
+// convolutions' two taps exchanged; 5 the layer scales left out.
+//
+// Built with
+//   cancho build tests/qwen3_tts_decoder_gpu.cho tests/qwen_asr/host.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_tts_decoder_gpu
+
+// `a<i>b<j>c` after `root`; a negative number is left out
+fn name2[&h, &r, &a, &b, &c](heap: &!h Heap, root: &r [byte], a: &a [byte], i: int, b: &b [byte], j: int, c: &c [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 128), root);
+    out = buffer.append(heap, out, a);
+    if i >= 0 {
+        out = buffer.push_nat(heap, out, i);
+    }
+    out = buffer.append(heap, out, b);
+    if j >= 0 {
+        out = buffer.push_nat(heap, out, j);
+    }
+    out = buffer.append(heap, out, c);
+    return out;
+}
+
+// the tensor `decoder.a<i>b<j>c` as binary64: `expect` values, or an error counted in `iv[0]`
+fn get[&h, &f, &p, &a, &b, &c, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], j: int, c: &c [byte], expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let name = name2(heap, "decoder.", a, i, b, j, c);
+    var out = box_slice(heap, 1, 0.0);
+    borrow name as &nb in {
+        let (v, cnt, ok) = wenc_st.load(heap, fs, st, buffer.bytes(nb));
+        if ok == 0 && cnt == expect {
+            unbox_slice(heap, out);
+            out = v;
+        } else {
+            unbox_slice(heap, v);
+            iv[0] = iv[0] + 1;
+        }
+    }
+    buffer.drop(heap, name);
+    return out;
+}
+
+// `values` as the file of singles `dir/a<i>b<j>c`
+fn put[&h, &f, &w, &a, &b, &c, &v, &q](heap: &!h Heap, fs: &f Fs(""), dir: &w [byte], a: &a [byte], i: int, b: &b [byte], j: int, c: &c [byte], values: &v [float], iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let name = name2(heap, "", a, i, b, j, c);
+    borrow name as &nb in {
+        qasr_host.put_file(heap, fs, dir, buffer.bytes(nb), 0 - 1, "", false, values, iv);
+    }
+    buffer.drop(heap, name);
+    return 0;
+}
+
+// the single nearest x, as binary64
+fn single(x: float) -> [] float {
+    return float_of32(f32_of(x));
+}
+
+// a tensor copied to a file as it is
+fn copy[&h, &f, &p, &w, &a, &b, &c, &d, &e, &g, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], j: int, c: &c [byte], expect: int, wdir: &w [byte], oa: &d [byte], oi: int, ob: &e [byte], oj: int, oc: &g [byte], iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let v = get(heap, fs, st, a, i, b, j, c, expect, iv);
+    borrow v as &vr in {
+        put(heap, fs, wdir, oa, oi, ob, oj, oc, contents(vr), iv);
+    }
+    unbox_slice(heap, v);
+    return 0;
+}
+
+// a product's [rows, cols] with every value times `scale` and, when `by` has `rows` values, each row times its own (a layer scale, a gamma)
+fn product[&h, &f, &p, &w, &a, &b, &d, &e, &s, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], rows: int, cols: int, scale: float, by: &s [float], wdir: &w [byte], oa: &d [byte], oi: int, ob: &e [byte], iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let v = get(heap, fs, st, a, i, b, 0 - 1, "", rows * cols, iv);
+    borrow mut v as &!vw in {
+        if len(contents(vw)) == rows * cols {
+            var r = 0;
+            while r < rows {
+                var m = scale;
+                if len(by) == rows {
+                    m = m * by[r];
+                }
+                if m != 1.0 {
+                    var k = 0;
+                    while k < cols {
+                        contents(vw)[r * cols + k] = contents(vw)[r * cols + k] * m;
+                        k = k + 1;
+                    }
+                }
+                r = r + 1;
+            }
+        }
+    }
+    borrow v as &vr in {
+        put(heap, fs, wdir, oa, oi, ob, 0 - 1, "", contents(vr), iv);
+    }
+    unbox_slice(heap, v);
+    return 0;
+}
+
+// a convolution's weight [cout, cin, k] as [rows, k cin], taps outermost in the columns (tests/chx/conv1d_f.chx); the rows past cout are zeros
+fn conv[&h, &f, &p, &w, &a, &b, &d, &e, &g, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], j: int, c: &g [byte], cout: int, cin: int, k: int, rows: int, wdir: &w [byte], oa: &d [byte], oi: int, ob: &e [byte], oj: int, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let v = get(heap, fs, st, a, i, b, j, c, cout * cin * k, iv);
+    let o = box_slice(heap, rows * k * cin, 0.0);
+    borrow v as &vr in {
+        borrow mut o as &!ow in {
+            if len(contents(vr)) == cout * cin * k {
+                var co = 0;
+                while co < cout {
+                    var ci = 0;
+                    while ci < cin {
+                        var t = 0;
+                        while t < k {
+                            contents(ow)[co * k * cin + t * cin + ci] = contents(vr)[(co * cin + ci) * k + t];
+                            t = t + 1;
+                        }
+                        ci = ci + 1;
+                    }
+                    co = co + 1;
+                }
+            }
+        }
+    }
+    borrow o as &or in {
+        put(heap, fs, wdir, oa, oi, ob, oj, ".f32", contents(or), iv);
+    }
+    unbox_slice(heap, v);
+    unbox_slice(heap, o);
+    return 0;
+}
+
+// a transposed convolution's weight [cin, cout, taps r] of stride r as [r cout, taps cin] (docs/audio.md section 20): output phase ph of an input position is row ph cout + co; with 2 taps, tap 0
+// (the position before) has the weights of ph + r and tap 1 (the position itself) those of ph. `swap` exchanges the two (mutant 4).
+fn transposed[&h, &f, &p, &w, &a, &b, &d, &e, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], cin: int, cout: int, r: int, taps: int, swap: bool, wdir: &w [byte], oa: &d [byte], oi: int, ob: &e [byte], iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let kk = taps * r;
+    let v = get(heap, fs, st, a, i, b, 0 - 1, "", cin * cout * kk, iv);
+    let o = box_slice(heap, r * cout * taps * cin, 0.0);
+    borrow v as &vr in {
+        borrow mut o as &!ow in {
+            if len(contents(vr)) == cin * cout * kk {
+                var ph = 0;
+                while ph < r {
+                    var co = 0;
+                    while co < cout {
+                        let row = (ph * cout + co) * taps * cin;
+                        var ci = 0;
+                        while ci < cin {
+                            let at = (ci * cout + co) * kk;
+                            if taps == 2 {
+                                var first = ph + r;
+                                var second = ph;
+                                if swap {
+                                    first = ph;
+                                    second = ph + r;
+                                }
+                                contents(ow)[row + ci] = contents(vr)[at + first];
+                                contents(ow)[row + cin + ci] = contents(vr)[at + second];
+                            } else {
+                                contents(ow)[row + ci] = contents(vr)[at + ph];
+                            }
+                            ci = ci + 1;
+                        }
+                        co = co + 1;
+                    }
+                    ph = ph + 1;
+                }
+            }
+        }
+    }
+    borrow o as &or in {
+        put(heap, fs, wdir, oa, oi, ob, 0 - 1, "", contents(or), iv);
+    }
+    unbox_slice(heap, v);
+    unbox_slice(heap, o);
+    return 0;
+}
+
+// a Snake's alpha and beta (c values each) as a = e^alpha and ib = 1 / (e^beta + 1e-9)
+fn snake[&h, &f, &p, &w, &a, &b, &g, &d, &e, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], j: int, c: &g [byte], n: int, wdir: &w [byte], oa: &d [byte], oi: int, ob: &e [byte], oj: int, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    var part = 0;
+    while part < 2 {
+        let nm = name2(heap, "", c, 0 - 1, "", 0 - 1, "alpha");
+        let nb = name2(heap, "", c, 0 - 1, "", 0 - 1, "beta");
+        var v = box_slice(heap, 1, 0.0);
+        if part == 0 {
+            borrow nm as &x in {
+                unbox_slice(heap, v);
+                v = get(heap, fs, st, a, i, b, j, buffer.bytes(x), n, iv);
+            }
+        } else {
+            borrow nb as &x in {
+                unbox_slice(heap, v);
+                v = get(heap, fs, st, a, i, b, j, buffer.bytes(x), n, iv);
+            }
+        }
+        buffer.drop(heap, nm);
+        buffer.drop(heap, nb);
+        borrow mut v as &!vw in {
+            var t = 0;
+            while t < len(contents(vw)) {
+                if part == 0 {
+                    contents(vw)[t] = math.exp(contents(vw)[t]);
+                } else {
+                    contents(vw)[t] = 1.0 / (math.exp(contents(vw)[t]) + 0.000000001);
+                }
+                t = t + 1;
+            }
+        }
+        borrow v as &vr in {
+            if part == 0 {
+                put(heap, fs, wdir, oa, oi, ob, oj, "a.f32", contents(vr), iv);
+            } else {
+                put(heap, fs, wdir, oa, oi, ob, oj, "b.f32", contents(vr), iv);
+            }
+        }
+        unbox_slice(heap, v);
+        part = part + 1;
+    }
+    return 0;
+}
+
+// a codebook: embedding_sum [2048, 256] / max(cluster_usage [2048], 1e-5), each a single divided by a single and rounded to one
+fn codebook[&h, &f, &p, &w, &a, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], layer: int, wdir: &w [byte], index: int, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let e = get(heap, fs, st, a, layer, "._codebook.embedding_sum", 0 - 1, "", 2048 * 256, iv);
+    let u = get(heap, fs, st, a, layer, "._codebook.cluster_usage", 0 - 1, "", 2048, iv);
+    let floor = single(0.00001);
+    borrow mut e as &!ew in {
+        borrow u as &ur in {
+            if len(contents(ew)) == 2048 * 256 && len(contents(ur)) == 2048 {
+                var r = 0;
+                while r < 2048 {
+                    var d = contents(ur)[r];
+                    if d < floor {
+                        d = floor;
+                    }
+                    var k = 0;
+                    while k < 256 {
+                        contents(ew)[r * 256 + k] = single(contents(ew)[r * 256 + k] / d);
+                        k = k + 1;
+                    }
+                    r = r + 1;
+                }
+            }
+        }
+    }
+    borrow e as &er in {
+        put(heap, fs, wdir, "cb", index, ".f32", 0 - 1, "", contents(er), iv);
+    }
+    unbox_slice(heap, e);
+    unbox_slice(heap, u);
+    return 0;
+}
+
+fn weights[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if na != 4 && na != 5 {
+        qasr_host.put(io, "usage: qwen3_tts_decoder_gpu weights <speech_tokenizer/model.safetensors> <weights dir> [<mutant 3-5>]\n");
+        return 100;
+    }
+    let st = arg(args, 2);
+    let wdir = arg(args, 3);
+    var mutant = 0;
+    if na == 5 {
+        mutant = qasr_host.num(arg(args, 4));
+        if mutant < 3 || mutant > 5 {
+            qasr_host.put(io, "a mutant of the weights is 3 to 5\n");
+            return 101;
+        }
+    }
+    if files.path_ok(fs, st) == false || files.path_ok(fs, wdir) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let iv = box_slice(heap, 1, 0);
+    let none = box_slice(heap, 1, 0.0);
+    var bad = 0;
+    borrow mut iv as &!qb in {
+        borrow none as &nr in {
+            let q = contents(qb);
+            let no = contents(nr)[0..0];
+            // the codebooks and their two products
+            codebook(heap, fs, st, "quantizer.rvq_first.vq.layers.", 0, wdir, 0, q);
+            var c = 0;
+            while c < 15 && q[0] == 0 {
+                codebook(heap, fs, st, "quantizer.rvq_rest.vq.layers.", c, wdir, c + 1, q);
+                c = c + 1;
+            }
+            copy(heap, fs, st, "quantizer.rvq_first.output_proj.weight", 0 - 1, "", 0 - 1, "", 512 * 256, wdir, "cbp0.f32", 0 - 1, "", 0 - 1, "", q);
+            copy(heap, fs, st, "quantizer.rvq_rest.output_proj.weight", 0 - 1, "", 0 - 1, "", 512 * 256, wdir, "cbp1.f32", 0 - 1, "", 0 - 1, "", q);
+            // pre_conv, the transformer
+            conv(heap, fs, st, "pre_conv.conv.weight", 0 - 1, "", 0 - 1, "", 1024, 512, 3, 1024, wdir, "pre", 0 - 1, "", 0 - 1, q);
+            copy(heap, fs, st, "pre_conv.conv.bias", 0 - 1, "", 0 - 1, "", 1024, wdir, "pre.b.f32", 0 - 1, "", 0 - 1, "", q);
+            copy(heap, fs, st, "pre_transformer.input_proj.weight", 0 - 1, "", 0 - 1, "", 512 * 1024, wdir, "inp.f32", 0 - 1, "", 0 - 1, "", q);
+            copy(heap, fs, st, "pre_transformer.input_proj.bias", 0 - 1, "", 0 - 1, "", 512, wdir, "inp.b.f32", 0 - 1, "", 0 - 1, "", q);
+            var qs = 0.125;
+            if mutant == 3 {
+                qs = 1.0;
+            }
+            var l = 0;
+            while l < 8 && q[0] == 0 {
+                copy(heap, fs, st, "pre_transformer.layers.", l, ".input_layernorm.weight", 0 - 1, "", 512, wdir, "n1_", l, ".f32", 0 - 1, "", q);
+                copy(heap, fs, st, "pre_transformer.layers.", l, ".post_attention_layernorm.weight", 0 - 1, "", 512, wdir, "n2_", l, ".f32", 0 - 1, "", q);
+                product(heap, fs, st, "pre_transformer.layers.", l, ".self_attn.q_proj.weight", 1024, 512, qs, no, wdir, "wq", l, ".f32", q);
+                product(heap, fs, st, "pre_transformer.layers.", l, ".self_attn.k_proj.weight", 1024, 512, 1.0, no, wdir, "wk", l, ".f32", q);
+                product(heap, fs, st, "pre_transformer.layers.", l, ".self_attn.v_proj.weight", 1024, 512, 1.0, no, wdir, "wv", l, ".f32", q);
+                product(heap, fs, st, "pre_transformer.layers.", l, ".mlp.gate_proj.weight", 1024, 512, 1.0, no, wdir, "wg", l, ".f32", q);
+                product(heap, fs, st, "pre_transformer.layers.", l, ".mlp.up_proj.weight", 1024, 512, 1.0, no, wdir, "wu", l, ".f32", q);
+                let sa = get(heap, fs, st, "pre_transformer.layers.", l, ".self_attn_layer_scale.scale", 0 - 1, "", 512, q);
+                let sm = get(heap, fs, st, "pre_transformer.layers.", l, ".mlp_layer_scale.scale", 0 - 1, "", 512, q);
+                borrow sa as &sar in {
+                    borrow sm as &smr in {
+                        if mutant == 5 {
+                            product(heap, fs, st, "pre_transformer.layers.", l, ".self_attn.o_proj.weight", 512, 1024, 1.0, no, wdir, "wo", l, ".f32", q);
+                            product(heap, fs, st, "pre_transformer.layers.", l, ".mlp.down_proj.weight", 512, 1024, 1.0, no, wdir, "wd", l, ".f32", q);
+                        } else {
+                            product(heap, fs, st, "pre_transformer.layers.", l, ".self_attn.o_proj.weight", 512, 1024, 1.0, contents(sar), wdir, "wo", l, ".f32", q);
+                            product(heap, fs, st, "pre_transformer.layers.", l, ".mlp.down_proj.weight", 512, 1024, 1.0, contents(smr), wdir, "wd", l, ".f32", q);
+                        }
+                    }
+                }
+                unbox_slice(heap, sa);
+                unbox_slice(heap, sm);
+                l = l + 1;
+            }
+            copy(heap, fs, st, "pre_transformer.norm.weight", 0 - 1, "", 0 - 1, "", 512, wdir, "nf.f32", 0 - 1, "", 0 - 1, "", q);
+            copy(heap, fs, st, "pre_transformer.output_proj.weight", 0 - 1, "", 0 - 1, "", 1024 * 512, wdir, "outp.f32", 0 - 1, "", 0 - 1, "", q);
+            copy(heap, fs, st, "pre_transformer.output_proj.bias", 0 - 1, "", 0 - 1, "", 1024, wdir, "outp.b.f32", 0 - 1, "", 0 - 1, "", q);
+            // the two stages that double the rate
+            var u = 0;
+            while u < 2 && q[0] == 0 {
+                transposed(heap, fs, st, "upsample.", u, ".0.conv.weight", 1024, 1024, 2, 1, false, wdir, "ut", u, ".f32", q);
+                copy(heap, fs, st, "upsample.", u, ".0.conv.bias", 0 - 1, "", 1024, wdir, "ut", u, "_b.f32", 0 - 1, "", q);
+                // the depthwise weight [c, 1, 7] as [7, c]
+                let dw = get(heap, fs, st, "upsample.", u, ".1.dwconv.conv.weight", 0 - 1, "", 1024 * 7, q);
+                let dt = box_slice(heap, 7 * 1024, 0.0);
+                borrow dw as &dr in {
+                    borrow mut dt as &!dtw in {
+                        if len(contents(dr)) == 1024 * 7 {
+                            var ch = 0;
+                            while ch < 1024 {
+                                var t = 0;
+                                while t < 7 {
+                                    contents(dtw)[t * 1024 + ch] = contents(dr)[ch * 7 + t];
+                                    t = t + 1;
+                                }
+                                ch = ch + 1;
+                            }
+                        }
+                    }
+                }
+                borrow dt as &dtr in {
+                    put(heap, fs, wdir, "dw", u, ".f32", 0 - 1, "", contents(dtr), q);
+                }
+                unbox_slice(heap, dw);
+                unbox_slice(heap, dt);
+                copy(heap, fs, st, "upsample.", u, ".1.dwconv.conv.bias", 0 - 1, "", 1024, wdir, "dw", u, "_b.f32", 0 - 1, "", q);
+                copy(heap, fs, st, "upsample.", u, ".1.norm.weight", 0 - 1, "", 1024, wdir, "ln", u, "_w.f32", 0 - 1, "", q);
+                copy(heap, fs, st, "upsample.", u, ".1.norm.bias", 0 - 1, "", 1024, wdir, "ln", u, "_b.f32", 0 - 1, "", q);
+                copy(heap, fs, st, "upsample.", u, ".1.pwconv1.weight", 0 - 1, "", 4096 * 1024, wdir, "pw1_", u, ".f32", 0 - 1, "", q);
+                copy(heap, fs, st, "upsample.", u, ".1.pwconv1.bias", 0 - 1, "", 4096, wdir, "pw1_", u, "_b.f32", 0 - 1, "", q);
+                let gm = get(heap, fs, st, "upsample.", u, ".1.gamma", 0 - 1, "", 1024, q);
+                borrow gm as &gr in {
+                    product(heap, fs, st, "upsample.", u, ".1.pwconv2.weight", 1024, 4096, 1.0, contents(gr), wdir, "pw2_", u, ".f32", q);
+                    product(heap, fs, st, "upsample.", u, ".1.pwconv2.bias", 1024, 1, 1.0, contents(gr), wdir, "pw2_", u, "_b.f32", q);
+                }
+                unbox_slice(heap, gm);
+                u = u + 1;
+            }
+            let zero = box_slice(heap, 1024, 0.0);
+            borrow zero as &zr in {
+                put(heap, fs, wdir, "zero.f32", 0 - 1, "", 0 - 1, "", contents(zr), q);
+            }
+            unbox_slice(heap, zero);
+            // the decoder: its first convolution, the four blocks, the last Snake and convolution
+            conv(heap, fs, st, "decoder.0.conv.weight", 0 - 1, "", 0 - 1, "", 1536, 1024, 7, 1536, wdir, "d0", 0 - 1, "", 0 - 1, q);
+            copy(heap, fs, st, "decoder.0.conv.bias", 0 - 1, "", 0 - 1, "", 1536, wdir, "d0.b.f32", 0 - 1, "", 0 - 1, "", q);
+            var j = 0;
+            var ch = 1536;
+            while j < 4 && q[0] == 0 {
+                var r = 8;
+                if j == 1 {
+                    r = 5;
+                }
+                if j == 2 {
+                    r = 4;
+                }
+                if j == 3 {
+                    r = 3;
+                }
+                let half = ch / 2;
+                snake(heap, fs, st, "decoder.", j + 1, ".block.0.", 0 - 1, "", ch, wdir, "t", j, "_", 0 - 1, q);
+                transposed(heap, fs, st, "decoder.", j + 1, ".block.1.conv.weight", ch, half, r, 2, mutant == 4, wdir, "t", j, ".f32", q);
+                copy(heap, fs, st, "decoder.", j + 1, ".block.1.conv.bias", 0 - 1, "", half, wdir, "t", j, "_bias.f32", 0 - 1, "", q);
+                var un = 0;
+                while un < 3 {
+                    snake(heap, fs, st, "decoder.", j + 1, ".block.", un + 2, ".act1.", half, wdir, "u", j, "_", un, q);
+                    snake(heap, fs, st, "decoder.", j + 1, ".block.", un + 2, ".act2.", half, wdir, "v", j, "_", un, q);
+                    conv(heap, fs, st, "decoder.", j + 1, ".block.", un + 2, ".conv1.conv.weight", half, half, 7, half, wdir, "u", j, "_", un * 10 + 1, q);
+                    copy(heap, fs, st, "decoder.", j + 1, ".block.", un + 2, ".conv1.conv.bias", half, wdir, "u", j, "_", un * 10 + 1, ".b.f32", q);
+                    conv(heap, fs, st, "decoder.", j + 1, ".block.", un + 2, ".conv2.conv.weight", half, half, 1, half, wdir, "u", j, "_", un * 10 + 2, q);
+                    copy(heap, fs, st, "decoder.", j + 1, ".block.", un + 2, ".conv2.conv.bias", half, wdir, "u", j, "_", un * 10 + 2, ".b.f32", q);
+                    un = un + 1;
+                }
+                ch = half;
+                j = j + 1;
+            }
+            snake(heap, fs, st, "decoder.5.", 0 - 1, "", 0 - 1, "", 96, wdir, "f_", 0 - 1, "", 0 - 1, q);
+            conv(heap, fs, st, "decoder.6.conv.weight", 0 - 1, "", 0 - 1, "", 1, 96, 7, 32, wdir, "fc", 0 - 1, "", 0 - 1, q);
+            copy(heap, fs, st, "decoder.6.conv.bias", 0 - 1, "", 0 - 1, "", 1, wdir, "fc_b.f32", 0 - 1, "", 0 - 1, "", q);
+            bad = q[0];
+        }
+    }
+    unbox_slice(heap, iv);
+    unbox_slice(heap, none);
+    if bad != 0 {
+        qasr_host.put(io, "the checkpoint is not there, a tensor of the decoder is missing or of another size, or the weights directory cannot be written\n");
+        return 104;
+    }
+    qasr_host.put(io, "weights: written\n");
+    return 0;
+}
+
+// the codes of a text file: how many were read into `ids`, or -1 for a byte that is neither a digit nor white space, a code past 2,047 or more codes than `ids` holds
+fn read_codes[&h, &f, &p, &v](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], ids: &!v [int]) -> [heap, fs_read(""), file_read] int {
+    let (text, status) = files.read_all(heap, fs, path);
+    var n = 0;
+    if status != 0 {
+        n = 0 - 1;
+    }
+    borrow text as &tb in {
+        let t = buffer.bytes(tb);
+        var i = 0;
+        var cur = 0 - 1;
+        while i <= len(t) && n >= 0 {
+            var c = 32;
+            if i < len(t) {
+                c = int_of(t[i]);
+            }
+            if c >= 48 && c <= 57 {
+                if cur < 0 {
+                    cur = 0;
+                }
+                cur = cur * 10 + (c - 48);
+                if cur >= 2048 {
+                    n = 0 - 1;
+                }
+            } else if c == 32 || c == 10 || c == 13 || c == 9 {
+                if cur >= 0 {
+                    if n >= len(ids) {
+                        n = 0 - 1;
+                    } else {
+                        ids[n] = cur;
+                        n = n + 1;
+                    }
+                    cur = 0 - 1;
+                }
+            } else {
+                n = 0 - 1;
+            }
+            i = i + 1;
+        }
+    }
+    buffer.drop(heap, text);
+    return n;
+}
+
+// a file of singles in the weights directory: `expect` values, or an error counted in `iv[0]`
+fn raw[&h, &f, &w, &a, &q](heap: &!h Heap, fs: &f Fs(""), wdir: &w [byte], a: &a [byte], i: int, expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let p = qasr_host.path3(heap, wdir, a, i, ".f32");
+    var out = box_slice(heap, 1, 0.0);
+    borrow p as &pb in {
+        let (v, n) = wenc_st.load_raw(heap, fs, buffer.bytes(pb));
+        if n == expect {
+            unbox_slice(heap, out);
+            out = v;
+        } else {
+            unbox_slice(heap, v);
+            iv[0] = iv[0] + 1;
+        }
+    }
+    buffer.drop(heap, p);
+    return out;
+}
+
+fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if na != 5 && na != 6 {
+        qasr_host.put(io, "usage: qwen3_tts_decoder_gpu prepare <weights dir> <work dir> <codes.txt> [<mutant 1-2>]\n");
+        return 100;
+    }
+    let wdir = arg(args, 2);
+    let work = arg(args, 3);
+    var mutant = 0;
+    if na == 6 {
+        mutant = qasr_host.num(arg(args, 5));
+        if mutant < 1 || mutant > 2 {
+            qasr_host.put(io, "a mutant of the inputs is 1 or 2\n");
+            return 101;
+        }
+    }
+    if files.path_ok(fs, wdir) == false || files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 4)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let ids = box_slice(heap, 384 * 16, 0);
+    var n = 0;
+    borrow mut ids as &!iw in {
+        n = read_codes(heap, fs, arg(args, 4), contents(iw));
+    }
+    if n < 16 || n % 16 != 0 {
+        unbox_slice(heap, ids);
+        qasr_host.put(io, "the codes are 16 numbers under 2048 a frame, 1 to 384 frames\n");
+        return 103;
+    }
+    let frames = n / 16;
+    let sp = qasr_host.round64(frames);
+    let iv = box_slice(heap, 1, 0);
+    var bad = 0;
+    borrow mut iv as &!qb in {
+        let q = contents(qb);
+        // x0: for each frame, P0 E0[c0] + P1 (E1[c1] + ... + E15[c15]), in binary64, after two rows of zeros
+        let x0 = box_slice(heap, (2 + sp) * 512, 0.0);
+        let p0 = raw(heap, fs, wdir, "cbp", 0, 512 * 256, q);
+        let p1 = raw(heap, fs, wdir, "cbp", 1, 512 * 256, q);
+        let rest = box_slice(heap, frames * 256, 0.0);
+        let first = box_slice(heap, frames * 256, 0.0);
+        var c = 0;
+        while c < 16 && q[0] == 0 {
+            let cb = raw(heap, fs, wdir, "cb", c, 2048 * 256, q);
+            borrow cb as &cr in {
+                borrow ids as &ir in {
+                    borrow mut rest as &!rw in {
+                        borrow mut first as &!fw in {
+                            if len(contents(cr)) == 2048 * 256 {
+                                var t = 0;
+                                while t < frames {
+                                    let code = contents(ir)[t * 16 + c];
+                                    var k = 0;
+                                    while k < 256 {
+                                        if c == 0 {
+                                            contents(fw)[t * 256 + k] = contents(cr)[code * 256 + k];
+                                        } else {
+                                            contents(rw)[t * 256 + k] = contents(rw)[t * 256 + k] + contents(cr)[code * 256 + k];
+                                        }
+                                        k = k + 1;
+                                    }
+                                    t = t + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, cb);
+            c = c + 1;
+        }
+        borrow p0 as &p0r in {
+            borrow p1 as &p1r in {
+                borrow rest as &rr in {
+                    borrow first as &fr in {
+                        borrow mut x0 as &!xw in {
+                            if q[0] == 0 {
+                                var t = 0;
+                                while t < frames {
+                                    var o = 0;
+                                    while o < 512 {
+                                        var a = 0.0;
+                                        var b = 0.0;
+                                        var k = 0;
+                                        while k < 256 {
+                                            a = a + contents(p0r)[o * 256 + k] * contents(fr)[t * 256 + k];
+                                            b = b + contents(p1r)[o * 256 + k] * contents(rr)[t * 256 + k];
+                                            k = k + 1;
+                                        }
+                                        contents(xw)[(2 + t) * 512 + o] = a + b;
+                                        o = o + 1;
+                                    }
+                                    t = t + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        borrow x0 as &xr in {
+            qasr_host.put_file(heap, fs, work, "x0", 0 - 1, ".f32", false, contents(xr), q);
+        }
+        unbox_slice(heap, x0);
+        unbox_slice(heap, p0);
+        unbox_slice(heap, p1);
+        unbox_slice(heap, rest);
+        unbox_slice(heap, first);
+        // the rotary tables [SP, 32], the angle in singles as the reference computes it: inv_freq = 1 / 10000^(2k / 64) a single, times the position, rounded to a single
+        let cs = box_slice(heap, sp * 32, 0.0);
+        let sn = box_slice(heap, sp * 32, 0.0);
+        borrow mut cs as &!cw in {
+            borrow mut sn as &!sw in {
+                var k = 0;
+                while k < 32 {
+                    let pw = single(math.exp(9.210340371976184 * single(float_of(2 * k) / 64.0)));
+                    let inv = single(1.0 / pw);
+                    var p = 0;
+                    while p < sp {
+                        let a = single(inv * float_of(p));
+                        contents(cw)[p * 32 + k] = math.cos(a);
+                        contents(sw)[p * 32 + k] = math.sin(a);
+                        p = p + 1;
+                    }
+                    k = k + 1;
+                }
+            }
+        }
+        borrow cs as &cr in {
+            qasr_host.put_file(heap, fs, work, "cs", 0 - 1, ".f32", false, contents(cr), q);
+        }
+        borrow sn as &sr in {
+            qasr_host.put_file(heap, fs, work, "sn", 0 - 1, ".f32", false, contents(sr), q);
+        }
+        unbox_slice(heap, cs);
+        unbox_slice(heap, sn);
+        // the mask [16 SP, SP], head-major: a query sees itself and the 71 before it
+        var window = 72;
+        if mutant == 1 {
+            window = sp + 1;
+        }
+        if mutant == 2 {
+            window = 71;
+        }
+        let mk = box_slice(heap, 16 * sp * sp, 0.0 - 1000000000.0);
+        borrow mut mk as &!mw in {
+            var hd = 0;
+            while hd < 16 {
+                var r = 0;
+                while r < sp {
+                    var k = r - window + 1;
+                    if k < 0 {
+                        k = 0;
+                    }
+                    while k <= r {
+                        contents(mw)[(hd * sp + r) * sp + k] = 0.0;
+                        k = k + 1;
+                    }
+                    r = r + 1;
+                }
+                hd = hd + 1;
+            }
+        }
+        borrow mk as &mr in {
+            qasr_host.put_file(heap, fs, work, "amask", 0 - 1, ".f32", false, contents(mr), q);
+        }
+        unbox_slice(heap, mk);
+        var u = 0;
+        while u < 2 {
+            let ones = box_slice(heap, (2 + 2 * u) * sp, 1.0);
+            borrow ones as &or in {
+                qasr_host.put_file(heap, fs, work, "ones", u, ".f32", false, contents(or), q);
+            }
+            unbox_slice(heap, ones);
+            u = u + 1;
+        }
+        bad = q[0];
+    }
+    unbox_slice(heap, iv);
+    unbox_slice(heap, ids);
+    if bad != 0 {
+        qasr_host.put(io, "the weights directory has no codebooks (run `weights` first) or the work directory cannot be written\n");
+        return 104;
+    }
+    qasr_host.put(io, "SP=");
+    qasr_host.put_int(io, sp);
+    qasr_host.put(io, " frames ");
+    qasr_host.put_int(io, frames);
+    qasr_host.put(io, " samples ");
+    qasr_host.put_int(io, 1920 * frames);
+    qasr_host.put(io, "\n");
+    return 0;
+}
+
+// the worst difference between the first `n` values of two arrays, where it is, and the second's peak; a NaN in the first is counted in `iv[0]`
+fn worst[&a, &b, &q](got: &a [float], want: &b [float], n: int, iv: &!q [int]) -> [] (float, int, float) {
+    var w = 0.0;
+    var at = 0;
+    var peak = 0.0;
+    var i = 0;
+    while i < n {
+        let d = qasr_host.abs(got[i] - want[i]);
+        if d >= 0.0 == false {
+            iv[0] = iv[0] + 1;
+        }
+        if d > w {
+            w = d;
+            at = i;
+        }
+        let p = qasr_host.abs(want[i]);
+        if p > peak {
+            peak = p;
+        }
+        i = i + 1;
+    }
+    return (w, at, peak);
+}
+
+fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 5 {
+        qasr_host.put(io, "usage: qwen3_tts_decoder_gpu compare <work dir> <reference samples .f32> <frames>\n");
+        return 100;
+    }
+    let frames = qasr_host.num(arg(args, 4));
+    if frames < 1 || frames > 384 {
+        qasr_host.put(io, "frames is 1 to 384\n");
+        return 101;
+    }
+    let sp = qasr_host.round64(frames);
+    let wp = qasr_host.path3(heap, arg(args, 2), "wave", 0 - 1, ".f32");
+    var status = 105;
+    borrow wp as &wpb in {
+        let (got, n) = wenc_st.load_raw(heap, fs, buffer.bytes(wpb));
+        let (want, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
+        if n != 1920 * sp || m != 1920 * frames {
+            qasr_host.put(io, "the session's samples or the reference's are not 1920 a frame\n");
+            status = 106;
+        } else {
+            let iv = box_slice(heap, 1, 0);
+            var nan = 0;
+            var w = 0.0;
+            var at = 0;
+            var peak = 0.0;
+            borrow got as &gr in {
+                borrow want as &wr in {
+                    borrow mut iv as &!q in {
+                        let (a, b, c) = worst(contents(gr), contents(wr), m, contents(q));
+                        w = a;
+                        at = b;
+                        peak = c;
+                        nan = contents(q)[0];
+                    }
+                }
+            }
+            unbox_slice(heap, iv);
+            qasr_host.put_int(io, m);
+            qasr_host.put(io, " samples against the reference's float32 (peak ");
+            qasr_host.put_float(io, peak);
+            qasr_host.put(io, "): worst difference ");
+            qasr_host.put_float(io, w);
+            qasr_host.put(io, " at sample ");
+            qasr_host.put_int(io, at);
+            qasr_host.put(io, "; the bound is 0.001\n");
+            status = 1;
+            if nan == 0 && w <= 0.001 {
+                status = 0;
+            }
+        }
+        unbox_slice(heap, got);
+        unbox_slice(heap, want);
+    }
+    buffer.drop(heap, wp);
+    return status;
+}
+
+fn stage[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 4 {
+        qasr_host.put(io, "usage: qwen3_tts_decoder_gpu stage <saved .f32> <reference .f32>\n");
+        return 100;
+    }
+    let (got, n) = wenc_st.load_raw(heap, fs, arg(args, 2));
+    let (want, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
+    var status = 106;
+    if n < 1 || m < 1 || m > n {
+        qasr_host.put(io, "the saved buffer or the reference is not there, or the reference is the longer\n");
+    } else {
+        let iv = box_slice(heap, 1, 0);
+        borrow got as &gr in {
+            borrow want as &wr in {
+                borrow mut iv as &!q in {
+                    let (w, at, peak) = worst(contents(gr), contents(wr), m, contents(q));
+                    qasr_host.put_int(io, m);
+                    qasr_host.put(io, " values: worst difference ");
+                    qasr_host.put_float(io, w);
+                    qasr_host.put(io, " at ");
+                    qasr_host.put_int(io, at);
+                    qasr_host.put(io, ", the reference's peak ");
+                    qasr_host.put_float(io, peak);
+                    if contents(q)[0] != 0 {
+                        qasr_host.put(io, ", with values that are not numbers");
+                    }
+                    qasr_host.put(io, "\n");
+                }
+            }
+        }
+        unbox_slice(heap, iv);
+        status = 0;
+    }
+    unbox_slice(heap, got);
+    unbox_slice(heap, want);
+    return status;
+}
+
+fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "weights") {
+        return weights(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "prepare") {
+        return prepare(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "compare") {
+        return compare(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "stage") {
+        return stage(io, heap, fs, args);
+    }
+    qasr_host.put(io, "usage: qwen3_tts_decoder_gpu weights ... | prepare ... | compare ... | stage ...\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}
