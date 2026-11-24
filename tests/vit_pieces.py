@@ -37,6 +37,43 @@ def run(root, kernel, consts, ins, outs, tmp):
     return [[float(x) for x in line.split()] for line in r.stdout.strip().split("\n")], ""
 
 
+def t_conv_gelu(root, tmp):
+    """conv_bias_gelu_erf (docs/audio.md 2.2): gelu(x + b) * m in f32, the exact GELU, rows masked by m. Tolerance 2e-6 relative with a floor of 2e-6 (measured 2.5e-7): the erf is Abramowitz and Stegun's (1.5e-7) in f32."""
+    s, n = 8, 64
+    x, b = rnd(50, s * n, -9, 9), rnd(51, n, -1, 1)
+    m = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]
+    for j in range(n):
+        x[2 * n + j] = -b[j]  # exactly zero after the bias
+    want = [0.5 * (x[i * n + j] + b[j]) * (1 + math.erf((x[i * n + j] + b[j]) / math.sqrt(2))) * m[i] for i in range(s) for j in range(n)]
+    o, err = run(root, "conv_bias_gelu_erf", [f"s={s}", f"n={n}", "bn=32", "m1=-1"], {"x": x, "b": b, "m": m}, ["y"], tmp)
+    if o is None:
+        return False, err
+    worst = max(abs(g - w) / (2e-6 * max(1.0, abs(w))) for g, w in zip(o[0], want))
+    return len(o[0]) == len(want) and worst <= 1.0, worst
+
+
+def t_conv_cols(root, tmp):
+    """conv_cols (docs/audio.md 2.2): the columns of a bordered f x w image as rows of f * c halves; row i, block j is the pixel (j, i). Exact but for the rounding to f16."""
+    t, f, c, w = 5, 3, 32, 6
+    wp = w + 2
+    r = (f + 2) * wp
+    x = rnd(52, r * c, -2, 2)
+    want = [x[((j + 1) * wp + i + 1) * c + ch] for i in range(t) for j in range(f) for ch in range(c)]
+    o, err = run(root, "conv_cols", [f"t={t}", f"f={f}", f"c={c}", f"wp={wp}", f"r={r}"], {"x": x}, ["y"], tmp)
+    return (False, err) if o is None else close_f16(o[0], want)
+
+
+CONV_TESTS = [("conv_bias_gelu_erf (f32, masked)", t_conv_gelu), ("conv_cols", t_conv_cols)]
+CONV_EDITS = [
+    ("conv_bias_gelu_erf", "let o  = g1 * mk", "let o  = g1", "no mask"),
+    ("conv_bias_gelu_erf", "let vv = xx + bb", "let vv = xx", "no bias"),
+    ("conv_bias_gelu_erf", "let g1 = g0 * 0.5", "let g1 = g0", "no 0.5"),
+    ("conv_cols", "load x[(j + 1) * wp + i + 1, 0 ; 1, c]", "load x[(i + 1) * wp + j + 1, 0 ; 1, c]", "the row and the column swapped"),
+    ("conv_cols", "load x[(j + 1) * wp + i + 1, 0 ; 1, c]", "load x[j * wp + i, 0 ; 1, c]", "the border read as the first row and column"),
+    ("conv_cols", "store ah -> y[i, j * c]", "store ah -> y[i, 0]", "every block written to the first"),
+]
+
+
 def close_f16(got, want):  # an f16 result: half a unit in the last place of f16 (4.9e-4 relative) and a floor of 1e-3 for values near zero (as the other piece tests)
     worst = max(abs(a - b) / (4.9e-4 * abs(b) + 1e-3) for a, b in zip(got, want))
     return len(got) == len(want) and worst <= 1.0, worst
@@ -94,7 +131,7 @@ TESTS = [
 def gate(root):
     ok = True
     with tempfile.TemporaryDirectory() as tmp:
-        for name, fn in TESTS:
+        for name, fn in TESTS + CONV_TESTS:
             good, msg = fn(root, tmp)
             shown = msg if isinstance(msg, str) else f"worst error {msg:.3g} of its tolerance"
             print(f"{'ok  ' if good else 'FAIL'} {name}: {shown}")
@@ -118,10 +155,10 @@ EDITS = [
     ("vit_bias_gelu_erf", "let g1 = g0 * 0.5", "let g1 = g0", "no 0.5"),
 ]
 survived = 0
-for kernel, old, new, what in EDITS:
+for kernel, old, new, what in EDITS + CONV_EDITS:
     with tempfile.TemporaryDirectory() as tmp:
         for f in os.listdir("tests/chx"):
-            if f.endswith(".chx") and f.startswith("vit_"):
+            if f.endswith(".chx") and (f.startswith("vit_") or f.startswith("conv_")):
                 shutil.copy(os.path.join("tests/chx", f), tmp)
         path = os.path.join(tmp, kernel + ".chx")
         text = open(path).read()

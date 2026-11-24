@@ -1,0 +1,144 @@
+# The audio tower of Qwen3-ASR-1.7B (docs/audio.md section 2): three 3 x 3 convolutions of stride 2 with a GELU over the log-mel pieces of a second, `conv_out`, the positions, 24 layers of 1,024 wide (16 heads of 64,
+# attention in windows), `ln_post`, `proj1`, GELU, `proj2`: SP rows of 2,048, as a model file (docs/resident.md section 31).
+#
+#     cancho-gpu-metal-session models/qwen3_asr_audio.model CHX=<tests/chx> CONV3=<examples/cnn/conv3.chx> WORK=<inputs> WDIR=<weights> BP=<pieces> SP=<rows, a multiple of 64, at most 13 BP>
+#
+# The picture: BP pieces of a second side by side, 128 mel bins high, 104 columns a piece (100 frames and 4 of zeros), 4 channels (the mel and three of zeros), in the bordered row layout of the VAE kernels. A stride-2
+# convolution with padding 1 is vae_s2d.chx and a stride-1 conv3 whose weights the host lays out (tests/qwen3_asr_audio_gpu.cho); 104, 52, 26 and 13 columns a piece, the zeros between pieces being each convolution's
+# padding (conv_bias_gelu_erf.chx's mask puts them back). A piece ends as 13 columns of 16 x 480, a column a token (conv_cols.chx). The host writes the positions (they restart in every piece), the attention's mask
+# as the per-head bias of dit_scores_bias.chx (0 inside a window of 104 tokens for a key that is audio, -1e9 elsewhere) and q's weight and bias times 1/8, which is 1/sqrt(64) exactly.
+text CHX = tests/chx
+text CONV3 = examples/cnn/conv3.chx
+text WORK = .
+text WDIR = .
+const BP = 10
+const SP = 128
+const NL = 24
+const D = 1024
+const FF = 4096
+const H = 16
+const HD = 64
+const CC = 480
+
+# a stride-2 convolution of the h x w picture `src` (f32, bordered rows, cin channels) to CC channels, its bias, the GELU and the mask: the output is cg${u}.y, (h / 2) x (w / 2)
+block down(u, src, cin, h, w)
+    const WP = w + 2
+    const R = ((h + 2) * WP + 63) / 64 * 64
+    const h2 = h / 2
+    const w2 = w / 2
+    const WP2 = w2 + 2
+    const R2 = ((h2 + 2) * WP2 + 63) / 64 * 64
+    const G2 = WP2 + 1
+    program sd${u} $CHX/vae_s2d.chx h=$h w=$w c=$cin r=$R r2=$R2 g2=$G2
+    if u == 0
+        resident sd0.x $WORK/mel.f32 f32
+    else
+        link $src -> sd${u}.x
+    end
+    if (4 * cin) % 32 != 0
+        program cv${u} $CHX/conv3_k16.chx rp=$R2 cin=${4 * cin} cout=$CC wp=$WP2 g=$G2
+    else
+        program cv${u} $CONV3 rp=$R2 cin=${4 * cin} cout=$CC wp=$WP2 g=$G2
+    end
+    link sd${u}.y -> cv${u}.x
+    resident cv${u}.w $WDIR/cv${u}.f16 f16
+    program cg${u} $CHX/conv_bias_gelu_erf.chx s=$R2 n=$CC bn=32 m1=-1
+    link cv${u}.y -> cg${u}.x
+    resident cg${u}.b $WDIR/cb${u}.f32 f32
+    resident cg${u}.m $WORK/cmask${u}.f32 f32
+end
+
+use down(0, "none", 4, 128, 104 * BP)
+use down(1, "cg0.y", CC, 64, 52 * BP)
+use down(2, "cg1.y", CC, 32, 26 * BP)
+
+program cols $CHX/conv_cols.chx t=$SP f=16 c=$CC wp=${13 * BP + 2} r=${(18 * (13 * BP + 2) + 63) / 64 * 64}
+link cg2.y -> cols.x
+program co $CHX/ported/gemm_mma.chx m=$SP n=$D k=${16 * CC}
+link cols.y -> co.a
+resident co.w $WDIR/conv_out.f16 f16
+program x0 $CHX/dit_add.chx s=$SP n=$D bn=1024
+link co.y -> x0.a
+resident x0.b $WORK/pos.f32 f32
+
+# product + bias, by a counter u: gemm_mma (g${u}, weight w${u}.f16) and vae_bias (b${u}, bias w${u}_b.f32, its mask all ones). A layer i has u = 10 + 10 i + {0: q, 1: k, 2: v, 3: o, 4: fc2}; proj2 is u = 5.
+block lin(u, src, n, k)
+    program g${u} $CHX/ported/gemm_mma.chx m=$SP n=$n k=$k
+    link $src -> g${u}.a
+    resident g${u}.w $WDIR/w${u}.f16 f16
+    program b${u} $CHX/vae_bias.chx r=$SP c=$n
+    link g${u}.y -> b${u}.x
+    resident b${u}.b $WDIR/w${u}_b.f32 f32
+    resident b${u}.m $WORK/ones.f32 f32
+end
+
+block layer(i)
+    const U = 10 + 10 * i
+    program L${i}_n1 $CHX/vit_ln.chx s=$SP n=$D
+    if i == 0
+        link x0.z -> L0_n1.x
+    else
+        link L${i - 1}_ad2.z -> L${i}_n1.x
+    end
+    resident L${i}_n1.w $WDIR/n1w${i}.f32 f32
+    resident L${i}_n1.b $WDIR/n1b${i}.f32 f32
+    use lin(U + 0, "L${i}_n1.y", D, D)
+    use lin(U + 1, "L${i}_n1.y", D, D)
+    use lin(U + 2, "L${i}_n1.y", D, D)
+    program L${i}_sc $CHX/dit_scores_bias.chx nh=$H nq=$SP t=$SP qs=32 ts=64 d=$HD
+    link b${U + 0}.z -> L${i}_sc.q
+    link b${U + 1}.z -> L${i}_sc.k
+    resident L${i}_sc.bias $WORK/amask.f32 f32
+    program L${i}_st $CHX/dit_stats.chx nh=$H nq=$SP t=$SP qs=32 cs=64
+    link L${i}_sc.sc -> L${i}_st.sc
+    program L${i}_pv $CHX/dit_pv.chx nh=$H nq=$SP t=$SP qs=32 cs=64 dw=32 d=$HD
+    link L${i}_sc.sc -> L${i}_pv.sc
+    link L${i}_st.m -> L${i}_pv.m
+    link L${i}_st.z -> L${i}_pv.z
+    link b${U + 2}.z -> L${i}_pv.v
+    program L${i}_c2 $CHX/dit_to_f16.chx s=$SP n=$D
+    link L${i}_pv.o -> L${i}_c2.x
+    use lin(U + 3, "L${i}_c2.y", D, D)
+    program L${i}_ad1 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    if i == 0
+        link x0.z -> L0_ad1.a
+    else
+        link L${i - 1}_ad2.z -> L${i}_ad1.a
+    end
+    link b${U + 3}.z -> L${i}_ad1.b
+    program L${i}_n2 $CHX/vit_ln.chx s=$SP n=$D
+    link L${i}_ad1.z -> L${i}_n2.x
+    resident L${i}_n2.w $WDIR/n2w${i}.f32 f32
+    resident L${i}_n2.b $WDIR/n2b${i}.f32 f32
+    program L${i}_f1g $CHX/ported/gemm_mma.chx m=$SP n=$FF k=$D
+    link L${i}_n2.y -> L${i}_f1g.a
+    resident L${i}_f1g.w $WDIR/f1_${i}.f16 f16
+    program L${i}_ge $CHX/vit_bias_gelu_erf.chx s=$SP n=$FF bn=512 m1=-1
+    link L${i}_f1g.y -> L${i}_ge.x
+    resident L${i}_ge.b $WDIR/f1_${i}_b.f32 f32
+    use lin(U + 4, "L${i}_ge.y", D, FF)
+    program L${i}_ad2 $CHX/dit_add.chx s=$SP n=$D bn=1024
+    link L${i}_ad1.z -> L${i}_ad2.a
+    link b${U + 4}.z -> L${i}_ad2.b
+end
+
+repeat i in 0 .. NL
+    use layer(i)
+end
+
+program lnp $CHX/vit_ln.chx s=$SP n=$D
+link L${NL - 1}_ad2.z -> lnp.x
+resident lnp.w $WDIR/lnpw.f32 f32
+resident lnp.b $WDIR/lnpb.f32 f32
+program p1g $CHX/ported/gemm_mma.chx m=$SP n=$D k=$D
+link lnp.y -> p1g.a
+resident p1g.w $WDIR/proj1.f16 f16
+program p1 $CHX/vit_bias_gelu_erf.chx s=$SP n=$D bn=512 m1=-1
+link p1g.y -> p1.x
+resident p1.b $WDIR/proj1_b.f32 f32
+use lin(5, "p1.y", 2048, D)
+save b5.z $WORK/rows.f32 f32
+program probe $CHX/dit_rows2.chx m=$SP n=2048 bn=1024
+link b5.z -> probe.x
+steps
+answer probe.y

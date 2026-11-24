@@ -133,6 +133,8 @@ f16:dit_cat s=4 n=256 bn=128
 f16:vit_ln s=4 n=256
 f16:vit_bias_gelu s=4 n=256 bn=128
 f16:vit_bias_gelu_erf s=4 n=256 bn=128 m1=-1
+conv_bias_gelu_erf s=8 n=64 bn=32 m1=-1
+f16:conv_cols t=5 f=3 c=32 wp=8 r=40
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64
 f16:vae_pad16 r=64 c=64 g=9

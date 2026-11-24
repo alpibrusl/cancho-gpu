@@ -1,0 +1,52 @@
+// The epilogue of a convolution that is followed by a GELU (docs/audio.md 2.2: the three strided convolutions of Qwen3-ASR's audio tower): y = gelu(x + b) * m, the exact GELU 0.5 v (1 + erf(v / sqrt 2)) with
+// vit_bias_gelu_erf.chx's erf (Abramowitz and Stegun 7.1.26; `m1` is -1, the surface has no negative literal), in f32. Rows of [s, n] are the pixels of a bordered image; m is 1 on the rows that are pixels and 0 on the
+// border and on the columns of zeros between the pieces of a second, so that the next convolution reads zeros there. vit_bias_gelu_erf.chx writes f16 and has no mask; vae_s2d.chx, which follows, reads f32.
+algo conv_bias_gelu_erf(s, n, bn, m1)
+  in  x: f32[s, n]
+  in  b: f32[1, n]
+  in  m: f32[s, 1]
+  out y: f32[s, n]
+{
+  grid i over s, j over n / bn
+  let xx = load x[i, j * bn ; 1, bn]
+  let bb = load b[0, j * bn ; 1, bn]
+  let vv = xx + bb
+  let z  = &vv * 0.7071067811865476
+  let zp = relu &z
+  let zm = &z * m1
+  let zn = relu zm
+  let az = zp + zn
+  let s0 = step z
+  let s1 = s0 * 2
+  let sg = s1 - 1
+  let a2 = &az * &az
+  let q0 = az * 0.3275911
+  let q1 = q0 + 1
+  let lq = log q1
+  let lm = lq * m1
+  let tt = exp lm
+  let c5 = &tt * 1.061405429
+  let c4 = c5 - 1.453152027
+  let c3 = c4 * &tt
+  let c2 = c3 + 1.421413741
+  let c1 = c2 * &tt
+  let c0 = c1 - 0.284496736
+  let cc = c0 * &tt
+  let cd = cc + 0.254829592
+  let pl = cd * tt
+  let a3 = a2 * m1
+  let ex = exp a3
+  let pe = pl * ex
+  let pn = pe * m1
+  let er = pn + 1
+  let ef = sg * er
+  let e1 = ef + 1
+  let g0 = vv * e1
+  let g1 = g0 * 0.5
+  let mk = load m[i, 0 ; 1, 1]
+  let o  = g1 * mk
+  store o -> y[i, j * bn]
+}
+
+schedule conv_bias_gelu_erf for apple-m-series { threads 256 }
+schedule conv_bias_gelu_erf for nvidia-ada     { threads 256 }

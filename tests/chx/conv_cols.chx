@@ -1,0 +1,15 @@
+// The columns of a bordered image as rows (docs/audio.md 2.2: Qwen3-ASR's `conv_out` reads, for a time step, the 480 channels of its 16 frequency rows as one vector of 7,680): row i of y holds, for j = 0 .. f - 1, the c channels
+// of the pixel (j, i) of the f x w image x in the bordered row layout (wp = w + 2 columns a row), rounded to f16: y[i, j * c + ch] = x[(j + 1) * wp + i + 1, ch]. y is the input of gemm_mma.chx, whose weight the host
+// writes with its columns in this order. t rows are written (t <= w).
+algo conv_cols(t, f, c, wp, r)
+  in  x: f32[r, c]
+  out y: f16[t, f * c]
+{
+  grid i over t, j over f
+  let a  = load x[(j + 1) * wp + i + 1, 0 ; 1, c]
+  let ah = stage f16 a
+  store ah -> y[i, j * c]
+}
+
+schedule conv_cols for apple-m-series { threads 128 }
+schedule conv_cols for nvidia-ada     { threads 128 }
