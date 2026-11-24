@@ -180,3 +180,40 @@ tests/qwen3_asr_greedy.sh $W <another work directory> $A/a0_prompt.txt <A1's wor
 * **Time:** a pass 0.93 s with its compile and the upload of 4 GB; the greedy loop 11.3 s for 18 tokens (0.63 s a token: a new process, the inputs and the 78 MB of logits to the host each time). 2.3 reckoned "tens of milliseconds" a pass for the products; the pass alone was not timed apart from the process. This is the form to check, not to use: A3 is the cached step.
 * **Held in the gate without a GPU or the checkpoint:** the model file's expansion (`tests/model.sh`) and `tests/qwen3_asr_text.sh`: the host program builds, refuses with its documented statuses (16 cases), and from a made-up embedding table writes a pass's inputs at their sizes with the right bytes (the halves 1.0, -2.0 and 2^-24 decoded, the audio row in its place, the causal mask).
 * **Not done:** the ids are the reference's: the prompt is not built or tokenised here, nor the answer turned back into text (A4, with `src/bpe.cho`); one clip, 5.4 s, English; the logits' 0.123 of 50 was not compared with what the reference's own BF16 gives; `tests/qwen3_asr_greedy.sh` is a shell loop and has no test of its own.
+
+## 10. A3 (design, 2026-11-24, written before its code): a token a step, with caches
+
+A2 runs the whole sequence for every token: 0.63 s a token. A3 runs one row a step against caches of the keys and values, as `docs/decode.md` does for Qwen2.5-1.5B. **[read, `tools/qsw/decode.cho` and the kernels]** That step's kernels take the head counts as constants (`kv_write_b`, `attention_scores_b`, `attention_pv_b`: `nkv`, `g`, `d`), except `dec_post`, written for 12 + 2 heads with biases and no norms; the generator (`qsw decode`) refuses any other shape, feeds token ids only, and samples by temperature.
+
+**One sequence, one model file** (`models/qwen3_asr_step.model`), not an extension of `qsw`: the audio rows are not token embeddings, the answer is an arg max, and a model file with `table` and `carry` lines says the step in 130 lines where the generator would need a third mode.
+
+**A step, for the row at position p:**
+
+| piece | kernel | new? |
+|---|---|---|
+| the row: the prompt's own row while it lasts (a table of rows the host writes: text embeddings and A1's audio rows), else the embedding of the last arg max | `onehot_h` and the product with the transposed table (`matvec_rows_f16h`, as `docs/decode.md`), then **`row_mix`**: `m x_table + (1 - m) x_embedding` | `row_mix`: `ids_mix` for a row of 2,048 |
+| the stream's norm, f16 out | `rms_h` | |
+| q, k and v in one product, 4,096 wide (16 + 8 + 8 heads of 128; the host stacks the three weights) | `matvec_rows_f16h` | |
+| the RMS norm of each q and k head with its weight, the rotary rotation at p; v as it is | **`dec_post_n`** | `dec_post` with norms in place of biases, 32 slots |
+| the new key and value rows into the caches (8 heads, `tmax` positions) | `kv_write_b`, `carry` | |
+| scores (scaled there by 1/sqrt(128)) and the weighted sum, 2 query heads a key/value head | `attention_scores_b`, `attention_pv_b` | |
+| o, the residual, the norm, gate and up in one product of 12,288, SwiGLU, down, the residual | `cast_h`, `matvec_rows_f16h`, `res_add`, `rms_h`, `swiglu_h` | |
+| the final norm and the head: 151,936 logits | `rms_h`, `matvec_rows_f16h` | |
+| **the arg max, on the device**: the row's maximum (`samp_max`, `samp_gmax`, with a mask of zeros), then **`amax_cand`**: `(V + 1 - j) step(l_j - max + tiny)` for column j (1-based), whose maximum (the same two kernels again) is `V + 1 - id` of the **first** maximal column, as torch's arg max; **`amax_id`** turns it into the id | `amax_cand`, `amax_id` |
+| the id into slot j of the request's answer, and carried to the next step's one-hot | `tok_acc`, `carry` | |
+
+**Four small kernels**, each a few lines, each to be held to float64 with mutants as the others are. **Tables, a block a step, written by the host:** the cos and sin of p, the cache's `sel` and `keep`, the attention's mask (positions up to p), the prompt's rows and their flag, the answer's `sel` and `keep`.
+
+**The prompt goes through the same step, a row a step**, audio rows included: no second session, no import of caches, and every row of the sequence is computed by the same kernels. It costs a step a row: 85 for the reference clip, about 405 for 30 s of audio. **A prefill in one pass (A2's session exporting its keys and values) is A3b, and is built only if the measured step makes the prompt cost more than a second for 30 s of audio.**
+
+**Sizes [reckoned]:** the caches are 28 layers x 2 x 8 heads x `tmax` x 128 singles: 117 MB at `tmax` 512. The weights are A2's 4 GB, restacked (q, k, v as one file a layer, gate and up as one; the 8 key/value heads once, not twice). A step reads every weight once: 4 GB of halves, which at the 11 ms a step `docs/decode.md` measured for 8 sequences of a 1.5B is **about 15 ms a step, unverified**.
+
+**Checks, written before the code:**
+
+1. **The four kernels against float64**, with mutants: for `dec_post_n` the norm's weight left out, q's weight used for k, the rotation's sign; for `amax_cand` and `amax_id` the last maximal column taken for the first; for `row_mix` the flag ignored.
+2. **The reference clip, teacher-forced** (all 103 rows from the table, the ids being the reference's): the arg max equal to the next id at 18 of 18 positions, as A2's bound; the ids the device wrote are those arg maxes. **And greedy** (the 85 prompt rows from the table, then the device's own ids for 24 steps): the reference's 18 ids, then whatever follows the end token, which the host cuts.
+3. **Mutants of the step, each to fail check 2:** the cache's `keep` read as `sel` (the row not written), the mask a position short (a row does not see itself), the rotary table a position late.
+4. **Time:** the milliseconds of a step, from requests of 16 and 64 steps in one session, three times; the whole clip (85 + 18 steps) from a cold process. Bar: the clip in under 3 s where A2's loop took 11.3 s, and no bar on the step beyond reporting it against the 15 ms reckoned.
+5. `scripts/gate.sh`, with the host program's refusals and inputs held without a GPU as A1's and A2's are.
+
+**Not in A3:** sampling (speech needs it: S2), more than one sequence, the prefill pass (A3b, on the condition above), the prompt's tokens (A4). **A tie of two maximal logits** would be resolved as torch does, to the first; it was the reason for `V + 1 - j`.
