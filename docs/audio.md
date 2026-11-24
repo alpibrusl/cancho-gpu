@@ -132,7 +132,7 @@ Both by hand, with scripts that are not in the repository; their outputs are the
 
 ## 8. A1: the audio tower on the GPU **[measured, 2026-11-24, M4 Max]**
 
-`models/qwen3_asr_audio.model` (203 lines, 1,689 lines expanded for the clip), its host side `tests/qwen3_asr_audio_gpu.cho` (cancho: the weights, the inputs, the comparison; no Python), two kernels (`conv_bias_gelu_erf`, `conv_cols`), and BF16 in the cancho safetensors reader (`tests/wan_enc/st.cho`, `load_bf16`).
+`models/qwen3_asr_audio.model` (144 lines, 1,689 lines expanded for the clip), its host side `tests/qwen3_asr_audio_gpu.cho` (cancho: the weights, the inputs, the comparison; no Python), two kernels (`conv_bias_gelu_erf`, `conv_cols`), and BF16 in the cancho safetensors reader (`tests/wan_enc/st.cho`, `load_bf16`).
 
 ```sh
 B=build/qwen3_asr_audio_gpu; A=~/.cache/cancho-media/audio-ref; W=~/.cache/cancho-media/qwen3-asr-audio-f16; K=<a work directory>

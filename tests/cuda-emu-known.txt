@@ -60,3 +60,4 @@ matvec_fp4_swiglu_pass_h_m=128_n=17408_k=5120_bm=16|noref|the interpreter's memo
 matvec_fp4_few_m=3_n=10240_k=5120|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_res_few_m=3_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_few_m=3_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
+conv_bias_gelu_erf_s=26624_n=480_bn=32_m1=-1|noref|the interpreter's memory cannot hold the tensors (the audio tower's second convolution at 30 s, docs/audio.md A1)
