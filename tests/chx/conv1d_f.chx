@@ -1,0 +1,26 @@
+// A causal 1-D convolution of k taps with a dilation dl, stride 1, on the matrix unit with f32 operands (docs/audio.md section 20, S1b; the reference's CausalConvNet): for s positions (rows) of cin channels,
+//   y[t, co] = sum over j < k, ci of w[co, j * cin + ci] * x[t + j * dl, ci]
+// where x has g = (k - 1) dl rows of zeros in front of its s rows (the causal padding: tap k - 1 reads the position itself, tap 0 the one g before), and w is the checkpoint's [cout, cin, k] with its taps
+// outermost in the columns. The taps are a loop, as conv3.chx's. The bias is the next kernel's. With k = 2, dl = 1 and r cout outputs this is also the transposed convolution of stride r and 2r taps, each
+// row of y the r output positions of an input position (section 20). Metal only: an f32 operand of the matrix unit is refused on CUDA (`lowering`).
+algo conv1d_f(s, cin, cout, k, dl)
+  in  x: f32[s + (k - 1) * dl, cin]
+  in  w: f32[cout, k * cin]
+  out y: f32[s, cout]
+  tile bm, bn, bk
+{
+  grid i over s / bm, j over cout / bn
+  let c = zeros f32[bm, bn] @frag
+  let c = for tp in 0 .. k with c {
+    let c = for p in 0 .. cin / bk with c {
+      let at = load x[i * bm + tp * dl, p * bk ; bm, bk] @shared
+      let wt = load w[j * bn, tp * cin + p * bk ; bn, bk] @shared
+      yield mma c at wt
+    }
+    yield c
+  }
+  store c -> y[i * bm, j * bn]
+}
+
+schedule conv1d_f for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv1d_f for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

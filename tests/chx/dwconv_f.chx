@@ -1,0 +1,24 @@
+// A causal depthwise 1-D convolution of k taps and its bias (docs/audio.md section 20, S1b; the reference's ConvNeXt block's `dwconv`): for s positions (rows) of c channels,
+//   y[t, ch] = b[ch] + sum over j < k of w[j, ch] * x[t + j, ch]
+// where x has k - 1 rows of zeros in front of its s rows (tap k - 1 reads the position itself) and w is the checkpoint's [c, 1, k] with its taps as rows. bm positions by bn channels to a threadgroup.
+algo dwconv_f(s, c, k, bm, bn)
+  in  x: f32[s + k - 1, c]
+  in  w: f32[k, c]
+  in  b: f32[1, c]
+  out y: f32[s, c]
+{
+  grid i over s / bm, j over c / bn
+  let acc = load b[0, j * bn ; 1, bn]
+  let z = zeros f32[bm, bn]
+  let acc = z + acc
+  let acc = for tp in 0 .. k with acc {
+    let xv = load x[i * bm + tp, j * bn ; bm, bn]
+    let wv = load w[tp, j * bn ; 1, bn]
+    let pr = xv * wv
+    yield acc + pr
+  }
+  store acc -> y[i * bm, j * bn]
+}
+
+schedule dwconv_f for apple-m-series { threads 256 }
+schedule dwconv_f for nvidia-ada     { threads 256 }

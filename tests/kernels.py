@@ -617,6 +617,36 @@ def amax_id(r, nq, v1):
     return [v1 - gm[i * nq] for i in range(r)]
 
 
+def conv1d_f(s_, cin, cout, k, dl):
+    """A causal convolution of k taps with a dilation (docs/audio.md section 20): y[t, co] = sum_j sum_ci w[co, j cin + ci] x[t + j dl, ci]."""
+    x, w = lcg([(s_ + (k - 1) * dl) * cin, cout * k * cin])
+    return [sum(w[co * k * cin + j * cin + ci] * x[(t + j * dl) * cin + ci] for j in range(k) for ci in range(cin)) for t in range(s_) for co in range(cout)]
+
+
+def convt1d_as_conv(s_, cin, cout, r, swap=False):
+    """The reference's transposed convolution of 2r taps and stride r with its last r outputs cut, from the same numbers conv1d_f(k=2, dl=1, cout = r cout) is given: the kernel's x has a row in front
+    (taken as the position before the first; the reference's has none, so that row must be zero for the two to be one, and the test's is not: it is added here as an input position whose own outputs are dropped),
+    and its w[ph * cout + co, tap * cin + ci] is W[ci][co][ph + r] for tap 0 and W[ci][co][ph] for tap 1."""
+    x, w = lcg([(s_ + 1) * cin, r * cout * 2 * cin])
+    def W(ci, co, j):
+        tap, ph = (0, j - r) if j >= r else (1, j)
+        if swap:
+            tap = 1 - tap
+        return w[(ph * cout + co) * 2 * cin + tap * cin + ci]
+    out = [0.0] * ((s_ + 1) * r + r) * cout
+    for u in range(s_ + 1):
+        for j in range(2 * r):
+            for co in range(cout):
+                out[(u * r + j) * cout + co] += sum(x[u * cin + ci] * W(ci, co, j) for ci in range(cin))
+    # positions r .. (s_ + 1) r are the s_ real positions' outputs (the first r belong to the row in front); the last r are the cut
+    return out[r * cout:(s_ + 1) * r * cout]
+
+
+def dwconv_f(s_, c, k):
+    x, w, b = lcg([(s_ + k - 1) * c, k * c, c])
+    return [b[ch] + sum(w[j * c + ch] * x[(t + j) * c + ch] for j in range(k)) for t in range(s_) for ch in range(c)]
+
+
 def kv_export(sq, nkv, tmax):
     """docs/audio.md section 12: token-major halves (a token's 2 nkv head rows, each key/value head twice) to a head-major f32 cache; the positions from sq on are not written and read as 0 here."""
     (x,) = lcg([sq * 2 * nkv * 128])
@@ -895,9 +925,13 @@ def new_checks():
     ok &= check("activations relu r=4 n=8", got["y"], [max(v, 0.0) for v in xs])
     ok &= check("activations step r=4 n=8", got["d"], [1.0 if v > 0.0 else 0.0 for v in xs])
     ok &= check("activations tanh r=4 n=8", got["t"], [math.tanh(v) for v in xs])
-    # S1a (docs/audio.md section 18): sin over [-64, 64), and the Snake activation x + sin^2(x a) ib
+    # S1b (docs/audio.md section 20): the decoder's convolutions
+    ok &= check("conv1d_f s=64 cin=32 cout=32 k=3 dl=2", run("conv1d_f", ["s=64", "cin=32", "cout=32", "k=3", "dl=2"])["y"], conv1d_f(64, 32, 32, 3, 2))
+    ok &= check("conv1d_f as a transposed convolution of stride 3: s=64 cin=32 cout=32 r=3", run("conv1d_f", ["s=64", "cin=32", "cout=96", "k=2", "dl=1"])["y"], convt1d_as_conv(64, 32, 32, 3))
+    ok &= check("dwconv_f s=8 c=16 k=7", run("dwconv_f", ["s=8", "c=16", "k=7", "bm=4", "bn=8"])["y"], dwconv_f(8, 16, 7))
+    # S1a (docs/audio.md section 18): sin over [-128, 128), and the Snake activation x + sin^2(x a) ib
     (xs,) = lcg([32])
-    ok &= check("sin_scaled r=4 n=8", run("sin_scaled", ["r=4", "n=8"])["y"], [math.sin(128.0 * v) for v in xs])
+    ok &= check("sin_scaled r=4 n=8", run("sin_scaled", ["r=4", "n=8"])["y"], [math.sin(256.0 * v) for v in xs])
     xs, sa, sb = lcg([4 * 16, 16, 16])
     ok &= check("snake s=4 c=16 bn=8", run("snake", ["s=4", "c=16", "bn=8"])["y"], [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
     got = run("colbcast", ["r=8", "c=16"])
@@ -1033,8 +1067,14 @@ MUTANTS = [
     ("attention_pvl.chx", "for c in 0 .. t / cs with a0", "for c in 1 .. t / cs with a0", "attention_pvl leaves out the first chunk"),
     ("activations.chx", "store relu &a -> y", "store step &a -> y", "relu is a step"),
     ("colbcast.chx", "let e = a * b", "let e = a + b", "colbcast adds the column where it multiplies"),
+    ("conv1d_f.chx", "load x[i * bm + tp * dl, p * bk ; bm, bk]", "load x[i * bm + tp, p * bk ; bm, bk]", "conv1d_f shifts a tap by one position, not by the dilation"),
+    ("conv1d_f.chx", "load w[j * bn, tp * cin + p * bk ; bn, bk]", "load w[j * bn, p * bk ; bn, bk]", "conv1d_f reads every tap's weights from the first tap"),
+    ("conv1d_f.chx", "for tp in 0 .. k with c", "for tp in 1 .. k with c", "conv1d_f leaves out the first tap"),
+    ("dwconv_f.chx", "let acc = z + acc", "let acc = z + acc * 0", "dwconv_f leaves the bias out"),
+    ("dwconv_f.chx", "load w[tp, j * bn ; 1, bn]", "load w[0, j * bn ; 1, bn]", "dwconv_f reads every tap's weights from the first"),
+    ("dwconv_f.chx", "load x[i * bm + tp, j * bn ; bm, bn]", "load x[i * bm + k - 1, j * bn ; bm, bn]", "dwconv_f reads every tap from the position itself"),
     ("sin_scaled.chx", "store sin b -> y", "store tanh b -> y", "sin is a tanh"),
-    ("sin_scaled.chx", "let b = a * 128", "let b = a * 127", "sin_scaled scales by 127"),
+    ("sin_scaled.chx", "let b = a * 256", "let b = a * 255", "sin_scaled scales by 255"),
     ("snake.chx", "let u = &sn * bv", "let u = &v * bv", "snake has x sin where the square of the sine is"),
     ("snake.chx", "store v + t -> y[i, j * bn]", "store v - t -> y[i, j * bn]", "snake subtracts the periodic part"),
     ("snake.chx", "let w = &v * av", "let w = &v + av", "snake adds a where it multiplies"),

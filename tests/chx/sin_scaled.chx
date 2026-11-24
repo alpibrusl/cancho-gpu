@@ -1,11 +1,11 @@
-// sin over a range of arguments (docs/audio.md section 18, S1a): y = sin(128 x). The interpreter's inputs are in [-0.5, 0.5), so the arguments cover [-64, 64): twenty periods, where a library's
+// sin over a range of arguments (docs/audio.md section 18, S1a): y = sin(256 x). The interpreter's inputs are in [-0.5, 0.5), so the arguments cover [-128, 128): forty periods (the decoder's Snakes see arguments to 95, section 21), where a library's
 // argument reduction is at work.
 algo sin_scaled(r, n)
   in  x: f32[r, n]
   out y: f32[r, n]
 {
   let a = load x
-  let b = a * 128
+  let b = a * 256
   store sin b -> y
 }
 

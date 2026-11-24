@@ -23,7 +23,7 @@ extern "C" __global__ void sin_scaled_4_8(
     for (uint k = 0; k < 1u; ++k) {
         const uint e = k * 128u + tid;
         if (e < 32u) {
-            v1[k] = float(float(float(p0_x[(uint)(0) * 8u + (uint)(0) * 1u + ((e))])) * 128.0f);
+            v1[k] = float(float(float(p0_x[(uint)(0) * 8u + (uint)(0) * 1u + ((e))])) * 256.0f);
         }
     }
     float v2[1];
