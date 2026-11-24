@@ -902,6 +902,55 @@ In float64 the response is linear (a text change 1,000 times smaller gives a vel
 * **[reckoned] What would make it faithful:** the products' inputs in f32 instead of f16 would start from a difference near 1e-7, which 100 x 20 leaves at about 2e-4. That is a different matrix-unit product (twice the bytes of activation; the weights can stay f16) and was not built or timed. torch's BF16 (8 bits of mantissa against f16's 11) starts from more: V1b put its whole model at 3.9e-2 on random inputs; its error on these latents was not measured.
 * **What this does not show:** one prompt, one seed, one size; the slope in float64 for two random directions of the latents and one of the text, not its largest direction; t = 522 in float64 for the latents only; why the model is steep there (whether the base model is too, or the three-step distillation made it so) was not looked at: the base model's 30 steps were not traced. Whether a viewer could tell the float64 video from ours was not tested: the float64 latents were not decoded.
 
+### V3c (design, 2026-11-24): the video transformer's products with f32 operands, so that our video is the float64 video of its rows
+
+V3b ended on a reckoning: with f32 in place of f16 at the products' inputs our latents would be about 2e-4 from float64's instead of 0.38. This is the design for building it; the measurements under it were made first.
+
+**Which roundings matter [measured, `tools/wan_ref.py` in float64 with the GPU's roundings put in by class of site, the traced latents of step 1 (t = 757), the fox's rows]:**
+
+| rounded to f16 | after blocks 3, 10, 20, 30 (of the rms, from plain float64) | velocity |
+|---|---|---|
+| everything the GPU rounds | 3.0e-4, 6.7e-4, 1.4e-2, 3.5e-2 | **3.3e-2** (the GPU itself: 4.2e-2) |
+| only the inputs of the linear products | 1.5e-4, 3.8e-4, 7.8e-3, 1.9e-2 | 1.8e-2 |
+| only q and k of the scores | 2.5e-4, 5.2e-4, 1.5e-2, 3.5e-2 | **3.4e-2** |
+| only the probabilities and v of the weighted sum | 8.8e-5, 2.0e-4, 6.1e-3, 1.4e-2 | 1.3e-2 |
+| everything but the linear products' inputs | 2.7e-4, 5.6e-4, 1.4e-2, 3.3e-2 | 3.1e-2 |
+| the same sites rounded to f32 instead | 3.7e-8, 8.4e-8, 5.9e-6, 1.4e-5 | **1.4e-5** |
+| each value as two f16 (its rounding and the remainder times 2,048) | 5.6e-8, 1.3e-7, 1.8e-6, 4.3e-6 | 4.1e-6 |
+
+* **The emulation reproduces the GPU** (3.3e-2 against the 4.2e-2 measured), so the f16 roundings are the whole of it.
+* **Every class matters alone**, the scores most: curing the linear products only (V3b's wording, "the products' inputs") would leave 3.1e-2. All three kinds of product need their operands in f32: `y = a w^T`, `q k^T` and `p v`.
+* **In f32 the same call is 1.4e-5 from float64**: 2,400 times nearer. V3b's "about 2e-4 after 100 x 20" was for the three steps; see the bound below.
+
+**What blocks it today [read, `src/check.cho`]:** `mma`, the matrix unit's product, takes f16 tiles only (`type`: "mma lhs is a 2-d f16 tile in threadgroup memory"). Two ways round it:
+
+* **Chosen: `mma` takes an f16 or an f32 tile for either operand** (the accumulator stays an f32 fragment). On Metal the operand's fragments are `simdgroup_matrix<float, 8, 8>` where the tile is f32; an f16 kernel's text does not change (the goldens say so). **[measured before this was written]** Metal compiles and runs the mixed product, f32 activations by f16 weights into f32: `gemm_mma_f` at 128 x 256 x 640 is 8.6e-6 of its peak from the interpreter, as the f16 kernel is (7.6e-6). **On CUDA it is refused** (`lowering`): `wmma` multiplies halves, and its `tf32` mode keeps 10 bits of an f32, fewer than f16's 11. The new kernels have no CUDA schedule.
+* **Not chosen: each f32 value as two f16** (`hi = f16(a)`, `lo = f16((a - hi) 2048)`, two products a linear layer, three for `q k^T` and `p v`). Expressible today, runs on CUDA too, and as exact (4.1e-6); but 2 to 3 times the products. Kept as the way for CUDA if a video is ever wanted there.
+
+**The weights stay f16 [read]:** the checkpoint is BF16, 8 bits of mantissa, exact in f16. Only activations change type.
+
+**Kernels (seven, each an existing one with a type changed and its `stage f16` removed; each held to float64 with mutants in the gate, as its f16 twin is):**
+
+| new | from | what changes |
+|---|---|---|
+| `gemm_mma_f` | `ported/gemm_mma` | `a` f32 |
+| `dit_scores_mma_f` | `dit_scores_mma` | `q`, `k` f32 |
+| `dit_pv_mma_f` | `dit_pv_mma` | the probabilities staged f32, `v` f32 |
+| `dit_wan_lnmod_f`, `vit_ln_f`, `vit_bias_gelu_f`, `dit_rope16_f` | the same names without `_f` | the output f32 |
+
+`dit_to_f16` goes (three a block): the f32 output is linked straight into the product. `models/wan_dit.model` takes `PREC=1` (default 0: the f16 programs, the same expansion as today, which `tests/model.sh`'s sha holds); the text enters as `ctx.f32`. `ATT=1` (the fused attention, any number of tokens) stays f16: not done here.
+
+**Memory [reckoned]:** threadgroup: `gemm_mma_f` 64 x 32 x 4 + 64 x 32 x 2 = 12 KB, the scores 16 KB, the weighted sum 64 x 32 x 4 + 32 x 128 x 4 = 24 KB plus its ordinary tiles, of Metal's 32 KB; if the last does not fit its `bn` halves. Device: the f32 activations are twice the f16 ones, the largest `[1152, 14336]` at 66 MB.
+
+**Checks, written before the first run of the model:**
+
+1. **Each kernel against float64**, the tolerance its f16 twin's test uses for an f32 result, and one mutant more than the twin has: **an operand rounded to f16 must fail**. That mutant is the point of the kernel; if a tolerance cannot tell it from the kernel, the tolerance is wrong.
+2. **One call at t = 757 on the traced latents: velocity under 1e-3 of the rms from float64** (reckoned 1.4e-5 from the table plus the f32 accumulations, unknown; 4.2e-2 today). **The three steps against the float64 chain of V3b (same rows, seed and noise): final latents under 1e-2** (0.377 today; reckoned 1.4e-5 x 19 x 1.6, about 5e-4). With `PREC=0`: the same bytes as before the change.
+3. **Time**, V3's protocol: three in a row and three alternated with `mlx-video` (17.1 to 18.8 s and 20.7 s today, steps 4.7 to 4.8 s). No figure is reckoned: f32 fragments are not known to cost more than f16 ones on this GPU, and the operands' traffic doubles. **The rule, set now: `PREC=1` becomes what `scripts/media video` runs if the video's wall time grows by under 10%; otherwise it is an option and the default stays.**
+4. `scripts/gate.sh` passing.
+
+**What this will not give:** the same video from two text encoders. Rows 6.1e-4 apart are 1.6e-2 apart in velocity at t = 757 in float64 (V3b); that is the model. What it gives is that our video is the float64 one of the rows it was given, to the bound of check 2.
+
 ### 6.2 Audio: nothing is chosen, and the first candidate found is not usable
 
 * **Recognition is already planned and is not generation:** `docs/roadmap-models.md` M6 (Whisper: a log-mel spectrogram as a product with a precomputed cosine and sine matrix, the encoder, the decoder).
