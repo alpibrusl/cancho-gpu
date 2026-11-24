@@ -549,6 +549,25 @@ tests/chx/vit_bias_gelu_erf.chx s=1024 n=4608 bn=512 m1=-1
 tests/chx/vit_ln.chx s=4 n=64 --run
 tests/chx/vit_bias_gelu.chx s=4 n=256 bn=128 --run
 tests/chx/vit_bias_gelu_erf.chx s=4 n=256 bn=128 m1=-1 --run
+# V3c (docs/diffusion.md section 6): the video transformer's products with f32 operands, at 17 frames of 640 x 352 (1,152 rows, 512 text rows) and small. Metal only: an f32 operand of `mma` is refused on CUDA
+# (tests/reject/lowering-mma-f32-cuda.chx). Held to float64 by tests/dit_block.py, tests/dit_attention_mma.py and tests/vit_pieces.py.
+tests/chx/gemm_mma_f.chx m=1152 n=3072 k=3072
+tests/chx/gemm_mma_f.chx m=1152 n=14336 k=3072
+tests/chx/dit_wan_lnmod_f.chx s=1152 n=3072
+tests/chx/vit_ln_f.chx s=1152 n=3072
+tests/chx/vit_bias_gelu_f.chx s=1152 n=14336 bn=256
+tests/chx/dit_rope16_f.chx s=1152 nh=24 h=64 sc=0.08838834764831843
+tests/chx/dit_scores_mma_f.chx nh=24 nq=1152 t=1152 d=128
+tests/chx/dit_scores_mma_f.chx nh=24 nq=1152 t=512 d=128
+tests/chx/dit_pv_mma_f.chx nh=24 nq=1152 t=1152 d=128
+tests/chx/dit_pv_mma_f.chx nh=24 nq=1152 t=512 d=128
+tests/chx/gemm_mma_f.chx m=64 n=256 k=96 --run
+tests/chx/dit_wan_lnmod_f.chx s=12 n=256 --run
+tests/chx/vit_ln_f.chx s=4 n=64 --run
+tests/chx/vit_bias_gelu_f.chx s=4 n=256 bn=128 --run
+tests/chx/dit_rope16_f.chx s=128 nh=2 h=64 sc=0.08838834764831845 --run
+tests/chx/dit_scores_mma_f.chx nh=2 nq=128 t=128 d=128 --run
+tests/chx/dit_pv_mma_f.chx nh=2 nq=128 t=128 d=128 --run
 tests/chx/vae_s2d.chx h=1024 w=1024 c=96 r=1052736 r2=264256 g2=515
 tests/chx/vae_avg2.chx h=1024 w=1024 c=96 r=1052736 r2=264256 g2=515
 tests/chx/vae_s2d.chx h=6 w=6 c=32 r=64 r2=64 g2=6 --run

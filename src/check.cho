@@ -574,8 +574,8 @@ fn max1(x: int) -> [] int {
 }
 
 fn mma_operand[&m, &t](m: &!m [int], t: &!t [byte], c: int, x: int, what: &static [byte]) -> [] bool {
-    if ir.space(m, x) != kinds.threadgroup() || ir.dtype(m, x) != kinds.f16() || mem.size(m, ir.shape(m, x)) != 2 {
-        let msg = text.f4(m, t, "mma $ is a 2-d f16 tile in threadgroup memory, found $$ in $", text.lit(m, t, what), text.lit(m, t, kinds.dtype_name(ir.dtype(m, x))), sd(m, t, ir.shape(m, x)), text.lit(m, t, kinds.space_name(ir.space(m, x))));
+    if ir.space(m, x) != kinds.threadgroup() || ir.dtype(m, x) != kinds.f16() && ir.dtype(m, x) != kinds.f32() || mem.size(m, ir.shape(m, x)) != 2 {
+        let msg = text.f4(m, t, "mma $ is a 2-d f16 or f32 tile in threadgroup memory, found $$ in $", text.lit(m, t, what), text.lit(m, t, kinds.dtype_name(ir.dtype(m, x))), sd(m, t, ir.shape(m, x)), text.lit(m, t, kinds.space_name(ir.space(m, x))));
         diag(m, t, c, "type", msg);
         return false;
     }

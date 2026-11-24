@@ -1,0 +1,18 @@
+// dit_scores_mma.chx with q and k in f32: head h's q k^T on the matrix unit from f32 tiles, f32 accumulation, so that nothing of q or k is rounded (docs/diffusion.md section 6, V3c). Metal only: the f32 product it feeds is not on CUDA's matrix unit.
+algo dit_scores_mma_f(nh, nq, t, d)
+  in  q:  f32[nq, nh * d]
+  in  k:  f32[t, nh * d]
+  out sc: f32[nh * nq, t]
+  tile bm, bn, bk
+{
+  grid h over nh, i over nq / bm, j over t / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. d / bk with acc {
+    let at = load q[i * bm, h * d + p * bk ; bm, bk] @shared
+    let wt = load k[j * bn, h * d + p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> sc[h * nq + i * bm, j * bn]
+}
+
+schedule dit_scores_mma_f for apple-m-series { threads 256 warps 4 2 bm 64 bn 64 bk 32 }

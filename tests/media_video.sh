@@ -90,6 +90,7 @@ both "video wdir flag"        video "a red fox" -o o --wdir "$T/w/dit"
 both "video rewritten"        video "a red fox" -o o --rewrite
 both "video rewrite fails soft" video "FAILSOFT a red fox" -o o --rewrite --rewrite-model m1
 both "video forced"           video "a fox" -o o --size 1280x704 --frames 33 --force
+both "video precise"          video "a red fox" -o o --precise --seed 2
 both "image"                  video "a fox runs" -o o --image fox.png
 both "image small, nonsquare" video "a fox runs" -o o --image small.png --size 512x288 --frames 9 --seed 3 --fps 8
 both "image grayscale"        video "a fox runs" -o o --image gray.png --size 384x256 --frames 5
@@ -106,6 +107,7 @@ refuse "image zero steps"     video "a fox" -o o --image small.png --steps 0
 refuse "image weak guidance"  video "a fox" -o o --image small.png --guidance 0.5
 refuse "image distilled model" video "a fox" -o o --image small.png --model fastwan2.2-ti2v-5b
 refuse "image rewrite"        video "a fox" -o o --image small.png --rewrite
+refuse "image precise"        video "a fox" -o o --image small.png --precise
 refuse "image weights no config" video "a fox" -o o --image small.png --weights "$T/w/dit"
 refuse "image bad size"       video "a fox" -o o --image small.png --size 641x352
 refuse "image too many tokens" video "a fox" -o o --image small.png --size 1280x704 --frames 33
