@@ -17,6 +17,8 @@ const D = 2048
 const FF = 6144
 const V = 151936
 const NQ = 2374
+# PRE=1 (docs/audio.md section 12): the caches start from kc<l>.f32 and vc<l>.f32, what models/qwen3_asr_text.model's PRE=1 pass saved for the prompt, in place of zeros.
+const PRE = 0
 
 program oh $QW/onehot_h.chx r=1 c=$V bc=128
 resident oh.ids $WORK/ids0.f32 f32
@@ -47,13 +49,21 @@ block layer(i)
     table post${i}.cs $WORK/cos.f32 $NS f32
     table post${i}.sn $WORK/sin.f32 $NS f32
     program kwk${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$T ts=64 d=128
-    resident kwk${i}.c $WORK/zcache.f32 f32
+    if PRE == 1
+        resident kwk${i}.c $WORK/kc${i}.f32 f32
+    else
+        resident kwk${i}.c $WORK/zcache.f32 f32
+    end
     link post${i}.kn -> kwk${i}.nw
     table kwk${i}.sel $WORK/sel.f32 $NS f32
     table kwk${i}.keep $WORK/keep.f32 $NS f32
     carry kwk${i}.y -> kwk${i}.c
     program kwv${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$T ts=64 d=128
-    resident kwv${i}.c $WORK/zcache.f32 f32
+    if PRE == 1
+        resident kwv${i}.c $WORK/vc${i}.f32 f32
+    else
+        resident kwv${i}.c $WORK/zcache.f32 f32
+    end
     link post${i}.vn -> kwv${i}.nw
     table kwv${i}.sel $WORK/sel.f32 $NS f32
     table kwv${i}.keep $WORK/keep.f32 $NS f32

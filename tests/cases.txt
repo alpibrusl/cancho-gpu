@@ -616,3 +616,6 @@ tests/chx/row_mix.chx n=256 bn=128 --run
 tests/chx/dec_post_n.chx r=2 --run
 tests/chx/amax_cand.chx r=2 nq=4 G=2 --run
 tests/chx/amax_id.chx r=3 nq=4 v1=3 --run
+# docs/audio.md, A3b: the keys and values of a whole pass as the cached step's caches, at 448 rows into 512 positions and small. Held to float64 by tests/kernels.py.
+tests/chx/kv_export.chx s=448 nkv=8 tmax=512
+tests/chx/kv_export.chx s=4 nkv=2 tmax=8 --run

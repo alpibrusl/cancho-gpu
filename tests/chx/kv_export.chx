@@ -1,0 +1,15 @@
+// The keys or the values a whole pass computed, as the caches of the cached step (docs/audio.md section 12: the prompt of Qwen3-ASR in one pass): x is token-major halves, a token's 2 nkv heads of 128 a row each
+// ([s * 2 * nkv, 128]: models/qwen3_asr_text.model writes every key/value head twice, once for each query head of its pair; the first copy is read), c the cache of kv_write_b.chx and attention_scores_b.chx for
+// one sequence: singles, head-major, [nkv * tmax, 128], position t of head h at row h * tmax + t. The positions from s on are not written.
+algo kv_export(s, nkv, tmax)
+  in  x: f16[s * 2 * nkv, 128]
+  out c: f32[nkv * tmax, 128]
+{
+  grid h over nkv, t over s
+  let a = load x[t * 2 * nkv + 2 * h, 0 ; 1, 128]
+  let b = stage f32 a
+  store b -> c[h * tmax + t, 0]
+}
+
+schedule kv_export for apple-m-series { threads 128 }
+schedule kv_export for nvidia-ada     { threads 128 }

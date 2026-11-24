@@ -18,6 +18,9 @@ const FF = 6144
 const H = 16
 const HD = 128
 const V = 151936
+# PRE=1 (docs/audio.md section 12): no head; each layer's keys and values are written as the cached step's caches of T positions (kv_export.chx) and saved as kc<l>.f32 and vc<l>.f32.
+const PRE = 0
+const T = 128
 
 block layer(i)
     program L${i}_n1 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
@@ -98,6 +101,14 @@ block layer(i)
     program L${i}_ad2 $CHX/dit_add.chx s=$SP n=$D bn=1024
     link L${i}_ad1.z -> L${i}_ad2.a
     link L${i}_gd.y -> L${i}_ad2.b
+    if PRE == 1
+        program L${i}_xk $CHX/kv_export.chx s=$SP nkv=8 tmax=$T
+        link L${i}_rk.y -> L${i}_xk.x
+        save L${i}_xk.c $WORK/kc${i}.f32 f32
+        program L${i}_xv $CHX/kv_export.chx s=$SP nkv=8 tmax=$T
+        link L${i}_vh.y -> L${i}_xv.x
+        save L${i}_xv.c $WORK/vc${i}.f32 f32
+    end
 end
 
 repeat i in 0 .. NL
@@ -107,12 +118,14 @@ end
 program nf $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.000001
 link L${NL - 1}_ad2.z -> nf.x
 resident nf.w $WDIR/nf.f32 f32
-program cf $CHX/dit_to_f16.chx s=$SP n=$D
-link nf.y -> cf.x
-program head $CHX/ported/gemm_mma.chx m=$SP n=$V k=$D
-link cf.y -> head.a
-resident head.w $WDIR/head.f16 f16
-save head.y $WORK/logits.f32 f32
+if PRE == 0
+    program cf $CHX/dit_to_f16.chx s=$SP n=$D
+    link nf.y -> cf.x
+    program head $CHX/ported/gemm_mma.chx m=$SP n=$V k=$D
+    link cf.y -> head.a
+    resident head.w $WDIR/head.f16 f16
+    save head.y $WORK/logits.f32 f32
+end
 program probe $CHX/dit_rows2.chx m=$SP n=$D bn=1024
 link nf.y -> probe.x
 steps

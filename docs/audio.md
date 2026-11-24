@@ -1,4 +1,4 @@
-# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token; A3 built: 11.5 ms a token)
+# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token; A3 and A3b built: 11.5 ms a token, the prompt in one pass)
 
 What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Sections 1 to 6 were written before anything was run or any weights downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors); section 7 is the two reference runs, made the same day once the downloads were agreed, and is **[measured]**. It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
 
@@ -225,7 +225,7 @@ A2 runs the whole sequence for every token: 0.63 s a token. A3 runs one row a st
 ```sh
 B=build/qwen3_asr_step_gpu; A=~/.cache/cancho-media/audio-ref; W=~/.cache/cancho-media/qwen3-asr-text-f16; K=<a work directory>
 $B weights <the snapshot's directory> $W                                  # once, after A2's: 2.3 GB more in 5 s
-$B inputs $W $K $A/a0_prompt.txt <A1's work directory>/rows.f32 109 128   # the prompt's 85 rows and 24 steps of answer; prints T=128 NS=109 rows 85
+$B inputs $W $K $A/a0_prompt.txt <A1's work directory>/rows.f32 109 128 0 # the prompt's 85 rows and 24 steps of answer, from position 0 (the last argument came with A3b); prints T=128 NS=109 rows 85
 printf '109\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_step.model CHX=$PWD/tests/chx QW=$PWD/examples/qwen TR=$PWD/examples/train WORK=$K WDIR=$W T=128 NS=109
 $B ids $K 84                                                              # the ids chosen from the prompt's last row on
 ```
@@ -252,3 +252,51 @@ $B ids $K 84                                                              # the 
   * the mutant "the rotary table a position late" survived with 18 of 18: a shift of every position changes no rotation between two rows. Replaced by "every step at position 0".
 * **Held in the gate without a GPU or the checkpoint:** the four kernels against float64 with seven mutants (`tests/kernels.py`; three first drafts of those mutants died of a refusal to compile and were replaced by ones that die on the numbers), their goldens, the model file's expansion, and `tests/qwen3_asr_step.sh`: the host program builds, refuses with its documented statuses, writes the tables of four steps with the right sizes and bytes, and reads a made-up answer of the device.
 * **Not done:** the step's time is from the host's clock around a request, not a profile of its kernels; one clip; the weights directory now holds some matrices twice (A2's files and the stacked ones: 6.3 GB for a 4.7 GB checkpoint); a tie of two maximal logits was not made to happen on the model; the ids past the end token are computed and thrown away (a request is a fixed number of steps).
+
+## 12. A3b (design, 2026-11-24, written before its code): the prompt in one pass
+
+Section 11 left the prompt at a step a row: 4.7 s for 30 s of audio. **[measured before this was written]** A2's session over 448 rows (a made-up sequence of 404 ids, the head included) takes **0.165 s a pass, four passes, once it is loaded; 1.20 s with its load.** 405 steps take 4.7 s. So the prompt goes through A2's pass and only the answer through steps.
+
+* **The pass, without its head** (`models/qwen3_asr_text.model` with `PRE=1`): the rows 0 to P - 2 of the prompt. For each layer the keys (normed and rotated, as the scores read them) and the values are already there as halves, token-major, 16 heads of which each pair is one key/value head. **One kernel, `kv_export`**, writes them as the step's caches: singles, head-major, `[8 * tmax, 128]`, position t of head h from row `16 t + 2 h`. 56 saves, 0.5 MB each at 128 positions.
+* **The steps** (`models/qwen3_asr_step.model` with `PRE=1`) start from those files in place of zeros, at the prompt's last row, P - 1, which comes from the table as before and gives the first id of the answer. The host's tables take the position of their first step.
+* **Not the same numbers as a prompt fed by steps:** the pass's keys and values are rounded to f16 (they are what A2 attends over) where a step's rows are f32. The bound is the reference's ids, not equality with section 11's caches.
+* **Two sessions, two loads** (the pass's weights are 4 GB, the step's 6.3 GB, stacked differently). One session for both would need the pass's products to read the stacked matrices, which is a different pass; not done here.
+
+**Checks, written before the code:**
+
+1. `kv_export` against float64, with mutants: the row of another head read, the position written a place late.
+2. **The reference clip:** the pass over the prompt's first 84 rows, then 25 steps from row 84: the reference's 18 ids, greedy; and teacher-forced (the answer's rows from the table) 18 of 18. **A mutant: the steps started from zeros** (the caches not read) must fail.
+3. **A long prompt** (the made-up 404 ids, caches of 512 positions): the ids of 16 steps after the pass against the ids of the same 16 steps after 404 steps. Reported, not bounded: the sequence means nothing, so its next tokens may be near ties.
+4. **Time, from cold processes, three times:** the clip (pass, export, steps), and the long prompt with 100 steps of answer, against the same by steps alone. Bar: the long prompt under 3.5 s where steps alone are reckoned at 5.9 s.
+5. `scripts/gate.sh`.
+
+## 13. A3b: the prompt in one pass **[measured, 2026-11-24, M4 Max]**
+
+`kv_export` (one kernel), `PRE=1` in `models/qwen3_asr_text.model` (no head; each layer's keys and values written as caches and saved) and in `models/qwen3_asr_step.model` (the caches start from those files), and a first position for the step's tables (`tests/qwen3_asr_step_gpu.cho inputs ... <first>`, `check ... [<first>]`).
+
+```sh
+BT=build/qwen3_asr_text_gpu; BS=build/qwen3_asr_step_gpu; K=<a work directory>     # P = the prompt's rows; the pass takes the first P - 1
+$BT inputs $W $K <the prompt's ids less the last> <audio rows>                    # prints SP
+printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_text.model CHX=$PWD/tests/chx WORK=$K WDIR=$W SP=<SP> PRE=1 T=<positions>
+$BS inputs $W $K <the prompt's ids> <audio rows> <steps> <positions> <P - 1>
+printf '<steps>\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_step.model CHX=$PWD/tests/chx QW=$PWD/examples/qwen TR=$PWD/examples/train WORK=$K WDIR=$W T=<positions> NS=<steps> PRE=1
+$BS ids $K 0
+```
+
+| the reference clip: the pass over 84 rows, then steps from row 84 | |
+|---|---|
+| teacher-forced: the id chosen is the next id | **18 of 18** |
+| greedy, three cold runs | **the reference's 18 ids** each time |
+| mutant: the steps start from zeros (`PRE=0` in the step) | 9 of 18 |
+| **time, cold, all of it** | **1.35, 1.31, 1.32 s** (section 11, by steps alone: 1.81 to 1.85): the pass with its load and 56 saves 0.50, the 25 steps with their load 0.80 to 0.83, the host's inputs 0.02 |
+
+| a long prompt: the made-up 404 ids, caches of 512 positions, 100 steps of answer; three cold runs | |
+|---|---|
+| by steps alone (504 steps) | 6.76, 6.66, 6.67 s (reckoned 5.9) |
+| **the pass over 403 rows, then 101 steps** | **2.87, 2.49, 2.43 s** (bar: 3.5): the pass with its load and saves 1.05, 0.69, 0.64; the steps with their load 1.79, 1.76, 1.76 |
+| the first 16 ids after the prompt, the two ways | the same 16, each run |
+
+* **The bar is met and the two ways agree** on the long prompt too, though its keys and values are rounded to f16 one way and not the other; on a sequence that means nothing this was reported, not required.
+* **Where the 2.4 s go now:** two loads (about 0.5 s each: 4 GB and 6.3 GB), a pass of 0.17 s, and 100 steps at about 12.5 ms with caches of 512 positions (11.5 at 128). The answer's steps are the larger part of a long clip.
+* **Held in the gate:** `kv_export` against float64 with two mutants (`tests/kernels.py`), its goldens, the two `PRE=1` expansions (`tests/model.sh`), and in `tests/qwen3_asr_step.sh` the tables from a first position and the check from one.
+* **Not done:** one session for the pass and the steps (two loads, and the weights twice on disk); the long prompt is made up, so nothing says its answer is right, only that the two ways give the same; the clip is still the only real one.
