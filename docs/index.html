@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cancho-gpu: GPU kernels that say what they can do</title>
-<meta name="description" content="A tile-kernel compiler written in cancho: CUDA C and Metal output checked byte-for-byte against an independent implementation, a CPU interpreter, a GPU device path, and an authority report that says it never touches the network or foreign code.">
+<meta name="description" content="A compiler for typed tile kernels, written in cancho: it refuses wrong programs by rule, writes CUDA C and Metal, and its kernels run a 27B language model, an image model, a video model and a speech recogniser on a Mac's GPU.">
 <meta property="og:title" content="cancho-gpu: a GPU kernel compiler that says what it can do">
-<meta property="og:description" content="Typed tile programs to CUDA C and Metal, checked byte-for-byte against an independent implementation, from a compiler that links only libc.">
+<meta property="og:description" content="Typed tile programs to CUDA C and Metal. The same kernels run text, image, video and speech models on a Mac's GPU, each held to a reference.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://alpibrusl.github.io/cancho-gpu/og.png">
@@ -34,130 +34,100 @@ a { color: var(--accent); text-underline-offset: .15em; }
 .wrap { width: 100%; max-width: 68rem; margin: 0 auto; padding: 0 20px; }
 .skip { position: absolute; left: 16px; top: -4rem; background: var(--accent); color: var(--accent-fg); padding: .5rem .8rem; border-radius: 6px; z-index: 9; }
 .skip:focus { top: 8px; }
-a:focus-visible, .btn:focus-visible, pre:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+a:focus-visible, .btn:focus-visible, pre:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
 header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
 header.top .wrap { display: flex; align-items: center; gap: 1.5rem; height: 3.4rem; }
 .brand { font: 700 1rem var(--mono); color: var(--fg); text-decoration: none; letter-spacing: -.01em; white-space: nowrap; }
+.brand img { height: 1.7rem; width: 1.7rem; vertical-align: middle; margin-right: .5rem; border-radius: 6px; }
 nav { display: flex; gap: 1.2rem; margin-left: auto; }
 nav a { color: var(--muted); text-decoration: none; font-size: .93rem; white-space: nowrap; }
 nav a:hover { color: var(--fg); }
-@media (max-width: 40rem) { nav a.opt { display: none; } }
+@media (max-width: 44rem) { nav a.opt { display: none; } }
 
-h1 { font-size: clamp(2.3rem, 6.2vw, 4rem); line-height: 1.04; letter-spacing: -.035em; margin: 0 0 1rem; font-weight: 750; }
-h2 { font-size: clamp(1.6rem, 3.4vw, 2.2rem); line-height: 1.15; letter-spacing: -.025em; margin: 0 0 .5rem; font-weight: 700; }
+h1 { font-size: clamp(2.3rem, 6.2vw, 4rem); line-height: 1.04; letter-spacing: -.035em; margin: 0 auto 1rem; font-weight: 750; max-width: 20ch; text-wrap: balance; }
+h2 { font-size: clamp(1.6rem, 3.4vw, 2.2rem); line-height: 1.15; letter-spacing: -.025em; margin: 0 0 .5rem; font-weight: 700; text-wrap: balance; }
 h3 { font-size: 1.05rem; margin: 0 0 .25rem; }
 p { margin: 0 0 1rem; }
 section { padding: 4.5rem 0 0; }
-.lead { font-size: 1.2rem; color: var(--muted); max-width: 34rem; }
-.sub { color: var(--muted); max-width: 38rem; }
+.lead { font-size: 1.2rem; color: var(--muted); max-width: 38rem; margin: 0 auto; }
+.sub { color: var(--muted); max-width: 40rem; }
+.center { text-align: center; } .center .sub { margin-left: auto; margin-right: auto; }
 code { font-family: var(--mono); font-size: .9em; background: var(--soft); padding: .1em .35em; border-radius: 5px; }
+.note { color: var(--muted); font-size: .88rem; margin-top: .9rem; }
+.num { font-variant-numeric: tabular-nums; }
 
-.hero { padding: 4rem 0 0; display: grid; gap: 2.5rem; align-items: center; }
-@media (min-width: 58rem) { .hero { grid-template-columns: 1.05fr 1fr; } }
+.hero { padding: 3.6rem 0 0; text-align: center; }
 .badge { display: inline-flex; gap: .5rem; align-items: center; font-size: .82rem; color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-line); padding: .22rem .7rem; border-radius: 999px; margin-bottom: 1.2rem; text-decoration: none; }
 .badge i { width: .5rem; height: .5rem; border-radius: 50%; background: var(--warn-line); display: inline-block; }
-.cta { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 1.6rem; }
+.cta { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 1.6rem; justify-content: center; }
 .btn { display: inline-block; padding: .65rem 1.15rem; border-radius: 8px; font-weight: 600; text-decoration: none; border: 1px solid var(--accent); }
 .btn.primary { background: var(--accent); color: var(--accent-fg); }
 .btn.ghost { color: var(--accent); }
 .btn.ghost:hover { background: var(--soft); }
 
-.term { background: #0d1117; color: #d6dde8; border: 1px solid #262c36; border-radius: 12px; font: .84rem/1.65 var(--mono); padding: 1rem 1.1rem 1.1rem; box-shadow: 0 18px 50px -24px rgba(20, 30, 70, .55); overflow-x: auto; }
-.term .bar { display: flex; gap: .35rem; margin-bottom: .8rem; }
-.term .bar i { width: .65rem; height: .65rem; border-radius: 50%; background: #2d3440; display: block; }
-.term .c { color: #7d8797; } .term .g { color: #5fd3a6; } .term .b { color: #8cb0ff; } .term .y { color: #e8c170; } .term .r { color: #ff8b82; }
-.term pre { margin: 0; white-space: pre; }
+/* what runs today: four tiles, each a real output over one line of numbers */
+.runs { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: 3rem; text-align: left; }
+.run { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; }
+.run .pic { aspect-ratio: 16 / 10; background: #0d1117; display: grid; place-items: center; overflow: hidden; }
+.run .pic img, .run .pic video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.run .pic svg { width: 100%; height: 100%; display: block; }
+.run figcaption { padding: .9rem 1.1rem 1.1rem; }
+.run .k { font: 600 .74rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.run b.big { display: block; font: 700 1.55rem/1.15 var(--font); letter-spacing: -.03em; margin: .15rem 0 .3rem; }
+.run p { color: var(--muted); font-size: .9rem; margin: 0; }
+.pic text { font: 12px var(--mono); fill: #9aa5b5; } .pic .us { fill: #7ea2ff; } .pic .them { fill: #3a4352; } .pic .hi { fill: #e8eaee; } .pic .wave { stroke: #7ea2ff; stroke-width: 3; stroke-linecap: round; }
 
-.three { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: 3.2rem; }
-.three div { border-top: 3px solid var(--accent); padding-top: .8rem; }
-.three p { color: var(--muted); margin: 0; font-size: .96rem; }
-
-.figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.2rem; }
-.figure.wide { margin-top: 2rem; }
-.figure svg, .figure img { display: block; width: 100%; height: auto; }
-.figure h3 { margin-bottom: .6rem; }
-.figure figcaption { color: var(--muted); font-size: .88rem; margin-top: .8rem; }
-.two { display: grid; gap: 1rem; grid-template-columns: 1fr; margin-top: 2rem; }
-@media (min-width: 52rem) { .two { grid-template-columns: 1fr 1fr; } }
-svg .t { fill: var(--fg); font: 600 13px var(--font); } svg .s { fill: var(--muted); font: 12px var(--font); }
-svg .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.4; } svg .hot { fill: var(--soft); stroke: var(--accent); stroke-width: 2; }
-svg .ar { stroke: var(--muted); stroke-width: 1.5; fill: none; } svg .dash { stroke-dasharray: 5 4; }
-svg .dot { fill: var(--accent); } svg .axis { stroke: var(--line); stroke-width: 2; }
-svg .bar1 { fill: var(--accent); } svg .bar2 { fill: var(--line); }
-
-.grid { display: grid; gap: 1px; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; margin-top: 2rem; }
-.grid div { background: var(--surface); padding: 1.1rem 1.2rem; }
-.grid p { color: var(--muted); font-size: .93rem; margin: 0; }
-
-.stats { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); margin: 2rem 0 0; }
-.stats div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }
-.stats b { display: block; font: 700 1.9rem/1.1 var(--font); letter-spacing: -.03em; }
-.stats span { color: var(--muted); font-size: .88rem; }
-.note { color: var(--muted); font-size: .88rem; margin-top: .9rem; }
+.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 2rem; }
+.card { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 12px; padding: 1.1rem 1.2rem; }
+.card p { color: var(--muted); font-size: .94rem; margin: 0; }
 
 pre.code { background: var(--soft); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; font: .86rem/1.65 var(--mono); overflow-x: auto; margin: 1.4rem 0 0; }
-.status { margin-top: 4.5rem; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 14px; padding: 1.3rem 1.5rem; }
-.status h2 { font-size: 1.2rem; letter-spacing: -.01em; }
-.status ul { margin: .4rem 0 0; padding-left: 1.2rem; color: var(--muted); }
-footer { margin-top: 4rem; border-top: 1px solid var(--line); padding: 1.6rem 0 2.6rem; color: var(--muted); font-size: .9rem; }
-footer .wrap { display: flex; flex-wrap: wrap; gap: .5rem 1.6rem; }
-table.fit { width: 100%; border-collapse: collapse; margin-top: 2rem; font-size: .95rem; }
-table.fit th, table.fit td { text-align: left; padding: .8rem .9rem; border-bottom: 1px solid var(--line); vertical-align: top; }
-table.fit thead th { color: var(--muted); font-weight: 600; font-size: .85rem; }
-table.fit tbody th { font-weight: 650; }
-table.fit td { color: var(--muted); }
-table.fit tr.us { background: var(--soft); } table.fit tr.us td, table.fit tr.us th { color: var(--fg); }
-@media (max-width: 44rem) { .fitwrap { overflow-x: auto; } table.fit.wide { min-width: 38rem; } }
-.cols { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); margin-top: 1.4rem; }
-.cols > div { border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; background: var(--surface); }
-.cols ul { margin: .4rem 0 0; padding-left: 1.1rem; color: var(--muted); } .cols li { margin: .25rem 0; }
-.cols .no h3 { color: var(--muted); }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+.stories { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: 1rem; margin-top: 1.8rem; }
+.story { min-width: 0; border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; background: var(--surface); }
+.story p { margin: .4rem 0; color: var(--muted); } .story pre.code { margin: .7rem 0; font-size: .8rem; }
 
-.hero-logo { display: block; width: min(100%, 21rem); height: auto; margin: 0 auto; border-radius: 16px; }
-.brand img { height: 1.7rem; width: 1.7rem; vertical-align: middle; margin-right: .5rem; border-radius: 6px; }
-
-/* the landing layout shared with cancho-code's page: a centred hero over a recording, cards, a flow, an explorer */
-.hero2 { padding: 3.6rem 0 1.6rem; text-align: center; }
-.hero2 h1 { margin: 0 auto 1rem; max-width: 20ch; }
-.hero2 .lead { margin: 0 auto; max-width: 38rem; }
-.hero2 .cta { justify-content: center; }
-figure.video { margin: 1.6rem auto 0; max-width: 60rem; }
-figure.video .frame { background: #0d1117; border: 1px solid #262c36; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 50px -24px rgba(20, 30, 70, .55); }
-figure.video video { display: block; width: 100%; height: auto; background: #0d1117; }
-figure.video figcaption, .caption { color: var(--muted); font-size: .88rem; margin: .8rem auto 0; max-width: 52rem; text-align: center; }
-details.transcript { max-width: 52rem; margin: .8rem auto 0; color: var(--muted); font-size: .9rem; }
-details.transcript summary { cursor: pointer; text-align: center; }
-details.transcript pre { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: .9rem 1rem; overflow-x: auto; font: .8rem/1.5 var(--mono); color: var(--fg); }
-.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 2rem; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1.2rem; }
-.card p { color: var(--muted); font-size: .94rem; margin: 0; }
-.center { text-align: center; } .center .sub { margin-left: auto; margin-right: auto; }
 .flow { max-width: 56rem; margin: 2rem auto 0; }
 .flow svg { width: 100%; height: auto; display: block; }
 .flow text { fill: var(--fg); font: 600 14px var(--font); } .flow .sm { font: 12.5px var(--font); fill: var(--muted); font-weight: 400; }
 .flow .box { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; } .flow .hot { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
 .flow .ok { fill: var(--surface); stroke: var(--good); stroke-width: 2; } .flow .no { fill: var(--surface); stroke: var(--bad); stroke-width: 2; }
 .flow .ar { stroke: var(--muted); stroke-width: 1.7; fill: none; marker-end: url(#ah); } .flow .ar.bad { stroke: var(--bad); stroke-dasharray: 5 4; }
-.explorer { max-width: 56rem; margin: 2rem auto 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.explorer { max-width: 56rem; margin: 2.5rem auto 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
 .explorer .tabs { display: flex; gap: .4rem; padding: .5rem; border-bottom: 1px solid var(--line); background: var(--soft); flex-wrap: wrap; }
 .explorer .tabs button { font: 600 .85rem var(--font); padding: .4rem .8rem; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
 .explorer .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-.explorer pre { margin: 0; padding: 1rem 1.1rem; overflow-x: auto; font: .82rem/1.55 var(--mono); min-height: 15rem; }
+.explorer pre { margin: 0; padding: 1rem 1.1rem; overflow: auto; font: .82rem/1.55 var(--mono); height: 21rem; }
 .explorer pre[hidden] { display: none; }
 .explorer .about { padding: .6rem 1.1rem .9rem; color: var(--muted); font-size: .9rem; border-top: 1px solid var(--line); }
-.bars { max-width: 44rem; margin: 2rem auto 0; display: grid; gap: .7rem; }
-.bar { display: grid; grid-template-columns: 8.5rem 1fr 5rem; gap: .8rem; align-items: center; font-size: .93rem; }
-.bar .track { height: 1.3rem; background: var(--soft); border-radius: 6px; overflow: hidden; }
-.bar .fill { height: 100%; background: var(--line); } .bar.us .fill { background: var(--accent); }
-.bar b { text-align: right; font-variant-numeric: tabular-nums; }
-@media (max-width: 36rem) { .bar { grid-template-columns: 6rem 1fr 4.2rem; } }
-.stories { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; max-width: 56rem; margin: 1.6rem auto 0; }
-.story { min-width: 0; border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; background: var(--surface); }
-.story h3 { margin: 0 0 .3rem; } .story p { margin: .4rem 0; color: var(--muted); } .story pre.code { margin: .7rem 0; }
-.story .note { font-size: .88rem; } .story pre.code { overflow-x: auto; } .story, .story pre, .links { text-align: left; }
-.links { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: .5rem; max-width: 56rem; } .links li { color: var(--muted); }
+.caption { color: var(--muted); font-size: .88rem; margin: .8rem auto 0; max-width: 52rem; text-align: center; }
+
+figure.video { margin: 1.6rem auto 0; max-width: 60rem; }
+figure.video .frame { background: #0d1117; border: 1px solid #262c36; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 50px -24px rgba(20, 30, 70, .55); }
+figure.video video { display: block; width: 100%; height: auto; background: #0d1117; }
+
+.cols { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); margin-top: 1.4rem; }
+.cols > div { border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; background: var(--surface); }
+.cols ul { margin: .4rem 0 0; padding-left: 1.1rem; color: var(--muted); } .cols li { margin: .3rem 0; }
+.cols .yes h3 { color: var(--good); } .cols .no h3 { color: var(--warn); }
+
+table.fit { width: 100%; border-collapse: collapse; margin-top: 1.6rem; font-size: .95rem; }
+table.fit th, table.fit td { text-align: left; padding: .7rem .9rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.fit thead th { color: var(--muted); font-weight: 600; font-size: .85rem; }
+table.fit tbody th { font-weight: 650; }
+table.fit td { color: var(--muted); font-variant-numeric: tabular-nums; }
+table.fit td b { color: var(--fg); }
+table.fit .behind { color: var(--warn); font-weight: 600; } table.fit .ahead { color: var(--good); font-weight: 600; }
+.fitwrap { overflow-x: auto; } table.fit { min-width: 38rem; }
+.stats { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); margin: 2rem 0 0; }
+.stats div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }
+.stats b { display: block; font: 700 1.9rem/1.1 var(--font); letter-spacing: -.03em; }
+.stats span { color: var(--muted); font-size: .88rem; }
+
+.links { list-style: none; padding: 0; margin: 1.2rem 0 0; display: grid; gap: .5rem 1.5rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); } .links li { color: var(--muted); font-size: .95rem; }
+footer { margin-top: 4rem; border-top: 1px solid var(--line); padding: 1.6rem 0 2.6rem; color: var(--muted); font-size: .9rem; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: .5rem 1.6rem; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 </style>
 </head>
 <body>
@@ -165,69 +135,90 @@ details.transcript pre { background: var(--soft); border: 1px solid var(--line);
 <header class="top"><div class="wrap">
   <a class="brand" href="#top"><img src="assets/cancho-gpu-logo-256.png" alt="">cancho-gpu</a>
   <nav aria-label="Sections">
-    <a href="#how" class="opt">How it works</a><a href="#stories">Stories</a><a href="#kernel" class="opt">A kernel</a><a href="#model" class="opt">The model</a><a href="#trained" class="opt">Training</a><a href="#standing" class="opt">Against torch</a><a href="#gaps" class="opt">Gaps</a><a href="#results" class="opt">Evidence</a><a href="#try">Try it</a><a href="#docs" class="opt">Docs</a>
+    <a href="#how" class="opt">How it works</a><a href="#stories">Stories</a><a href="#watch" class="opt">Watch</a><a href="#status" class="opt">Status</a><a href="#results" class="opt">Evidence</a><a href="#try">Try it</a><a href="#docs" class="opt">Docs</a>
     <a href="https://github.com/alpibrusl/cancho-gpu">GitHub</a>
   </nav>
 </div></header>
 
 <main id="main" class="wrap">
 
-<div class="hero2" id="top">
-  <a class="badge" href="#status"><i></i>Alpha &middot; runs a 27B model and trains models on a Metal GPU</a>
+<div class="hero" id="top">
+  <a class="badge" href="#status"><i></i>Alpha &middot; Metal on Apple Silicon &middot; one machine's numbers</a>
   <h1>GPU kernels that say what they can do.</h1>
-  <p class="lead">Write a tile kernel once. The compiler checks it, refuses what is wrong and names the rule, and writes <b>CUDA C</b> and <b>Metal</b>. The same kernels run Qwen3.8&#8209;27B on a Mac's GPU.</p>
+  <p class="lead">Write a tile kernel once. The compiler checks it, refuses what is wrong and names the rule, and writes <b>CUDA C</b> and <b>Metal</b>. The same kernels run text, image, video and speech models on a Mac's GPU.</p>
   <div class="cta"><a class="btn primary" href="#try">Try it</a><a class="btn ghost" href="#results">See the evidence</a></div>
 
+  <div class="runs">
+    <figure class="run">
+      <div class="pic"><svg viewBox="0 0 320 200" role="img" aria-label="Tokens a second on four requests, cancho-gpu then Ollama: an LRU cache class 85 and 81; a search tree class 100 and 101; functions in cancho 113 and 112; two paragraphs of prose 46 and 57.">
+        <g transform="translate(14 22)">
+          <text x="0" y="0">LRU cache class</text><rect class="us" x="0" y="7" width="188" height="9" rx="2"/><text class="hi" x="194" y="16">85</text><rect class="them" x="0" y="19" width="179" height="9" rx="2"/><text x="185" y="28">81</text>
+          <text x="0" y="46">search tree class</text><rect class="us" x="0" y="53" width="221" height="9" rx="2"/><text class="hi" x="227" y="62">100</text><rect class="them" x="0" y="65" width="223" height="9" rx="2"/><text x="229" y="74">101</text>
+          <text x="0" y="92">functions in cancho</text><rect class="us" x="0" y="99" width="250" height="9" rx="2"/><text class="hi" x="256" y="108">113</text><rect class="them" x="0" y="111" width="248" height="9" rx="2"/><text x="254" y="120">112</text>
+          <text x="0" y="138">two paragraphs of prose</text><rect class="us" x="0" y="145" width="102" height="9" rx="2"/><text class="hi" x="108" y="154">46</text><rect class="them" x="0" y="157" width="126" height="9" rx="2"/><text x="132" y="166">57</text>
+        </g>
+      </svg></div>
+      <figcaption><span class="k">Text &middot; Qwen3.8-27B</span><b class="big">85 to 113 tokens/s on code</b><p>Level with Ollama (grey) on the same Mac once it has warmed; behind it on prose. Served over an OpenAI-compatible endpoint.</p></figcaption>
+    </figure>
+    <figure class="run">
+      <div class="pic"><img src="assets/made-image.jpg" alt="A picture this project generated: a granite outcrop on a mountain ridge at sunrise, with thin blue lines glowing across the rock." width="800" height="500" loading="lazy"></div>
+      <figcaption><span class="k">Image &middot; Qwen-Image-2.1-Turbo</span><b class="big">1024 &times; 1024 in 61 to 65 s</b><p>This picture was made by the kernels. mflux takes 52 to 55 s: it is faster.</p></figcaption>
+    </figure>
+    <figure class="run">
+      <div class="pic"><video src="assets/made-video.mp4" poster="assets/made-video.jpg" controls loop muted playsinline preload="none" aria-label="A clip this project generated: a red fox running through snow."></video></div>
+      <figcaption><span class="k">Video &middot; FastWan2.2-TI2V-5B</span><b class="big">17 frames in about 21 s</b><p>640 &times; 352 from a prompt. mlx-video takes about 23.5 s, run in turn on the same Mac.</p></figcaption>
+    </figure>
+    <figure class="run">
+      <div class="pic"><svg viewBox="0 0 320 200" role="img" aria-label="A drawing: a waveform above three lines standing for text, clip.wav to transcript.txt.">
+        <g class="wave" transform="translate(20 62)"><path d="M0 0v0M10 -8v16M20 -20v40M30 -12v24M40 -30v60M50 -18v36M60 -6v12M70 -24v48M80 -34v68M90 -14v28M100 -4v8M110 -22v44M120 -28v56M130 -10v20M140 -18v36M150 -32v64M160 -12v24M170 -6v12M180 -26v52M190 -16v32M200 -8v16M210 -22v44M220 -30v60M230 -14v28M240 -4v8M250 -18v36M260 -10v20M270 -4v8M280 0v0" fill="none"/></g>
+        <g fill="#3a4352"><rect x="20" y="132" width="210" height="8" rx="4"/><rect x="20" y="148" width="262" height="8" rx="4"/><rect x="20" y="164" width="150" height="8" rx="4"/></g>
+        <text x="20" y="192">clip.wav  &rarr;  transcript.txt</text>
+      </svg></div>
+      <figcaption><span class="k">Speech to text &middot; Qwen3-ASR-1.7B</span><b class="big">16 s of speech in 3 s</b><p>The reference's transcript to the letter on its two clips. Clips over 152 s are refused.</p></figcaption>
+    </figure>
+  </div>
+</div>
 
 <section id="why">
-<div class="cards">
-  <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
-  <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal, recorded for 403 emitting cases and 30 refusals, each held byte for byte to the previous record (they first agreed with the Rust implementation this language began as).</p></div>
-  <div class="card"><h3>Held to numbers</h3><p>Every numeric kernel is checked against a float64 reference written from the mathematics, and nineteen are checked to fail when broken on purpose. The goldens are a regression record of this compiler. A CPU interpreter says what a kernel computes; on a Mac the GPU agrees with it to about 1e-6.</p></div>
-  <div class="card"><h3>Runs a real model</h3><p>Qwen3.8-27B decodes at 27.4 tokens a second on a Metal GPU (39.9 with speculative decoding), with the same tokens and top five as a reference's log-probabilities.</p></div>
-  <div class="card"><h3>Trains and fine-tunes on the GPU</h3><p>A network trained with Adam without its parameters leaving the GPU (the loss equals <code>torch.optim.Adam</code>'s to six digits), then a GPT of up to 59.95 M parameters (167.8 ms a step against torch MPS's 196.7) and Qwen2.5 with LoRA (889.2 ms against 1,142.0 for float16 autocast), with loss curves equal to peft's. The CNN is 1.7 times slower than torch. <a href="#standing">The table</a>.</p></div>
-  <div class="card"><h3>Honest about what is missing</h3><p>CUDA has run only against a mock driver, the 27B decodes at 88% of Ollama's speed with speculation (60% without), attention stops at 1024 positions in the runner, every training comparison is one run on one machine, and no tuned model for the cancho-code experiment exists yet. <a href="#gaps">The list</a>.</p></div>
-  <div class="card"><h3>An authority you can read</h3><p>The report lists exactly what the compiler may do, and the gate fails if it widens. The one program that calls foreign code says so.</p></div>
-</div>
-<p class="note">What the promise does <b>not</b> establish: that a kernel is fast (speed is measured, against torch for training and against Ollama and MLX-LM for decoding: faster than torch on the GPT and the Qwen fine-tuning steps, slower on the CNN and below Ollama on the 27B), that CUDA works on a real GPU (it has run only against a mock driver), or that a kernel computes what you meant (the checker proves linearity, bounds and shapes, not intent). The stories below say what each run shows and what it does not.</p>
+  <div class="cards">
+    <div class="card"><h3>Refuses wrong programs</h3><p>Every tile is consumed exactly once; bounds, shapes and the threadgroup budget are checked, and a refusal names the rule it broke.</p></div>
+    <div class="card"><h3>One source, two targets</h3><p>The same <code>.chx</code> kernel becomes CUDA C and Metal. Every emitted text is held byte for byte to a recorded golden: 499 cases.</p></div>
+    <div class="card"><h3>Held to numbers</h3><p>Each numeric kernel is checked against a float64 reference written from the mathematics, and each model against its reference implementation.</p></div>
+    <div class="card"><h3>An authority you can read</h3><p>The compiler links only libc. Its report lists what it may do (files, printing, memory), and the gate fails if that widens. No network, no foreign code.</p></div>
+  </div>
+  <p class="note">What the promise does <b>not</b> establish: that a kernel is fast (speed is measured, and the table below has the rows where others are faster), that CUDA works beyond the one NVIDIA L4 it ran on, or that a kernel computes what you meant (the checker proves linearity, bounds and shapes, not intent).</p>
 </section>
 
 <section id="stories">
-  <div class="center"><h2>Five things that were actually run.</h2>
-  <p class="sub">Each story is a real command and what it printed, with the document that holds the run and a line on what it does not show.</p></div>
+  <div class="center"><h2>Four things that were actually run.</h2>
+  <p class="sub">Each is a real command, with what it shows and what it does not.</p></div>
 <!--stories-->
   <div class="stories">
     <article class="story"><h3>A wrong kernel is refused, and the rule has a name</h3>
-      <p>A kernel that loads a second tensor and never uses it. The checker refuses it and says which tensor and which rule; nothing is written.</p>
 <pre class="code">$ cancho-gpu check leak.chx n=8
-error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op</pre>
-      <p class="note">Shows: the refusal and its stable rule tag (every rule has a fixture, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/rules.md">rules.md</a>). Does not show: that a kernel which passes computes what you meant.</p></article>
-    <article class="story"><h3>Run a kernel on your own numbers</h3>
-      <p>The backward of a matrix product, on two small matrices you can check by hand: <code>dy</code> is 1 2 / 3 4 and <code>w</code> is 1 0 2 / 0 1 3, so <code>dx = dy w</code> is 1 2 8 / 3 4 18.</p>
-<pre class="code">$ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
-    --in dy dy --in w w --out dx
-1.0 2.0 8.0 3.0 4.0 18.0</pre>
-      <p class="note">Shows: the CPU interpreter, with inputs from files and the whole output printed (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">run.md</a>). Does not show: a GPU run; the device programs do not take input yet.</p></article>
-    <article class="story"><h3>Train a small model with kernels as the objective</h3>
-      <p>A least-squares fit whose loss and gradient are computed by cancho-gpu kernels, driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS: 12 evaluations to within 1.1e-5 of the normal-equations solution, at 28 to 36 ms an evaluation.</p>
-<pre class="code">$ opt minimize --method bfgs --x0 0,0,0 -- python3 examples/train/lsq_objective.py ...
-{"method":"bfgs","x":[1.5065,-2.0052,0.4572],"nfev":12,"converged":true, ...}</pre>
-      <p class="note">Shows: a kernel as an optimiser's objective, on the CPU interpreter (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/examples/train/README.md">examples</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">training.md</a>). Does not show: more than 32 parameters or any speed claim; this is the CPU path, and training on the GPU is done in sessions (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>).</p></article>
-    <article class="story"><h3>A 27B model on the same kernels</h3>
-      <p>Qwen3.8-27B (NVFP4, read from Ollama's store) generating on a Metal GPU: 27.4 tokens a second, 39.9 with speculative decoding, against 45.3 for Ollama in the same invocation, on one Apple M4 Max.</p>
-<pre class="code">$ cancho-gpu-run35 &lt;ollama store&gt; tests/chx "&lt;prompt&gt;" 64</pre>
-      <p class="note">Shows: it runs and agrees with a reference's log-probabilities to 1e-4 (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>). Does not show: that it is the fast way to run this model; it is not.</p></article>
-    <article class="story"><h3>Compared with OpenNN</h3>
-      <p>A two-layer sigmoid network, forward only, the same weights in both: outputs agree to 1.4e-7 of a binary64 reference. OpenNN's call takes about 2.5 microseconds in process; cancho-gpu's CPU interpreter takes milliseconds as two processes. <b>No ratio is claimed</b>: they measure different things.</p>
-<pre class="code">$ python3 bench/opennn/compare.py --opennn build/forward_opennn --gpu build/cancho-gpu</pre>
-      <p class="note">Shows: agreement and the two timings, with the differences and where cancho-gpu is worse (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>). Does not show: any GPU, training, or a larger network (the one training comparison, against OpenNN's CPU path only, is in resident.md sections 13 and 14).</p></article>
+error[leak]: `w.1` is never consumed; drop it,
+  yield it or move it into an op</pre>
+      <p class="note">Shows: the refusal and its stable rule tag (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/rules.md">rules.md</a>). Does not show: that a kernel which passes computes what you meant.</p></article>
+    <article class="story"><h3>A 27B model behind an OpenAI-compatible endpoint</h3>
+<pre class="code">$ build/cancho-gpu-serve ~/.ollama/models tests/chx --port 8080
+$ curl localhost:8080/v1/chat/completions \
+    -d '{"messages":[{"role":"user","content":"..."}]}'</pre>
+      <p class="note">Shows: Qwen3.8-27B with its own draft head, 85 to 113 tokens a second on three code requests where Ollama gave 81 to 112 (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/serving.md">serving.md</a> 11.6). Does not show: prose, where few drafts are accepted (46 against 57), tools, or more than one request at a time.</p></article>
+    <article class="story"><h3>A picture and a clip from a prompt</h3>
+<pre class="code">$ scripts/media image "a granite outcrop ..." -o out/rock
+$ scripts/media video "a red fox running ..." -o out/fox</pre>
+      <p class="note">Shows: the two outputs at the top of this page, from a diffusion transformer, its text encoder and its decoder as kernels (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/diffusion.md">diffusion.md</a>). Does not show: the fastest way to make an image; mflux is 12 s ahead at 1024 &times; 1024.</p></article>
+    <article class="story"><h3>A recording to its words</h3>
+<pre class="code">$ scripts/media transcribe clip.wav -o out/clip
+$ cat out/clip/transcript.txt</pre>
+      <p class="note">Shows: Qwen3-ASR-1.7B on the GPU, giving the reference's transcript to the letter on its two clips, 16.2 s of speech in 3.0 s from a cold start (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/audio.md">audio.md</a>). Does not show: a word error rate on a test set, or clips over 152 s, which are refused.</p></article>
   </div>
 <!--/stories-->
 </section>
 
 <section id="how">
   <div class="center"><h2>How it works.</h2>
-  <p class="sub">A kernel is checked before it is lowered; a refusal never reaches a GPU. The interpreter is the reference for what a kernel computes.</p></div>
+  <p class="sub">A kernel is checked before it is lowered; a refusal never reaches a GPU. The CPU interpreter is the reference for what a kernel computes.</p></div>
   <div class="flow">
   <svg viewBox="0 0 780 330" role="img" aria-label="Flow: a .chx kernel is checked; a refusal names its rule; a pass is lowered to CUDA C and Metal; the device path compiles and runs it; the CPU interpreter checks the result; a model runner uses the kernels for every layer.">
     <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs>
@@ -251,12 +242,8 @@ error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op</p
     <path class="ar" d="M550 278H620Q676 278 676 214"/>
   </svg>
   </div>
-</section>
 
-<section id="kernel">
-  <div class="center"><h2>Look at one kernel.</h2>
-  <p class="sub">The real source of <code>swiglu.chx</code>, what the compiler writes for each target, and what it says to a program that breaks a rule.</p></div>
-  <div class="explorer">
+  <div class="explorer" id="kernel">
     <div class="tabs" role="tablist" aria-label="Kernel views">
       <button type="button" role="tab" aria-selected="true" data-p="k0">Source (.chx)</button>
       <button type="button" role="tab" aria-selected="false" data-p="k1">Metal</button>
@@ -365,269 +352,67 @@ algo k(n)
 schedule k for nvidia-ada { threads 32 }</pre>
     <div class="about" id="kabout">Fifteen lines. Every tile is a value that must be consumed once; the schedule says how many threads a threadgroup has.</div>
   </div>
-  <p class="caption">The Metal and CUDA text is the compiler's actual output for <code>n=17408</code> (<code>cancho-gpu emit tests/chx/swiglu.chx out n=17408</code>), the kernel function only; the refusal is <code>tests/reject/leak.chx</code>.</p>
-</section>
-
-<section id="audit">
-  <img class="hero-logo" src="assets/cancho-gpu-logo.png" alt="cancho-gpu logo: a granite outcrop with circuit traces on a blue disc" width="512" height="512" style="margin-bottom:2rem">
-  <h2>A kernel compiler should be small enough to audit.</h2>
-  <div class="fitwrap"><table class="fit">
-    <thead><tr><th>Question</th><th>What cancho-gpu does</th></tr></thead>
-    <tbody>
-      <tr><th>Can the compiler call into C or touch the network?</th><td>No. Its report lists <code>args</code>, <code>err_write</code>, <code>fs_read</code>, <code>fs_write</code>, <code>heap</code> and <code>io_write</code>, and says it never touches the network or foreign code. <code>tests/authority.sh</code> fails the gate if that changes.</td></tr>
-      <tr><th>How do I know the output is right?</th><td>Numbers: every numeric kernel is held to a float64 reference written from the mathematics, and a device program compares the GPU against the CPU interpreter. Text: the CUDA and Metal output is recorded in goldens, which are a regression record of this compiler, not an answer. They first agreed byte for byte with a Rust implementation of the language, which was the oracle until it was retired; for CUDA, which no machine here can run, that was the only independent check, and nothing replaces it yet.</td></tr>
-      <tr><th>Does it run on a GPU?</th><td>Metal: yes, on Apple Silicon, with the result inside the 2e-2 tolerance of the interpreter. CUDA: only against a mock driver so far, because no machine here has an NVIDIA GPU. The page and the README say which is which.</td></tr>
-      <tr><th>Is it an inference runtime?</th><td>A first one (and a training stack, below). <code>cancho-gpu-run</code> and <code>cancho-gpu-run35</code> run Qwen2.5-0.5B and Qwen3.8-27B: every layer is a compiled kernel on a Metal GPU. The 0.5B model gives the same greedy tokens as Hugging Face transformers; the 27B (NVFP4 weights from Ollama's store, 48 gated-delta layers) matches a reference implementation's golden log-probabilities to 1e-4 and decodes at 27.4 tokens a second (39.9 with speculative decoding), against 45.3 for Ollama in the same benchmark run. It also serves an OpenAI-compatible chat endpoint with streaming (one request at a time).</td></tr>
-    </tbody>
-  </table></div>
+  <p class="caption">One real kernel, <code>swiglu.chx</code>: its source, the compiler's actual output for <code>n=17408</code> on each target (the kernel function only), and a refusal (<code>tests/reject/leak.chx</code>).</p>
 </section>
 
 <section id="watch">
-  <div class="center"><h2>A real session, replayed.</h2></div>
+  <div class="center"><h2>The same request to two engines.</h2>
+  <p class="sub">Qwen3.8-27B writing three functions in cancho: cancho-gpu on the left, Ollama on the right, on one Apple M4 Max.</p></div>
 <figure class="video">
-  <div class="frame"><video controls preload="metadata" playsinline poster="demo-poster.png" aria-label="A recorded terminal session: a kernel is compiled to Metal, a wrong kernel is refused, and a 27B model generates text on the GPU">
-    <source src="demo.mp4" type="video/mp4"><source src="demo.webm" type="video/webm">
-    Your browser cannot play the video; the transcript below has the same session.
+  <div class="frame"><video controls preload="none" playsinline poster="assets/compare.jpg" aria-label="Two panes of the same code being written, token by token: cancho-gpu finishes 347 tokens in 3.32 seconds, 113 tokens a second; Ollama 346 tokens in 3.20 seconds, 112 tokens a second.">
+    <source src="assets/compare.mp4" type="video/mp4">
+    Your browser cannot play the video: cancho-gpu wrote 347 tokens in 3.32 s (113 tokens a second), Ollama 346 in 3.20 s (112).
   </video></div>
-  <figcaption>A real session, recorded: the commands run for real, only the typing is simulated. Kernel compiled and a wrong one refused, then Qwen3.8-27B (NVFP4, weights from Ollama's store) generating 64 tokens, greedy, no chat template, on an Apple M4 Max.</figcaption>
-  <details class="transcript"><summary>Transcript</summary><pre id="transcript"># cancho-gpu: typed tile kernels, one source for CUDA C and Metal
-
-$ cat swiglu.chx
-// a = silu(g) * u over a row of n: the gated activation of a SwiGLU MLP.
-algo swiglu(n)
-  in  g: f32[1, n]
-  in  u: f32[1, n]
-  out y: f32[1, n]
-{
-  let gt = load g
-  let ut = load u
-  let sg = sigmoid &amp;gt
-  let a  = gt * sg
-  store a * ut -&gt; y
-}
-
-schedule swiglu for apple-m-series { threads 256 }
-schedule swiglu for nvidia-ada     { threads 256 }
-
-$ cancho-gpu emit swiglu.chx out n=17408
-swiglu_17408.cu: 256 threads, grid 1x1, 0 B of tiles
-swiglu_17408.metal: 256 threads, grid 1x1, 0 B of tiles
-
-# what it writes for Apple GPUs (the CUDA C is written next to it)
-$ sed -n '/kernel void/,/^}/p' out/swiglu_17408.metal | head -22
-kernel void swiglu_17408(
-    device const float* p0_g [[buffer(0)]],
-    device const float* p1_u [[buffer(1)]],
-    device float* p2_y [[buffer(2)]],
-    uint tid [[thread_index_in_threadgroup]],
-    uint3 tgpos [[threadgroup_position_in_grid]])
-{
-    const uint gid = tgpos.x;
-    float v2[68];
-    for (uint k = 0; k &lt; 68u; ++k) {
-        const uint e = k * 256u + tid;
-        if (e &lt; 17408u) {
-            v2[k] = float(1.0f / (1.0f + precise::exp(-float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])))));
-        }
-    }
-    float v3[68];
-    for (uint k = 0; k &lt; 68u; ++k) {
-        const uint e = k * 256u + tid;
-        if (e &lt; 17408u) {
-            v3[k] = float(float(float(p0_g[(uint)(0) * 17408u + (uint)(0) * 1u + ((e))])) * float(v2[k]));
-        }
-    }
-
-# a wrong program is refused, with the rule it broke
-$ cat leak.chx
-algo k(n)
-  in  x: f32[1, n]
-  in  w: f32[1, n]
-  out y: f32[1, n]
-{
-  let a = load x
-  let b = load w
-  store sigmoid a -&gt; y
-}
-schedule k for nvidia-ada { threads 32 }
-
-$ cancho-gpu check leak.chx n=8
-error[leak]: `w.1` is never consumed; drop it, yield it or move it into an op
-
-# and the kernels run a 27B model on this Mac's GPU
-$ cancho-gpu-run35 ~/.ollama/models kernels "Q: Why is the sky blue?\nA:" 64 --stream --timing
-
-The sky appears blue due to a phenomenon called **Rayleigh scattering**.
-
-When sunlight enters the Earth's atmosphere, it collides with gas molecules (primarily nitrogen and oxygen). Sunlight is composed of all colors of the visible spectrum, which have different wavelengths. Shorter wavelengths (like blue and violet) scatter
-timing: load_ms=4580 prefill_tokens=11 prefill_ms=311 decode_tokens=63 decode_ms=2808</pre></details>
+  <p class="caption">A replay, not a live race: each engine was recorded alone on the GPU (the fastest of three runs, 23 November 2026, greedy) and the two are played in step from the moment of the request. cancho-gpu: 347 tokens in 3.32 s, 113 a second. Ollama 0.40.17: 346 in 3.20 s, 112 a second. Ollama's first runs that day were slower (64 to 67 on Python); its drafting gets deeper as it serves requests, and these are its warmed figures.</p>
 </figure>
 </section>
 
-<section id="train">
-  <div class="center"><h2>Run a kernel on your own numbers.</h2>
-  <p class="sub"><code>cancho-gpu run</code> executes a kernel on the CPU interpreter over inputs you give it and prints the whole output. It exists so a kernel can be the objective of an optimiser, and a small model has been trained that way. The command does not run on a GPU; training on the GPU is done in sessions (below).</p></div>
-  <pre class="code">$ printf '1 2\n3 4\n' &gt; dy; printf '1 0 2\n0 1 3\n' &gt; w
-$ cancho-gpu run tests/chx/bwd_dx.chx r=2 n=2 k=3 --target nvidia-ada \
-    --in dy dy --in w w --out dx
-1.0 2.0 8.0 3.0 4.0 18.0</pre>
-  <div class="cards">
-    <div class="card"><h3>Backward kernels</h3><p><code>dx</code>, <code>dw</code>, <code>db</code> and the sigmoid's, held, element by element, to a reference that is itself checked against finite differences.</p></div>
-    <div class="card"><h3>A fit, with kernels as the objective</h3><p>A least-squares fit driven by <a href="https://github.com/alpibrusl/cancho-opt">cancho-opt</a>'s BFGS, loss and gradient computed by these kernels: 12 evaluations, within 1.1e-5 of the normal-equations solution, 28 to 36 ms an evaluation on the CPU interpreter.</p></div>
-    <div class="card"><h3>What it cannot do</h3><p>At most 32 parameters through <code>opt</code>, and the CPU interpreter only. Whether a GPU helps at that size: with text on a pipe it cannot (training.md); the sessions, with the data on the device, are the GPU path.</p></div>
-  </div>
-  <p class="note">Design, gates and numbers: <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">the run document</a> and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">the training document</a>, which also says why training does not belong in the compiler yet. Examples: <a href="https://github.com/alpibrusl/cancho-gpu/tree/main/examples/train">cancho-gpu</a> and <a href="https://github.com/alpibrusl/cancho-opt/tree/main/examples/train">cancho-opt</a>.</p>
-</section>
-
-<section id="fit">
-  <h2>Where it fits.</h2>
+<section id="status">
+  <h2>What exists today, and what does not.</h2>
   <div class="cols">
-    <div><h3>Use it for</h3><ul>
-      <li>Compiling <code>.chx</code> tile kernels to CUDA C and Metal with a small, auditable toolchain</li>
-      <li>Checking a kernel on the CPU before a GPU is involved</li>
-      <li>Trying a cancho program that drives a GPU through a thin C shim</li>
-      <li>Training and fine-tuning small models on a Mac's GPU, checked against a float64 specification and torch (one machine, one run each)</li>
+    <div class="yes"><h3>Built</h3><ul>
+      <li>The compiler: parser, checker, CUDA C and Metal emitters, a CPU interpreter, and device paths for both targets</li>
+      <li>Qwen3.8-27B served over <code>/v1/chat/completions</code>, with streaming, a prefix cache and the model's own draft head</li>
+      <li>Text to image and photo editing (Qwen-Image-2.1-Turbo), video from a prompt (FastWan2.2-TI2V-5B), speech to text (Qwen3-ASR-1.7B), through <code>scripts/media</code></li>
+      <li>Training on the GPU: a GPT, a CNN, Qwen2.5 with LoRA and full fine-tuning, each held to torch or peft</li>
     </ul></div>
     <div class="no"><h3>Not yet</h3><ul>
-      <li>CUDA on real hardware, Hopper, AMD</li>
-      <li>Decoding as fast as Ollama on the 27B (88% with speculation), long contexts (it needs a change to the language), concurrent requests</li>
-      <li>Attention over more than 1364 positions (it needs a change to the language)</li>
-      <li>Training contexts above 128 (GPT) or 512 (Qwen), a CNN as fast as torch, 90% on CIFAR-10, a 7B model with a gradient check or a run past 90 steps (the 7B ran 90 steps of QLoRA once)</li>
-      <li>Results of the cancho-code fine-tuning experiment: the design and the untuned baselines exist, no tuned model does</li>
-      <li>Image editing as fast as torch's (92 s against 54 s), and video</li>
-    </ul></div>
-  </div>
-</section>
-
-<section class="status" id="status">
-  <h2>Status: alpha</h2>
-  <ul>
-    <li>Built: a model runner for Qwen2 on Metal, the parser, checker, CUDA and Metal emitters, the CPU interpreter, both device paths, <code>exp</code>/<code>log</code>/<code>softmax</code>, the GGUF and safetensors readers, a BPE tokenizer, a sampler, rope, kv_append, attention and gate kernels, backward kernels, <code>run</code> (a kernel on your inputs, CPU interpreter), and training sessions on Metal: a GPT (trained and served), a CNN, Qwen2.5 LoRA and full fine-tuning, a ResNet-18-class backbone (equal to torch, not timed).</li>
-    <li>Since then: batched decode and an on-device sampler, a complete optimiser, text-to-image and image editing on Qwen-Image-2.1-Turbo (1024 &times; 1024; an edit takes 92 s against torch's 54 s), a 7B QLoRA run, and the weight-space editing pipeline (see below). Video from a prompt (FastWan2.2-TI2V-5B) runs: 17 frames of 640 &times; 352 in 44 s through the <code>scripts/media</code> command line.</li>
-    <li>Open: split-KV attention (<a href="https://github.com/alpibrusl/cancho-gpu/issues/6">#6</a>), concurrent serving and a prefix cache (<a href="https://github.com/alpibrusl/cancho-gpu/issues/7">#7</a>), AMD (<a href="https://github.com/alpibrusl/cancho-gpu/issues/9">#9</a>), model adapters (<a href="https://github.com/alpibrusl/cancho-gpu/issues/10">#10</a>), <code>run</code> on a GPU through the device programs, the cancho-code fine-tuning experiment's tuned arms (M8), the vision backbone's timing (M9 V2), a gradient comparison with peft for the 7B QLoRA run, and an edit as fast as torch's.</li>
-    <li>Unproven: CUDA on a real GPU (so every training number is Metal); any result on a second machine or a second seed; the 27B's decode speed against Ollama's (88% with speculation, 60% without).</li>
-  </ul>
-</section>
-
-<section id="model">
-  <div class="center"><h2>A real model on the same kernels.</h2>
-  <p class="sub">Qwen3.8-27B (NVFP4, 48 gated-delta layers) reads Ollama's store and runs on a Metal GPU. It is not the fastest way to run this model, and the page says so.</p></div>
-  <div class="bars" role="img" aria-label="Decode speed on the same machine: Ollama 45.3 tokens a second, MLX-LM 29.6, cancho-gpu 27.4, cancho-gpu with speculative decoding 39.9">
-    <div class="bar"><span>Ollama</span><div class="track"><div class="fill" style="width:100%"></div></div><b>45.3</b></div>
-    <div class="bar"><span>MLX-LM</span><div class="track"><div class="fill" style="width:65.3%"></div></div><b>29.6</b></div>
-    <div class="bar us"><span>cancho-gpu, speculative</span><div class="track"><div class="fill" style="width:88.1%"></div></div><b>39.9</b></div>
-    <div class="bar us"><span>cancho-gpu</span><div class="track"><div class="fill" style="width:60.5%"></div></div><b>27.4</b></div>
-  </div>
-  <p class="caption">Decode speed, tokens a second, greedy, 128 tokens of a prose continuation, five runs each, one machine (Apple M4 Max, 64 GB), one invocation, with a light background load (load average about 2 at the start; the runs themselves varied by under 2%) (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">docs/benchmark.md</a>). Ollama decodes this model with speculative decoding from the model's own draft head; cancho-gpu does too in the speculative row (a chain of two drafts, three rows checked a pass, the same tokens as plain decoding: <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>), and is not there yet. MLX-LM uses a different 4-bit quantisation. Prompt processing takes eight tokens at a time: a 49-token prompt in 0.65 s, against 2.2 s a token at a time (one run each).</p>
-  <div class="cards">
-    <div class="card"><h3>Correct, not just fast</h3><p>Three prompts, eight steps each: the same token and top five as the reference's golden log-probabilities, logit gaps within 1e-4.</p></div>
-    <div class="card"><h3>Small first</h3><p>Qwen2.5-0.5B gives the same greedy tokens as Hugging Face transformers in float32, every top-5 logit within 1e-4, at about 6 ms a token.</p></div>
-    <div class="card"><h3>Measured, with the misses</h3><p>An experiment that looked like a win and was a bug, and one that did not move the pipeline at all, are in <a href="https://github.com/alpibrusl/cancho-gpu/issues/24">#24</a> and <a href="https://github.com/alpibrusl/cancho-gpu/issues/26">#26</a>.</p></div>
-  </div>
-</section>
-
-<section id="trained">
-  <div class="center"><h2>Not only run: trained, on the same kernels.</h2>
-  <p class="sub">Training happens in <em>sessions</em>: compile and upload once, then run many steps for one request, with the parameters, the optimiser's state and the data staying on the GPU. Every model below is held to a float64 specification written for it and to torch or peft. All of it is Metal, on one Apple M4 Max, one run and one seed each (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>).</p></div>
-  <div class="cards">
-    <div class="card"><h3>A GPT, trained and served</h3><p>3.26 M to 59.95 M parameters, on characters and on a 2,048-token byte-pair vocabulary built here (sections 15 to 17, 19). The 59.95 M model takes 167.8 ms a step against torch MPS's 196.7, with validation curves within 0.013 nats. Served from a forward-only session, all 576 greedy tokens equal torch's, at 650 tokens a second against torch's 340.</p></div>
-    <div class="card"><h3>A CNN on real CIFAR-10</h3><p>A 0.85 M-parameter ResNet reaches 87.4% test accuracy, torch's 87.0%, with no augmentation (section 18). <b>The roadmap's 90% is not met by any runtime</b>, and a step takes 17.6 ms against torch MPS's 10.6: 1.7 times slower.</p></div>
-    <div class="card"><h3>Qwen2.5, fine-tuned</h3><p>The forward pass equals transformers' (loss within 1.2e-4 on the 0.5B, 5.2e-6 on the 1.5B); LoRA gradients at cosine 0.99986 and 0.99938 or better against peft; a 300-step run (0.5B) and a 150-step run (1.5B) whose loss curves equal peft float32's; full fine-tuning of the 0.5B with the embedding table trained, equal to torch float32 (sections 20 to 24). A 4-bit NVFP4 base for the 1.5B's LoRA (section 27): the loss 8.6e-5 from transformers', gradients at cosine 0.997738 or better, the adapters winning back 45.6% of the 4-bit base's 0.0492-nat cost, at 2,483.1 ms a step against 2,480.6 on an f16 base and 17.52 GB against 19.29.</p></div>
-    <div class="card"><h3>Speed and memory against torch</h3><p>0.5B LoRA step: 889.2 ms and 16.14 GB against float16 autocast's 1,142.0 ms and 27.48 GB. 1.5B: 2,467.3 ms and 19.38 GB against 2,743.8 ms and 39.93 GB. Full fine-tuning of the 0.5B: 1,381.4 ms and 21.03 GB against 1,450.8 ms and 44.56 GB (torch float32). The memory clause of the 0.5B LoRA exit was <b>not</b> met: 59% of torch's, not under half.</p></div>
-    <div class="card"><h3>A vision backbone for a robot</h3><p>A ResNet-18-class network (11,181,632 parameters, 96 &times; 128 input) trained in a session, its loss and gradients equal to torch's: loss 2.78119 against torch float32's 2.78022 on Metal (section 26). <b>Not timed</b>: no step time is claimed, and no robot data exist yet.</p></div>
-    <div class="card"><h3>An experiment with no result yet</h3><p>Does fine-tuning a small model on cancho make it better at cancho-code's job? The design is fixed before any result, the data (6,946 records, 2.78 M tokens, with a contamination check) is built, and the two untuned baselines are near zero: 0.012 of the oracle's points for the better arm. <b>No tuned model has been trained, and no training result is in</b> (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/roadmap-models.md">roadmap-models.md</a> section 7). The 7B model that the 4-bit work (QLoRA) was designed for has not been run and is in progress.</p></div>
-  </div>
-</section>
-
-<section id="since">
-  <div class="center"><h2>Beyond training: sampling, images, edits.</h2>
-  <p class="sub">What was added since the training sections above. Same rules: Metal on one Apple M4 Max, each piece held to a float64 or torch reference written for it, and each ends in what it does not show.</p></div>
-  <div class="cards">
-    <div class="card"><h3>A batched decode and a sampler on the device</h3><p>Up to 32 sequences of Qwen2.5-1.5B a step, with the sampled ids staying on the GPU: the <b>same 48 tokens as transformers' greedy generation</b> on two chat prompts, 35.6 ms a step at 32 sequences with 1,152-position caches (43.0 ms with LoRA adapters). Temperature sampling by inverse CDF takes 0.99 ms for 32 rows over a 152,064-token vocabulary; detokenisation matches Hugging Face's on 461 of 461 (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/decode.md">decode.md</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/sampler.md">sampler.md</a>). Written for <a href="https://github.com/alpibrusl/cancho-rl">cancho-rl</a>, which uses it for reinforcement learning on this GPU.</p></div>
-    <div class="card"><h3>An optimiser that is complete</h3><p>Global-norm gradient clipping, decay groups, a learning-rate schedule and gradient accumulation, written as <code>.chx</code> kernels and held to <code>torch.optim.AdamW</code>, <code>clip_grad_norm_</code> and the schedulers, with a binary64 numpy version where torch is float32; the CNN, ResNet and Qwen LoRA sessions take <code>opt=</code> (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/optimizer.md">optimizer.md</a>).</p></div>
-    <div class="card"><h3>Images and photo editing: Qwen-Image-2.1-Turbo</h3><p>A 7.12 B-parameter diffusion transformer, its text encoder (the Qwen3-VL language model) and its VAE decoder, from a prompt and a seed to pixels, as kernels. <b>It is closer to the exact float64 pipeline than torch's own BF16 is</b>: the 1024 &times; 1024 image is 0.16 of 255 from float64 (49.3 dB), torch's is 4.75 (26.2 dB). On time, a 1024 &times; 1024 step takes 6.25 s against torch MPS's 4.99 s; the whole pipeline is about 52 s against 41 s (an estimate from the measured stages). <b>Editing a photograph runs end to end on the GPU</b> (vision tower, the language model reading the photograph, a VAE encoder, the transformer with the photograph as a cached prefix): a real public-domain photograph and one prompt come out as the same edit as torch's (final latents 1.0% of their rms apart, 39.1 dB between the images) in <b>92 s against torch's 54 s</b>, so <b>torch is faster here</b> (torch's is a warm process with its 17 s of loading left out; ours includes loading 30 GB of weights, and with everything loaded it would be about 70 s, an estimate). Its transformer step is 5.6 s against our 7.2, all of it two kernels: our matrix products reach 13.0 TFLOPS against torch's 14.4, and our attention takes 70 ms a block against torch's fused 41. It was 150 s: keeping the weights on the device between the eight steps (a session request, <code>reload</code>) took off 36 s with a bit-identical result, running the stages in one process 7 s more, and reading the softmax scores once instead of twice (two new kernels) another 5 s, returning the stages' results as binary files instead of text 10 s more, and the prefix pass and the steps now share one session. A second photograph of another shape and a scene-changing prompt also ran (118 s; looked at, not compared with torch). <b>Video is not started</b> (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/diffusion.md">diffusion.md</a>).</p></div>
-    <div class="card"><h3>Video and a command line: FastWan2.2-TI2V-5B</h3><p>A 5 B-parameter distilled video transformer (three denoising steps, no guidance) and its 3-D VAE decoder, as kernels. <b>17 frames of 640 &times; 352 take 25 s from prompt to <code>video.mp4</code></b> once the weights are written (44 s the first time; 7 s of it the text encoder, still torch on the host). The decoder does 33 frames of 640 &times; 352 in 15.2 s and 17 frames of 1024 &times; 576 in 20.7 s once its buffers are reused, and equals the float64 decoder to about 3e-4 of the output's rms at the shapes where float64 can run; <b>larger decodes run out of GPU memory</b> (17 frames of 1280 &times; 704 do), and the Metal layer now says so instead of answering zeros, which it did until now. Not compared with the real pipeline's output or time. Use it with <code>scripts/media video "a red fox running through snow" -o out/fox --frames 17 --size 640x352</code>, <code>scripts/media edit photo.jpg "Make it a bright sunny afternoon." -o out/sunny</code> (wired; the edit weights were not on disk to run it through the command) and <code>scripts/media doctor</code>. Each task takes <code>--model NAME</code> (<code>scripts/media models</code> lists them) but only one model is supported per task today (FastWan2.2-TI2V-5B for video, Qwen-Image-2.1-Turbo for edit); any other name is refused. Text to image from a free prompt is not wired. <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/cli.md">docs/cli.md</a></p></div>
-    <div class="card"><h3>Models as files</h3><p>A session file (programs, resident data, links, aliases) can now be a <b>model file</b>: constants, blocks with parameters, <code>repeat</code>, <code>if</code> and <code>${expression}</code> (<code>cancho-gpu model-expand</code>). The text encoder of Qwen-Image-2.1-Turbo (36 layers, 149 lines) and its transformer (32 blocks, 142 lines) expand to the 3,196 and 3,310 lines that the Python generators wrote, <b>byte for byte</b>, and the Metal session runs the text encoder straight from its model file with a byte-identical result. The weights' conversion and the other models are still Python (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a> section 31).</p></div>
-    <div class="card"><h3>Weight-space editing, with the negative results</h3><p>A pipeline with pre-registered gates for a published edit of a model's weights: the edit costs 0.0205 nats a token and +1.3% perplexity, which fails the registered 0.02 gate by its interval's upper bound; a gradient search for the edit that fixes loops was <b>not recovered</b>, and a rank-1 edit built from gradients broke held-out loops. On the engine side, a greedy runner and the edit as a 262,844-byte patch run on Metal in f32 and f16, and teacher-forced agreement with a float64 reference holds to 16,510 positions (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/weight-space-w4.md">weight-space-w4.md</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/weight-space-w4-r4.md">weight-space-w4-r4.md</a>, <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/weight-space.md">weight-space.md</a>).</p></div>
-    <div class="card"><h3>The training session writer, in cancho</h3><p>The session file of a Qwen2 LoRA run (<code>qsw</code>) is now written by a cancho program, byte for byte what the Python writer wrote; it also writes the gradient-only, forward-only and prefill sessions the above need.</p></div>
-  </div>
-</section>
-
-<section id="standing">
-  <h2>Where it stands against torch and others.</h2>
-  <p class="sub">Every number is measured and copied from the section named. One machine (Apple M4 Max, 64 GB), torch 2.12 on MPS unless marked, one run and one seed each, torch run by default (not compiled, no MPS graphs). Memory is the process's peak footprint unless marked <i>driver</i>. The rows where cancho-gpu is slower or larger are in the table on purpose.</p>
-  <div class="fitwrap"><table class="fit wide">
-    <thead><tr><th>Workload</th><th>cancho-gpu (Metal)</th><th>Reference</th><th>Source</th></tr></thead>
-    <tbody>
-      <tr><th>Adam step, 4096 &times; 32 &times; 32 (1,089 parameters)</th><td>0.301 ms</td><td>torch CPU 0.372 ms, MPS 0.870 ms</td><td>resident.md 12.1</td></tr>
-      <tr><th>Adam step, 16384 &times; 64 &times; 128</th><td>1.013 ms</td><td>torch CPU 1.333 ms, MPS 1.011 ms</td><td>resident.md 12.1</td></tr>
-      <tr><th>Epoch, 64-512-512-512-1, 200,000 samples</th><td>0.198 s mixed precision (0.941 s in float32; section 13 measured that at 2.6 times torch MPS's time)</td><td>torch MPS float32 0.377 s, autocast 0.457 s; OpenNN CPU 1.550 s</td><td>resident.md 13, 14</td></tr>
-      <tr><th>GPT, 10.80 M parameters, 4,096 tokens a step</th><td>37.0 ms</td><td>torch MPS float32 41.3 ms, autocast 44.5 ms</td><td>resident.md 15</td></tr>
-      <tr><th>GPT, 27.4 M parameters</th><td>81.0 ms</td><td>86.0 ms, 91.7 ms</td><td>resident.md 17</td></tr>
-      <tr><th>GPT, 59.95 M parameters</th><td>167.8 ms</td><td>196.7 ms, 201.1 ms</td><td>resident.md 19.1</td></tr>
-      <tr><th>GPT decoding, 3.26 M parameters</th><td>650 tokens a second</td><td>torch MPS 340 (recompute), 273 (key/value cache)</td><td>resident.md 16</td></tr>
-      <tr class="us"><th>CNN, 0.85 M-parameter ResNet, batch 128</th><td>17.6 ms a step: <b>1.7 times slower</b>; CIFAR-10 accuracy 0.8740</td><td>torch MPS float32 10.6 ms, 0.8697; autocast 11.0 ms, 0.8674</td><td>resident.md 18.2, 18.1</td></tr>
-      <tr><th>Qwen2.5-0.5B forward, 4,096 tokens</th><td>382.1 ms; 16.35 GB</td><td>torch MPS float32 488 ms, 14.4 GB (driver); autocast 474 ms, 15.0 GB (driver)</td><td>resident.md 20</td></tr>
-      <tr><th>Qwen2.5-0.5B LoRA step</th><td>889.2 ms; 16.14 GB</td><td>autocast 1,142.0 ms, 27.48 GB; float32 1,237.9 ms, 31.49 GB</td><td>resident.md 22.3</td></tr>
-      <tr><th>Qwen2.5-1.5B forward</th><td>1,116 ms</td><td>float32 1,258 ms; autocast 1,188 ms</td><td>resident.md 23.2</td></tr>
-      <tr><th>Qwen2.5-1.5B LoRA step</th><td>2,467.3 ms; 19.38 GB</td><td>autocast 2,743.8 ms, 39.93 GB; float32 2,980.3 ms, 46.76 GB</td><td>resident.md 23.5</td></tr>
-      <tr><th>Qwen2.5-1.5B LoRA step, 4-bit (NVFP4) base</th><td>2,483.1 ms; 17.52 GB</td><td>same step, f16 base: 2,480.6 ms, 19.29 GB; no torch time (peft ran with activation checkpointing)</td><td>resident.md 27.5</td></tr>
-      <tr><th>Qwen2.5-0.5B full fine-tuning step</th><td>1,381.4 ms; 21.03 GB</td><td>torch float32 1,450.8 ms; 44.56 GB</td><td>resident.md 24.4</td></tr>
-      <tr><th>Qwen2.5-1.5B full fine-tuning step</th><td>4,191 ms; 44.27 GB (four steps)</td><td>no comparison: not run</td><td>resident.md 24.9</td></tr>
-      <tr><th>ResNet-18-class backbone, 11,181,632 parameters</th><td>equal to torch's loss and gradients; no time measured</td><td></td><td>resident.md 26.3, 26.4</td></tr>
-      <tr class="us"><th>Decoding Qwen3.8-27B (NVFP4), tokens a second</th><td>27.4; 39.9 with speculative decoding</td><td><b>Ollama 45.3</b>, MLX-LM 29.6</td><td>benchmark.md</td></tr>
-      <tr class="us"><th>Decoding Qwen2.5-0.5B (bf16), tokens a second</th><td>180.4</td><td><b>MLX-LM 347.2</b>; transformers on the CPU, float32 67.0</td><td>benchmark.md</td></tr>
-    </tbody>
-  </table></div>
-  <p class="note"><b>Reading it.</b> For the GPT and for Qwen2.5 fine-tuning cancho-gpu takes less time a step than torch on MPS (1.28 times faster than float16 autocast on the 0.5B LoRA step, 1.11 times on the 1.5B's, 1.05 times on the 0.5B's full fine-tuning), with loss curves equal to the digits in the sections, and uses less memory in the three fine-tuning rows that have a torch number; the 0.5B forward pass uses more. It is slower on the CNN, and its decoding is slower than Ollama's on the 27B (88% of it with speculation) and than MLX-LM's on the 0.5B model. This is not a claim about torch tuned (compiled, with graphs), another machine or NVIDIA, and the fine-tuning rows are on this repository's own Markdown, Rust and cancho files: a measure of agreement with torch, not of how good a tuned model is.</p>
-  <p class="note"><b>Against OpenNN.</b> <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a> is the forward pass of one small two-layer sigmoid network on a CPU: both agree with a binary64 reference to 1.4e-7, and no timing ratio is claimed because the two measure different things. It has no GPU in it and no training. The only training comparison with OpenNN (resident.md sections 13 and 14, the third row above) is against OpenNN's <i>CPU</i> path, which was built without BLAS and so is not its best. <b>No comparison against OpenNN's GPU path exists</b>, for the forward pass or for training.</p>
-</section>
-
-<section id="gaps">
-  <h2>Known gaps.</h2>
-  <p class="sub">Assembled from the limits paragraphs of the sections cited. None of them is hidden by the table above.</p>
-  <div class="cols">
-    <div><h3>Hardware and method</h3><ul>
-      <li><b>CUDA has run on one NVIDIA L4 only</b> (it compiles and 176 of 188 cases agree with the interpreter), otherwise a mock driver; no Hopper, no AMD. All training numbers are Metal on one Apple M4 Max.</li>
-      <li><b>One run, one seed</b> for every comparison with torch; a 0.01-nat difference between GPT runtimes is inside what another seed would move (resident.md 19.1).</li>
-      <li>The Qwen held-out set is 7 files and 16,384 tokens; the 1.5B run is 150 steps; full fine-tuning is 40 and 300 steps at one untuned learning rate. Some step times were measured with another process on the machine, and the sections say which.</li>
-    </ul></div>
-    <div><h3>Where it misses</h3><ul>
-      <li><b>M4's 90% is unmet</b>: 87.4% on real CIFAR-10 with no augmentation; torch gets 87.0% (18.1).</li>
-      <li><b>The CNN is slower than torch</b> (17.6 ms against 10.6): 186 launches a step, and the ResNet-18-class network has <b>287</b>; the one fusion the surface allows would remove about 14% of them (estimate; 18.2, 26.3, roadmap 8.4).</li>
-      <li><b>M7.3's memory clause is unmet for the 0.5B</b>: 59% of torch float16 autocast's footprint, not under half. Met narrowly for the 1.5B (48.5% by footprint, 51.3% by torch's driver number) after two memory changes (22.3, 23.5).</li>
-      <li>Decoding is slower than Ollama on the 27B and than MLX-LM on the 0.5B model.</li>
-    </ul></div>
-    <div><h3>Costs and ceilings</h3><ul>
-      <li><b>The vocabulary</b> is a one-hot product, since the surface has no gather or atomics: +14% of a GPT step at 2,048 tokens, about 203 ms of a 1,380 ms Qwen step (15%) at 151,936. A GPT vocabulary above about 2,048 is not built (17, 24.5).</li>
-      <li><b>Contexts</b>: the GPT trains at 128, Qwen at 512; the decode runners stop at 1,024 positions (256 for the 0.5B runner); split-KV is not built.</li>
-      <li><b>Precision</b>: a static loss scale of 16 (above 64 it is silently wrong); f16 gradients make Adam move near-zero rows by noise, 11.3% off peft in layer 0's q <code>B</code> after 300 steps, with the held-out loss equal to 6e-5; whether an f32 gradient would remove it was not tried (22.4).</li>
-    </ul></div>
-    <div><h3>Not done</h3><ul>
-      <li><b>1.5B full fine-tuning</b> is four steps: it fits (44.27 GB of 64), with no held-out loss and no torch comparison (24.9).</li>
-      <li><b>The 7B ran once.</b> The 4-bit base (QLoRA) is measured on the 1.5B (one seed, 150 steps, group size 16 only on the GPU, 54.4% of its loss cost remaining; no torch comparison, 27.4 to 27.6) and ran 90 steps on the 7B, held-out loss 2.1026 to 1.7556 at 5.34 s a step, with no gradient check at that size (28.6).</li>
-      <li><b>M8 has no training result</b>; the untuned baselines are near zero (A: 0.012, B: 0.000; Claude Haiku 5.5: 0.99) and the tuned arms will be read on compile rate and refusal tags.</li>
-      <li><b>M9</b>: the backbone is not timed; no robot or synthetic data, no regression head (26.4, roadmap 8.3).</li>
-      <li>A text resident file is capped at 16 MiB (binary is not); a <code>table</code> must fit the 512 MiB byte pool, so a 300-step Qwen run is five or six sessions.</li>
+      <li>CUDA beyond one NVIDIA L4 run of an earlier suite; no Hopper, no AMD</li>
+      <li>Any number from a second machine: everything here is one Apple M4 Max</li>
+      <li>Concurrent requests, tools and stop sequences in the server</li>
+      <li>An image as fast as mflux's, prose as fast as Ollama's, a CNN step as fast as torch's</li>
+      <li>Speech synthesis (the decoder's kernels are being built) and music</li>
     </ul></div>
   </div>
 </section>
 
 <section id="results">
   <h2>Measured, not promised.</h2>
-  <p class="sub">"It works" is a comparison with an independent reference, not an opinion; the CUDA text, which no machine here can run, is the exception. <b>Who ran what:</b> the case counts and the interpreter runs are checked by CI on every push (<code>scripts/gate.sh</code>); the 27B and Metal numbers were made by hand on one Apple M4 Max and are reported in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">benchmark.md</a>, the training and fine-tuning numbers (one run each) in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>; the OpenNN numbers are one run on a 4-vCPU container, in <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">comparison.md</a>. Where a claim turned out false, the design document was corrected in place.</p>
+  <p class="sub">Against other engines on the same machine, with the rows where they are faster.</p>
+  <div class="fitwrap"><table class="fit">
+    <thead><tr><th>Workload</th><th>cancho-gpu</th><th>Other engine</th><th></th></tr></thead>
+    <tbody>
+      <tr><th>27B, code, tokens a second</th><td><b>85, 100, 113</b></td><td>Ollama 81, 101, 112</td><td>level</td></tr>
+      <tr><th>27B, prose, tokens a second</th><td><b>46</b></td><td>Ollama 57</td><td class="behind">behind</td></tr>
+      <tr><th>Image, 1024 &times; 1024, 8 steps</th><td><b>61 to 65 s</b></td><td>mflux 52 to 55 s</td><td class="behind">behind</td></tr>
+      <tr><th>Video, 17 frames of 640 &times; 352</th><td><b>about 21 s</b></td><td>mlx-video 23.4 to 23.8 s</td><td class="ahead">ahead</td></tr>
+      <tr><th>GPT training step, 59.95 M parameters</th><td><b>167.8 ms</b></td><td>torch MPS 196.7 ms</td><td class="ahead">ahead</td></tr>
+      <tr><th>Qwen2.5-0.5B LoRA step</th><td><b>889 ms</b>, 16.1 GB</td><td>torch autocast 1,142 ms, 27.5 GB</td><td class="ahead">ahead</td></tr>
+      <tr><th>CNN training step, CIFAR-10</th><td><b>17.6 ms</b></td><td>torch MPS 10.6 ms</td><td class="behind">behind</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note"><b>Who ran what.</b> Every time above was measured by hand on one Apple M4 Max (64 GB), not by CI. Text: each engine alone, greedy, the fastest of three runs, Ollama after it had warmed (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/serving.md">serving.md</a> 11.6). Image and video: each engine a new process, run in turn; the pictures were not compared between engines (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/diffusion.md">diffusion.md</a> 8). Training: one run and one seed each, with loss curves equal to torch's or peft's to the digits given there (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">resident.md</a>). Where a claim turned out false, the document that made it was corrected in place.</p>
   <div class="stats">
-    <div><b>433</b><span>cases held to recorded goldens (403 emit, 30 refused); 218 of the first ones agreed byte for byte with the Rust implementation, now retired as the oracle</span></div>
-    <div><b>142</b><span>interpreter runs recorded as goldens; 51 of the first ones had the same summary as the Rust's when it was the oracle, f32 order included</span></div>
-    <div><b>4,987</b><span>hostile files and texts across the GGUF, safetensors and tokenizer readers: none traps or hangs; every refusal names its rule</span></div>
-    <div><b>0</b><span>differences from the independent readers on 6 real GGUF models and 3,379 Qwen3.8 tensors; the sampler's picks match on 2,269 rows. the tokenizer agrees with Hugging Face on 5,300+ records of real and random text across two real Qwen tokenizers (it did not, until issue #51 was fixed)</span></div>
+    <div><b class="num">499</b><span>emitted and refused cases held byte for byte to recorded goldens, by CI on every push</span></div>
+    <div><b class="num">7,904</b><span>hostile files and inputs across five readers in the same CI run: none traps or hangs</span></div>
+    <div><b class="num">176 / 188</b><span>device cases agreeing with the interpreter on an NVIDIA L4, none disagreeing: one run, by hand, of an earlier suite</span></div>
+    <div><b class="num">0.16 / 255</b><span>mean distance of our 1024 &times; 1024 image from the float64 pipeline; torch's BF16 is 4.75 (by hand)</span></div>
   </div>
-  <p class="note"><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">The design document</a> holds how it is built and what it cost; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">the device document</a> what is and is not proved on a GPU; <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">the runtime document</a> where each reader differs from its oracle, and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">the kernels document</a> the context limit.</p>
 </section>
 
 <section id="try">
   <h2>Try it.</h2>
-  <p class="sub">You need the cancho compiler at the commit pinned in <code>cancho.toml</code>, and Rust to build it.</p>
+  <p class="sub">You need the cancho compiler at the commit pinned in <code>cancho.toml</code>, and Rust to build it. The compiler runs anywhere; the models need a Mac with Apple Silicon.</p>
   <pre class="code">git clone https://github.com/alpibrusl/cancho
 git clone https://github.com/alpibrusl/cancho-gpu &amp;&amp; cd cancho-gpu
 REV=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)
@@ -636,32 +421,23 @@ export CANCHO=$PWD/../cancho/target/release/cancho
 $CANCHO build
 mkdir -p out
 build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
-  <p class="note">Other commands: <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code>, <code>cancho-gpu run &lt;file.chx&gt; [--in NAME FILE ...] [--out NAME ...]</code> and <code>cancho-gpu gguf &lt;file.gguf&gt; [--sum]</code>. <code>scripts/gate.sh</code> is everything CI runs.</p>
+  <p class="note">Then <code>cancho-gpu check &lt;file.chx&gt; [name=value ...] [--run]</code> for the checker and the interpreter, <code>scripts/media doctor</code> for what the models need, and <code>scripts/gate.sh</code> for everything CI runs.</p>
 </section>
 
 <section id="docs">
   <h2>Go deeper.</h2>
   <ul class="links">
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">Design</a>: how the compiler is built, what it cost and every difference from the Rust</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/run.md">Run</a>: a kernel on your own inputs, with its gates and numbers</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/training.md">Training</a>: whether training belongs here, and what the surface can express of a backward pass</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">Sessions</a>: training on the device, a GPT, a CNN, Qwen2.5 LoRA and full fine-tuning, a vision backbone, every number with its conditions</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/roadmap-models.md">Roadmap of models</a>: the milestones M1 to M9, the cancho-code experiment (M8) and the vision job (M9)</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/tree/main/docs/m8">M8 data</a>: the manifests, the mix and the contamination check of the training data</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/comparison.md">Compared with OpenNN</a>: a forward pass measured on a CPU, and where cancho-gpu is worse</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">Device</a>: driving a GPU, and what stays unproven</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/runtime.md">Runtime</a>: the GGUF and safetensors readers, the tokenizer and the sampler</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/kernels.md">Kernels</a>: the attention-layer decode kernels and the context limit</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/qwen35.md">Qwen3.8-27B</a>: the 27B runner, its kernels and how it is checked</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/serving.md">Serving</a>: the OpenAI-compatible endpoint</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/benchmark.md">Benchmark</a>: the numbers, their conditions and how to rerun them</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/decode.md">Decode</a>: a batched decode on the device, prefill, LoRA in the step</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/sampler.md">Sampler</a>: temperature sampling on the device</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/optimizer.md">Optimiser</a>: clipping, decay groups, the schedule, accumulation</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/diffusion.md">Diffusion</a>: Qwen-Image-2.1-Turbo, text to image, every stage measured against float64 and torch</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/weight-space.md">Weight space</a> and <a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/weight-space-w4.md">W4</a>: editing a model's weights, with the gates and the negative results</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/chx.md">The language</a>: <code>.chx</code>, defined</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/rules.md">Rules</a>: every refusal and what triggers it</li>
-    <li><a href="llms.txt">llms.txt</a>: this page as an agent reads it</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">Design</a>: how the compiler is built and what it cost</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/serving.md">Serving</a>: the endpoint, the cache, the drafts, against Ollama</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/diffusion.md">Diffusion</a>: images, edits and video, stage by stage</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/audio.md">Audio</a>: recognition built, speech in progress</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/cli.md">The media command</a>: image, edit, video, transcribe</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">Sessions</a>: training on the device, every number with its conditions</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">Device</a>: driving a GPU, and what stays unproven</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu#readme">README</a>: the full list, with the older work this page leaves out</li>
+    <li><a href="llms.txt">llms.txt</a>: this project as an agent reads it</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/issues">Issues</a>: the open slices</li>
   </ul>
 </section>
@@ -679,7 +455,7 @@ build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
   var about = {
     k0: "Fifteen lines. Every tile is a value that must be consumed once; the schedule says how many threads a threadgroup has.",
     k1: "What the compiler writes for Apple GPUs: one thread owns elements of the row, nothing is staged in threadgroup memory.",
-    k2: "The same kernel for NVIDIA GPUs (checked against a mock driver here; no machine in this project has an NVIDIA GPU).",
+    k2: "The same kernel for NVIDIA GPUs.",
     k3: "A program that loads a tile it never uses. The refusal names the rule (leak) and the tile; nothing is lowered."
   };
   var tabs = document.querySelectorAll(".explorer .tabs button");
