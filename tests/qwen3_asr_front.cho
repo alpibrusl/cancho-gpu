@@ -1,0 +1,439 @@
+edition 9;
+
+import std.buffer;
+import std.io;
+import files;
+import qasr_host;
+import qasr_wav;
+import qasr_mel;
+import qasr_answer;
+import wenc_st;
+
+// qwen3_asr_front -- stage A4a of docs/audio.md: what stands between a wav file and Qwen3-ASR's sessions, and between their answer and words, on the host, in cancho.
+//
+//   qwen3_asr_front mel     <clip.wav> <mel.f32> [<mutant 1-3>]     the log-mel of the clip (resampled to 16 kHz if its rate is another), `[128, frames]` singles; prints `frames <n> rate <hz> samples <n at 16 kHz>`
+//   qwen3_asr_front melraw  <samples.f32> <mel.f32>                 the same from mono singles already at 16 kHz
+//   qwen3_asr_front close   <a.f32> <b.f32> <bound>                 the largest difference of two files of singles of one size; exit status 0 if it is at most the bound (decimal, as 0.0002)
+//   qwen3_asr_front prompt  <tower rows> <ids.txt> <prefill.txt>    the prompt's ids for that many audio rows (9 fixed ids, the audio token a row, 6 fixed ids), and the same less the last (the prefill's)
+//   qwen3_asr_front answer  <vocab.json> <ids.f32> <from>           the device's answer (tests/qwen3_asr_step_gpu.cho's ids_out.f32, 1-based singles) from a step on, as two lines: the language, the text
+//   qwen3_asr_front words   <vocab.json> <ids.txt> <from>           the same from decimal ids in a text file (the reference's sequence, from the prompt's length)
+
+fn mel[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args, raw: bool) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if raw && na != 4 || raw == false && na != 4 && na != 5 {
+        qasr_host.put(io, "usage: qwen3_asr_front mel <clip.wav> <mel.f32> [<mutant 1-3>] | melraw <samples.f32> <mel.f32>\n");
+        return 100;
+    }
+    var mutant = 0;
+    if na == 5 {
+        mutant = qasr_host.num(arg(args, 4));
+        if mutant < 1 || mutant > 3 {
+            qasr_host.put(io, "a mutant is 1 to 3\n");
+            return 101;
+        }
+    }
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 3)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    var samples = box_slice(heap, 1, 0.0);
+    var count = 0;
+    var rate = 16000;
+    if raw {
+        let (v, n) = wenc_st.load_raw(heap, fs, arg(args, 2));
+        unbox_slice(heap, samples);
+        samples = v;
+        count = n;
+        if n < 1 {
+            unbox_slice(heap, samples);
+            qasr_host.put(io, "the samples are singles, at least one\n");
+            return 103;
+        }
+    } else {
+        let (v, n, r, st) = qasr_wav.load(heap, fs, arg(args, 2));
+        unbox_slice(heap, samples);
+        samples = v;
+        count = n;
+        rate = r;
+        if st != 0 {
+            unbox_slice(heap, samples);
+            if st == 1 {
+                qasr_host.put(io, "the file cannot be read\n");
+            } else if st == 2 {
+                qasr_host.put(io, "not a wav file (RIFF, WAVE)\n");
+            } else if st == 4 {
+                qasr_host.put(io, "a wav file of a kind that is not read: PCM of 16 bits or float of 32, 1 to 8 channels, 8,000 to 192,000 Hz\n");
+            } else {
+                qasr_host.put(io, "a wav file with no format before its samples, with no samples, or cut short\n");
+            }
+            return 103 + st;
+        }
+        if rate != 16000 {
+            var resampled = box_slice(heap, 1, 0.0);
+            var m = 0;
+            borrow samples as &sr in {
+                let (o, k) = qasr_wav.to_16k(heap, contents(sr), count, rate);
+                unbox_slice(heap, resampled);
+                resampled = o;
+                m = k;
+            }
+            unbox_slice(heap, samples);
+            samples = resampled;
+            count = m;
+        }
+    }
+    var status = 0;
+    let frames = qasr_mel.frames_of(count);
+    if count < 400 || frames < 1 {
+        qasr_host.put(io, "the clip is under 400 samples at 16 kHz (25 ms): no frame of the mel\n");
+        status = 110;
+    } else if frames > 120000 {
+        qasr_host.put(io, "the clip is over 20 minutes\n");
+        status = 111;
+    } else {
+        let out = box_slice(heap, 128 * frames, 0.0);
+        borrow samples as &sr in {
+            borrow mut out as &!ow in {
+                qasr_mel.compute(heap, contents(sr), count, contents(ow), mutant);
+            }
+        }
+        let iv = box_slice(heap, 1, 0);
+        borrow out as &or in {
+            borrow mut iv as &!qb in {
+                // the file's directory and name are one path here: put_file takes a directory, so the path is written whole through the codec's own writer
+                if wenc_write(heap, fs, arg(args, 3), contents(or)) != 0 {
+                    contents(qb)[0] = 1;
+                }
+                if contents(qb)[0] != 0 {
+                    status = 112;
+                }
+            }
+        }
+        unbox_slice(heap, iv);
+        unbox_slice(heap, out);
+        if status != 0 {
+            qasr_host.put(io, "the mel could not be written\n");
+        } else {
+            qasr_host.put(io, "frames ");
+            qasr_host.put_int(io, frames);
+            qasr_host.put(io, " rate ");
+            qasr_host.put_int(io, rate);
+            qasr_host.put(io, " samples ");
+            qasr_host.put_int(io, count);
+            qasr_host.put(io, "\n");
+        }
+    }
+    unbox_slice(heap, samples);
+    return status;
+}
+
+fn wenc_write[&h, &f, &p, &v](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], values: &v [float]) -> [heap, fs_write(""), file_write] int {
+    return qasr_host.write_singles(heap, fs, path, values);
+}
+
+// a decimal like 0.0002 or 3: its value, or -1
+fn decimal[&t](text: &t [byte]) -> [] float {
+    var v = 0.0;
+    var scale = 0.0;
+    var i = 0;
+    var digits = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c == 46 && scale == 0.0 {
+            scale = 1.0;
+        } else if c >= 48 && c <= 57 {
+            digits = digits + 1;
+            if scale == 0.0 {
+                v = v * 10.0 + float_of(c - 48);
+            } else {
+                scale = scale * 10.0;
+                v = v + float_of(c - 48) / scale;
+            }
+        } else {
+            return 0.0 - 1.0;
+        }
+        i = i + 1;
+    }
+    if digits == 0 {
+        return 0.0 - 1.0;
+    }
+    return v;
+}
+
+fn close[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 5 {
+        qasr_host.put(io, "usage: qwen3_asr_front close <a.f32> <b.f32> <bound>\n");
+        return 100;
+    }
+    let bound = decimal(arg(args, 4));
+    if bound < 0.0 {
+        qasr_host.put(io, "the bound is a decimal, as 0.0002\n");
+        return 101;
+    }
+    let (a, n) = wenc_st.load_raw(heap, fs, arg(args, 2));
+    let (b, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
+    var status = 106;
+    if n < 1 || n != m {
+        qasr_host.put(io, "the two files are not singles of one size\n");
+    } else {
+        var worst = 0.0;
+        var sum = 0.0;
+        var bad = false;
+        borrow a as &ar in {
+            borrow b as &br in {
+                var i = 0;
+                while i < n {
+                    let d = qasr_host.abs(contents(ar)[i] - contents(br)[i]);
+                    if d >= 0.0 == false {
+                        bad = true;
+                    }
+                    if d > worst {
+                        worst = d;
+                    }
+                    sum = sum + d;
+                    i = i + 1;
+                }
+            }
+        }
+        qasr_host.put(io, "largest difference ");
+        qasr_host.put_float(io, worst);
+        qasr_host.put(io, ", mean ");
+        qasr_host.put_float(io, sum / float_of(n));
+        qasr_host.put(io, ", over ");
+        qasr_host.put_int(io, n);
+        qasr_host.put(io, " values\n");
+        status = 1;
+        if worst <= bound && bad == false {
+            status = 0;
+        }
+    }
+    unbox_slice(heap, a);
+    unbox_slice(heap, b);
+    return status;
+}
+
+fn push_id[&h](heap: &!h Heap, b: buffer.Buffer, id: int, first: bool) -> [heap] buffer.Buffer {
+    var out = b;
+    if first == false {
+        out = buffer.push(heap, out, byte_of(32));
+    }
+    return buffer.push_nat(heap, out, id);
+}
+
+fn prompt[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_write(""), file_write] int {
+    if arg_count(args) != 5 {
+        qasr_host.put(io, "usage: qwen3_asr_front prompt <tower rows> <ids.txt> <prefill.txt>\n");
+        return 100;
+    }
+    let rows = qasr_host.num(arg(args, 2));
+    if rows < 1 || rows > 8000 {
+        qasr_host.put(io, "the tower's rows are 1 to 8000\n");
+        return 101;
+    }
+    if files.path_ok(fs, arg(args, 3)) == false || files.path_ok(fs, arg(args, 4)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    // <|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|> ... <|audio_end|><|im_end|>\n<|im_start|>assistant\n
+    var all = buffer.empty(heap, 8 * (rows + 16));
+    var pre = buffer.empty(heap, 8 * (rows + 16));
+    let total = 9 + rows + 6;
+    var k = 0;
+    while k < total {
+        var id = qasr_host.audio_token();
+        if k == 0 || k == 5 || k == total - 3 {
+            id = 151644;
+        } else if k == 1 {
+            id = 8948;
+        } else if k == 2 || k == 4 || k == 7 || k == total - 4 || k == total - 1 {
+            id = 198;
+        } else if k == 3 || k == total - 5 {
+            id = 151645;
+        } else if k == 6 {
+            id = 872;
+        } else if k == 8 {
+            id = 151669;
+        } else if k == total - 6 {
+            id = 151670;
+        } else if k == total - 2 {
+            id = 77091;
+        }
+        all = push_id(heap, all, id, k == 0);
+        if k < total - 1 {
+            pre = push_id(heap, pre, id, k == 0);
+        }
+        k = k + 1;
+    }
+    all = buffer.push(heap, all, byte_of(10));
+    pre = buffer.push(heap, pre, byte_of(10));
+    var status = 0;
+    borrow all as &ab in {
+        if files.write_all(fs, arg(args, 3), buffer.bytes(ab)) != 0 {
+            status = 112;
+        }
+    }
+    borrow pre as &pb in {
+        if files.write_all(fs, arg(args, 4), buffer.bytes(pb)) != 0 {
+            status = 112;
+        }
+    }
+    buffer.drop(heap, all);
+    buffer.drop(heap, pre);
+    if status != 0 {
+        qasr_host.put(io, "the ids could not be written\n");
+    } else {
+        qasr_host.put(io, "prompt ");
+        qasr_host.put_int(io, total);
+        qasr_host.put(io, "\n");
+    }
+    return status;
+}
+
+fn answer[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args, device: bool) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 5 {
+        qasr_host.put(io, "usage: qwen3_asr_front answer <vocab.json> <ids.f32> <from> | words <vocab.json> <ids.txt> <from>\n");
+        return 100;
+    }
+    let from = qasr_host.num(arg(args, 4));
+    if from < 0 {
+        qasr_host.put(io, "the first id's place is a number\n");
+        return 101;
+    }
+    let ids = box_slice(heap, 8192, 0);
+    var n = 0 - 1;
+    if device {
+        let (got, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
+        if m >= 1 && m <= 8192 {
+            n = m;
+            borrow got as &gr in {
+                borrow mut ids as &!iw in {
+                    var k = 0;
+                    while k < m {
+                        // 1-based singles; what is not a whole id becomes one past the vocabulary, which the decoding refuses
+                        let x = contents(gr)[k];
+                        var id = qasr_host.vocab();
+                        if x >= 1.0 && x <= float_of(qasr_host.vocab()) && float_of(truncate(x)) == x {
+                            id = truncate(x) - 1;
+                        }
+                        contents(iw)[k] = id;
+                        k = k + 1;
+                    }
+                }
+            }
+        }
+        unbox_slice(heap, got);
+    } else {
+        borrow mut ids as &!iw in {
+            n = qasr_host.read_ids(heap, fs, arg(args, 3), contents(iw));
+        }
+    }
+    var status = 0;
+    if n < 1 || from >= n {
+        qasr_host.put(io, "the ids cannot be read, or the first id's place is past them\n");
+        status = 106;
+    } else {
+        // language <name> <asr_text> the words <end>
+        var mark = 0 - 1;
+        var end = 0 - 1;
+        borrow ids as &ir in {
+            var k = from;
+            while k < n && end < 0 {
+                if contents(ir)[k] == qasr_answer.asr_text() && mark < 0 {
+                    mark = k;
+                }
+                if qasr_answer.is_end(contents(ir)[k]) {
+                    end = k;
+                }
+                k = k + 1;
+            }
+        }
+        if mark < 0 || end < 0 || end < mark {
+            qasr_host.put(io, "the answer has no <asr_text> before its end, or no end: not a transcript\n");
+            status = 107;
+        } else {
+            var lang = buffer.empty(heap, 64);
+            var text = buffer.empty(heap, 1024);
+            var s1 = 0;
+            var s2 = 0;
+            borrow ids as &ir in {
+                let (l, a) = qasr_answer.decode(heap, fs, arg(args, 2), contents(ir), from, mark, lang);
+                lang = l;
+                s1 = a;
+                let (t, b) = qasr_answer.decode(heap, fs, arg(args, 2), contents(ir), mark + 1, end, text);
+                text = t;
+                s2 = b;
+            }
+            if s1 != 0 || s2 != 0 {
+                qasr_host.put(io, "the vocabulary cannot be read, or an id of the answer has no token in it\n");
+                status = 108;
+            } else {
+                borrow lang as &lb in {
+                    // the language's tokens read "language English": the name is what follows the first word
+                    let l = buffer.bytes(lb);
+                    var at = 0;
+                    if len(l) >= 9 && int_of(l[0]) == 108 && int_of(l[8]) == 32 {
+                        at = 9;
+                    }
+                    io.write_all(io, l[at..len(l)]);
+                }
+                qasr_host.put(io, "\n");
+                borrow text as &tb in {
+                    io.write_all(io, buffer.bytes(tb));
+                }
+                qasr_host.put(io, "\n");
+            }
+            buffer.drop(heap, lang);
+            buffer.drop(heap, text);
+        }
+    }
+    unbox_slice(heap, ids);
+    return status;
+}
+
+fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "mel") {
+        return mel(io, heap, fs, args, false);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "melraw") {
+        return mel(io, heap, fs, args, true);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "close") {
+        return close(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "prompt") {
+        return prompt(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "answer") {
+        return answer(io, heap, fs, args, true);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "words") {
+        return answer(io, heap, fs, args, false);
+    }
+    qasr_host.put(io, "usage: qwen3_asr_front mel ... | melraw ... | close ... | prompt ... | answer ... | words ...\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

@@ -1,0 +1,191 @@
+edition 9;
+
+module qasr_mel;
+
+import std.math;
+
+// `qasr_mel` -- Whisper's log-mel spectrogram of 128 bins, as Qwen3-ASR's feature extractor computes it (docs/audio.md section 14, A4a; `transformers`' WhisperFeatureExtractor, numpy): the samples at 16 kHz
+// reflected 200 each side; frames of 400 every 160 under a periodic Hann window; the power of the 201 frequency bins; 128 triangular filters on the Slaney mel scale from 0 to 8,000 Hz with Slaney's norm;
+// log10 floored at 1e-10; the last frame dropped; floored again at the clip's maximum less 8; (x + 4) / 4. In binary64. The clip is not padded: `count / 160` frames.
+//
+// The transform is direct: 201 bins by 400 samples a frame, with a table of the 400 cosines and sines (the angle of bin k and sample n is 2 pi (k n mod 400) / 400).
+
+pub fn frames_of(count: int) -> [] int {
+    return count / 160;
+}
+
+fn hz_to_mel(f: float) -> [] float {
+    if f < 1000.0 {
+        return 3.0 * f / 200.0;
+    }
+    return 15.0 + math.log(f / 1000.0) * 27.0 / math.log(6.4);
+}
+
+fn mel_to_hz(m: float) -> [] float {
+    if m < 15.0 {
+        return 200.0 * m / 3.0;
+    }
+    return 1000.0 * math.exp(math.log(6.4) / 27.0 * (m - 15.0));
+}
+
+// the sample at index `i` of the clip reflected 200 each side (numpy's "reflect": the edge sample is not repeated)
+fn padded[&x](x: &x [float], count: int, i: int) -> [] float {
+    var j = i - 200;
+    if j < 0 {
+        j = 0 - j;
+    }
+    if j >= count {
+        j = 2 * (count - 1) - j;
+    }
+    if j < 0 || j >= count {
+        return 0.0;
+    }
+    return x[j];
+}
+
+// The mel of `count` samples into `out`, bin-major `[128, frames_of(count)]`: the number of frames, or -1 when `out` is too short or the clip has under 400 samples (the reflection needs 201).
+// `mutant` (a test's): 1 no window, 2 the last frame kept in place of the first, 3 no floor at the maximum less 8.
+pub fn compute[&h, &x, &o](heap: &!h Heap, x: &x [float], count: int, out: &!o [float], mutant: int) -> [heap] int {
+    let frames = frames_of(count);
+    if count < 400 || frames < 1 || len(out) < 128 * frames {
+        return 0 - 1;
+    }
+    let pi = 3.141592653589793;
+    let cs = box_slice(heap, 400, 0.0);
+    let sn = box_slice(heap, 400, 0.0);
+    let win = box_slice(heap, 400, 1.0);
+    let filt = box_slice(heap, 128 * 201, 0.0);
+    let frame = box_slice(heap, 400, 0.0);
+    let power = box_slice(heap, 201, 0.0);
+    borrow mut cs as &!cw in {
+        borrow mut sn as &!sw in {
+            borrow mut win as &!ww in {
+                var n = 0;
+                while n < 400 {
+                    let a = 2.0 * pi * float_of(n) / 400.0;
+                    contents(cw)[n] = math.cos(a);
+                    contents(sw)[n] = math.sin(a);
+                    if mutant != 1 {
+                        contents(ww)[n] = 0.5 - 0.5 * math.cos(a);
+                    }
+                    n = n + 1;
+                }
+            }
+        }
+    }
+    // the filters: 130 points evenly spaced in mel from 0 to 8,000 Hz; filter m rises from point m to m + 1 and falls to m + 2, scaled by 2 / (its width in hertz)
+    let pts = box_slice(heap, 130, 0.0);
+    borrow mut pts as &!pw in {
+        let top = hz_to_mel(8000.0);
+        var m = 0;
+        while m < 130 {
+            contents(pw)[m] = mel_to_hz(top * float_of(m) / 129.0);
+            m = m + 1;
+        }
+    }
+    borrow pts as &pr in {
+        borrow mut filt as &!fw in {
+            var m = 0;
+            while m < 128 {
+                let lo = contents(pr)[m];
+                let mid = contents(pr)[m + 1];
+                let hi = contents(pr)[m + 2];
+                var k = 0;
+                while k < 201 {
+                    let f = 8000.0 * float_of(k) / 200.0;
+                    let up = (f - lo) / (mid - lo);
+                    let down = (hi - f) / (hi - mid);
+                    var v = up;
+                    if down < v {
+                        v = down;
+                    }
+                    if v > 0.0 {
+                        contents(fw)[m * 201 + k] = v * 2.0 / (hi - lo);
+                    }
+                    k = k + 1;
+                }
+                m = m + 1;
+            }
+        }
+    }
+    unbox_slice(heap, pts);
+    var peak = 0.0 - 1000.0;
+    borrow cs as &cr in {
+        borrow sn as &sr in {
+            borrow win as &wr in {
+                borrow filt as &fr in {
+                    borrow mut frame as &!gw in {
+                        borrow mut power as &!pw in {
+                            var t = 0;
+                            while t < frames {
+                                var src = t;
+                                if mutant == 2 {
+                                    src = t + 1;
+                                }
+                                var n = 0;
+                                while n < 400 {
+                                    contents(gw)[n] = padded(x, count, src * 160 + n) * contents(wr)[n];
+                                    n = n + 1;
+                                }
+                                var k = 0;
+                                while k < 201 {
+                                    var re = 0.0;
+                                    var im = 0.0;
+                                    var idx = 0;
+                                    n = 0;
+                                    while n < 400 {
+                                        let g = contents(gw)[n];
+                                        re = re + g * contents(cr)[idx];
+                                        im = im - g * contents(sr)[idx];
+                                        idx = idx + k;
+                                        if idx >= 400 {
+                                            idx = idx - 400;
+                                        }
+                                        n = n + 1;
+                                    }
+                                    contents(pw)[k] = re * re + im * im;
+                                    k = k + 1;
+                                }
+                                var m = 0;
+                                while m < 128 {
+                                    var e = 0.0;
+                                    k = 0;
+                                    while k < 201 {
+                                        e = e + contents(fr)[m * 201 + k] * contents(pw)[k];
+                                        k = k + 1;
+                                    }
+                                    if e < 0.0000000001 {
+                                        e = 0.0000000001;
+                                    }
+                                    let l = math.log(e) / math.log(10.0);
+                                    out[m * frames + t] = l;
+                                    if l > peak {
+                                        peak = l;
+                                    }
+                                    m = m + 1;
+                                }
+                                t = t + 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    unbox_slice(heap, cs);
+    unbox_slice(heap, sn);
+    unbox_slice(heap, win);
+    unbox_slice(heap, filt);
+    unbox_slice(heap, frame);
+    unbox_slice(heap, power);
+    var i = 0;
+    while i < 128 * frames {
+        var l = out[i];
+        if mutant != 3 && l < peak - 8.0 {
+            l = peak - 8.0;
+        }
+        out[i] = (l + 4.0) / 4.0;
+        i = i + 1;
+    }
+    return frames;
+}

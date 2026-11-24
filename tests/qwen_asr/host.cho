@@ -297,3 +297,8 @@ pub fn seq_rows[&h, &f, &w, &d, &a, &x, &q](heap: &!h Heap, fs: &f Fs(""), wdir:
     unbox_slice(heap, raw);
     return 0;
 }
+
+// `values` as a file of singles at `path` (a whole path, where put_file takes a directory and a name): 0, or what the codec's writer answered
+pub fn write_singles[&h, &f, &p, &v](heap: &!h Heap, fs: &f Fs(""), path: &p [byte], values: &v [float]) -> [heap, fs_write(""), file_write] int {
+    return wenc_codec.write_f32(heap, fs, path, values);
+}
