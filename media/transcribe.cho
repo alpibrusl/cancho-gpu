@@ -1,0 +1,508 @@
+edition 10;
+
+module transcribe;
+
+import std.buffer;
+import std.io;
+import files;
+import pathx;
+import stage;
+import shared;
+
+// transcribe -- `media transcribe CLIP -o DIR [--most N]` (docs/audio.md section 16, A4b): a wav file to its words with Qwen3-ASR-1.7B. The stages are the host programs of A1 to A4a (scripts/asr) and three
+// Metal sessions (scripts/asr-session); the numbers one stage needs from another are read here from what the stage prints. There is no Python of this command.
+
+// The longest clip, in frames of the mel (100 a second): 152 s, the longest that gave the reference's transcript to the letter is 151.4 s (docs/audio.md section 17).
+fn longest() -> [] int {
+    return 15200;
+}
+
+// The most positions the step's session holds: its lowering needs 8 bytes a position and 128 of the 32,768 a thread group has (docs/audio.md section 17), and the positions are a multiple of 64.
+fn most_positions() -> [] int {
+    return 4032;
+}
+
+// The number written after the first `key` of `text`, or -1.
+fn after[&t, &k](text: &t [byte], key: &k [byte]) -> [] int {
+    var i = 0;
+    while i + len(key) <= len(text) {
+        var same = true;
+        var j = 0;
+        while j < len(key) && same {
+            if int_of(text[i + j]) != int_of(key[j]) {
+                same = false;
+            }
+            j = j + 1;
+        }
+        if same {
+            var n = 0;
+            var digits = 0;
+            var p = i + len(key);
+            while p < len(text) && int_of(text[p]) >= 48 && int_of(text[p]) <= 57 && digits < 9 {
+                n = n * 10 + (int_of(text[p]) - 48);
+                digits = digits + 1;
+                p = p + 1;
+            }
+            if digits > 0 {
+                return n;
+            }
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// `list` plus one argument: `key`, then `dir`, then `/name` when there is a name.
+fn add_kv[&h, &k, &d, &n](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+    var l = buffer.append(heap, list, key);
+    l = buffer.append(heap, l, dir);
+    if len(name) > 0 {
+        l = buffer.push(heap, l, byte_of(47));
+        l = buffer.append(heap, l, name);
+    }
+    return buffer.push(heap, l, byte_of(0));
+}
+
+// `list` plus one argument: `key`, then the number.
+fn add_kn[&h, &k](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], n: int) -> [heap] buffer.Buffer {
+    return buffer.push(heap, shared.push_int(heap, buffer.append(heap, list, key), n), byte_of(0));
+}
+
+// Two digits of a number under 100.
+fn push2[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+    return buffer.push(heap, buffer.push(heap, out, byte_of(48 + n / 10)), byte_of(48 + n % 10));
+}
+
+// One stage: `== label`, the program of scripts/ on `list` (consumed), `== label: S.CC s`. The status (0, or 1 after `media: label failed (exit N): the stage's first line`) and what the stage printed.
+fn run_stage[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] (int, buffer.Buffer) {
+    io.write_all(io, "== ");
+    io.write_all(io, label);
+    io.write_all(io, "\n");
+    flush_out(io);
+    let t0 = clock_ms(clock);
+    var code = 255;
+    var out = buffer.empty(heap, 8);
+    borrow list as &lb in {
+        let (c2, so, se) = stage.capture(heap, exec, sdir, clock, program, buffer.bytes(lb), env, 10800000);
+        code = c2;
+        buffer.drop(heap, out);
+        out = so;
+        if c2 != 0 {
+            borrow se as &seb in {
+                io.error_all(io, buffer.bytes(seb));
+            }
+        }
+        buffer.drop(heap, se);
+    }
+    buffer.drop(heap, list);
+    if code != 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 160), label);
+        m = buffer.append(heap, m, " failed (exit ");
+        m = shared.push_int(heap, m, code);
+        m = buffer.push(heap, m, byte_of(41));
+        borrow out as &ob in {
+            let t = buffer.bytes(ob);
+            var end = 0;
+            while end < len(t) && int_of(t[end]) != 10 {
+                end = end + 1;
+            }
+            if end > 0 {
+                m = buffer.append(heap, m, ": ");
+                m = buffer.append(heap, m, t[0..end]);
+            }
+        }
+        shared.refuse_buf(io, heap, m);
+        return (1, out);
+    }
+    let cs = (clock_ms(clock) - t0 + 5) / 10;
+    var s = buffer.append(heap, buffer.empty(heap, 96), "== ");
+    s = buffer.append(heap, s, label);
+    s = buffer.append(heap, s, ": ");
+    s = shared.push_int(heap, s, cs / 100);
+    s = buffer.push(heap, s, byte_of(46));
+    s = push2(heap, s, cs % 100);
+    s = buffer.append(heap, s, " s\n");
+    borrow s as &sb in {
+        io.write_all(io, buffer.bytes(sb));
+    }
+    buffer.drop(heap, s);
+    flush_out(io);
+    return (0, out);
+}
+
+// Is `root`/`name` a file?
+fn built[&h, &f, &r](heap: &!h Heap, fs: &f Fs(""), root: &r [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
+    let p = pathx.under(heap, root, name);
+    var there = false;
+    borrow p as &pb in {
+        there = shared.is_file(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return there;
+}
+
+pub fn cmd_transcribe[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    var clip = "";
+    var positional = 0;
+    var output = "";
+    var most = 0;
+    var k = from;
+    let n = arg_count(args);
+    let stop = shared.dashdash(args, from);
+    while k < stop {
+        let t = arg(args, k);
+        if shared.is_text(t, "-o") || shared.is_text(t, "--output") {
+            k = k + 1;
+            if k >= stop {
+                return shared.bad_value(io, "-o/--output");
+            }
+            output = arg(args, k);
+        } else if shared.is_text(t, "--most") {
+            k = k + 1;
+            if k >= stop || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--most");
+            }
+            most = shared.num(arg(args, k));
+            if most < 1 || most > 4096 {
+                return shared.refuse_text(io, "--most is the answer's budget of tokens, 1 to 4096");
+            }
+        } else if positional == 0 {
+            clip = t;
+            positional = 1;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    k = stop + 1;
+    while k < n {
+        if positional == 0 {
+            clip = arg(args, k);
+            positional = 1;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    if positional < 1 || len(output) == 0 {
+        io.error_all(io, "media: the following arguments are required: clip, -o/--output\n");
+        return 2;
+    }
+    let cabs = pathx.absolute(heap, ctx.cwd, clip);
+    var found = false;
+    borrow cabs as &cb in {
+        found = shared.is_file(fs, buffer.bytes(cb));
+    }
+    if found == false {
+        buffer.drop(heap, cabs);
+        var m = buffer.append(heap, buffer.empty(heap, 128), "no such clip: ");
+        m = buffer.append(heap, m, clip);
+        return shared.refuse_buf(io, heap, m);
+    }
+    if built(heap, fs, ctx.root, "build/cancho-gpu-metal-session") == false {
+        buffer.drop(heap, cabs);
+        return shared.refuse_text(io, "build/cancho-gpu-metal-session is missing: build it with `CANCHO=<pinned cancho> scripts/build-metal-session.sh` (cancho.toml names the compiler)");
+    }
+    if built(heap, fs, ctx.root, "build/qwen3_asr_front") == false || built(heap, fs, ctx.root, "build/qwen3_asr_audio_gpu") == false || built(heap, fs, ctx.root, "build/qwen3_asr_text_gpu") == false || built(heap, fs, ctx.root, "build/qwen3_asr_step_gpu") == false {
+        buffer.drop(heap, cabs);
+        return shared.refuse_text(io, "the host programs of the recognition are missing (build/qwen3_asr_front, _audio_gpu, _text_gpu, _step_gpu): build them with `CANCHO=<pinned cancho> scripts/build-asr.sh`");
+    }
+    let snap = shared.snapshot_of(heap, fs, ctx.home, "Qwen--Qwen3-ASR-1.7B", "");
+    var missing = false;
+    borrow snap as &sb in {
+        missing = len(buffer.bytes(sb)) == 0;
+    }
+    if missing {
+        buffer.drop(heap, cabs);
+        buffer.drop(heap, snap);
+        return shared.refuse_text(io, "weights not in the Hugging Face cache: `hf download Qwen/Qwen3-ASR-1.7B`");
+    }
+    let wa = pathx.under(heap, ctx.cache, "qwen3-asr-audio-f16");
+    let wt = pathx.under(heap, ctx.cache, "qwen3-asr-text-f16");
+    // the language model's weights are there when the last file of the second program that writes them is
+    var have = false;
+    borrow wt as &wtb in {
+        let ef = pathx.under(heap, buffer.bytes(wtb), "embt.f16");
+        borrow ef as &efb in {
+            have = shared.is_file(fs, buffer.bytes(efb));
+        }
+        buffer.drop(heap, ef);
+    }
+    var status = 0;
+    let kb = shared.num(ctx.free_kb);
+    if have == false && kb >= 0 && kb * 1024 < 8000000000 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the f16 weight files (7 GB) are written to ");
+        borrow wt as &wtb2 in {
+            m = buffer.append(heap, m, buffer.bytes(wtb2));
+        }
+        m = buffer.append(heap, m, " on first use and only ");
+        m = shared.push_int(heap, m, (kb * 1024 + 500000000) / 1000000000);
+        m = buffer.append(heap, m, " GB are free");
+        status = shared.refuse_buf(io, heap, m);
+    }
+    let out = pathx.absolute(heap, ctx.cwd, output);
+    var work = buffer.empty(heap, 8);
+    borrow out as &ob0 in {
+        buffer.drop(heap, work);
+        work = pathx.under(heap, buffer.bytes(ob0), "work");
+    }
+    if status == 0 {
+        var made = 0;
+        borrow work as &wk0 in {
+            made = pathx.make_all(fs, buffer.bytes(wk0));
+        }
+        borrow wa as &wab0 in {
+            made = made + pathx.make_all(fs, buffer.bytes(wab0));
+        }
+        borrow wt as &wtb0 in {
+            made = made + pathx.make_all(fs, buffer.bytes(wtb0));
+        }
+        if made != 0 {
+            status = shared.refuse_text(io, "cannot create the output directory or the weights' directories");
+        }
+    }
+    if status == 0 {
+        borrow cabs as &cb2 in {
+            borrow out as &ob in {
+                borrow work as &wk in {
+                    borrow snap as &sb2 in {
+                        borrow wa as &wab in {
+                            borrow wt as &wtb3 in {
+                                status = stages(io, heap, fs, exec, sdir, clock, env, ctx.root, buffer.bytes(cb2), buffer.bytes(ob), buffer.bytes(wk), buffer.bytes(sb2), buffer.bytes(wab), buffer.bytes(wtb3), have, most);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    buffer.drop(heap, cabs);
+    buffer.drop(heap, snap);
+    buffer.drop(heap, wa);
+    buffer.drop(heap, wt);
+    buffer.drop(heap, out);
+    buffer.drop(heap, work);
+    return status;
+}
+
+// A stage whose printed line is not needed.
+fn quiet[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    let (s, o) = run_stage(io, heap, exec, sdir, clock, program, label, list, env);
+    buffer.drop(heap, o);
+    return s;
+}
+
+// A stage that prints numbers: the status and the numbers after `k1` and `k2` (-1 each when `k2` is empty or the number is not there; a number not there is a refusal).
+fn numbers[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte], k1: &static [byte], k2: &static [byte], k3: &static [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] (int, int, int, int) {
+    let (s, o) = run_stage(io, heap, exec, sdir, clock, program, label, list, env);
+    var a = 0 - 1;
+    var b = 0 - 1;
+    var d = 0 - 1;
+    var status = s;
+    if s == 0 {
+        borrow o as &ob in {
+            a = after(buffer.bytes(ob), k1);
+            if len(k2) > 0 {
+                b = after(buffer.bytes(ob), k2);
+            }
+            if len(k3) > 0 {
+                d = after(buffer.bytes(ob), k3);
+            }
+        }
+        if a < 0 || len(k2) > 0 && b < 0 || len(k3) > 0 && d < 0 {
+            var m = buffer.append(heap, buffer.empty(heap, 128), label);
+            m = buffer.append(heap, m, ": the stage did not print `");
+            m = buffer.append(heap, m, k1);
+            m = buffer.append(heap, m, "` and its number");
+            shared.refuse_buf(io, heap, m);
+            status = 1;
+        }
+    }
+    buffer.drop(heap, o);
+    return (status, a, b, d);
+}
+
+// After the refusals: the weights on first use, the mel, the tower, the prompt, the pass, the steps, the text.
+fn stages[&i, &h, &f, &x, &y, &c, &e, &r, &cl, &o, &w, &s, &wa, &wt](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, env: &e [byte], root: &r [byte], clip: &cl [byte], out: &o [byte], work: &w [byte], snap: &s [byte], wa: &wa [byte], wt: &wt [byte], have: bool, most_given: int) -> [io_write, err_write, heap, fs_write(""), file_write, exec_under, clock, poll] int {
+    let t0 = clock_ms(clock);
+    if have == false {
+        var l = stage.add_arg(heap, buffer.empty(heap, 256), "text");
+        l = stage.add_arg(heap, l, "weights");
+        l = stage.add_arg(heap, l, snap);
+        l = stage.add_arg(heap, l, wt);
+        if quiet(io, heap, exec, sdir, clock, "asr", "the language model's weights, once (1 of 2)", l, env) != 0 {
+            return 1;
+        }
+        l = stage.add_arg(heap, buffer.empty(heap, 256), "step");
+        l = stage.add_arg(heap, l, "weights");
+        l = stage.add_arg(heap, l, snap);
+        l = stage.add_arg(heap, l, wt);
+        if quiet(io, heap, exec, sdir, clock, "asr", "the language model's weights, once (2 of 2)", l, env) != 0 {
+            return 1;
+        }
+    }
+    // the mel
+    var l1 = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+    l1 = stage.add_arg(heap, l1, "mel");
+    l1 = stage.add_arg(heap, l1, clip);
+    l1 = add_kv(heap, l1, "", work, "clip.mel.f32");
+    let (s1, frames, u1, u2) = numbers(io, heap, exec, sdir, clock, "asr", "mel", l1, env, "frames ", "", "");
+    if s1 != 0 {
+        return 1;
+    }
+    if frames < 1 || frames > longest() {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the clip is ");
+        m = shared.push_int(heap, m, (frames + 50) / 100);
+        m = buffer.append(heap, m, " s; the longest that was transcribed to the reference's words is ");
+        m = shared.push_int(heap, m, longest() / 100);
+        m = buffer.append(heap, m, " s (docs/audio.md section 17)");
+        shared.refuse_buf(io, heap, m);
+        return 1;
+    }
+    // the audio tower
+    var l2 = stage.add_arg(heap, buffer.empty(heap, 256), "audio");
+    l2 = stage.add_arg(heap, l2, "prepare");
+    l2 = stage.add_arg(heap, l2, snap);
+    l2 = stage.add_arg(heap, l2, wa);
+    l2 = stage.add_arg(heap, l2, work);
+    l2 = add_kv(heap, l2, "", work, "clip.mel.f32");
+    l2 = shared.put_num(heap, l2, frames);
+    let (s2, bp, sp, rows) = numbers(io, heap, exec, sdir, clock, "asr", "audio tower's inputs", l2, env, "BP=", "SP=", "tokens ");
+    if s2 != 0 {
+        return 1;
+    }
+    var l3 = stage.add_arg(heap, buffer.empty(heap, 512), "1");
+    l3 = add_kv(heap, l3, "", root, "models/qwen3_asr_audio.model");
+    l3 = add_kv(heap, l3, "CHX=", root, "tests/chx");
+    l3 = add_kv(heap, l3, "CONV3=", root, "examples/cnn/conv3.chx");
+    l3 = add_kv(heap, l3, "WORK=", work, "");
+    l3 = add_kv(heap, l3, "WDIR=", wa, "");
+    l3 = add_kn(heap, l3, "BP=", bp);
+    l3 = add_kn(heap, l3, "SP=", sp);
+    if quiet(io, heap, exec, sdir, clock, "asr-session", "audio tower (GPU)", l3, env) != 0 {
+        return 1;
+    }
+    // the prompt
+    var l4 = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+    l4 = stage.add_arg(heap, l4, "prompt");
+    l4 = shared.put_num(heap, l4, rows);
+    l4 = add_kv(heap, l4, "", work, "prompt.txt");
+    l4 = add_kv(heap, l4, "", work, "prefill.txt");
+    let (s4, plen, u3, u4) = numbers(io, heap, exec, sdir, clock, "asr", "prompt", l4, env, "prompt ", "", "");
+    if s4 != 0 {
+        return 1;
+    }
+    // the budget of steps: --most, or 6 a second of audio and 16 (docs/audio.md section 16)
+    var most = most_given;
+    if most == 0 {
+        most = frames * 6 / 100 + 16;
+        if most > 4096 {
+            most = 4096;
+        }
+    }
+    let positions = (plen + most + 63) / 64 * 64;
+    if positions > most_positions() {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the prompt (");
+        m = shared.push_int(heap, m, plen);
+        m = buffer.append(heap, m, " tokens) and the answer's budget (");
+        m = shared.push_int(heap, m, most);
+        m = buffer.append(heap, m, ") need ");
+        m = shared.push_int(heap, m, positions);
+        m = buffer.append(heap, m, " positions and the answer's session holds ");
+        m = shared.push_int(heap, m, most_positions());
+        m = buffer.append(heap, m, ": pass a smaller --most");
+        shared.refuse_buf(io, heap, m);
+        return 1;
+    }
+    var l5 = stage.add_arg(heap, buffer.empty(heap, 256), "text");
+    l5 = stage.add_arg(heap, l5, "inputs");
+    l5 = stage.add_arg(heap, l5, wt);
+    l5 = stage.add_arg(heap, l5, work);
+    l5 = add_kv(heap, l5, "", work, "prefill.txt");
+    l5 = add_kv(heap, l5, "", work, "rows.f32");
+    let (s5, spt, u5, u6) = numbers(io, heap, exec, sdir, clock, "asr", "prompt's inputs", l5, env, "SP=", "", "");
+    if s5 != 0 {
+        return 1;
+    }
+    var l6 = stage.add_arg(heap, buffer.empty(heap, 512), "1");
+    l6 = add_kv(heap, l6, "", root, "models/qwen3_asr_text.model");
+    l6 = add_kv(heap, l6, "CHX=", root, "tests/chx");
+    l6 = add_kv(heap, l6, "WORK=", work, "");
+    l6 = add_kv(heap, l6, "WDIR=", wt, "");
+    l6 = add_kn(heap, l6, "SP=", spt);
+    l6 = stage.add_arg(heap, l6, "PRE=1");
+    l6 = add_kn(heap, l6, "T=", positions);
+    if quiet(io, heap, exec, sdir, clock, "asr-session", "prompt in one pass (GPU)", l6, env) != 0 {
+        return 1;
+    }
+    // the answer, a token a step
+    var l7 = stage.add_arg(heap, buffer.empty(heap, 256), "step");
+    l7 = stage.add_arg(heap, l7, "inputs");
+    l7 = stage.add_arg(heap, l7, wt);
+    l7 = stage.add_arg(heap, l7, work);
+    l7 = add_kv(heap, l7, "", work, "prompt.txt");
+    l7 = add_kv(heap, l7, "", work, "rows.f32");
+    l7 = shared.put_num(heap, l7, most + 1);
+    l7 = shared.put_num(heap, l7, positions);
+    l7 = shared.put_num(heap, l7, plen - 1);
+    if quiet(io, heap, exec, sdir, clock, "asr", "answer's inputs", l7, env) != 0 {
+        return 1;
+    }
+    var l8 = shared.put_num(heap, buffer.empty(heap, 512), most + 1);
+    l8 = add_kv(heap, l8, "", root, "models/qwen3_asr_step.model");
+    l8 = add_kv(heap, l8, "CHX=", root, "tests/chx");
+    l8 = add_kv(heap, l8, "QW=", root, "examples/qwen");
+    l8 = add_kv(heap, l8, "TR=", root, "examples/train");
+    l8 = add_kv(heap, l8, "WORK=", work, "");
+    l8 = add_kv(heap, l8, "WDIR=", wt, "");
+    l8 = add_kn(heap, l8, "T=", positions);
+    l8 = add_kn(heap, l8, "NS=", most + 1);
+    l8 = stage.add_arg(heap, l8, "PRE=1");
+    if quiet(io, heap, exec, sdir, clock, "asr-session", "answer (GPU)", l8, env) != 0 {
+        return 1;
+    }
+    var l9 = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+    l9 = stage.add_arg(heap, l9, "answer");
+    l9 = add_kv(heap, l9, "", snap, "vocab.json");
+    l9 = add_kv(heap, l9, "", work, "ids_out.f32");
+    l9 = stage.add_arg(heap, l9, "0");
+    let (s9, text) = run_stage(io, heap, exec, sdir, clock, "asr", "answer as text", l9, env);
+    if s9 != 0 {
+        buffer.drop(heap, text);
+        var m = buffer.append(heap, buffer.empty(heap, 128), "the answer had a budget of ");
+        m = shared.push_int(heap, m, most);
+        m = buffer.append(heap, m, " tokens; if it did not end in them, pass --most with more");
+        shared.refuse_buf(io, heap, m);
+        return 1;
+    }
+    let tp = pathx.under(heap, out, "transcript.txt");
+    var wrote = 0;
+    borrow tp as &tpb in {
+        borrow text as &tb in {
+            wrote = files.write_all(fs, buffer.bytes(tpb), buffer.bytes(tb));
+            io.write_all(io, buffer.bytes(tb));
+        }
+    }
+    buffer.drop(heap, tp);
+    buffer.drop(heap, text);
+    if wrote != 0 {
+        shared.refuse_text(io, "transcript.txt could not be written");
+        return 1;
+    }
+    let cs = (clock_ms(clock) - t0 + 5) / 10;
+    var d = buffer.append(heap, buffer.empty(heap, 160), "done: ");
+    d = buffer.append(heap, d, out);
+    d = buffer.append(heap, d, " (transcript.txt) in ");
+    d = shared.push_int(heap, d, cs / 100);
+    d = buffer.push(heap, d, byte_of(46));
+    d = push2(heap, d, cs % 100);
+    d = buffer.append(heap, d, " s\n");
+    borrow d as &db in {
+        io.write_all(io, buffer.bytes(db));
+    }
+    buffer.drop(heap, d);
+    return 0;
+}

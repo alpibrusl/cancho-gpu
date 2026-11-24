@@ -365,6 +365,84 @@ The package on `transformers` without flash-attention never applies the windows 
 For scale, the reference package transcribes the 16 s clip in 3.7 s in float32 on the CPU and 1.6 s in BF16 on MPS **with its model already loaded**; its load was not timed, so the two are not compared here.
 
 * **The mel alone** is 0.13 s for the 16 s clip from 16 kHz samples: about 0.25 s for 30 s, under the half second that would have sent it to the GPU. The first resampler took 1.6 s for the same clip (a Bessel series of 60 terms at each of 26 M taps); the window is a table now and the mel moved by 9.5e-7.
-* **The answer is a fixed number of steps** (the script's third argument, 192 if not given): a clip whose answer is shorter pays for the rest (3.0 s at 192). The media command is to ask for steps until the end token.
+* **The answer is a fixed number of steps** (the script's third argument, 192 if not given): a clip whose answer is shorter pays for the rest (3.0 s at 192). **[corrected with A4b, section 16]** This said the media command would ask for steps until the end token; a session cannot end on a value, so the command fixes a budget from the clip's length.
 * **Held in the gate without a GPU or the checkpoint** (`tests/qwen3_asr_front.sh`, 41 checks): the mel within 2e-4 of a fixture the reference's feature extractor made (`tests/qwen_asr/fixture`: 0.2 s of two tones and noise, its second half 100 dB down so that the floor is at work; 4.7e-6), three mutants of the mel far from it, wav files read (stereo PCM of 16 bits, float of 32, a rate of 8 kHz) and refused (8 bits, 4 kHz, an extensible format with no sub-format, a data chunk longer than the file, under 400 samples, not RIFF, four bytes, no file), the prompt's ids, and answers decoded from a made-up vocabulary, with their refusals (no `<asr_text>`, no end, an id with no token, a token outside the alphabet).
 * **Not done:** the resampler's numbers have no test of their own (only that 8 kHz gives twice the samples); the fixture and the two clips are the reference's by hand, with scripts that are not in the repository; two clips, one voice, English, both synthetic speech from S0; no clip over 16 s, so nothing past 256 rows of tower or 448 of prompt was transcribed for real; PCM of 24 bits and every container but wav are refused; the tower's weights are now written once and found by one file's presence, which a half-written directory would fool.
+
+## 16. A4b (design, 2026-11-24, written before its code): `scripts/media transcribe CLIP -o DIR`
+
+A4a's stages are run by a shell script that is not in the gate. A4b runs them from the media program (`media/`, cancho), as the image and the video are run, and holds the command in the gate without a GPU.
+
+**[read, before this was written]**
+
+* **The media program can start only a program of `scripts/`** (`media/stage.cho`: the directory is opened once and the child is started under it). The picture encoder has `scripts/enc` and `scripts/enc-session` for that. Recognition gets the same two: `scripts/asr WHICH ARGS...` (the four host programs of A1 to A4a: `front`, `audio`, `text`, `step`) and `scripts/asr-session STEPS MODEL NAME=value...` (the Metal session, given its two lines).
+* **The stages pass numbers to one another** (the mel's frames, the tower's `BP` and `SP` and its rows, the prompt's length, the pass's `SP`): the script reads them with `sed`. The media program reads them from what each stage prints (`stage.capture`), so a stage's printed line is its interface; the gate test holds those lines.
+* **A session runs the number of steps it is given** and cannot end on a value it computes. **[corrected here: section 15 said the media command "is to ask for steps until the end token"; it cannot, and does not.]** The answer therefore has a budget of steps fixed before it starts.
+* **There is no Python `transcribe`** and none is written (the media program's other commands are checked against `tools/media.py`; this one has nothing to be checked against but its own stages).
+
+**The command.** `scripts/media transcribe CLIP -o DIR [--most N]`: `DIR/transcript.txt` (the language on the first line, the text on the second), the same two lines on the output after the stages' lines, the intermediate files in `DIR/work` (which `CANCHO_MEDIA_CLEAN_WORK=1` removes, as for the others). The wrapper takes the GPU lock as for an image. With no `build/media`, or with `CANCHO_MEDIA_IMPL=python`, the wrapper refuses: there is no other implementation.
+
+**The stages**, each a line `== label` and its time, to a hundredth of a second (the whole job is two or three seconds; the other commands print whole seconds):
+
+| | program | reads from what it prints |
+|---|---|---|
+| the language model's weights, on first use (6.3 GB) | `asr text weights`, `asr step weights` | |
+| the mel | `asr front mel CLIP work/clip.mel.f32` | `frames F` |
+| the tower's inputs (and its weights on first use, 0.6 GB) | `asr audio prepare SNAPSHOT WEIGHTS work work/clip.mel.f32 F` | `BP=.. SP=.. tokens R` |
+| the audio tower | `asr-session 1 models/qwen3_asr_audio.model ...` | |
+| the prompt | `asr front prompt R work/prompt.txt work/prefill.txt` | `prompt P` |
+| the pass's inputs | `asr text inputs WEIGHTS work work/prefill.txt work/rows.f32` | `SP=S` |
+| the prompt in one pass | `asr-session 1 models/qwen3_asr_text.model ... PRE=1 T=..` | |
+| the steps' inputs | `asr step inputs WEIGHTS work work/prompt.txt work/rows.f32 N+1 T P-1` | |
+| the answer | `asr-session N+1 models/qwen3_asr_step.model ... PRE=1` | |
+| the answer as text | `asr front answer SNAPSHOT/vocab.json work/ids_out.f32 0` | the two lines |
+
+**The budget of steps** is `--most N`, or 6 for each second of audio plus 16 **[reckoned: the two clips' answers are 3.4 and 3.8 tokens a second of audio, the language's two tokens and the end included]**. An answer that has not ended in its budget is refused (`the answer did not end in N tokens: pass --most`), not written cut. A step is 11.5 to 12.5 ms (section 13), so the 16 s clip pays for about 50 steps it does not use: 0.6 s **[reckoned]**.
+
+**The longest clip.** **[done, section 17: 152 s; the clips made were 38, 76, 151 and 303 s]** A4a transcribed nothing over 16 s. Before the command has a bound, clips of about 38 s and 76 s (the two reference clips one after another, by hand) are transcribed by the reference and by the stages; **the command refuses a clip longer than the longest that gave the reference's words**, and the refusal says so.
+
+**Refusals** (`media: ...`, status 2, before any stage): no `-o` or no clip; a `--most` that is not 1 to 4096; no such file; `build/cancho-gpu-metal-session`, or one of the four host programs, not built (with the command that builds them: `scripts/build-asr.sh`, new); the checkpoint not in the Hugging Face cache; under 8 GB free when the language model's weights are still to be written. From a stage (status 1, the stage's own line passed on): a file that is not a wav it reads, a clip under 25 ms, a clip over the bound, an answer with no end.
+
+**Checks.**
+
+* **In the gate, no GPU and no checkpoint** (`tests/media_transcribe.sh`): a temporary root whose `scripts/asr` and `scripts/asr-session` print their arguments and the lines the real stages print; the argument list of every stage for a clip of 1,624 frames, `transcript.txt`, the budget from the frames and from `--most`, the weights stages run when the weights are not there and not when they are, every refusal above with its status, a stage that fails and one whose line cannot be read. The stages' real lines are held by the four host tests already in the gate.
+* **By hand, on the GPU: the two reference clips through `scripts/media transcribe` give the reference's transcripts to the letter**, and the time of the command beside the script's at the same number of steps.
+
+**Not in A4b:** a context, a forced language, any container but wav, a `transcribe` entry in `media models` (that text is compared with `tools/media.py models`, which has no such command), the studio.
+
+## 17. A4b: `scripts/media transcribe` **[measured, 2026-11-24, M4 Max]**
+
+`media/transcribe.cho` (cancho; the command of `build/media`), `scripts/asr` and `scripts/asr-session` (the two programs it starts), `scripts/build-asr.sh` (the four host programs), `tests/media_transcribe.sh` (in the gate).
+
+```sh
+scripts/media transcribe clip.wav -o out/clip        # out/clip/transcript.txt: the language, then the text
+```
+
+**The bound of section 16 is met: the two reference clips give the reference's transcripts to the letter**, from their 24 kHz wav files.
+
+| cold, every process new, three runs | `scripts/media transcribe` | the script of A4a at the same number of steps |
+|---|---|---|
+| the 16.2 s clip, a budget of 113 tokens (the answer is 62) | **3.03, 2.99, 3.07 s** | 3.30, 3.35, 3.36 s |
+| the 5.4 s clip, a budget of 48 (the answer is 18) | 1.96, 1.93, 1.94 s | 2.22, 2.22, 2.22 s |
+
+The script's own timing costs it about 0.3 s (a Python started for each lap), so the two are the same stages at the same price. Of the 16 s clip's 3.07 s: the mel 0.27, the tower 0.25, the prompt's pass 0.58, the answer 1.91, the six host steps 0.06 together. **The budget costs 0.4 s over A4a's 2.61 s at 65 steps** (reckoned 0.6): the price of a session that cannot stop at the end token.
+
+**Longer clips**, made by hand of the two reference clips one after another (the long, the short, the long: 37.8 s, and that 2, 4 and 8 times), transcribed by the reference in float32 on the CPU:
+
+| clip | prompt, budget, positions | from the reference's own 16 kHz samples | from the 24 kHz file, resampled here | time (24 kHz file) |
+|---|---|---|---|---|
+| 37.8 s | 507, 243, 768 | **the reference's transcript to the letter** | the reference's but for a comma (`gone, and` where it has `gone and`, twice) | 6.4 s |
+| 75.7 s | 999, 470, 1,472 | **to the letter** | the same comma, four times | 11.1 s |
+| 151.4 s | 1,983, 924, 2,944 | **to the letter** | not the reference's: see below | 23.1 s (20.9 from 16 kHz) |
+| 302.7 s | | | refused by the session: `error[budget]`, 46,720 bytes of thread-group memory for 5,824 positions where 32,768 are allowed | |
+
+* **The stages are the reference's to the letter up to 151 s; the resampler is not librosa's and moves a near tie.** The comma is the only difference at 38 and 76 s. On its own (section 15) the long clip's sentence has the comma in the reference too; inside the longer clip the reference drops it and these samples keep it.
+* **At 151 s the reference itself leaves out 63 words** (one short sentence and one whole long clip after it, 4 of the speech's 28 sentences: 2,010 characters where the speech has 2,343). From the reference's samples the command leaves out the same 63 words, to the letter; from samples resampled here it writes all of them (its transcript is the 76 s one twice). So the text of a clip this long depends on rounding in the samples, in the reference as here, and neither is "the model's answer" more than the other. The clips repeat the same sentences, which is the worst case for this; no long clip of ordinary speech was tried.
+* **The answer's session holds 4,032 positions**: its lowering needs 8 bytes of thread-group memory a position and 128 more (33,920 at 4,224, 32,896 at 4,096, measured as refusals), and the positions are a multiple of 64. At 13 rows and 6 tokens of budget a second that is about 3.5 minutes; the command refuses before the session does, with the numbers.
+* **The command refuses a clip over 152 s**: 151.4 s is the longest that was compared, and its answer is already not stable.
+* **A step costs more with more positions**: 16.5 s for 925 steps at 2,944 positions is 17.8 ms a step, where 128 positions cost 11.5 (section 11). The answer is 60 to 80% of a long clip's time.
+* **The mel with its resampling is 2.4 s for 151 s from 24 kHz** (1.1 s from 16 kHz): 0.48 s for 30 s, and 0.22 s from 16 kHz: under the half second for 30 s that section 14 set for sending it to the GPU, narrowly when it resamples. Left on the host.
+
+**Held in the gate without a GPU or the checkpoint** (`tests/media_transcribe.sh`, stages that log their arguments and print the real stages' lines): the nine argument lists of a job, the budget and the positions from the frames and from `--most`, the clip after `--`, the two weights programs run first when `embt.f16` is not there and the disk check before them, ten refusals before any stage and the disk check (status 2, no stage run), ten after one (status 1, the stage's own line passed on, no transcript written: a file the mel refuses, a stage that fails, a session that fails, a stage whose line has no number, an answer with no end, a clip over 152 s, more positions than 4,032), the two bounds met exactly (152.00 s, 4,032 positions), and the wrapper's refusal when asked for the Python.
+
+**Not done:** a session that ends at the end token (the budget is paid in full, and an answer longer than it is refused, not continued); one session for the pass and the steps; the comma: a resampler that gives librosa's samples, or a statement of which filter the model was trained behind; clips of ordinary speech, other voices, other languages; any clip between 152 s and the reference's 20 minutes (the reference cuts long audio into pieces itself; that is not built); a context, a forced language, timestamps; `media models` does not list the command; the studio does not offer it; the weights' directory is trusted when its last file is there.

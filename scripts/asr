@@ -1,0 +1,13 @@
+#!/bin/sh
+# A host program of the recognition (docs/audio.md section 16), started by build/media (media/transcribe.cho): `asr front|audio|text|step ARGS...` runs build/qwen3_asr_front, _audio_gpu, _text_gpu or
+# _step_gpu on ARGS in the repository's root. A cancho program can start only a program of scripts/.
+cd "$(dirname "$0")/.." || exit 1
+case "${1:-}" in
+  front) p=build/qwen3_asr_front ;;
+  audio) p=build/qwen3_asr_audio_gpu ;;
+  text) p=build/qwen3_asr_text_gpu ;;
+  step) p=build/qwen3_asr_step_gpu ;;
+  *) echo "asr: the first argument is front, audio, text or step"; exit 100 ;;
+esac
+shift
+exec "$p" "$@"
