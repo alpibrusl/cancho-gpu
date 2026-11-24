@@ -617,6 +617,17 @@ def amax_id(r, nq, v1):
     return [v1 - gm[i * nq] for i in range(r)]
 
 
+def kv_export(sq, nkv, tmax):
+    """docs/audio.md section 12: token-major halves (a token's 2 nkv head rows, each key/value head twice) to a head-major f32 cache; the positions from sq on are not written and read as 0 here."""
+    (x,) = lcg([sq * 2 * nkv * 128])
+    out = [0.0] * (nkv * tmax * 128)
+    for h in range(nkv):
+        for t in range(sq):
+            for c in range(128):
+                out[(h * tmax + t) * 128 + c] = f16(x[(t * 2 * nkv + 2 * h) * 128 + c])
+    return out
+
+
 def attention_scores_b(nb, nkv, g, t, d, tmax):
     q, k, mask = lcg([nb * nkv * g * d, nb * nkv * tmax * d, nb * t])
     out = []
@@ -868,6 +879,7 @@ def new_checks():
     ok &= check("kv_write_b nb=2 nkv=2 tmax=32 ts=16", run("kv_write_b", ["nb=2", "nkv=2", "tmax=32", "ts=16", "d=128"])["y"], kv_write_b(2, 2, 32, 128))
     ok &= check("ids_mix r=8", run("ids_mix", ["r=8"])["y"], ids_mix(8))
     ok &= check("row_mix n=256", run("row_mix", ["n=256", "bn=128"])["y"], row_mix(256))
+    ok &= check("kv_export s=4 nkv=2 tmax=8", run("kv_export", ["s=4", "nkv=2", "tmax=8"])["c"], kv_export(4, 2, 8))
     got = run("dec_post_n", ["r=2"])
     want_q, want_k, want_v = dec_post_n(2)
     ok &= check("dec_post_n q r=2", got["q"], want_q)
@@ -1027,7 +1039,9 @@ MUTANTS = [
     ("delta_step1.chx", "let e0  = d0 * b0", "let e0  = d0 + b0", "delta_step1 adds beta to the error"),
     ("delta_step1.chx", "let sg0 = s0 * g0", "let sg0 = s0 + g0", "delta_step1 adds the decay to the state"),
     ("delta_step1.chx", "let g0  = load g[i, 0 ; 1, 128]", "let g0  = load g[0, 0 ; 1, 128]", "delta_step1 decays every head by the first head's gate"),
-    ("delta_step1.chx", "let v0  = load v[i * 128 + r * br ; br]", "let v0  = load v[r * br ; br]", "delta_step1 reads every head's values from the first head"),    ("row_mix.chx", "store a + b -> y[0, j * bn]", "store a - b -> y[0, j * bn]", "row_mix subtracts the embedding"),
+    ("delta_step1.chx", "let v0  = load v[i * 128 + r * br ; br]", "let v0  = load v[r * br ; br]", "delta_step1 reads every head's values from the first head"),    ("kv_export.chx", "load x[t * 2 * nkv + 2 * h, 0 ; 1, 128]", "load x[t * 2 * nkv + h, 0 ; 1, 128]", "kv_export reads row h of a token, not 2 h"),
+    ("kv_export.chx", "store b -> c[h * tmax + t, 0]", "store b -> c[h * tmax + t + 1, 0]", "kv_export writes a position late"),
+    ("row_mix.chx", "store a + b -> y[0, j * bn]", "store a - b -> y[0, j * bn]", "row_mix subtracts the embedding"),
     ("dec_post_n.chx", "let a1 = n1 * w1", "let a1 = n1 + w1", "dec_post_n adds the norm's weight to q's first half"),
     ("dec_post_n.chx", "let x1 = load kw[0, 0 ; 1, 64]", "let x1 = load qw[0, 0 ; 1, 64]", "dec_post_n norms k with q's weight"),
     ("dec_post_n.chx", "let lo = t1 - t2", "let lo = t1 + t2", "dec_post_n's rotation has the wrong sign"),

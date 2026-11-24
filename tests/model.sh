@@ -54,6 +54,8 @@ tag=dec;     check qwen_image_vae_decoder CHX=/chx CONV3=/conv3 WORK=/w H0=86 W0
 tag=a5s;     check qwen3_asr_audio CHX=/chx CONV3=/conv3 WORK=/w WDIR=/wd BP=10 SP=128
 tag=sp128;   check qwen3_asr_text CHX=/chx WORK=/w WDIR=/wd SP=128
 tag=t128;    check qwen3_asr_step CHX=/chx QW=/qw TR=/tr WORK=/w WDIR=/wd T=128 NS=109
+tag=pre448;  check qwen3_asr_text CHX=/chx WORK=/w WDIR=/wd SP=448 PRE=1 T=512
+tag=pre512;  check qwen3_asr_step CHX=/chx QW=/qw TR=/tr WORK=/w WDIR=/wd T=512 NS=101 PRE=1
 tag=sp64;    check umt5_enc CHX=/chx WORK=/w WDIR=/wd SP=64
 if [ -n "$SESSION" ]; then
   "$BIN" model-expand tests/model/chain.model CHX=tests/chx > "$WORK/chain.session"

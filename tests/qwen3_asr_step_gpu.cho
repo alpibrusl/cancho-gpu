@@ -10,13 +10,14 @@ import wenc_st;
 // qwen3_asr_step_gpu -- stage A3 of docs/audio.md: the language model of Qwen3-ASR-1.7B a token a step with caches (models/qwen3_asr_step.model), its host side written in cancho.
 //
 //   qwen3_asr_step_gpu weights <snapshot dir> <weights dir>
-//   qwen3_asr_step_gpu inputs  <weights dir> <work dir> <ids.txt> <audio rows .f32> <steps> <positions> [<mutant 1-3>]
-//   qwen3_asr_step_gpu check   <work dir> <ids.txt> <prompt length>
+//   qwen3_asr_step_gpu inputs  <weights dir> <work dir> <ids.txt> <audio rows .f32> <steps> <positions> <first> [<mutant 1-3>]
+//   qwen3_asr_step_gpu check   <work dir> <ids.txt> <prompt length> [<first>]
 //   qwen3_asr_step_gpu ids     <work dir> <from step>
 //
 // `weights` adds to the directory tests/qwen3_asr_text_gpu.cho's `weights` wrote (the norms, o, down, the head and the embedding table are shared) what the step reads stacked: `qkv<l>.f16` (q, k and v, 4,096
 // rows of 2,048: the 8 key/value heads once), `gu<l>.f16` (gate then up, 12,288 rows) and `embt.f16`, the embedding table transposed (2,048 rows of 151,936): 2.5 GB.
-// `inputs` writes the tables of `steps` steps (a block a step) for caches of `positions` (a multiple of 64): the rows of the sequence in `ids.txt` for the steps that have one (`xtab`, with `mtab` 1; the
+// `inputs` writes the tables of `steps` steps (a block a step) for caches of `positions` (a multiple of 64), step j being position `first` + j (`first` is 0, or the rows a prefill has already put in the
+// caches: docs/audio.md section 12): the rows of the sequence in `ids.txt` for the steps that have one (`xtab`, with `mtab` 1; the
 // embeddings and, in the places of the audio token, the audio tower's rows) and zeros with `mtab` 0 after it, where the step takes the embedding of the id it chose before; the cos and sin of each step's
 // position; the caches' `sel` and `keep`; the attention's mask; the answer's `sel` and `keep`; and the constants (the one-hot's column numbers, the arg max's ranks, zeros). Run the steps with
 //   printf '<steps>\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_step.model CHX=<repo>/tests/chx QW=<repo>/examples/qwen TR=<repo>/examples/train WORK=<work> WDIR=<weights> T=<positions> NS=<steps>
@@ -146,20 +147,20 @@ fn weights[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
     return status;
 }
 
-// a table of `steps` blocks of `width`: block j is `off` everywhere and `on` at column j (`upto` false) or at the columns up to j + `shift` (`upto` true)
-fn put_steps[&h, &f, &w, &n, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], name: &n [byte], steps: int, width: int, on: float, off: float, upto: bool, shift: int, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+// a table of `steps` blocks of `width`: block j is `off` everywhere and `on` at column `at` + j (`upto` false) or at the columns up to `at` + j + `shift` (`upto` true)
+fn put_steps[&h, &f, &w, &n, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], name: &n [byte], steps: int, width: int, at: int, on: float, off: float, upto: bool, shift: int, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
     let t = box_slice(heap, steps * width, off);
     borrow mut t as &!tw in {
         var j = 0;
         while j < steps {
             if upto {
                 var k = 0;
-                while k <= j + shift && k < width {
+                while k <= at + j + shift && k < width {
                     contents(tw)[j * width + k] = on;
                     k = k + 1;
                 }
-            } else if j < width {
-                contents(tw)[j * width + j] = on;
+            } else if at + j < width {
+                contents(tw)[j * width + at + j] = on;
             }
             j = j + 1;
         }
@@ -173,20 +174,21 @@ fn put_steps[&h, &f, &w, &n, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte],
 
 fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
     let na = arg_count(args);
-    if na != 8 && na != 9 {
-        qasr_host.put(io, "usage: qwen3_asr_step_gpu inputs <weights dir> <work dir> <ids.txt> <audio rows .f32> <steps> <positions> [<mutant 1-3>]\n");
+    if na != 9 && na != 10 {
+        qasr_host.put(io, "usage: qwen3_asr_step_gpu inputs <weights dir> <work dir> <ids.txt> <audio rows .f32> <steps> <positions> <first> [<mutant 1-3>]\n");
         return 100;
     }
     let wdir = arg(args, 2);
     let work = arg(args, 3);
     let steps = qasr_host.num(arg(args, 6));
     let tmax = qasr_host.num(arg(args, 7));
+    let first = qasr_host.num(arg(args, 8));
     var mutant = 0;
-    if na == 9 {
-        mutant = qasr_host.num(arg(args, 8));
+    if na == 10 {
+        mutant = qasr_host.num(arg(args, 9));
     }
-    if steps < 1 || steps > 8192 || tmax < 64 || tmax % 64 != 0 || steps > tmax || mutant < 0 || mutant > 3 {
-        qasr_host.put(io, "steps is 1 to 8192 and at most the positions, the positions a multiple of 64, a mutant 1 to 3\n");
+    if steps < 1 || steps > 8192 || tmax < 64 || tmax % 64 != 0 || first < 0 || first + steps > tmax || mutant < 0 || mutant > 3 {
+        qasr_host.put(io, "steps is 1 to 8192, the positions a multiple of 64 that holds first + steps, a mutant 1 to 3\n");
         return 101;
     }
     if files.path_ok(fs, wdir) == false || files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 4)) == false || files.path_ok(fs, arg(args, 5)) == false {
@@ -199,8 +201,8 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
         n = qasr_host.read_ids(heap, fs, arg(args, 4), contents(iw));
     }
     var status = 0;
-    if n < 1 || n > steps {
-        qasr_host.put(io, "the ids are 1 to `steps` decimal numbers under 151936, separated by white space\n");
+    if n < 1 || n <= first || n - first > steps {
+        qasr_host.put(io, "the ids are more than `first` and at most first + steps decimal numbers under 151936, separated by white space\n");
         status = 103;
     } else {
         let (rows, nr) = wenc_st.load_raw(heap, fs, arg(args, 5));
@@ -222,14 +224,25 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
             borrow mut iv as &!qb in {
                 let q = contents(qb);
                 // the rows of the steps that have one, and their flag
-                let xt = box_slice(heap, steps * 2048, 0.0);
+                let all = box_slice(heap, n * 2048, 0.0);
                 borrow ids as &ir in {
                     borrow rows as &rr in {
-                        borrow mut xt as &!xw in {
-                            qasr_host.seq_rows(heap, fs, wdir, contents(ir), n, contents(rr), contents(xw), q);
+                        borrow mut all as &!aw in {
+                            qasr_host.seq_rows(heap, fs, wdir, contents(ir), n, contents(rr), contents(aw), q);
                         }
                     }
                 }
+                let xt = box_slice(heap, steps * 2048, 0.0);
+                borrow all as &ar in {
+                    borrow mut xt as &!xw in {
+                        var i = 0;
+                        while i < (n - first) * 2048 {
+                            contents(xw)[i] = contents(ar)[first * 2048 + i];
+                            i = i + 1;
+                        }
+                    }
+                }
+                unbox_slice(heap, all);
                 borrow xt as &xr in {
                     qasr_host.put_file(heap, fs, work, "xtab", 0 - 1, ".f32", false, contents(xr), q);
                 }
@@ -237,7 +250,7 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
                 let mt = box_slice(heap, steps, 0.0);
                 borrow mut mt as &!mw in {
                     var j = 0;
-                    while j < n {
+                    while j < n - first {
                         contents(mw)[j] = 1.0;
                         j = j + 1;
                     }
@@ -246,14 +259,14 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
                     qasr_host.put_file(heap, fs, work, "mtab", 0 - 1, ".f32", false, contents(mr), q);
                 }
                 unbox_slice(heap, mt);
-                // the rotary tables [steps, 64]: step j is position j
+                // the rotary tables [steps, 64]: step j is position first + j
                 let cs = box_slice(heap, steps * 64, 0.0);
                 let sn = box_slice(heap, steps * 64, 0.0);
                 borrow mut cs as &!cw in {
                     borrow mut sn as &!sw in {
                         var p = 0;
                         while p < steps {
-                            var pos = float_of(p);
+                            var pos = float_of(first + p);
                             if mutant == 3 {
                                 pos = 0.0;
                             }
@@ -278,19 +291,19 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
                 unbox_slice(heap, sn);
                 // the caches: step j writes position j and keeps the others; the attention sees the positions up to j
                 if mutant == 1 {
-                    put_steps(heap, fs, work, "sel", steps, tmax, 0.0, 0.0, false, 0, q);
+                    put_steps(heap, fs, work, "sel", steps, tmax, first, 0.0, 0.0, false, 0, q);
                 } else {
-                    put_steps(heap, fs, work, "sel", steps, tmax, 1.0, 0.0, false, 0, q);
+                    put_steps(heap, fs, work, "sel", steps, tmax, first, 1.0, 0.0, false, 0, q);
                 }
-                put_steps(heap, fs, work, "keep", steps, tmax, 0.0, 1.0, false, 0, q);
+                put_steps(heap, fs, work, "keep", steps, tmax, first, 0.0, 1.0, false, 0, q);
                 if mutant == 2 {
-                    put_steps(heap, fs, work, "mask", steps, tmax, 0.0, 0.0 - 1000000000.0, true, 0 - 1, q);
+                    put_steps(heap, fs, work, "mask", steps, tmax, first, 0.0, 0.0 - 1000000000.0, true, 0 - 1, q);
                 } else {
-                    put_steps(heap, fs, work, "mask", steps, tmax, 0.0, 0.0 - 1000000000.0, true, 0, q);
+                    put_steps(heap, fs, work, "mask", steps, tmax, first, 0.0, 0.0 - 1000000000.0, true, 0, q);
                 }
                 // the answer: step j's id into slot j
-                put_steps(heap, fs, work, "accsel", steps, steps, 1.0, 0.0, false, 0, q);
-                put_steps(heap, fs, work, "acckeep", steps, steps, 0.0, 1.0, false, 0, q);
+                put_steps(heap, fs, work, "accsel", steps, steps, 0, 1.0, 0.0, false, 0, q);
+                put_steps(heap, fs, work, "acckeep", steps, steps, 0, 0.0, 1.0, false, 0, q);
                 // the constants: the one-hot's column numbers 1 .. V, the arg max's ranks V - j, zeros for the masks, the caches and the answer, and a first id
                 let vv = qasr_host.vocab();
                 let jr = box_slice(heap, vv, 0.0);
@@ -342,7 +355,7 @@ fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Ar
                     qasr_host.put(io, " NS=");
                     qasr_host.put_int(io, steps);
                     qasr_host.put(io, " rows ");
-                    qasr_host.put_int(io, n);
+                    qasr_host.put_int(io, n - first);
                     qasr_host.put(io, "\n");
                 }
             }
@@ -368,8 +381,8 @@ fn chosen(x: float) -> [] int {
 
 fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args, checking: bool) -> [args, io_write, heap, fs_read(""), file_read] int {
     let na = arg_count(args);
-    if checking && na != 5 || checking == false && na != 4 {
-        qasr_host.put(io, "usage: qwen3_asr_step_gpu check <work dir> <ids.txt> <prompt length> | ids <work dir> <from step>\n");
+    if checking && na != 5 && na != 6 || checking == false && na != 4 {
+        qasr_host.put(io, "usage: qwen3_asr_step_gpu check <work dir> <ids.txt> <prompt length> [<first>] | ids <work dir> <from step>\n");
         return 100;
     }
     let op = qasr_host.path3(heap, arg(args, 2), "ids_out", 0 - 1, ".f32");
@@ -410,8 +423,12 @@ fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Arg
                 n = qasr_host.read_ids(heap, fs, arg(args, 3), contents(iw));
             }
             let prompt = qasr_host.num(arg(args, 4));
-            if n < 2 || prompt < 1 || prompt >= n || m < n {
-                qasr_host.put(io, "the ids are the whole sequence, the prompt's length 1 to its length less one, and the steps at least as many\n");
+            var first = 0;
+            if na == 6 {
+                first = qasr_host.num(arg(args, 5));
+            }
+            if n < 2 || prompt < 1 || prompt >= n || first < 0 || first > prompt - 1 || m < n - first {
+                qasr_host.put(io, "the ids are the whole sequence, the prompt's length 1 to its length less one, the first step's position at most the prompt's last row, and the steps reach the sequence's end\n");
                 status = 101;
             } else {
                 var equal = 0;
@@ -419,7 +436,7 @@ fn after[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Arg
                     borrow ids as &ir in {
                         var p = prompt - 1;
                         while p < n - 1 {
-                            if chosen(contents(gr)[p]) == contents(ir)[p + 1] {
+                            if chosen(contents(gr)[p - first]) == contents(ir)[p + 1] {
                                 equal = equal + 1;
                             }
                             p = p + 1;
