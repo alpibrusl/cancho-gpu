@@ -1,0 +1,25 @@
+// dit_rope16.chx with an f32 output: the rotary rotation (rotate-half per head, tables per position) times a constant, not rounded to f16, for dit_scores_mma_f.chx (docs/diffusion.md section 6, V3c). Metal only: the f32 product it feeds is not on CUDA's matrix unit.
+algo dit_rope16_f(s, nh, h, sc)
+  in  x:  f32[s * nh, 2 * h]
+  in  cs: f32[s, h]
+  in  sn: f32[s, h]
+  out y:  f32[s * nh, 2 * h]
+{
+  grid t over s
+  let x1  = load x[t * nh, 0 ; nh, h]
+  let x2  = load x[t * nh, h ; nh, h]
+  let c   = load cs[t, 0 ; 1, h]
+  let sg  = load sn[t, 0 ; 1, h]
+  let a   = &x1 * &c
+  let b   = &x2 * &sg
+  let lo  = a - b
+  let d   = x2 * c
+  let e   = x1 * sg
+  let hi  = d + e
+  let lo2 = lo * sc
+  let hi2 = hi * sc
+  store lo2 -> y[t * nh, 0]
+  store hi2 -> y[t * nh, h]
+}
+
+schedule dit_rope16_f for apple-m-series { threads 128 }

@@ -23,6 +23,7 @@ import math
 import os
 import random
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -88,7 +89,7 @@ def t_lnmod(root, tmp):
     return (False, err) if o is None else close(o[0], want, True)
 
 
-def t_wan_lnmod(root, tmp):
+def t_wan_lnmod(root, tmp, kernel="dit_wan_lnmod", f16=True):
     s, n = 12, 256
     x = rnd(21, s * n, -2, 2)
     x[3 * n + 17] = 900.0
@@ -104,8 +105,22 @@ def t_wan_lnmod(root, tmp):
         var = sum((v - mu) ** 2 for v in row) / n
         for j in range(n):
             want.append((row[j] - mu) / math.sqrt(var + 1e-6) * (1 + pick(sel, sc[:n], sc[n:], i, j)) + pick(sel, sh[:n], sh[n:], i, j))
-    o, err = run(root, "dit_wan_lnmod", [f"s={s}", f"n={n}"], {"x": x, "sh": sh, "sc": sc, "sel": sel}, ["y"], tmp)
-    return (False, err) if o is None else close(o[0], want, True)
+    o, err = run(root, kernel, [f"s={s}", f"n={n}"], {"x": x, "sh": sh, "sc": sc, "sel": sel}, ["y"], tmp)
+    return (False, err) if o is None else close(o[0], want, f16)
+
+
+def t_gemm_f(root, tmp):
+    """gemm_mma_f: y = a w^T with f32 activations and f16 weights (docs/diffusion.md V3c). The reference takes a as the f32 nearest the text given and w as f16 values, so what is left is the f32 accumulation."""
+    m, n, k = 64, 256, 96
+    f32r = lambda v: struct.unpack("<f", struct.pack("<f", v))[0]
+    a = [f32r(v) for v in rnd(61, m * k, -2, 2)]
+    w = [f16r(v) for v in rnd(62, n * k, -1, 1)]
+    want = [sum(a[i * k + p] * w[j * k + p] for p in range(k)) for i in range(m) for j in range(n)]
+    o, err = run(root, "gemm_mma_f", [f"m={m}", f"n={n}", f"k={k}"], {"a": a, "w": w}, ["y"], tmp)
+    if o is None:
+        return False, err
+    worst = max(abs(g - b) / (1e-5 * max(1.0, abs(b))) for g, b in zip(o[0], want))  # f32 sums of 96 products: 2.7e-6 measured; an f16 rounding of `a` is 1e-3
+    return len(o[0]) == len(want) and worst <= 1.0, worst
 
 
 def t_wan_gate(root, tmp):
@@ -281,7 +296,8 @@ def permutation(bad=False):
 TESTS = [("dit_lnmod (with an outlier of 2300)", t_lnmod), ("dit_rope, rotate-half with per-position tables", t_rope), ("rmsnorm_rows as the per-head norm", t_rmsnorm),
          ("dit_gate_res", t_gate), ("dit_wan_lnmod (shift and 1 + scale)", t_wan_lnmod), ("dit_wan_gate_res (no tanh)", t_wan_gate), ("dit_swiglu", t_swiglu), ("dit_geglu (umT5's gated GELU)", t_geglu), ("dit_to_f16", t_cast), ("dit_gelu (tanh approximation)", t_gelu), ("dit_silu", t_silu), ("dit_add", t_add),
          ("dit_modsplit (four [2, n] blocks of a [64, 4n] product)", t_modsplit), ("dit_rows2", t_rows2),
-         ("dit_euler", t_euler), ("dit_rows2h (f16 probe)", t_rows2h)]
+         ("dit_euler", t_euler), ("dit_rows2h (f16 probe)", t_rows2h),
+         ("dit_wan_lnmod_f (f32 out)", lambda r, t: t_wan_lnmod(r, t, "dit_wan_lnmod_f", False)), ("gemm_mma_f (f32 activations by f16 weights)", t_gemm_f)]
 
 
 def gate(root):
@@ -330,6 +346,10 @@ EDITS = [
     ("dit_rows2h", "load x[0, j * bn ; 2, bn]", "load x[1, j * bn ; 2, bn]", "rows 1 and 2, not 0 and 1"),
     ("dit_euler", "let b  = a * d", "let b  = a + d", "the step size added, not multiplied"),
     ("dit_euler", "let sl = load sel[i, 0 ; 1, 1]", "let sl = load sel[0, 0 ; 1, 1]", "the first row's selector for every row (no image row is updated)"),
+    ("dit_wan_lnmod_f", "  store o2 -> y[i, 0]", "  let oh = stage f16 o2\n  store oh -> y[i, 0]", "the output rounded to f16"),
+    ("dit_wan_lnmod_f", "let o2 = o + hh", "let o2 = o - hh", "the shift subtracted"),
+    ("gemm_mma_f", "    yield mma acc at wt", "    let ah = stage f16 at\n    yield mma acc ah wt", "the activations rounded to f16"),
+    ("gemm_mma_f", "load w[j * bn, p * bk ; bn, bk]", "load w[0, p * bk ; bn, bk]", "the first block of weight rows for every block"),
 ]
 good, _ = permutation(bad=True)
 print(f"{'killed  ' if not good else 'SURVIVED'} permutation: the identity in place of the even-first permutation is refused")
@@ -337,7 +357,7 @@ survived = 1 if good else 0
 for kernel, old, new, what in EDITS:
     with tempfile.TemporaryDirectory() as tmp:
         for f in os.listdir("tests/chx"):
-            if f.endswith(".chx") and (f.startswith("dit_") or f == "rmsnorm_rows.chx"):
+            if f.endswith(".chx") and (f.startswith("dit_") or f in ("rmsnorm_rows.chx", "gemm_mma_f.chx")):
                 shutil.copy(os.path.join("tests/chx", f), tmp)
         path = os.path.join(tmp, kernel + ".chx")
         text = open(path).read()
