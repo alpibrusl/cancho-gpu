@@ -1,0 +1,203 @@
+edition 9;
+
+module qasr_wav;
+
+import std.buffer;
+import std.math;
+import files;
+
+// `qasr_wav` -- a wav file as mono samples at 16 kHz in binary64 (docs/audio.md section 14, A4a): what Qwen3-ASR's mel is computed from.
+//
+// A wav file is RIFF: "RIFF", a length, "WAVE", then chunks (a four-byte name, a length, that many bytes, padded to an even count). `fmt ` holds the format (1 PCM, 3 IEEE float, 0xFFFE extensible, whose
+// own format is two bytes at offset 24), the channels, the rate and the bits a sample; `data` the samples, channel-interleaved. Read here: PCM of 16 bits and float of 32, any number of channels up to 8
+// (their mean), a rate from 8,000 to 192,000. Nothing here traps on a file's content: every offset is checked against the file before a byte is read.
+//
+// `load` answers `(samples, count, rate, status)`: status 0, or 1 the file cannot be read, 2 not a RIFF/WAVE file, 3 no `fmt ` chunk before the data or a truncated one, 4 a format, a sample size, a channel count
+// or a rate that is not read, 5 no `data` chunk or one that holds no whole sample, 6 a `data` chunk that says more bytes than the file has.
+
+fn le16[&b](bytes: &b [byte], at: int) -> [] int {
+    return int_of(bytes[at]) | int_of(bytes[at + 1]) << 8;
+}
+
+fn le32[&b](bytes: &b [byte], at: int) -> [] int {
+    return int_of(bytes[at]) | int_of(bytes[at + 1]) << 8 | int_of(bytes[at + 2]) << 16 | int_of(bytes[at + 3]) << 24;
+}
+
+fn tag[&b](bytes: &b [byte], at: int, name: &static [byte]) -> [] bool {
+    return int_of(bytes[at]) == int_of(name[0]) && int_of(bytes[at + 1]) == int_of(name[1]) && int_of(bytes[at + 2]) == int_of(name[2]) && int_of(bytes[at + 3]) == int_of(name[3]);
+}
+
+pub fn load[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte]) -> [heap, fs_read(""), file_read] (Box[[float]], int, int, int) {
+    var samples = box_slice(heap, 1, 0.0);
+    var count = 0;
+    var rate = 0;
+    var status = 1;
+    let (file, err) = files.read_all(heap, fs, path);
+    if err == 0 {
+        borrow file as &fb in {
+            let b = buffer.bytes(fb);
+            let n = len(b);
+            status = 2;
+            if n >= 12 && tag(b, 0, "RIFF") && tag(b, 8, "WAVE") {
+                status = 3;
+                var at = 12;
+                var format = 0;
+                var channels = 0;
+                var bits = 0;
+                var have_fmt = false;
+                var done = false;
+                while done == false && at + 8 <= n {
+                    let size = le32(b, at + 4);
+                    if tag(b, at, "fmt ") {
+                        if size < 16 || at + 8 + 16 > n {
+                            done = true;
+                        } else {
+                            format = le16(b, at + 8);
+                            channels = le16(b, at + 10);
+                            rate = le32(b, at + 12);
+                            bits = le16(b, at + 22);
+                            if format == 65534 && size >= 26 && at + 8 + 26 <= n {
+                                format = le16(b, at + 32);
+                            }
+                            have_fmt = true;
+                        }
+                    } else if tag(b, at, "data") {
+                        done = true;
+                        if have_fmt {
+                            status = 4;
+                            let float32 = format == 3 && bits == 32;
+                            let pcm16 = format == 1 && bits == 16;
+                            if (float32 || pcm16) && channels >= 1 && channels <= 8 && rate >= 8000 && rate <= 192000 {
+                                let width = bits / 8;
+                                status = 6;
+                                if size >= 0 && at + 8 + size <= n {
+                                    status = 5;
+                                    let frames = size / (width * channels);
+                                    if frames >= 1 {
+                                        let out = box_slice(heap, frames, 0.0);
+                                        borrow mut out as &!ow in {
+                                            var i = 0;
+                                            while i < frames {
+                                                var sum = 0.0;
+                                                var c = 0;
+                                                while c < channels {
+                                                    let p = at + 8 + (i * channels + c) * width;
+                                                    if float32 {
+                                                        sum = sum + float_of32(f32_of_bits(le32(b, p)));
+                                                    } else {
+                                                        var v = le16(b, p);
+                                                        if v >= 32768 {
+                                                            v = v - 65536;
+                                                        }
+                                                        sum = sum + float_of(v) / 32768.0;
+                                                    }
+                                                    c = c + 1;
+                                                }
+                                                contents(ow)[i] = sum / float_of(channels);
+                                                i = i + 1;
+                                            }
+                                        }
+                                        unbox_slice(heap, samples);
+                                        samples = out;
+                                        count = frames;
+                                        status = 0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if size < 0 {
+                        done = true;
+                    } else {
+                        at = at + 8 + size + size % 2;
+                    }
+                }
+                if status == 3 && have_fmt {
+                    status = 5;
+                }
+            }
+        }
+    }
+    buffer.drop(heap, file);
+    return (samples, count, rate, status);
+}
+
+// The modified Bessel function of the first kind and order 0, by its series (the terms fall below 1e-17 of the sum well inside 60 for the arguments a Kaiser window of beta 9 gives).
+fn bessel0(x: float) -> [] float {
+    var sum = 1.0;
+    var term = 1.0;
+    var k = 1;
+    while k < 60 {
+        let h = x / (2.0 * float_of(k));
+        term = term * h * h;
+        sum = sum + term;
+        k = k + 1;
+    }
+    return sum;
+}
+
+// `x` (at `from` hertz) at 16,000 hertz: a windowed-sinc low-pass evaluated at each output instant. The pass band ends at 0.94 of the lower of the two Nyquist frequencies; the window is Kaiser's with beta 9
+// (side lobes under -90 dB) over 32 zero crossings each side. Not librosa's filter (the reference package resamples with librosa, whose default is another design): the samples differ in the last places,
+// and docs/audio.md section 15 says by how much the mel does. The output has `count * 16000 / from` samples, rounded up.
+pub fn to_16k[&h, &x](heap: &!h Heap, x: &x [float], count: int, from: int) -> [heap] (Box[[float]], int) {
+    let n = (count * 16000 + from - 1) / from;
+    let out = box_slice(heap, n, 0.0);
+    var cut = 0.94 * 0.5;
+    if from > 16000 {
+        cut = 0.94 * 0.5 * 16000.0 / float_of(from);
+    }
+    let zeros = 32.0;
+    let half = zeros / (2.0 * cut);
+    let pi = 3.141592653589793;
+    let i0b = bessel0(9.0);
+    // the window over r in [0, 1] as a table of 8,193 points read with a linear interpolation (its error is under 1e-8 of the window's peak): the series of 60 terms at every tap was most of the time
+    let wt = box_slice(heap, 8194, 0.0);
+    borrow mut wt as &!ww in {
+        var q = 0;
+        while q <= 8192 {
+            let r = float_of(q) / 8192.0;
+            contents(ww)[q] = bessel0(9.0 * sqrt(1.0 - r * r)) / i0b;
+            q = q + 1;
+        }
+    }
+    borrow wt as &wr in {
+        borrow mut out as &!ow in {
+            var j = 0;
+            while j < n {
+                let t = float_of(j) * float_of(from) / 16000.0;
+                var k = truncate(t - half);
+                if k < 0 {
+                    k = 0;
+                }
+                var last = truncate(t + half) + 1;
+                if last > count - 1 {
+                    last = count - 1;
+                }
+                var acc = 0.0;
+                while k <= last {
+                    let d = t - float_of(k);
+                    let r = d / half;
+                    if r > 0.0 - 1.0 && r < 1.0 {
+                        var s = 2.0 * cut;
+                        if d != 0.0 {
+                            s = math.sin(2.0 * pi * cut * d) / (pi * d);
+                        }
+                        var ra = r;
+                        if ra < 0.0 {
+                            ra = 0.0 - ra;
+                        }
+                        let pos = ra * 8192.0;
+                        let qi = truncate(pos);
+                        let fr = pos - float_of(qi);
+                        acc = acc + x[k] * s * (contents(wr)[qi] * (1.0 - fr) + contents(wr)[qi + 1] * fr);
+                    }
+                    k = k + 1;
+                }
+                contents(ow)[j] = acc;
+                j = j + 1;
+            }
+        }
+    }
+    unbox_slice(heap, wt);
+    return (out, n);
+}

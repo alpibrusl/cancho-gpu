@@ -1,4 +1,4 @@
-# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token; A3 and A3b built: 11.5 ms a token, the prompt in one pass)
+# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token; A3 and A3b built: 11.5 ms a token, the prompt in one pass; A4a built: two clips from their wav files to the reference's words)
 
 What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Sections 1 to 6 were written before anything was run or any weights downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors); section 7 is the two reference runs, made the same day once the downloads were agreed, and is **[measured]**. It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
 
@@ -35,12 +35,12 @@ Revision `7278e1e7`, two safetensors files, 4.70 GB, 708 tensors, 2,349 M values
   * three 3 x 3 convolutions of stride 2, padding 1, each followed by GELU (erf): 1 to 480 channels, then 480 to 480 twice. 128 x 100 becomes 16 x 13; a full second is **13 tokens**;
   * `conv_out`, a product without bias from 480 x 16 = 7,680 to 1,024, a column of the picture a token; plus sinusoidal positions that **restart at 0 in every piece**;
   * 24 layers of 1,024 wide, 16 heads of 64, feed-forward 4,096 with GELU, layer norms before each half (with weight and bias), biases on every product: Whisper's encoder layer;
-  * **attention in windows of 104 tokens (8 s)**: a token sees only its own window (`n_window_infer` 800 frames);
+  * **attention in windows of 104 tokens (8 s)**: a token sees only its own window (`n_window_infer` 800 frames) **[corrected 2026-11-24, section 15: that is what the configuration says; the reference as it runs attends across the windows, and so does the session]**;
   * `ln_post`, `proj1` (1,024 to 1,024), GELU, `proj2` (1,024 to 2,048).
 * **The language model** (`thinker.model`, 28 layers, 2,031 M values with the embedding and the head): hidden 2,048, 16 query heads over 8 key/value heads of 128, an RMS norm with a weight of 128 on q and on k of each head, no bias anywhere, SwiGLU of 6,144, RMS norms of eps 1e-6, rotary positions of theta 1e6 (the three position rows of its "mrope" are equal for text and audio, so it is the plain rotary embedding), `lm_head` stored beside the embedding (151,936 x 2,048 each).
 * **The prompt:** `<|im_start|>system\n{context}<|im_end|>\n<|im_start|>user\n<|audio_start|>` + one `<|audio_pad|>` a token of audio + `<|audio_end|><|im_end|>\n<|im_start|>assistant\n`; the tower's rows replace the embeddings of the pads. The answer is `language English<asr_text>the words`, greedy, ended by `<|im_end|>` or `<|endoftext|>`. 30 s of audio is 390 audio tokens and about 15 of prompt.
 
-**A doubt found in the code [read]:** the tower's `forward` computes the windows (`cu_seqlens`) and hands them to each layer, but the mask that would apply them (`_prepare_attention_mask`) is not called there: with any attention but `flash_attention_2` the layers would attend across windows. For a clip of 8 s or less there is one window and no doubt; **the first gates use such a clip**, and which behaviour the published numbers have is to be found when the reference runs (A4).
+**A doubt found in the code [read]:** the tower's `forward` computes the windows (`cu_seqlens`) and hands them to each layer, but the mask that would apply them (`_prepare_attention_mask`) is not called there: with any attention but `flash_attention_2` the layers would attend across windows. For a clip of 8 s or less there is one window and no doubt; **the first gates use such a clip**, and which behaviour the published numbers have is to be found when the reference runs (A4). **[Found, section 15: across the windows.]**
 
 ### 2.2 Each piece against what exists **[read from `tests/chx/`, `models/`; the "no new kernel" lines are reckoned until A1 and A2 run]**
 
@@ -250,7 +250,7 @@ $B ids $K 84                                                              # the 
 * **Two things the design got wrong, both corrected there:**
   * `step(l - max + 1e-30)` for "is this column the maximum": on the Metal GPU it was 0 everywhere, the maximum included (the first run chose no id at all; the interpreter and the kernel's GPU comparison on random data did not show it). The kernel now takes `1 - step(max - l)`, which is exact and needs no small number.
   * the mutant "the rotary table a position late" survived with 18 of 18: a shift of every position changes no rotation between two rows. Replaced by "every step at position 0".
-* **Held in the gate without a GPU or the checkpoint:** the four kernels against float64 with seven mutants (`tests/kernels.py`; three first drafts of those mutants died of a refusal to compile and were replaced by ones that die on the numbers), their goldens, the model file's expansion, and `tests/qwen3_asr_step.sh`: the host program builds, refuses with its documented statuses, writes the tables of four steps with the right sizes and bytes, and reads a made-up answer of the device.
+* **Held in the gate without a GPU or the checkpoint:** the four kernels against float64 (`tests/kernels.py`), their goldens, **[corrected 2026-11-24, with A4: this line said the seven mutants were in the gate; the gate runs `tests/kernels.py` without `--mutants`, as it did before these kernels, so the mutants were run by hand: all seven killed, after three first drafts that died of a refusal to compile were replaced]** the model file's expansion, and `tests/qwen3_asr_step.sh`: the host program builds, refuses with its documented statuses, writes the tables of four steps with the right sizes and bytes, and reads a made-up answer of the device.
 * **Not done:** the step's time is from the host's clock around a request, not a profile of its kernels; one clip; the weights directory now holds some matrices twice (A2's files and the stacked ones: 6.3 GB for a 4.7 GB checkpoint); a tie of two maximal logits was not made to happen on the model; the ids past the end token are computed and thrown away (a request is a fixed number of steps).
 
 ## 12. A3b (design, 2026-11-24, written before its code): the prompt in one pass
@@ -298,5 +298,73 @@ $BS ids $K 0
 
 * **The bar is met and the two ways agree** on the long prompt too, though its keys and values are rounded to f16 one way and not the other; on a sequence that means nothing this was reported, not required.
 * **Where the 2.4 s go now:** two loads (about 0.5 s each: 4 GB and 6.3 GB), a pass of 0.17 s, and 100 steps at about 12.5 ms with caches of 512 positions (11.5 at 128). The answer's steps are the larger part of a long clip.
-* **Held in the gate:** `kv_export` against float64 with two mutants (`tests/kernels.py`), its goldens, the two `PRE=1` expansions (`tests/model.sh`), and in `tests/qwen3_asr_step.sh` the tables from a first position and the check from one.
+* **Held in the gate:** `kv_export` against float64 (`tests/kernels.py`; **[corrected with A4]** its two mutants are not in the gate, which runs that test without `--mutants`: run by hand after the PR was opened, both killed), its goldens, the two `PRE=1` expansions (`tests/model.sh`), and in `tests/qwen3_asr_step.sh` the tables from a first position and the check from one.
 * **Not done:** one session for the pass and the steps (two loads, and the weights twice on disk); the long prompt is made up, so nothing says its answer is right, only that the two ways give the same; the clip is still the only real one.
+
+## 14. A4 (design, 2026-11-24, written before its code): from a wav file to words
+
+After A3b the sessions transcribe the reference clip, but from the reference's mel and the reference's token ids. A4 is what is left between a file and a line of text, in two parts.
+
+**[read, before this was written]**
+
+* **The prompt needs no tokeniser.** With no context it is 9 fixed ids (`<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>`), one `<|audio_pad|>` (151676) a tower row, and 6 fixed ids (`<|audio_end|><|im_end|>\n<|im_start|>assistant\n`): read off A0's 85 ids, 9 + 70 + 6. A context (the system text) would need the tokeniser and is not in A4.
+* **The answer is `language <name>` `<asr_text>` (151704) the words, then `<|im_end|>` (151645).** Cut by id; the words are ordinary byte-level BPE tokens.
+* **The checkpoint has no `tokenizer.json`** (it ships `vocab.json` and `merges.txt`), which `src/bpe.cho` reads. Made by hand with the package, a `tokenizer.json` decodes A0's answer to the letter with `cancho-gpu detokenize`; but decoding needs only `vocab.json` (id to token) and the byte-level table of GPT-2, so **the answer is decoded from `vocab.json` in cancho**, and nothing is made by hand.
+* **The mel is Whisper's** (`transformers`' `WhisperFeatureExtractor`, numpy): the samples reflected 200 each side, frames of 400 every 160 under a periodic Hann window, the power of the 201 bins, 128 triangular filters on the Slaney mel scale from 0 to 8,000 Hz with Slaney's norm, `log10` floored at 1e-10, the last frame dropped, floored again at the clip's maximum less 8, then `(x + 4) / 4`. The clip is not padded to 30 s.
+* **The package resamples to 16 kHz with librosa**, whose filter is not reproduced here.
+
+### A4a: the host pieces, each against the reference
+
+| piece | where | check |
+|---|---|---|
+| a wav file: RIFF, PCM of 16 bits or float of 32, any number of channels (their mean), any rate | `tests/qwen_asr/wav.cho` | fixtures in the gate: a mono and a stereo file of a few samples, a truncated one, a format it does not read: each a refusal with its status, none a crash |
+| to 16 kHz when the rate is another: a windowed-sinc filter (Kaiser, stated in the code), in float64 | the same | **the mel of the 24 kHz reference clip resampled here against the reference's (resampled by librosa): reported, not bounded** (two filters); and the transcript below |
+| the mel | `tests/qwen_asr/mel.cho`, float64 on the host | **from the reference's own 16 kHz samples: within 2e-4 of the reference's mel at every value** (it computes in float64 and keeps float32; the values are of order 1). Mutants: the window left out, the last frame kept, the floor at the maximum less 8 left out |
+| the prompt's ids from the number of tower rows | the host program of A3 | equal to A0's 85 ids |
+| the answer's ids to `language` and text | `tests/qwen_asr/answer.cho` | A0's 18 ids give `English` and the sentence, to the letter; an id that is not in the vocabulary, an answer with no `<asr_text>`: refusals |
+| **a clip longer than 8 s** | a second reference run by hand (S0 then A0, three sentences) | **which of the two the reference's tower does, attention in windows of 104 rows or across them (2.1's doubt): the GPU's rows with each mask against the reference's float32 rows. The one that meets A1's bound is the one built; the other must fail it.** Then the transcript, end to end, with the host's own mel |
+
+**The whole of A4a's bound: the two reference clips, from their wav files to their words, through the host's mel, A1, the prompt, A3b and the answer, give the reference's transcripts to the letter.**
+
+**Time is reported for the mel** (a direct transform is 400 x 201 products a frame, 100 frames a second: 8 M a second of audio, in cancho on one core). If 30 s costs more than half a second it becomes two products on the GPU (`docs/roadmap-models.md` G15), not in A4a.
+
+### A4b: `scripts/media transcribe CLIP -o DIR`
+
+The stages as the media program runs its others (`media/`, the stage runner), the sessions given their two lines on their input; the weights written on first use, as umT5's are; `DIR/transcript.txt` and the text on the output. Refusals with the media program's rule tags: no such file, not a wav it reads, no audio, longer than the caches allow, the checkpoint not in the cache, no Metal session. Designed in detail when A4a is in, since its stages are A4a's programs.
+
+**Not in A4:** a context or a forced language (they need the tokeniser on the prompt's side), timestamps (another model), streaming, clips over the 20 minutes the reference cuts at, any container but wav.
+
+## 15. A4a: from a wav file to words **[measured, 2026-11-24, M4 Max]**
+
+`tests/qwen3_asr_front.cho` and its modules in `tests/qwen_asr/` (`wav.cho`, `mel.cho`, `answer.cho`; cancho, no Python), `tests/qwen3_asr_transcribe.sh` (the stages in a row; it needs the GPU and the weights), and a second reference clip made by hand as the first was: three sentences, **16.24 s**, 1,624 frames of mel, 211 tower rows, a prompt of 226 ids, an answer of 62 (`~/.cache/cancho-media/audio-ref/s1.*`, `a1_*`).
+
+**The doubt of 2.1 is settled: the reference attends across the 8 s windows.** On the 16 s clip, from the reference's mel:
+
+| the audio tower's 211 rows against the reference's float32 | mean abs error | rows nearer than the yardstick's (BF16 on MPS: 1.28e-4) |
+|---|---|---|
+| attention over the whole clip | **6.8e-6** | **211 of 211** |
+| attention in windows of 104 rows, as the configuration reads | 3.0e-3 | 0 |
+
+The package on `transformers` without flash-attention never applies the windows it computes. The session does what the reference does; the windows are mutant 5 of `tests/qwen3_asr_audio_gpu.cho`, which fails on this clip (and cannot on the first, which is one window). Whether the model was trained with the windows, and so whether the reference is right, is not something these runs say.
+
+| piece | against the reference | |
+|---|---|---|
+| the mel from the reference's own 16 kHz samples (bound 2e-4) | largest difference **1.9e-5** and 1.7e-5 on the two clips (mean 1.8e-7) | met |
+| the mel from the 24 kHz files, resampled here | largest 0.16 and 0.15, mean 1.6e-3 and 1.3e-3: another filter than librosa's | reported |
+| the prompt's ids for 70 and for 211 rows | the reference's 85 and 226 ids | equal |
+| the answer's ids as text, from `vocab.json` | `English` and both transcripts | to the letter |
+| **the two clips from their 24 kHz wav files, every stage the host's and the sessions'** | **the reference's two transcripts** | **to the letter** |
+
+**Time, cold, every process new, three runs** (`TIMES=1 tests/qwen3_asr_transcribe.sh`):
+
+| | all | the mel (with the resampling) | the tower | the prompt's pass | the answer |
+|---|---|---|---|---|---|
+| the 16.2 s clip, 65 steps of answer (it needs 62) | **2.63, 2.61, 2.61 s** | 0.27 | 0.26 to 0.27 | 0.55 to 0.56 | 1.32 |
+| the 5.4 s clip, 24 steps | 1.85, 1.86, 1.85 s | | | | |
+
+For scale, the reference package transcribes the 16 s clip in 3.7 s in float32 on the CPU and 1.6 s in BF16 on MPS **with its model already loaded**; its load was not timed, so the two are not compared here.
+
+* **The mel alone** is 0.13 s for the 16 s clip from 16 kHz samples: about 0.25 s for 30 s, under the half second that would have sent it to the GPU. The first resampler took 1.6 s for the same clip (a Bessel series of 60 terms at each of 26 M taps); the window is a table now and the mel moved by 9.5e-7.
+* **The answer is a fixed number of steps** (the script's third argument, 192 if not given): a clip whose answer is shorter pays for the rest (3.0 s at 192). The media command is to ask for steps until the end token.
+* **Held in the gate without a GPU or the checkpoint** (`tests/qwen3_asr_front.sh`, 41 checks): the mel within 2e-4 of a fixture the reference's feature extractor made (`tests/qwen_asr/fixture`: 0.2 s of two tones and noise, its second half 100 dB down so that the floor is at work; 4.7e-6), three mutants of the mel far from it, wav files read (stereo PCM of 16 bits, float of 32, a rate of 8 kHz) and refused (8 bits, 4 kHz, an extensible format with no sub-format, a data chunk longer than the file, under 400 samples, not RIFF, four bytes, no file), the prompt's ids, and answers decoded from a made-up vocabulary, with their refusals (no `<asr_text>`, no end, an id with no token, a token outside the alphabet).
+* **Not done:** the resampler's numbers have no test of their own (only that 8 kHz gives twice the samples); the fixture and the two clips are the reference's by hand, with scripts that are not in the repository; two clips, one voice, English, both synthetic speech from S0; no clip over 16 s, so nothing past 256 rows of tower or 448 of prompt was transcribed for real; PCM of 24 bits and every container but wav are refused; the tower's weights are now written once and found by one file's presence, which a half-written directory would fool.

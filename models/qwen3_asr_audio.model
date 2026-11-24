@@ -1,12 +1,11 @@
-# The audio tower of Qwen3-ASR-1.7B (docs/audio.md section 2): three 3 x 3 convolutions of stride 2 with a GELU over the log-mel pieces of a second, `conv_out`, the positions, 24 layers of 1,024 wide (16 heads of 64,
-# attention in windows), `ln_post`, `proj1`, GELU, `proj2`: SP rows of 2,048, as a model file (docs/resident.md section 31).
+# The audio tower of Qwen3-ASR-1.7B (docs/audio.md section 2): three 3 x 3 convolutions of stride 2 with a GELU over the log-mel pieces of a second, `conv_out`, the positions, 24 layers of 1,024 wide (16 heads of 64), `ln_post`, `proj1`, GELU, `proj2`: SP rows of 2,048, as a model file (docs/resident.md section 31).
 #
 #     cancho-gpu-metal-session models/qwen3_asr_audio.model CHX=<tests/chx> CONV3=<examples/cnn/conv3.chx> WORK=<inputs> WDIR=<weights> BP=<pieces> SP=<rows, a multiple of 64, at most 13 BP>
 #
 # The picture: BP pieces of a second side by side, 128 mel bins high, 104 columns a piece (100 frames and 4 of zeros), 4 channels (the mel and three of zeros), in the bordered row layout of the VAE kernels. A stride-2
 # convolution with padding 1 is vae_s2d.chx and a stride-1 conv3 whose weights the host lays out (tests/qwen3_asr_audio_gpu.cho); 104, 52, 26 and 13 columns a piece, the zeros between pieces being each convolution's
 # padding (conv_bias_gelu_erf.chx's mask puts them back). A piece ends as 13 columns of 16 x 480, a column a token (conv_cols.chx). The host writes the positions (they restart in every piece), the attention's mask
-# as the per-head bias of dit_scores_bias.chx (0 inside a window of 104 tokens for a key that is audio, -1e9 elsewhere) and q's weight and bias times 1/8, which is 1/sqrt(64) exactly.
+# as the per-head bias of dit_scores_bias.chx (0 for a key that is audio, -1e9 elsewhere: no windows, as the reference runs, docs/audio.md section 15) and q's weight and bias times 1/8, which is 1/sqrt(64) exactly.
 text CHX = tests/chx
 text CONV3 = examples/cnn/conv3.chx
 text WORK = .
