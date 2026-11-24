@@ -619,3 +619,9 @@ tests/chx/amax_id.chx r=3 nq=4 v1=3 --run
 # docs/audio.md, A3b: the keys and values of a whole pass as the cached step's caches, at 448 rows into 512 positions and small. Held to float64 by tests/kernels.py.
 tests/chx/kv_export.chx s=448 nkv=8 tmax=512
 tests/chx/kv_export.chx s=4 nkv=2 tmax=8 --run
+# S1a (docs/audio.md section 18): sin, and the Snake activation of Qwen3-TTS's codec decoder at its widest (1,536 channels) and narrowest (96, a second of audio)
+tests/chx/sin_scaled.chx r=4 n=8
+tests/chx/sin_scaled.chx r=4 n=8 --run
+tests/chx/snake.chx s=64 c=1536 bn=256
+tests/chx/snake.chx s=24000 c=96 bn=96
+tests/chx/snake.chx s=4 c=16 bn=8 --run

@@ -261,6 +261,9 @@ fn unary_apply(u: int, x: float) -> [] float {
     if u == kinds.tanh() {
         return f32.tanh32(x);
     }
+    if u == kinds.sin() {
+        return f32.sin32(x);
+    }
     if u == kinds.step() {
         if x > 0.0 {
             return 1.0;

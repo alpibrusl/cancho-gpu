@@ -143,6 +143,10 @@ pub fn tanh() -> [] int {
     return 7;
 }
 
+pub fn sin() -> [] int {
+    return 8;
+}
+
 // --- Reduce
 pub fn r_max() -> [] int {
     return 0;

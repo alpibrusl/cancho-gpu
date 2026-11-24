@@ -564,6 +564,10 @@ pub fn tanh32(x: float) -> [] float {
     return round(math.tanh(x));
 }
 
+pub fn sin32(x: float) -> [] float {
+    return round(math.sin(x));
+}
+
 pub fn log32(x: float) -> [] float {
     return round(math.log(x));
 }
