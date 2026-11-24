@@ -6,7 +6,7 @@ set -eu
 cd "$(dirname "$0")/.."
 C="${CANCHO:-cancho}"
 mkdir -p build
-$C build tests/qwen3_asr_audio_gpu.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_asr_audio_gpu 2>&1 | grep -v "^ld: warning" || true
+$C build tests/qwen3_asr_audio_gpu.cho tests/qwen_asr/host.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_asr_audio_gpu 2>&1 | grep -v "^ld: warning" || true
 B=build/qwen3_asr_audio_gpu
 T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT

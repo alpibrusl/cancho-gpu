@@ -5,6 +5,7 @@ import std.fmt;
 import std.io;
 import std.math;
 import files;
+import qasr_host;
 import wenc_st;
 import wenc_codec;
 
@@ -26,172 +27,7 @@ import wenc_codec;
 // pieces are not put back after the first convolution.
 //
 // Built with
-//   cancho build tests/qwen3_asr_audio_gpu.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_asr_audio_gpu
-
-fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
-    io.write_all(io, text);
-    return 0;
-}
-
-fn put_int[&i](io: &!i Io, n: int) -> [io_write] int {
-    region a {
-        let out = alloc_slice[a](24, byte_of(0));
-        var k = 0;
-        var x = n;
-        if x == 0 {
-            out[0] = byte_of(48);
-            k = 1;
-        }
-        while x > 0 {
-            out[k] = byte_of(48 + x % 10);
-            x = x / 10;
-            k = k + 1;
-        }
-        var l = 0;
-        var r = k - 1;
-        while l < r {
-            let tmp = out[l];
-            out[l] = out[r];
-            out[r] = tmp;
-            l = l + 1;
-            r = r - 1;
-        }
-        io.write_all(io, out[0..k]);
-    }
-    return 0;
-}
-
-fn put_float[&i](io: &!i Io, x: float) -> [io_write] int {
-    region a {
-        let out = alloc_slice[a](32, byte_of(0));
-        let n = fmt.float_into(out, x);
-        io.write_all(io, out[0..n]);
-    }
-    return 0;
-}
-
-fn num[&t](text: &t [byte]) -> [] int {
-    if len(text) == 0 || len(text) > 6 {
-        return 0 - 1;
-    }
-    var n = 0;
-    var i = 0;
-    while i < len(text) {
-        let c = int_of(text[i]);
-        if c < 48 || c > 57 {
-            return 0 - 1;
-        }
-        n = n * 10 + (c - 48);
-        i = i + 1;
-    }
-    return n;
-}
-
-fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
-    if len(x) != len(y) {
-        return false;
-    }
-    var i = 0;
-    while i < len(x) {
-        if int_of(x[i]) != int_of(y[i]) {
-            return false;
-        }
-        i = i + 1;
-    }
-    return true;
-}
-
-// ---- paths and files: `iv[0]` counts errors
-
-fn path3[&h, &w, &a, &b](heap: &!h Heap, dir: &w [byte], first: &a [byte], n: int, tail: &b [byte]) -> [heap] buffer.Buffer {
-    var b = buffer.append(heap, buffer.empty(heap, 128), dir);
-    b = buffer.push(heap, b, byte_of(47));
-    b = buffer.append(heap, b, first);
-    if n >= 0 {
-        b = buffer.push_nat(heap, b, n);
-    }
-    b = buffer.append(heap, b, tail);
-    return b;
-}
-
-// `dir/first<n>tail` as halves (`half`) or singles; `n` < 0 leaves the number out
-fn put_file[&h, &f, &w, &a, &b, &v, &q](heap: &!h Heap, fs: &f Fs(""), dir: &w [byte], first: &a [byte], n: int, tail: &b [byte], half: bool, values: &v [float], iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
-    let p = path3(heap, dir, first, n, tail);
-    borrow p as &pb in {
-        var r = 0;
-        if half {
-            r = wenc_codec.write_f16(heap, fs, buffer.bytes(pb), values);
-        } else {
-            r = wenc_codec.write_f32(heap, fs, buffer.bytes(pb), values);
-        }
-        if r != 0 {
-            iv[0] = iv[0] + 1;
-        }
-    }
-    buffer.drop(heap, p);
-    return 0;
-}
-
-// ---- the checkpoint: two shards, every tensor BF16
-
-fn name3[&h, &a, &b](heap: &!h Heap, first: &a [byte], n: int, tail: &b [byte]) -> [heap] buffer.Buffer {
-    var out = buffer.append(heap, buffer.empty(heap, 128), "thinker.audio_tower.");
-    out = buffer.append(heap, out, first);
-    if n >= 0 {
-        out = buffer.push_nat(heap, out, n);
-    }
-    out = buffer.append(heap, out, tail);
-    return out;
-}
-
-// the tensor `thinker.audio_tower.<first><n><tail>` as binary64 from whichever shard holds it: `expect` values, or an error counted in `iv[0]`
-fn tensor[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], first: &a [byte], n: int, tail: &b [byte], expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
-    let name = name3(heap, first, n, tail);
-    var out = box_slice(heap, 1, 0.0);
-    var found = false;
-    var shard = 1;
-    while shard <= 2 && found == false {
-        let sp = path3(heap, snap, "model-0000", shard, "-of-00002.safetensors");
-        borrow sp as &spb in {
-            borrow name as &nb in {
-                let (v, cnt, ok) = wenc_st.load_bf16(heap, fs, buffer.bytes(spb), buffer.bytes(nb));
-                if ok == 0 && cnt == expect {
-                    unbox_slice(heap, out);
-                    out = v;
-                    found = true;
-                } else {
-                    unbox_slice(heap, v);
-                }
-            }
-        }
-        buffer.drop(heap, sp);
-        shard = shard + 1;
-    }
-    buffer.drop(heap, name);
-    if found == false {
-        iv[0] = iv[0] + 1;
-    }
-    return out;
-}
-
-// copy a tensor to a file, scaled
-fn copy[&h, &f, &p, &w, &a, &b, &c, &d, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], first: &a [byte], n: int, tail: &b [byte], expect: int, scale: float, wdir: &w [byte], out_first: &c [byte], out_n: int, out_tail: &d [byte], half: bool, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
-    let v = tensor(heap, fs, snap, first, n, tail, expect, iv);
-    if scale != 1.0 {
-        borrow mut v as &!vw in {
-            var i = 0;
-            while i < len(contents(vw)) {
-                contents(vw)[i] = contents(vw)[i] * scale;
-                i = i + 1;
-            }
-        }
-    }
-    borrow v as &vr in {
-        put_file(heap, fs, wdir, out_first, out_n, out_tail, half, contents(vr), iv);
-    }
-    unbox_slice(heap, v);
-    return 0;
-}
+//   cancho build tests/qwen3_asr_audio_gpu.cho tests/qwen_asr/host.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_asr_audio_gpu
 
 // the (shift, half) of an original tap k of a stride-2 axis with padding 1: output i reads 2i - 1 (the pair i - 1, its second half), 2i and 2i + 1 (the pair i)
 fn tap_shift(k: int, vae: bool) -> [] int {
@@ -223,7 +59,7 @@ fn tap_half(k: int, vae: bool) -> [] int {
 
 // a stride-2 3 x 3 weight `[480, cin, 3, 3]` as a stride-1 3 x 3 convolution over 4 `cpad` channels `(a, b, channel)`: `[480, 9 * 4 * cpad]`, tap-major (conv3.chx: column (3 dy + dx) * 4 cpad + (2 a + b) * cpad + ch)
 fn conv_weights[&h, &f, &p, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], index: int, cin: int, cpad: int, mutant: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
-    let w = tensor(heap, fs, snap, "conv2d", index, ".weight", 480 * cin * 9, iv);
+    let w = qasr_host.tensor(heap, fs, snap, "thinker.audio_tower.", "conv2d", index, ".weight", 480 * cin * 9, iv);
     let out = box_slice(heap, 480 * 9 * 4 * cpad, 0.0);
     borrow w as &wr in {
         borrow mut out as &!ow in {
@@ -256,13 +92,9 @@ fn conv_weights[&h, &f, &p, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], 
     return out;
 }
 
-fn round64(n: int) -> [] int {
-    return (n + 63) / 64 * 64;
-}
-
 // the rows of an h x w picture in the bordered layout, rounded up to 64
 fn rows_of(h: int, w: int) -> [] int {
-    return round64((h + 2) * (w + 2));
+    return qasr_host.round64((h + 2) * (w + 2));
 }
 
 // the tokens a piece of `n` frames gives (three convolutions of stride 2 with padding 1)
@@ -290,7 +122,7 @@ fn put_cmask[&h, &f, &w, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], ind
         }
     }
     borrow m as &mr in {
-        put_file(heap, fs, work, "cmask", index, ".f32", false, contents(mr), iv);
+        qasr_host.put_file(heap, fs, work, "cmask", index, ".f32", false, contents(mr), iv);
     }
     unbox_slice(heap, m);
     return 0;
@@ -308,14 +140,14 @@ fn weights[&i, &h, &f, &p, &w, &q](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), sn
         }
         let cw = conv_weights(heap, fs, snap, c + 1, cin, cpad, mutant, iv);
         borrow cw as &cr in {
-            put_file(heap, fs, wdir, "cv", c, ".f16", true, contents(cr), iv);
+            qasr_host.put_file(heap, fs, wdir, "cv", c, ".f16", true, contents(cr), iv);
         }
         unbox_slice(heap, cw);
-        copy(heap, fs, snap, "conv2d", c + 1, ".bias", 480, 1.0, wdir, "cb", c, ".f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "conv2d", c + 1, ".bias", 480, 1.0, wdir, "cb", c, ".f32", false, iv);
         c = c + 1;
     }
     // conv_out [1024, 480 * 16], column (channel, bin) -> (bin, channel)
-    let co = tensor(heap, fs, snap, "conv_out", 0 - 1, ".weight", 1024 * 7680, iv);
+    let co = qasr_host.tensor(heap, fs, snap, "thinker.audio_tower.", "conv_out", 0 - 1, ".weight", 1024 * 7680, iv);
     let cp = box_slice(heap, 1024 * 7680, 0.0);
     borrow co as &cor in {
         borrow mut cp as &!cpw in {
@@ -337,7 +169,7 @@ fn weights[&i, &h, &f, &p, &w, &q](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), sn
         }
     }
     borrow cp as &cpr in {
-        put_file(heap, fs, wdir, "conv_out", 0 - 1, ".f16", true, contents(cpr), iv);
+        qasr_host.put_file(heap, fs, wdir, "conv_out", 0 - 1, ".f16", true, contents(cpr), iv);
     }
     unbox_slice(heap, co);
     unbox_slice(heap, cp);
@@ -349,53 +181,53 @@ fn weights[&i, &h, &f, &p, &w, &q](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), sn
     var l = 0;
     while l < 24 {
         let u = 10 + 10 * l;
-        copy(heap, fs, snap, "layers.", l, ".self_attn.q_proj.weight", 1024 * 1024, qs, wdir, "w", u, ".f16", true, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.q_proj.bias", 1024, qs, wdir, "w", u, "_b.f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.k_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 1, ".f16", true, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.k_proj.bias", 1024, 1.0, wdir, "w", u + 1, "_b.f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.v_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 2, ".f16", true, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.v_proj.bias", 1024, 1.0, wdir, "w", u + 2, "_b.f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.out_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 3, ".f16", true, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn.out_proj.bias", 1024, 1.0, wdir, "w", u + 3, "_b.f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".fc2.weight", 1024 * 4096, 1.0, wdir, "w", u + 4, ".f16", true, iv);
-        copy(heap, fs, snap, "layers.", l, ".fc2.bias", 1024, 1.0, wdir, "w", u + 4, "_b.f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".fc1.weight", 4096 * 1024, 1.0, wdir, "f1_", l, ".f16", true, iv);
-        copy(heap, fs, snap, "layers.", l, ".fc1.bias", 4096, 1.0, wdir, "f1_", l, "_b.f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn_layer_norm.weight", 1024, 1.0, wdir, "n1w", l, ".f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".self_attn_layer_norm.bias", 1024, 1.0, wdir, "n1b", l, ".f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".final_layer_norm.weight", 1024, 1.0, wdir, "n2w", l, ".f32", false, iv);
-        copy(heap, fs, snap, "layers.", l, ".final_layer_norm.bias", 1024, 1.0, wdir, "n2b", l, ".f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.q_proj.weight", 1024 * 1024, qs, wdir, "w", u, ".f16", true, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.q_proj.bias", 1024, qs, wdir, "w", u, "_b.f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.k_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 1, ".f16", true, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.k_proj.bias", 1024, 1.0, wdir, "w", u + 1, "_b.f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.v_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 2, ".f16", true, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.v_proj.bias", 1024, 1.0, wdir, "w", u + 2, "_b.f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.out_proj.weight", 1024 * 1024, 1.0, wdir, "w", u + 3, ".f16", true, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn.out_proj.bias", 1024, 1.0, wdir, "w", u + 3, "_b.f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".fc2.weight", 1024 * 4096, 1.0, wdir, "w", u + 4, ".f16", true, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".fc2.bias", 1024, 1.0, wdir, "w", u + 4, "_b.f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".fc1.weight", 4096 * 1024, 1.0, wdir, "f1_", l, ".f16", true, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".fc1.bias", 4096, 1.0, wdir, "f1_", l, "_b.f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn_layer_norm.weight", 1024, 1.0, wdir, "n1w", l, ".f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".self_attn_layer_norm.bias", 1024, 1.0, wdir, "n1b", l, ".f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".final_layer_norm.weight", 1024, 1.0, wdir, "n2w", l, ".f32", false, iv);
+        qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "layers.", l, ".final_layer_norm.bias", 1024, 1.0, wdir, "n2b", l, ".f32", false, iv);
         l = l + 1;
     }
-    copy(heap, fs, snap, "ln_post", 0 - 1, ".weight", 1024, 1.0, wdir, "lnpw", 0 - 1, ".f32", false, iv);
-    copy(heap, fs, snap, "ln_post", 0 - 1, ".bias", 1024, 1.0, wdir, "lnpb", 0 - 1, ".f32", false, iv);
-    copy(heap, fs, snap, "proj1", 0 - 1, ".weight", 1024 * 1024, 1.0, wdir, "proj1", 0 - 1, ".f16", true, iv);
-    copy(heap, fs, snap, "proj1", 0 - 1, ".bias", 1024, 1.0, wdir, "proj1", 0 - 1, "_b.f32", false, iv);
-    copy(heap, fs, snap, "proj2", 0 - 1, ".weight", 2048 * 1024, 1.0, wdir, "w", 5, ".f16", true, iv);
-    copy(heap, fs, snap, "proj2", 0 - 1, ".bias", 2048, 1.0, wdir, "w", 5, "_b.f32", false, iv);
+    qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "ln_post", 0 - 1, ".weight", 1024, 1.0, wdir, "lnpw", 0 - 1, ".f32", false, iv);
+    qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "ln_post", 0 - 1, ".bias", 1024, 1.0, wdir, "lnpb", 0 - 1, ".f32", false, iv);
+    qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "proj1", 0 - 1, ".weight", 1024 * 1024, 1.0, wdir, "proj1", 0 - 1, ".f16", true, iv);
+    qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "proj1", 0 - 1, ".bias", 1024, 1.0, wdir, "proj1", 0 - 1, "_b.f32", false, iv);
+    qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "proj2", 0 - 1, ".weight", 2048 * 1024, 1.0, wdir, "w", 5, ".f16", true, iv);
+    qasr_host.copy(heap, fs, snap, "thinker.audio_tower.", "proj2", 0 - 1, ".bias", 2048, 1.0, wdir, "w", 5, "_b.f32", false, iv);
     return 0;
 }
 
 fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
     let na = arg_count(args);
     if na != 7 && na != 8 {
-        put(io, "usage: qwen3_asr_audio_gpu prepare <snapshot dir> <weights dir> <work dir> <mel.f32> <frames> [<mutant 1-4>]\n");
+        qasr_host.put(io, "usage: qwen3_asr_audio_gpu prepare <snapshot dir> <weights dir> <work dir> <mel.f32> <frames> [<mutant 1-4>]\n");
         return 100;
     }
     let snap = arg(args, 2);
     let wdir = arg(args, 3);
     let work = arg(args, 4);
-    let frames = num(arg(args, 6));
+    let frames = qasr_host.num(arg(args, 6));
     var mutant = 0;
     if na == 8 {
-        mutant = num(arg(args, 7));
+        mutant = qasr_host.num(arg(args, 7));
     }
     if frames < 1 || frames > 120000 || mutant < 0 || mutant > 4 {
-        put(io, "frames is 1 to 120000 (20 minutes) and a mutant 1 to 4\n");
+        qasr_host.put(io, "frames is 1 to 120000 (20 minutes) and a mutant 1 to 4\n");
         return 101;
     }
     if files.path_ok(fs, snap) == false || files.path_ok(fs, wdir) == false || files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 5)) == false {
-        put(io, "the paths are absolute\n");
+        qasr_host.put(io, "the paths are absolute\n");
         return 102;
     }
     let pieces = (frames + 99) / 100;
@@ -404,7 +236,7 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
         tail = 100;
     }
     let tokens = (pieces - 1) * 13 + tokens_of(tail);
-    let sp = round64(tokens);
+    let sp = qasr_host.round64(tokens);
     let bp = (sp + 12) / 13;
     let iv = box_slice(heap, 1, 0);
     var status = 0;
@@ -413,7 +245,7 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
         // the picture: 128 bins high, 104 columns a piece (100 frames and 4 of zeros), 4 channels (the mel and three of zeros)
         let (mel, n) = wenc_st.load_raw(heap, fs, arg(args, 5));
         if n != 128 * frames {
-            put(io, "the mel is not 128 x frames singles\n");
+            qasr_host.put(io, "the mel is not 128 x frames singles\n");
             status = 103;
         } else {
             let w0 = 104 * bp;
@@ -433,7 +265,7 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
                 }
             }
             borrow pic as &pr in {
-                put_file(heap, fs, work, "mel", 0 - 1, ".f32", false, contents(pr), q);
+                qasr_host.put_file(heap, fs, work, "mel", 0 - 1, ".f32", false, contents(pr), q);
             }
             unbox_slice(heap, pic);
             // the masks of the three convolutions' outputs: 50 of 52, 25 of 26, 13 of 13 columns a piece
@@ -464,7 +296,7 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
                 }
             }
             borrow pos as &pr in {
-                put_file(heap, fs, work, "pos", 0 - 1, ".f32", false, contents(pr), q);
+                qasr_host.put_file(heap, fs, work, "pos", 0 - 1, ".f32", false, contents(pr), q);
             }
             unbox_slice(heap, pos);
             // the attention's mask as the per-head bias [16 * SP, SP]: 0 for a key that is audio and in the query's window of 104 tokens (8 s), -1e9 elsewhere
@@ -487,28 +319,28 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
                 }
             }
             borrow am as &ar in {
-                put_file(heap, fs, work, "amask", 0 - 1, ".f32", false, contents(ar), q);
+                qasr_host.put_file(heap, fs, work, "amask", 0 - 1, ".f32", false, contents(ar), q);
             }
             unbox_slice(heap, am);
             let ones = box_slice(heap, sp, 1.0);
             borrow ones as &or in {
-                put_file(heap, fs, work, "ones", 0 - 1, ".f32", false, contents(or), q);
+                qasr_host.put_file(heap, fs, work, "ones", 0 - 1, ".f32", false, contents(or), q);
             }
             unbox_slice(heap, ones);
             weights(io, heap, fs, snap, wdir, mutant, q);
             if q[0] != 0 {
-                put(io, "a tensor of the checkpoint was not found or a file could not be written: ");
-                put_int(io, q[0]);
-                put(io, "\n");
+                qasr_host.put(io, "a tensor of the checkpoint was not found or a file could not be written: ");
+                qasr_host.put_int(io, q[0]);
+                qasr_host.put(io, "\n");
                 status = 104;
             } else {
-                put(io, "BP=");
-                put_int(io, bp);
-                put(io, " SP=");
-                put_int(io, sp);
-                put(io, " tokens ");
-                put_int(io, tokens);
-                put(io, "\n");
+                qasr_host.put(io, "BP=");
+                qasr_host.put_int(io, bp);
+                qasr_host.put(io, " SP=");
+                qasr_host.put_int(io, sp);
+                qasr_host.put(io, " tokens ");
+                qasr_host.put_int(io, tokens);
+                qasr_host.put(io, "\n");
             }
         }
         unbox_slice(heap, mel);
@@ -517,32 +349,25 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
     return status;
 }
 
-fn abs(x: float) -> [] float {
-    if x < 0.0 {
-        return 0.0 - x;
-    }
-    return x;
-}
-
 fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
     if arg_count(args) != 6 {
-        put(io, "usage: qwen3_asr_audio_gpu compare <work dir> <reference rows .f32> <yardstick rows .f32> <tokens>\n");
+        qasr_host.put(io, "usage: qwen3_asr_audio_gpu compare <work dir> <reference rows .f32> <yardstick rows .f32> <tokens>\n");
         return 100;
     }
-    let tokens = num(arg(args, 5));
+    let tokens = qasr_host.num(arg(args, 5));
     if tokens < 1 {
-        put(io, "tokens is a positive number\n");
+        qasr_host.put(io, "tokens is a positive number\n");
         return 101;
     }
-    let sp = round64(tokens);
-    let rp = path3(heap, arg(args, 2), "rows", 0 - 1, ".f32");
+    let sp = qasr_host.round64(tokens);
+    let rp = qasr_host.path3(heap, arg(args, 2), "rows", 0 - 1, ".f32");
     var status = 105;
     borrow rp as &rpb in {
         let (got, n) = wenc_st.load_raw(heap, fs, buffer.bytes(rpb));
         let (want, m) = wenc_st.load_raw(heap, fs, arg(args, 3));
         let (yard, y) = wenc_st.load_raw(heap, fs, arg(args, 4));
         if n != sp * 2048 || m != tokens * 2048 || y != tokens * 2048 {
-            put(io, "the session's rows, the reference or the yardstick has the wrong size\n");
+            qasr_host.put(io, "the session's rows, the reference or the yardstick has the wrong size\n");
             status = 106;
         } else {
             var sum_g = 0.0;
@@ -562,8 +387,8 @@ fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
                             var c = 0;
                             while c < 2048 {
                                 let b = contents(wr)[r * 2048 + c];
-                                let dg = abs(contents(gr)[r * 2048 + c] - b);
-                                let dy = abs(contents(yr)[r * 2048 + c] - b);
+                                let dg = qasr_host.abs(contents(gr)[r * 2048 + c] - b);
+                                let dy = qasr_host.abs(contents(yr)[r * 2048 + c] - b);
                                 // a NaN fails every comparison: count it as far
                                 if dg >= 0.0 == false {
                                     bad = true;
@@ -590,21 +415,21 @@ fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
                 }
             }
             let cnt = float_of(tokens * 2048);
-            put(io, "rows against the reference's float32 (rms ");
-            put_float(io, sqrt(ss / cnt));
-            put(io, "): mean abs error ");
-            put_float(io, sum_g / cnt);
-            put(io, ", the yardstick's (BF16 on MPS) ");
-            put_float(io, sum_y / cnt);
-            put(io, "; worst element ");
-            put_float(io, max_g);
-            put(io, ", the yardstick's ");
-            put_float(io, max_y);
-            put(io, "; rows nearer than the yardstick's: ");
-            put_int(io, nearer);
-            put(io, " of ");
-            put_int(io, tokens);
-            put(io, "\n");
+            qasr_host.put(io, "rows against the reference's float32 (rms ");
+            qasr_host.put_float(io, sqrt(ss / cnt));
+            qasr_host.put(io, "): mean abs error ");
+            qasr_host.put_float(io, sum_g / cnt);
+            qasr_host.put(io, ", the yardstick's (BF16 on MPS) ");
+            qasr_host.put_float(io, sum_y / cnt);
+            qasr_host.put(io, "; worst element ");
+            qasr_host.put_float(io, max_g);
+            qasr_host.put(io, ", the yardstick's ");
+            qasr_host.put_float(io, max_y);
+            qasr_host.put(io, "; rows nearer than the yardstick's: ");
+            qasr_host.put_int(io, nearer);
+            qasr_host.put(io, " of ");
+            qasr_host.put_int(io, tokens);
+            qasr_host.put(io, "\n");
             status = 1;
             if nearer == tokens && bad == false {
                 status = 0;
@@ -619,13 +444,13 @@ fn compare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
 }
 
 fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
-    if arg_count(args) >= 2 && is_text(arg(args, 1), "prepare") {
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "prepare") {
         return prepare(io, heap, fs, args);
     }
-    if arg_count(args) >= 2 && is_text(arg(args, 1), "compare") {
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "compare") {
         return compare(io, heap, fs, args);
     }
-    put(io, "usage: qwen3_asr_audio_gpu prepare ... | compare ...\n");
+    qasr_host.put(io, "usage: qwen3_asr_audio_gpu prepare ... | compare ...\n");
     return 100;
 }
 

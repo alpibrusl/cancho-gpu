@@ -1,0 +1,184 @@
+edition 9;
+
+module qasr_host;
+
+import std.buffer;
+import std.fmt;
+import std.io;
+import wenc_st;
+import wenc_codec;
+
+// `qasr_host` -- what the host programs of Qwen3-ASR's sessions share (tests/qwen3_asr_audio_gpu.cho, tests/qwen3_asr_text_gpu.cho; docs/audio.md): printing, the arguments, paths, and the checkpoint's tensors
+// (two shards, every tensor BF16) copied to the files a session reads, as halves or singles. `iv[0]` counts errors: a tensor that is not there or has another size, a file that could not be written.
+
+pub fn put[&i](io: &!i Io, text: &static [byte]) -> [io_write] int {
+    io.write_all(io, text);
+    return 0;
+}
+
+pub fn put_int[&i](io: &!i Io, n: int) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](24, byte_of(0));
+        var k = 0;
+        var x = n;
+        if x == 0 {
+            out[0] = byte_of(48);
+            k = 1;
+        }
+        while x > 0 {
+            out[k] = byte_of(48 + x % 10);
+            x = x / 10;
+            k = k + 1;
+        }
+        var l = 0;
+        var r = k - 1;
+        while l < r {
+            let tmp = out[l];
+            out[l] = out[r];
+            out[r] = tmp;
+            l = l + 1;
+            r = r - 1;
+        }
+        io.write_all(io, out[0..k]);
+    }
+    return 0;
+}
+
+pub fn put_float[&i](io: &!i Io, x: float) -> [io_write] int {
+    region a {
+        let out = alloc_slice[a](32, byte_of(0));
+        let n = fmt.float_into(out, x);
+        io.write_all(io, out[0..n]);
+    }
+    return 0;
+}
+
+pub fn num[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 6 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+pub fn is_text[&a, &b](x: &a [byte], y: &b [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+pub fn path3[&h, &w, &a, &b](heap: &!h Heap, dir: &w [byte], first: &a [byte], n: int, tail: &b [byte]) -> [heap] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 128), dir);
+    b = buffer.push(heap, b, byte_of(47));
+    b = buffer.append(heap, b, first);
+    if n >= 0 {
+        b = buffer.push_nat(heap, b, n);
+    }
+    b = buffer.append(heap, b, tail);
+    return b;
+}
+
+// `dir/first<n>tail` as halves (`half`) or singles; `n` < 0 leaves the number out
+pub fn put_file[&h, &f, &w, &a, &b, &v, &q](heap: &!h Heap, fs: &f Fs(""), dir: &w [byte], first: &a [byte], n: int, tail: &b [byte], half: bool, values: &v [float], iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let p = path3(heap, dir, first, n, tail);
+    borrow p as &pb in {
+        var r = 0;
+        if half {
+            r = wenc_codec.write_f16(heap, fs, buffer.bytes(pb), values);
+        } else {
+            r = wenc_codec.write_f32(heap, fs, buffer.bytes(pb), values);
+        }
+        if r != 0 {
+            iv[0] = iv[0] + 1;
+        }
+    }
+    buffer.drop(heap, p);
+    return 0;
+}
+
+pub fn name3[&h, &r, &a, &b](heap: &!h Heap, root: &r [byte], first: &a [byte], n: int, tail: &b [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.append(heap, buffer.empty(heap, 128), root);
+    out = buffer.append(heap, out, first);
+    if n >= 0 {
+        out = buffer.push_nat(heap, out, n);
+    }
+    out = buffer.append(heap, out, tail);
+    return out;
+}
+
+// the tensor `<root><first><n><tail>` as binary64 from whichever shard holds it: `expect` values, or an error counted in `iv[0]`
+pub fn tensor[&h, &f, &p, &r, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], root: &r [byte], first: &a [byte], n: int, tail: &b [byte], expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let name = name3(heap, root, first, n, tail);
+    var out = box_slice(heap, 1, 0.0);
+    var found = false;
+    var shard = 1;
+    while shard <= 2 && found == false {
+        let sp = path3(heap, snap, "model-0000", shard, "-of-00002.safetensors");
+        borrow sp as &spb in {
+            borrow name as &nb in {
+                let (v, cnt, ok) = wenc_st.load_bf16(heap, fs, buffer.bytes(spb), buffer.bytes(nb));
+                if ok == 0 && cnt == expect {
+                    unbox_slice(heap, out);
+                    out = v;
+                    found = true;
+                } else {
+                    unbox_slice(heap, v);
+                }
+            }
+        }
+        buffer.drop(heap, sp);
+        shard = shard + 1;
+    }
+    buffer.drop(heap, name);
+    if found == false {
+        iv[0] = iv[0] + 1;
+    }
+    return out;
+}
+
+// copy a tensor to a file, scaled
+pub fn copy[&h, &f, &p, &r, &w, &a, &b, &c, &d, &q](heap: &!h Heap, fs: &f Fs(""), snap: &p [byte], root: &r [byte], first: &a [byte], n: int, tail: &b [byte], expect: int, scale: float, wdir: &w [byte], out_first: &c [byte], out_n: int, out_tail: &d [byte], half: bool, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let v = tensor(heap, fs, snap, root, first, n, tail, expect, iv);
+    if scale != 1.0 {
+        borrow mut v as &!vw in {
+            var i = 0;
+            while i < len(contents(vw)) {
+                contents(vw)[i] = contents(vw)[i] * scale;
+                i = i + 1;
+            }
+        }
+    }
+    borrow v as &vr in {
+        put_file(heap, fs, wdir, out_first, out_n, out_tail, half, contents(vr), iv);
+    }
+    unbox_slice(heap, v);
+    return 0;
+}
+
+pub fn round64(n: int) -> [] int {
+    return (n + 63) / 64 * 64;
+}
+
+pub fn abs(x: float) -> [] float {
+    if x < 0.0 {
+        return 0.0 - x;
+    }
+    return x;
+}

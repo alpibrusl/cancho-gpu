@@ -33,6 +33,7 @@ tests/gguf.sh
 tests/safetensors.sh
 CANCHO="$CANCHO" tests/wan_enc.sh
 CANCHO="$CANCHO" tests/qwen3_asr_audio.sh
+CANCHO="$CANCHO" tests/qwen3_asr_text.sh
 tests/tokenizer.sh
 python3 tests/tokenizer_hf.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/detokenize_hf.py "${CANCHO_GPU:-build/cancho-gpu}"

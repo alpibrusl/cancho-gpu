@@ -1,4 +1,4 @@
-# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made and A1, the audio tower, built)
+# Audio: recognition, then speech, then music (design, 2026-11-24; the reference runs made; A1 and A2 built: the reference clip is transcribed on the GPU, token for token)
 
 What was **read** (the Hub's API, configuration files, the headers of the safetensors files, the models' reference code, this repository's sources) is marked **[read]**; arithmetic or judgment on it **[reckoned]**. **Sections 1 to 6 were written before anything was run or any weights downloaded** (only the first bytes of each safetensors file, which hold the names and shapes of its tensors); section 7 is the two reference runs, made the same day once the downloads were agreed, and is **[measured]**. It replaces `docs/diffusion.md` 6.2, which found no usable model, and follows `docs/hf-survey.md`, which named these two on 2026-11-14.
 
@@ -155,3 +155,28 @@ $B compare $K $A/a0_f32_tower.f32 $A/a0_bf16mps_tower.f32 70
 * **Held in the gate without a GPU or the checkpoint:** the two kernels against float64 with six mutants (`tests/vit_pieces.py`), their goldens, the model file's expansion (`tests/model.sh`), and `tests/qwen3_asr_audio.sh`: the host program builds, refuses with the status it documents (9 cases) and writes the session's inputs at their sizes for a clip of one second.
 * **What 2.2 got wrong:** "reckoned none" for the convolutions; two small kernels were needed (corrected there). The rest of the tower is existing kernels: `vae_s2d`, `conv3` and `conv3_k16`, `gemm_mma`, `vae_bias`, `vit_ln`, `vit_bias_gelu_erf`, `dit_scores_bias`, `dit_stats`, `dit_pv`, `dit_to_f16`, `dit_add`.
 * **Not done:** a clip longer than 8 s (more than one attention window: 2.1's doubt, and the mutant "the windows' mask dropped" that 2.3 named, which needs one); the mel is the reference's, not the host's (A4); the BF16 reader has no test of its own in the gate (it is exercised only when the checkpoint is there); one clip.
+
+## 9. A2: the transcript, a whole pass a token **[measured, 2026-11-24, M4 Max]**
+
+`models/qwen3_asr_text.model` (119 lines, 1,973 expanded): the 28 layers, the final norm and the head over the whole sequence, the Qwen-Image transformer's layer without its modulation. **No new kernel**: `rmsnorm_rows` (the stream's norms, and q and k of each head as rows of 128), `gemm_mma`, `dit_rope16`, `dit_scores_mma`, `dit_stats_o`, `dit_pv_mma`, `dit_to_f16`, `dit_swiglu`, `dit_add`. Its host side is `tests/qwen3_asr_text_gpu.cho` (cancho); what it shares with A1's is `tests/qwen_asr/host.cho`. The audio rows are A1's, from the GPU: the two sessions in a row.
+
+```sh
+B=build/qwen3_asr_text_gpu; A=~/.cache/cancho-media/audio-ref; W=~/.cache/cancho-media/qwen3-asr-text-f16; K=<a work directory>
+$B weights <the snapshot's directory> $W                                  # once: 4.0 GB in 7 s
+$B inputs $W $K $A/a0_seq.txt <A1's work directory>/rows.f32              # prints SP=128 tokens 103
+printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_asr_text.model CHX=$PWD/tests/chx WORK=$K WDIR=$W SP=128
+$B check $K $A/a0_seq.txt 85 $A/a0_logits.f32
+tests/qwen3_asr_greedy.sh $W <another work directory> $A/a0_prompt.txt <A1's work directory>/rows.f32
+```
+
+| | arg max equal to the next id, of 18 | logits against the reference's float32 (largest 50.05) |
+|---|---|---|
+| **teacher-forced on the reference's sequence (85 of prompt and audio, 18 of answer)** | **18** | worst difference 0.123, smallest cosine of a row 0.999974 |
+| mutant 1: no causal mask | 4 | worst 35.2 |
+| mutant 2: every row at position 0 | 0 | worst 42.1 |
+| mutant 3: query head h reads key/value head h % 8, not h / 2 | 0 | |
+
+* **The greedy answer from the prompt alone, one pass a token, is the reference's 18 ids:** `language English<asr_text>The quick brown fox jumps over the lazy dog near the quiet river.<|im_end|>`. Both halves of 2.3's bound are met: the same tokens, and the arg max equal at every position teacher-forced.
+* **Time:** a pass 0.93 s with its compile and the upload of 4 GB; the greedy loop 11.3 s for 18 tokens (0.63 s a token: a new process, the inputs and the 78 MB of logits to the host each time). 2.3 reckoned "tens of milliseconds" a pass for the products; the pass alone was not timed apart from the process. This is the form to check, not to use: A3 is the cached step.
+* **Held in the gate without a GPU or the checkpoint:** the model file's expansion (`tests/model.sh`) and `tests/qwen3_asr_text.sh`: the host program builds, refuses with its documented statuses (16 cases), and from a made-up embedding table writes a pass's inputs at their sizes with the right bytes (the halves 1.0, -2.0 and 2^-24 decoded, the audio row in its place, the causal mask).
+* **Not done:** the ids are the reference's: the prompt is not built or tokenised here, nor the answer turned back into text (A4, with `src/bpe.cho`); one clip, 5.4 s, English; the logits' 0.123 of 50 was not compared with what the reference's own BF16 gives; `tests/qwen3_asr_greedy.sh` is a shell loop and has no test of its own.
