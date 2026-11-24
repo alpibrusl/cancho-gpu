@@ -300,3 +300,36 @@ $BS ids $K 0
 * **Where the 2.4 s go now:** two loads (about 0.5 s each: 4 GB and 6.3 GB), a pass of 0.17 s, and 100 steps at about 12.5 ms with caches of 512 positions (11.5 at 128). The answer's steps are the larger part of a long clip.
 * **Held in the gate:** `kv_export` against float64 (`tests/kernels.py`; **[corrected with A4]** its two mutants are not in the gate, which runs that test without `--mutants`: run by hand after the PR was opened, both killed), its goldens, the two `PRE=1` expansions (`tests/model.sh`), and in `tests/qwen3_asr_step.sh` the tables from a first position and the check from one.
 * **Not done:** one session for the pass and the steps (two loads, and the weights twice on disk); the long prompt is made up, so nothing says its answer is right, only that the two ways give the same; the clip is still the only real one.
+
+## 14. A4 (design, 2026-11-24, written before its code): from a wav file to words
+
+After A3b the sessions transcribe the reference clip, but from the reference's mel and the reference's token ids. A4 is what is left between a file and a line of text, in two parts.
+
+**[read, before this was written]**
+
+* **The prompt needs no tokeniser.** With no context it is 9 fixed ids (`<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>`), one `<|audio_pad|>` (151676) a tower row, and 6 fixed ids (`<|audio_end|><|im_end|>\n<|im_start|>assistant\n`): read off A0's 85 ids, 9 + 70 + 6. A context (the system text) would need the tokeniser and is not in A4.
+* **The answer is `language <name>` `<asr_text>` (151704) the words, then `<|im_end|>` (151645).** Cut by id; the words are ordinary byte-level BPE tokens.
+* **The checkpoint has no `tokenizer.json`** (it ships `vocab.json` and `merges.txt`), which `src/bpe.cho` reads. Made by hand with the package, a `tokenizer.json` decodes A0's answer to the letter with `cancho-gpu detokenize`; but decoding needs only `vocab.json` (id to token) and the byte-level table of GPT-2, so **the answer is decoded from `vocab.json` in cancho**, and nothing is made by hand.
+* **The mel is Whisper's** (`transformers`' `WhisperFeatureExtractor`, numpy): the samples reflected 200 each side, frames of 400 every 160 under a periodic Hann window, the power of the 201 bins, 128 triangular filters on the Slaney mel scale from 0 to 8,000 Hz with Slaney's norm, `log10` floored at 1e-10, the last frame dropped, floored again at the clip's maximum less 8, then `(x + 4) / 4`. The clip is not padded to 30 s.
+* **The package resamples to 16 kHz with librosa**, whose filter is not reproduced here.
+
+### A4a: the host pieces, each against the reference
+
+| piece | where | check |
+|---|---|---|
+| a wav file: RIFF, PCM of 16 bits or float of 32, any number of channels (their mean), any rate | `tests/qwen_asr/wav.cho` | fixtures in the gate: a mono and a stereo file of a few samples, a truncated one, a format it does not read: each a refusal with its status, none a crash |
+| to 16 kHz when the rate is another: a windowed-sinc filter (Kaiser, stated in the code), in float64 | the same | **the mel of the 24 kHz reference clip resampled here against the reference's (resampled by librosa): reported, not bounded** (two filters); and the transcript below |
+| the mel | `tests/qwen_asr/mel.cho`, float64 on the host | **from the reference's own 16 kHz samples: within 2e-4 of the reference's mel at every value** (it computes in float64 and keeps float32; the values are of order 1). Mutants: the window left out, the last frame kept, the floor at the maximum less 8 left out |
+| the prompt's ids from the number of tower rows | the host program of A3 | equal to A0's 85 ids |
+| the answer's ids to `language` and text | `tests/qwen_asr/answer.cho` | A0's 18 ids give `English` and the sentence, to the letter; an id that is not in the vocabulary, an answer with no `<asr_text>`: refusals |
+| **a clip longer than 8 s** | a second reference run by hand (S0 then A0, three sentences) | **which of the two the reference's tower does, attention in windows of 104 rows or across them (2.1's doubt): the GPU's rows with each mask against the reference's float32 rows. The one that meets A1's bound is the one built; the other must fail it.** Then the transcript, end to end, with the host's own mel |
+
+**The whole of A4a's bound: the two reference clips, from their wav files to their words, through the host's mel, A1, the prompt, A3b and the answer, give the reference's transcripts to the letter.**
+
+**Time is reported for the mel** (a direct transform is 400 x 201 products a frame, 100 frames a second: 8 M a second of audio, in cancho on one core). If 30 s costs more than half a second it becomes two products on the GPU (`docs/roadmap-models.md` G15), not in A4a.
+
+### A4b: `scripts/media transcribe CLIP -o DIR`
+
+The stages as the media program runs its others (`media/`, the stage runner), the sessions given their two lines on their input; the weights written on first use, as umT5's are; `DIR/transcript.txt` and the text on the output. Refusals with the media program's rule tags: no such file, not a wav it reads, no audio, longer than the caches allow, the checkpoint not in the cache, no Metal session. Designed in detail when A4a is in, since its stages are A4a's programs.
+
+**Not in A4:** a context or a forced language (they need the tokeniser on the prompt's side), timestamps (another model), streaming, clips over the 20 minutes the reference cuts at, any container but wav.
