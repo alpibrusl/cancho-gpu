@@ -674,3 +674,14 @@ tests/chx/moe_rank.chx nq=2 --run
 tests/chx/moe_pick.chx n=128 k=6 --run
 tests/chx/axpy_slot.chx n=64 bn=16 k=6 j=4 --run
 tests/chx/group_sum.chx k=256 G=32 --run
+# K4 (docs/kolibri.md section 11): the attention of Kolibri 1.1. dec_post_g: dec_post_n with the head counts as parameters (48 query heads over 4 key/value heads); fp4_round: an indexed layer's new
+# keys and values rounded to NVFP4, ties to even; the cached step's kernels and the 4-bit products at this model's shapes. Held to float64 by tests/kernels.py, and tests/kstep.sh for the thresholds.
+tests/chx/dec_post_g.chx r=1 nq=48 nkv=4
+tests/chx/fp4_round.chx r=4 n=128
+tests/chx/kv_write_b.chx nb=1 nkv=4 tmax=64 ts=64 d=128
+tests/chx/attention_scores_b.chx nb=1 nkv=4 g=12 t=64 ts=64 d=128 tmax=64
+tests/chx/attention_pv_b.chx nb=1 nkv=4 g=12 t=64 dw=16 d=128 tmax=64
+tests/chx/matvec_q4_rows.chx n=7168 k=2560
+tests/chx/matvec_q4_rows.chx n=2560 k=6144
+tests/chx/dec_post_g.chx r=2 nq=6 nkv=2 --run
+tests/chx/fp4_round.chx r=3 n=64 --run

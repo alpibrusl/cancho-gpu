@@ -1,0 +1,290 @@
+# Kolibri 1.1 a token a step, with caches of the keys and values (docs/kolibri.md section 11, stage K4): layers L0 .. L0 + NL - 1 of the 50, each an attention half and an MLP half, then (HEAD=1) the
+# final norm and the head's logits. A request of N runs N steps.
+#
+#     cancho-gpu-metal-session models/kolibri_step.model CHX=<tests/chx> W=<the weights> X=<a run's tables and saves> T=<the caches' positions, a multiple of 64> NS=<steps in the tables>
+#
+# The kinds of layer are this model's own: layer i is "indexed" when i % 5 == 4 (no positions; its new keys and values rounded to NVFP4), else "sliding" (rotary positions, a window that the host's
+# mask draws); the indexed layers 9, 14, 49 have no keys and values and read layer 4's caches, and 34, 39, 44 read layer 29's. Layers 0 and 1 have a dense MLP, the others a mixture of experts
+# (section 10; the blocks of models/kolibri_mlp.model with the layer's number in the names); `down` matrices are Q4_1 in layers 0 to 5.
+#
+# TF=0 chains the layers: layer L0's row is x<L0>.f32's block of the step (for L0=0 the embeddings of the ids, written by the host), every other layer's the layer before's. TF=1 gives every layer
+# its own table x<i>.f32 (the reference's row before it): each layer alone.
+#
+# W, the weights (the host's, K5; by hand in K4). For layer i: a<i>.norm.f32, a<i>.qn.f32, a<i>.kn.f32 (the norms' weights), a<i>.pn.f32 (the norm after), a<i>.qkv.q4 and .s (q, k and v's rows one
+# after another: codes two a byte, f16 scales a group of 32) or a<i>.q.q4 and .s where there are no keys, a<i>.o.q4 and .s; m<i>.ffn_norm.f32, m<i>.post_norm.f32 and the files of
+# models/kolibri_mlp.model with m<i>. before their names. Once: ones_d.f32, ones_h.f32, ones_f.f32, ones_qkv.f32, ones_q.f32 (dequant_q4's row scales), ar.f32 (0 .. NE - 1), sl.f32 (0 .. K - 1),
+# e4m3.f32 (fp4_round.chx's table), one64.f32 and zero64.f32 (an indexed layer's cos and sin), fnorm.f32, head.f32.
+# X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64), sel.f32 and keep.f32 (NS columns of T: the step's position and its complement), mask.f32 (NS rows of T: 0 on the keys a
+# sliding layer's step sees, -1e9 elsewhere), maskg.f32 (the same for an indexed layer: every key so far), zcache.f32 (NKV * T * 128 zeros).
+#
+# SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, kn<i>.f32, vn<i>.f32 (the step's new rows as cached), o<i>.f32, and
+# idx<i>.f32, wt<i>.f32. F32= F16= I8= (empty) reads and writes every file as text, and D, NQ, NKV, NE, EH, K, FF, BN, V make a small model: tests/kstep.sh, in the gate.
+text CHX = tests/chx
+text W = .
+text X = .
+const T = 64
+const NS = 64
+const L0 = 0
+const NL = 50
+const TF = 0
+const HEAD = 1
+const SAVE = 1
+const ANS = 0
+const D = 2560
+const NQ = 48
+const NKV = 4
+const NE = 384
+const EH = 512
+const K = 6
+const FF = 3584
+const V = 128000
+const BN = 256
+text F32 = f32
+text F16 = f16
+text I8 = i8
+
+# one cache of layer i (n is kwk or kwv): this step's row written at the step's position
+block cache(i, n, src)
+    program L${i}$n $CHX/kv_write_b.chx nb=1 nkv=$NKV tmax=$T ts=64 d=128
+    resident L${i}$n.c $X/zcache.f32 $F32
+    link $src -> L${i}$n.nw
+    table L${i}$n.sel $X/sel.f32 $NS $F32
+    table L${i}$n.keep $X/keep.f32 $NS $F32
+    carry L${i}$n.y -> L${i}$n.c
+end
+
+# the attention half of layer i, whose keys and values are layer s's: L${i}ra.wo is the row after it
+block attn(i, s)
+    program L${i}an $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+    if TF || i == L0
+        table L${i}an.x $X/x${i}.f32 $NS $F32
+    else
+        link L${i - 1}out.wo -> L${i}an.x
+    end
+    resident L${i}an.w $W/a${i}.norm.f32 $F32
+    if s == i
+        program L${i}qkv $CHX/matvec_q4_rows.chx n=${(NQ + 2 * NKV) * 128} k=$D
+        link L${i}an.y -> L${i}qkv.x
+        resident L${i}qkv.wq $W/a${i}.qkv.q4 $I8
+        resident L${i}qkv.ws $W/a${i}.qkv.s $F16
+        resident L${i}qkv.wg $W/ones_qkv.f32 $F32
+        program L${i}po $CHX/dec_post_g.chx r=1 nq=$NQ nkv=$NKV
+        link L${i}qkv.y -> L${i}po.y
+        resident L${i}po.qw $W/a${i}.qn.f32 $F32
+        resident L${i}po.kw $W/a${i}.kn.f32 $F32
+        if i % 5 == 4
+            resident L${i}po.cs $W/one64.f32 $F32
+            resident L${i}po.sn $W/zero64.f32 $F32
+            program L${i}rk $CHX/fp4_round.chx r=$NKV n=128
+            link L${i}po.kn -> L${i}rk.x
+            resident L${i}rk.tb $W/e4m3.f32 $F32
+            program L${i}rv $CHX/fp4_round.chx r=$NKV n=128
+            link L${i}po.vn -> L${i}rv.x
+            resident L${i}rv.tb $W/e4m3.f32 $F32
+            use cache(i, "kwk", "L${i}rk.y")
+            use cache(i, "kwv", "L${i}rv.y")
+        else
+            table L${i}po.cs $X/cos.f32 $NS $F32
+            table L${i}po.sn $X/sin.f32 $NS $F32
+            use cache(i, "kwk", "L${i}po.kn")
+            use cache(i, "kwv", "L${i}po.vn")
+        end
+    else
+        program L${i}qp $CHX/matvec_q4_rows.chx n=${NQ * 128} k=$D
+        link L${i}an.y -> L${i}qp.x
+        resident L${i}qp.wq $W/a${i}.q.q4 $I8
+        resident L${i}qp.ws $W/a${i}.q.s $F16
+        resident L${i}qp.wg $W/ones_q.f32 $F32
+        program L${i}po $CHX/rmsnorm_rows.chx r=$NQ n=128 eps=0.000001
+        link L${i}qp.y -> L${i}po.x
+        resident L${i}po.w $W/a${i}.qn.f32 $F32
+    end
+    program L${i}as $CHX/attention_scores_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$T ts=64 d=128 tmax=$T
+    if s == i
+        link L${i}po.q -> L${i}as.q
+    else
+        link L${i}po.y -> L${i}as.q
+    end
+    link L${s}kwk.y -> L${i}as.k
+    if i % 5 == 4
+        table L${i}as.mask $X/maskg.f32 $NS $F32
+    else
+        table L${i}as.mask $X/mask.f32 $NS $F32
+    end
+    program L${i}ap $CHX/attention_pv_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$T dw=16 d=128 tmax=$T
+    link L${i}as.sc -> L${i}ap.sc
+    link L${s}kwv.y -> L${i}ap.v
+    program L${i}op $CHX/matvec_q4_rows.chx n=$D k=${NQ * 128}
+    link L${i}ap.o -> L${i}op.x
+    resident L${i}op.wq $W/a${i}.o.q4 $I8
+    resident L${i}op.ws $W/a${i}.o.s $F16
+    resident L${i}op.wg $W/ones_d.f32 $F32
+    program L${i}apn $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+    link L${i}op.y -> L${i}apn.x
+    resident L${i}apn.w $W/a${i}.pn.f32 $F32
+    program L${i}ra $CHX/step_add.chx n=$D
+    if TF || i == L0
+        table L${i}ra.w $X/x${i}.f32 $NS $F32
+    else
+        link L${i - 1}out.wo -> L${i}ra.w
+    end
+    link L${i}apn.y -> L${i}ra.d
+    if SAVE > 1
+        save L${i}ra.wo $X/mid${i}.f32 $F32
+        save L${i}ap.o $X/o${i}.f32 $F32
+        if s == i
+            save L${i}po.q $X/q${i}.f32 $F32
+            if i % 5 == 4
+                save L${i}rk.y $X/kn${i}.f32 $F32
+                save L${i}rv.y $X/vn${i}.f32 $F32
+            else
+                save L${i}po.kn $X/kn${i}.f32 $F32
+                save L${i}po.vn $X/vn${i}.f32 $F32
+            end
+        else
+            save L${i}po.y $X/q${i}.f32 $F32
+        end
+    end
+end
+
+# a `down` product named n of layer i: resident files of the name `pre` (pick < 0), or blocks of tables picked by slot `pick` of the layer's pk.idx.
+block down(i, n, src, pre, h, pick)
+    program $n $CHX/matvec_q4_rows.chx n=$D k=$h
+    link $src -> $n.x
+    resident $n.wg $W/ones_d.f32 $F32
+    if pick < 0
+        resident $n.wq $W/m${i}.$pre.down.q4 $I8
+        resident $n.ws $W/m${i}.$pre.down.s $F16
+    else
+        table $n.wq $W/m${i}.$pre.down.q4 $NE $I8 by L${i}pk.idx $pick
+        table $n.ws $W/m${i}.$pre.down.s $NE $F16 by L${i}pk.idx $pick
+    end
+end
+
+# one SwiGLU MLP of h hidden in layer i, numbered p (an expert's slot, K the shared one): L${i}E${p}_y.y is down(silu(gate n) * (up n)), n the normed row. `ones` names the hidden rows' scales.
+block mlp(i, p, pre, h, pick, ones)
+    program L${i}E${p}_g $CHX/matvec_q4_rows.chx n=$h k=$D
+    link L${i}nrm.y -> L${i}E${p}_g.x
+    program L${i}E${p}_u $CHX/matvec_q4_rows.chx n=$h k=$D
+    link L${i}nrm.y -> L${i}E${p}_u.x
+    if pick < 0
+        resident L${i}E${p}_g.wq $W/m${i}.$pre.gate.q4 $I8
+        resident L${i}E${p}_g.ws $W/m${i}.$pre.gate.s $F16
+        resident L${i}E${p}_u.wq $W/m${i}.$pre.up.q4 $I8
+        resident L${i}E${p}_u.ws $W/m${i}.$pre.up.s $F16
+    else
+        table L${i}E${p}_g.wq $W/m${i}.$pre.gate.q4 $NE $I8 by L${i}pk.idx $pick
+        table L${i}E${p}_g.ws $W/m${i}.$pre.gate.s $NE $F16 by L${i}pk.idx $pick
+        table L${i}E${p}_u.wq $W/m${i}.$pre.up.q4 $NE $I8 by L${i}pk.idx $pick
+        table L${i}E${p}_u.ws $W/m${i}.$pre.up.s $NE $F16 by L${i}pk.idx $pick
+    end
+    resident L${i}E${p}_g.wg $W/$ones.f32 $F32
+    resident L${i}E${p}_u.wg $W/$ones.f32 $F32
+    program L${i}E${p}_a $CHX/swiglu.chx n=$h
+    link L${i}E${p}_g.y -> L${i}E${p}_a.g
+    link L${i}E${p}_u.y -> L${i}E${p}_a.u
+    if i < 6
+        use down(i, "L${i}E${p}_d", "L${i}E${p}_a.y", pre, h, pick)
+        program L${i}E${p}_s $CHX/group_sum.chx k=$h G=32
+        link L${i}E${p}_a.y -> L${i}E${p}_s.x
+        program L${i}E${p}_y $CHX/matvec_res.chx n=$D k=${h / 32}
+        link L${i}E${p}_s.s -> L${i}E${p}_y.x
+        link L${i}E${p}_d.y -> L${i}E${p}_y.r
+        if pick < 0
+            resident L${i}E${p}_y.w $W/m${i}.$pre.down.c $F32
+        else
+            table L${i}E${p}_y.w $W/m${i}.$pre.down.c $NE $F32 by L${i}pk.idx $pick
+        end
+    else
+        use down(i, "L${i}E${p}_y", "L${i}E${p}_a.y", pre, h, pick)
+    end
+end
+
+# the MLP half of layer i, from L${i}ra.wo: L${i}out.wo is the row after the layer
+block ffn(i)
+    program L${i}nrm $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+    link L${i}ra.wo -> L${i}nrm.x
+    resident L${i}nrm.w $W/m${i}.ffn_norm.f32 $F32
+    if i < 2
+        use mlp(i, 0, "dn", FF, -1, "ones_f")
+    else
+        program L${i}rt $CHX/matvec_rows.chx n=$NE k=$D
+        link L${i}nrm.y -> L${i}rt.x
+        resident L${i}rt.w $W/m${i}.route.f32 $F32
+        program L${i}zb $CHX/step_add.chx n=$NE
+        link L${i}rt.y -> L${i}zb.w
+        resident L${i}zb.d $W/m${i}.bias.f32 $F32
+        program L${i}rnk $CHX/moe_rank.chx nq=${NE / 64}
+        link L${i}zb.wo -> L${i}rnk.yc
+        link L${i}zb.wo -> L${i}rnk.yr
+        resident L${i}rnk.ic $W/ar.f32 $F32
+        resident L${i}rnk.ir $W/ar.f32 $F32
+        program L${i}pk $CHX/moe_pick.chx n=$NE k=$K
+        link L${i}rnk.cnt -> L${i}pk.cnt
+        link L${i}rt.y -> L${i}pk.lg
+        resident L${i}pk.ar $W/ar.f32 $F32
+        resident L${i}pk.sl $W/sl.f32 $F32
+        use mlp(i, K, "sh", EH, -1, "ones_h")
+        repeat j in 0 .. K
+            use mlp(i, j, "ex", EH, j, "ones_h")
+            program L${i}m$j $CHX/axpy_slot.chx n=$D bn=$BN k=$K j=$j
+            if j == 0
+                link L${i}E${K}_y.y -> L${i}m0.m
+            else
+                link L${i}m${j - 1}.mo -> L${i}m$j.m
+            end
+            link L${i}E${j}_y.y -> L${i}m$j.y
+            link L${i}pk.wt -> L${i}m$j.wt
+        end
+        if SAVE > 1
+            save L${i}pk.idx $X/idx${i}.f32 $F32
+            save L${i}pk.wt $X/wt${i}.f32 $F32
+        end
+    end
+    program L${i}pn $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+    if i < 2
+        link L${i}E0_y.y -> L${i}pn.x
+    else
+        link L${i}m${K - 1}.mo -> L${i}pn.x
+    end
+    resident L${i}pn.w $W/m${i}.post_norm.f32 $F32
+    program L${i}out $CHX/step_add.chx n=$D
+    link L${i}ra.wo -> L${i}out.w
+    link L${i}pn.y -> L${i}out.d
+    if SAVE
+        save L${i}out.wo $X/out${i}.f32 $F32
+    end
+end
+
+repeat i in L0 .. L0 + NL
+    if i % 5 != 4 || i == 4 || i == 19 || i == 24 || i == 29
+        use attn(i, i)
+    else
+        if i == 49 || i < 29
+            use attn(i, 4)
+        else
+            use attn(i, 29)
+        end
+    end
+    use ffn(i)
+end
+
+if HEAD
+    program fn $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+    link L${L0 + NL - 1}out.wo -> fn.x
+    resident fn.w $W/fnorm.f32 $F32
+    program head $CHX/matvec_rows.chx n=$V k=$D
+    link fn.y -> head.x
+    resident head.w $W/head.f32 $F32
+    if SAVE
+        save fn.y $X/final.f32 $F32
+        save head.y $X/logits.f32 $F32
+    end
+end
+steps
+# ANS=1 answers the row after the last layer every step; ANS=0 the last layer's experts (K numbers), or that row where the last layer is dense.
+if ANS || L0 + NL < 3
+    answer L${L0 + NL - 1}out.wo
+else
+    answer L${L0 + NL - 1}pk.idx
+end

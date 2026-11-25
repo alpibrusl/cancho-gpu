@@ -1,0 +1,68 @@
+// dec_post_n.chx with the head counts as parameters (docs/kolibri.md K4: Kolibri 1.1 has nq 48 query heads over nkv 4 key/value heads of 128): the fused q/k/v product's output y, r rows of
+// (nq + 2 nkv) * 128, is read as heads of 128: the query heads, the key heads, the value heads. Each q and k head is divided by its root mean square (eps 1e-6) and multiplied by the weight of its kind
+// (qw, kw: one row of 128 for all heads), then rotated (rotate_half: the halves of a head are (x1, x2), out = (x1 c - x2 s, x2 c + x1 s)) with the cos and sin of the row's own position (cs, sn: [r, 64],
+// tables read a block a step). The values are copied. A layer with no positions gives cs ones and sn zeros, which leaves a head as it is, to the bit.
+algo dec_post_g(r, nq, nkv)
+  in  y:  f32[r * (nq + 2 * nkv), 128]
+  in  qw: f32[1, 128]
+  in  kw: f32[1, 128]
+  in  cs: f32[r, 64]
+  in  sn: f32[r, 64]
+  out q:  f32[r * nq, 128]
+  out kn: f32[r * nkv, 128]
+  out vn: f32[r * nkv, 128]
+{
+  grid i over r
+  let c  = load cs[i, 0 ; 1, 64]
+  let s  = load sn[i, 0 ; 1, 64]
+  let q1 = load y[i * (nq + 2 * nkv), 0 ; nq, 64]
+  let q2 = load y[i * (nq + 2 * nkv), 64 ; nq, 64]
+  let qa = &q1 * &q1
+  let qb = &q2 * &q2
+  let qm = rowsum qa + rowsum qb
+  let qe = qm * (1 / 128)
+  let qt = qe + 0.000001
+  let qr = rsqrt qt
+  let w1 = load qw[0, 0 ; 1, 64]
+  let w2 = load qw[0, 64 ; 1, 64]
+  let n1 = q1 * &qr
+  let n2 = q2 * qr
+  let a1 = n1 * w1
+  let a2 = n2 * w2
+  let t1 = &a1 * &c
+  let t2 = &a2 * &s
+  let lo = t1 - t2
+  let t3 = a2 * &c
+  let t4 = a1 * &s
+  let hi = t3 + t4
+  store lo -> q[i * nq, 0]
+  store hi -> q[i * nq, 64]
+  let k1 = load y[i * (nq + 2 * nkv) + nq, 0 ; nkv, 64]
+  let k2 = load y[i * (nq + 2 * nkv) + nq, 64 ; nkv, 64]
+  let ka = &k1 * &k1
+  let kb = &k2 * &k2
+  let km = rowsum ka + rowsum kb
+  let ke = km * (1 / 128)
+  let kt = ke + 0.000001
+  let kr = rsqrt kt
+  let x1 = load kw[0, 0 ; 1, 64]
+  let x2 = load kw[0, 64 ; 1, 64]
+  let m1 = k1 * &kr
+  let m2 = k2 * kr
+  let e1 = m1 * x1
+  let e2 = m2 * x2
+  let u1 = &e1 * &c
+  let u2 = &e2 * &s
+  let klo = u1 - u2
+  let u3 = e2 * c
+  let u4 = e1 * s
+  let khi = u3 + u4
+  store klo -> kn[i * nkv, 0]
+  store khi -> kn[i * nkv, 64]
+  let v0 = load y[i * (nq + 2 * nkv) + nq + nkv, 0 ; nkv, 128]
+  store v0 -> vn[i * nkv, 0]
+}
+
+schedule dec_post_g for apple-m-series { threads 128 }
+schedule dec_post_g for nvidia-ada     { threads 128 }
+schedule dec_post_g for amd-cdna3      { threads 128 }
