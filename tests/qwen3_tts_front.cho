@@ -1,0 +1,516 @@
+edition 9;
+
+import std.buffer;
+import std.io;
+import std.math;
+import files;
+import qasr_host;
+import wenc_st;
+
+// qwen3_tts_front -- stage S4 of docs/audio.md (section 28): what stands between a sentence and Qwen3-TTS's sessions, and between their samples and a wav file. cancho, no GPU.
+//
+//   qwen3_tts_front tokenizer <snapshot dir> <tokenizer.json to write>
+//   qwen3_tts_front prompt    <tokenize's output> <voice> <language> <ids.txt to write>
+//   qwen3_tts_front pcm       <speech.pcm> <samples .f32> <skip> <take> new | more
+//   qwen3_tts_front wav       <speech.pcm> <speech.wav to write>
+//
+// `tokenizer` writes, from the checkpoint's `vocab.json` and `merges.txt` (Qwen2's tokenizer as two files), the one file `cancho-gpu tokenize` reads: the vocabulary as it is, each line of the merges
+// as a string, the NFC normalizer and Qwen2's split, no added tokens (a text that spells a control token is read as its letters).
+// `prompt` reads what `cancho-gpu tokenize <tokenizer.json> <text file>` printed (one record: one `ids N: ...` line) and writes the prompt's ids, `<|im_start|>assistant\n`, the text,
+// `<|im_end|>\n<|im_start|>assistant\n`, as tests/qwen3_tts_lm_gpu.cho's `inputs talker` reads them. It prints `text <N> language <codec id, or 0 for none> speaker <codec id>`: the voice is one of the
+// checkpoint's nine, the language one of its ten or `auto`; a voice that is a dialect's takes the dialect's id when the language is chinese or auto, as the reference does.
+// `pcm` appends (`more`) or starts (`new`) a file of 16-bit samples, little-endian, with `take` of the session's samples after the first `skip`: round(32767 x), clamped. A piece of a long clip
+// is decoded with frames of context in front, whose samples are skipped.
+// `wav` puts the 44 bytes of a RIFF header (PCM, mono, 24,000 Hz, 16 bits) in front of them and prints `samples <N>`.
+//
+// Built with
+//   cancho build tests/qwen3_tts_front.cho tests/qwen_asr/host.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_tts_front
+
+// the longest text, in tokens: the longest that was spoken and heard back is 108 (docs/audio.md section 29)
+fn longest() -> [] int {
+    return 110;
+}
+
+// `dir/name` read whole: the bytes and 0, or a status
+fn slurp[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], name: &static [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
+    var p = buffer.append(heap, buffer.empty(heap, 256), dir);
+    p = buffer.push(heap, p, byte_of(47));
+    p = buffer.append(heap, p, name);
+    var out = buffer.empty(heap, 8);
+    var status = 1;
+    borrow p as &pb in {
+        let (text, err) = files.read_all(heap, fs, buffer.bytes(pb));
+        buffer.drop(heap, out);
+        out = text;
+        status = err;
+    }
+    buffer.drop(heap, p);
+    return (out, status);
+}
+
+fn tokenizer[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 4 {
+        qasr_host.put(io, "usage: qwen3_tts_front tokenizer <snapshot dir> <tokenizer.json to write>\n");
+        return 100;
+    }
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 3)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (vocab, e1) = slurp(heap, fs, arg(args, 2), "vocab.json");
+    let (merges, e2) = slurp(heap, fs, arg(args, 2), "merges.txt");
+    var status = 0;
+    var out = buffer.empty(heap, 8388608);
+    var count = 0;
+    borrow vocab as &vb in {
+        borrow merges as &mb in {
+            let v = buffer.bytes(vb);
+            let m = buffer.bytes(mb);
+            // the vocabulary is one JSON object: from its first brace to its last
+            var first = 0;
+            while first < len(v) && int_of(v[first]) != 123 {
+                first = first + 1;
+            }
+            var last = len(v);
+            while last > first && int_of(v[last - 1]) != 125 {
+                last = last - 1;
+            }
+            if e1 != 0 || e2 != 0 || last - first < 2 || len(m) == 0 {
+                status = 104;
+            } else {
+                out = buffer.append(heap, out, "{\"version\":\"1.0\",\"added_tokens\":[],\"normalizer\":{\"type\":\"NFC\"},\"pre_tokenizer\":{\"type\":\"Sequence\",\"pretokenizers\":[{\"type\":\"Split\",\"pattern\":{\"Regex\":\"");
+                // Qwen2's split; `~` stands for a backslash, written twice in JSON
+                let rx = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^~r~n~p{L}~p{N}]?~p{L}+|~p{N}| ?[^~s~p{L}~p{N}]+[~r~n]*|~s*[~r~n]+|~s+(?!~S)|~s+";
+                var k = 0;
+                while k < len(rx) {
+                    if int_of(rx[k]) == 126 {
+                        out = buffer.push(heap, buffer.push(heap, out, byte_of(92)), byte_of(92));
+                    } else {
+                        out = buffer.push(heap, out, rx[k]);
+                    }
+                    k = k + 1;
+                }
+                out = buffer.append(heap, out, "\"},\"behavior\":\"Isolated\",\"invert\":false},{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"trim_offsets\":false,\"use_regex\":false}]},\"model\":{\"type\":\"BPE\",\"vocab\":");
+                out = buffer.append(heap, out, v[first..last]);
+                out = buffer.append(heap, out, ",\"merges\":[");
+                // a merge a line; a line that begins with `#` is the file's header
+                var at = 0;
+                while at < len(m) {
+                    var end = at;
+                    while end < len(m) && int_of(m[end]) != 10 {
+                        end = end + 1;
+                    }
+                    var stop = end;
+                    if stop > at && int_of(m[stop - 1]) == 13 {
+                        stop = stop - 1;
+                    }
+                    if stop > at && int_of(m[at]) != 35 {
+                        if count > 0 {
+                            out = buffer.push(heap, out, byte_of(44));
+                        }
+                        out = buffer.push(heap, out, byte_of(34));
+                        var j = at;
+                        while j < stop {
+                            let c = int_of(m[j]);
+                            if c == 34 || c == 92 {
+                                out = buffer.push(heap, out, byte_of(92));
+                            }
+                            if c < 32 {
+                                status = 104;
+                            }
+                            out = buffer.push(heap, out, m[j]);
+                            j = j + 1;
+                        }
+                        out = buffer.push(heap, out, byte_of(34));
+                        count = count + 1;
+                    }
+                    at = end + 1;
+                }
+                out = buffer.append(heap, out, "]}}\n");
+            }
+        }
+    }
+    buffer.drop(heap, vocab);
+    buffer.drop(heap, merges);
+    if status == 0 {
+        borrow out as &ob in {
+            if files.write_big(fs, arg(args, 3), buffer.bytes(ob)) != 0 {
+                status = 104;
+            }
+        }
+    }
+    buffer.drop(heap, out);
+    if status != 0 {
+        qasr_host.put(io, "vocab.json or merges.txt is not in the snapshot or is not what a tokenizer's is, or the file cannot be written\n");
+        return 104;
+    }
+    qasr_host.put(io, "tokenizer: merges ");
+    qasr_host.put_int(io, count);
+    qasr_host.put(io, "\n");
+    return 0;
+}
+
+// the codec id of a voice (2861 to 3066), or -1
+fn voice_id[&t](name: &t [byte]) -> [] int {
+    if qasr_host.is_text(name, "serena") {
+        return 3066;
+    }
+    if qasr_host.is_text(name, "vivian") {
+        return 3065;
+    }
+    if qasr_host.is_text(name, "uncle_fu") {
+        return 3010;
+    }
+    if qasr_host.is_text(name, "ryan") {
+        return 3061;
+    }
+    if qasr_host.is_text(name, "aiden") {
+        return 2861;
+    }
+    if qasr_host.is_text(name, "ono_anna") {
+        return 2873;
+    }
+    if qasr_host.is_text(name, "sohee") {
+        return 2864;
+    }
+    if qasr_host.is_text(name, "eric") {
+        return 2875;
+    }
+    if qasr_host.is_text(name, "dylan") {
+        return 2878;
+    }
+    return 0 - 1;
+}
+
+// the codec id of a language, 0 for `auto`, or -1
+fn language_id[&t](name: &t [byte]) -> [] int {
+    if qasr_host.is_text(name, "auto") {
+        return 0;
+    }
+    if qasr_host.is_text(name, "chinese") {
+        return 2055;
+    }
+    if qasr_host.is_text(name, "english") {
+        return 2050;
+    }
+    if qasr_host.is_text(name, "german") {
+        return 2053;
+    }
+    if qasr_host.is_text(name, "italian") {
+        return 2070;
+    }
+    if qasr_host.is_text(name, "portuguese") {
+        return 2071;
+    }
+    if qasr_host.is_text(name, "spanish") {
+        return 2054;
+    }
+    if qasr_host.is_text(name, "japanese") {
+        return 2058;
+    }
+    if qasr_host.is_text(name, "korean") {
+        return 2064;
+    }
+    if qasr_host.is_text(name, "french") {
+        return 2061;
+    }
+    if qasr_host.is_text(name, "russian") {
+        return 2069;
+    }
+    return 0 - 1;
+}
+
+fn prompt[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 6 {
+        qasr_host.put(io, "usage: qwen3_tts_front prompt <tokenize's output> <voice> <language> <ids.txt to write>\n");
+        return 100;
+    }
+    let spk = voice_id(arg(args, 3));
+    var lang = language_id(arg(args, 4));
+    if spk < 0 {
+        qasr_host.put(io, "the voice is one of serena, vivian, uncle_fu, ryan, aiden, ono_anna, sohee, eric, dylan\n");
+        return 101;
+    }
+    if lang < 0 {
+        qasr_host.put(io, "the language is auto or one of chinese, english, german, italian, portuguese, spanish, japanese, korean, french, russian\n");
+        return 101;
+    }
+    // a dialect's voice speaks its dialect when the language is chinese or not given: sichuan (2062) for eric, beijing (2074) for dylan
+    if lang == 0 || lang == 2055 {
+        if spk == 2875 {
+            lang = 2062;
+        }
+        if spk == 2878 {
+            lang = 2074;
+        }
+    }
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 5)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (text, err) = files.read_all(heap, fs, arg(args, 2));
+    var out = buffer.append(heap, buffer.empty(heap, 4096), "151644 77091 198");
+    var records = 0;
+    var count = 0;
+    var bad = false;
+    borrow text as &tb in {
+        let t = buffer.bytes(tb);
+        var at = 0;
+        while at < len(t) {
+            var end = at;
+            while end < len(t) && int_of(t[end]) != 10 {
+                end = end + 1;
+            }
+            if end - at >= 4 && int_of(t[at]) == 105 && int_of(t[at + 1]) == 100 && int_of(t[at + 2]) == 115 && int_of(t[at + 3]) == 32 {
+                records = records + 1;
+                // `ids N: a b c`: the numbers after the colon
+                var p = at + 4;
+                while p < end && int_of(t[p]) != 58 {
+                    p = p + 1;
+                }
+                p = p + 1;
+                var cur = 0 - 1;
+                while p <= end {
+                    var c = 32;
+                    if p < end {
+                        c = int_of(t[p]);
+                    }
+                    if c >= 48 && c <= 57 {
+                        if cur < 0 {
+                            cur = 0;
+                        }
+                        cur = cur * 10 + (c - 48);
+                        if cur >= 151643 {
+                            bad = true;
+                            cur = 0;
+                        }
+                    } else if c == 32 {
+                        if cur >= 0 {
+                            out = buffer.push_nat(heap, buffer.push(heap, out, byte_of(32)), cur);
+                            count = count + 1;
+                            cur = 0 - 1;
+                        }
+                    } else {
+                        bad = true;
+                    }
+                    p = p + 1;
+                }
+            }
+            at = end + 1;
+        }
+    }
+    buffer.drop(heap, text);
+    var status = 0;
+    if err != 0 || records != 1 || bad || count < 1 {
+        qasr_host.put(io, "the text is one record of the tokenizer's output with at least one token of its vocabulary (no text, or a line that holds only %%, is refused)\n");
+        status = 103;
+    } else if count > longest() {
+        qasr_host.put(io, "the text is ");
+        qasr_host.put_int(io, count);
+        qasr_host.put(io, " tokens; the longest that was spoken and heard back is ");
+        qasr_host.put_int(io, longest());
+        qasr_host.put(io, " (docs/audio.md section 29)\n");
+        status = 105;
+    } else {
+        out = buffer.append(heap, out, " 151645 198 151644 77091 198\n");
+        borrow out as &ob in {
+            if files.write_all(fs, arg(args, 5), buffer.bytes(ob)) != 0 {
+                status = 104;
+            }
+        }
+        if status != 0 {
+            qasr_host.put(io, "the ids could not be written\n");
+        } else {
+            qasr_host.put(io, "text ");
+            qasr_host.put_int(io, count);
+            qasr_host.put(io, " language ");
+            qasr_host.put_int(io, lang);
+            qasr_host.put(io, " speaker ");
+            qasr_host.put_int(io, spk);
+            qasr_host.put(io, "\n");
+        }
+    }
+    buffer.drop(heap, out);
+    return status;
+}
+
+fn pcm[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 7 {
+        qasr_host.put(io, "usage: qwen3_tts_front pcm <speech.pcm> <samples .f32> <skip> <take> new | more\n");
+        return 100;
+    }
+    let skip = qasr_host.num(arg(args, 4));
+    let take = qasr_host.num(arg(args, 5));
+    let fresh = qasr_host.is_text(arg(args, 6), "new");
+    if skip < 0 || take < 1 || fresh == false && qasr_host.is_text(arg(args, 6), "more") == false {
+        qasr_host.put(io, "skip is 0 or more samples, take 1 or more, and the last word new or more\n");
+        return 101;
+    }
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 3)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (x, n) = wenc_st.load_raw(heap, fs, arg(args, 3));
+    var status = 0;
+    if n < skip + take {
+        qasr_host.put(io, "the samples are fewer than skip + take\n");
+        status = 105;
+    } else {
+        var out = buffer.empty(heap, 2 * take + 8);
+        var bad = 0;
+        borrow x as &xr in {
+            var k = 0;
+            while k < take {
+                let v = contents(xr)[skip + k];
+                var s = 0;
+                if v >= 1.0 {
+                    s = 32767;
+                } else if v <= 0.0 - 1.0 {
+                    s = 0 - 32767;
+                } else if v >= 0.0 {
+                    s = truncate(math.floor(v * 32767.0 + 0.5));
+                } else if v < 0.0 {
+                    s = 0 - truncate(math.floor(0.5 - v * 32767.0));
+                } else {
+                    bad = bad + 1;
+                }
+                if s < 0 {
+                    s = s + 65536;
+                }
+                out = buffer.push(heap, buffer.push(heap, out, byte_of(s % 256)), byte_of(s / 256));
+                k = k + 1;
+            }
+        }
+        if bad != 0 {
+            qasr_host.put(io, "a sample is not a number\n");
+            status = 105;
+        } else {
+            var w = 0;
+            borrow out as &ob in {
+                if fresh {
+                    w = files.write_big(fs, arg(args, 2), buffer.bytes(ob));
+                } else {
+                    w = files.append_all(fs, arg(args, 2), buffer.bytes(ob));
+                }
+            }
+            if w != 0 {
+                qasr_host.put(io, "the samples could not be written\n");
+                status = 104;
+            } else {
+                qasr_host.put(io, "pcm ");
+                qasr_host.put_int(io, take);
+                qasr_host.put(io, "\n");
+            }
+        }
+        buffer.drop(heap, out);
+    }
+    unbox_slice(heap, x);
+    return status;
+}
+
+// `n` as `bytes` little-endian bytes
+fn le[&h](heap: &!h Heap, out: buffer.Buffer, n: int, bytes: int) -> [heap] buffer.Buffer {
+    var o = out;
+    var v = n;
+    var k = 0;
+    while k < bytes {
+        o = buffer.push(heap, o, byte_of(v % 256));
+        v = v / 256;
+        k = k + 1;
+    }
+    return o;
+}
+
+fn wav[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 4 {
+        qasr_host.put(io, "usage: qwen3_tts_front wav <speech.pcm> <speech.wav to write>\n");
+        return 100;
+    }
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 3)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (data, err) = files.read_all(heap, fs, arg(args, 2));
+    var status = 0;
+    var size = 0;
+    borrow data as &db in {
+        size = len(buffer.bytes(db));
+    }
+    if err != 0 || size < 2 || size % 2 != 0 || size > 2000000000 {
+        qasr_host.put(io, "the samples are a file of 16-bit numbers, at least one\n");
+        status = 105;
+    } else {
+        var out = buffer.append(heap, buffer.empty(heap, size + 64), "RIFF");
+        out = le(heap, out, 36 + size, 4);
+        out = buffer.append(heap, out, "WAVEfmt ");
+        out = le(heap, out, 16, 4);
+        out = le(heap, out, 1, 2);
+        out = le(heap, out, 1, 2);
+        out = le(heap, out, 24000, 4);
+        out = le(heap, out, 48000, 4);
+        out = le(heap, out, 2, 2);
+        out = le(heap, out, 16, 2);
+        out = buffer.append(heap, out, "data");
+        out = le(heap, out, size, 4);
+        borrow data as &db in {
+            out = buffer.append(heap, out, buffer.bytes(db));
+        }
+        borrow out as &ob in {
+            if files.write_big(fs, arg(args, 3), buffer.bytes(ob)) != 0 {
+                status = 104;
+            }
+        }
+        buffer.drop(heap, out);
+        if status != 0 {
+            qasr_host.put(io, "the wav file could not be written\n");
+        } else {
+            qasr_host.put(io, "samples ");
+            qasr_host.put_int(io, size / 2);
+            qasr_host.put(io, "\n");
+        }
+    }
+    buffer.drop(heap, data);
+    return status;
+}
+
+fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "tokenizer") {
+        return tokenizer(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "prompt") {
+        return prompt(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "pcm") {
+        return pcm(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "wav") {
+        return wav(io, heap, fs, args);
+    }
+    qasr_host.put(io, "usage: qwen3_tts_front tokenizer ... | prompt ... | pcm ... | wav ...\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

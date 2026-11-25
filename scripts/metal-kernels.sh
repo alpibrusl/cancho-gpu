@@ -142,11 +142,18 @@ conv1d_f s=256 cin=1024 cout=1536 k=7 dl=1
 conv1d_f s=2048 cin=768 cout=1920 k=2 dl=1
 conv1d_f s=2432 cin=96 cout=96 k=7 dl=9
 dwconv_f s=128 c=1024 k=7 bm=8 bn=256
-snake s=64 c=1536 bn=256
-snake s=4 c=16 bn=8
+snake s=64 c=1536 bn=256 g=1
+snake s=4 c=16 bn=8 g=3
+bias_pad s=512 c=1024 g=6 bn=256
+dit_swiglu_f s=128 n=1024 bn=256
+wave s=4096 c=32 bm=64 lim=0.25 m1=-1
 dec_post_n r=2
 amax_cand r=2 nq=4 G=2
 amax_id r=3 nq=4 v1=3
+samp_pen nq=48 G=2 invt=1.25 rp=1.5 irp=0.6666666666666666
+samp_rank nq=48
+samp_keep n=3072 k=0.05 bm=256 lo=4
+seen_or c=3072 bc=256
 f16:conv_cols t=5 f=3 c=32 wp=8 r=40
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64

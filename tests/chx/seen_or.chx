@@ -1,0 +1,30 @@
+// The ids drawn so far, for the repetition penalty (docs/audio.md section 26): y = max(seen, m onehot(id)) over a vocabulary of c, bc columns a threadgroup. id is 1-based and jrow holds 1 .. c, as
+// onehot_h.chx reads them (the same selection, relu(1 - |j - id|)); m is 1 where this step's draw counts and 0 where it does not (a table: the steps of the prefix draw nothing that is kept). y is carried
+// back to seen: each element is read and written by the thread that owns it.
+algo seen_or(c, bc)
+  in  seen: f32[1, c]
+  in  id:   f32[1, 1]
+  in  jrow: f32[1, c]
+  in  m:    f32[1, 1]
+  out y:    f32[1, c]
+{
+  grid q over c / bc
+  let j  = load jrow[0, q * bc ; 1, bc]
+  let t  = load id
+  let db = j - t
+  let zn = zeros f32[1, bc]
+  let dn = zn - &db
+  let df = relu db + relu dn
+  let zo = zeros f32[1, bc]
+  let on = zo + 1.0
+  let oh = relu (on - df)
+  let mm = load m
+  let g  = oh * mm
+  let s  = load seen[0, q * bc ; 1, bc]
+  let e  = g - &s
+  let r  = relu e
+  store s + r -> y[0, q * bc]
+}
+
+schedule seen_or for apple-m-series { threads 128 }
+schedule seen_or for nvidia-ada     { threads 128 }

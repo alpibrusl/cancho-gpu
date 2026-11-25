@@ -622,9 +622,10 @@ tests/chx/kv_export.chx s=4 nkv=2 tmax=8 --run
 # S1a (docs/audio.md section 18): sin, and the Snake activation of Qwen3-TTS's codec decoder at its widest (1,536 channels) and narrowest (96, a second of audio)
 tests/chx/sin_scaled.chx r=4 n=8
 tests/chx/sin_scaled.chx r=4 n=8 --run
-tests/chx/snake.chx s=64 c=1536 bn=256
-tests/chx/snake.chx s=24000 c=96 bn=96
-tests/chx/snake.chx s=4 c=16 bn=8 --run
+tests/chx/snake.chx s=64 c=1536 bn=256 g=1
+tests/chx/snake.chx s=24000 c=96 bn=96 g=54
+tests/chx/snake.chx s=4 c=16 bn=8 g=0 --run
+tests/chx/snake.chx s=4 c=16 bn=8 g=3 --run
 # S1b (docs/audio.md section 20): the codec decoder's convolutions at their shapes for 64 frames (a little over 5 s). conv1d_f: pre_conv, the decoder's first, a transposed one of stride 8 (1,536 to 768,
 # as 2 taps to 6,144 outputs), a residual unit's with dilation 9 at 96 channels (a tenth of a second), and a small one run. dwconv_f: the ConvNeXt block's at 1,024 channels.
 tests/chx/conv1d_f.chx s=64 cin=512 cout=1024 k=3 dl=1
@@ -634,3 +635,22 @@ tests/chx/conv1d_f.chx s=2432 cin=96 cout=96 k=7 dl=9
 tests/chx/conv1d_f.chx s=64 cin=32 cout=32 k=3 dl=2 --run
 tests/chx/dwconv_f.chx s=128 c=1024 k=7 bm=8 bn=256
 tests/chx/dwconv_f.chx s=8 c=16 k=7 bm=4 bn=8 --run
+# S1c (docs/audio.md section 22): the decoder's other three kernels. bias_pad: a product's bias at the decoder's widest, and with rows in front; dit_swiglu_f: the transformer's MLP for 128 frames; wave: a little over five
+# seconds of samples, and a small one whose clamp is at 0.25 so that the run's inputs pass both ends.
+tests/chx/bias_pad.chx s=256 c=1536 g=0 bn=256
+tests/chx/bias_pad.chx s=512 c=1024 g=6 bn=256
+tests/chx/bias_pad.chx s=4 c=16 g=2 bn=8 --run
+tests/chx/dit_swiglu_f.chx s=128 n=1024 bn=256
+tests/chx/dit_swiglu_f.chx s=6 n=32 bn=16 --run
+tests/chx/wave.chx s=122880 c=32 bm=64 lim=1 m1=-1
+tests/chx/wave.chx s=16 c=4 bm=4 lim=0.25 m1=-1 --run
+# S3 (docs/audio.md section 26): the four kernels of a draw as torch's generate makes it, at the talker's 3,072 entries (48 chunks of 64), the predictor's 2,048 and small. Held to float64 by tests/kernels.py.
+tests/chx/samp_pen.chx nq=48 G=2 invt=1.1111111111111112 rp=1.05 irp=0.9523809523809523
+tests/chx/samp_rank.chx nq=48
+tests/chx/samp_rank.chx nq=32
+tests/chx/samp_keep.chx n=3072 k=50 bm=256 lo=1000000000
+tests/chx/seen_or.chx c=3072 bc=256
+tests/chx/samp_pen.chx nq=4 G=2 invt=1.25 rp=1.5 irp=0.6666666666666666 --run
+tests/chx/samp_rank.chx nq=4 --run
+tests/chx/samp_keep.chx n=256 k=0.05 bm=64 lo=4 --run
+tests/chx/seen_or.chx c=64 bc=32 --run
