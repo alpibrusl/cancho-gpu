@@ -1,5 +1,7 @@
 # CUDA on a real GPU, in Google Cloud
 
+The AMD counterpart (one MI300X on DigitalOcean, `scripts/amd/hip_test.sh`) is `docs/amd.md` section 10: written, tested against stubs, not run.
+
 > **Status: written and checked against a stub `gcloud` (`tests/gcp.sh`, in the
 > gate), and run against Google on a real NVIDIA L4 (`g2-standard-8`,
 > europe-west1-b, and one run in us-central1-a) in runs on 2026-11-04 and 2026-11-05: NVRTC compiles

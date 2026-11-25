@@ -17,7 +17,12 @@ shift
 name=$("$ROOT/scripts/case-name.sh" "$file" "$@")
 EMU=$ROOT/build/emu
 status=0
-if [ "${EMU_BACKEND:-cuda}" = hip ]; then
+if [ "${EMU_BACKEND:-cuda}" = real ]; then
+  # No emulator: whatever device the shim finds (scripts/amd/remote_hip.sh, on a card), a case at most CASE_TIMEOUT seconds.
+  limit=""
+  if command -v timeout >/dev/null 2>&1; then limit="timeout ${CASE_TIMEOUT:-300}"; fi
+  $limit "$ROOT/build/cancho-gpu-device" run "$ROOT/$file" "$@" >"$OUT/$name.out" 2>&1 || status=$?
+elif [ "${EMU_BACKEND:-cuda}" = hip ]; then
   CANCHOGPU_LIBHIP=$EMU/libamdhip64_emu.so CANCHOGPU_LIBHIPRTC=$EMU/libhiprtc_emu.so \
     CANCHOGPU_EMU_CACHE=${CANCHOGPU_EMU_CACHE:-$EMU/cache} \
     "$ROOT/build/cancho-gpu-device" run "$ROOT/$file" "$@" >"$OUT/$name.out" 2>&1 || status=$?

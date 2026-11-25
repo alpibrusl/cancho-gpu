@@ -4,6 +4,13 @@
  * libamdhip64_emu at 64 lanes and again at 32.
  *
  *     wave_selftest <libamdhip64_emu.so> <libhiprtc_emu.so>
+ *     wave_selftest <libamdhip64.so> <libhiprtc.so> real
+ *
+ * With `real` the libraries are AMD's and the kernel runs once, on the card
+ * (docs/amd.md slice H6): it prints the `warpSize` the card reports and the
+ * sums, and passes when they are a 64-lane wave's or a 32-lane wave's, which
+ * is whether a real shuffle is the one the emulator models. WAVE_HIPRTC_OPT
+ * is one option handed to hipRTC (an include path, an architecture).
  *
  * At 64 every lane of a wave must hold that wave's sum. At 32 the same text
  * is a different program (the first step reaches past the wave and adds a
@@ -59,7 +66,8 @@ static int run(const char *warp, float *y, float *w) {
     }
     void *prog = NULL, *mod = NULL, *fn = NULL;
     create(&prog, SRC, "kernel.hip", 0, NULL, NULL);
-    if (compile(prog, 0, NULL)) {
+    const char *opt = getenv("WAVE_HIPRTC_OPT");
+    if (compile(prog, opt ? 1 : 0, &opt)) {
         size_t n = 0;
         logsize(prog, &n);
         char *log = calloc(1, n + 1);
@@ -103,7 +111,8 @@ static int run(const char *warp, float *y, float *w) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
+    int real = argc == 4 && !strcmp(argv[3], "real");
+    if (argc != 3 && !real) {
         fprintf(stderr, "usage: wave_selftest <libamdhip64_emu.so> <libhiprtc_emu.so>\n");
         return 2;
     }
@@ -115,6 +124,28 @@ int main(int argc, char **argv) {
     }
     float y[N], w[N];
     int bad = 0;
+    if (real) {
+        int (*init)(unsigned) = dlsym(hip, "hipInit");
+        int (*dev)(int) = dlsym(hip, "hipSetDevice");
+        if ((init && init(0)) || (dev && dev(0))) {
+            fprintf(stderr, "wave_selftest: the device did not open\n");
+            return 1;
+        }
+        if (run(NULL, y, w)) {
+            return 1;
+        }
+        printf("warpSize %g; thread 0 holds %g, thread 32 holds %g, thread 64 holds %g\n", w[0], y[0], y[32], y[64]);
+        if (w[0] == 64.0f && y[0] == 2080.0f && y[32] == 2080.0f && y[64] == 6176.0f) {
+            printf("a 64-lane wave, shuffled as the emulator models it\n");
+            return 0;
+        }
+        if (w[0] == 32.0f && y[0] == 1056.0f && y[32] == 3104.0f && y[64] == 5152.0f) {
+            printf("a 32-lane wave, shuffled as the emulator models it at 32\n");
+            return 0;
+        }
+        printf("NOT what the emulator models at either width\n");
+        return 1;
+    }
     /* 64 lanes (the default of the HIP build): 1+...+64 = 2080, 65+...+128 = 6176. */
     if (run(NULL, y, w)) {
         return 1;
