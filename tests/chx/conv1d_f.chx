@@ -24,3 +24,4 @@ algo conv1d_f(s, cin, cout, k, dl)
 
 schedule conv1d_f for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
 schedule conv1d_f for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv1d_f for amd-cdna3      { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

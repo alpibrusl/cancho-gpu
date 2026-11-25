@@ -25,3 +25,4 @@ algo gated_norm(h, n, eps)
 
 schedule gated_norm for apple-m-series { threads 128 br 1 }
 schedule gated_norm for nvidia-ada     { threads 128 br 1 }
+schedule gated_norm for amd-cdna3      { threads 128 br 1 }

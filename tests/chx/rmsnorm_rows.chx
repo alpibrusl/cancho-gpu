@@ -20,3 +20,4 @@ algo rmsnorm_rows(r, n, eps)
 
 schedule rmsnorm_rows for apple-m-series { threads 256 }
 schedule rmsnorm_rows for nvidia-ada     { threads 256 }
+schedule rmsnorm_rows for amd-cdna3      { threads 256 }

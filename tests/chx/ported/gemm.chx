@@ -32,3 +32,4 @@ algo gemm(m, n, k)
 
 schedule gemm for apple-m-series { threads 128 bm 16 bn 16 bk 32 }
 schedule gemm for nvidia-ada     { threads 128 bm 16 bn 16 bk 32 }
+schedule gemm for amd-cdna3      { threads 128 bm 16 bn 16 bk 32 }

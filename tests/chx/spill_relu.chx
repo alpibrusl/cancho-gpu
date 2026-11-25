@@ -19,3 +19,4 @@ algo spill_relu(nh, nq, t, d)
 
 schedule spill_relu for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
 schedule spill_relu for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
+schedule spill_relu for amd-cdna3      { threads 256 warps 2 4 bm 128 bn 128 bk 64 }

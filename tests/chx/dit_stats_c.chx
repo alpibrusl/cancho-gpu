@@ -20,3 +20,4 @@ algo dit_stats_c(nh, nq, t, qs, cs)
 
 schedule dit_stats_c for apple-m-series { threads 64 }
 schedule dit_stats_c for nvidia-ada     { threads 128 }
+schedule dit_stats_c for amd-cdna3      { threads 128 }

@@ -14,3 +14,4 @@ algo matvec_rows_f16h(m, n, k)
 
 schedule matvec_rows_f16h for apple-m-series { threads 256 bn 16 frag 2 }
 schedule matvec_rows_f16h for nvidia-ada     { threads 128 bn 4 }
+schedule matvec_rows_f16h for amd-cdna3      { threads 128 bn 4 }

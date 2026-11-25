@@ -12,3 +12,4 @@ algo bwd_db(r, n)
 
 schedule bwd_db for apple-m-series { threads 128 }
 schedule bwd_db for nvidia-ada     { threads 128 }
+schedule bwd_db for amd-cdna3      { threads 128 }

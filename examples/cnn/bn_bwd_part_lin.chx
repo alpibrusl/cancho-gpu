@@ -28,3 +28,4 @@ algo bn_bwd_part_lin(rp, c, rb)
 
 schedule bn_bwd_part_lin for apple-m-series { threads 128 }
 schedule bn_bwd_part_lin for nvidia-ada     { threads 128 }
+schedule bn_bwd_part_lin for amd-cdna3      { threads 128 }

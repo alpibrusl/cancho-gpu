@@ -20,3 +20,4 @@ algo bwd_dw(r, n, k)
 
 schedule bwd_dw for apple-m-series { threads 128 bk 1 }
 schedule bwd_dw for nvidia-ada     { threads 128 bk 1 }
+schedule bwd_dw for amd-cdna3      { threads 128 bk 1 }

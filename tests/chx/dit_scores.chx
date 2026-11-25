@@ -24,3 +24,4 @@ algo dit_scores(nh, nq, t, qs, ts, d)
 
 schedule dit_scores for apple-m-series { threads 512 }
 schedule dit_scores for nvidia-ada     { threads 128 }
+schedule dit_scores for amd-cdna3      { threads 128 }

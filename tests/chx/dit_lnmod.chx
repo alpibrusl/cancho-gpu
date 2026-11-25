@@ -32,3 +32,4 @@ algo dit_lnmod(s, n)
 
 schedule dit_lnmod for apple-m-series { threads 256 }
 schedule dit_lnmod for nvidia-ada     { threads 256 }
+schedule dit_lnmod for amd-cdna3      { threads 256 }

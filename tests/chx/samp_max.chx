@@ -16,3 +16,4 @@ algo samp_max(r, nq, G)
 
 schedule samp_max for apple-m-series { threads 256 }
 schedule samp_max for nvidia-ada     { threads 128 }
+schedule samp_max for amd-cdna3      { threads 128 }

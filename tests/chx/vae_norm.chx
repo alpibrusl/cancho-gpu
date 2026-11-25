@@ -24,3 +24,4 @@ algo vae_norm(r, c, g, sc)
 
 schedule vae_norm for apple-m-series { threads 256 }
 schedule vae_norm for nvidia-ada     { threads 256 }
+schedule vae_norm for amd-cdna3      { threads 256 }

@@ -21,3 +21,4 @@ algo rowops(r, n)
 
 schedule rowops for apple-m-series { threads 128 }
 schedule rowops for nvidia-ada     { threads 256 }
+schedule rowops for amd-cdna3      { threads 256 }

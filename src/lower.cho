@@ -1044,12 +1044,9 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, th
     }
     let body = text.joined(m, t, gen.body(m, g), "");
     if dialect.is_hip(d) {
-        // What the HIP text cannot say yet (docs/amd.md sections 2 and 4): a refusal, never CUDA's text on a 64-lane wave.
+        // What the HIP text cannot say yet (docs/amd.md section 4): a refusal. HIP's kernel language has no `wmma`.
         if gen.uses_mma(m, g) {
             return err.fail(m, t, "lowering", text.f1(m, t, "$ has no matrix unit this compiler can name: `mma` is not lowered for it yet (docs/amd.md, slice H5)", target.name(m, tg)));
-        }
-        if text.contains(m, t, body, "__shfl") {
-            return err.fail(m, t, "lowering", text.f2(m, t, "this kernel reduces across the lanes of a simdgroup with shuffles laid out for 32 lanes, and $ has $: not lowered for it yet (docs/amd.md, slice H4)", target.name(m, tg), n(m, t, target.simd_width(m, tg))));
         }
     }
     let out = mem.list(m);

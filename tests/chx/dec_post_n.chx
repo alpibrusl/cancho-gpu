@@ -65,3 +65,4 @@ algo dec_post_n(r)
 
 schedule dec_post_n for apple-m-series { threads 128 }
 schedule dec_post_n for nvidia-ada     { threads 128 }
+schedule dec_post_n for amd-cdna3      { threads 128 }

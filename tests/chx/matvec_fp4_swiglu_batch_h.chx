@@ -33,3 +33,4 @@ algo matvec_fp4_swiglu_batch_h(m, n, k)
 
 schedule matvec_fp4_swiglu_batch_h for apple-m-series { threads 256 bn 32 frag 4 }
 schedule matvec_fp4_swiglu_batch_h for nvidia-ada     { threads 256 bn 8 }
+schedule matvec_fp4_swiglu_batch_h for amd-cdna3      { threads 256 bn 8 }

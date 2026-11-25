@@ -20,3 +20,4 @@ algo qnorm(r, n, eps)
 
 schedule qnorm for apple-m-series { threads 256 br 1 }
 schedule qnorm for nvidia-ada     { threads 256 br 1 }
+schedule qnorm for amd-cdna3      { threads 256 br 1 }
