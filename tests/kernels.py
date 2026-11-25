@@ -617,6 +617,23 @@ def amax_id(r, nq, v1):
     return [v1 - gm[i * nq] for i in range(r)]
 
 
+def q4_code(n, k, row, c):
+    """The interpreter's made-up code bytes, 0x30 + i % 8, two codes a byte, low nibble first."""
+    byte = 48 + (row * (k // 2) + c // 2) % 8
+    return byte & 15 if c % 2 == 0 else byte >> 4
+
+
+def dq_q4(n, k):
+    """ggml Q4_0 as tiles (docs/kolibri.md K1): (code - 8) times the f16 scale of the group of 32, times the row's scale."""
+    ws, wg = lcg([n * k // 32, n])
+    return [(q4_code(n, k, row, c) - 8) * f16(ws[row * (k // 32) + c // 32]) * wg[row] for row in range(n) for c in range(k)]
+
+
+def matvec_q4(n, k):
+    x, ws, wg = lcg([k, n * k // 32, n])
+    return [sum(x[c] * (q4_code(n, k, row, c) - 8) * f16(ws[row * (k // 32) + c // 32]) * wg[row] for c in range(k)) for row in range(n)]
+
+
 def samp_pen(nq, invt, rp):
     """A draw's logits (docs/audio.md section 26): the repetition penalty where seen, the temperature, the forbidden entries added."""
     l, seen, add = lcg([nq * 64, nq * 64, nq * 64])
@@ -942,6 +959,10 @@ def new_checks():
     ok &= check("samp_rank nq=4", run("samp_rank", ["nq=4"])["cnt"], samp_rank(4))
     ok &= check("samp_keep n=256 k=0.05", run("samp_keep", ["n=256", "k=0.05", "bm=64", "lo=4"])["z"], samp_keep(256, 0.05, 4))
     ok &= check("seen_or c=64", run("seen_or", ["c=64", "bc=32"])["y"], seen_or(64))
+    ok &= check("dq_q4 n=8 k=64", run("dq_q4", ["n=8", "k=64", "bn=4", "bk=32"])["w"], dq_q4(8, 64))
+    ok &= check("dq_q4 n=4 k=128", run("dq_q4", ["n=4", "k=128", "bn=2", "bk=64"])["w"], dq_q4(4, 128))
+    ok &= check("matvec_q4_rows n=16 k=64", run("matvec_q4_rows", ["n=16", "k=64"])["y"], matvec_q4(16, 64))
+    ok &= check("matvec_q4_rows n=8 k=320", run("matvec_q4_rows", ["n=8", "k=320"])["y"], matvec_q4(8, 320))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -1142,6 +1163,11 @@ MUTANTS = [
     ("dec_post_n.chx", "let qe = qm * (1 / 128)", "let qe = qm * (1 / 64)", "dec_post_n takes q's mean square over 64"),
     ("amax_cand.chx", "let eq = on - st", "let eq = on + st", "amax_cand keeps the ranks of the columns under the maximum, twice"),
     ("amax_id.chx", "store o - a -> id[i, 0]", "store o + a -> id[i, 0]", "amax_id adds the rank"),
+    ("dq_q4.chx", "let s = load ws[i * bn, j * (bk / 32) ; bn, bk / 32]", "let s = load ws[i * bn, 0 ; bn, bk / 32]", "dq_q4 reads every tile's scales from the first"),
+    ("dq_q4.chx", "let r = load wg[i * bn ; bn]", "let r = load wg[0 ; bn]", "dq_q4 reads every tile's row scales from the first"),
+    ("dq_q4.chx", "let q = load wq[i * bn, j * (bk / 2) ; bn, bk / 2]", "let q = load wq[i * bn, 0 ; bn, bk / 2]", "dq_q4 reads every tile's codes from the first"),
+    ("matvec_q4_rows.chx", "let s  = load ws[i * bn, 0 ; bn, k / 32]", "let s  = load ws[0, 0 ; bn, k / 32]", "matvec_q4_rows reads every tile's scales from the first rows"),
+    ("matvec_q4_rows.chx", "let g  = load wg[i * bn ; bn]", "let g  = load wg[0 ; bn]", "matvec_q4_rows reads every tile's row scales from the first rows"),
     ("samp_pen.chx", "let pp = p * irp", "let pp = p * rp", "samp_pen multiplies a positive logit by the penalty"),
     ("samp_pen.chx", "let sd = s * d", "let sd = s + d", "samp_pen adds what was seen to the penalty's change"),
     ("samp_pen.chx", "let u  = t * invt", "let u  = t", "samp_pen leaves the temperature out"),
