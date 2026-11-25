@@ -74,7 +74,7 @@ Revision `0c0e3051`: `model.safetensors` 3.83 GB (404 tensors, 1,917 M values, B
 
 ### 3.1 What it is **[read]**
 
-* **The talker:** the same 28 layers as 2.1's language model (2,048, 16 over 8 heads of 128, SwiGLU 6,144), over a vocabulary of 3,072 codec entries (2,048 codes, then the control, language and voice entries). The text goes through the text embedding (151,936 x 2,048) and `text_projection` (two products with a SiLU); **a frame's input is the sum of its 16 code embeddings plus the embedding of the next text token** (the text is fed alongside the frames, then a pad embedding).
+* **The talker:** the same 28 layers as 2.1's language model (2,048, 16 over 8 heads of 128, SwiGLU 6,144), over a vocabulary of 3,072 codec entries (2,048 codes, then the control, language and voice entries). The text goes through the text embedding (151,936 x 2,048) and `text_projection` (two products with a SiLU); **a frame's input is the sum of its 16 code embeddings plus the embedding of the next text token** (the text is fed alongside the frames, then a pad embedding). **[corrected with S2, section 24: that is the streaming form. `generate_custom_voice` runs the other one (`non_streaming_mode=True`): the whole text is in the prefix, and every frame's input is the sum of its 16 code embeddings plus the pad embedding]**
 * **A frame is 16 codes of 2,048, 12.5 frames a second.** The talker's head gives the first; **the code predictor** (5 layers of 1,024 wide, the same kind of layer, a product from 2,048 down to 1,024 in front) gives the other 15 one after another, each with a head and an embedding of its own, from the talker's last hidden row and the codes so far.
 * **Sampling**, not arg max: temperature 0.9, top-k 50, repetition penalty 1.05, for the talker and for the predictor.
 * **The codec's decoder** (the `decoder.*` tensors of the tokenizer; its encoder is for cloning and is not needed):
@@ -98,9 +98,9 @@ Revision `0c0e3051`: `model.safetensors` 3.83 GB (404 tensors, 1,917 M values, B
 ### 3.3 Stages
 
 * **S0. The reference**, as A0: one sentence, one voice, a fixed seed; the 16 x T codes and the waveform kept.
-* **S1. The codec's decoder from the reference's codes**, the part with everything new and no sampling: `sin` first (the operation, its float64 test, its mutants), then the three convolutions, then the model file. **Bound, set now: the waveform within 1e-3 of full scale of the reference's float32 at every sample, and the kernels held to float64 as the others are.**
+* **S1. The codec's decoder from the reference's codes** **[done, sections 18 to 23: the worst sample 4.6e-6 from the reference's]**, the part with everything new and no sampling: `sin` first (the operation, its float64 test, its mutants), then the three convolutions, then the model file. **Bound, set now: the waveform within 1e-3 of full scale of the reference's float32 at every sample, and the kernels held to float64 as the others are.**
 * **S2. The talker and the predictor, teacher-forced** on the reference's codes: the logits of every draw. Bound: as A2's, the arg max equal wherever the reference's top two are clear.
-* **S3. Generation**, with the device's sampler. A sampled sequence cannot equal torch's; **the check is S2's logits and the predictor's draws given the reference's uniforms if they can be fed, else a listening check and A's recogniser on the result** (the two halves of this document test each other).
+* **S3. Generation** **[done, sections 26 and 27: with the reference's noise the device draws the reference's code at every clear draw; with the host's noise the recogniser hears the sentence]**, with the device's sampler. A sampled sequence cannot equal torch's; **the check is S2's logits and the predictor's draws given the reference's uniforms if they can be fed, else a listening check and A's recogniser on the result** (the two halves of this document test each other).
 * **S4. `scripts/media speak "TEXT" -o DIR --voice NAME --language L`**, and the real-time factor.
 
 ### 3.4 Size **[reckoned]**
@@ -466,7 +466,7 @@ A causal 1-D convolution of k taps with a dilation (the taps a loop of products 
 
 ### S1c: the decoder
 
-The codebook sums, the 8 transformer layers with their window of 72, the two ConvNeXt stages, the four Snake blocks, the model file and the session; the reference's activations hooked at each stage by hand, so that the first stage past the bound is named. **The bound of 3.3 is S1c's.**
+The codebook sums, the 8 transformer layers with their window of 72, the two ConvNeXt stages, the four Snake blocks, the model file and the session; the reference's activations hooked at each stage by hand, so that the first stage past the bound is named. **The bound of 3.3 is S1c's.** **[done: sections 22 and 23]**
 
 ## 19. S1a: `sin` and the Snake activation **[measured, 2026-11-24, M4 Max]**
 
@@ -519,7 +519,7 @@ The codebook sums, the 8 transformer layers with their window of 72, the two Con
 | transposed, 1,024 to 1,024, stride 2, 2 taps | `conv1d_f k=1`, read as 2 rows a position | 67 positions (134 rows), 256 of the outputs | 1.0e-6 | 1.32 |
 | depthwise, 1,024 channels, 7 taps, with its bias | `dwconv_f` | 134 positions, all channels | 2.5e-6 | 26.6 |
 
-Every one is within 2.3e-6 of its peak. Where only some outputs are compared it is because the interpreter reads a tensor as text of at most 16 MiB: the weights of those outputs are whole (every input channel, every tap); a later position cannot change an earlier one in a causal layer, so a prefix is the layer's own output. **Not compared: the transposed convolution of stride 8 (1,536 to 768) and of stride 4**, whose layout is the one of strides 5 and 3.
+Every one is within 2.3e-6 of its peak. Where only some outputs are compared it is because the interpreter reads a tensor as text of at most 16 MiB: the weights of those outputs are whole (every input channel, every tap); a later position cannot change an earlier one in a causal layer, so a prefix is the layer's own output. **Not compared: the transposed convolution of stride 8 (1,536 to 768) and of stride 4**, whose layout is the one of strides 5 and 3. **[with S1c, section 23: both are in the whole decoder, whose activations after each block are compared]**
 
 | on the Metal GPU against the interpreter, the test's own inputs | worst difference, of the peak |
 |---|---|
@@ -533,3 +533,304 @@ Every one is within 2.3e-6 of its peak. Where only some outputs are compared it 
 * **Against float64, in the gate:** `conv1d_f` with 3 taps and a dilation of 2; the transposed convolution of stride 3 written as the reference computes it, against `conv1d_f` with 2 taps; `dwconv_f`. **Mutants, run by hand, all killed by numbers:** a tap shifted by one position where the dilation is 2; every tap's weights read from the first tap; the first tap left out; the depthwise bias left out; its taps' weights from the first; its taps all reading the position itself; and, of the reference's reading, the two taps of the transposed layout exchanged.
 * **Goldens** for seven cases; `conv1d_f` is refused on CUDA (`lowering`: an f32 operand of the matrix unit), as designed, and its goldens there are the refusal.
 * **Not done:** the kernels on the GPU with the reference's tensors (the device runner takes the test's inputs only; real tensors on the GPU are S1c's session); the bias of `conv1d_f` (S1c's kernel); the rows of zeros in front are the caller's to provide, and nothing here checks that a session's buffers have them; the widest transposed layer (6,144 outputs of 3,072 inputs) does not fit the interpreter, so it has a golden and no numeric run; no time was measured.
+
+## 22. S1c (design, 2026-11-24, written before its code): the decoder as one session
+
+**[read: `Qwen3TTSTokenizerV2Decoder.forward` and what it calls; the configuration: 512 wide, 16 heads of 64, MLP 1,024 (SiLU gate), no attention bias, RMS eps 1e-5, window 72, rotary base 10,000, layer scale 0.01 at initialisation, rates (2, 2) then (8, 5, 4, 3)]** `models/qwen3_tts_decoder.model` is the decoder for SP frames (a multiple of 64): SP rows through the transformer, 4 SP after the two stages, 1,920 SP samples. Every layer is causal, so the rows after a clip's last frame change nothing before them: a clip of T frames runs with SP = T rounded up and its first 1,920 T samples are the answer.
+
+**Everything is f32, weights and activations. [measured before this was written, by hand, the reference on S0's codes]** The reference with the transformer's products' weights rounded to f16 moves the waveform by 1.4e-3 at worst; with only their inputs rounded to f16, by 1.2e-3; the ConvNeXt blocks' two products the same way, 3.5e-4 and 1.4e-4. The bound is 1e-3, so the f16 kernels that the recognition's layers run on (`gemm_mma`, `dit_rope16`, `dit_scores_mma`, `dit_pv_mma`, `vit_ln`, `dit_swiglu`) cannot carry this model: section 20's "rounding them to f16 would be a change to the model" was reckoned for the convolutions and holds for the transformer too. A product is `conv1d_f` with one tap.
+
+| the reference | as |
+|---|---|
+| the codebooks (`embedding_sum / cluster_usage` clamped at 1e-5, 16 of 2,048 x 256), the first's sum through one 256 to 512 product and the other fifteen's through another | **the host**: it writes the divided tables once (the division of two singles rounded to a single, as torch's) and, for a clip, the sum of the two products of each frame in binary64, rounded once: `x0.f32`, `[2 + SP, 512]` with two rows of zeros in front |
+| `pre_conv`, `input_proj`, `output_proj`, the two stages' transposed convolutions, the decoder's convolutions | `conv1d_f`, then `bias_pad` (new) |
+| a transformer layer: RMS norm; q, k, v; rotary; attention over the last 72; o; the layer scale; RMS norm; gate, up, SiLU, down; the layer scale | `rmsnorm_rows`; `conv1d_f` three times; `dit_rope` (f32) on q and k; `dit_scores_bias`, `dit_stats`, `dit_pv` (the f32 attention of the recognition's audio tower, 16 heads of 64 as there); `conv1d_f`; `dit_add`; then `rmsnorm_rows`, `conv1d_f` twice, **`dit_swiglu_f` (new: `dit_swiglu` with an f32 output)**, `conv1d_f`, `dit_add` |
+| the window and the causal mask | one `[16 SP, SP]` bias the host writes: 0 where `i - 72 < j <= i`, -1e9 elsewhere |
+| the layer scales, the ConvNeXt block's `gamma` | **folded by the host** into the rows of `o_proj`, `down_proj`, `pwconv2` and into `pwconv2`'s bias, in binary64, rounded once: one more rounding of a weight (6e-8 of it) where the reference rounds the product |
+| 1 / sqrt(64) | q's weight times 0.125, exact |
+| a ConvNeXt block | `dwconv_f`, `vit_ln_f`, `conv1d_f`, `conv_bias_gelu_erf` (its mask all ones), `conv1d_f`, `bias_pad`, `dit_add` |
+| a block: Snake, the transposed convolution, three residual units | `snake`, `conv1d_f` with 2 taps read as r rows a position (section 20), `bias_pad`; a unit is `snake`, `conv1d_f` (7 taps), `bias_pad`, `snake`, `conv1d_f` (1 tap), `bias_pad`, `dit_add` |
+| the last Snake and convolution, the clamp | `snake`, `conv1d_f` to 32 outputs of which 31 have zero weights, **`wave` (new)**: the first column plus its bias, clamped to [-1, 1] |
+
+**The rows of zeros in front of a convolution's input** are the kernel before it writing its s rows after g rows it does not touch: `out y: f32[g + s, c]`, stored from row g. `snake` gets the constant `g` (0 is what it was), and **`bias_pad`** is `y[g + t] = x[t] + b`: the bias of a product, and with a bias of zeros the one copy that only pads (in front of the decoder's first convolution, whose input is a sum). **[read: `shim/canchogpu-metal.mm` makes a program's buffers with `newBufferWithLength`, which Metal fills with zeros, and nothing else writes those rows]** The check is the waveform itself: the first positions of every convolution read them.
+
+**The clamp** has no operation of its own: `1 - relu(2 - relu(v + 1))`, which is `v` rounded once at `v + 1` (6e-8 at worst) inside [-1, 1] and exactly the ends outside, for every finite v. **[as built: the kernel's bound is a constant, `lim`, 1 in the model; its test runs with 0.25, because a test's inputs are under 1 in magnitude and would never reach a clamp at 1]**
+
+**The rotary tables:** the reference computes the angle in singles (`inv_freq` a single, times the position, rounded). The host does the same with its `f32`, so the angle can differ from torch's only by `inv_freq`'s last place (torch's `pow` in singles against binary64 rounded).
+
+**New kernels: three small ones and a constant** (`bias_pad`, `dit_swiglu_f`, `wave`, `snake`'s `g`), each against float64 with mutants as the others.
+
+**The host, `tests/qwen3_tts_decoder_gpu.cho`** (cancho): `weights` (the checkpoint's `speech_tokenizer/model.safetensors` to the session's files, once), `prepare` (a clip's codes, a text file of 16 numbers a frame, to `x0.f32`, the rotary tables, the mask), `compare` (the session's `wave.f32` against the reference's samples: **every one of the first 1,920 T within 1e-3**, exit status 0 only then) and `stage` (a saved buffer against a reference activation: the worst difference and the peak, for the by-hand table). Mutants of the layout, each to fail `compare`: the window left out (on a clip longer than 72 frames), the window one short, q not scaled, the transposed convolutions' two taps exchanged, the layer scales left out.
+
+**Checks.** By hand (the checkpoint and a Metal GPU): S0's 67 frames (SP 128) and S1's 203 (SP 256, past the window) against the reference's waveforms; the reference's activations hooked after the transformer, after the two stages, after each block, so that the first stage past the bound is named if one is. In the gate: the kernels' float64 references and goldens, the model file's expansion (`tests/model.sh`), and the host's refusals without a checkpoint (`tests/qwen3_tts_decoder.sh`).
+
+**Not in S1c:** a clip longer than a session holds, which the reference cuts in pieces of 300 frames with 25 of context (`chunked_decode`: S4's), the wav file (S4's), and the time, reported and not bounded.
+
+## 23. S1c: the decoder on the GPU **[measured, 2026-11-24, M4 Max]**
+
+`models/qwen3_tts_decoder.model` (266 programs for any SP) with `tests/qwen3_tts_decoder_gpu.cho` as its host, from the reference's codes, against the reference's own samples (the model's package in float32 on the CPU; its decoder alone on a clip's codes gives the clip's kept waveform exactly):
+
+| clip | frames, SP | samples | worst difference at any sample | the reference's peak | the whole session process |
+|---|---|---|---|---|---|
+| S0 | 67, 128 | 128,640 (5.4 s) | **2.7e-6** | 0.415 | 0.36 s |
+| S1 | 203, 256 | 389,760 (16.2 s) | **2.6e-6** | 0.429 | 0.60 s |
+| S1, S0 and S1 again, cut at 384 frames (the most the host takes) | 384, 384 | 737,280 (30.7 s) | **4.6e-6** | 0.429 | 0.85 s |
+
+**The bound of 3.3 is 1e-3: it is met with more than two hundred times to spare**, on every sample of the three clips. The time is the session's process from start to exit, three runs each within 0.02 s: reading 435 MB of weights, compiling, the pass, writing the samples. `prepare` is 0.02 s and `weights`, once, 0.8 s (236 files).
+
+**The reference's activations, stage by stage** (hooked by hand, the session's buffers saved with `PROBE=1`, `stage`):
+
+| after | S0: worst difference | S1: worst difference | the reference's peak |
+|---|---|---|---|
+| the host's codebook sums (`x0`) | 3.4e-5 | | 89.8 |
+| the transformer and `output_proj` | 1.2e-7 | 1.9e-7 | 0.204 |
+| the first stage | 4.9e-6 | 6.4e-6 | 2.55 |
+| the second stage | 5.5e-5 | 6.5e-5 | 21.8 |
+| the decoder's first convolution | 4.0e-5 | 6.1e-5 | 14.5, 17.7 |
+| block 1 (rate 8) | 3.2e-5 | 3.5e-5 | 10.2, 10.0 |
+| block 2 (rate 5) | 3.9e-4 | 1.2e-4 | 4.6, 5.3 |
+| block 3 (rate 4) | 1.9e-4 | 1.7e-4 | 4.4, 4.1 |
+| block 4 (rate 3) | 8.3e-4 | 8.6e-4 | 135, 133 |
+| the samples | 2.7e-6 | 2.6e-6 | 0.415, 0.429 |
+
+No stage is the one where the two part: the differences are those of singles summed in another order, growing with the depth and with the Snakes' steep places (block 2's are 8e-5 of its peak, block 4's 6e-6 of its), and the last convolution and the clamp bring them back to 6e-6 of the peak.
+
+**Mutants of the layout, each run through the session and `compare`:**
+
+| mutant | S0 (67 frames) | S1 (203 frames) |
+|---|---|---|
+| 1 the window left out | passes, 2.7e-6: no query has more than 72 keys | **fails, 4.4e-2** |
+| 2 the window 71 | passes, the same | **fails, 3.4e-3** |
+| 3 q not scaled | **fails, 0.22** | |
+| 4 the transposed convolutions' two taps exchanged | **fails, 0.52** | |
+| 5 the layer scales left out | **fails, 0.59** | |
+
+The window is held only by a clip longer than 72 frames, as section 22 said: S1 is the check, and a window one frame short is caught at 3.4 times the bound.
+
+**The new kernels** (`bias_pad`, `dit_swiglu_f`, `wave`, and `snake`'s `g`): against float64 in the gate (`tests/kernels.py`, six checks); on the Metal GPU against the interpreter, by hand, worst 6.0e-8 (`snake` at 64 x 1,536) and 1.5e-8 (`dit_swiglu_f`), the others equal to the bit; **13 mutants, run by hand, all killed by numbers** (a kernel writing over the rows in front, the bias subtracted or read from the first tile, the gate's sigmoid of the wrong operand, the clamp left out at either end, the second column read, and S1a's three of `snake`). Goldens for eleven cases.
+
+* **In the gate, without a GPU or the checkpoint:** the model file's expansion at SP 128 and at SP 256 with the probes (`tests/model.sh`); `tests/qwen3_tts_decoder.sh`, 37 checks: the host's refusals with their statuses, the inputs' sizes from codebooks of zeros, the mask's window read from its bytes (row 100 sees keys 29 to 100), and `compare`'s bound from files written by hand (a sample off by 0.0009 passes, by 0.0011 fails, a value that is not a number fails, a difference after the clip's last sample is not counted).
+* **By hand** (the checkpoint and a Metal GPU; the reference's samples and activations are written by a script that is not in the repository): `build/qwen3_tts_decoder_gpu weights <speech_tokenizer/model.safetensors> W`, `prepare W K codes.txt`, `printf '1\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_tts_decoder.model CHX=$PWD/tests/chx WORK=K WDIR=W SP=..`, `compare K wave.f32 <frames>`.
+* **Corrected by this stage:** section 20 chose f32 for the convolutions by reckoning; measured (section 22), f16 in the transformer alone is past the bound, so the decoder has no f16 product at all.
+* **Not done:** a clip longer than 384 frames (the reference's pieces of 300 with 25 of context: S4); the rotary tables and the folded weights are not compared with the reference's one by one (the activation after the transformer, 1.2e-7, holds them together); the device's memory is not measured; the time is one machine's and is not split into loading, compiling and the pass; the CUDA lowering of the three new kernels has goldens and no run on a device (`conv1d_f`, which the model needs, is Metal's alone); nothing here writes a wav file (S4).
+
+## 24. S2 (design, 2026-11-25, written before its code): the talker and the code predictor, teacher-forced
+
+**[read: `Qwen3TTSForConditionalGeneration.generate`, `Qwen3TTSTalkerForConditionalGeneration.forward`, the code predictor's two classes, and the checkpoint's configuration; measured by hand: S0's generation run again with the same seed gives S0's codes, and its hooks keep what each model read and the logits of every draw]**
+
+* **The talker is the recognition's language model with another head**: 28 layers of 2,048, 16 query heads over 8 key/value heads of 128, RMS norms on q and k, rotary base 1e6, SwiGLU 6,144, eps 1e-6, and `codec_head`, 3,072 outputs. Its three-part rotary positions are equal for a sequence with no image, so they are the plain ones. **The code predictor is the same layer at 1,024 wide** (5 layers, SwiGLU 3,072), with q, k and v still 16 heads of 128, so 2,048 wide: the one thing `models/qwen3_asr_text.model` cannot say, where they are D wide. `models/qwen3_tts_lm.model` is that file's layer with q's width its own constant, a product and bias in front when asked (the predictor's 2,048 to 1,024), and the rows after the final norm saved. **No new kernel.** The weights are BF16, exact in f16, and the activations go through f16 at each product as in A2: this stage's bound is on arg maxes, not 1e-3 of a waveform.
+* **What the talker reads, as the reference builds it for a preset voice** (S0: 25 rows of prefix, then a row a frame). With `P(t)` the text embedding of token t through `text_projection` (two products with biases, SiLU between) and `C(c)` the codec embedding: three rows `P` of the prompt's first three ids; six rows `P(pad) x 5, P(bos)` plus `C` of think, think-bos, the language, think-eos, the speaker, codec-pad; a row `P(t) + C(codec-pad)` for each token of the text, and one for `P(eos)`; a row `P(pad) + C(codec-bos)`; then for each frame the sum of its 16 code embeddings (the talker's for the first code, the predictor's fifteen tables for the others) plus `P(pad)`. The row before frame g's gives the logits of frame g's first code; the last frame's row gives the end token's.
+* **What the predictor reads for a frame:** 16 rows of 2,048: the talker's row after its final norm (the one whose logits gave the first code), the talker's embedding of the first code, then the predictor's table i - 1 of code i for i = 1 to 14. Row p (1 to 15) through head p - 1 gives the logits of code p. **All frames in one pass:** 16 T rows, the mask causal within a frame and closed between frames, the positions 0 to 15 in every frame; the 15 heads are one product to 30,720 outputs, of which a row reads its own 2,048 (fifteen times the work, in a pass that is a check and not the form to use: S3 is the cached step).
+* **The host, `tests/qwen3_tts_lm_gpu.cho`** (cancho): `weights` (both models' files and the tables the inputs need), `inputs talker` (ids, codes, a language id, a speaker id), `inputs predictor` (codes and the talker's rows, the session's or the reference's), `check talker` and `check predictor`, `near` (a saved file against a reference's, from an offset). The ids of the text are the reference's: the prompt is not tokenised here (S4).
+* **Bound, set now.** The codes are sampled, so a row's arg max is not the next code (48 of S0's 67 first codes are). The check is against the reference's logits: **the arg max equal at every row where the reference's top two are more than 0.5 apart** (A2's worst logit difference was 0.12; 59 of the talker's 68 rows are that clear, the closest pair is 0.04 apart), exit status 0 only then. Reported beside it, because the draws are from the top 50: the worst difference over each row's 50 largest reference logits, and over all.
+* **Mutants, each to fail its check:** the talker's mask left out; every row at position 0; query head h reading key/value head h % 8; the predictor's mask causal across frames; its positions not restarting; its heads one place off. **[corrected in section 25: positions that do not restart are not a mutant, and that form passed; the mutant is positions that restart a row early]**
+* **By hand** (the checkpoint, a Metal GPU): S0, the talker's pass and the predictor's from the reference's rows, then the predictor's from the talker's own rows (the two in a row). **In the gate:** the model file's expansion and the host's refusals and input sizes without a checkpoint.
+
+## 25. S2: the talker and the code predictor, teacher-forced **[measured, 2026-11-25, M4 Max]**
+
+`models/qwen3_tts_lm.model` (the talker as it is; the predictor with `D=1024 FF=3072 NL=5 V=30720 PROJ=1`) and `tests/qwen3_tts_lm_gpu.cho`, on S0's ids and codes, against the logits of every draw of S0's generation (the model's package in float32 on the CPU, run again by hand with S0's seed: its codes are S0's). The reference's largest logit is 34.6.
+
+| | rows | arg max equal to the reference's | of the rows whose top two are more than 0.5 apart | worst difference over a row's 50 largest | over all |
+|---|---|---|---|---|---|
+| **the talker** (25 rows of prefix, 67 frames) | 68 | 68 | **59 of 59** | 0.012 | 0.013 |
+| **the predictor from the reference's rows** | 1,005 | 1,004 | **428 of 428** | 0.041 | 0.053 |
+| **the predictor from the talker's own rows** (the two sessions in a row) | 1,005 | 1,003 | **428 of 428** | 0.044 | 0.044 |
+
+* **The bound of section 24 is met by all three.** The rows where the arg max differs are ones the bound leaves out: the reference's own top two are within 0.5 there.
+* **Fewer than half of the predictor's draws have a clear first choice** (428 of 1,005), and 19 of the talker's 67 first codes are not its arg max: this model's output is its sampling. What S3 needs of these passes is the last two columns, the logits over the 50 a draw is taken from: within 0.012 for the talker and 0.044 for the predictor, of logits up to 34.6.
+* **The inputs the host builds:** the talker's 92 rows against the reference's, worst difference 1.7e-6 (peak 12.0): the text embedding through `text_projection` in binary64, the codec rows, the sums of 16 embeddings. The predictor's 1,072 rows from the reference's talker rows equal the reference's to the bit. The talker's rows after its final norm, which the predictor reads, are within 0.014 of the reference's (peak 50.0).
+* **Time:** the talker's pass is 0.45 to 0.52 s for the whole process (3.7 GB of weights), the predictor's 0.52 s the first time and 0.17 to 0.19 s after (234 MB; 1,088 rows and a head of 30,720). `weights` is 6.4 s, once.
+
+**Mutants**, each through its session and `check` (of the clear rows, how many keep the reference's arg max):
+
+| mutant | the talker, of 59 | the predictor, of 428 |
+|---|---|---|
+| 1 the talker's mask left out | **0** | |
+| 2 every row at position 0 | **11** | |
+| 3 query head h reads key/value head h % 8 | **0** | **1** |
+| 4 the predictor's mask causal across frames | | **16** |
+| 5 its positions restart every 15 rows | | **245** |
+| 6 its heads one place off | 59 (not its mutant) | **0** |
+
+* **Corrected: section 24's mutant 5 was not one.** "Its positions not restarting" (rows numbered on through the frames) passed, 428 of 428: the rotary scores depend on the difference of two positions, and within a frame that is the same either way. The mutant is now positions that restart a row early, which fails. The positions 0 to 15 are what the reference uses and are kept; they are not something the check can hold.
+* **In the gate, without a GPU or the checkpoint:** the model file's expansion for the talker and for the predictor (`tests/model.sh`), and `tests/qwen3_tts_lm.sh`, 52 checks: the refusals with their statuses, both models' inputs at their sizes from tables of zeros, the two masks and the predictor's restarting positions read from their bytes, a frame's first row taken from the right row of the talker's file, and `check` from files written by hand (a clear row's arg max elsewhere fails, the same where the reference's top two are 0.25 apart passes, the predictor's rows read their own head's columns).
+* **By hand:** `build/qwen3_tts_lm_gpu weights <model.safetensors> TW PW`; `inputs talker TW K ids.txt codes.txt 2050 3061` (English, the voice Ryan); the session; `check talker K logits.f32 25 67`; `inputs predictor TW K2 codes.txt K/hidden.f32 24`; the session with the predictor's definitions; `check predictor K2 plog.f32 67`.
+* **Not done:** one clip, one language, one voice; the ids are the reference's (no tokenizer here: S4), and the language and the voice are given as their codec ids; the streaming form, the instruction text and the dialect rule of `generate` are not built; the logits' differences were not compared with what the reference's own BF16 gives; sampling, the repetition penalty and the suppressed entries are S3's; a pass over a whole sequence is the form to check, not the one to generate with.
+
+
+## 26. S3 (design, 2026-11-25, written before its code): generation, a frame a step
+
+**[read: `transformers`' `generate` as the reference calls it, and `torch.multinomial`; measured by hand before this was written: S0's generation run again with `torch.multinomial` replaced by its algorithm written out gives S0's codes, 1,073 draws]**
+
+* **What a draw is in the reference.** The talker's 3,072 logits go through: the repetition penalty 1.05 (a logit of an id drawn before, once however often it was drawn: divided by 1.05 if positive, multiplied if not); the end token forbidden in the first two frames; the entries 2,048 to 3,071 forbidden except the end token, 2,150; the temperature 0.9; the 50 largest kept (every entry not less than the 50th). The predictor's 2,048 logits: the temperature and the 50 largest, nothing else. **[measured: this reading against the reference's probabilities of every draw, worst 1.4e-6 and 3.6e-7]** Then `torch.multinomial`, which for one sample draws **an exponential q for every entry and takes the arg max of p / q**.
+* **So the reference's draws can be fed, and section 3.3's question is answered: not as uniforms.** `docs/sampler.md`'s sampler takes one uniform a draw and walks a cumulative sum; torch takes 3,072 numbers a draw. But `arg max p / q` is `arg max (log p - log q)`: **the processed logits plus a row of noise `g = -log q`, then the arg max the recognition's step already has on the device.** The noise is data, a table a draw, as `docs/sampler.md` has its uniforms: the reference's own q (kept by hand for S0) or the host's (a seeded generator, `g = -log(-log u)`, the same distribution). S3 samples this way, and not with the inverse-CDF kernels: it needs no cumulative sums, it is checked draw by draw, and the 50 largest are needed either way.
+* **Four kernels, each a few lines, held to float64 with mutants:**
+  * `samp_pen`: `y = (l + seen (pen(l) - l)) invt + add`, `pen(l) = relu(l) / rp + (l - relu(l)) rp`; `seen` is 1 at the ids drawn before, `add` a table that is -1e9 at a forbidden entry. The predictor uses it with `seen` and `add` zeros.
+  * `samp_rank`: for each entry, in 64 x 64 tiles, how many entries are larger (`step(y_i - y_j)` summed); `samp_keep`: the tiles' counts summed, `z = y + g` where fewer than k are larger and -1e9 elsewhere. A tie at the 50th keeps both, as torch does.
+  * `seen_or`: `seen` with the entry of this step's first code set, where the step's draw counts (a flag, a table); carried.
+* **One step is one frame** (`models/qwen3_tts_step.model`): the talker's cached step (section 10's, at this model's head), its draw, **the predictor's 16 rows unrolled** in the same step (five layers each; row p reads the caches row p - 1 wrote, by links, and row 0 starts from zeros, so the predictor's caches need no reset and no table: its positions, masks and selectors are constants), a draw after each of rows 1 to 15, and the next frame's row: the 16 ids gathered, one one-hot of 16 x 3,072, one product with the 16 tables side by side, plus `P(pad)`; carried to the next step. **About 1,900 programs a step [reckoned; measured in section 27: 1,895 programs, 25 ms a step]: at section 11's 12 microseconds a program, 23 ms of launches, and a frame is 80 ms of audio.** A resident file two programs read is one buffer (`docs/resident.md`), so the predictor's layers are loaded once.
+* **The prefix goes through the same step, a row a step** (section 10's form; S0's is 25 rows), from a table of rows the S2 host writes; the predictor runs on those steps too and what it draws is thrown away (a flag keeps it out of `seen`). A prefill in one pass is section 12's and is not built here.
+* **Teacher forcing** is a flag and a table of ids a draw (`ids_mix`): what goes on (to the predictor's next row, to the next frame's row, to `seen`) is the reference's code where the flag is 1, the device's draw where it is 0. The ids the device drew are answered either way.
+* **The end**: a request is a number of steps; the host reads the first codes and cuts at the end token.
+* **The host, `tests/qwen3_tts_step_gpu.cho`** (cancho): `weights` (the checkpoint's layers stacked as the step reads them, the tables transposed), `inputs` (the tables of a request: the prefix's rows, the noise from a file or from a seed, the forbidden entries, the forced codes if any), `codes` (the frames up to the end token, as the decoder's `prepare` reads them), `check`.
+* **Bounds, set now:**
+  1. **Teacher-forced with the reference's noise** (S0, 68 + 1,005 draws): the device's draw equal to the reference's **at every draw whose two largest `log p + g` in the reference are more than 0.2 apart** (section 25's logits are within 0.012 and 0.044, 0.05 after the temperature, on each of two entries); exit status 0 only then. Reported: the draws equal of all. **[measured from the reference: 2 of the talker's 68 draws and 177 of the predictor's 1,005 are closer than that]** **[corrected when run, section 27: that margin looks only at the 50 the reference kept, and the first run failed it at one draw, where the device kept the reference's 51st entry, 0.002 under its 50th, and that entry's noise won. A draw is clear when the winner's `y + g` is more than 0.2 above that of every other entry that is kept or within 0.1 of the 50th, and the winner is not itself within 0.1 of the 51st: 2 of 68 and 208 of 1,005 are not.]**
+  2. **The talker's processed logits at a step** (the session stopped there, `z` saved): the 50 kept are the reference's 50 with nonzero probability, and `z - g` less its maximum is the reference's `log p` less its maximum within 0.1. At frame 0 (the end token forbidden), and at a frame where the penalty moves the reference's probabilities by more than 0.1.
+  3. **Free, with the reference's noise** (no forcing): the frames equal to S0's before the first that differs. Reported, not bounded: one draw the other way and the rest is another sentence's worth of codes.
+  4. **Free, with the host's noise**, three seeds: the codes through section 23's decoder and the waveform through section 17's `transcribe`; the words are the text's. This is the check section 3.3 called the two halves testing each other.
+  5. **Mutants, each to fail bound 1 or 2:** the penalty left out; the noise a step late; the predictor's rows all at position 0; `P(pad)` left out of the next row; the predictor's row 1 read from its own first table and not the talker's; the 51 largest kept; the end token allowed from the first frame. **[corrected when run, section 27: the 51 largest fail bound 2 and not bound 1, whose margin now leaves out the draws the 51st entry can change; and the end token allowed from the first frame fails neither on S0, where it is not among the 50 largest of the first two frames either way: that table is held by its bytes in the gate.]**
+  6. **Time:** the milliseconds of a step from requests of two lengths; S0's clip from a cold process, codes then waveform. No bar but real time: under 80 ms a step.
+  7. `scripts/gate.sh`: the four kernels against float64, the model file's expansion, the host's refusals and tables without a GPU or the checkpoint.
+* **Not in S3:** the tokenizer, a wav file, a command of `scripts/media` (S4); more than one sequence; a clip longer than the decoder's 384 frames.
+
+## 27. S3: generation, a frame a step **[measured, 2026-11-25, M4 Max]**
+
+`models/qwen3_tts_step.model` (337 lines; 1,895 programs a step, 1,927 with `FORCE=1 PROBE=1`), the four kernels of section 26 (`samp_pen`, `samp_rank`, `samp_keep`, `seen_or`) and the host side `tests/qwen3_tts_step_gpu.cho` (cancho). The talker's step, its draw, the predictor's 16 rows and 15 draws and the next frame's row are one step of one session; the noise of every draw is a table.
+
+```sh
+BL=build/qwen3_tts_lm_gpu; B=build/qwen3_tts_step_gpu; A=~/.cache/cancho-media/audio-ref; TW=~/.cache/cancho-media/qwen3-tts-talker-f16; W=~/.cache/cancho-media/qwen3-tts-step-f16; K=<a work directory>
+$B weights <model.safetensors> $W                                              # once: 3.2 GB in 5.7 s
+$BL inputs talker $TW $K/l $A/lm/s0/ids.txt $A/lm/s0/codes.txt 2050 3061       # the prefix's rows (x0.f32, the first 25) and pad.f32; prints prefix 25
+$B inputs $K/s $K/l/x0.f32 $K/l/pad.f32 25 92 128 ref $A/gen/s0 $A/lm/s0/codes.txt   # teacher-forced with the reference's noise; `seed 1 -` for the host's noise and nothing forced
+printf '92\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_tts_step.model CHX=$PWD/tests/chx QW=$PWD/examples/qwen TR=$PWD/examples/train WORK=$K/s WDIR=$W T=128 NS=92 FORCE=1
+$B check $K/s 25 $A/lm/s0/codes.txt $A/gen/s0/margins.f32
+$B codes $K/s 25 $K/codes.txt                                                  # then section 23's `prepare` and session for the waveform
+```
+
+**Bound 1, teacher-forced with the reference's noise** (S0: 25 rows of prefix, 67 frames and the end token; `ref.py`, by hand and not in the repository, kept the noise of the reference's 1,073 draws):
+
+| | draws | equal to the reference's | of the clear ones |
+|---|---|---|---|
+| the talker (the end token its 68th draw) | 68 | **68** | **66 of 66** |
+| the predictor | 1,005 | 1,003 | **797 of 797** |
+
+* **The bound was corrected after the first run, in section 26**: with the margin the design set (over the reference's 50 kept alone) the predictor was 827 of 828. The one miss was frame 62, code 14: the reference's 50th and 51st logits are 0.002 apart, the device kept the other one, and that entry's noise was the row's largest. Nothing was wrong in the draw; the margin did not say what it was meant to. The margin now counts the entries at the edge of the 50, and under it 797 of 797 hold. The other draw that differs (frame 16, code 8) has a margin of 0.005 under either.
+* **Bound 2, the talker's processed logits** (`PROBE=1`, the session stopped at the frame's step, `probe`): the 50 kept are the reference's 50 at frames 0, 1, 5, 46 and 67, and their log probabilities, each less its maximum, are within **0.0074** (bound 0.1). Frame 0 has the end token forbidden; at frames 5 and 46 the penalty moves the reference's probabilities by 0.31.
+* **Bound 3, free with the reference's noise:** the first **16 of 67** frames are S0's; frame 16's code 8 is the draw with a margin of 0.005, and the rest is another sequence, as expected.
+* **Bound 4, free with the host's noise**, seeds 1, 2 and 3 (160 steps each): 63, 59 and 61 frames before the end token (the reference's S0 has 67); each through section 23's decoder (5.0, 4.7 and 4.9 s of audio) and `scripts/media transcribe`: **"The quick brown fox jumps over the lazy dog near the quiet river."** each time, the text given. The recogniser heard them; nobody listened. The wav files were written by a scratch script (S4 writes them properly).
+* **Mutants, each through its session:**
+
+| mutant | the talker's clear draws | the predictor's | `check` | `probe` |
+|---|---|---|---|---|
+| none | 66 of 66 | 797 of 797 | 0 | 0 |
+| 1 the penalty left out (`RP=1 IRP=1`) | 64 | 797 | fails | fails at frame 46: 1.84 |
+| 2 the noise a step late | 43 | 101 | fails | |
+| 3 the predictor's rows at position 0 | 66 | 243 | fails | |
+| 4 `P(pad)` left out of the next row | 50 | 435 | fails | |
+| 5 the predictor's row 1 from its own first table | 66 | 77 | fails | |
+| 6 the 51 largest (`K=51`) | 66 | 797 | passes | fails: 51 kept |
+| 7 the end token allowed from the first frame | 66 | 797 | **passes** | **passes** |
+
+* **Mutant 7 survives on S0**: the end token is not among the 50 largest of the first two frames whether it is forbidden or not, so no draw and no probe of this clip can tell. The table that forbids it is held by its bytes in the gate (`tests/qwen3_tts_step.sh`), and by nothing on the device.
+* **Time** (the session's process, cold, with its load of 3.2 GB and its compile):
+
+| | |
+|---|---|
+| a step, from requests of 32, 96 and 224 steps, twice | **25.0 and 25.8 ms** (28.8 and 24.3 the first time): a frame is 80 ms of audio, so 3.1 times faster than real time |
+| 416 steps, caches of 448 positions | 12.7 s: about 29 ms a step over all of them (the talker's caches are rewritten whole every step, which grows with the positions **[reckoned, not profiled]**) |
+| before the first step | about 0.55 s **[reckoned: the 32 steps' 1.36 s less 32 steps]** |
+| S0, teacher-forced, 92 steps | 2.9 s |
+| a sentence, free: 160 steps, then the decoder, then `transcribe` | 4.6 s, 1.5 s, 2.9 s |
+
+* **The kernels:** against float64 in the gate (`tests/kernels.py`); on the Metal GPU against the interpreter, by hand, no difference at all (they add, compare and count). **Eleven mutants, run by hand (the gate runs that test without `--mutants`): all killed by numbers, after three first drafts that died of a refusal to compile were replaced.**
+* **Held in the gate without a GPU or the checkpoint:** the four kernels, their goldens, the model file's two expansions (`tests/model.sh`), and `tests/qwen3_tts_step.sh`, 109 checks: the refusals, the tables of six steps at their sizes and bytes (the noise from files and from a seed, the forbidden entries by step, the forced codes and the end token after them, each mutant's one change), and `codes`, `check` and `probe` on answers written by hand. `tests/qwen3_tts_lm.sh` checks the pad row S2's host now writes.
+* **Not done:**
+  * The session cannot stop at the end token: a request is a number of steps, and the steps after the end are computed and thrown away (160 steps for about 60 frames above). S4 has to ask in pieces or guess a length.
+  * The prefix goes a row a step (25 steps, 0.6 s); the prefill in one pass is not built. S2's host writes the prefix only with a codes file, so a free run gives it any frame.
+  * The draw as a chain (`samp_pen`, `samp_rank`, `samp_keep`, the arg max) has no test of its own on made-up data: each kernel has, and the chain is held by the probe and the draws on the real model, by hand.
+  * One clip, one language, one voice, the reference's ids; three seeds; the longest run 160 steps. The decoder takes 384 frames at most **[a session does; the reference's `decode` cuts every clip at 300 frames with 25 of context, section 28, and S4 does the same]**.
+  * The host's noise is a Lehmer generator's, not torch's: the same distribution, never the same sequence as a seed of the reference.
+  * The time is not split into loading, compiling and steps, and the device's memory is not measured.
+
+## 28. S4 (design, 2026-11-25, written before its code): `scripts/media speak "TEXT" -o DIR`
+
+S3 generates from the reference's token ids, from a prefix that needed a frame of codes to be written, for one voice and one language, and ends in a file of floats. S4 is what is left between a sentence and a wav file, run from the media program as section 16's `transcribe` is.
+
+**[read and measured by hand before this was written]**
+
+* **The tokenizer is Qwen2's**, and the checkpoint's `vocab.json` and `merges.txt` are byte for byte those of Qwen2.5, whose `tokenizer.json` `cancho-gpu tokenize` already reads (`src/bpe.cho`: the Qwen2 split, NFC, held to Hugging Face's ids in the gate). **Measured: 13 texts of 13** (ten languages, quotes, digits, a decomposed accent, an emoji, runs of spaces) **give the reference's ids** through that file. The command must not depend on another model's files, so a host step writes a `tokenizer.json` from the checkpoint's two files: the vocabulary as it is, each line of the merges as a string, the same normalizer and split, no added tokens. A text that spells a control token (`<|im_end|>`) is therefore read as its letters, where the reference would make it the token: a difference, kept on purpose.
+* **The prompt** is `<|im_start|>assistant\n`, the text, `<|im_end|>\n<|im_start|>assistant\n`: the ids 151644 77091 198, the text's, 151645 198 151644 77091 198.
+* **The voice and the language** are codec ids from the checkpoint's configuration: nine voices, ten languages and two dialects. With the language `auto` the prefix has no language row and `nothink` in place of `think` (one row shorter). A voice that is a dialect's (`eric`, `dylan`) takes its dialect's id when the language is Chinese or `auto`. **Measured: `tests/qwen3_tts_lm_gpu.cho inputs talker`, given `-` for the codes and 0 for no language, writes the reference's prefix rows within 1.7e-6 for five pairs** (auto and Ryan, Chinese and Dylan, auto and Eric, German and Serena, English and Dylan).
+* **The reference decodes every clip in pieces of 300 frames, each with the 25 frames before it as context** (`chunked_decode`; the context's samples are dropped). **[corrects sections 22, 23 and 27, which say the decoder "takes 384 frames at most" as if the reference cut only longer clips: one pass of up to 384 frames is what S1c compared with the decoder's own forward; the reference's `decode` cuts at 300.]**
+* **A session cannot end on a value it computes** (section 16), so the frames have a budget fixed before the steps start. **[corrected when built, section 29: the session cannot, but what asks it can stop asking. It answers each request with the id the step drew, and 100 requests of one step cost what one request of 100 does (3.2 s and 3.4 s, measured), so `scripts/tts-session until` asks a step at a time and stops at the end token. The budget is then only the size of the tables.]**
+
+**The command.** `scripts/media speak "TEXT" -o DIR [--voice NAME] [--language NAME] [--seed N] [--most N]`: `DIR/speech.wav` (24 kHz, mono, 16 bits), the intermediate files in `DIR/work`. The voice is `ryan` unless given, the language `auto`, the seed 1 (the same command gives the same file). cancho's alone: no Python of it.
+
+**The stages** (`scripts/tts WHICH ARGS...` for the host programs and the tokenizer, `scripts/tts-session STEPS MODEL NAME=value...` for the sessions):
+
+| | program | reads from what it prints |
+|---|---|---|
+| on first use: the tables of the prefix and the tokenizer's file (0.7 GB), the step's weights (3.2 GB), the decoder's (0.4 GB) | `tts lm tables`, `tts front tokenizer`, `tts step weights`, `tts decoder weights` | |
+| the text's ids | `tts tokens TOKENIZER work/text.txt work/tok.txt` (`cancho-gpu tokenize`) | |
+| the prompt | `tts front prompt work/tok.txt VOICE LANGUAGE work/ids.txt` | `text N language L speaker S` |
+| the prefix | `tts lm inputs talker TABLES work/lm work/ids.txt - L S` | `prefix P` |
+| the steps' tables | `tts step inputs work/step work/lm/x0.f32 work/lm/pad.f32 P STEPS POSITIONS seed N -` | |
+| the frames | `tts-session until 2.151e3 STEPS models/qwen3_tts_step.model ...` **[as corrected above]** | |
+| the codes | `tts step codes work/step P work/codes.txt` | `frames F` |
+| each piece of 300 frames | `tts decoder prepare DEC work/dec work/codes.txt FIRST COUNT`, `tts-session 1 models/qwen3_tts_decoder.model ...`, `tts front pcm work/speech.pcm work/dec/wave.f32 SKIP TAKE new|more` | `SP=` |
+| the file | `tts front wav work/speech.pcm DIR/speech.wav` | `samples N` |
+
+**The budget of frames** is `--most N`, or a number from the text's tokens **to be set from measured runs (section 29) before the command is called done** **[set there: 8 frames a token and 40, and no more than a request's 1,024 steps hold]**; a generation that has not ended in its budget is refused, not written cut. **The bounds on the text and on the frames** are the longest that was compared, as section 16 did for the clip.
+
+**New in the hosts:** `tests/qwen3_tts_front.cho` (`tokenizer`, `prompt`, `pcm`, `wav`; cancho); `tables` in the S2 host (the six files the prefix needs, not the 3.9 GB of S2's passes); `-` and 0 in its `inputs talker`; a first frame and a count in the decoder host's `prepare`.
+
+**Bounds, set now:**
+
+1. **The ids** of the 13 texts from the file the host writes: the reference's, all of them.
+2. **The prefix rows** of the five pairs: within 1e-5 of the reference's (measured above: 1.7e-6).
+3. **A clip of more than 300 frames, in pieces**: the waveform within 1e-3 of the reference's `decode` of the same codes at every sample, section 3.3's bound.
+4. **`speak`, then section 17's `transcribe` on its file: the text's words** (letters and digits, case and punctuation aside), for S0's sentence in three voices and three seeds, S1's three sentences, a German and a Spanish sentence with their language given, and one with `auto`. A miss is reported as it is, with what was heard.
+5. **The wav file**: its header and its samples (`round(32767 x)`, clamped) by their bytes, in the gate.
+6. **The real-time factor**: the command's wall time, cold, over the seconds of speech, for S0's sentence and S1's three. No bar set but section 3.4's "within reach": reported.
+7. **In the gate, no GPU and no checkpoint**: `tests/qwen3_tts_front.sh` (the host's refusals, a tokenizer file from a toy vocabulary read back by `cancho-gpu tokenize`, the prompt's ids, each voice and language and the dialect rule, the wav's bytes), the changed hosts' tests, and `tests/media_speak.sh` as `tests/media_transcribe.sh`: every stage's arguments, the budget, the pieces of a long clip, each refusal with its status.
+
+**Not in S4:** an instruction text, a cloned voice, streaming, more than one sentence at once, the studio, `media models`.
+
+## 29. S4: `scripts/media speak` **[measured, 2026-11-25, M4 Max]**
+
+`media/speak.cho` (cancho; the command of `build/media`), `scripts/tts` and `scripts/tts-session` (the programs it starts), `scripts/build-tts.sh` (the four host programs), `tests/qwen3_tts_front.cho` (the tokenizer's file, the prompt, the samples, the wav), and three changes in the hosts of S1 to S3 (a prefix with no codes and with no language, `tables`, a window of frames in the decoder's `prepare`).
+
+```sh
+scripts/media speak "The quick brown fox jumps over the lazy dog near the quiet river." -o out/fox      # out/fox/speech.wav, 24 kHz, mono, 16 bits
+scripts/media speak "Guten Morgen!" -o out/de --voice serena --language german --seed 2
+```
+
+**The bounds of section 28:**
+
+| | |
+|---|---|
+| 1. the ids of the 13 texts, from the file the host writes of the checkpoint's `vocab.json` and `merges.txt` (151,291 merges, 0.23 s) | **the reference's, 13 of 13** |
+| 2. the prefix rows of the five voice and language pairs | within **1.7e-6** of the reference's (bound 1e-5) |
+| 3. a clip of 620 frames in three pieces, the wav's samples against the reference's `decode` of the same codes | worst **1.7e-5** at any of 1,190,400 samples (bound 1e-3); the reference's own one pass over the 620 frames is 9.1e-2 from its pieces, so the pieces are what is being matched |
+| 4. `speak`, then `transcribe` of its file: the text's words | **20 of 20**, below |
+| 5. the wav's header and samples by their bytes | in the gate |
+
+**Bound 4, each from a cold command** (the transcript beside the text, case and punctuation aside):
+
+| text | voice, language, seed | speech | the command | heard |
+|---|---|---|---|---|
+| S0's sentence (14 tokens) | ryan, aiden and serena; english; seeds 1, 2, 3 | 3.6 to 5.3 s | 3.0 to 3.6 s | the sentence, 9 of 9 |
+| S1's three sentences (54 tokens) | ryan, english, seeds 1, 2, 3 | 20.8, 23.8, 16.3 s | 10.7, 11.5, 9.0 s | the three sentences, 3 of 3 |
+| a German sentence | serena, german | 4.6 s | 3.7 s | the sentence |
+| the same | vivian, auto | 5.9 s | 4.2 s | the sentence, as German |
+| a Spanish sentence | ryan, spanish | 5.7 s | 4.0 s | the sentence |
+| S0's sentence | ryan, auto | 5.7 s | 3.7 s | the sentence |
+| a Chinese sentence | vivian, chinese; dylan, chinese (the Beijing dialect's id) | 4.3, 2.6 s | 3.1, 2.5 s | the sentence, both |
+| a Japanese sentence | ono_anna, japanese | 4.6 s | 3.2 s | the sentence |
+| a French sentence | ryan, french | 5.3 s | 3.9 s | the sentence |
+| S1's three sentences twice (108 tokens, 620 frames) | ryan, english, seed 1 | 49.6 s | 23.5 s | the six sentences |
+
+* **One sample made on the way was wrong**: S0's sentence, seed 1, under the first form of the host's noise, came out 9.1 s long and was heard as "... over the lazy dog. Fichter and steak near the quiet river." The model wandered and came back; nothing in the stages was different from the runs beside it. The noise's layout was changed after it for another reason (below), so that sample cannot be made again with the command as it is, and no other run did it. **A sampled voice can say something that is not the text, and nothing here checks a file before it is written.**
+* **Bound 6, the real-time factor** (the command's wall time over the speech's seconds, cold, three runs each, the same file each time): **0.69** for S0's sentence (3.59, 3.58, 3.59 s for 5.20 s), **0.51** for S1's (10.53, 10.55, 10.51 s for 20.80 s), **0.47** for the 620 frames. Of S1's 10.5 s: the frames 8.63, the waveform 0.80, the steps' tables 0.69, the prefix 0.30, the rest 0.11.
+* **The session stops at the end token after all** (section 28's correction): `scripts/tts-session until 2.151e3 MOST ...` asks a step a request and reads the id each answers. Before it, S0's sentence took 7.5 s with a budget of 190 frames it mostly did not use; with it 3.6 s. The budget is now the size of the tables only.
+* **The budget is 8 frames a token of the text and 40** (the runs above used 3.8 to 6.4 frames a token), and never more than a request's 1,024 steps hold with the prefix. **The longest text is 110 tokens**: 108 is the longest spoken and heard back; 162 tokens (S1's sentences three times) did not end in the 999 frames a request held, and was refused.
+* **A step is 26 to 27 ms here**: 8.63 s for S1's 325 steps at 576 positions, 19.45 s for the 740 steps of the 620 frames at 1,024 positions (section 27: 25 ms at 128). **Not explained:** in a first round of these runs, with a budget of 12 frames a token (832 positions), S1's steps took 35 to 46 ms; the round in the table did not repeat it and it was not looked into.
+* **A draw's noise is now its seed's, its frame's and its place's in the frame**, not its place in a table that depends on the number of steps (the first form): a budget does not move the draws. **It can still move the sample**: the same seed with a budget of 12 a token gave 5.36 s where 8 a token gives 5.20 s, because the positions are a constant of the kernels and a different constant sums in another order, enough to turn a draw whose two best are close (section 27's 0.005). The same command gives the same file, three times of three; another `--most` may not.
+* **Held in the gate without a GPU or the checkpoint:** `tests/media_speak.sh` (103 checks: the ten stages' arguments, the voice, language and seed passed on, the budget and the positions, the three pieces of 620 frames and the edge cases at 300 and 301, each weights program run when its last file is missing, 13 refusals before any stage and 10 after one, the wrappers), `tests/qwen3_tts_front.sh` (46: a tokenizer file from a toy vocabulary read by `cancho-gpu tokenize`, with a merge of a quote and a backslash; every voice, language and dialect; the samples' and the wav's bytes), and the three hosts' tests with the new forms.
+* **Not done:**
+  * A text over 110 tokens: sentences would have to be spoken one by one and joined, which the reference does not do either; not built.
+  * Nobody listened: the recogniser heard 20 files of 20. It does not judge the voice, the prosody or a dialect (Dylan's Chinese was heard as the same sentence; whether it is Beijing's is not known here).
+  * A text that spells a control token is read as its letters (section 28). The Korean, Russian, Italian and Portuguese of the checkpoint were not spoken, nor the voices `uncle_fu`, `sohee` and `eric`.
+  * The voices and languages are a table in the host, read once from the checkpoint's `config.json` by hand, not from the file at each run.
+  * The stop is a loop in a shell script (`scripts/tts-session`), since a cancho program can only start a program of `scripts/` and cannot talk to it while it runs.
+  * The prefix still goes a row a step; the weights' directories are trusted when their last file is there; `media models` does not list the command; the studio does not offer it; no instruction text, no cloned voice, no streaming.
