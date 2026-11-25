@@ -542,7 +542,12 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
     if tg < 0 {
         return 0 - 1;
     }
-    if ir.dtype(m, tq) != kinds.i8() || ir.dtype(m, ts) != kinds.i8() {
+    if k == kinds.op_dequant_q4() {
+        // Q4_0: the codes are bytes, a group's scale an f16 as the file holds it
+        if ir.dtype(m, tq) != kinds.i8() || ir.dtype(m, ts) != kinds.f16() {
+            return diag(m, t, c, "type", text.lit(m, t, "q4 values must be I8 and their scales F16"));
+        }
+    } else if ir.dtype(m, tq) != kinds.i8() || ir.dtype(m, ts) != kinds.i8() {
         return diag(m, t, c, "type", text.lit(m, t, "nvfp4 values and FP8 scales must be I8"));
     }
     if ir.dtype(m, tg) != kinds.f32() {

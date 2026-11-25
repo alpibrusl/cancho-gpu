@@ -55,6 +55,7 @@ atom      := '&' NAME                                          // a borrow: the 
            | ('mma'|'mma_nn'|'mma_tn'|'mma_tt') atom atom atom   // acc a b
            | 'matmul' atom atom | 'matmul_nt' atom atom
            | 'dequant_fp4' atom atom atom NUMBER               // q scales g group
+           | 'dequant_q4' atom atom atom NUMBER                // q scales g group
            | 'add_window' atom NAME '[' ce {',' ce} ']'
            | 'stage' ('f16'|'f32') atom
            | ('rowsum'|'rowmax'|'rsqrt'|'sigmoid'|'softplus'|'exp'|'log'|'relu'|'step'|'tanh'|'sin') atom
@@ -111,6 +112,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `matmul_nt a b` | `a b^T`, `[m,k] x [n,k]` to `[m,n]` |
 | `mma c a b`, `mma_nn`, `mma_tn`, `mma_tt` | `c + a b^T`, accumulated (`mma`: `a` is `[m, k]`, `b` is `[n, k]`); the other spellings say that the operands are stored the other way round, so no transposed copy is needed: `mma_nn` is `c + a b` with `b` stored `[k, n]` (a layer's input gradient `dz w`), `mma_tn` is `c + a^T b` with `a` stored `[k, m]` and `b` `[k, n]` (a weight gradient `dz^T x`, summed over the batch `k`), `mma_tt` is `c + a^T b^T`. The operand tiles are as below; `a`, `b` are 2-D `f16` or `f32` tiles in `shared` memory (each its own type: f32 activations by f16 weights is `tests/chx/gemm_mma_f.chx`; **an f32 operand is lowered on Metal only** and refused on CUDA with `lowering`, whose `wmma` multiplies halves: `docs/diffusion.md` section 6, V3c; on the M4 Max it costs 1.5 to 1.9 times the f16 product, and a warp should hold half the fragments it holds in f16) and `c` an `f32` fragment (`frag`) tile; a fragment can be accumulated into, stored, or carried through a loop, and nothing else (`type`) |
 | `dequant_fp4 q s g G` | `[n,k]` weights from `q: i8[n,k/2]` (two NVFP4 e2m1 codes a byte, low nibble first), `s: i8[n,k/G]` (one e4m3 scale per group of `G`), `g: f32[n]` (one scale per row): `e2m1(code) * e4m3(scale) * g[row]` |
+| `dequant_q4 q s g G` | `[n,k]` weights from `q: i8[n,k/2]` (two 4-bit codes a byte, low nibble first), `s: f16[n,k/G]` (one scale per group of `G`), `g: f32[n]` (one scale per row): `(code - 8) * s[group] * g[row]`, ggml's Q4_0 with `G` 32 and `g` ones, exact in f32. Lazy like `dequant_fp4`; a product takes its expression element by element (no path of its own in the reduction) |
 | `stage T a` | a copy of `a` in `shared` memory, rounded to `T` |
 | `add_window acc x[o]` | `acc` plus the window of `x` at offsets `o`, of `acc`'s shape |
 | `store e -> y[o]` | write `e` into the window of `y` at `o` (the origin if no offsets), rounding to `y`'s dtype |

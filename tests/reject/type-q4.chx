@@ -1,0 +1,18 @@
+// RULE type
+// ARGS n=8 k=64
+// Q4_0's scales are f16 as the file holds them (docs/kolibri.md K1): a byte of scale is NVFP4's, and `dequant_q4` refuses it.
+algo q4_bytes(n, k)
+  in  wq: i8[n, k / 2]
+  in  ws: i8[n, k / 32]
+  in  wg: f32[n]
+  out w:  f32[n, k]
+{
+  let q = load wq
+  let s = load ws
+  let r = load wg
+  let x = dequant_q4 q s r 32
+  store x -> w
+}
+
+schedule q4_bytes for apple-m-series { threads 128 }
+schedule q4_bytes for nvidia-ada     { threads 128 }

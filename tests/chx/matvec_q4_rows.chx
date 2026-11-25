@@ -1,0 +1,21 @@
+// y = x w^T for one row with ggml Q4_0 weights, the output rows spread over threadgroups (docs/kolibri.md K1): matvec_fp4_rows.chx with dequant_q4. The dequantisation is lazy and the product takes
+// its expression element by element: there is no path of its own in the reduction yet (NVFP4's has one), so this is the plain form, to be measured.
+algo matvec_q4_rows(n, k)
+  in  x:  f32[1, k]
+  in  wq: i8[n, k / 2]
+  in  ws: f16[n, k / 32]
+  in  wg: f32[n]
+  out y:  f32[1, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let q  = load wq[i * bn, 0 ; bn, k / 2]
+  let s  = load ws[i * bn, 0 ; bn, k / 32]
+  let g  = load wg[i * bn ; bn]
+  let w  = dequant_q4 q s g 32
+  store matmul_nt xt w -> y[0, i * bn]
+}
+
+schedule matvec_q4_rows for apple-m-series { threads 256 bn 8 }
+schedule matvec_q4_rows for nvidia-ada     { threads 256 bn 8 }

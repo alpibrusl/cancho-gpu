@@ -1,0 +1,20 @@
+// A window of ggml Q4_0 weights -> an f32 matrix (docs/kolibri.md K1): the dequantisation of a mixture-of-experts layer's chosen expert into a scratch buffer that an f32 product reads.
+//
+// `wq` holds the 4-bit codes two a byte in the matrix's own order, low nibble first (the file has a block's 32 codes as 16 low nibbles then 16 high ones: the host repacks them), `ws` the f16 scale of
+// each group of 32 as the file has it, `wg` one f32 a row (ones for Q4_0). A value is `(code - 8) * scale * row`, exact in f32: a code has four bits and an f16 eleven. bn rows and bk columns a threadgroup.
+algo dq_q4(n, k, bn, bk)
+  in  wq: i8[n, k / 2]
+  in  ws: f16[n, k / 32]
+  in  wg: f32[n]
+  out w:  f32[n, k]
+{
+  grid i over n / bn, j over k / bk
+  let q = load wq[i * bn, j * (bk / 2) ; bn, bk / 2]
+  let s = load ws[i * bn, j * (bk / 32) ; bn, bk / 32]
+  let r = load wg[i * bn ; bn]
+  let x = dequant_q4 q s r 32
+  store x -> w[i * bn, j * bk]
+}
+
+schedule dq_q4 for apple-m-series { threads 128 }
+schedule dq_q4 for nvidia-ada     { threads 128 }
