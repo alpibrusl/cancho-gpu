@@ -51,7 +51,7 @@ cuda_at_64() { # <expected> <file> <consts> [<from=>to>]
 }
 mfail=0
 hip_mutant 'device-mismatch' tests/chx/ported/silu_mul.chx "" 'expf(=>exp2f(' || mfail=1
-hip_mutant 'past the end of buffer' tests/chx/attn_gate.chx "r=24 n=256" '+ (e)] = =>+ (e) + 256u] = ' || mfail=1
+hip_mutant 'illegal memory access' tests/chx/attn_gate.chx "r=24 n=256" '+ (e)] = =>+ (e) + 256u] = ' || mfail=1
 hip_mutant 'device-mismatch' tests/chx/ported/rmsnorm.chx "n=4096 eps=1e-5" '__syncthreads();=>' || mfail=1
 hip_mutant 'does not name' tests/chx/ported/rmsnorm.chx "n=4096 eps=1e-5" '0xffffffffffffffffull=>0xffffffffu' || mfail=1
 hip_mutant 'kernel.hip(' tests/chx/ported/silu_mul.chx "" 'float v4[1];=>nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> v4;' || mfail=1
