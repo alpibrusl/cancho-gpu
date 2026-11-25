@@ -1,4 +1,4 @@
-# AMD: a HIP target (design, 2026-11-24; H1 built: `emit` writes HIP text for 156 cases, never compiled; H2 built: the shim drives a HIP runtime, held to a mock; H3 built: those cases run on a CPU emulator at 64 lanes, and it corrected section 2; H4 built: the shuffling kernels emit too, 454 cases in all, 399 agreeing with the interpreter on the emulator; nothing run on AMD hardware)
+# AMD: a HIP target (design, 2026-11-24; H1 built: `emit` writes HIP text for 156 cases, never compiled; H2 built: the shim drives a HIP runtime, held to a mock; H3 built: those cases run on a CPU emulator at 64 lanes, and it corrected section 2; H4 and H5 built: the shuffling kernels and the matrix products emit too, 500 cases in all, 441 agreeing with the interpreter on the emulator; nothing run on AMD hardware)
 
 Issue [#9](https://github.com/alpibrusl/cancho-gpu/issues/9), slice 11 of the roadmap. Today `amd-cdna3` is a row of `src/target.cho` (`simd_width` 64, 1,024 threads, 64 KiB of threadgroup memory) with no emitter, no shim and no case: a file with a schedule for it type-checks and `emit` writes nothing for it.
 
@@ -71,7 +71,7 @@ Issue #9 offered two ways: reuse `nvidia-ada`'s CUDA C through ROCm's compatibil
 | H2 | the HIP table in the shim, the mock libraries, `tests/device.sh` for the target | the mock's log agrees with each program; no library gives `error[device]` |
 | H3 | the emulator at a width from the target; the test of what 64 lanes do to the CUDA text | H1's cases agree with the interpreter under the emulator (section 7) |
 | H4 | the 64-bit shuffle mask in the HIP dialect, and the shuffling kernels no longer refused (as designed: the lowering's width from the target row; section 7 measured that the trees need no change) | the shuffling kernels emit and agree under the emulator at 64; the two targets' goldens unchanged (section 8) |
-| H5 | the product without `wmma` | the 29 emit and agree under the emulator |
+| H5 | the product without `wmma` | the 29 emit and agree under the emulator (section 9) |
 | H6 | the first run on an MI300X: hipRTC compiles every golden `.hip`, the device cases against the interpreter, the unconfirmed items of section 1 answered in this document | a `results/` directory and this document corrected in place |
 | H7 | a model on the card (Qwen3.8-27B through `cancho-gpu-serve`), with its speed | after H6, and only then is a number published |
 
@@ -79,7 +79,7 @@ H1 to H5 need no AMD hardware and no credit. H6 is one script on the pattern of 
 
 ## 5. H1, built
 
-`cancho-gpu emit` lowers a file's `amd-cdna3` schedule to `<dir>/<kernel>.hip`, and `check` checks it. The dialect (`dialect.hip()` of `src/dialect.cho`) is CUDA's spelling with a different preamble: `#include <hip/hip_fp16.h>`, the infinity as clang's `__builtin_inff()` (hipRTC has no standard headers), and the NVFP4 table as `static const` where CUDA says `__constant__`. After lowering, `src/lower.cho` refuses for this target a kernel that uses `mma` and one whose text shuffles, each `error[lowering]` saying which slice lifts it (`tests/reject/lowering-mma-hip.chx`, `tests/reject/lowering-shuffle-hip.chx`). (H4, section 8, lifted the second and removed its fixture.)
+`cancho-gpu emit` lowers a file's `amd-cdna3` schedule to `<dir>/<kernel>.hip`, and `check` checks it. The dialect (`dialect.hip()` of `src/dialect.cho`) is CUDA's spelling with a different preamble: `#include <hip/hip_fp16.h>`, the infinity as clang's `__builtin_inff()` (hipRTC has no standard headers), and the NVFP4 table as `static const` where CUDA says `__constant__`. After lowering, `src/lower.cho` refuses for this target a kernel that uses `mma` and one whose text shuffles, each `error[lowering]` saying which slice lifts it (`tests/reject/lowering-mma-hip.chx`, `tests/reject/lowering-shuffle-hip.chx`). (H4, section 8, lifted the second and H5, section 9, the first; their fixtures are gone, and `tests/reject/lowering-wave-hip.chx` holds what is still refused: threads that are not whole waves.)
 
 **Measured.** 76 kernel files of `tests/chx/` and `examples/` carry an `amd-cdna3` schedule, a copy of their `nvidia-ada` one, and their 156 cases of `tests/cases.txt` each record a `.hip` file in `golden/`: none names a shuffle or `wmma`, 42 name `__half`. The other goldens changed only by gaining the interpreter's `amd-cdna3:` lines in 70 `RUN.txt` files (92 lines added, none removed); no `.cu` or `.metal` file changed.
 
@@ -136,6 +136,18 @@ That last line is the opposite of what sections 2 and 3.1 reckoned, and they are
 
 **Not done.** `cancho-gpu run --target` and a session still name only the two older targets. The 55 cases without a reference were not run at full size.
 
-## 9. What this does not claim
+## 9. H5, built
 
-No AMD GPU has run a kernel of this project, no AMD compiler has read the HIP text of sections 5 and 8 (a CPU compiler has, in sections 7 and 8), and the shim of section 6 has called only a mock and an emulator. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.
+`mma` lowers for `amd-cdna3` as 3.3 decided, and by the smallest change that does it: the HIP text is the CUDA text with `nvcuda::wmma` renamed to `cgm`, a namespace the kernel's own preamble defines (`dialect.matrix_includes`, 23 lines of HIP). It gives the calls the lowering already writes (`fragment`, `fill_fragment`, `load_matrix_sync`, `mma_sync`, `store_matrix_sync`, `x[]` and `num_elements`) on plain registers. A 16 x 16 tile belongs to 32 consecutive threads, as under CUDA; thread *l* of them holds row *l*/2 and columns 8(*l* mod 2) to +7 of an accumulator (8 floats), that row of an `a` (16 floats) and those columns of a `b` (128 floats), so its share of a product is 8 sums of 16 multiply-adds in its own registers, with no shuffle and no barrier. A warp of a schedule's grid is those 32 threads, so a wave of 64 holds two, and the grid check counts 32 a warp for this target.
+
+**Measured.** 13 more kernel files carry an `amd-cdna3` schedule (172 schedules in all) and their **29 cases record a `.hip` file: 483 cases in all**, every case of `tests/cases.txt` that records CUDA text except `bn_fin` and the five recorded refusals of section 8. `golden/` gained those 29 files and 9 interpreter lines in 8 `RUN.txt` files; nothing else changed. **Under the emulator at 64 lanes: 424 of the 483 agree with the interpreter, 59 have no reference, none disagrees** (the CUDA text's own figures are 430 and 59 of 489); of the 29 matrix cases 25 agree and 4 have no reference, the worst at 7.8e-5 of the peak. Two more mutants are refused: the product with a subtraction for its addition, and a thread taking the wrong columns.
+
+**After `main` was merged in (2026-11-25).** `main` had gained kernels for speech while these slices were open; seven of their files were given an `amd-cdna3` schedule (179 in all) and one existing kernel had gained a case. The figures on the merged tree: **500 cases record a `.hip` file, and under the emulator 441 agree with the interpreter, 59 have no reference, none disagrees.** The figures above and in sections 5, 7 and 8 are those of each slice when it was built.
+
+**What it costs, reckoned and not measured.** A thread reads 144 values to make 8 where `wmma` reads 16 for 8 (each value of `b` is read by 16 threads, of `a` by 2), and it holds 152 floats a tile pair in registers. So the matrix products on an AMD card will be slow by this lowering, by an amount only H6 can state; the card's own matrix units stay unreached (3.3).
+
+**Not done.** `mma` of an f32 operand is still refused for this target with CUDA's message, though this lowering would not need the refusal. The four cases without a reference were not run at full size.
+
+## 10. What this does not claim
+
+No AMD GPU has run a kernel of this project, no AMD compiler has read the HIP text of sections 5, 8 and 9 (a CPU compiler has), and the shim of section 6 has called only a mock and an emulator. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.

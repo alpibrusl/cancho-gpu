@@ -28,3 +28,4 @@ algo seen_or(c, bc)
 
 schedule seen_or for apple-m-series { threads 128 }
 schedule seen_or for nvidia-ada     { threads 128 }
+schedule seen_or for amd-cdna3      { threads 128 }

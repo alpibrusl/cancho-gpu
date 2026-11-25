@@ -54,6 +54,8 @@ hip_mutant 'device-mismatch' tests/chx/ported/silu_mul.chx "" 'expf(=>exp2f(' ||
 hip_mutant 'illegal memory access' tests/chx/attn_gate.chx "r=24 n=256" '+ (e)] = =>+ (e) + 256u] = ' || mfail=1
 hip_mutant 'device-mismatch' tests/chx/ported/rmsnorm.chx "n=4096 eps=1e-5" '__syncthreads();=>' || mfail=1
 hip_mutant 'does not name' tests/chx/ported/rmsnorm.chx "n=4096 eps=1e-5" '0xffffffffffffffffull=>0xffffffffu' || mfail=1
+hip_mutant 'device-mismatch' tests/chx/ported/gemm_mma.chx "m=128 n=128 k=64" 's += a.x[k]=>s -= a.x[k]' || mfail=1
+hip_mutant 'device-mismatch' tests/chx/ported/gemm_mma.chx "m=128 n=128 k=64" '(threadIdx.x & 1u) * 8u=>(threadIdx.x & 1u) * 4u' || mfail=1
 hip_mutant 'kernel.hip(' tests/chx/ported/silu_mul.chx "" 'float v4[1];=>nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> v4;' || mfail=1
 WIDE='0xffffffffu=>0xffffffffffffffffull'
 cuda_at_64 'does not name' tests/chx/ported/rmsnorm.chx "n=4096 eps=1e-5" || mfail=1
@@ -69,7 +71,7 @@ agrees() { # <file> <consts>: the CUDA text, 64 lanes, the mask widened
 agrees tests/chx/ported/rmsnorm.chx "n=4096 eps=1e-5" || mfail=1
 agrees tests/chx/softmax.chx "r=4 n=64" || mfail=1
 [ "$mfail" -eq 0 ] || exit 1
-echo "5 mutants of emitted HIP kernels refused; the CUDA text at 64 lanes refused for its 32-bit mask, and right with a 64-bit one (2 kernels)"
+echo "7 mutants of emitted HIP kernels refused; the CUDA text at 64 lanes refused for its 32-bit mask, and right with a 64-bit one (2 kernels)"
 OUT=${HIP_EMU_OUT:-$(mktemp -d)}
 mkdir -p "$OUT"
 if [ -z "${HIP_EMU_OUT:-}" ]; then trap 'rm -rf "$OUT" "$WORKM"' EXIT; else trap 'rm -f "$WORKM"' EXIT; fi

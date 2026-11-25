@@ -25,3 +25,4 @@ algo conv3_dx(rp, cin, cout, wp, g)
 
 schedule conv3_dx for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
 schedule conv3_dx for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule conv3_dx for amd-cdna3      { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

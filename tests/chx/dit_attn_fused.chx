@@ -49,3 +49,4 @@ algo dit_attn_fused(nh, nq, t, d)
 
 schedule dit_attn_fused for apple-m-series { threads 128 warps 2 2 bm 16 bn 32 bk 32 }
 schedule dit_attn_fused for nvidia-ada     { threads 64 warps 1 2 bm 16 bn 32 bk 32 }
+schedule dit_attn_fused for amd-cdna3      { threads 64 warps 1 2 bm 16 bn 32 bk 32 }

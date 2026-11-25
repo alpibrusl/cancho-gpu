@@ -14,3 +14,4 @@ algo bias_pad(s, c, g, bn)
 
 schedule bias_pad for apple-m-series { threads 256 }
 schedule bias_pad for nvidia-ada     { threads 256 }
+schedule bias_pad for amd-cdna3      { threads 256 }
