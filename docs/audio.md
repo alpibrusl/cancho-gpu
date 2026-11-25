@@ -738,6 +738,99 @@ $B codes $K/s 25 $K/codes.txt                                                  #
   * The session cannot stop at the end token: a request is a number of steps, and the steps after the end are computed and thrown away (160 steps for about 60 frames above). S4 has to ask in pieces or guess a length.
   * The prefix goes a row a step (25 steps, 0.6 s); the prefill in one pass is not built. S2's host writes the prefix only with a codes file, so a free run gives it any frame.
   * The draw as a chain (`samp_pen`, `samp_rank`, `samp_keep`, the arg max) has no test of its own on made-up data: each kernel has, and the chain is held by the probe and the draws on the real model, by hand.
-  * One clip, one language, one voice, the reference's ids; three seeds; the longest run 160 steps. The decoder takes 384 frames at most.
+  * One clip, one language, one voice, the reference's ids; three seeds; the longest run 160 steps. The decoder takes 384 frames at most **[a session does; the reference's `decode` cuts every clip at 300 frames with 25 of context, section 28, and S4 does the same]**.
   * The host's noise is a Lehmer generator's, not torch's: the same distribution, never the same sequence as a seed of the reference.
   * The time is not split into loading, compiling and steps, and the device's memory is not measured.
+
+## 28. S4 (design, 2026-11-25, written before its code): `scripts/media speak "TEXT" -o DIR`
+
+S3 generates from the reference's token ids, from a prefix that needed a frame of codes to be written, for one voice and one language, and ends in a file of floats. S4 is what is left between a sentence and a wav file, run from the media program as section 16's `transcribe` is.
+
+**[read and measured by hand before this was written]**
+
+* **The tokenizer is Qwen2's**, and the checkpoint's `vocab.json` and `merges.txt` are byte for byte those of Qwen2.5, whose `tokenizer.json` `cancho-gpu tokenize` already reads (`src/bpe.cho`: the Qwen2 split, NFC, held to Hugging Face's ids in the gate). **Measured: 13 texts of 13** (ten languages, quotes, digits, a decomposed accent, an emoji, runs of spaces) **give the reference's ids** through that file. The command must not depend on another model's files, so a host step writes a `tokenizer.json` from the checkpoint's two files: the vocabulary as it is, each line of the merges as a string, the same normalizer and split, no added tokens. A text that spells a control token (`<|im_end|>`) is therefore read as its letters, where the reference would make it the token: a difference, kept on purpose.
+* **The prompt** is `<|im_start|>assistant\n`, the text, `<|im_end|>\n<|im_start|>assistant\n`: the ids 151644 77091 198, the text's, 151645 198 151644 77091 198.
+* **The voice and the language** are codec ids from the checkpoint's configuration: nine voices, ten languages and two dialects. With the language `auto` the prefix has no language row and `nothink` in place of `think` (one row shorter). A voice that is a dialect's (`eric`, `dylan`) takes its dialect's id when the language is Chinese or `auto`. **Measured: `tests/qwen3_tts_lm_gpu.cho inputs talker`, given `-` for the codes and 0 for no language, writes the reference's prefix rows within 1.7e-6 for five pairs** (auto and Ryan, Chinese and Dylan, auto and Eric, German and Serena, English and Dylan).
+* **The reference decodes every clip in pieces of 300 frames, each with the 25 frames before it as context** (`chunked_decode`; the context's samples are dropped). **[corrects sections 22, 23 and 27, which say the decoder "takes 384 frames at most" as if the reference cut only longer clips: one pass of up to 384 frames is what S1c compared with the decoder's own forward; the reference's `decode` cuts at 300.]**
+* **A session cannot end on a value it computes** (section 16), so the frames have a budget fixed before the steps start. **[corrected when built, section 29: the session cannot, but what asks it can stop asking. It answers each request with the id the step drew, and 100 requests of one step cost what one request of 100 does (3.2 s and 3.4 s, measured), so `scripts/tts-session until` asks a step at a time and stops at the end token. The budget is then only the size of the tables.]**
+
+**The command.** `scripts/media speak "TEXT" -o DIR [--voice NAME] [--language NAME] [--seed N] [--most N]`: `DIR/speech.wav` (24 kHz, mono, 16 bits), the intermediate files in `DIR/work`. The voice is `ryan` unless given, the language `auto`, the seed 1 (the same command gives the same file). cancho's alone: no Python of it.
+
+**The stages** (`scripts/tts WHICH ARGS...` for the host programs and the tokenizer, `scripts/tts-session STEPS MODEL NAME=value...` for the sessions):
+
+| | program | reads from what it prints |
+|---|---|---|
+| on first use: the tables of the prefix and the tokenizer's file (0.7 GB), the step's weights (3.2 GB), the decoder's (0.4 GB) | `tts lm tables`, `tts front tokenizer`, `tts step weights`, `tts decoder weights` | |
+| the text's ids | `tts tokens TOKENIZER work/text.txt work/tok.txt` (`cancho-gpu tokenize`) | |
+| the prompt | `tts front prompt work/tok.txt VOICE LANGUAGE work/ids.txt` | `text N language L speaker S` |
+| the prefix | `tts lm inputs talker TABLES work/lm work/ids.txt - L S` | `prefix P` |
+| the steps' tables | `tts step inputs work/step work/lm/x0.f32 work/lm/pad.f32 P STEPS POSITIONS seed N -` | |
+| the frames | `tts-session until 2.151e3 STEPS models/qwen3_tts_step.model ...` **[as corrected above]** | |
+| the codes | `tts step codes work/step P work/codes.txt` | `frames F` |
+| each piece of 300 frames | `tts decoder prepare DEC work/dec work/codes.txt FIRST COUNT`, `tts-session 1 models/qwen3_tts_decoder.model ...`, `tts front pcm work/speech.pcm work/dec/wave.f32 SKIP TAKE new|more` | `SP=` |
+| the file | `tts front wav work/speech.pcm DIR/speech.wav` | `samples N` |
+
+**The budget of frames** is `--most N`, or a number from the text's tokens **to be set from measured runs (section 29) before the command is called done** **[set there: 8 frames a token and 40, and no more than a request's 1,024 steps hold]**; a generation that has not ended in its budget is refused, not written cut. **The bounds on the text and on the frames** are the longest that was compared, as section 16 did for the clip.
+
+**New in the hosts:** `tests/qwen3_tts_front.cho` (`tokenizer`, `prompt`, `pcm`, `wav`; cancho); `tables` in the S2 host (the six files the prefix needs, not the 3.9 GB of S2's passes); `-` and 0 in its `inputs talker`; a first frame and a count in the decoder host's `prepare`.
+
+**Bounds, set now:**
+
+1. **The ids** of the 13 texts from the file the host writes: the reference's, all of them.
+2. **The prefix rows** of the five pairs: within 1e-5 of the reference's (measured above: 1.7e-6).
+3. **A clip of more than 300 frames, in pieces**: the waveform within 1e-3 of the reference's `decode` of the same codes at every sample, section 3.3's bound.
+4. **`speak`, then section 17's `transcribe` on its file: the text's words** (letters and digits, case and punctuation aside), for S0's sentence in three voices and three seeds, S1's three sentences, a German and a Spanish sentence with their language given, and one with `auto`. A miss is reported as it is, with what was heard.
+5. **The wav file**: its header and its samples (`round(32767 x)`, clamped) by their bytes, in the gate.
+6. **The real-time factor**: the command's wall time, cold, over the seconds of speech, for S0's sentence and S1's three. No bar set but section 3.4's "within reach": reported.
+7. **In the gate, no GPU and no checkpoint**: `tests/qwen3_tts_front.sh` (the host's refusals, a tokenizer file from a toy vocabulary read back by `cancho-gpu tokenize`, the prompt's ids, each voice and language and the dialect rule, the wav's bytes), the changed hosts' tests, and `tests/media_speak.sh` as `tests/media_transcribe.sh`: every stage's arguments, the budget, the pieces of a long clip, each refusal with its status.
+
+**Not in S4:** an instruction text, a cloned voice, streaming, more than one sentence at once, the studio, `media models`.
+
+## 29. S4: `scripts/media speak` **[measured, 2026-11-25, M4 Max]**
+
+`media/speak.cho` (cancho; the command of `build/media`), `scripts/tts` and `scripts/tts-session` (the programs it starts), `scripts/build-tts.sh` (the four host programs), `tests/qwen3_tts_front.cho` (the tokenizer's file, the prompt, the samples, the wav), and three changes in the hosts of S1 to S3 (a prefix with no codes and with no language, `tables`, a window of frames in the decoder's `prepare`).
+
+```sh
+scripts/media speak "The quick brown fox jumps over the lazy dog near the quiet river." -o out/fox      # out/fox/speech.wav, 24 kHz, mono, 16 bits
+scripts/media speak "Guten Morgen!" -o out/de --voice serena --language german --seed 2
+```
+
+**The bounds of section 28:**
+
+| | |
+|---|---|
+| 1. the ids of the 13 texts, from the file the host writes of the checkpoint's `vocab.json` and `merges.txt` (151,291 merges, 0.23 s) | **the reference's, 13 of 13** |
+| 2. the prefix rows of the five voice and language pairs | within **1.7e-6** of the reference's (bound 1e-5) |
+| 3. a clip of 620 frames in three pieces, the wav's samples against the reference's `decode` of the same codes | worst **1.7e-5** at any of 1,190,400 samples (bound 1e-3); the reference's own one pass over the 620 frames is 9.1e-2 from its pieces, so the pieces are what is being matched |
+| 4. `speak`, then `transcribe` of its file: the text's words | **20 of 20**, below |
+| 5. the wav's header and samples by their bytes | in the gate |
+
+**Bound 4, each from a cold command** (the transcript beside the text, case and punctuation aside):
+
+| text | voice, language, seed | speech | the command | heard |
+|---|---|---|---|---|
+| S0's sentence (14 tokens) | ryan, aiden and serena; english; seeds 1, 2, 3 | 3.6 to 5.3 s | 3.0 to 3.6 s | the sentence, 9 of 9 |
+| S1's three sentences (54 tokens) | ryan, english, seeds 1, 2, 3 | 20.8, 23.8, 16.3 s | 10.7, 11.5, 9.0 s | the three sentences, 3 of 3 |
+| a German sentence | serena, german | 4.6 s | 3.7 s | the sentence |
+| the same | vivian, auto | 5.9 s | 4.2 s | the sentence, as German |
+| a Spanish sentence | ryan, spanish | 5.7 s | 4.0 s | the sentence |
+| S0's sentence | ryan, auto | 5.7 s | 3.7 s | the sentence |
+| a Chinese sentence | vivian, chinese; dylan, chinese (the Beijing dialect's id) | 4.3, 2.6 s | 3.1, 2.5 s | the sentence, both |
+| a Japanese sentence | ono_anna, japanese | 4.6 s | 3.2 s | the sentence |
+| a French sentence | ryan, french | 5.3 s | 3.9 s | the sentence |
+| S1's three sentences twice (108 tokens, 620 frames) | ryan, english, seed 1 | 49.6 s | 23.5 s | the six sentences |
+
+* **One sample made on the way was wrong**: S0's sentence, seed 1, under the first form of the host's noise, came out 9.1 s long and was heard as "... over the lazy dog. Fichter and steak near the quiet river." The model wandered and came back; nothing in the stages was different from the runs beside it. The noise's layout was changed after it for another reason (below), so that sample cannot be made again with the command as it is, and no other run did it. **A sampled voice can say something that is not the text, and nothing here checks a file before it is written.**
+* **Bound 6, the real-time factor** (the command's wall time over the speech's seconds, cold, three runs each, the same file each time): **0.69** for S0's sentence (3.59, 3.58, 3.59 s for 5.20 s), **0.51** for S1's (10.53, 10.55, 10.51 s for 20.80 s), **0.47** for the 620 frames. Of S1's 10.5 s: the frames 8.63, the waveform 0.80, the steps' tables 0.69, the prefix 0.30, the rest 0.11.
+* **The session stops at the end token after all** (section 28's correction): `scripts/tts-session until 2.151e3 MOST ...` asks a step a request and reads the id each answers. Before it, S0's sentence took 7.5 s with a budget of 190 frames it mostly did not use; with it 3.6 s. The budget is now the size of the tables only.
+* **The budget is 8 frames a token of the text and 40** (the runs above used 3.8 to 6.4 frames a token), and never more than a request's 1,024 steps hold with the prefix. **The longest text is 110 tokens**: 108 is the longest spoken and heard back; 162 tokens (S1's sentences three times) did not end in the 999 frames a request held, and was refused.
+* **A step is 26 to 27 ms here**: 8.63 s for S1's 325 steps at 576 positions, 19.45 s for the 740 steps of the 620 frames at 1,024 positions (section 27: 25 ms at 128). **Not explained:** in a first round of these runs, with a budget of 12 frames a token (832 positions), S1's steps took 35 to 46 ms; the round in the table did not repeat it and it was not looked into.
+* **A draw's noise is now its seed's, its frame's and its place's in the frame**, not its place in a table that depends on the number of steps (the first form): a budget does not move the draws. **It can still move the sample**: the same seed with a budget of 12 a token gave 5.36 s where 8 a token gives 5.20 s, because the positions are a constant of the kernels and a different constant sums in another order, enough to turn a draw whose two best are close (section 27's 0.005). The same command gives the same file, three times of three; another `--most` may not.
+* **Held in the gate without a GPU or the checkpoint:** `tests/media_speak.sh` (103 checks: the ten stages' arguments, the voice, language and seed passed on, the budget and the positions, the three pieces of 620 frames and the edge cases at 300 and 301, each weights program run when its last file is missing, 13 refusals before any stage and 10 after one, the wrappers), `tests/qwen3_tts_front.sh` (46: a tokenizer file from a toy vocabulary read by `cancho-gpu tokenize`, with a merge of a quote and a backslash; every voice, language and dialect; the samples' and the wav's bytes), and the three hosts' tests with the new forms.
+* **Not done:**
+  * A text over 110 tokens: sentences would have to be spoken one by one and joined, which the reference does not do either; not built.
+  * Nobody listened: the recogniser heard 20 files of 20. It does not judge the voice, the prosody or a dialect (Dylan's Chinese was heard as the same sentence; whether it is Beijing's is not known here).
+  * A text that spells a control token is read as its letters (section 28). The Korean, Russian, Italian and Portuguese of the checkpoint were not spoken, nor the voices `uncle_fu`, `sohee` and `eric`.
+  * The voices and languages are a table in the host, read once from the checkpoint's `config.json` by hand, not from the file at each run.
+  * The stop is a loop in a shell script (`scripts/tts-session`), since a cancho program can only start a program of `scripts/` and cannot talk to it while it runs.
+  * The prefix still goes a row a step; the weights' directories are trusted when their last file is there; `media models` does not list the command; the studio does not offer it; no instruction text, no cloned voice, no streaming.

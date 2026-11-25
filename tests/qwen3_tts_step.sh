@@ -98,6 +98,11 @@ same "nothing forced" "$(od -An -tx1 "$T/s1/force.f32" | tr -d ' \n')" "00000000
 same "the seed's noise: none before the first frame, some at it" "$(at "$T/s1/g0.f32" 3072) $([ "$(at "$T/s1/g0.f32" 6144)" != 00000000 ] && echo some)" "00000000 some"
 same "the same seed, the same noise" "$(cmp -s "$T/s1/g0.f32" "$T/s2/g0.f32" && cmp -s "$T/s1/g15.f32" "$T/s2/g15.f32" && echo equal)" "equal"
 same "another seed, another noise" "$(cmp -s "$T/s1/g0.f32" "$T/s3/g0.f32" || echo differs)" "differs"
+# a draw's noise is its seed's, its frame's and its place's: the same row whatever the number of steps (frame 1 is step 3: singles 9216 on of g0, 6144 on of g7)
+mkdir -p "$T/s4"
+want "inputs, the seed with more steps" 0 inputs "$T/s4" "$T/x0.f32" "$T/pad.f32" 3 40 64 seed 7 -
+same "the same seed with more steps: the same rows" "$(at "$T/s1/g0.f32" 9216) $(at "$T/s1/g7.f32" 6144) $(at "$T/s1/g7.f32" 6145)" "$(at "$T/s4/g0.f32" 9216) $(at "$T/s4/g7.f32" 6144) $(at "$T/s4/g7.f32" 6145)"
+same "two draws of a frame differ" "$([ "$(at "$T/s1/g7.f32" 6144)" != "$(at "$T/s1/g8.f32" 6144)" ] && echo differ)" "differ"
 # a made-up answer of the device, [16, 4]: every draw the id 1 (code 0), but code 1 of step 1 the id 3, and the first code of step 3 the end token: with a prefix of 2, two frames
 i=0; while [ $i -lt 64 ]; do printf "$ONE"; i=$((i + 1)); done > "$T/a/ids_out.f32"
 cp "$T/a/ids_out.f32" "$T/b/ids_out.f32"; cp "$T/a/ids_out.f32" "$T/c/ids_out.f32"

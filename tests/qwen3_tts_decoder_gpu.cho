@@ -507,15 +507,15 @@ fn raw[&h, &f, &w, &a, &q](heap: &!h Heap, fs: &f Fs(""), wdir: &w [byte], a: &a
 
 fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
     let na = arg_count(args);
-    if na != 5 && na != 6 {
-        qasr_host.put(io, "usage: qwen3_tts_decoder_gpu prepare <weights dir> <work dir> <codes.txt> [<mutant 1-2>]\n");
+    if na < 5 || na > 8 {
+        qasr_host.put(io, "usage: qwen3_tts_decoder_gpu prepare <weights dir> <work dir> <codes.txt> [<first frame> <frames>] [<mutant 1-2>]\n");
         return 100;
     }
     let wdir = arg(args, 2);
     let work = arg(args, 3);
     var mutant = 0;
-    if na == 6 {
-        mutant = qasr_host.num(arg(args, 5));
+    if na == 6 || na == 8 {
+        mutant = qasr_host.num(arg(args, na - 1));
         if mutant < 1 || mutant > 2 {
             qasr_host.put(io, "a mutant of the inputs is 1 or 2\n");
             return 101;
@@ -525,17 +525,40 @@ fn prepare[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g A
         qasr_host.put(io, "the paths are absolute\n");
         return 102;
     }
-    let ids = box_slice(heap, 384 * 16, 0);
+    // a window of the clip's frames (the reference decodes in pieces: docs/audio.md section 28), or the whole clip
+    let windowed = na >= 7;
+    var most = 384;
+    if windowed {
+        most = 4096;
+    }
+    let ids = box_slice(heap, most * 16, 0);
     var n = 0;
     borrow mut ids as &!iw in {
         n = read_codes(heap, fs, arg(args, 4), contents(iw));
     }
     if n < 16 || n % 16 != 0 {
         unbox_slice(heap, ids);
-        qasr_host.put(io, "the codes are 16 numbers under 2048 a frame, 1 to 384 frames\n");
+        qasr_host.put(io, "the codes are 16 numbers under 2048 a frame, 1 to 384 frames (to 4096 when a window of them is asked for)\n");
         return 103;
     }
-    let frames = n / 16;
+    var frames = n / 16;
+    if windowed {
+        let first = qasr_host.num(arg(args, 5));
+        let count = qasr_host.num(arg(args, 6));
+        if first < 0 || count < 1 || count > 384 || first + count > frames {
+            unbox_slice(heap, ids);
+            qasr_host.put(io, "the window is a first frame and 1 to 384 frames, inside the clip\n");
+            return 101;
+        }
+        borrow mut ids as &!iw in {
+            var k = 0;
+            while k < count * 16 {
+                contents(iw)[k] = contents(iw)[first * 16 + k];
+                k = k + 1;
+            }
+        }
+        frames = count;
+    }
     let sp = qasr_host.round64(frames);
     let iv = box_slice(heap, 1, 0);
     var bad = 0;

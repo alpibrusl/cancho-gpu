@@ -23,7 +23,7 @@ fn most_positions() -> [] int {
 }
 
 // The number written after the first `key` of `text`, or -1.
-fn after[&t, &k](text: &t [byte], key: &k [byte]) -> [] int {
+pub fn after[&t, &k](text: &t [byte], key: &k [byte]) -> [] int {
     var i = 0;
     while i + len(key) <= len(text) {
         var same = true;
@@ -54,7 +54,7 @@ fn after[&t, &k](text: &t [byte], key: &k [byte]) -> [] int {
 }
 
 // `list` plus one argument: `key`, then `dir`, then `/name` when there is a name.
-fn add_kv[&h, &k, &d, &n](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
+pub fn add_kv[&h, &k, &d, &n](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], dir: &d [byte], name: &n [byte]) -> [heap] buffer.Buffer {
     var l = buffer.append(heap, list, key);
     l = buffer.append(heap, l, dir);
     if len(name) > 0 {
@@ -65,17 +65,17 @@ fn add_kv[&h, &k, &d, &n](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], d
 }
 
 // `list` plus one argument: `key`, then the number.
-fn add_kn[&h, &k](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], n: int) -> [heap] buffer.Buffer {
+pub fn add_kn[&h, &k](heap: &!h Heap, list: buffer.Buffer, key: &k [byte], n: int) -> [heap] buffer.Buffer {
     return buffer.push(heap, shared.push_int(heap, buffer.append(heap, list, key), n), byte_of(0));
 }
 
 // Two digits of a number under 100.
-fn push2[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
+pub fn push2[&h](heap: &!h Heap, out: buffer.Buffer, n: int) -> [heap] buffer.Buffer {
     return buffer.push(heap, buffer.push(heap, out, byte_of(48 + n / 10)), byte_of(48 + n % 10));
 }
 
 // One stage: `== label`, the program of scripts/ on `list` (consumed), `== label: S.CC s`. The status (0, or 1 after `media: label failed (exit N): the stage's first line`) and what the stage printed.
-fn run_stage[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] (int, buffer.Buffer) {
+pub fn run_stage[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] (int, buffer.Buffer) {
     io.write_all(io, "== ");
     io.write_all(io, label);
     io.write_all(io, "\n");
@@ -132,7 +132,7 @@ fn run_stage[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec("
 }
 
 // Is `root`/`name` a file?
-fn built[&h, &f, &r](heap: &!h Heap, fs: &f Fs(""), root: &r [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
+pub fn built[&h, &f, &r](heap: &!h Heap, fs: &f Fs(""), root: &r [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
     let p = pathx.under(heap, root, name);
     var there = false;
     borrow p as &pb in {
@@ -289,14 +289,14 @@ pub fn cmd_transcribe[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h
 }
 
 // A stage whose printed line is not needed.
-fn quiet[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+pub fn quiet[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] int {
     let (s, o) = run_stage(io, heap, exec, sdir, clock, program, label, list, env);
     buffer.drop(heap, o);
     return s;
 }
 
 // A stage that prints numbers: the status and the numbers after `k1` and `k2` (-1 each when `k2` is empty or the number is not there; a number not there is a refusal).
-fn numbers[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte], k1: &static [byte], k2: &static [byte], k3: &static [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] (int, int, int, int) {
+pub fn numbers[&i, &h, &x, &y, &c, &e](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, program: &static [byte], label: &static [byte], list: buffer.Buffer, env: &e [byte], k1: &static [byte], k2: &static [byte], k3: &static [byte]) -> [io_write, err_write, heap, exec_under, clock, poll] (int, int, int, int) {
     let (s, o) = run_stage(io, heap, exec, sdir, clock, program, label, list, env);
     var a = 0 - 1;
     var b = 0 - 1;

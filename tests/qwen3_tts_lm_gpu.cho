@@ -13,7 +13,8 @@ import wenc_codec;
 // programs on the Metal GPU (models/qwen3_tts_lm.model), their host side written in cancho.
 //
 //   qwen3_tts_lm_gpu weights <model.safetensors> <talker weights dir> <predictor weights dir> [<mutant 3 or 6>]
-//   qwen3_tts_lm_gpu inputs talker <talker weights dir> <work dir> <ids.txt> <codes.txt> <language id> <speaker id> [<mutant 1-2>]
+//   qwen3_tts_lm_gpu tables <model.safetensors> <tables dir>
+//   qwen3_tts_lm_gpu inputs talker <talker weights dir> <work dir> <ids.txt> <codes.txt | -> <language id | 0> <speaker id> [<mutant 1-2>]
 //   qwen3_tts_lm_gpu inputs predictor <talker weights dir> <work dir> <codes.txt> <hidden rows .f32> <first row> [<mutant 4-5>]
 //   qwen3_tts_lm_gpu check talker <work dir> <reference logits .f32> <prefix rows> <frames>
 //   qwen3_tts_lm_gpu check predictor <work dir> <reference logits .f32> <frames>
@@ -116,6 +117,40 @@ fn layers[&h, &f, &p, &w, &a, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], 
         copy(heap, fs, st, root, l, ".mlp.down_proj.weight", d * ff, dir, "wd", l, ".f16", true, iv);
         l = l + 1;
     }
+    return 0;
+}
+
+// `tables`: the six files `inputs talker` reads for a prefix (the text embedding, the two products of `text_projection` and their biases, the codec embedding), without the layers: what a generation
+// needs of this program (docs/audio.md section 28)
+fn tables_only[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 4 {
+        qasr_host.put(io, "usage: qwen3_tts_lm_gpu tables <model.safetensors> <tables dir>\n");
+        return 100;
+    }
+    let st = arg(args, 2);
+    let tw = arg(args, 3);
+    if files.path_ok(fs, st) == false || files.path_ok(fs, tw) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let iv = box_slice(heap, 1, 0);
+    var bad = 0;
+    borrow mut iv as &!qb in {
+        let q = contents(qb);
+        copy(heap, fs, st, "model.text_embedding.weight", 0 - 1, "", qasr_host.vocab() * 2048, tw, "emb", 0 - 1, ".f16", true, q);
+        copy(heap, fs, st, "text_projection.linear_fc1.weight", 0 - 1, "", 2048 * 2048, tw, "tp", 1, ".f32", false, q);
+        copy(heap, fs, st, "text_projection.linear_fc1.bias", 0 - 1, "", 2048, tw, "tpb", 1, ".f32", false, q);
+        copy(heap, fs, st, "text_projection.linear_fc2.weight", 0 - 1, "", 2048 * 2048, tw, "tp", 2, ".f32", false, q);
+        copy(heap, fs, st, "text_projection.linear_fc2.bias", 0 - 1, "", 2048, tw, "tpb", 2, ".f32", false, q);
+        copy(heap, fs, st, "model.codec_embedding.weight", 0 - 1, "", 3072 * 2048, tw, "cemb", 0 - 1, ".f32", false, q);
+        bad = q[0];
+    }
+    unbox_slice(heap, iv);
+    if bad != 0 {
+        qasr_host.put(io, "the checkpoint is not there, a tensor of the talker is missing or of another size, or the tables' directory cannot be written\n");
+        return 104;
+    }
+    qasr_host.put(io, "tables: written\n");
     return 0;
 }
 
@@ -332,15 +367,17 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
     let work = arg(args, 4);
     let lang = qasr_host.num(arg(args, 7));
     let spk = qasr_host.num(arg(args, 8));
+    // `-` for the codes: the prefix alone (what a generation starts from)
+    let nocodes = qasr_host.is_text(arg(args, 6), "-");
     var mutant = 0;
     if na == 10 {
         mutant = qasr_host.num(arg(args, 9));
     }
-    if lang < 2048 || lang > 3071 || spk < 2048 || spk > 3071 || na == 10 && mutant != 1 && mutant != 2 {
-        qasr_host.put(io, "the language and the speaker are codec ids, 2048 to 3071, and a mutant of the talker's inputs is 1 or 2\n");
+    if lang != 0 && (lang < 2048 || lang > 3071) || spk < 2048 || spk > 3071 || na == 10 && mutant != 1 && mutant != 2 {
+        qasr_host.put(io, "the language and the speaker are codec ids, 2048 to 3071 (the language 0 for none), and a mutant of the talker's inputs is 1 or 2\n");
         return 101;
     }
-    if files.path_ok(fs, wdir) == false || files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 5)) == false || files.path_ok(fs, arg(args, 6)) == false {
+    if files.path_ok(fs, wdir) == false || files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 5)) == false || nocodes == false && files.path_ok(fs, arg(args, 6)) == false {
         qasr_host.put(io, "the paths are absolute\n");
         return 102;
     }
@@ -359,10 +396,14 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
             k = k + 1;
         }
     }
-    borrow mut codes as &!cw in {
-        frames = frames_of(heap, fs, arg(args, 6), contents(cw));
+    if nocodes {
+        frames = 0;
+    } else {
+        borrow mut codes as &!cw in {
+            frames = frames_of(heap, fs, arg(args, 6), contents(cw));
+        }
     }
-    if n < 9 || audio || frames < 1 {
+    if n < 9 || audio || frames < 0 || frames == 0 && nocodes == false {
         unbox_slice(heap, ids);
         unbox_slice(heap, codes);
         qasr_host.put(io, "the ids are 9 to 2048 text ids (three of the role, the text, five that end the turn) and the codes 16 under 2048 a frame, 1 to 1024 frames\n");
@@ -371,7 +412,12 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
     // the tokens that go through the text embedding and its projection: the role's three, the text, then bos, eos, pad
     let text = n - 8;
     let nt = text + 6;
-    let prefix = text + 11;
+    // the codec rows in front of the text: think, think-bos, the language, think-eos, the speaker, codec-pad; with no language nothink, think-bos, think-eos, the speaker, codec-pad
+    var head = 6;
+    if lang == 0 {
+        head = 5;
+    }
+    let prefix = text + 5 + head;
     let rows = prefix + frames;
     let sp = qasr_host.round64(rows);
     let iv = box_slice(heap, 1, 0);
@@ -457,7 +503,7 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
                             let p = contents(pp);
                             let c = contents(ce);
                             let x = contents(xw);
-                            // think, think-bos, the language, think-eos, the speaker, codec-pad: the six codec ids of rows 3 to 8; codec-pad is 2148 and codec-bos 2149
+                            // the codec ids of the rows after the role's three; codec-pad is 2148 and codec-bos 2149
                             var r = 0;
                             while r < prefix {
                                 var from = pad;
@@ -465,28 +511,44 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
                                 if r < 3 {
                                     from = r * 2048;
                                     cid = 0 - 1;
-                                } else if r < 9 {
-                                    if r == 8 {
+                                } else if r < 3 + head {
+                                    let slot = r - 3;
+                                    if r == 2 + head {
                                         from = bos;
                                     }
-                                    if r == 3 {
-                                        cid = 2154;
+                                    if lang == 0 {
+                                        if slot == 0 {
+                                            cid = 2155;
+                                        }
+                                        if slot == 1 {
+                                            cid = 2156;
+                                        }
+                                        if slot == 2 {
+                                            cid = 2157;
+                                        }
+                                        if slot == 3 {
+                                            cid = spk;
+                                        }
+                                    } else {
+                                        if slot == 0 {
+                                            cid = 2154;
+                                        }
+                                        if slot == 1 {
+                                            cid = 2156;
+                                        }
+                                        if slot == 2 {
+                                            cid = lang;
+                                        }
+                                        if slot == 3 {
+                                            cid = 2157;
+                                        }
+                                        if slot == 4 {
+                                            cid = spk;
+                                        }
                                     }
-                                    if r == 4 {
-                                        cid = 2156;
-                                    }
-                                    if r == 5 {
-                                        cid = lang;
-                                    }
-                                    if r == 6 {
-                                        cid = 2157;
-                                    }
-                                    if r == 7 {
-                                        cid = spk;
-                                    }
-                                } else if r < 9 + text {
-                                    from = (r - 6) * 2048;
-                                } else if r == 9 + text {
+                                } else if r < 3 + head + text {
+                                    from = (r - head) * 2048;
+                                } else if r == 3 + head + text {
                                     from = eos;
                                 } else {
                                     cid = 2149;
@@ -521,7 +583,7 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
         unbox_slice(heap, cemb);
         // ... then the predictor's table i - 1 of code i, and last the pad
         var tb = 0;
-        while tb < 15 && q[0] == 0 {
+        while tb < 15 && q[0] == 0 && frames > 0 {
             let pe = raw(heap, fs, wdir, "pemb", tb, 2048 * 2048, q);
             borrow pe as &per in {
                 borrow codes as &cr in {
@@ -925,6 +987,9 @@ fn near[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args
 
 fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
     let na = arg_count(args);
+    if na >= 2 && qasr_host.is_text(arg(args, 1), "tables") {
+        return tables_only(io, heap, fs, args);
+    }
     if na >= 2 && qasr_host.is_text(arg(args, 1), "weights") {
         return weights(io, heap, fs, args);
     }
