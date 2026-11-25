@@ -14,6 +14,10 @@
  *     CANCHOGPU_EMU_MUTATE    `from=>to`: every `from` in the source becomes
  *                             `to` before compiling -- how tests/cuda-emu.sh
  *                             shows the emulator can fail on the emitted CUDA
+ *     CANCHOGPU_EMU_WARP      32 or 64: the lanes of a warp (default 32; 64
+ *                             when built as hipRTC, tests/emu/libhiprtc_emu.c,
+ *                             which is this file with EMU_HIP: HIP's names,
+ *                             no wmma, 64-bit masks, docs/amd.md section 7)
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1
@@ -27,6 +31,19 @@
 
 #ifndef EMU_INCLUDE_DIR
 #define EMU_INCLUDE_DIR "tests/emu/include"
+#endif
+
+#ifdef EMU_HIP
+#define EMU_KERNEL "kernel.hip"
+#define EMU_WARP_DEFAULT 64
+#define EMU_DEFS "-DEMU_HIP"
+/* The row of src/target.cho; AMD's limit was not found in what was read (docs/amd.md section 1). */
+#define EMU_SMEM_MAX (64 * 1024)
+#else
+#define EMU_KERNEL "kernel.cu"
+#define EMU_WARP_DEFAULT 32
+#define EMU_DEFS ""
+#define EMU_SMEM_MAX (48 * 1024)
 #endif
 
 typedef int nvrtcResult;
@@ -146,7 +163,7 @@ static void translate(struct prog *x, const char *raw) {
             ln = atoi(c + 1);
         }
         char out[1024];
-        snprintf(out, sizeof out, "kernel.cu(%d): %s", ln, at + 2);
+        snprintf(out, sizeof out, EMU_KERNEL "(%d): %s", ln, at + 2);
         say(x, out);
     }
     free(copy);
@@ -186,6 +203,16 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
     h = fnv(h, x->src, strlen(x->src));
     h = fnv(h, ents, strlen(ents));
     h = fnv(h, cxx, strlen(cxx));
+    const char *we = getenv("CANCHOGPU_EMU_WARP");
+    int warp = we ? atoi(we) : EMU_WARP_DEFAULT;
+    if (warp != 32 && warp != 64) {
+        say(x, EMU_KERNEL "(0): error: CANCHOGPU_EMU_WARP is 32 or 64");
+        free(ents);
+        return 6;
+    }
+    char defs[64];
+    snprintf(defs, sizeof defs, "-DEMU_WARP=%d %s", warp, EMU_DEFS);
+    h = fnv(h, defs, strlen(defs));
     char path[900];
     snprintf(path, sizeof path, "%s/cuda_emu.h", inc);
     /* include/ holds forwarding headers; the real one is its parent's. */
@@ -200,7 +227,7 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
     if (access(so, R_OK) != 0) {
         FILE *f = fopen(cu, "w");
         if (!f) {
-            say(x, "kernel.cu(0): error: cannot write the emulator's scratch directory");
+            say(x, EMU_KERNEL "(0): error: cannot write the emulator's scratch directory");
             free(ents);
             return 6;
         }
@@ -216,8 +243,8 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
          * reports it as a fault. */
         snprintf(cmd, sizeof cmd,
                  "%s -std=c++17 -O1 -g0 -fno-strict-aliasing -ffp-contract=fast -fno-math-errno -shared -fPIC "
-                 "-fsanitize=alignment -fsanitize-trap=alignment -Wno-everything -I'%s' -x c++ '%s' -o '%s' >'%s' 2>&1",
-                 cxx, inc, cu, tmp_so, logf);
+                 "-fsanitize=alignment -fsanitize-trap=alignment -Wno-everything %s -I'%s' -x c++ '%s' -o '%s' >'%s' 2>&1",
+                 cxx, defs, inc, cu, tmp_so, logf);
         int rc = system(cmd);
         FILE *lf = fopen(logf, "r");
         char *raw = calloc(1, 65536);
@@ -230,7 +257,7 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
         if (rc != 0) {
             translate(x, raw);
             if (x->log[0] == 0) {
-                say(x, "kernel.cu(0): error: the C++ compiler failed");
+                say(x, EMU_KERNEL "(0): error: the C++ compiler failed");
                 say(x, raw);
             }
             free(raw);
@@ -240,7 +267,7 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
         }
         free(raw);
         if (rename(tmp_so, so) != 0) {
-            say(x, "kernel.cu(0): error: cannot place the compiled kernel");
+            say(x, EMU_KERNEL "(0): error: cannot place the compiled kernel");
             free(ents);
             return 6;
         }
@@ -252,9 +279,9 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
         size_t (*bytes)(void) = (size_t (*)(void))dlsym(lib, "__emu_smem_bytes");
         size_t used = bytes ? bytes() : 0;
         dlclose(lib);
-        if (used > 48 * 1024) {
+        if (used > EMU_SMEM_MAX) {
             char msg[300];
-            snprintf(msg, sizeof msg, "ptxas error   : Entry function uses too much shared data (0x%zx bytes, 0xc000 max)", used);
+            snprintf(msg, sizeof msg, "ptxas error   : Entry function uses too much shared data (0x%zx bytes, 0x%x max)", used, EMU_SMEM_MAX);
             say(x, msg);
             return 6;
         }

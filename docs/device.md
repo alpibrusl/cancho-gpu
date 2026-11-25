@@ -149,7 +149,7 @@ trap.
 
 ## 5b. How it is checked without a GPU, by running it
 
-The mock (§5) checks the plumbing and runs nothing. `tests/emu/` is a driver
+The mock (§5) checks the plumbing and runs nothing. (`tests/emu/`, described here, also runs the HIP text for `amd-cdna3`, in waves of 64 lanes: `docs/amd.md` section 7.) `tests/emu/` is a driver
 and an NVRTC that **run the emitted CUDA on the CPU**, selected through the
 same `CANCHOGPU_LIBCUDA` / `CANCHOGPU_LIBNVRTC` names, so the unmodified device
 program and shim run end to end and the result is held to the interpreter at

@@ -1,5 +1,6 @@
 #!/bin/sh
-# One case of tests/cases.txt through the emulating driver (tests/cuda-emu.sh):
+# One case of tests/cases.txt through the emulating driver (tests/cuda-emu.sh),
+# or with EMU_BACKEND=hip through the emulating HIP runtime (tests/hip-emu.sh):
 #
 #     run-case.sh <outdir> '<file.chx> [name=value ...]'
 #
@@ -16,9 +17,15 @@ shift
 name=$("$ROOT/scripts/case-name.sh" "$file" "$@")
 EMU=$ROOT/build/emu
 status=0
-CANCHOGPU_LIBCUDA=$EMU/libcuda_emu.so CANCHOGPU_LIBNVRTC=$EMU/libnvrtc_emu.so \
-  CANCHOGPU_EMU_CACHE=${CANCHOGPU_EMU_CACHE:-$EMU/cache} \
-  "$ROOT/build/cancho-gpu-device" run "$ROOT/$file" "$@" >"$OUT/$name.out" 2>&1 || status=$?
+if [ "${EMU_BACKEND:-cuda}" = hip ]; then
+  CANCHOGPU_LIBHIP=$EMU/libamdhip64_emu.so CANCHOGPU_LIBHIPRTC=$EMU/libhiprtc_emu.so \
+    CANCHOGPU_EMU_CACHE=${CANCHOGPU_EMU_CACHE:-$EMU/cache} \
+    "$ROOT/build/cancho-gpu-device" run "$ROOT/$file" "$@" >"$OUT/$name.out" 2>&1 || status=$?
+else
+  CANCHOGPU_LIBCUDA=$EMU/libcuda_emu.so CANCHOGPU_LIBNVRTC=$EMU/libnvrtc_emu.so \
+    CANCHOGPU_EMU_CACHE=${CANCHOGPU_EMU_CACHE:-$EMU/cache} \
+    "$ROOT/build/cancho-gpu-device" run "$ROOT/$file" "$@" >"$OUT/$name.out" 2>&1 || status=$?
+fi
 worst=$(sed -n 's/^compare: \(.*\)/\1/p' "$OUT/$name.out" | head -3 | tr '\n' ';')
 find=$(grep -m1 -E '^(emu-race|emu-warn|error)' "$OUT/$name.out" | cut -c1-300)
 # The device program's threshold is 2e-2 of the peak. Measured over every case
