@@ -272,7 +272,8 @@ Qwen2.5 and Qwen3.8 tokenizers (see Measured). What the splitter is:
   with `normalized`, `lstrip`, `rstrip` or `single_word` set is refused (`tok-added`): none of the
   real ones has them;
 * a GGUF is accepted only with `tokenizer.ggml.model = gpt2` and
-  `tokenizer.ggml.pre = qwen35` (`tok-gguf-model`, `tok-gguf-pre`).
+  `tokenizer.ggml.pre = qwen35`, or `qwen2` (`tok-gguf-model`, `tok-gguf-pre`). Under `qwen2` the pattern is Qwen2's
+  and the text is split as it is, with no NFC (`docs/kolibri.md` section 12: Kolibri 1.1's file).
 
 Not implemented, and not seen to matter: the `(?i:` group's Unicode case folding (`'ſ` is not a
 contraction here), and any pre-tokenizer but the two.
