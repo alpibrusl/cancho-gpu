@@ -654,3 +654,11 @@ tests/chx/samp_pen.chx nq=4 G=2 invt=1.25 rp=1.5 irp=0.6666666666666666 --run
 tests/chx/samp_rank.chx nq=4 --run
 tests/chx/samp_keep.chx n=256 k=0.05 bm=64 lo=4 --run
 tests/chx/seen_or.chx c=64 bc=32 --run
+# K1 (docs/kolibri.md): ggml Q4_0 weights. dq_q4: an expert's matrix of Kolibri 1.1 (512 x 2,560) to an f32 scratch; matvec_q4_rows: the product with the dequantisation lazy in it, the expert's gate or up
+# (512 x 2,560), its down (2,560 x 512), the attention's q (6,144 x 2,560); and small. Held to float64 by tests/kernels.py.
+tests/chx/dq_q4.chx n=512 k=2560 bn=8 bk=64
+tests/chx/matvec_q4_rows.chx n=512 k=2560
+tests/chx/matvec_q4_rows.chx n=2560 k=512
+tests/chx/matvec_q4_rows.chx n=6144 k=2560
+tests/chx/dq_q4.chx n=8 k=64 bn=4 bk=32 --run
+tests/chx/matvec_q4_rows.chx n=16 k=64 --run

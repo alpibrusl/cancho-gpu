@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; nothing runs on the GPU yet)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; no layer runs yet)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -42,7 +42,7 @@ Qwen's weights are BF16 and exact in f16, and every stage of `docs/audio.md` ran
 | piece | have | missing |
 |---|---|---|
 | a 4-bit weight read in a kernel | `dequant_fp4`, for NVFP4 (a table of 16 values, an E4M3 scale) | **Q4_0**: `(nibble - 8) scale` with an f16 scale a group of 32. One operation of the language, K1 |
-| a product with 4-bit weights | `matvec_fp4_rows` and its family, fused into the product's reduction for NVFP4 | the same for Q4_0. First as two kernels (dequantise to an f32 scratch, then the f32 product); fused later if the time asks for it |
+| a product with 4-bit weights | `matvec_fp4_rows` and its family, fused into the product's reduction for NVFP4 | the same for Q4_0. First as two kernels (dequantise to an f32 scratch, then the f32 product); fused later if the time asks for it **[corrected in section 8: the product takes the lazy dequantisation as it is, with no scratch, from the first day; what NVFP4 has and this has not is a path of its own in the reduction]** |
 | choosing 6 experts of 384 | S3's `samp_rank` (how many entries are larger) gives the six | **reading a window of a weight file chosen by a value**: a load's offset is an index or a constant (`error[offset]`, measured). Not in the kernel language: in the session, which binds a program's input at an offset it reads from a buffer, checked against the file. K2 |
 | Q4_1 (`nibble scale + offset`) | | no second operation: `(nibble - 8) scale + (offset + 8 scale)`, the second term a product of 16 or 112 columns with the sums of the input's groups |
 | the attention | the cached step's kernels take the head counts as constants (`attention_scores_b`, `attention_pv_b`, `kv_write_b`) | `dec_post_n` is written for 16 + 8 + 8 heads: a form for 48 + 4 + 4, and one with no rotation |
@@ -61,7 +61,7 @@ Qwen's weights are BF16 and exact in f16, and every stage of `docs/audio.md` ran
 ## 6. Stages, each a gate
 
 * **K0. The reference** **[done, section 2]**.
-* **K1. `dequant_q4` in the language**: the operation, its float64 test and mutants, the kernels `dq_q4` (a window of 4-bit weights to an f32 scratch) and the product after it, against the reference's own dequantisation of one expert, to the bit. Refused inside a product until it is fused, with a rule tag.
+* **K1. `dequant_q4` in the language** **[done, section 8]**: the operation, its float64 test and mutants, the kernels `dq_q4` (a window of 4-bit weights to an f32 scratch) and the product after it, against the reference's own dequantisation of one expert, to the bit. Refused inside a product until it is fused, with a rule tag. **[corrected in section 8: not refused; a product takes it]**
 * **K2. A window chosen by a value, in the session**: a directive that binds an input at `index x stride` of a resident file, the index read from a buffer the step computed; the CPU session and the Metal one agree; an index outside the file is a refusal with a rule tag, never a read.
 * **K3. One MoE layer**: the router, the six, the experts and the shared one, from the reference's row before the layer to its row after it; then the dense MLP of layers 0 and 1.
 * **K4. One attention layer of each kind** (sliding with rotary; indexed with NVFP4 keys and values; one that reads another layer's), then **the 50 layers as one cached step**, teacher-forced on the reference's ids: the stream after every layer and the logits. Bound, as `docs/audio.md` S2: the arg max at every row whose two best are clear, and the differences over the 50 largest reported.
@@ -75,3 +75,24 @@ Qwen's weights are BF16 and exact in f16, and every stage of `docs/audio.md` ran
 
 * **Building llama.cpp's unmerged branch** for a second reference. Not done; the stages above do not wait for it, but until some implementation that is not this reader's agrees, "the reference" means section 2's.
 * **Nothing else is downloaded.** The 42.6 GB file is in `~/.cache/cancho-media/kolibri-1.1-gguf/`.
+
+## 8. K1: `dequant_q4` **[measured, 2026-11-25, M4 Max]**
+
+`dequant_q4 q s g G` in the kernel language (`docs/chx.md`): `(code - 8) * s[group] * g[row]`, with `q: i8[n, k/2]` (two codes a byte, low nibble first), `s: f16[n, k/G]`, `g: f32[n]`. ggml's Q4_0 is `G` 32 and `g` ones. It is `dequant_fp4`'s node with another table and an f16 scale: the same operands, shapes and laziness, about 40 lines in the parser, the elaboration, the checker, the interpreter and the lowering. **No recorded golden of any other kernel changed.**
+
+Two kernels: `dq_q4` (a window of 4-bit weights to an f32 matrix) and `matvec_q4_rows` (`matvec_fp4_rows` with the new operation).
+
+**One expert of the file** (layer 10's expert 137, the `gate` matrix, 512 x 2,560; the host's part done by hand: a block's 16 low nibbles then 16 high ones repacked two a byte in the matrix's order, the f16 scales as they are):
+
+| | the CPU session | the Metal session |
+|---|---|---|
+| `dq_q4`'s 1,310,720 values against the reference's dequantisation | **equal to the bit** | **equal to the bit** |
+| `dq_q4` then the f32 product, against the float64 product (peak 0.156) | 2.5e-7 | 3.0e-8 |
+| `matvec_q4_rows`, the dequantisation inside the product | 2.5e-7 | 2.3e-8 |
+
+* **The design was wrong about the product, in the right direction.** Section 6 planned a scratch matrix and a refusal inside a product. A product already takes any lazy tile element by element, and takes this one: `matvec_q4_rows` reads 0.74 MB where the scratch form writes and reads 5 MB. What it has not is NVFP4's own path in the reduction (wide loads, a scale formed once a group).
+* **Time, one matrix of 512 x 2,560, from requests of 20,000 and 100,000 steps on the Metal GPU:** the fused product about 3 microseconds a step, a plain f32 product of the same matrix 7, the scratch form 18. **These are single runs of a session that does nothing else and the first two are near the clock's noise; what they say is that an expert's product is microseconds, under a program's launch (12).** A token's 864 expert products are then launches, about 10 ms **[reckoned]**.
+* **Held to float64** (`tests/kernels.py`, in the gate): both kernels, two sizes each. **Mutants, by hand: five, four killed there.** The fifth (every tile's codes read from the first tile) cannot be seen with the interpreter's made-up bytes, `0x30 + i % 8`, which are the same in every tile of 16 bytes: **`tests/q4.sh`, new and in the gate, runs both kernels on codes that do not repeat, against exact arithmetic, and kills it.**
+* **On the Metal GPU against the interpreter** (`scripts/metal-kernels.sh`'s cases, by hand): `dq_q4` 1.2e-7 of a peak of 1.98 with rows' scales that are not ones (three factors, one rounding apart); the products 1.3e-6, 8.4e-7 and 1.5e-6 of their peaks at 512 x 2,560, 2,560 x 512 and 6,144 x 2,560.
+* **A refusal:** scales that are bytes (`error[type]: q4 values must be I8 and their scales F16`, `tests/reject/type-q4.chx`).
+* **Not done:** Q4_1 and Q6_K (the host's, K5); the host's repacking is a scratch script here, not a program; CUDA and HIP texts are emitted and held by goldens but ran nowhere; no path of its own in the reduction, so a large product (the attention's 6,144 x 2,560) is the plain element-by-element form, whose time against NVFP4's is not measured.

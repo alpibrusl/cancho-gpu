@@ -169,6 +169,11 @@ pub fn e_dequant_fp4() -> [] int {
     return 3;
 }
 
+// `dequant_q4 q s g G`: ggml's Q4_0 as tiles, `(code - 8) * s[group] * g[row]` with f16 scales (docs/kolibri.md K1). The same operands as `dequant_fp4`, another table and another scale.
+pub fn e_dequant_q4() -> [] int {
+    return 16;
+}
+
 pub fn e_add_window() -> [] int {
     return 4;
 }
@@ -321,6 +326,10 @@ pub fn op_spill() -> [] int {
 
 pub fn op_dequant_fp4() -> [] int {
     return 13;
+}
+
+pub fn op_dequant_q4() -> [] int {
+    return 15;
 }
 
 // --- IR statements

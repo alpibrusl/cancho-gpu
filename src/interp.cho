@@ -538,8 +538,13 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
             code = byte & 15;
         }
         let g = row * (c / group) + cl / group;
-        let scale = f32.e4m3(truncate(fm[m[sc + 1] + g]) & 255);
-        fm[m[out + 1] + i] = f32.mul(f32.mul(f32.e2m1(code), scale), fm[m[gs + 1] + row]);
+        if k == kinds.op_dequant_q4() {
+            // Q4_0: (code - 8) times the group's f16 scale, exact in f32, then the row's scale
+            fm[m[out + 1] + i] = f32.mul(f32.mul(float_of(code - 8), fm[m[sc + 1] + g]), fm[m[gs + 1] + row]);
+        } else {
+            let scale = f32.e4m3(truncate(fm[m[sc + 1] + g]) & 255);
+            fm[m[out + 1] + i] = f32.mul(f32.mul(f32.e2m1(code), scale), fm[m[gs + 1] + row]);
+        }
         i = i + 1;
     }
     return out;

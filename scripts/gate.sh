@@ -22,6 +22,7 @@ tests/files.sh
 tests/golden.sh
 tests/reject.sh
 tests/run.sh
+tests/q4.sh
 CANCHO="$CANCHO" tests/device.sh
 CANCHO="$CANCHO" tests/device-io.sh
 tests/gcp.sh

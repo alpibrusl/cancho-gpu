@@ -154,6 +154,9 @@ samp_pen nq=48 G=2 invt=1.25 rp=1.5 irp=0.6666666666666666
 samp_rank nq=48
 samp_keep n=3072 k=0.05 bm=256 lo=4
 seen_or c=3072 bc=256
+dq_q4 n=512 k=2560 bn=8 bk=64
+matvec_q4_rows n=512 k=2560
+matvec_q4_rows n=2560 k=512
 f16:conv_cols t=5 f=3 c=32 wp=8 r=40
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64
