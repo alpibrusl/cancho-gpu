@@ -60,6 +60,9 @@ tag=sp64;    check umt5_enc CHX=/chx WORK=/w WDIR=/wd SP=64
 # The codec decoder of Qwen3-TTS (docs/audio.md section 22): 128 frames, and 256 with the stage activations saved.
 tag=sp128;   check qwen3_tts_decoder CHX=/chx WORK=/w WDIR=/wd SP=128
 tag=probe256; check qwen3_tts_decoder CHX=/chx WORK=/w WDIR=/wd SP=256 PROBE=1
+# The talker and the code predictor of Qwen3-TTS (docs/audio.md section 24): S0's 92 rows, and its 67 frames of 16 rows.
+tag=talker128; check qwen3_tts_lm CHX=/chx WORK=/w WDIR=/wd SP=128
+tag=pred1088; check qwen3_tts_lm CHX=/chx WORK=/w WDIR=/wd SP=1088 D=1024 FF=3072 NL=5 V=30720 PROJ=1
 # The video transformer at 17 frames of 640 x 352: the f16 programs (the expansion models/wan_dit.model had before PREC existed) and the f32-operand ones (docs/diffusion.md section 6, V3c).
 tag=f16;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1
 tag=f32;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1 PREC=1 GEMM=gemm_mma_f LNM=dit_wan_lnmod_f LN=vit_ln_f GELU=vit_bias_gelu_f ROPE=dit_rope16_f SCO=dit_scores_mma_f PVM=dit_pv_mma_f AT=f32
