@@ -1,0 +1,17 @@
+#!/bin/sh
+# A host program of the speech (docs/audio.md section 28), started by build/media (media/speak.cho): `tts front|lm|step|decoder ARGS...` runs build/qwen3_tts_front, _lm_gpu, _step_gpu or _decoder_gpu
+# on ARGS in the repository's root, and `tts tokens TOKENIZER TEXT OUT` writes what `cancho-gpu tokenize TOKENIZER TEXT` prints to OUT. A cancho program can start only a program of scripts/.
+cd "$(dirname "$0")/.." || exit 1
+case "${1:-}" in
+  front) p=build/qwen3_tts_front ;;
+  lm) p=build/qwen3_tts_lm_gpu ;;
+  step) p=build/qwen3_tts_step_gpu ;;
+  decoder) p=build/qwen3_tts_decoder_gpu ;;
+  tokens)
+    [ $# -eq 4 ] || { echo "tts: tokens TOKENIZER TEXT OUT"; exit 100; }
+    build/cancho-gpu tokenize "$2" "$3" > "$4" || { rc=$?; head -1 "$4"; exit $rc; }
+    exit 0 ;;
+  *) echo "tts: the first argument is front, lm, step, decoder or tokens"; exit 100 ;;
+esac
+shift
+exec "$p" "$@"
