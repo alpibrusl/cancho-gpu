@@ -254,6 +254,9 @@ if __name__ == "__main__":
             f.write(tokenizer(**kw)[0])
     with open(os.path.join(HERE, "toy.gguf"), "wb") as f:
         f.write(gguf_tokenizer())
+    # the same vocabulary under `qwen2` (docs/kolibri.md K5): Qwen2's pattern, and no normalisation
+    with open(os.path.join(HERE, "toy-qwen2.gguf"), "wb") as f:
+        f.write(gguf_tokenizer(pre="qwen2"))
     os.makedirs(os.path.join(HERE, "reject"), exist_ok=True)
     for name, data in reject().items():
         with open(os.path.join(HERE, "reject", name), "wb") as f:

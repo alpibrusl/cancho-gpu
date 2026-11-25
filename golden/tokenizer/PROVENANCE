@@ -3,3 +3,5 @@ fixed: cancho-gpu tokenize reproduces it, and also agrees with the library on th
 They were first made by lex-rt's Rust tokenizer at lex-gpu 851497d64e0f7a3bce63e1c6eab47ad0ffa79c16, which shared the deviations the fix removed.
 The GGUF fixture (toy.gguf) is a regression record of cancho-gpu tokenize: the library cannot read a GGUF; its output agrees with the library on
 the equivalent JSON toy except for the ids given to added tokens.
+toy-qwen2.gguf is toy.gguf with `tokenizer.ggml.pre = qwen2` (Qwen2's pattern, no normalisation; docs/kolibri.md section 12), a regression record too: what holds that
+path to the library is the real file, by hand (Kolibri 1.1's GGUF against Hugging Face `tokenizers` on its tokenizer.json, 537 lines of the two corpora here).

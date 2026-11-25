@@ -77,6 +77,11 @@ pub fn f_lifted() -> [] int {
     return 8;
 }
 
+// 1 when the text is split as it is, 0 (the default) when each stretch is NFC-normalised first: a GGUF with the `qwen2` pre-tokenizer.
+pub fn f_raw() -> [] int {
+    return 10;
+}
+
 // ---------------------------------------------------------------------
 // Hash tables
 // ---------------------------------------------------------------------
@@ -246,7 +251,7 @@ fn set_text[&m](m: &!m [int], tk: int, id: int, start: int, n: int) -> [] int {
 }
 
 fn new_record[&m](m: &!m [int], ids: int, merges: int, vocab_cap: int) -> [] int {
-    let tk = mem.rec(m, 10);
+    let tk = mem.rec(m, 11);
     m[tk + f_ids()] = ids;
     m[tk + f_start()] = mem.grab(m, ids + 1);
     m[tk + f_len()] = mem.grab(m, ids + 1);
@@ -852,6 +857,9 @@ fn encode_normalised[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to
     if from >= to {
         return 0;
     }
+    if m[tk + f_raw()] == 1 {
+        return encode_ordinary(m, t, tk, from, to, out);
+    }
     let cps = unicode.scalars(m, t, from, to);
     let norm = unicode.nfc(m, cps);
     let ns = m[mem.text_slot()];
@@ -966,13 +974,17 @@ fn string_array[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte
 }
 
 // The tokenizer of a parsed GGUF header `g`: the record, or -1. Only a
-// byte-level BPE (`gpt2`) with the `qwen35` pre-tokenizer, as the oracle.
+// byte-level BPE (`gpt2`) with the `qwen35` pre-tokenizer, as the oracle, or
+// with `qwen2`: Qwen2's pattern, and the text split as it is (llama.cpp
+// normalises nothing; a model whose `tokenizer.json` has an NFC normaliser
+// and whose GGUF says `qwen2` would differ on text that is not NFC).
 pub fn from_gguf[&m, &t](m: &!m [int], t: &!t [byte], g: int) -> [] int {
     if !kv_is_string(m, t, g, "tokenizer.ggml.model", "gpt2") {
         return bad(m, t, "tok-gguf-model", "the GGUF tokenizer is not byte-level BPE (tokenizer.ggml.model gpt2)");
     }
-    if !kv_is_string(m, t, g, "tokenizer.ggml.pre", "qwen35") {
-        return bad(m, t, "tok-gguf-pre", "only the qwen35 pre-tokenizer has been checked against this splitter");
+    let qwen2 = kv_is_string(m, t, g, "tokenizer.ggml.pre", "qwen2");
+    if !qwen2 && !kv_is_string(m, t, g, "tokenizer.ggml.pre", "qwen35") {
+        return bad(m, t, "tok-gguf-pre", "only the qwen35 and qwen2 pre-tokenizers have been checked against this splitter");
     }
     let tokens = string_array(m, t, g, "tokenizer.ggml.tokens");
     if tokens < 0 {
@@ -985,6 +997,10 @@ pub fn from_gguf[&m, &t](m: &!m [int], t: &!t [byte], g: int) -> [] int {
     let n = mem.size(m, tokens) / 2;
     let nm = mem.size(m, merges) / 2;
     let tk = new_record(m, n, nm, n);
+    if qwen2 {
+        m[tk + f_pre()] = 1;
+        m[tk + f_raw()] = 1;
+    }
     // The token types: control (3) and user-defined (4) tokens are matched
     // whole before anything else, unused (5) ones are padding; a missing
     // array is all ordinary. A types array shorter than the tokens leaves

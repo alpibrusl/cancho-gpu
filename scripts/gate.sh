@@ -38,6 +38,7 @@ CANCHO="$CANCHO" tests/wan_enc.sh
 CANCHO="$CANCHO" tests/qwen3_asr_audio.sh
 CANCHO="$CANCHO" tests/qwen3_asr_text.sh
 CANCHO="$CANCHO" tests/qwen3_asr_step.sh
+CANCHO="$CANCHO" tests/kolibri_host.sh
 CANCHO="$CANCHO" tests/qwen3_asr_front.sh
 CANCHO="$CANCHO" tests/qwen3_tts_decoder.sh
 CANCHO="$CANCHO" tests/qwen3_tts_lm.sh

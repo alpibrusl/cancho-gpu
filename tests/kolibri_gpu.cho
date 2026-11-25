@@ -1,0 +1,876 @@
+edition 5;
+
+// `kolibri_gpu` -- the host side of Kolibri 1.1's cached step (models/kolibri_step.model; docs/kolibri.md section 12, stage K5), in cancho: the files the session reads, from the model's GGUF.
+//
+//     kolibri_gpu weights <gguf> <dir>
+//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions>
+//     kolibri_gpu argmax  <f32 file>
+//
+// `weights` writes what the model file calls W, a tensor a chunk at a time. For layer i: the norms' weights copied (a<i>.norm.f32, a<i>.qn.f32, a<i>.kn.f32, a<i>.pn.f32, m<i>.ffn_norm.f32,
+// m<i>.post_norm.f32), the router (m<i>.route.f32, m<i>.bias.f32), and each 4-bit matrix NAME as NAME.q4 (its codes two a byte, low nibble first, in the matrix's order: ggml keeps a block of 32 as
+// 16 low nibbles then 16 high ones), NAME.s (the f16 scales) and, for a Q4_1 tensor, NAME.c (the offsets `m + 8 d` as f32, so that `code d + m` is the Q4_0 product plus a small one):
+// a<i>.qkv (q, k and v one after another; a<i>.q where the layer has no keys of its own), a<i>.o, m<i>.dn.gate/up/down (a dense layer), m<i>.sh.* and m<i>.ex.* (the shared expert and the experts).
+// Once: head.f32 (the Q6_K head decoded), fnorm.f32, the ones (ones_d, ones_h, ones_f, ones_qkv, ones_q, one64), zero64, ar.f32, sl.f32 and e4m3.f32 (fp4_round.chx's table: E4M3's 125
+// thresholds, what the scale grows by past each, and a 1 where a scale at the threshold goes up). Which layers are dense, which have keys and which tensors are Q4_1 are the file's to say.
+// `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised), cos.f32 and sin.f32, sel.f32 and keep.f32,
+// mask.f32 (the file's window) and maskg.f32, zcache.f32. `positions` is the caches' length, a multiple of 64 no shorter than the ids.
+// `argmax` prints `argmax <index> value <v> margin <v - the second largest>` for a file of f32: the next token from the session's saved logits.
+//
+// Exit 0; 1 with every refusal as `error[<rule>]: <message>` (kolibri-read, kolibri-meta, kolibri-tensor, kolibri-ids, kolibri-write, or the GGUF reader's own); 2 for a usage mistake
+// (`error[kolibri-usage]`). No file reaches a trap: a length is checked against the bytes read before it is used, and a short read is a refusal.
+//
+// Built by scripts/build-kolibri.sh.
+
+import std.io;
+import std.math;
+import mem;
+import text;
+import err;
+import fileio;
+import gguf;
+import f32;
+
+fn words() -> [] int {
+    return 4000000;
+}
+
+// the header's cap: the tokenizer's 128,000 tokens and 127,644 merges are in it
+fn head_cap() -> [] int {
+    return 100663296;
+}
+
+// the scratch after the header: a chunk read (4 MiB) and three written (4 MiB, 1 MiB, 1 MiB)
+fn in_cap() -> [] int {
+    return 4194304;
+}
+
+fn scratch() -> [] int {
+    return 10485760;
+}
+
+fn bytes_cap() -> [] int {
+    return head_cap() + scratch() + 16777216;
+}
+
+// The open file: `[path, the file's size, the position in t where the header begins, the header record, the scratch's position]`.
+fn open_gguf[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] int {
+    let name = text.from_bytes(m, t, path);
+    let (top, got, size) = fileio.prefix(m, t, fs, path, head_cap());
+    if top < 0 {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "cannot read $", name));
+    }
+    let g = gguf.parse(m, t, top, top + got);
+    if g < 0 {
+        return 0 - 1;
+    }
+    let sc = m[mem.text_slot()];
+    m[mem.text_slot()] = sc + scratch();
+    return mem.rec5(m, name, size, top, g, sc);
+}
+
+// An integer of the metadata, or -1 with a refusal (every one this program reads is positive or zero).
+fn meta_int[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte]) -> [] int {
+    let r = gguf.find_kv(m, t, g, name);
+    if r < 0 || !gguf.is_int(m[r + 2]) {
+        return err.fail(m, t, "kolibri-meta", text.f1(m, t, "the file's metadata has no whole number `$`", text.lit(m, t, name)));
+    }
+    let v = gguf.int_at(t, m[r + 3], m[r + 2]);
+    if v < 0 || v > 1000000000 {
+        return err.fail(m, t, "kolibri-meta", text.f1(m, t, "`$` is not a count", text.lit(m, t, name)));
+    }
+    return v;
+}
+
+fn int_width(ty: int) -> [] int {
+    if ty == 0 || ty == 1 || ty == 7 {
+        return 1;
+    }
+    if ty == 2 || ty == 3 {
+        return 2;
+    }
+    if ty == 4 || ty == 5 {
+        return 4;
+    }
+    if ty == 10 || ty == 11 {
+        return 8;
+    }
+    return 0;
+}
+
+// The position of the first element of an array of `n` whole numbers in the metadata and its element type, or (-1, 0) with a refusal.
+fn meta_ints[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte], n: int) -> [] (int, int) {
+    let r = gguf.find_kv(m, t, g, name);
+    if r < 0 || m[r + 2] != 9 {
+        err.fail(m, t, "kolibri-meta", text.f1(m, t, "the file's metadata has no array `$`", text.lit(m, t, name)));
+        return (0 - 1, 0);
+    }
+    let et = gguf.le(t, m[r + 3], 4);
+    let count = gguf.le(t, m[r + 3] + 4, 8);
+    if int_width(et) == 0 || count != n {
+        err.fail(m, t, "kolibri-meta", text.f2(m, t, "`$` is not an array of $ whole numbers", text.lit(m, t, name), text.num(m, t, n)));
+        return (0 - 1, 0);
+    }
+    return (m[r + 3] + 12, et);
+}
+
+fn ints_at[&t](t: &!t [byte], at: int, et: int, i: int) -> [] int {
+    let w = int_width(et);
+    if et == 7 {
+        return int_of(t[at + i]);
+    }
+    return gguf.int_at(t, at + i * w, et);
+}
+
+// The tensor named `name` (a handle) of ggml type `ty` (or `ty2`): its record, or -1 with a refusal.
+fn tensor[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: int, ty: int, ty2: int) -> [] int {
+    let list = m[g + gguf.f_tensor_list()];
+    var i = 0;
+    while i < mem.size(m, list) {
+        let r = mem.get(m, list, i);
+        if gguf.same_bytes(t, m[r], m[r + 1], text.start(name), text.size(name)) {
+            if m[r + 4] != ty && m[r + 4] != ty2 {
+                return err.fail(m, t, "kolibri-tensor", text.f2(m, t, "the tensor `$` has ggml type $, which is not what this program reads there", name, text.num(m, t, m[r + 4])));
+            }
+            if m[r + 2] < 1 || m[r + 6] < 1 {
+                return err.fail(m, t, "kolibri-tensor", text.f1(m, t, "the tensor `$` has no values", name));
+            }
+            return r;
+        }
+        i = i + 1;
+    }
+    return err.fail(m, t, "kolibri-tensor", text.f1(m, t, "the file has no tensor `$`", name));
+}
+
+fn cols[&m, &t](m: &!m [int], t: &!t [byte], r: int) -> [] int {
+    return gguf.le(t, m[r + 3], 8);
+}
+
+// Where a tensor's bytes begin in the file.
+fn data_at[&m](m: &!m [int], file: int, r: int) -> [] int {
+    let g = m[file + 3];
+    return m[g + gguf.f_data()] - m[file + 2] + m[r + 5];
+}
+
+// `n` bytes of the file from `at` into the scratch's first part: 0, or -1 with a refusal.
+fn fetch[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, at: int, n: int, what: int) -> [fs_read(""), file_read] int {
+    if n > in_cap() || at < 0 || at + n > m[file + 1] {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "the tensor `$` runs past the end of the file", what));
+    }
+    let got = fileio.read_at(t, fs, text.bytes(t, m[file]), at, m[file + 4], n);
+    if got != n {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "short read of `$`", what));
+    }
+    return 0;
+}
+
+fn write_all[&w, &b](file: &!w File, bytes: &b [byte]) -> [file_write] int {
+    var at = 0;
+    while at < len(bytes) {
+        match file_write(file, bytes[at..len(bytes)]) {
+            Done::Ok(n) => {
+                if n <= 0 {
+                    return 0 - 1;
+                }
+                at = at + n;
+            }
+            Done::Failed(e) => {
+                return 0 - 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// `t[at .. at + n]` to the file `path`, made or emptied when `fresh` and added to otherwise: 0, or -1 with a refusal.
+fn put[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, fresh: bool, at: int, n: int) -> [fs_write(""), file_write] int {
+    var status = 0 - 1;
+    if fresh {
+        match open_write(fs, text.bytes(t, path)) {
+            Opened::Ok(opened) => {
+                var out = opened;
+                borrow mut out as &!w in {
+                    status = write_all(w, t[at..at + n]);
+                }
+                file_close(out);
+            }
+            Opened::Failed(e) => {
+            }
+        }
+    } else {
+        match open_append(fs, text.bytes(t, path)) {
+            Opened::Ok(opened) => {
+                var out = opened;
+                borrow mut out as &!w in {
+                    status = write_all(w, t[at..at + n]);
+                }
+                file_close(out);
+            }
+            Opened::Failed(e) => {
+            }
+        }
+    }
+    if status != 0 {
+        return err.fail(m, t, "kolibri-write", text.f1(m, t, "cannot write $", path));
+    }
+    return 0;
+}
+
+fn put32[&t](t: &!t [byte], at: int, x: float) -> [] int {
+    let b = f32.bits32(f32.round(x));
+    t[at] = byte_of(b & 255);
+    t[at + 1] = byte_of(b >> 8 & 255);
+    t[at + 2] = byte_of(b >> 16 & 255);
+    t[at + 3] = byte_of(b >> 24 & 255);
+    return 0;
+}
+
+fn half_at[&t](t: &!t [byte], at: int) -> [] float {
+    return f32.from_bits16(int_of(t[at]) | int_of(t[at + 1]) << 8);
+}
+
+// An F32 tensor of `n` values, copied to `path`.
+fn copy_f32[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: int, path: int, n: int) -> [fs_read(""), file_read, fs_write(""), file_write] int {
+    let r = tensor(m, t, m[file + 3], name, 0, 0);
+    if r < 0 {
+        return 0 - 1;
+    }
+    if n > 0 && m[r + 6] != n {
+        return err.fail(m, t, "kolibri-tensor", text.f2(m, t, "the tensor `$` has not $ values", name, text.num(m, t, n)));
+    }
+    let sc = m[file + 4];
+    let total = 4 * m[r + 6];
+    var done = 0;
+    while done < total {
+        var k = total - done;
+        if k > in_cap() {
+            k = in_cap();
+        }
+        if fetch(m, t, fs, file, data_at(m, file, r) + done, k, name) < 0 {
+            return 0 - 1;
+        }
+        if put(m, t, fs, path, done == 0, sc, k) < 0 {
+            return 0 - 1;
+        }
+        done = done + k;
+    }
+    return 0;
+}
+
+// One Q4_0 (18 bytes) or Q4_1 (20) tensor added to `base`.q4, `base`.s and, for Q4_1, `base`.c; `fresh` empties the files first. Answers the ggml type, or -1 with a refusal.
+fn q4_one[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: int, base: int, fresh: bool, want: int) -> [fs_read(""), file_read, fs_write(""), file_write] int {
+    let r = tensor(m, t, m[file + 3], name, 2, 3);
+    if r < 0 {
+        return 0 - 1;
+    }
+    let ty = m[r + 4];
+    if want > 0 && ty != want {
+        return err.fail(m, t, "kolibri-tensor", text.f1(m, t, "the tensor `$` is not of the 4-bit format of the tensors it is stacked with", name));
+    }
+    if cols(m, t, r) % 32 != 0 || m[r + 6] % cols(m, t, r) != 0 {
+        return err.fail(m, t, "kolibri-tensor", text.f1(m, t, "the tensor `$` is not rows of a multiple of 32 values", name));
+    }
+    var bw = 18;
+    if ty == 3 {
+        bw = 20;
+    }
+    let blocks = m[r + 6] / 32;
+    let sc = m[file + 4];
+    let oq = sc + in_cap();
+    let os = oq + 4194304;
+    let oc = os + 1048576;
+    let pq = text.f1(m, t, "$.q4", base);
+    let ps = text.f1(m, t, "$.s", base);
+    let pc = text.f1(m, t, "$.c", base);
+    var done = 0;
+    while done < blocks {
+        var nb = blocks - done;
+        if nb > 131072 {
+            nb = 131072;
+        }
+        if fetch(m, t, fs, file, data_at(m, file, r) + done * bw, nb * bw, name) < 0 {
+            return 0 - 1;
+        }
+        var b = 0;
+        while b < nb {
+            let p = sc + b * bw;
+            let q = p + bw - 16;
+            var j = 0;
+            while j < 8 {
+                let x = int_of(t[q + 2 * j]);
+                let y = int_of(t[q + 2 * j + 1]);
+                t[oq + 16 * b + j] = byte_of(x & 15 | (y & 15) << 4);
+                t[oq + 16 * b + 8 + j] = byte_of(x >> 4 | y >> 4 << 4);
+                j = j + 1;
+            }
+            t[os + 2 * b] = t[p];
+            t[os + 2 * b + 1] = t[p + 1];
+            if ty == 3 {
+                put32(t, oc + 4 * b, half_at(t, p + 2) + 8.0 * f32.round(half_at(t, p)));
+            }
+            b = b + 1;
+        }
+        let first = fresh && done == 0;
+        if put(m, t, fs, pq, first, oq, 16 * nb) < 0 || put(m, t, fs, ps, first, os, 2 * nb) < 0 {
+            return 0 - 1;
+        }
+        if ty == 3 && put(m, t, fs, pc, first, oc, 4 * nb) < 0 {
+            return 0 - 1;
+        }
+        done = done + nb;
+    }
+    return ty;
+}
+
+// The Q6_K head decoded to f32: a block of 210 bytes is 256 values, `d scale (q - 32)`, the 6-bit q split over 128 bytes of low nibbles and 64 of high pairs, 16 scales of a byte, d an f16.
+fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: int, path: int) -> [fs_read(""), file_read, fs_write(""), file_write] int {
+    let r = tensor(m, t, m[file + 3], name, 14, 14);
+    if r < 0 {
+        return 0 - 1;
+    }
+    if m[r + 6] % 256 != 0 {
+        return err.fail(m, t, "kolibri-tensor", text.f1(m, t, "the tensor `$` is not a multiple of 256 values", name));
+    }
+    let blocks = m[r + 6] / 256;
+    let sc = m[file + 4];
+    let out = sc + in_cap();
+    var done = 0;
+    while done < blocks {
+        var nb = blocks - done;
+        if nb > 4096 {
+            nb = 4096;
+        }
+        if fetch(m, t, fs, file, data_at(m, file, r) + done * 210, nb * 210, name) < 0 {
+            return 0 - 1;
+        }
+        var b = 0;
+        while b < nb {
+            let p = sc + b * 210;
+            let d = half_at(t, p + 208);
+            var half = 0;
+            while half < 2 {
+                let ql = p + 64 * half;
+                let qh = p + 128 + 32 * half;
+                let ss = p + 192 + 8 * half;
+                let o = out + 4 * (256 * b + 128 * half);
+                var l = 0;
+                while l < 32 {
+                    let h = int_of(t[qh + l]);
+                    let lo = int_of(t[ql + l]);
+                    let hi = int_of(t[ql + l + 32]);
+                    let is = l / 16;
+                    var k = 0;
+                    while k < 4 {
+                        var q = 0;
+                        if k == 0 {
+                            q = lo & 15 | (h & 3) << 4;
+                        } else if k == 1 {
+                            q = hi & 15 | (h >> 2 & 3) << 4;
+                        } else if k == 2 {
+                            q = lo >> 4 | (h >> 4 & 3) << 4;
+                        } else {
+                            q = hi >> 4 | (h >> 6 & 3) << 4;
+                        }
+                        var s = int_of(t[ss + is + 2 * k]);
+                        if s > 127 {
+                            s = s - 256;
+                        }
+                        // ggml's order, so that a zero has ggml's sign: (d scale) q
+                        put32(t, o + 4 * (l + 32 * k), d * float_of(s) * float_of(q - 32));
+                        k = k + 1;
+                    }
+                    l = l + 1;
+                }
+                half = half + 1;
+            }
+            b = b + 1;
+        }
+        if put(m, t, fs, path, done == 0, out, 1024 * nb) < 0 {
+            return 0 - 1;
+        }
+        done = done + nb;
+    }
+    return 0;
+}
+
+// `n` times the f32 `x` (or, `ramp`, 0, 1, 2 ...) to `path`.
+fn fill[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, n: int, x: float, ramp: bool) -> [fs_write(""), file_write] int {
+    let sc = m[file + 4];
+    var done = 0;
+    var fresh = true;
+    while done < n || fresh {
+        var k = n - done;
+        if k > 1048576 {
+            k = 1048576;
+        }
+        var i = 0;
+        while i < k {
+            if ramp {
+                put32(t, sc + 4 * i, float_of(done + i));
+            } else {
+                put32(t, sc + 4 * i, x);
+            }
+            i = i + 1;
+        }
+        if put(m, t, fs, path, fresh, sc, 4 * k) < 0 {
+            return 0 - 1;
+        }
+        fresh = false;
+        done = done + k;
+    }
+    return 0;
+}
+
+// fp4_round.chx's table: FP8 E4M3's values from 2^-9 to 448 are 126 (7 subnormal multiples of 2^-9, 14 binades of 8, and 7 of the last); between neighbours the threshold is the midpoint,
+// the increment their difference, and a tie goes up where the lower neighbour's last bit is odd (round half to even).
+fn e4m3_table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int) -> [fs_write(""), file_write] int {
+    let sc = m[file + 4];
+    let vals = sc + 2048;
+    var n = 0;
+    var k = 1;
+    while k < 8 {
+        put32(t, vals + 8 * n, math.ldexp(float_of(k), 0 - 9));
+        t[vals + 8 * n + 4] = byte_of(k % 2);
+        n = n + 1;
+        k = k + 1;
+    }
+    var e = 0 - 6;
+    while e < 9 {
+        var j = 0;
+        while j < 8 && (e < 8 || j < 7) {
+            put32(t, vals + 8 * n, math.ldexp(float_of(8 + j), e - 3));
+            t[vals + 8 * n + 4] = byte_of(j % 2);
+            n = n + 1;
+            j = j + 1;
+        }
+        e = e + 1;
+    }
+    var i = 0;
+    while i < 125 {
+        let a = word_at(t, vals + 8 * i);
+        let b = word_at(t, vals + 8 * i + 8);
+        put32(t, sc + 4 * i, (a + b) / 2.0);
+        put32(t, sc + 500 + 4 * i, b - a);
+        put32(t, sc + 1000 + 4 * i, float_of(int_of(t[vals + 8 * i + 4])));
+        i = i + 1;
+    }
+    return put(m, t, fs, path, true, sc, 1500);
+}
+
+fn name2[&m, &t](m: &!m [int], t: &!t [byte], dir: int, first: &static [byte], l: int, tail: &static [byte]) -> [] int {
+    return text.cat3(m, t, text.f2(m, t, "$/$", dir, text.lit(m, t, first)), text.num(m, t, l), text.lit(m, t, tail));
+}
+
+fn blk[&m, &t](m: &!m [int], t: &!t [byte], l: int, tail: &static [byte]) -> [] int {
+    return text.cat3(m, t, text.lit(m, t, "blk."), text.num(m, t, l), text.lit(m, t, tail));
+}
+
+// The three matrices of one SwiGLU MLP of layer `l`: tensors `blk.<l>.ffn_{gate,up,down}<suffix>.weight` to `m<l>.<pre>.{gate,up,down}`.
+fn mlp3[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, dir: int, l: int, suffix: &static [byte], pre: &static [byte]) -> [fs_read(""), file_read, fs_write(""), file_write] int {
+    let s = text.lit(m, t, suffix);
+    let p = text.lit(m, t, pre);
+    if q4_one(m, t, fs, file, text.cat3(m, t, blk(m, t, l, ".ffn_gate"), s, text.lit(m, t, ".weight")), text.cat3(m, t, name2(m, t, dir, "m", l, "."), p, text.lit(m, t, ".gate")), true, 0) < 0 {
+        return 0 - 1;
+    }
+    if q4_one(m, t, fs, file, text.cat3(m, t, blk(m, t, l, ".ffn_up"), s, text.lit(m, t, ".weight")), text.cat3(m, t, name2(m, t, dir, "m", l, "."), p, text.lit(m, t, ".up")), true, 0) < 0 {
+        return 0 - 1;
+    }
+    return q4_one(m, t, fs, file, text.cat3(m, t, blk(m, t, l, ".ffn_down"), s, text.lit(m, t, ".weight")), text.cat3(m, t, name2(m, t, dir, "m", l, "."), p, text.lit(m, t, ".down")), true, 0);
+}
+
+fn weights[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, fs_write(""), file_write, args] int {
+    let file = open_gguf(m, t, fs, arg(args, 2));
+    if file < 0 {
+        return 0 - 1;
+    }
+    let g = m[file + 3];
+    let dir = text.from_bytes(m, t, arg(args, 3));
+    let nl = meta_int(m, t, g, "kolibri1.block_count");
+    let dense = meta_int(m, t, g, "kolibri1.leading_dense_block_count");
+    let d = meta_int(m, t, g, "kolibri1.embedding_length");
+    let ne = meta_int(m, t, g, "kolibri1.expert_count");
+    let used = meta_int(m, t, g, "kolibri1.expert_used_count");
+    let eh = meta_int(m, t, g, "kolibri1.expert_feed_forward_length");
+    let ff = meta_int(m, t, g, "kolibri1.feed_forward_length");
+    let nq = meta_int(m, t, g, "kolibri1.attention.head_count");
+    let nkv = meta_int(m, t, g, "kolibri1.attention.head_count_kv");
+    let hd = meta_int(m, t, g, "kolibri1.attention.key_length");
+    if nl < 0 || dense < 0 || d < 0 || ne < 0 || used < 0 || eh < 0 || ff < 0 || nq < 0 || nkv < 0 || hd < 0 {
+        return 0 - 1;
+    }
+    let (src, st) = meta_ints(m, t, g, "kolibri1.attention.kv_source_map", nl);
+    if src < 0 {
+        return 0 - 1;
+    }
+    var bad = fill(m, t, fs, file, text.f1(m, t, "$/ones_d.f32", dir), d, 1.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_h.f32", dir), eh, 1.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_f.f32", dir), ff, 1.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_qkv.f32", dir), (nq + 2 * nkv) * hd, 1.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_q.f32", dir), nq * hd, 1.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/one64.f32", dir), hd / 2, 1.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/zero64.f32", dir), hd / 2, 0.0, false) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ar.f32", dir), ne, 0.0, true) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/sl.f32", dir), used, 0.0, true) < 0;
+    bad = bad || e4m3_table(m, t, fs, file, text.f1(m, t, "$/e4m3.f32", dir)) < 0;
+    bad = bad || copy_f32(m, t, fs, file, text.lit(m, t, "output_norm.weight"), text.f1(m, t, "$/fnorm.f32", dir), d) < 0;
+    bad = bad || q6k(m, t, fs, file, text.lit(m, t, "output.weight"), text.f1(m, t, "$/head.f32", dir)) < 0;
+    if bad {
+        return 0 - 1;
+    }
+    var l = 0;
+    while l < nl {
+        let mark = m[mem.top_slot()];
+        let tmark = m[mem.text_slot()];
+        let own = ints_at(t, src, st, l) == l;
+        bad = copy_f32(m, t, fs, file, blk(m, t, l, ".attn_norm.weight"), name2(m, t, dir, "a", l, ".norm.f32"), d) < 0;
+        bad = bad || copy_f32(m, t, fs, file, blk(m, t, l, ".attn_q_norm.weight"), name2(m, t, dir, "a", l, ".qn.f32"), hd) < 0;
+        bad = bad || copy_f32(m, t, fs, file, blk(m, t, l, ".post_attention_norm.weight"), name2(m, t, dir, "a", l, ".pn.f32"), d) < 0;
+        bad = bad || copy_f32(m, t, fs, file, blk(m, t, l, ".ffn_norm.weight"), name2(m, t, dir, "m", l, ".ffn_norm.f32"), d) < 0;
+        bad = bad || copy_f32(m, t, fs, file, blk(m, t, l, ".post_ffw_norm.weight"), name2(m, t, dir, "m", l, ".post_norm.f32"), d) < 0;
+        if !bad && own {
+            bad = copy_f32(m, t, fs, file, blk(m, t, l, ".attn_k_norm.weight"), name2(m, t, dir, "a", l, ".kn.f32"), hd) < 0;
+            let base = name2(m, t, dir, "a", l, ".qkv");
+            let ty = q4_one(m, t, fs, file, blk(m, t, l, ".attn_q.weight"), base, true, 0);
+            bad = bad || ty < 0 || q4_one(m, t, fs, file, blk(m, t, l, ".attn_k.weight"), base, false, ty) < 0 || q4_one(m, t, fs, file, blk(m, t, l, ".attn_v.weight"), base, false, ty) < 0;
+        } else if !bad {
+            bad = q4_one(m, t, fs, file, blk(m, t, l, ".attn_q.weight"), name2(m, t, dir, "a", l, ".q"), true, 0) < 0;
+        }
+        bad = bad || q4_one(m, t, fs, file, blk(m, t, l, ".attn_output.weight"), name2(m, t, dir, "a", l, ".o"), true, 0) < 0;
+        if !bad && l < dense {
+            bad = mlp3(m, t, fs, file, dir, l, "", "dn") < 0;
+        } else if !bad {
+            bad = copy_f32(m, t, fs, file, blk(m, t, l, ".ffn_gate_inp.weight"), name2(m, t, dir, "m", l, ".route.f32"), ne * d) < 0;
+            bad = bad || copy_f32(m, t, fs, file, blk(m, t, l, ".exp_probs_b.bias"), name2(m, t, dir, "m", l, ".bias.f32"), ne) < 0;
+            bad = bad || mlp3(m, t, fs, file, dir, l, "_shexp", "sh") < 0 || mlp3(m, t, fs, file, dir, l, "_exps", "ex") < 0;
+        }
+        if bad {
+            return 0 - 1;
+        }
+        m[mem.top_slot()] = mark;
+        m[mem.text_slot()] = tmark;
+        io.write_all(io, "layer ");
+        io.write_all(io, text.bytes(t, text.num(m, t, l)));
+        if own {
+            io.write_all(io, ": its own keys");
+        } else {
+            io.write_all(io, ": reads another layer's keys");
+        }
+        if l < dense {
+            io.write_all(io, ", a dense MLP\n");
+        } else {
+            io.write_all(io, ", a mixture of experts\n");
+        }
+        m[mem.top_slot()] = mark;
+        m[mem.text_slot()] = tmark;
+        l = l + 1;
+    }
+    return 0;
+}
+
+// The whole numbers of the text `t[at .. at + n]` as a list, or -1 with a refusal: digits and blanks only, each under `limit`.
+fn read_ids[&m, &t](m: &!m [int], t: &!t [byte], at: int, n: int, limit: int) -> [] int {
+    let out = mem.list(m);
+    var i = 0;
+    while i < n {
+        let c = int_of(t[at + i]);
+        if c == 32 || c == 10 || c == 13 || c == 9 {
+            i = i + 1;
+        } else if c >= 48 && c <= 57 {
+            var v = 0;
+            while i < n && int_of(t[at + i]) >= 48 && int_of(t[at + i]) <= 57 {
+                v = v * 10 + int_of(t[at + i]) - 48;
+                if v >= limit {
+                    return err.fail(m, t, "kolibri-ids", text.n1(m, t, "an id is not under the vocabulary's $", limit));
+                }
+                i = i + 1;
+            }
+            mem.push(m, out, v);
+        } else {
+            return err.fail(m, t, "kolibri-ids", text.lit(m, t, "the ids file has something that is not a whole number"));
+        }
+    }
+    if mem.size(m, out) == 0 {
+        return err.fail(m, t, "kolibri-ids", text.lit(m, t, "the ids file has no id"));
+    }
+    return out;
+}
+
+// A float of the metadata (binary32 or binary64), or `fallback` with a refusal recorded.
+fn meta_float[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte]) -> [] float {
+    let r = gguf.find_kv(m, t, g, name);
+    if r >= 0 && m[r + 2] == 6 {
+        return f32.from_bits32(gguf.le(t, m[r + 3], 4));
+    }
+    if r >= 0 && m[r + 2] == 12 {
+        return f32.from_bits(gguf.le(t, m[r + 3], 8));
+    }
+    err.fail(m, t, "kolibri-meta", text.f1(m, t, "the file's metadata has no number `$`", text.lit(m, t, name)));
+    return 0.0;
+}
+
+// NS blocks of `width` f32 to `path`, entry (s, c) of kind `what`: 0 sel, 1 keep, 2 the window's mask, 3 the mask of every key so far, 4 cos, 5 sin, 6 zeros.
+fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, ns: int, width: int, what: int, window: int, base: float) -> [fs_write(""), file_write] int {
+    let sc = m[file + 4];
+    var s = 0;
+    while s < ns {
+        var c = 0;
+        while c < width {
+            var x = 0.0;
+            if what == 0 && c == s {
+                x = 1.0;
+            } else if what == 1 && c != s {
+                x = 1.0;
+            } else if what == 2 && (c > s || c <= s - window) {
+                x = 0.0 - 1000000000.0;
+            } else if what == 3 && c > s {
+                x = 0.0 - 1000000000.0;
+            } else if what == 4 || what == 5 {
+                // the reference's float32 steps: the power, its inverse, the angle, each rounded
+                let pw = f32.round(math.exp(float_of(c) / float_of(width) * math.log(base)));
+                let angle = f32.round(float_of(s) * f32.round(1.0 / pw));
+                if what == 4 {
+                    x = math.cos(angle);
+                } else {
+                    x = math.sin(angle);
+                }
+            }
+            put32(t, sc + 4 * c, x);
+            c = c + 1;
+        }
+        if put(m, t, fs, path, s == 0, sc, 4 * width) < 0 {
+            return 0 - 1;
+        }
+        s = s + 1;
+    }
+    return 0;
+}
+
+fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, fs_write(""), file_write, args] int {
+    let file = open_gguf(m, t, fs, arg(args, 2));
+    if file < 0 {
+        return 0 - 1;
+    }
+    let g = m[file + 3];
+    let dir = text.from_bytes(m, t, arg(args, 4));
+    let d = meta_int(m, t, g, "kolibri1.embedding_length");
+    let nkv = meta_int(m, t, g, "kolibri1.attention.head_count_kv");
+    let hd = meta_int(m, t, g, "kolibri1.attention.key_length");
+    let window = meta_int(m, t, g, "kolibri1.attention.sliding_window");
+    let base = meta_float(m, t, g, "kolibri1.rope.freq_base");
+    if d < 0 || nkv < 0 || hd < 0 || window < 0 || err.failed(m) {
+        return 0 - 1;
+    }
+    if d % 32 != 0 || d > 65536 || hd % 2 != 0 || hd > 4096 || base <= 1.0 {
+        return err.fail(m, t, "kolibri-meta", text.lit(m, t, "the file's widths are not ones this program writes tables for"));
+    }
+    let positions = text.from_bytes(m, t, arg(args, 5));
+    var tt = 0;
+    var digits = text.size(positions) > 0 && text.size(positions) < 8;
+    var k = 0;
+    while digits && k < text.size(positions) {
+        let c = text.at(t, positions, k);
+        digits = c >= 48 && c <= 57;
+        tt = tt * 10 + c - 48;
+        k = k + 1;
+    }
+    if !digits || tt < 64 || tt % 64 != 0 || tt > 1048576 {
+        return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the positions are a multiple of 64, at most 1048576"));
+    }
+    let emb = tensor(m, t, g, text.lit(m, t, "token_embd.weight"), 2, 2);
+    if emb < 0 {
+        return 0 - 1;
+    }
+    if cols(m, t, emb) != d {
+        return err.fail(m, t, "kolibri-tensor", text.lit(m, t, "the embedding's rows are not the model's width"));
+    }
+    let (itop, igot, isize) = fileio.prefix(m, t, fs, arg(args, 3), 4194304);
+    if itop < 0 || isize > igot {
+        return err.fail(m, t, "kolibri-ids", text.lit(m, t, "cannot read the ids file (or it is over 4 MiB)"));
+    }
+    let ids = read_ids(m, t, itop, igot, m[emb + 6] / d);
+    if ids < 0 {
+        return 0 - 1;
+    }
+    let ns = mem.size(m, ids);
+    if ns > tt {
+        return err.fail(m, t, "kolibri-ids", text.n2(m, t, "$ ids do not fit caches of $ positions", ns, tt));
+    }
+    let sc = m[file + 4];
+    let out = sc + in_cap();
+    let x0 = text.f1(m, t, "$/x0.f32", dir);
+    let row = d / 32 * 18;
+    var s = 0;
+    while s < ns {
+        if fetch(m, t, fs, file, data_at(m, file, emb) + mem.get(m, ids, s) * row, row, text.lit(m, t, "token_embd.weight")) < 0 {
+            return 0 - 1;
+        }
+        var b = 0;
+        while b < d / 32 {
+            let p = sc + 18 * b;
+            let scale = half_at(t, p);
+            var j = 0;
+            while j < 16 {
+                let q = int_of(t[p + 2 + j]);
+                put32(t, out + 4 * (32 * b + j), float_of((q & 15) - 8) * scale);
+                put32(t, out + 4 * (32 * b + 16 + j), float_of((q >> 4) - 8) * scale);
+                j = j + 1;
+            }
+            b = b + 1;
+        }
+        if put(m, t, fs, x0, s == 0, out, 4 * d) < 0 {
+            return 0 - 1;
+        }
+        s = s + 1;
+    }
+    var bad = table(m, t, fs, file, text.f1(m, t, "$/sel.f32", dir), ns, tt, 0, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keep.f32", dir), ns, tt, 1, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/mask.f32", dir), ns, tt, 2, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/maskg.f32", dir), ns, tt, 3, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/cos.f32", dir), ns, hd / 2, 4, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), ns, hd / 2, 5, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zcache.f32", dir), nkv * hd, tt, 6, window, base) < 0;
+    if bad {
+        return 0 - 1;
+    }
+    io.write_all(io, "steps ");
+    io.write_all(io, text.bytes(t, text.num(m, t, ns)));
+    io.write_all(io, "\n");
+    return 0;
+}
+
+fn word_at[&t](t: &!t [byte], at: int) -> [] float {
+    return f32.from_bits32(int_of(t[at]) | int_of(t[at + 1]) << 8 | int_of(t[at + 2]) << 16 | int_of(t[at + 3]) << 24);
+}
+
+fn argmax[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
+    let name = text.from_bytes(m, t, arg(args, 2));
+    let sc = m[mem.text_slot()];
+    m[mem.text_slot()] = sc + in_cap();
+    var at = 0;
+    var best = 0 - 1;
+    var bv = 0.0;
+    var second = 0.0;
+    var have2 = false;
+    var more = true;
+    while more {
+        let got = fileio.read_at(t, fs, arg(args, 2), at, sc, in_cap());
+        if got < 0 || got % 4 != 0 {
+            return err.fail(m, t, "kolibri-read", text.f1(m, t, "cannot read $ as f32", name));
+        }
+        var k = 0;
+        while k < got / 4 {
+            let x = word_at(t, sc + 4 * k);
+            if x != x {
+                return err.fail(m, t, "kolibri-read", text.f1(m, t, "$ has a value that is not a number", name));
+            }
+            if best < 0 || x > bv {
+                if best >= 0 {
+                    second = bv;
+                    have2 = true;
+                }
+                bv = x;
+                best = at / 4 + k;
+            } else if !have2 || x > second {
+                second = x;
+                have2 = true;
+            }
+            k = k + 1;
+        }
+        at = at + got;
+        more = got == in_cap();
+    }
+    if best < 0 {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "$ is empty", name));
+    }
+    io.write_all(io, "argmax ");
+    io.write_all(io, text.bytes(t, text.num(m, t, best)));
+    io.write_all(io, " value ");
+    io.write_all(io, text.bytes(t, f32.debug(m, t, bv)));
+    io.write_all(io, " margin ");
+    if have2 {
+        io.write_all(io, text.bytes(t, f32.debug(m, t, f32.round(bv - second))));
+    } else {
+        io.write_all(io, "none");
+    }
+    io.write_all(io, "\n");
+    return 0;
+}
+
+fn is_word[&a](x: &a [byte], y: &static [byte]) -> [] bool {
+    if len(x) != len(y) {
+        return false;
+    }
+    var i = 0;
+    while i < len(x) {
+        if int_of(x[i]) != int_of(y[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn report[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io) -> [err_write] int {
+    var i = 0;
+    while i < err.count(m) {
+        let (rule, msg) = err.nth(m, i);
+        io.error_all(io, "error[");
+        io.error_all(io, text.bytes(t, rule));
+        io.error_all(io, "]: ");
+        io.error_all(io, text.bytes(t, msg));
+        io.error_all(io, "\n");
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, err_write, fs_read(""), file_read, fs_write(""), file_write, args] int {
+    var status = 0 - 2;
+    if arg_count(args) == 4 && is_word(arg(args, 1), "weights") {
+        status = weights(m, t, io, fs, args);
+    } else if arg_count(args) == 6 && is_word(arg(args, 1), "inputs") {
+        status = inputs(m, t, io, fs, args);
+    } else if arg_count(args) == 3 && is_word(arg(args, 1), "argmax") {
+        status = argmax(m, t, io, fs, args);
+    }
+    if status == 0 - 2 {
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> | argmax <f32 file>\n");
+        return 2;
+    }
+    if status < 0 || err.failed(m) {
+        return report(m, t, io);
+    }
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    var status = 0;
+    borrow mut heap as &!h in {
+        var mb = box_slice(h, words(), 0);
+        var tb = box_slice(h, bytes_cap(), byte_of(0));
+        borrow mut mb as &!mr in {
+            borrow mut tb as &!tr in {
+                let m = contents(mr);
+                let t = contents(tr);
+                mem.init(m);
+                borrow mut io as &!i in {
+                    borrow fs as &f in {
+                        borrow args as &a in {
+                            status = run(m, t, i, f, a);
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, mb);
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(io);
+    release(fs);
+    release(args);
+    return status;
+}
