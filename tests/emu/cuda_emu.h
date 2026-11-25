@@ -35,6 +35,23 @@
 
 #include "emu_abi.h"
 
+// The lanes of a warp (HIP: a wave). 32 on every NVIDIA card; 64 on AMD's
+// gfx9 (docs/amd.md). The compiling side passes -DEMU_WARP=64, and -DEMU_HIP
+// for the HIP text, which has no wmma and whose `_sync` masks are 64 bits.
+#ifndef EMU_WARP
+#define EMU_WARP 32
+#endif
+#if EMU_WARP != 32 && EMU_WARP != 64
+#error "EMU_WARP is 32 or 64"
+#endif
+#if EMU_WARP == 64
+typedef unsigned long long emu_mask_t;
+#define EMU_FULL 0xffffffffffffffffull
+#else
+typedef unsigned emu_mask_t;
+#define EMU_FULL 0xffffffffu
+#endif
+
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -85,7 +102,7 @@ struct dim3 { unsigned x, y, z; };
 
 static uint3 threadIdx, blockIdx;
 static dim3 blockDim, gridDim;
-static const int warpSize = 32;
+static const int warpSize = EMU_WARP;
 
 // ---- half precision -------------------------------------------------------
 // IEEE binary16, round to nearest even, as cuda_fp16.h converts.
@@ -141,7 +158,7 @@ struct Fiber {
     State st;
     int site;          // the __syncthreads line a fiber waits at
     CollectiveFn run;  // the warp collective it waits at
-    unsigned mask;
+    uint64_t mask;
     uint64_t key;      // what the collective's lanes must agree on
     uint64_t v;        // a value in, a result out
     int a1, a2;
@@ -211,7 +228,7 @@ static inline void barrier(int site) {
 // A warp collective: park until every lane the mask names has arrived with
 // the same call; `run` then does the work for the whole group at once (so
 // no lane runs ahead and changes memory the others still have to read).
-static inline void collective(CollectiveFn run, unsigned mask, uint64_t key) {
+static inline void collective(CollectiveFn run, uint64_t mask, uint64_t key) {
     Fiber &f = F[cur];
     f.st = WARP;
     f.run = run;
@@ -228,8 +245,8 @@ static void fiber_main() {
 // Make every group of lanes whose collective is complete run it.
 static bool release_warps() {
     bool any = false;
-    for (unsigned w = 0; w * 32 < N; w++) {
-        unsigned base = w * 32, lanes = N - base < 32 ? N - base : 32;
+    for (unsigned w = 0; w * EMU_WARP < N; w++) {
+        unsigned base = w * EMU_WARP, lanes = N - base < EMU_WARP ? N - base : EMU_WARP;
         for (;;) {
             bool progress = false;
             for (unsigned l = 0; l < lanes; l++) {
@@ -237,27 +254,27 @@ static bool release_warps() {
                 if (f.st != WARP) {
                     continue;
                 }
-                unsigned mask = f.mask;
+                uint64_t mask = f.mask;
                 if (!(mask >> l & 1)) {
                     cur = (int)(base + l);
-                    fail(11, "a thread called a warp collective with a mask (0x%08x) that does not name its own lane %u", mask, l);
+                    fail(11, "a thread called a warp collective with a mask (0x%08llx) that does not name its own lane %u of %d", (unsigned long long)mask, l, EMU_WARP);
                 }
-                Fiber *group[32];
+                Fiber *group[EMU_WARP];
                 int n = 0;
                 bool ready = true;
-                for (unsigned m = 0; m < 32; m++) {
+                for (unsigned m = 0; m < EMU_WARP; m++) {
                     if (!(mask >> m & 1)) {
                         continue;
                     }
                     if (m >= lanes) {
                         cur = (int)(base + l);
-                        warn(0, "the mask 0x%08x names lane %u but the block's last warp has %u lanes (undefined in CUDA)", mask, m, lanes);
+                        warn(0, "the mask 0x%08llx names lane %u but the block's last warp has %u lanes (undefined in CUDA)", (unsigned long long)mask, m, lanes);
                         continue;
                     }
                     Fiber &g = F[base + m];
                     if (g.st == DONE) {
                         cur = (int)(base + l);
-                        warn(1, "the mask 0x%08x names lane %u, which has exited (undefined in CUDA)", mask, m);
+                        warn(1, "the mask 0x%08llx names lane %u, which has exited (undefined in CUDA)", (unsigned long long)mask, m);
                         continue;
                     }
                     if (g.st != WARP || g.run != f.run || g.mask != mask) {
@@ -316,7 +333,7 @@ static void run_block(unsigned nthreads, int shuffle, char *stacks, size_t stack
     for (unsigned i = 0; i < N; i++) {
         Fiber &f = F[i];
         memset(&f, 0, sizeof f);
-        f.lane = (int)(i % 32);
+        f.lane = (int)(i % EMU_WARP);
         f.st = RUN;
         getcontext(&f.ctx);
         f.ctx.uc_stack.ss_sp = stacks + i * stack_size;
@@ -409,7 +426,7 @@ enum ShflKind { DOWN, UP, XOR, IDX };
 template <ShflKind K>
 static void shfl_run(Fiber **g, int n) {
     // Values were deposited in v; results go back in v after all are read.
-    uint64_t out[32];
+    uint64_t out[EMU_WARP];
     for (int i = 0; i < n; i++) {
         Fiber &f = *g[i];
         int w = f.a2;
@@ -434,10 +451,10 @@ static void shfl_run(Fiber **g, int n) {
     for (int i = 0; i < n; i++) g[i]->v = out[i];
 }
 template <ShflKind K, class T>
-static T shfl(unsigned mask, T v, int arg, int width) {
+static T shfl(uint64_t mask, T v, int arg, int width) {
     static_assert(sizeof(T) <= 8, "shuffle of a wide value");
-    if (width < 1 || width > 32 || (width & (width - 1))) {
-        fail(13, "shuffle width %d is not a power of two up to 32", width);
+    if (width < 1 || width > EMU_WARP || (width & (width - 1))) {
+        fail(13, "shuffle width %d is not a power of two up to %d", width, EMU_WARP);
     }
     Fiber &f = F[cur];
     f.v = 0;
@@ -450,14 +467,17 @@ static T shfl(unsigned mask, T v, int arg, int width) {
     return r;
 }
 }  // namespace emu
-template <class T> static inline T __shfl_down_sync(unsigned m, T v, unsigned d, int w = 32) { return emu::shfl<emu::DOWN, T>(m, v, (int)d, w); }
-template <class T> static inline T __shfl_up_sync(unsigned m, T v, unsigned d, int w = 32) { return emu::shfl<emu::UP, T>(m, v, (int)d, w); }
-template <class T> static inline T __shfl_xor_sync(unsigned m, T v, int d, int w = 32) { return emu::shfl<emu::XOR, T>(m, v, d, w); }
-template <class T> static inline T __shfl_sync(unsigned m, T v, int s, int w = 32) { return emu::shfl<emu::IDX, T>(m, v, s, w); }
+template <class T> static inline T __shfl_down_sync(emu_mask_t m, T v, unsigned d, int w = EMU_WARP) { return emu::shfl<emu::DOWN, T>(m, v, (int)d, w); }
+template <class T> static inline T __shfl_up_sync(emu_mask_t m, T v, unsigned d, int w = EMU_WARP) { return emu::shfl<emu::UP, T>(m, v, (int)d, w); }
+template <class T> static inline T __shfl_xor_sync(emu_mask_t m, T v, int d, int w = EMU_WARP) { return emu::shfl<emu::XOR, T>(m, v, d, w); }
+template <class T> static inline T __shfl_sync(emu_mask_t m, T v, int s, int w = EMU_WARP) { return emu::shfl<emu::IDX, T>(m, v, s, w); }
 #define __syncthreads() ::emu::barrier(__LINE__)
-static inline void __syncwarp(unsigned = 0xffffffffu) {}
+static inline void __syncwarp(emu_mask_t = EMU_FULL) {}
 
 // ---- wmma -----------------------------------------------------------------
+// HIP's kernel language has none (docs/amd.md section 1): under EMU_HIP a
+// kernel that names it does not compile, as hipRTC would refuse it.
+#ifndef EMU_HIP
 // Fragments hold their logical matrix (the hardware scatters it across the
 // lanes; which lane holds what is not observable through the API). load and
 // mma and store are collective: all lanes of the warp must arrive with the
@@ -521,7 +541,7 @@ static void wmma_load(F &f, const Elem *p, unsigned ldm) {
     me.p0 = &f;
     me.p1 = (void *)p;
     me.a1 = (int)ldm;
-    collective(wmma_load_run<F, Elem, COL>, 0xffffffffu, (uint64_t)(uintptr_t)p * 31 + ldm + (COL ? 7 : 0));
+    collective(wmma_load_run<F, Elem, COL>, EMU_FULL, (uint64_t)(uintptr_t)p * 31 + ldm + (COL ? 7 : 0));
 }
 
 template <class F, class Elem, bool COL>
@@ -543,7 +563,7 @@ static void wmma_store(Elem *p, const F &f, unsigned ldm) {
     me.p0 = (void *)&f;
     me.p1 = p;
     me.a1 = (int)ldm;
-    collective(wmma_store_run<F, Elem, COL>, 0xffffffffu, (uint64_t)(uintptr_t)p * 31 + ldm + (COL ? 7 : 0));
+    collective(wmma_store_run<F, Elem, COL>, EMU_FULL, (uint64_t)(uintptr_t)p * 31 + ldm + (COL ? 7 : 0));
 }
 
 template <class D, class A, class B, class C>
@@ -597,10 +617,11 @@ static void mma_sync(fragment<accumulator, M, N, K, T> &d, const fragment<matrix
     me.p1 = (void *)&a;
     me.p2 = (void *)&b;
     me.v = (uint64_t)(uintptr_t)&c;
-    emu::collective(emu::wmma_mma_run<D, A, B, D>, 0xffffffffu, 0x4d4d41ull);
+    emu::collective(emu::wmma_mma_run<D, A, B, D>, EMU_FULL, 0x4d4d41ull);
 }
 }  // namespace wmma
 }  // namespace nvcuda
+#endif  // EMU_HIP
 
 // ---- the launch -----------------------------------------------------------
 #ifdef __APPLE__
