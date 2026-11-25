@@ -54,7 +54,9 @@ pub fn s_carries() -> [] int {
     return 5;
 }
 
-// table records (program, param, the interpreter's offset of the whole table, blocks)
+// table records, 9 words: program, param, the interpreter's offset of the whole table (-1: a device's binary table), blocks, the file's name (a device's binary table), then the pick
+// (docs/kolibri.md K2): the program and the output whose value says which block is read, and the slot of that output (-1, 0, 0 for a table that steps), and 1 when a device
+// session gave it the buffer of an earlier table of the same file
 pub fn s_tables() -> [] int {
     return 6;
 }
@@ -319,8 +321,15 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, carry_raw, mem.rec5(m, sp, sa, dp, da, lineno));
             } else if text.is(t, head, "table") {
-                if nw != 4 && !(nw == 5 && (text.is(t, mem.get(m, words, 4), "f32") || text.is(t, mem.get(m, words, 4), "f16"))) {
-                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16]"));
+                // `by PROGRAM.OUT SLOT` at the end: the block is the one that output's slot names, read when the table's program is about to run (docs/kolibri.md K2)
+                var nt = nw;
+                var picked = false;
+                if nw >= 7 && text.is(t, mem.get(m, words, nw - 3), "by") {
+                    nt = nw - 3;
+                    picked = true;
+                }
+                if nt != 4 && !(nt == 5 && (text.is(t, mem.get(m, words, 4), "f32") || text.is(t, mem.get(m, words, 4), "f16") || text.is(t, mem.get(m, words, 4), "i8"))) {
+                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [by PROGRAM.OUT SLOT]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -330,17 +339,33 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 if !okb || blocks < 1.0 || blocks > 100000000.0 || float_of(truncate(blocks)) != blocks {
                     return bad(m, t, lineno, text.lit(m, t, "the blocks of a table are a positive whole number"));
                 }
-                let traw = mem.grab(m, 6);
+                let traw = mem.grab(m, 9);
+                m[traw + 6] = 0 - 1;
+                m[traw + 7] = 0;
+                m[traw + 8] = 0;
+                if picked {
+                    let (spn, san) = dotted(m, t, mem.get(m, words, nw - 2));
+                    let (oks, slot) = runcmd.number(m, t, mem.get(m, words, nw - 1));
+                    if spn < 0 || !oks || slot < 0.0 || slot > 100000000.0 || float_of(truncate(slot)) != slot {
+                        return bad(m, t, lineno, text.lit(m, t, "a table is picked `by PROGRAM.OUT SLOT`, the slot a whole number from 0"));
+                    }
+                    m[traw + 6] = spn;
+                    m[traw + 7] = san;
+                    m[traw + 8] = truncate(slot);
+                }
                 m[traw] = pn;
                 m[traw + 1] = an;
                 m[traw + 2] = mem.get(m, words, 2);
                 m[traw + 3] = truncate(blocks);
                 m[traw + 4] = lineno;
                 m[traw + 5] = 0;
-                if nw == 5 {
+                if nt == 5 {
                     m[traw + 5] = 1;
                     if text.is(t, mem.get(m, words, 4), "f16") {
                         m[traw + 5] = 2;
+                    }
+                    if text.is(t, mem.get(m, words, 4), "i8") {
+                        m[traw + 5] = 3;
                     }
                 }
                 mem.push(m, table_raw, traw);
@@ -555,16 +580,37 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         m[cell] = 4;
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        // a picked table: the output that names the block belongs to a program listed before the table's, and has the slot
+        var sp0 = 0 - 1;
+        var sa0 = 0;
+        if m[raw + 6] >= 0 {
+            let (sp, sa, sprm) = locate(m, t, progs, m[raw + 6], m[raw + 7], m[raw + 4]);
+            if sp < 0 {
+                return 0 - 1;
+            }
+            if !ir.param_writable(m, sprm) || ir.param_dtype(m, sprm) != kinds.f32() {
+                return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is not an f32 output: a table is picked by a value a kernel wrote", m[raw + 7]));
+            }
+            if sp >= pi {
+                return bad(m, t, m[raw + 4], text.f2(m, t, "`$` is picked by `$`, which is not listed before it", m[raw], m[raw + 6]));
+            }
+            let sg = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
+            if m[raw + 8] >= m[sg + 3] {
+                return bad(m, t, m[raw + 4], text.f2(m, t, "`$` has $ values: the slot is past them", m[raw + 7], text.num(m, t, m[sg + 3])));
+            }
+            sp0 = sp;
+            sa0 = sa;
+        }
         // A device session keeps a binary table out of the interpreter's memory: the device program reads the file straight to the device (the table's record has -1 for its place
         // there, and the file's name), so a table can be as large as the device's memory.
         var direct = false;
         if device && m[raw + 5] != 0 {
             direct = true;
             let dt = ir.param_dtype(m, prm);
-            if m[raw + 5] == 1 && dt != kinds.f32() || m[raw + 5] == 2 && dt != kinds.f16() {
+            if m[raw + 5] == 1 && dt != kinds.f32() || m[raw + 5] == 2 && dt != kinds.f16() || m[raw + 5] == 3 && dt != kinds.i8() {
                 return err.fail(m, t, "usage", text.f1(m, t, "`$` has another type than the binary file's flag says", m[raw + 1]));
             }
-            mem.push(m, tables, mem.rec5(m, pi, ai, 0 - 1, m[raw + 3], m[raw + 2]));
+            mem.push(m, tables, table_rec(m, pi, ai, 0 - 1, m[raw + 3], m[raw + 2], sp0, sa0, m[raw + 8]));
         }
         if !direct {
             let whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
@@ -572,7 +618,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
             }
             var loaded = 0;
-            if m[raw + 5] == 2 {
+            if m[raw + 5] == 3 {
+                loaded = runcmd.load_i8(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+            } else if m[raw + 5] == 2 {
                 loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
             } else if m[raw + 5] == 1 {
                 loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
@@ -582,7 +630,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             if loaded < 0 {
                 return 0 - 1;
             }
-            mem.push(m, tables, mem.rec4(m, pi, ai, whole, m[raw + 3]));
+            mem.push(m, tables, table_rec(m, pi, ai, whole, m[raw + 3], 0, sp0, sa0, m[raw + 8]));
         }
         i = i + 1;
     }
@@ -850,6 +898,29 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
 }
 
 // The program `pname`'s parameter `aname`: (program index, parameter index, the parameter), or (-1, -1, -1) with a refusal.
+// A table's record (s_tables).
+fn table_rec[&m](m: &!m [int], pi: int, ai: int, whole: int, blocks: int, file: int, sp: int, sa: int, slot: int) -> [] int {
+    let r = mem.rec(m, 9);
+    m[r] = pi;
+    m[r + 1] = ai;
+    m[r + 2] = whole;
+    m[r + 3] = blocks;
+    m[r + 4] = file;
+    m[r + 5] = sp;
+    m[r + 6] = sa;
+    m[r + 7] = slot;
+    m[r + 8] = 0;
+    return r;
+}
+
+// The block a picked table reads: the value as a whole number from 0 to `blocks` - 1, or -1 with a refusal. A value that is not one (a fraction, a NaN, a block the table has not) is never a read.
+pub fn picked_block[&m, &t](m: &!m [int], t: &!t [byte], v: float, blocks: int) -> [] int {
+    if v >= 0.0 && v < float_of(blocks) && float_of(truncate(v)) == v {
+        return truncate(v);
+    }
+    return err.fail(m, t, "session", text.f1(m, t, "a table of $ blocks was picked by a value that is not one of them", text.num(m, t, blocks)));
+}
+
 fn locate[&m, &t](m: &!m [int], t: &!t [byte], progs: int, pname: int, aname: int, line: int) -> [] (int, int, int) {
     let pi = prog_index(m, t, progs, pname);
     if pi < 0 {
@@ -1055,8 +1126,29 @@ pub fn fill_inputs[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], ses
 pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: int) -> [] int {
     let progs = m[sess + s_progs()];
     let links = m[sess + s_links()];
+    let tables = m[sess + s_tables()];
     var q = 0;
     while q < mem.size(m, progs) {
+        // a picked table of this program: the block its output's slot names, now that the output's program has run
+        var pk = 0;
+        while pk < mem.size(m, tables) {
+            let tb = mem.get(m, tables, pk);
+            if m[tb] == q && m[tb + 5] >= 0 {
+                let g = mem.get(m, m[mem.get(m, progs, q) + 2], m[tb + 1]);
+                let sg = mem.get(m, m[mem.get(m, progs, m[tb + 5]) + 2], m[tb + 6]);
+                let block = picked_block(m, t, fm[m[sg + 2] + m[tb + 7]], m[tb + 3]);
+                if block < 0 {
+                    return 0 - 1;
+                }
+                let from = m[tb + 2] + m[g + 3] * block;
+                var e = 0;
+                while e < m[g + 3] {
+                    fm[m[g + 2] + e] = fm[from + e];
+                    e = e + 1;
+                }
+            }
+            pk = pk + 1;
+        }
         var l = 0;
         while l < mem.size(m, links) {
             let link = mem.get(m, links, l);
@@ -1150,7 +1242,8 @@ pub fn run_steps[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess:
             let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
             let from = m[tb + 2] + m[g + 3] * (m[sess + s_count()] % m[tb + 3]);
             var e = 0;
-            while e < m[g + 3] {
+            // a picked table is read when its program is about to run (run_cpu), not here
+            while e < m[g + 3] && m[tb + 5] < 0 {
                 fm[m[g + 2] + e] = fm[from + e];
                 e = e + 1;
             }
