@@ -18,3 +18,4 @@ algo dit_scores_mma(nh, nq, t, d)
 
 schedule dit_scores_mma for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
 schedule dit_scores_mma for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
+schedule dit_scores_mma for amd-cdna3      { threads 256 warps 2 4 bm 128 bn 128 bk 64 }

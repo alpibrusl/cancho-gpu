@@ -26,3 +26,4 @@ algo convk(rp, cx, cin, cout, wp, g, kh, kw, oy, ox)
 
 schedule convk for apple-m-series { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
 schedule convk for nvidia-ada     { threads 128 warps 2 2 bm 64 bn 32 bk 32 }
+schedule convk for amd-cdna3      { threads 128 warps 2 2 bm 64 bn 32 bk 32 }

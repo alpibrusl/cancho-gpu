@@ -334,7 +334,17 @@ pub fn entry_point[&m, &t](m: &!m [int], t: &!t [byte], d: int, name: int, param
 
 // ---------------------------------------------------------------------
 // The matrix unit: CUDA `wmma` (16x16x16), Metal `simdgroup_matrix` (8x8)
+// HIP has neither: its text is CUDA's with `nvcuda::wmma` renamed to the `cgm` namespace of `matrix_includes`, which
+// gives the same calls on plain registers (`matrix_namespace`, applied by `lower`).
 // ---------------------------------------------------------------------
+
+// HIP's text names `cgm` wherever CUDA's names `nvcuda::wmma`.
+pub fn matrix_namespace[&m, &t](m: &!m [int], t: &!t [byte], d: int, src: int) -> [] int {
+    if is_hip(d) {
+        return text.replace_lit(m, t, src, "nvcuda::wmma", text.lit(m, t, "cgm"));
+    }
+    return src;
+}
 
 pub fn atom(d: int) -> [] int {
     if is_cuda(d) {
@@ -344,6 +354,9 @@ pub fn atom(d: int) -> [] int {
 }
 
 pub fn matrix_includes[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
+    if is_hip(d) {
+        return text.lit(m, t, "// The matrix unit, without one: HIP's kernel language names no `wmma` (docs/amd.md sections 3.3 and 9). A 16 x 16 tile\n// belongs to 32 consecutive threads, as under CUDA; thread l of them holds row l / 2, columns (l % 2) * 8 to + 7 of an\n// accumulator, that row of an `a` and those columns of a `b`, so a product is plain multiply-adds in the thread's own registers.\nnamespace cgm {\nstruct row_major {};\nstruct col_major {};\nstruct matrix_a {};\nstruct matrix_b {};\nstruct accumulator {};\nenum layout_t { mem_row_major };\ntemplate <class U, int M, int N, int K, class T, class L = void> struct fragment;\ntemplate <class T> struct fragment<accumulator, 16, 16, 16, T, void> { static const int num_elements = 8; float x[8]; };\ntemplate <class T, class L> struct fragment<matrix_a, 16, 16, 16, T, L> { static const int num_elements = 16; float x[16]; };\ntemplate <class T, class L> struct fragment<matrix_b, 16, 16, 16, T, L> { static const int num_elements = 128; float x[128]; };\ntypedef fragment<accumulator, 16, 16, 16, float> acc_t;\n__device__ __forceinline__ uint row() { return (threadIdx.x & 31u) / 2u; }\n__device__ __forceinline__ uint col() { return (threadIdx.x & 1u) * 8u; }\n__device__ __forceinline__ void fill_fragment(acc_t& f, float v) { for (uint i = 0; i < 8u; ++i) f.x[i] = v; }\ntemplate <class T> __device__ __forceinline__ void load_matrix_sync(fragment<matrix_a, 16, 16, 16, T, row_major>& f, const T* p, uint ld) { const uint r = row(); for (uint k = 0; k < 16u; ++k) f.x[k] = float(p[r * ld + k]); }\ntemplate <class T> __device__ __forceinline__ void load_matrix_sync(fragment<matrix_a, 16, 16, 16, T, col_major>& f, const T* p, uint ld) { const uint r = row(); for (uint k = 0; k < 16u; ++k) f.x[k] = float(p[k * ld + r]); }\ntemplate <class T> __device__ __forceinline__ void load_matrix_sync(fragment<matrix_b, 16, 16, 16, T, row_major>& f, const T* p, uint ld) { const uint c = col(); for (uint k = 0; k < 16u; ++k) for (uint i = 0; i < 8u; ++i) f.x[k * 8u + i] = float(p[k * ld + c + i]); }\ntemplate <class T> __device__ __forceinline__ void load_matrix_sync(fragment<matrix_b, 16, 16, 16, T, col_major>& f, const T* p, uint ld) { const uint c = col(); for (uint k = 0; k < 16u; ++k) for (uint i = 0; i < 8u; ++i) f.x[k * 8u + i] = float(p[(c + i) * ld + k]); }\n__device__ __forceinline__ void load_matrix_sync(acc_t& f, const float* p, uint ld, layout_t) { const uint r = row(), c = col(); for (uint i = 0; i < 8u; ++i) f.x[i] = p[r * ld + c + i]; }\n__device__ __forceinline__ void store_matrix_sync(float* p, const acc_t& f, uint ld, layout_t) { const uint r = row(), c = col(); for (uint i = 0; i < 8u; ++i) p[r * ld + c + i] = f.x[i]; }\ntemplate <class T, class LA, class LB> __device__ __forceinline__ void mma_sync(acc_t& d, const fragment<matrix_a, 16, 16, 16, T, LA>& a, const fragment<matrix_b, 16, 16, 16, T, LB>& b, const acc_t& c) { for (uint i = 0; i < 8u; ++i) { float s = c.x[i]; for (uint k = 0; k < 16u; ++k) s += a.x[k] * b.x[k * 8u + i]; d.x[i] = s; } }\n}\n\n");
+    }
     if is_cuda(d) {
         return text.lit(m, t, "#include <mma.h>\n\n");
     }

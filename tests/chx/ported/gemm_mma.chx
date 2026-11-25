@@ -31,4 +31,5 @@ algo gemm_mma(m, n, k)
 }
 
 schedule gemm_mma for nvidia-ada     { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
+schedule gemm_mma for amd-cdna3      { threads 256 warps 2 4 bm 128 bn 128 bk 64 }
 schedule gemm_mma for apple-m-series { threads 128 warps 2 2 bm 64 bn 64 bk 32 }
