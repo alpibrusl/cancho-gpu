@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/kolibri_host.sh -- the host side of Kolibri 1.1's step (tests/kolibri_gpu.cho, docs/kolibri.md K5) without the model: it builds, and on a toy GGUF written here byte by byte (three layers 32
-# wide: a dense one, a mixture of 2 experts with its own keys, a mixture that reads layer 1's keys; 2 query heads over 1 key/value head of 16; a vocabulary of 8) every file `weights` and `inputs`
+# wide: a dense one, a mixture of 2 experts with its own keys, a mixture that reads layer 1's keys; 2 query heads over 1 key/value head of 16; a vocabulary of 64) every file `weights` and `inputs`
 # write is what awk's arithmetic of the formats says: the copied tensors, the repacked codes and the scales to the byte, the Q4_1 offsets, the decoded Q6_K head, the embedding rows and the tables
 # as numbers; the list of files is exactly the expected one. Then `argmax`, and the refusals, each with its rule and status 1 (2 for usage), none a trap.
 set -eu
@@ -12,7 +12,7 @@ T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 fail=0
 : > "$T/fails"   # a line a failure of the two big checks, so that an `ok` is said only of a part that had none
-toy() { # out file, variant (none | notensor | nokv | f32q | wide | short): the toy GGUF, and for `none` the expected files under $T/want with $T/manifest
+toy() { # out file, variant (none | notensor | nokv | f32q | wide | v8): the toy GGUF, and for `none` the expected files under $T/want with $T/manifest
 awk -v T="$T" -v VAR="$2" '
 function rb(k, i) { return (i * 37 + 11 + 101 * int(i / 61) + 53 * k) % 256 }
 function tb(k, i,   j) { # byte i of tensor k: any byte, but an f16 field never has all its exponent bits set (no infinity, no NaN)
@@ -48,7 +48,7 @@ function mlp(l, suffix, pre,   a) { q41("blk." l ".ffn_gate" suffix ".weight", "
 function fillw(file, n, v, ramp,   i) { want(file, "vals"); for (i = 0; i < n; i++) printf "%s\n", ramp ? i : v > W; close(W) }
 BEGIN {
   NT = 0; DATA = 0; NB = 0; BYTES = T "/bytes.txt"; for (i = 1; i < 128; i++) ORD[sprintf("%c", i)] = i
-  D = 32; NQ = 2; NKV = 1; HD = 16; NE = 2; EH = 32; FF = 64; V = 8; NL = 3; WIN = 2
+  D = 32; NQ = 2; NKV = 1; HD = 16; NE = 2; EH = 32; FF = 64; V = (VAR == "v8") ? 8 : 64; NL = 3; WIN = 2
   for (l = 0; l < NL; l++) { p = "blk." l "."
     add(p "attn_norm.weight", 0, D); add(p "attn_q_norm.weight", 0, HD); add(p "post_attention_norm.weight", 0, D); add(p "ffn_norm.weight", 0, D); add(p "post_ffw_norm.weight", 0, D)
     add(p "attn_q.weight", 2, D, NQ * HD); add(p "attn_output.weight", 2, NQ * HD, D)
@@ -77,17 +77,23 @@ BEGIN {
   want("e4m3.f32", "vals"); for (i = 0; i < 125; i++) printf "%.17g\n", (ev[i] + ev[i + 1]) / 2 > W; for (i = 0; i < 125; i++) printf "%.17g\n", ev[i + 1] - ev[i] > W; for (i = 0; i < 125; i++) printf "%d\n", od[i] > W; close(W)
   copy("output_norm.weight", "fnorm.f32")
   want("head.f32", "vals"); k = ID["output.weight"]
-  for (n = 0; n < 256; n++) { h = int(n / 128); r = n % 128; kq = int(r / 32); l = r % 32; qb = tb(k, h * 64 + l + (kq % 2 ? 32 : 0)); nib = kq < 2 ? qb % 16 : int(qb / 16); top = int(tb(k, 128 + h * 32 + l) / 4^kq) % 4
-    s = tb(k, 192 + h * 8 + int(l / 16) + 2 * kq); if (s > 127) s -= 256; printf "%.9g\n", half(tb(k, 208), tb(k, 209)) * s * (nib + 16 * top - 32) > W } close(W)
+  for (n = 0; n < V * D; n++) { o = int(n / 256) * 210; h = int((n % 256) / 128); r = n % 128; kq = int(r / 32); l = r % 32; qb = tb(k, o + h * 64 + l + (kq % 2 ? 32 : 0)); nib = kq < 2 ? qb % 16 : int(qb / 16); top = int(tb(k, o + 128 + h * 32 + l) / 4^kq) % 4
+    s = tb(k, o + 192 + h * 8 + int(l / 16) + 2 * kq); if (s > 127) s -= 256; printf "%.9g\n", half(tb(k, o + 208), tb(k, o + 209)) * s * (nib + 16 * top - 32) > W } close(W)
+  q41("token_embd.weight", "emb"); want("rank.f32", "vals"); for (i = 0; i < V; i++) printf "%d\n", V - i > W; close(W); fillw("zmk.f32", V, 0); fillw("one1.f32", 1, 1)
   for (l = 0; l < NL; l++) { p = "blk." l "."
     copy(p "attn_norm.weight", "a" l ".norm.f32"); copy(p "attn_q_norm.weight", "a" l ".qn.f32"); copy(p "post_attention_norm.weight", "a" l ".pn.f32"); copy(p "ffn_norm.weight", "m" l ".ffn_norm.f32"); copy(p "post_ffw_norm.weight", "m" l ".post_norm.f32")
     if (l < 2) { copy(p "attn_k_norm.weight", "a" l ".kn.f32"); THREE[1] = p "attn_q.weight"; THREE[2] = p "attn_k.weight"; THREE[3] = p "attn_v.weight"; q4(THREE, 3, "a" l ".qkv") } else q41(p "attn_q.weight", "a" l ".q")
     q41(p "attn_output.weight", "a" l ".o")
     if (l == 0) mlp(l, "", "dn"); else { copy(p "ffn_gate_inp.weight", "m" l ".route.f32"); copy(p "exp_probs_b.bias", "m" l ".bias.f32"); mlp(l, "_shexp", "sh"); mlp(l, "_exps", "ex") }
   }
-  # what `inputs` writes for the ids 3 0 7 and caches of 64 positions (after the line `inputs` of the manifest)
-  printf "inputs -\n" > (T "/manifest"); NS = 3; split("3 0 7", IDS, " "); k = ID["token_embd.weight"]
-  want("x0.f32", "vals"); for (s = 1; s <= NS; s++) for (b = 0; b < D / 32; b++) { o = IDS[s] * (D / 32) * 18 + b * 18; for (i = 0; i < 32; i++) { c = i < 16 ? tb(k, o + 2 + i) % 16 : int(tb(k, o + 2 + i - 16) / 16); printf "%.9g\n", (c - 8) * half(tb(k, o), tb(k, o + 1)) > W } } close(W)
+  # what `inputs` writes for the ids 3 0 7, five steps and caches of 64 positions (after the line `inputs` of the manifest)
+  printf "inputs -\n" > (T "/manifest"); NP = 3; NS = 5; split("3 0 7", IDS, " "); k = ID["token_embd.weight"]
+  want("x0.f32", "vals"); for (s = 1; s <= NS; s++) for (b = 0; b < D / 32; b++) { o = IDS[s] * (D / 32) * 18 + b * 18; for (i = 0; i < 32; i++) { c = i < 16 ? tb(k, o + 2 + i) % 16 : int(tb(k, o + 2 + i - 16) / 16); printf "%.9g\n", (s <= NP ? (c - 8) * half(tb(k, o), tb(k, o + 1)) : 0) > W } } close(W)
+  want("idtab.f32", "vals"); for (s = 1; s <= NS; s++) printf "%d\n", (s <= NP ? IDS[s] : 0) > W; close(W)
+  want("mtab.f32", "vals"); for (s = 1; s <= NS; s++) printf "%d\n", (s <= NP) > W; close(W)
+  want("accsel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < NS; c++) printf "%d\n", (c == s) > W; close(W)
+  want("acckeep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < NS; c++) printf "%d\n", (c != s) > W; close(W)
+  fillw("acc0.f32", NS, 0); fillw("id0.f32", 1, 0)
   want("sel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
   want("keep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
   want("mask.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", ((c <= s && c > s - WIN) ? 0 : -1e9) > W; close(W)
@@ -119,9 +125,9 @@ if [ "$(tr '\n' ';' < "$T/out.txt")" != "layer 0: its own keys, a dense MLP;laye
 [ "$(cat "$T/fails")" = "$before" ] && echo "ok   weights: $((split_at - 1)) files of a three-layer toy, each as awk has it, and no other"
 before=$(cat "$T/fails")
 printf '3 0\n7\n' > "$T/ids.txt"
-if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
-[ "$(cat "$T/out.txt")" = "steps 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids and the seven tables"
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
+[ "$(cat "$T/out.txt")" = "steps 5 prompt 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the thirteen tables"
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
 got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
@@ -130,6 +136,8 @@ got=$("$B" argmax "$T/w/ones_d.f32" 2>&1)
 if [ "$got" = "argmax 0 value 1.0 margin 0.0" ]; then echo "ok   argmax of equal values is the first"; else echo "FAIL argmax of equal values: $got"; fail=1; fi
 got=$("$B" argmax "$T/w/sl.f32" 2>&1)
 if [ "$got" = "argmax 0 value 0.0 margin none" ]; then echo "ok   argmax of one value"; else echo "FAIL argmax of one value: $got"; fail=1; fi
+got=$("$B" ids "$T/x/idtab.f32" 1 2>&1)
+if [ "$got" = "0 7 0 0" ]; then echo "ok   ids from an index on"; else echo "FAIL ids: $got"; fail=1; fi
 refuse() { # name, rule, status, the command
   name=$1; rule=$2; want=$3; shift 3
   status=0; "$@" > "$T/out.txt" 2> "$T/err.txt" || status=$?
@@ -156,7 +164,7 @@ refuse "a 4-bit matrix whose rows are not a multiple of 32" kolibri-tensor 1 "$B
 refuse "a directory that is not there" kolibri-write 1 "$B" weights "$T/toy.gguf" "$T/nowhere"
 printf '3 x 7\n' > "$T/bad.txt"
 refuse "an id that is not a number" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
-printf '3 8\n' > "$T/bad.txt"
+printf '3 64\n' > "$T/bad.txt"
 refuse "an id past the vocabulary" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
 : > "$T/bad.txt"
 refuse "no ids" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
@@ -164,6 +172,12 @@ refuse "positions that are not a multiple of 64" kolibri-usage 1 "$B" inputs "$T
 refuse "positions that are not a number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 6x
 awk 'BEGIN { for (i = 0; i < 65; i++) printf "1 " }' > "$T/bad.txt"
 refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
+refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
+refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65
+toy "$T/v.gguf" v8
+refuse "an embedding that is not a multiple of 64 rows" kolibri-tensor 1 "$B" weights "$T/v.gguf" "$T/r"
+refuse "ids from past the file's end" kolibri-read 1 "$B" ids "$T/x/idtab.f32" 6
+refuse "ids of a file whose values are not whole" kolibri-read 1 "$B" ids "$T/x/cos.f32" 0
 printf 'abc' > "$T/bad.f32"
 refuse "an f32 file of three bytes" kolibri-read 1 "$B" argmax "$T/bad.f32"
 : > "$T/bad.f32"

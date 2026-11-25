@@ -17,6 +17,7 @@
 # X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64), sel.f32 and keep.f32 (NS columns of T: the step's position and its complement), mask.f32 (NS rows of T: 0 on the keys a
 # sliding layer's step sees, -1e9 elsewhere), maskg.f32 (the same for an indexed layer: every key so far), zcache.f32 (NKV * T * 128 zeros).
 #
+# GEN=1 (with HEAD=1 and L0=0) generates: section 13; it reads emb.q4, emb.s, rank.f32, zmk.f32, one1.f32 of W and idtab.f32, mtab.f32, id0.f32, acc0.f32, accsel.f32, acckeep.f32 of X.
 # SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, kn<i>.f32, vn<i>.f32 (the step's new rows as cached), o<i>.f32, and
 # idx<i>.f32, wt<i>.f32. F32= F16= I8= (empty) reads and writes every file as text, and D, NQ, NKV, NE, EH, K, FF, BN, V make a small model: tests/kstep.sh, in the gate.
 text CHX = tests/chx
@@ -28,6 +29,7 @@ const L0 = 0
 const NL = 50
 const TF = 0
 const HEAD = 1
+const GEN = 0
 const SAVE = 1
 const ANS = 0
 const D = 2560
@@ -56,10 +58,14 @@ end
 # the attention half of layer i, whose keys and values are layer s's: L${i}ra.wo is the row after it
 block attn(i, s)
     program L${i}an $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
-    if TF || i == L0
-        table L${i}an.x $X/x${i}.f32 $NS $F32
+    if GEN && i == L0
+        link emb.w -> L${i}an.x
     else
-        link L${i - 1}out.wo -> L${i}an.x
+        if TF || i == L0
+            table L${i}an.x $X/x${i}.f32 $NS $F32
+        else
+            link L${i - 1}out.wo -> L${i}an.x
+        end
     end
     resident L${i}an.w $W/a${i}.norm.f32 $F32
     if s == i
@@ -123,10 +129,14 @@ block attn(i, s)
     link L${i}op.y -> L${i}apn.x
     resident L${i}apn.w $W/a${i}.pn.f32 $F32
     program L${i}ra $CHX/step_add.chx n=$D
-    if TF || i == L0
-        table L${i}ra.w $X/x${i}.f32 $NS $F32
+    if GEN && i == L0
+        link emb.w -> L${i}ra.w
     else
-        link L${i - 1}out.wo -> L${i}ra.w
+        if TF || i == L0
+            table L${i}ra.w $X/x${i}.f32 $NS $F32
+        else
+            link L${i - 1}out.wo -> L${i}ra.w
+        end
     end
     link L${i}apn.y -> L${i}ra.d
     if SAVE > 1
@@ -256,6 +266,19 @@ block ffn(i)
     end
 end
 
+# GEN=1 (section 13): the step's id is the prompt's while its mask is 1 (idtab.f32, mtab.f32: a block a step) and then the id the step before chose; its row is that id's row of the embedding
+# matrix, the codes and scales picked by the id.
+if GEN
+    program cur $CHX/row_mix.chx n=1 bn=1
+    table cur.xt $X/idtab.f32 $NS $F32
+    resident cur.xe $X/id0.f32 $F32
+    table cur.m $X/mtab.f32 $NS $F32
+    program emb $CHX/dq_q4.chx n=1 k=$D bn=1 bk=32
+    table emb.wq $W/emb.q4 $V $I8 by cur.y 0
+    table emb.ws $W/emb.s $V $F16 by cur.y 0
+    resident emb.wg $W/one1.f32 $F32
+end
+
 repeat i in L0 .. L0 + NL
     if i % 5 != 4 || i == 4 || i == 19 || i == 24 || i == 29
         use attn(i, i)
@@ -281,10 +304,41 @@ if HEAD
         save head.y $X/logits.f32 $F32
     end
 end
+if GEN
+    # the arg max, the first of equal maxima (docs/audio.md section 10), as an id from 0; the ids of the request's steps collected in ids_out.f32
+    program smx $CHX/samp_max.chx r=1 nq=${V / 64} G=2
+    link head.y -> smx.l
+    resident smx.mk $W/zmk.f32 $F32
+    program sgm $CHX/samp_gmax.chx r=1 nq=${V / 64}
+    link smx.cm -> sgm.cm
+    program cand $CHX/amax_cand.chx r=1 nq=${V / 64} G=2
+    link head.y -> cand.l
+    link sgm.gmb -> cand.gmb
+    resident cand.rk $W/rank.f32 $F32
+    program smx2 $CHX/samp_max.chx r=1 nq=${V / 64} G=2
+    link cand.c -> smx2.l
+    resident smx2.mk $W/zmk.f32 $F32
+    program sgm2 $CHX/samp_gmax.chx r=1 nq=${V / 64}
+    link smx2.cm -> sgm2.cm
+    program aid $CHX/amax_id.chx r=1 nq=${V / 64} v1=$V
+    link sgm2.gmb -> aid.gm
+    program ac $CHX/tok_acc.chx r=1 s=$NS
+    resident ac.acc $X/acc0.f32 $F32
+    link aid.id -> ac.ids
+    table ac.sel $X/accsel.f32 $NS $F32
+    table ac.keep $X/acckeep.f32 $NS $F32
+    carry aid.id -> cur.xe
+    carry ac.y -> ac.acc
+    save ac.y $X/ids_out.f32 $F32
+end
 steps
-# ANS=1 answers the row after the last layer every step; ANS=0 the last layer's experts (K numbers), or that row where the last layer is dense.
-if ANS || L0 + NL < 3
-    answer L${L0 + NL - 1}out.wo
+# GEN=1 answers the id the step chose. ANS=1 answers the row after the last layer every step; ANS=0 the last layer's experts (K numbers), or that row where the last layer is dense.
+if GEN
+    answer aid.id
 else
-    answer L${L0 + NL - 1}pk.idx
+    if ANS || L0 + NL < 3
+        answer L${L0 + NL - 1}out.wo
+    else
+        answer L${L0 + NL - 1}pk.idx
+    end
 end
