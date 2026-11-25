@@ -51,7 +51,7 @@ i=0; while [ $i -lt 15 ]; do zeros "$T/w/pemb$i.f32" 16777216; i=$((i + 1)); don
 # the talker: 10 ids are 2 of text, so a prefix of 13 rows, and 4 frames: 17 rows in 64
 want "inputs talker" 0 inputs talker "$T/w" "$T/k" "$T/ids.txt" "$T/codes.txt" 2050 3061
 if [ "$(cat "$T/out")" = "SP=64 rows 17 prefix 13 frames 4" ]; then echo "ok   inputs talker says SP=64 rows 17 prefix 13 frames 4"; else echo "FAIL inputs talker said: $(cat "$T/out")"; fail=1; fi
-for f in "x0.f32 524288" "cs.f32 16384" "sn.f32 16384" "mask.f32 16384"; do
+for f in "x0.f32 524288" "cs.f32 16384" "sn.f32 16384" "mask.f32 16384" "pad.f32 8192"; do
   set -- $f
   size=$(wc -c < "$T/k/$1" | tr -d ' ')
   if [ "$size" = "$2" ]; then echo "ok   talker $1: $2 bytes"; else echo "FAIL talker $1: $size bytes, wanted $2"; fail=1; fi

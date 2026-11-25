@@ -1,0 +1,28 @@
+// The third: the k largest of the row kept and the noise added (docs/audio.md section 26). cnt is samp_rank.chx's count of larger entries; an entry with fewer than k is kept (every entry not less than the
+// k-th largest: a tie at the k-th keeps both, as torch's top-k filter does) and gets z = y + g; the others get -lo (1e9 in the model: under every sum of a logit and its noise). g is the row of noise, -log of an exponential for each entry (a table), and the arg max
+// of z (samp_max.chx, samp_gmax.chx, amax_cand.chx, amax_id.chx) is torch.multinomial's draw from the softmax of the kept entries. bm entries a threadgroup.
+algo samp_keep(n, k, bm, lo)
+  in  cnt: f32[n, 1]
+  in  y:   f32[n, 1]
+  in  g:   f32[n, 1]
+  out z:   f32[n, 1]
+{
+  grid q over n / bm
+  let c   = load cnt[q * bm, 0 ; bm, 1]
+  let zz  = zeros f32[bm, 1]
+  let kk  = zz + k
+  let d   = kk - c
+  let kp  = step d
+  let a   = load y[q * bm, 0 ; bm, 1]
+  let nz  = load g[q * bm, 0 ; bm, 1]
+  let s   = a + nz
+  let t   = s * &kp
+  let o   = zeros f32[bm, 1]
+  let on  = o + 1.0
+  let off = on - kp
+  let big = off * lo
+  store t - big -> z[q * bm, 0]
+}
+
+schedule samp_keep for apple-m-series { threads 256 }
+schedule samp_keep for nvidia-ada     { threads 128 }

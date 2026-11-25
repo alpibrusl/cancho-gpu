@@ -617,6 +617,27 @@ def amax_id(r, nq, v1):
     return [v1 - gm[i * nq] for i in range(r)]
 
 
+def samp_pen(nq, invt, rp):
+    """A draw's logits (docs/audio.md section 26): the repetition penalty where seen, the temperature, the forbidden entries added."""
+    l, seen, add = lcg([nq * 64, nq * 64, nq * 64])
+    return [(l[j] + seen[j] * ((l[j] / rp if l[j] > 0 else l[j] * rp) - l[j])) * invt + add[j] for j in range(nq * 64)]
+
+
+def samp_rank(nq):
+    yc, yr = lcg([nq * 64, nq * 64])
+    return [float(sum(1 for v in yr if v > yc[j])) for j in range(nq * 64)]
+
+
+def samp_keep(n, k, lo):
+    cnt, y, g = lcg([n, n, n])
+    return [y[j] + g[j] if k - cnt[j] > 0 else -lo for j in range(n)]
+
+
+def seen_or(c):
+    seen, idv, jrow, m = lcg([c, 1, c, 1])
+    return [max(seen[j], m[0] * max(0.0, 1 - abs(jrow[j] - idv[0]))) for j in range(c)]
+
+
 def conv1d_f(s_, cin, cout, k, dl):
     """A causal convolution of k taps with a dilation (docs/audio.md section 20): y[t, co] = sum_j sum_ci w[co, j cin + ci] x[t + j dl, ci]."""
     x, w = lcg([(s_ + (k - 1) * dl) * cin, cout * k * cin])
@@ -917,6 +938,10 @@ def new_checks():
     ok &= check("dec_post_n vn r=2", got["vn"], want_v)
     ok &= check("amax_cand r=2 nq=4", run("amax_cand", ["r=2", "nq=4", "G=2"])["c"], amax_cand(2, 4))
     ok &= check("amax_id r=3 nq=4", run("amax_id", ["r=3", "nq=4", "v1=3"])["id"], amax_id(3, 4, 3))
+    ok &= check("samp_pen nq=4", run("samp_pen", ["nq=4", "G=2", "invt=1.25", "rp=1.5", "irp=0.6666666666666666"])["y"], samp_pen(4, 1.25, 1.5))
+    ok &= check("samp_rank nq=4", run("samp_rank", ["nq=4"])["cnt"], samp_rank(4))
+    ok &= check("samp_keep n=256 k=0.05", run("samp_keep", ["n=256", "k=0.05", "bm=64", "lo=4"])["z"], samp_keep(256, 0.05, 4))
+    ok &= check("seen_or c=64", run("seen_or", ["c=64", "bc=32"])["y"], seen_or(64))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -1117,6 +1142,17 @@ MUTANTS = [
     ("dec_post_n.chx", "let qe = qm * (1 / 128)", "let qe = qm * (1 / 64)", "dec_post_n takes q's mean square over 64"),
     ("amax_cand.chx", "let eq = on - st", "let eq = on + st", "amax_cand keeps the ranks of the columns under the maximum, twice"),
     ("amax_id.chx", "store o - a -> id[i, 0]", "store o + a -> id[i, 0]", "amax_id adds the rank"),
+    ("samp_pen.chx", "let pp = p * irp", "let pp = p * rp", "samp_pen multiplies a positive logit by the penalty"),
+    ("samp_pen.chx", "let sd = s * d", "let sd = s + d", "samp_pen adds what was seen to the penalty's change"),
+    ("samp_pen.chx", "let u  = t * invt", "let u  = t", "samp_pen leaves the temperature out"),
+    ("samp_pen.chx", "store u + m -> y[qb * G, 0]", "store u - m -> y[qb * G, 0]", "samp_pen subtracts the forbidden entries' addend"),
+    ("samp_rank.chx", "let dn = zn - d", "let dn = d - zn", "samp_rank counts the smaller entries"),
+    ("samp_rank.chx", "let r  = load yr[p, 0 ; 1, 64]", "let r  = load yr[q, 0 ; 1, 64]", "samp_rank compares every chunk with its own"),
+    ("samp_keep.chx", "let d   = kk - c", "let d   = c - kk", "samp_keep keeps the entries with k or more larger ones"),
+    ("samp_keep.chx", "let s   = a + nz", "let s   = a - nz", "samp_keep subtracts the noise"),
+    ("samp_keep.chx", "store t - big -> z[q * bm, 0]", "store t + big -> z[q * bm, 0]", "samp_keep raises what it drops"),
+    ("seen_or.chx", "let g  = oh * mm", "let g  = oh + mm", "seen_or adds the flag"),
+    ("seen_or.chx", "let e  = g - &s", "let e  = g + &s", "seen_or adds what was seen twice"),
 ]
 
 
