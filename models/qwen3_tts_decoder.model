@@ -1,0 +1,213 @@
+# The codec decoder of Qwen3-TTS-12Hz-1.7B (docs/audio.md sections 3.1 and 22, stage S1c): SP frames of 16 codes to 1,920 SP samples at 24 kHz. A convolution of 3 taps, 8 transformer layers of 512 wide
+# (16 heads of 64, rotary, attention over the last 72 frames), two stages that double the rate (a transposed convolution and a ConvNeXt block), a convolution of 7 taps to 1,536 channels, four blocks that
+# multiply the rate by 8, 5, 4 and 3 and halve the channels (Snake, a transposed convolution, three residual units), Snake, a convolution to one channel, the clamp. A model file (docs/resident.md section 31).
+#
+#     cancho-gpu-metal-session models/qwen3_tts_decoder.model CHX=<tests/chx> WORK=<inputs> WDIR=<weights> SP=<frames, a multiple of 64>
+#
+# Everything is f32: a product is conv1d_f.chx with one tap (rounding this model's weights or activations to f16 moves the waveform past its bound, section 22). Rows are positions and columns channels.
+# A transposed convolution of stride r is conv1d_f.chx to r times the outputs, its [s, r c] buffer linked as [s r, c] (section 20). The rows of zeros in front of a convolution's input are the kernel before
+# it storing after g rows it leaves alone (snake.chx and bias_pad.chx, their `g`).
+# The host (tests/qwen3_tts_decoder_gpu.cho) writes x0.f32, the frames' codebook sums with two rows of zeros in front; the rotary tables; the attention's mask with its window; q's weight times 1/8; the layer
+# scales and the ConvNeXt blocks' gamma folded into the product before them; a Snake's a = e^alpha and ib = 1 / (e^beta + 1e-9); the transposed convolutions' weights as section 20 lays them out.
+# PROBE=1 also saves the activations after the transformer, the two stages and each block, for the by-hand comparison with the reference's.
+text CHX = tests/chx
+text WORK = .
+text WDIR = .
+const SP = 128
+const NL = 8
+const D = 512
+const FF = 1024
+const H = 16
+const HD = 64
+const L = 1024
+const PROBE = 0
+
+# y = x w^T + b, stored after g rows: lin$name.y -> b$name.y
+block lin(name, src, s, cin, cout, k, dl, g, bn)
+    program c$name $CHX/conv1d_f.chx s=$s cin=$cin cout=$cout k=$k dl=$dl
+    link $src -> c$name.x
+    resident c$name.w $WDIR/$name.f32 f32
+    program b$name $CHX/bias_pad.chx s=$s c=$cout g=$g bn=$bn
+    link c$name.y -> b$name.x
+    resident b$name.b $WDIR/$name.b.f32 f32
+end
+
+program cpre $CHX/conv1d_f.chx s=$SP cin=512 cout=$L k=3 dl=1
+resident cpre.x $WORK/x0.f32 f32
+resident cpre.w $WDIR/pre.f32 f32
+program bpre $CHX/bias_pad.chx s=$SP c=$L g=0 bn=256
+link cpre.y -> bpre.x
+resident bpre.b $WDIR/pre.b.f32 f32
+use lin("inp", "bpre.y", SP, L, D, 1, 1, 0, 256)
+
+# a product without a bias: p$name.y
+block prod(name, src, cin, cout)
+    program p$name $CHX/conv1d_f.chx s=$SP cin=$cin cout=$cout k=1 dl=1
+    link $src -> p$name.x
+    resident p$name.w $WDIR/$name.f32 f32
+end
+
+block layer(i, src)
+    program L${i}_n1 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.00001
+    link $src -> L${i}_n1.x
+    resident L${i}_n1.w $WDIR/n1_${i}.f32 f32
+    use prod("wq${i}", "L${i}_n1.y", D, H * HD)
+    use prod("wk${i}", "L${i}_n1.y", D, H * HD)
+    use prod("wv${i}", "L${i}_n1.y", D, H * HD)
+    program L${i}_rq $CHX/dit_rope.chx s=$SP nh=$H h=${HD / 2}
+    link pwq${i}.y -> L${i}_rq.x
+    resident L${i}_rq.cs $WORK/cs.f32 f32
+    resident L${i}_rq.sn $WORK/sn.f32 f32
+    program L${i}_rk $CHX/dit_rope.chx s=$SP nh=$H h=${HD / 2}
+    link pwk${i}.y -> L${i}_rk.x
+    resident L${i}_rk.cs $WORK/cs.f32 f32
+    resident L${i}_rk.sn $WORK/sn.f32 f32
+    program L${i}_sc $CHX/dit_scores_bias.chx nh=$H nq=$SP t=$SP qs=32 ts=64 d=$HD
+    link L${i}_rq.y -> L${i}_sc.q
+    link L${i}_rk.y -> L${i}_sc.k
+    resident L${i}_sc.bias $WORK/amask.f32 f32
+    program L${i}_st $CHX/dit_stats.chx nh=$H nq=$SP t=$SP qs=32 cs=64
+    link L${i}_sc.sc -> L${i}_st.sc
+    program L${i}_pv $CHX/dit_pv.chx nh=$H nq=$SP t=$SP qs=32 cs=64 dw=32 d=$HD
+    link L${i}_sc.sc -> L${i}_pv.sc
+    link L${i}_st.m -> L${i}_pv.m
+    link L${i}_st.z -> L${i}_pv.z
+    link pwv${i}.y -> L${i}_pv.v
+    use prod("wo${i}", "L${i}_pv.o", H * HD, D)
+    program L${i}_ad1 $CHX/dit_add.chx s=$SP n=$D bn=256
+    link $src -> L${i}_ad1.a
+    link pwo${i}.y -> L${i}_ad1.b
+    program L${i}_n2 $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.00001
+    link L${i}_ad1.z -> L${i}_n2.x
+    resident L${i}_n2.w $WDIR/n2_${i}.f32 f32
+    use prod("wg${i}", "L${i}_n2.y", D, FF)
+    use prod("wu${i}", "L${i}_n2.y", D, FF)
+    program L${i}_sw $CHX/dit_swiglu_f.chx s=$SP n=$FF bn=256
+    link pwg${i}.y -> L${i}_sw.g
+    link pwu${i}.y -> L${i}_sw.u
+    use prod("wd${i}", "L${i}_sw.y", FF, D)
+    program L${i}_ad2 $CHX/dit_add.chx s=$SP n=$D bn=256
+    link L${i}_ad1.z -> L${i}_ad2.a
+    link pwd${i}.y -> L${i}_ad2.b
+end
+
+use layer(0, "binp.y")
+repeat i in 1 .. NL
+    use layer(i, "L${i - 1}_ad2.z")
+end
+
+program nf $CHX/rmsnorm_rows.chx r=$SP n=$D eps=0.00001
+link L${NL - 1}_ad2.z -> nf.x
+resident nf.w $WDIR/nf.f32 f32
+use lin("outp", "nf.y", SP, D, L, 1, 1, 0, 256)
+
+# a stage that doubles the rate: r rows in, 2 r out, U${u}_ad.z. The transposed convolution's bias is added twice, once after 6 rows of zeros for the depthwise convolution and once for the residual.
+block stage(u, src, r)
+    program U${u}_t $CHX/conv1d_f.chx s=$r cin=$L cout=${2 * L} k=1 dl=1
+    link $src -> U${u}_t.x
+    resident U${u}_t.w $WDIR/ut${u}.f32 f32
+    program U${u}_h $CHX/bias_pad.chx s=${2 * r} c=$L g=0 bn=256
+    link U${u}_t.y -> U${u}_h.x
+    resident U${u}_h.b $WDIR/ut${u}_b.f32 f32
+    program U${u}_hg $CHX/bias_pad.chx s=${2 * r} c=$L g=6 bn=256
+    link U${u}_t.y -> U${u}_hg.x
+    resident U${u}_hg.b $WDIR/ut${u}_b.f32 f32
+    program U${u}_dw $CHX/dwconv_f.chx s=${2 * r} c=$L k=7 bm=8 bn=256
+    link U${u}_hg.y -> U${u}_dw.x
+    resident U${u}_dw.w $WDIR/dw${u}.f32 f32
+    resident U${u}_dw.b $WDIR/dw${u}_b.f32 f32
+    program U${u}_ln $CHX/vit_ln_f.chx s=${2 * r} n=$L
+    link U${u}_dw.y -> U${u}_ln.x
+    resident U${u}_ln.w $WDIR/ln${u}_w.f32 f32
+    resident U${u}_ln.b $WDIR/ln${u}_b.f32 f32
+    program U${u}_p1 $CHX/conv1d_f.chx s=${2 * r} cin=$L cout=${4 * L} k=1 dl=1
+    link U${u}_ln.y -> U${u}_p1.x
+    resident U${u}_p1.w $WDIR/pw1_${u}.f32 f32
+    program U${u}_ge $CHX/conv_bias_gelu_erf.chx s=${2 * r} n=${4 * L} bn=512 m1=-1
+    link U${u}_p1.y -> U${u}_ge.x
+    resident U${u}_ge.b $WDIR/pw1_${u}_b.f32 f32
+    resident U${u}_ge.m $WORK/ones${u}.f32 f32
+    program U${u}_p2 $CHX/conv1d_f.chx s=${2 * r} cin=${4 * L} cout=$L k=1 dl=1
+    link U${u}_ge.y -> U${u}_p2.x
+    resident U${u}_p2.w $WDIR/pw2_${u}.f32 f32
+    program U${u}_pb $CHX/bias_pad.chx s=${2 * r} c=$L g=0 bn=256
+    link U${u}_p2.y -> U${u}_pb.x
+    resident U${u}_pb.b $WDIR/pw2_${u}_b.f32 f32
+    program U${u}_ad $CHX/dit_add.chx s=${2 * r} n=$L bn=256
+    link U${u}_h.y -> U${u}_ad.a
+    link U${u}_pb.y -> U${u}_ad.b
+end
+
+use stage(0, "boutp.y", SP)
+use stage(1, "U0_ad.z", 2 * SP)
+
+# the decoder's first convolution: 7 taps over the second stage's sum, which a copy puts after 6 rows of zeros
+program pz $CHX/bias_pad.chx s=${4 * SP} c=$L g=6 bn=256
+link U1_ad.z -> pz.x
+resident pz.b $WDIR/zero.f32 f32
+use lin("d0", "pz.y", 4 * SP, L, 1536, 7, 1, 0, 96)
+
+# a residual unit of block j at s rows of c channels, dilation dl: Snake (after 6 dl rows of zeros), 7 taps, Snake, 1 tap, plus its input: B${j}_${q}_ad.z
+block unit(j, q, dl, src, s, c)
+    program B${j}_${q}_a1 $CHX/snake.chx s=$s c=$c bn=96 g=${6 * dl}
+    link $src -> B${j}_${q}_a1.x
+    resident B${j}_${q}_a1.a $WDIR/u${j}_${q}a.f32 f32
+    resident B${j}_${q}_a1.ib $WDIR/u${j}_${q}b.f32 f32
+    use lin("u${j}_${q * 10 + 1}", "B${j}_${q}_a1.y", s, c, c, 7, dl, 0, 96)
+    program B${j}_${q}_a2 $CHX/snake.chx s=$s c=$c bn=96 g=0
+    link bu${j}_${q * 10 + 1}.y -> B${j}_${q}_a2.x
+    resident B${j}_${q}_a2.a $WDIR/v${j}_${q}a.f32 f32
+    resident B${j}_${q}_a2.ib $WDIR/v${j}_${q}b.f32 f32
+    use lin("u${j}_${q * 10 + 2}", "B${j}_${q}_a2.y", s, c, c, 1, 1, 0, 96)
+    program B${j}_${q}_ad $CHX/dit_add.chx s=$s n=$c bn=96
+    link $src -> B${j}_${q}_ad.a
+    link bu${j}_${q * 10 + 2}.y -> B${j}_${q}_ad.b
+end
+
+# block j: s rows of c channels to s r rows of c / 2. Snake (after one row of zeros), the transposed convolution as 2 taps to r c / 2 outputs read as r rows a position, its bias, three units
+block up(j, src, s, c, r)
+    program B${j}_s $CHX/snake.chx s=$s c=$c bn=96 g=1
+    link $src -> B${j}_s.x
+    resident B${j}_s.a $WDIR/t${j}_a.f32 f32
+    resident B${j}_s.ib $WDIR/t${j}_b.f32 f32
+    program B${j}_t $CHX/conv1d_f.chx s=$s cin=$c cout=${r * c / 2} k=2 dl=1
+    link B${j}_s.y -> B${j}_t.x
+    resident B${j}_t.w $WDIR/t${j}.f32 f32
+    program B${j}_tb $CHX/bias_pad.chx s=${s * r} c=${c / 2} g=0 bn=96
+    link B${j}_t.y -> B${j}_tb.x
+    resident B${j}_tb.b $WDIR/t${j}_bias.f32 f32
+    use unit(j, 0, 1, "B${j}_tb.y", s * r, c / 2)
+    use unit(j, 1, 3, "B${j}_0_ad.z", s * r, c / 2)
+    use unit(j, 2, 9, "B${j}_1_ad.z", s * r, c / 2)
+end
+
+use up(0, "bd0.y", 4 * SP, 1536, 8)
+use up(1, "B0_2_ad.z", 32 * SP, 768, 5)
+use up(2, "B1_2_ad.z", 160 * SP, 384, 4)
+use up(3, "B2_2_ad.z", 640 * SP, 192, 3)
+
+program fs $CHX/snake.chx s=${1920 * SP} c=96 bn=96 g=6
+link B3_2_ad.z -> fs.x
+resident fs.a $WDIR/f_a.f32 f32
+resident fs.ib $WDIR/f_b.f32 f32
+program fc $CHX/conv1d_f.chx s=${1920 * SP} cin=96 cout=32 k=7 dl=1
+link fs.y -> fc.x
+resident fc.w $WDIR/fc.f32 f32
+program wv $CHX/wave.chx s=${1920 * SP} c=32 bm=64 lim=1 m1=-1
+link fc.y -> wv.x
+resident wv.b $WDIR/fc_b.f32 f32
+save wv.y $WORK/wave.f32 f32
+if PROBE == 1
+    save boutp.y $WORK/st_tr.f32 f32
+    save U0_ad.z $WORK/st_up0.f32 f32
+    save U1_ad.z $WORK/st_up1.f32 f32
+    save bd0.y $WORK/st_d0.f32 f32
+    save B0_2_ad.z $WORK/st_b0.f32 f32
+    save B1_2_ad.z $WORK/st_b1.f32 f32
+    save B2_2_ad.z $WORK/st_b2.f32 f32
+    save B3_2_ad.z $WORK/st_b3.f32 f32
+end
+program probe $CHX/dit_rows2.chx m=$SP n=$L bn=256
+link boutp.y -> probe.x
+steps
+answer probe.y

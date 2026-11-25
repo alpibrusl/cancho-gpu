@@ -1,0 +1,1062 @@
+edition 9;
+
+import std.buffer;
+import std.io;
+import std.math;
+import files;
+import qasr_host;
+import wenc_st;
+
+// qwen3_tts_step_gpu -- stage S3 of docs/audio.md (section 26): Qwen3-TTS-12Hz-1.7B generating a frame a step on the Metal GPU (models/qwen3_tts_step.model), its host side written in cancho.
+//
+//   qwen3_tts_step_gpu weights <model.safetensors> <weights dir> [<mutant 5>]
+//   qwen3_tts_step_gpu inputs  <work dir> <prefix rows .f32> <pad row .f32> <prefix> <steps> <positions> ref <dir> | seed <n>  <codes.txt | -> [<mutant 2, 3, 4 or 7>]
+//   qwen3_tts_step_gpu codes   <work dir> <prefix> <codes.txt to write>
+//   qwen3_tts_step_gpu check   <work dir> <prefix> <reference codes.txt> <margins .f32>
+//   qwen3_tts_step_gpu probe   <work dir> <reference probabilities .f32> <row> <reference noise .f32>
+//
+// `weights` writes, from the BF16 checkpoint, what the step reads: each layer's q, k and v as one matrix of 4,096 rows (the 8 key/value heads once), gate and up as one, o and down, the norms; the two heads
+// (the predictor's 15 as 15 files); the predictor's projection; and the tables transposed for the one-hot products: the talker's codec embedding (`embt`), the predictor's 15 (`pembt<i>`), and the 16 side
+// by side, each 3,072 columns wide (`sumt`, the predictor's padded with zeros). The talker's files have the names of models/qwen3_asr_step.model, the predictor's the same with a `p` in front.
+// `inputs` writes the tables of `steps` steps (a block a step) for caches of `positions` (a multiple of 64). The prefix's rows are the first `prefix` rows of the file tests/qwen3_tts_lm_gpu.cho's
+// `inputs talker` writes as x0.f32, the pad row its pad.f32. Step j is position j; steps 0 to prefix - 1 read the prefix's rows, and step prefix - 1 + g draws frame g. The noise of a draw is a row of
+// -log q, q an exponential for each entry: `ref <dir>` reads the reference's (`gt.f32`, rows of 3,072, a row a frame; `gp.f32`, rows of 2,048, 15 a frame; frames past the files' end get zeros),
+// `seed <n>` makes it (-log(-log u), u from a generator started for each draw from n, the frame and the draw's place in it: the same whatever the number of steps). With a codes file the frames' codes are forced (the tables tf<p> and force; the row after the last frame forces the end token):
+// run the session with FORCE=1. It prints `T=<positions> NS=<steps> prefix <P> frames <draws>`. Run the steps with
+//   printf '<steps>\ncheckpoint\n' | build/cancho-gpu-metal-session models/qwen3_tts_step.model CHX=<repo>/tests/chx QW=<repo>/examples/qwen TR=<repo>/examples/train WORK=<work> WDIR=<weights> T=<positions> NS=<steps>
+// which saves `<work>/ids_out.f32`, `[16, steps]`: row i the ids drawn for code i (1-based), a column a step.
+// `codes` writes the frames up to the end token, 16 codes a line, as tests/qwen3_tts_decoder_gpu.cho's `prepare` reads them, and prints `frames <n>`; status 3 if no step drew the end token (the frames
+// are written all the same), 1 if a draw is not a code.
+// `check` is S3's first bound, for a teacher-forced run with the reference's noise: the device's draw equal to the reference's at every draw whose margin (the reference's two largest log p + g apart;
+// `margins`: the talker's T + 1, then the predictor's 15 T) is more than 0.2; exit status 0 only then. It also prints the frames equal to the reference's before the first that differs.
+// `probe` is the second bound, for a session with PROBE=1 stopped at the step of the reference's draw `row`: the entries kept (z.f32 above -1e8) are the reference's entries of nonzero probability, and
+// z - g less its maximum is the reference's log p less its maximum within 0.1; exit status 0 only then.
+// Mutants (each must fail `check` or `probe`): 2 the noise a step late; 3 the predictor's rows all at position 0; 4 P(pad) left out of the next row; 5 (of `weights`) the predictor's row 1 read from
+// the predictor's first table, not the talker's; 7 the end token allowed from the first frame. Mutants 1 (the penalty left out) and 6 (the 51 largest) are definitions of the session: RP=1 IRP=1, K=51.
+//
+// Built with
+//   cancho build tests/qwen3_tts_step_gpu.cho tests/qwen_asr/host.cho tests/wan_enc/st.cho tests/wan_enc/codec.cho studio/files.cho --std -o build/qwen3_tts_step_gpu
+
+// the end token of the codec's first code
+fn eos() -> [] int {
+    return 2150;
+}
+
+// the tensor `talker.<a><i><b>` as binary64: `expect` values, or an error counted in `iv[0]`; a negative number is left out of the name
+fn get[&h, &f, &p, &a, &b, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], expect: int, iv: &!q [int]) -> [heap, fs_read(""), file_read] Box[[float]] {
+    let name = qasr_host.name3(heap, "talker.", a, i, b);
+    var out = box_slice(heap, 1, 0.0);
+    borrow name as &nb in {
+        let (v, cnt, ok) = wenc_st.load_bf16(heap, fs, st, buffer.bytes(nb));
+        if ok == 0 && cnt == expect {
+            unbox_slice(heap, out);
+            out = v;
+        } else {
+            unbox_slice(heap, v);
+            iv[0] = iv[0] + 1;
+        }
+    }
+    buffer.drop(heap, name);
+    return out;
+}
+
+// a tensor copied to `dir/<oa><oi><ob>`, as halves or singles
+fn copy[&h, &f, &p, &w, &a, &b, &c, &d, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], a: &a [byte], i: int, b: &b [byte], expect: int, dir: &w [byte], oa: &c [byte], oi: int, ob: &d [byte], half: bool, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let v = get(heap, fs, st, a, i, b, expect, iv);
+    borrow v as &vr in {
+        qasr_host.put_file(heap, fs, dir, oa, oi, ob, half, contents(vr), iv);
+    }
+    unbox_slice(heap, v);
+    return 0;
+}
+
+// the tensors `<root><layer><a>`, `<root><layer><b>` and (if `nc` > 0) `<root><layer><c>` one after another, as halves, to `dir/<oa><layer>.f16`
+fn cat[&h, &f, &p, &w, &r, &a, &b, &c, &d, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], root: &r [byte], layer: int, a: &a [byte], na: int, b: &b [byte], nb: int, c: &c [byte], nc: int, dir: &w [byte], oa: &d [byte], iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let all = box_slice(heap, na + nb + nc, 0.0);
+    var part = 0;
+    var at = 0;
+    while part < 3 {
+        var n = na;
+        if part == 1 {
+            n = nb;
+        }
+        if part == 2 {
+            n = nc;
+        }
+        if n > 0 {
+            var x = box_slice(heap, 1, 0.0);
+            if part == 0 {
+                unbox_slice(heap, x);
+                x = get(heap, fs, st, root, layer, a, n, iv);
+            } else if part == 1 {
+                unbox_slice(heap, x);
+                x = get(heap, fs, st, root, layer, b, n, iv);
+            } else {
+                unbox_slice(heap, x);
+                x = get(heap, fs, st, root, layer, c, n, iv);
+            }
+            borrow x as &xr in {
+                borrow mut all as &!aw in {
+                    if len(contents(xr)) == n {
+                        var i = 0;
+                        while i < n {
+                            contents(aw)[at + i] = contents(xr)[i];
+                            i = i + 1;
+                        }
+                    }
+                }
+            }
+            unbox_slice(heap, x);
+            at = at + n;
+        }
+        part = part + 1;
+    }
+    borrow all as &ar in {
+        qasr_host.put_file(heap, fs, dir, oa, layer, ".f16", true, contents(ar), iv);
+    }
+    unbox_slice(heap, all);
+    return 0;
+}
+
+// the layers of a model `d` wide with a SwiGLU of `ff`: the files of models/qwen3_tts_step.model, their names after `pre`
+fn layers[&h, &f, &p, &w, &a, &q](heap: &!h Heap, fs: &f Fs(""), st: &p [byte], root: &a [byte], n: int, d: int, ff: int, dir: &w [byte], pred: bool, iv: &!q [int]) -> [heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    var l = 0;
+    while l < n && iv[0] == 0 {
+        if pred {
+            copy(heap, fs, st, root, l, ".input_layernorm.weight", d, dir, "pn1_", l, ".f32", false, iv);
+            copy(heap, fs, st, root, l, ".post_attention_layernorm.weight", d, dir, "pn2_", l, ".f32", false, iv);
+            copy(heap, fs, st, root, l, ".self_attn.q_norm.weight", 128, dir, "pnq", l, ".f32", false, iv);
+            copy(heap, fs, st, root, l, ".self_attn.k_norm.weight", 128, dir, "pnk", l, ".f32", false, iv);
+            cat(heap, fs, st, root, l, ".self_attn.q_proj.weight", 2048 * d, ".self_attn.k_proj.weight", 1024 * d, ".self_attn.v_proj.weight", 1024 * d, dir, "pqkv", iv);
+            copy(heap, fs, st, root, l, ".self_attn.o_proj.weight", d * 2048, dir, "pwo", l, ".f16", true, iv);
+            cat(heap, fs, st, root, l, ".mlp.gate_proj.weight", ff * d, ".mlp.up_proj.weight", ff * d, "", 0, dir, "pgu", iv);
+            copy(heap, fs, st, root, l, ".mlp.down_proj.weight", d * ff, dir, "pwd", l, ".f16", true, iv);
+        } else {
+            copy(heap, fs, st, root, l, ".input_layernorm.weight", d, dir, "n1_", l, ".f32", false, iv);
+            copy(heap, fs, st, root, l, ".post_attention_layernorm.weight", d, dir, "n2_", l, ".f32", false, iv);
+            copy(heap, fs, st, root, l, ".self_attn.q_norm.weight", 128, dir, "nq", l, ".f32", false, iv);
+            copy(heap, fs, st, root, l, ".self_attn.k_norm.weight", 128, dir, "nk", l, ".f32", false, iv);
+            cat(heap, fs, st, root, l, ".self_attn.q_proj.weight", 2048 * d, ".self_attn.k_proj.weight", 1024 * d, ".self_attn.v_proj.weight", 1024 * d, dir, "qkv", iv);
+            copy(heap, fs, st, root, l, ".self_attn.o_proj.weight", d * 2048, dir, "wo", l, ".f16", true, iv);
+            cat(heap, fs, st, root, l, ".mlp.gate_proj.weight", ff * d, ".mlp.up_proj.weight", ff * d, "", 0, dir, "gu", iv);
+            copy(heap, fs, st, root, l, ".mlp.down_proj.weight", d * ff, dir, "wd", l, ".f16", true, iv);
+        }
+        l = l + 1;
+    }
+    return 0;
+}
+
+// a table `[rows, 2048]` into `out`, `[2048, width]` (transposed), from column `at`
+fn transposed[&s, &o](src: &s [float], rows: int, out: &!o [float], width: int, at: int) -> [] int {
+    if len(src) != rows * 2048 || len(out) != 2048 * width || at + rows > width {
+        return 1;
+    }
+    var c = 0;
+    while c < 2048 {
+        var r = 0;
+        while r < rows {
+            out[c * width + at + r] = src[r * 2048 + c];
+            r = r + 1;
+        }
+        c = c + 1;
+    }
+    return 0;
+}
+
+fn weights[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if na != 4 && na != 5 {
+        qasr_host.put(io, "usage: qwen3_tts_step_gpu weights <model.safetensors> <weights dir> [<mutant 5>]\n");
+        return 100;
+    }
+    let st = arg(args, 2);
+    let wdir = arg(args, 3);
+    var mutant = 0;
+    if na == 5 {
+        mutant = qasr_host.num(arg(args, 4));
+        if mutant != 5 {
+            qasr_host.put(io, "the mutant of the weights is 5\n");
+            return 101;
+        }
+    }
+    if files.path_ok(fs, st) == false || files.path_ok(fs, wdir) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let iv = box_slice(heap, 1, 0);
+    var bad = 0;
+    borrow mut iv as &!qb in {
+        let q = contents(qb);
+        layers(heap, fs, st, "model.layers.", 28, 2048, 6144, wdir, false, q);
+        if q[0] == 0 {
+            copy(heap, fs, st, "model.norm.weight", 0 - 1, "", 2048, wdir, "nf", 0 - 1, ".f32", false, q);
+            copy(heap, fs, st, "codec_head.weight", 0 - 1, "", 3072 * 2048, wdir, "head", 0 - 1, ".f16", true, q);
+        }
+        layers(heap, fs, st, "code_predictor.model.layers.", 5, 1024, 3072, wdir, true, q);
+        if q[0] == 0 {
+            copy(heap, fs, st, "code_predictor.model.norm.weight", 0 - 1, "", 1024, wdir, "pnf", 0 - 1, ".f32", false, q);
+            copy(heap, fs, st, "code_predictor.small_to_mtp_projection.weight", 0 - 1, "", 1024 * 2048, wdir, "pproj", 0 - 1, ".f16", true, q);
+            copy(heap, fs, st, "code_predictor.small_to_mtp_projection.bias", 0 - 1, "", 1024, wdir, "pproj_b", 0 - 1, ".f32", false, q);
+            var k = 0;
+            while k < 15 {
+                copy(heap, fs, st, "code_predictor.lm_head.", k, ".weight", 2048 * 1024, wdir, "phead", k, ".f16", true, q);
+                k = k + 1;
+            }
+        }
+        // the tables, transposed: the talker's alone, each of the predictor's alone, and the 16 side by side
+        if q[0] == 0 {
+            let sum = box_slice(heap, 2048 * 16 * 3072, 0.0);
+            let ce = get(heap, fs, st, "model.codec_embedding.weight", 0 - 1, "", 3072 * 2048, q);
+            let et = box_slice(heap, 2048 * 3072, 0.0);
+            borrow ce as &cr in {
+                borrow mut sum as &!sw in {
+                    transposed(contents(cr), 3072, contents(sw), 16 * 3072, 0);
+                }
+                if mutant != 5 {
+                    borrow mut et as &!ew in {
+                        transposed(contents(cr), 3072, contents(ew), 3072, 0);
+                    }
+                }
+            }
+            unbox_slice(heap, ce);
+            var t = 0;
+            while t < 15 {
+                let pe = get(heap, fs, st, "code_predictor.model.codec_embedding.", t, ".weight", 2048 * 2048, q);
+                let pt = box_slice(heap, 2048 * 2048, 0.0);
+                borrow pe as &pr in {
+                    borrow mut sum as &!sw in {
+                        transposed(contents(pr), 2048, contents(sw), 16 * 3072, (t + 1) * 3072);
+                    }
+                    borrow mut pt as &!pw in {
+                        transposed(contents(pr), 2048, contents(pw), 2048, 0);
+                    }
+                    if mutant == 5 && t == 0 {
+                        borrow mut et as &!ew in {
+                            transposed(contents(pr), 2048, contents(ew), 3072, 0);
+                        }
+                    }
+                }
+                borrow pt as &pr in {
+                    qasr_host.put_file(heap, fs, wdir, "pembt", t, ".f16", true, contents(pr), q);
+                }
+                unbox_slice(heap, pe);
+                unbox_slice(heap, pt);
+                t = t + 1;
+            }
+            borrow et as &er in {
+                qasr_host.put_file(heap, fs, wdir, "embt", 0 - 1, ".f16", true, contents(er), q);
+            }
+            borrow sum as &sr in {
+                qasr_host.put_file(heap, fs, wdir, "sumt", 0 - 1, ".f16", true, contents(sr), q);
+            }
+            unbox_slice(heap, et);
+            unbox_slice(heap, sum);
+        }
+        bad = q[0];
+    }
+    unbox_slice(heap, iv);
+    if bad != 0 {
+        qasr_host.put(io, "the checkpoint is not there, a tensor of the talker is missing or of another size, or the weights directory cannot be written\n");
+        return 104;
+    }
+    qasr_host.put(io, "weights: written\n");
+    return 0;
+}
+
+// `n` values `v` as `dir/<name><i>.f32` (`i` < 0: no number)
+fn put_const[&h, &f, &w, &n, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], name: &n [byte], i: int, n: int, v: float, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let t = box_slice(heap, n, v);
+    borrow t as &tr in {
+        qasr_host.put_file(heap, fs, work, name, i, ".f32", false, contents(tr), iv);
+    }
+    unbox_slice(heap, t);
+    return 0;
+}
+
+// `n` values, `off` everywhere and `on` at `at` (`upto` false) or at 0 .. `at` (`upto` true), as `dir/<name><i>.f32`
+fn put_one[&h, &f, &w, &n, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], name: &n [byte], i: int, n: int, at: int, on: float, off: float, upto: bool, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let t = box_slice(heap, n, off);
+    borrow mut t as &!tw in {
+        var k = 0;
+        while k < n {
+            if k == at || upto && k < at {
+                contents(tw)[k] = on;
+            }
+            k = k + 1;
+        }
+    }
+    borrow t as &tr in {
+        qasr_host.put_file(heap, fs, work, name, i, ".f32", false, contents(tr), iv);
+    }
+    unbox_slice(heap, t);
+    return 0;
+}
+
+// a table of `steps` blocks of `width`: block j is `off` everywhere and `on` at column j (`upto` false) or at the columns up to j (`upto` true)
+fn put_steps[&h, &f, &w, &n, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], name: &n [byte], steps: int, width: int, on: float, off: float, upto: bool, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let t = box_slice(heap, steps * width, off);
+    borrow mut t as &!tw in {
+        var j = 0;
+        while j < steps {
+            if upto {
+                var k = 0;
+                while k <= j && k < width {
+                    contents(tw)[j * width + k] = on;
+                    k = k + 1;
+                }
+            } else if j < width {
+                contents(tw)[j * width + j] = on;
+            }
+            j = j + 1;
+        }
+    }
+    borrow t as &tr in {
+        qasr_host.put_file(heap, fs, work, name, 0 - 1, ".f32", false, contents(tr), iv);
+    }
+    unbox_slice(heap, t);
+    return 0;
+}
+
+// the rotary row of a position: cos into `cs[at ..]`, sin into `sn[at ..]`, 64 each (base 1e6, as the recognition's)
+fn rotary[&c, &s](pos: int, cs: &!c [float], sn: &!s [float], at: int) -> [] int {
+    var k = 0;
+    while k < 64 {
+        let a = float_of(pos) * math.exp(0.0 - 13.815510557964274 * float_of(k) / 64.0);
+        cs[at + k] = math.cos(a);
+        sn[at + k] = math.sin(a);
+        k = k + 1;
+    }
+    return 0;
+}
+
+// the next number of the generator in `state[0]` (a Lehmer generator, modulus 2^31 - 1), as -log(-log u): the noise an entry of a draw gets
+fn gumbel[&s](state: &!s [int]) -> [] float {
+    state[0] = state[0] * 48271 % 2147483647;
+    let u = float_of(state[0]) / 2147483647.0;
+    return 0.0 - math.log(0.0 - math.log(u));
+}
+
+// where the generator starts for draw `p` of frame `g` under `seed`: a mix of the three (a Lehmer generator started at s and at 2 s gives two streams of which one is the other doubled, so the
+// starts must not be near multiples), 1 to 2^31 - 2. A draw's noise then depends on the seed, its frame and its place in the frame, and not on how many steps were asked for.
+fn row_start(seed: int, g: int, p: int) -> [] int {
+    var x = (seed * 1103515245 + g * 1664525 + p * 22695477 + 374761393) % 4294967296;
+    x = (x ^ x / 32768) * 1103515245 % 4294967296;
+    x = (x ^ x / 8192) * 1664525 % 4294967296;
+    x = x ^ x / 65536;
+    return x % 2147483646 + 1;
+}
+
+// the noise table of draw `p`, `[steps, width]`: step j's row is frame j - (prefix - 1) - `late`'s (zeros before the first frame); from `given` (rows of `width`, `per` a frame, this draw's the
+// one at `slot`) while it has the frame and zeros after it, or, with `seeded`, from the generator
+fn noise[&h, &f, &w, &v, &s, &q](heap: &!h Heap, fs: &f Fs(""), work: &w [byte], p: int, steps: int, prefix: int, width: int, given: &v [float], per: int, slot: int, seeded: bool, state: &!s [int], late: int, iv: &!q [int]) -> [heap, fs_write(""), file_write] int {
+    let t = box_slice(heap, steps * width, 0.0);
+    borrow mut t as &!tw in {
+        var j = 0;
+        while j < steps {
+            let g = j - (prefix - 1) - late;
+            if g >= 0 {
+                var k = 0;
+                if seeded {
+                    state[0] = row_start(state[1], g, p);
+                    while k < width {
+                        contents(tw)[j * width + k] = gumbel(state);
+                        k = k + 1;
+                    }
+                } else if (g * per + slot + 1) * width <= len(given) {
+                    while k < width {
+                        contents(tw)[j * width + k] = given[(g * per + slot) * width + k];
+                        k = k + 1;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+    }
+    borrow t as &tr in {
+        qasr_host.put_file(heap, fs, work, "g", p, ".f32", false, contents(tr), iv);
+    }
+    unbox_slice(heap, t);
+    return 0;
+}
+
+fn inputs[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    let na = arg_count(args);
+    if na != 11 && na != 12 {
+        qasr_host.put(io, "usage: qwen3_tts_step_gpu inputs <work dir> <prefix rows .f32> <pad row .f32> <prefix> <steps> <positions> ref <dir> | seed <n>  <codes.txt | -> [<mutant 2, 3, 4 or 7>]\n");
+        return 100;
+    }
+    let work = arg(args, 2);
+    let prefix = qasr_host.num(arg(args, 5));
+    let steps = qasr_host.num(arg(args, 6));
+    let tmax = qasr_host.num(arg(args, 7));
+    let seeded = qasr_host.is_text(arg(args, 8), "seed");
+    let forced = qasr_host.is_text(arg(args, 10), "-") == false;
+    var mutant = 0;
+    if na == 12 {
+        mutant = qasr_host.num(arg(args, 11));
+    }
+    var seed = 1;
+    if seeded {
+        seed = qasr_host.num(arg(args, 9));
+    }
+    if prefix < 1 || steps < prefix || steps > 1024 || tmax < 64 || tmax % 64 != 0 || steps > tmax || seeded == false && qasr_host.is_text(arg(args, 8), "ref") == false || seed < 1 || seed > 2147483646 || na == 12 && mutant != 2 && mutant != 3 && mutant != 4 && mutant != 7 {
+        qasr_host.put(io, "the prefix is 1 or more rows, the steps the prefix to 1024, the positions a multiple of 64 that holds the steps, the noise `ref <dir>` or `seed <1 to 2147483646>`, a mutant 2, 3, 4 or 7\n");
+        return 101;
+    }
+    if files.path_ok(fs, work) == false || files.path_ok(fs, arg(args, 3)) == false || files.path_ok(fs, arg(args, 4)) == false || seeded == false && files.path_ok(fs, arg(args, 9)) == false || forced && files.path_ok(fs, arg(args, 10)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (rows, nr) = wenc_st.load_raw(heap, fs, arg(args, 3));
+    let (pad, np) = wenc_st.load_raw(heap, fs, arg(args, 4));
+    let codes = box_slice(heap, 1024 * 16, 0);
+    var frames = 0;
+    if forced {
+        borrow mut codes as &!cw in {
+            let n = qasr_host.read_ids(heap, fs, arg(args, 10), contents(cw));
+            frames = n / 16;
+            if n < 16 || n % 16 != 0 {
+                frames = 0 - 1;
+            }
+            var k = 0;
+            while k < n {
+                if contents(cw)[k] >= 2048 {
+                    frames = 0 - 1;
+                }
+                k = k + 1;
+            }
+        }
+    }
+    var gt = box_slice(heap, 1, 0.0);
+    var gp = box_slice(heap, 1, 0.0);
+    var ngt = 0;
+    var ngp = 0;
+    if seeded == false {
+        let a = qasr_host.path3(heap, arg(args, 9), "gt", 0 - 1, ".f32");
+        borrow a as &ab in {
+            let (v, n) = wenc_st.load_raw(heap, fs, buffer.bytes(ab));
+            unbox_slice(heap, gt);
+            gt = v;
+            ngt = n;
+        }
+        buffer.drop(heap, a);
+        let b = qasr_host.path3(heap, arg(args, 9), "gp", 0 - 1, ".f32");
+        borrow b as &bb in {
+            let (v, n) = wenc_st.load_raw(heap, fs, buffer.bytes(bb));
+            unbox_slice(heap, gp);
+            gp = v;
+            ngp = n;
+        }
+        buffer.drop(heap, b);
+    }
+    var status = 0;
+    if nr < prefix * 2048 || nr % 2048 != 0 || np != 2048 {
+        qasr_host.put(io, "the prefix's rows are rows of 2048 singles, at least `prefix` of them, and the pad row is one\n");
+        status = 105;
+    } else if frames < 0 {
+        qasr_host.put(io, "the codes are 16 under 2048 a frame, 1 to 1024 frames\n");
+        status = 103;
+    } else if seeded == false && (ngt < 3072 || ngt % 3072 != 0 || ngp < 15 * 2048 || ngp % (15 * 2048) != 0) {
+        qasr_host.put(io, "the reference's noise is gt.f32, rows of 3072 singles, and gp.f32, 15 rows of 2048 a frame\n");
+        status = 105;
+    } else {
+        let iv = box_slice(heap, 1, 0);
+        borrow mut iv as &!qb in {
+            let q = contents(qb);
+            // the prefix's rows and their flag; the pad row (mutant 4: zeros)
+            let xt = box_slice(heap, steps * 2048, 0.0);
+            let mt = box_slice(heap, steps, 0.0);
+            borrow rows as &rr in {
+                borrow mut xt as &!xw in {
+                    var k = 0;
+                    while k < prefix * 2048 {
+                        contents(xw)[k] = contents(rr)[k];
+                        k = k + 1;
+                    }
+                }
+            }
+            borrow mut mt as &!mw in {
+                var j = 0;
+                while j < prefix {
+                    contents(mw)[j] = 1.0;
+                    j = j + 1;
+                }
+            }
+            borrow xt as &xr in {
+                qasr_host.put_file(heap, fs, work, "xtab", 0 - 1, ".f32", false, contents(xr), q);
+            }
+            borrow mt as &mr in {
+                qasr_host.put_file(heap, fs, work, "mtab", 0 - 1, ".f32", false, contents(mr), q);
+            }
+            unbox_slice(heap, xt);
+            unbox_slice(heap, mt);
+            if mutant == 4 {
+                put_const(heap, fs, work, "pad", 0 - 1, 2048, 0.0, q);
+            } else {
+                borrow pad as &pr in {
+                    qasr_host.put_file(heap, fs, work, "pad", 0 - 1, ".f32", false, contents(pr), q);
+                }
+            }
+            // the talker's positions, caches and mask, as the recognition's step
+            let cs = box_slice(heap, steps * 64, 0.0);
+            let sn = box_slice(heap, steps * 64, 0.0);
+            borrow mut cs as &!cw in {
+                borrow mut sn as &!sw in {
+                    var j = 0;
+                    while j < steps {
+                        rotary(j, contents(cw), contents(sw), j * 64);
+                        j = j + 1;
+                    }
+                }
+            }
+            borrow cs as &cr in {
+                qasr_host.put_file(heap, fs, work, "cos", 0 - 1, ".f32", false, contents(cr), q);
+            }
+            borrow sn as &sr in {
+                qasr_host.put_file(heap, fs, work, "sin", 0 - 1, ".f32", false, contents(sr), q);
+            }
+            unbox_slice(heap, cs);
+            unbox_slice(heap, sn);
+            put_steps(heap, fs, work, "sel", steps, tmax, 1.0, 0.0, false, q);
+            put_steps(heap, fs, work, "keep", steps, tmax, 0.0, 1.0, false, q);
+            put_steps(heap, fs, work, "mask", steps, tmax, 0.0, 0.0 - 1000000000.0, true, q);
+            put_steps(heap, fs, work, "accsel", steps, steps, 1.0, 0.0, false, q);
+            put_steps(heap, fs, work, "acckeep", steps, steps, 0.0, 1.0, false, q);
+            // valid: the step before drew a frame's first code. addt: the entries that may not be drawn, the end token among them in the first two frames (mutant 7: not)
+            let va = box_slice(heap, steps, 0.0);
+            let ad = box_slice(heap, steps * 3072, 0.0);
+            borrow mut va as &!vw in {
+                borrow mut ad as &!aw in {
+                    var j = 0;
+                    while j < steps {
+                        if j >= prefix {
+                            contents(vw)[j] = 1.0;
+                        }
+                        var k = 2048;
+                        while k < 3072 {
+                            if k != eos() || mutant != 7 && j <= prefix {
+                                contents(aw)[j * 3072 + k] = 0.0 - 1000000000.0;
+                            }
+                            k = k + 1;
+                        }
+                        j = j + 1;
+                    }
+                }
+            }
+            borrow va as &vr in {
+                qasr_host.put_file(heap, fs, work, "valid", 0 - 1, ".f32", false, contents(vr), q);
+            }
+            borrow ad as &ar in {
+                qasr_host.put_file(heap, fs, work, "addt", 0 - 1, ".f32", false, contents(ar), q);
+            }
+            unbox_slice(heap, va);
+            unbox_slice(heap, ad);
+            // the noise, a table a draw (mutant 2: a step late)
+            var late = 0;
+            if mutant == 2 {
+                late = 1;
+            }
+            // [0] the generator's state, [1] the seed: each row of noise starts from its own state (row_start)
+            let state = box_slice(heap, 2, seed);
+            borrow mut state as &!sb in {
+                borrow gt as &gr in {
+                    noise(heap, fs, work, 0, steps, prefix, 3072, contents(gr), 1, 0, seeded, contents(sb), late, q);
+                }
+                borrow gp as &gr in {
+                    var p = 1;
+                    while p < 16 {
+                        noise(heap, fs, work, p, steps, prefix, 2048, contents(gr), 15, p - 1, seeded, contents(sb), late, q);
+                        p = p + 1;
+                    }
+                }
+            }
+            unbox_slice(heap, state);
+            // the forced codes: frame g at step prefix - 1 + g, and the end token after the last frame
+            let fo = box_slice(heap, steps, 0.0);
+            borrow mut fo as &!fw in {
+                var j = 0;
+                while j < steps {
+                    let g = j - (prefix - 1);
+                    if forced && g >= 0 && g <= frames {
+                        contents(fw)[j] = 1.0;
+                    }
+                    j = j + 1;
+                }
+            }
+            borrow fo as &fr in {
+                qasr_host.put_file(heap, fs, work, "force", 0 - 1, ".f32", false, contents(fr), q);
+            }
+            unbox_slice(heap, fo);
+            var p = 0;
+            while p < 16 {
+                let tf = box_slice(heap, steps, 1.0);
+                borrow codes as &cr in {
+                    borrow mut tf as &!tw in {
+                        var j = 0;
+                        while j < steps {
+                            let g = j - (prefix - 1);
+                            if forced && g >= 0 && g < frames {
+                                contents(tw)[j] = float_of(contents(cr)[g * 16 + p] + 1);
+                            } else if forced && g == frames && p == 0 {
+                                contents(tw)[j] = float_of(eos() + 1);
+                            }
+                            j = j + 1;
+                        }
+                    }
+                }
+                borrow tf as &tr in {
+                    qasr_host.put_file(heap, fs, work, "tf", p, ".f32", false, contents(tr), q);
+                }
+                unbox_slice(heap, tf);
+                // the predictor's row p: its position (mutant 3: 0), its place in the caches, what it sees; and slot p of the frame's 16 ids
+                let pc = box_slice(heap, 64, 0.0);
+                let ps = box_slice(heap, 64, 0.0);
+                borrow mut pc as &!cw in {
+                    borrow mut ps as &!sw in {
+                        if mutant == 3 {
+                            rotary(0, contents(cw), contents(sw), 0);
+                        } else {
+                            rotary(p, contents(cw), contents(sw), 0);
+                        }
+                    }
+                }
+                borrow pc as &cr in {
+                    qasr_host.put_file(heap, fs, work, "pcos", p, ".f32", false, contents(cr), q);
+                }
+                borrow ps as &sr in {
+                    qasr_host.put_file(heap, fs, work, "psin", p, ".f32", false, contents(sr), q);
+                }
+                unbox_slice(heap, pc);
+                unbox_slice(heap, ps);
+                put_one(heap, fs, work, "psel", p, 64, p, 1.0, 0.0, false, q);
+                put_one(heap, fs, work, "pkeep", p, 64, p, 0.0, 1.0, false, q);
+                put_one(heap, fs, work, "pmask", p, 64, p, 0.0, 0.0 - 1000000000.0, true, q);
+                put_one(heap, fs, work, "gsel", p, 16, p, 1.0, 0.0, false, q);
+                put_one(heap, fs, work, "gkeep", p, 16, p, 0.0, 1.0, false, q);
+                p = p + 1;
+            }
+            // the constants: zeros, a one, the one-hots' column numbers 1 .. V and the arg max's ranks V - j at the two vocabularies, the empty caches and answer
+            put_const(heap, fs, work, "zero", 16, 16, 0.0, q);
+            put_const(heap, fs, work, "zero", 2048, 2048, 0.0, q);
+            put_const(heap, fs, work, "zero", 3072, 3072, 0.0, q);
+            put_const(heap, fs, work, "one", 1, 1, 1.0, q);
+            put_const(heap, fs, work, "zcache", 0 - 1, 8 * tmax * 128, 0.0, q);
+            put_const(heap, fs, work, "pzcache", 0 - 1, 8 * 64 * 128, 0.0, q);
+            put_const(heap, fs, work, "acc0", 0 - 1, 16 * steps, 0.0, q);
+            var v = 2048;
+            while v <= 3072 {
+                let jr = box_slice(heap, v, 0.0);
+                let rk = box_slice(heap, v, 0.0);
+                borrow mut jr as &!jw in {
+                    borrow mut rk as &!rw in {
+                        var j = 0;
+                        while j < v {
+                            contents(jw)[j] = float_of(j + 1);
+                            contents(rw)[j] = float_of(v - j);
+                            j = j + 1;
+                        }
+                    }
+                }
+                borrow jr as &jrr in {
+                    qasr_host.put_file(heap, fs, work, "jrow", v, ".f32", false, contents(jrr), q);
+                }
+                borrow rk as &rkr in {
+                    qasr_host.put_file(heap, fs, work, "rank", v, ".f32", false, contents(rkr), q);
+                }
+                unbox_slice(heap, jr);
+                unbox_slice(heap, rk);
+                v = v + 1024;
+            }
+            if q[0] != 0 {
+                qasr_host.put(io, "a file could not be written in the work directory\n");
+                status = 104;
+            } else {
+                qasr_host.put(io, "T=");
+                qasr_host.put_int(io, tmax);
+                qasr_host.put(io, " NS=");
+                qasr_host.put_int(io, steps);
+                qasr_host.put(io, " prefix ");
+                qasr_host.put_int(io, prefix);
+                qasr_host.put(io, " frames ");
+                qasr_host.put_int(io, steps - prefix + 1);
+                qasr_host.put(io, "\n");
+            }
+        }
+        unbox_slice(heap, iv);
+    }
+    unbox_slice(heap, rows);
+    unbox_slice(heap, pad);
+    unbox_slice(heap, codes);
+    unbox_slice(heap, gt);
+    unbox_slice(heap, gp);
+    return status;
+}
+
+// the id a step drew, 0-based, from the single the device wrote (1-based); -1 for what is not a whole number of a vocabulary of `v`
+fn drawn(x: float, v: int) -> [] int {
+    if x >= 1.0 == false || x > float_of(v) {
+        return 0 - 1;
+    }
+    let k = truncate(x);
+    if float_of(k) != x {
+        return 0 - 1;
+    }
+    return k - 1;
+}
+
+// the device's answer `<work>/ids_out.f32`, `[16, steps]`, and its steps (0 if it is not there or not 16 rows)
+fn answer[&h, &f, &w](heap: &!h Heap, fs: &f Fs(""), work: &w [byte]) -> [heap, fs_read(""), file_read] (Box[[float]], int) {
+    let op = qasr_host.path3(heap, work, "ids_out", 0 - 1, ".f32");
+    var got = box_slice(heap, 1, 0.0);
+    var steps = 0;
+    borrow op as &opb in {
+        let (v, m) = wenc_st.load_raw(heap, fs, buffer.bytes(opb));
+        unbox_slice(heap, got);
+        got = v;
+        if m >= 16 && m % 16 == 0 {
+            steps = m / 16;
+        }
+    }
+    buffer.drop(heap, op);
+    return (got, steps);
+}
+
+fn codes[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) != 5 {
+        qasr_host.put(io, "usage: qwen3_tts_step_gpu codes <work dir> <prefix> <codes.txt to write>\n");
+        return 100;
+    }
+    let prefix = qasr_host.num(arg(args, 3));
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 4)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (got, steps) = answer(heap, fs, arg(args, 2));
+    var status = 0;
+    if steps < 1 {
+        qasr_host.put(io, "the steps' ids are not there: run the session and its checkpoint\n");
+        status = 106;
+    } else if prefix < 1 || prefix > steps {
+        qasr_host.put(io, "the prefix is 1 to the steps\n");
+        status = 101;
+    } else {
+        var text = buffer.empty(heap, 4096);
+        var frames = 0;
+        var ended = false;
+        var bad = false;
+        borrow got as &gr in {
+            var j = prefix - 1;
+            while j < steps && ended == false && bad == false {
+                let first = drawn(contents(gr)[j], 3072);
+                if first == eos() {
+                    ended = true;
+                } else {
+                    var p = 0;
+                    while p < 16 {
+                        let c = drawn(contents(gr)[p * steps + j], 2048);
+                        if c < 0 {
+                            bad = true;
+                        } else {
+                            if p > 0 {
+                                text = buffer.push(heap, text, byte_of(32));
+                            }
+                            text = buffer.push_nat(heap, text, c);
+                        }
+                        p = p + 1;
+                    }
+                    text = buffer.push(heap, text, byte_of(10));
+                    if bad == false {
+                        frames = frames + 1;
+                    }
+                }
+                j = j + 1;
+            }
+        }
+        if bad {
+            qasr_host.put(io, "a draw of frame ");
+            qasr_host.put_int(io, frames);
+            qasr_host.put(io, " is not a code\n");
+            status = 1;
+        } else {
+            var w = 0;
+            borrow text as &tb in {
+                w = files.write_all(fs, arg(args, 4), buffer.bytes(tb));
+            }
+            if w != 0 {
+                qasr_host.put(io, "the codes could not be written\n");
+                status = 104;
+            } else {
+                qasr_host.put(io, "frames ");
+                qasr_host.put_int(io, frames);
+                if ended == false {
+                    qasr_host.put(io, ": no step drew the end token\n");
+                    status = 3;
+                } else {
+                    qasr_host.put(io, "\n");
+                }
+            }
+        }
+        buffer.drop(heap, text);
+    }
+    unbox_slice(heap, got);
+    return status;
+}
+
+fn check[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 6 {
+        qasr_host.put(io, "usage: qwen3_tts_step_gpu check <work dir> <prefix> <reference codes.txt> <margins .f32>\n");
+        return 100;
+    }
+    let prefix = qasr_host.num(arg(args, 3));
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 4)) == false || files.path_ok(fs, arg(args, 5)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let (got, steps) = answer(heap, fs, arg(args, 2));
+    let want = box_slice(heap, 1024 * 16, 0);
+    var frames = 0 - 1;
+    borrow mut want as &!ww in {
+        let n = qasr_host.read_ids(heap, fs, arg(args, 4), contents(ww));
+        if n >= 16 && n % 16 == 0 {
+            frames = n / 16;
+        }
+    }
+    let (marg, nm) = wenc_st.load_raw(heap, fs, arg(args, 5));
+    var status = 1;
+    if steps < 1 {
+        qasr_host.put(io, "the steps' ids are not there: run the session and its checkpoint\n");
+        status = 106;
+    } else if frames < 1 || prefix < 1 || steps < prefix + frames || nm != 16 * frames + 1 {
+        qasr_host.put(io, "the reference's codes are 16 a frame, the steps reach the row after the last frame, and the margins are the talker's frames + 1 then the predictor's 15 a frame\n");
+        status = 101;
+    } else {
+        // [0] the talker's draws equal, [1] its clear draws, [2] of those the equal ones; [3], [4], [5] the predictor's; [6] the frames equal before the first that differs; [7] 1 once one differed
+        let counts = box_slice(heap, 8, 0);
+        borrow got as &gr in {
+            borrow want as &wr in {
+                borrow marg as &mr in {
+                    borrow mut counts as &!cb in {
+                        let c = contents(cb);
+                        var g = 0;
+                        while g <= frames {
+                            let j = prefix - 1 + g;
+                            var all = true;
+                            var expect = eos();
+                            if g < frames {
+                                expect = contents(wr)[g * 16];
+                            }
+                            let same = drawn(contents(gr)[j], 3072) == expect;
+                            let clear = contents(mr)[g] > 0.2;
+                            if same {
+                                c[0] = c[0] + 1;
+                            } else {
+                                all = false;
+                            }
+                            if clear {
+                                c[1] = c[1] + 1;
+                                if same {
+                                    c[2] = c[2] + 1;
+                                }
+                            }
+                            var p = 1;
+                            while p < 16 && g < frames {
+                                let ps = drawn(contents(gr)[p * steps + j], 2048) == contents(wr)[g * 16 + p];
+                                let pc = contents(mr)[frames + 1 + g * 15 + p - 1] > 0.2;
+                                if ps {
+                                    c[3] = c[3] + 1;
+                                } else {
+                                    all = false;
+                                }
+                                if pc {
+                                    c[4] = c[4] + 1;
+                                    if ps {
+                                        c[5] = c[5] + 1;
+                                    }
+                                }
+                                p = p + 1;
+                            }
+                            if all == false {
+                                c[7] = 1;
+                            }
+                            if c[7] == 0 && g < frames {
+                                c[6] = c[6] + 1;
+                            }
+                            g = g + 1;
+                        }
+                    }
+                }
+            }
+        }
+        borrow counts as &cb in {
+            let c = contents(cb);
+            qasr_host.put(io, "the talker's draws equal to the reference's: ");
+            qasr_host.put_int(io, c[0]);
+            qasr_host.put(io, " of ");
+            qasr_host.put_int(io, frames + 1);
+            qasr_host.put(io, "; of the clear ones ");
+            qasr_host.put_int(io, c[2]);
+            qasr_host.put(io, " of ");
+            qasr_host.put_int(io, c[1]);
+            qasr_host.put(io, "\nthe predictor's: ");
+            qasr_host.put_int(io, c[3]);
+            qasr_host.put(io, " of ");
+            qasr_host.put_int(io, 15 * frames);
+            qasr_host.put(io, "; of the clear ones ");
+            qasr_host.put_int(io, c[5]);
+            qasr_host.put(io, " of ");
+            qasr_host.put_int(io, c[4]);
+            qasr_host.put(io, "\nframes equal before the first that differs: ");
+            qasr_host.put_int(io, c[6]);
+            qasr_host.put(io, " of ");
+            qasr_host.put_int(io, frames);
+            qasr_host.put(io, "\n");
+            if c[2] == c[1] && c[5] == c[4] {
+                status = 0;
+            }
+        }
+        unbox_slice(heap, counts);
+    }
+    unbox_slice(heap, got);
+    unbox_slice(heap, want);
+    unbox_slice(heap, marg);
+    return status;
+}
+
+fn probe[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), file_read] int {
+    if arg_count(args) != 6 {
+        qasr_host.put(io, "usage: qwen3_tts_step_gpu probe <work dir> <reference probabilities .f32> <row> <reference noise .f32>\n");
+        return 100;
+    }
+    let row = qasr_host.num(arg(args, 4));
+    if files.path_ok(fs, arg(args, 2)) == false || files.path_ok(fs, arg(args, 3)) == false || files.path_ok(fs, arg(args, 5)) == false {
+        qasr_host.put(io, "the paths are absolute\n");
+        return 102;
+    }
+    let zp = qasr_host.path3(heap, arg(args, 2), "z", 0 - 1, ".f32");
+    var z = box_slice(heap, 1, 0.0);
+    var nz = 0;
+    borrow zp as &zb in {
+        let (v, n) = wenc_st.load_raw(heap, fs, buffer.bytes(zb));
+        unbox_slice(heap, z);
+        z = v;
+        nz = n;
+    }
+    buffer.drop(heap, zp);
+    let (pr, np) = wenc_st.load_raw(heap, fs, arg(args, 3));
+    let (gr, ng) = wenc_st.load_raw(heap, fs, arg(args, 5));
+    var status = 1;
+    if nz != 3072 {
+        qasr_host.put(io, "the draw's row is not there: run the session with PROBE=1 and its checkpoint\n");
+        status = 106;
+    } else if row < 0 || (row + 1) * 3072 > np || (row + 1) * 3072 > ng {
+        qasr_host.put(io, "the row is one of the reference's, in both of its files\n");
+        status = 101;
+    } else {
+        var kept = 0;
+        var both = 0;
+        var theirs = 0;
+        var zmax = 0.0 - 1000000000.0;
+        var pmax = 0.0;
+        var worst = 0.0;
+        borrow z as &zr in {
+            borrow pr as &prr in {
+                borrow gr as &grr in {
+                    var k = 0;
+                    while k < 3072 {
+                        let p = contents(prr)[row * 3072 + k];
+                        let mine = contents(zr)[k] > 0.0 - 100000000.0;
+                        if mine {
+                            kept = kept + 1;
+                            let y = contents(zr)[k] - contents(grr)[row * 3072 + k];
+                            if y > zmax {
+                                zmax = y;
+                            }
+                        }
+                        if p > 0.0 {
+                            theirs = theirs + 1;
+                            if mine {
+                                both = both + 1;
+                            }
+                            if p > pmax {
+                                pmax = p;
+                            }
+                        }
+                        k = k + 1;
+                    }
+                    k = 0;
+                    while k < 3072 {
+                        let p = contents(prr)[row * 3072 + k];
+                        if p > 0.0 && contents(zr)[k] > 0.0 - 100000000.0 {
+                            let d = qasr_host.abs(contents(zr)[k] - contents(grr)[row * 3072 + k] - zmax - (math.log(p) - math.log(pmax)));
+                            if d > worst {
+                                worst = d;
+                            }
+                        }
+                        k = k + 1;
+                    }
+                }
+            }
+        }
+        qasr_host.put(io, "kept ");
+        qasr_host.put_int(io, kept);
+        qasr_host.put(io, ", the reference's ");
+        qasr_host.put_int(io, theirs);
+        qasr_host.put(io, ", in both ");
+        qasr_host.put_int(io, both);
+        qasr_host.put(io, "; the log probabilities of those, each less its maximum, worst ");
+        qasr_host.put_float(io, worst);
+        qasr_host.put(io, "\n");
+        if kept == theirs && both == theirs && worst <= 0.1 {
+            status = 0;
+        }
+    }
+    unbox_slice(heap, z);
+    unbox_slice(heap, pr);
+    unbox_slice(heap, gr);
+    return status;
+}
+
+fn run[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args: &g Args) -> [args, io_write, heap, fs_read(""), fs_write(""), file_read, file_write] int {
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "weights") {
+        return weights(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "inputs") {
+        return inputs(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "codes") {
+        return codes(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "check") {
+        return check(io, heap, fs, args);
+    }
+    if arg_count(args) >= 2 && qasr_host.is_text(arg(args, 1), "probe") {
+        return probe(io, heap, fs, args);
+    }
+    qasr_host.put(io, "usage: qwen3_tts_step_gpu weights ... | inputs ... | codes ... | check ... | probe ...\n");
+    return 100;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(net);
+    release(clock);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 100;
+    borrow mut io as &!i in {
+        borrow fs as &f in {
+            borrow mut heap as &!h in {
+                borrow args as &g in {
+                    status = run(i, h, f, g);
+                }
+            }
+        }
+    }
+    release(args);
+    release(io);
+    release(heap);
+    release(fs);
+    return status;
+}

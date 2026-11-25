@@ -1,0 +1,459 @@
+edition 10;
+
+module speak;
+
+import std.buffer;
+import std.io;
+import files;
+import pathx;
+import stage;
+import shared;
+import transcribe;
+
+// speak -- `media speak "TEXT" -o DIR [--voice NAME] [--language NAME] [--seed N] [--most N]` (docs/audio.md section 28, S4): a sentence to a wav file with Qwen3-TTS-12Hz-1.7B. The stages are the host
+// programs of S1 to S4 and the tokenizer (scripts/tts) and the Metal sessions (scripts/tts-session); the numbers one stage needs from another are read here from what the stage prints, with
+// transcribe.cho's helpers. There is no Python of this command.
+
+// The most steps a request holds (tests/qwen3_tts_step_gpu.cho's tables), which are the talker's positions too: the prefix and the frames.
+fn most_steps() -> [] int {
+    return 1024;
+}
+
+// The frames of a piece the reference decodes at once, and the frames before it that it reads again as context (`chunked_decode`).
+fn piece() -> [] int {
+    return 300;
+}
+
+fn context() -> [] int {
+    return 25;
+}
+
+// Is `dir`/`name` a file?
+fn there[&h, &f, &d](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], name: &static [byte]) -> [heap, fs_read("")] bool {
+    let p = pathx.under(heap, dir, name);
+    var yes = false;
+    borrow p as &pb in {
+        yes = shared.is_file(fs, buffer.bytes(pb));
+    }
+    buffer.drop(heap, p);
+    return yes;
+}
+
+pub fn cmd_speak[&i, &h, &f, &x, &y, &c, &e, &a, &zc](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, ctx: &zc shared.Ctx, env: &e [byte], args: &a Args, from: int) -> [args, io_write, err_write, heap, fs_read(""), fs_write(""), file_write, dir_read, dir_write, exec_under, clock, poll] int {
+    var text = "";
+    var positional = 0;
+    var output = "";
+    var voice = "ryan";
+    var language = "auto";
+    var most = 0;
+    var seed = 1;
+    var k = from;
+    let n = arg_count(args);
+    let stop = shared.dashdash(args, from);
+    while k < stop {
+        let t = arg(args, k);
+        if shared.is_text(t, "-o") || shared.is_text(t, "--output") {
+            k = k + 1;
+            if k >= stop {
+                return shared.bad_value(io, "-o/--output");
+            }
+            output = arg(args, k);
+        } else if shared.is_text(t, "--voice") {
+            k = k + 1;
+            if k >= stop {
+                return shared.bad_value(io, "--voice");
+            }
+            voice = arg(args, k);
+        } else if shared.is_text(t, "--language") {
+            k = k + 1;
+            if k >= stop {
+                return shared.bad_value(io, "--language");
+            }
+            language = arg(args, k);
+        } else if shared.is_text(t, "--most") {
+            k = k + 1;
+            if k >= stop || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--most");
+            }
+            most = shared.num(arg(args, k));
+            if most < 1 || most > 1000 {
+                return shared.refuse_text(io, "--most is the budget of frames (12.5 a second of speech), 1 to 1000");
+            }
+        } else if shared.is_text(t, "--seed") {
+            k = k + 1;
+            if k >= stop || shared.num(arg(args, k)) < 0 {
+                return shared.bad_value(io, "--seed");
+            }
+            seed = shared.num(arg(args, k));
+            if seed < 1 || seed > 2147483646 {
+                return shared.refuse_text(io, "--seed is 1 to 2147483646");
+            }
+        } else if positional == 0 {
+            text = t;
+            positional = 1;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    k = stop + 1;
+    while k < n {
+        if positional == 0 {
+            text = arg(args, k);
+            positional = 1;
+        } else {
+            io.error_all(io, "media: unrecognized arguments\n");
+            return 2;
+        }
+        k = k + 1;
+    }
+    if positional < 1 || len(output) == 0 {
+        io.error_all(io, "media: the following arguments are required: text, -o/--output\n");
+        return 2;
+    }
+    if shared.rewriter_blank(text) {
+        return shared.refuse_text(io, "the text is empty");
+    }
+    if transcribe.built(heap, fs, ctx.root, "build/cancho-gpu-metal-session") == false {
+        return shared.refuse_text(io, "build/cancho-gpu-metal-session is missing: build it with `CANCHO=<pinned cancho> scripts/build-metal-session.sh` (cancho.toml names the compiler)");
+    }
+    if transcribe.built(heap, fs, ctx.root, "build/cancho-gpu") == false {
+        return shared.refuse_text(io, "build/cancho-gpu is missing (the tokenizer is its `tokenize`): build it with `CANCHO=<pinned cancho> scripts/build.sh`");
+    }
+    if transcribe.built(heap, fs, ctx.root, "build/qwen3_tts_front") == false || transcribe.built(heap, fs, ctx.root, "build/qwen3_tts_lm_gpu") == false || transcribe.built(heap, fs, ctx.root, "build/qwen3_tts_step_gpu") == false || transcribe.built(heap, fs, ctx.root, "build/qwen3_tts_decoder_gpu") == false {
+        return shared.refuse_text(io, "the host programs of the speech are missing (build/qwen3_tts_front, _lm_gpu, _step_gpu, _decoder_gpu): build them with `CANCHO=<pinned cancho> scripts/build-tts.sh`");
+    }
+    let snap = shared.snapshot_of(heap, fs, ctx.home, "Qwen--Qwen3-TTS-12Hz-1.7B-CustomVoice", "");
+    var missing = false;
+    borrow snap as &sb in {
+        missing = len(buffer.bytes(sb)) == 0;
+    }
+    if missing {
+        buffer.drop(heap, snap);
+        return shared.refuse_text(io, "weights not in the Hugging Face cache: `hf download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`");
+    }
+    let wt = pathx.under(heap, ctx.cache, "qwen3-tts-tables");
+    let ws = pathx.under(heap, ctx.cache, "qwen3-tts-step-f16");
+    let wd = pathx.under(heap, ctx.cache, "qwen3-tts-decoder-f32");
+    // each directory is there when the last file its program writes is
+    var have_t = false;
+    var have_s = false;
+    var have_d = false;
+    borrow wt as &b1 in {
+        have_t = there(heap, fs, buffer.bytes(b1), "tokenizer.json");
+    }
+    borrow ws as &b2 in {
+        have_s = there(heap, fs, buffer.bytes(b2), "sumt.f16");
+    }
+    borrow wd as &b3 in {
+        have_d = there(heap, fs, buffer.bytes(b3), "fc_b.f32");
+    }
+    var status = 0;
+    let kb = shared.num(ctx.free_kb);
+    if (have_t == false || have_s == false || have_d == false) && kb >= 0 && kb * 1024 < 5000000000 {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the weight files (4.3 GB) are written under ");
+        m = buffer.append(heap, m, ctx.cache);
+        m = buffer.append(heap, m, " on first use and only ");
+        m = shared.push_int(heap, m, (kb * 1024 + 500000000) / 1000000000);
+        m = buffer.append(heap, m, " GB are free");
+        status = shared.refuse_buf(io, heap, m);
+    }
+    let out = pathx.absolute(heap, ctx.cwd, output);
+    var work = buffer.empty(heap, 8);
+    borrow out as &ob0 in {
+        buffer.drop(heap, work);
+        work = pathx.under(heap, buffer.bytes(ob0), "work");
+    }
+    if status == 0 {
+        var made = 0;
+        borrow work as &wk0 in {
+            let a1 = pathx.under(heap, buffer.bytes(wk0), "lm");
+            let a2 = pathx.under(heap, buffer.bytes(wk0), "step");
+            let a3 = pathx.under(heap, buffer.bytes(wk0), "dec");
+            borrow a1 as &p1 in {
+                made = pathx.make_all(fs, buffer.bytes(p1));
+            }
+            borrow a2 as &p2 in {
+                made = made + pathx.make_all(fs, buffer.bytes(p2));
+            }
+            borrow a3 as &p3 in {
+                made = made + pathx.make_all(fs, buffer.bytes(p3));
+            }
+            buffer.drop(heap, a1);
+            buffer.drop(heap, a2);
+            buffer.drop(heap, a3);
+        }
+        borrow wt as &b4 in {
+            made = made + pathx.make_all(fs, buffer.bytes(b4));
+        }
+        borrow ws as &b5 in {
+            made = made + pathx.make_all(fs, buffer.bytes(b5));
+        }
+        borrow wd as &b6 in {
+            made = made + pathx.make_all(fs, buffer.bytes(b6));
+        }
+        if made != 0 {
+            status = shared.refuse_text(io, "cannot create the output directory or the weights' directories");
+        }
+    }
+    if status == 0 {
+        // the text as a file, for the tokenizer
+        var wrote = 0;
+        borrow work as &wk1 in {
+            let tp = pathx.under(heap, buffer.bytes(wk1), "text.txt");
+            borrow tp as &tpb in {
+                wrote = files.write_all(fs, buffer.bytes(tpb), text);
+            }
+            buffer.drop(heap, tp);
+        }
+        if wrote != 0 {
+            status = shared.refuse_text(io, "cannot write the text in the output directory");
+        }
+    }
+    if status == 0 {
+        let lv = shared.lower_text(heap, voice);
+        let ll = shared.lower_text(heap, language);
+        borrow out as &ob in {
+            borrow work as &wk in {
+                borrow snap as &sb2 in {
+                    borrow wt as &t in {
+                        borrow ws as &s in {
+                            borrow wd as &d in {
+                                borrow lv as &v in {
+                                    borrow ll as &l in {
+                                        status = stages(io, heap, exec, sdir, clock, env, ctx.root, buffer.bytes(ob), buffer.bytes(wk), buffer.bytes(sb2), buffer.bytes(t), buffer.bytes(s), buffer.bytes(d), have_t, have_s, have_d, buffer.bytes(v), buffer.bytes(l), seed, most);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        buffer.drop(heap, lv);
+        buffer.drop(heap, ll);
+    }
+    buffer.drop(heap, snap);
+    buffer.drop(heap, wt);
+    buffer.drop(heap, ws);
+    buffer.drop(heap, wd);
+    buffer.drop(heap, out);
+    buffer.drop(heap, work);
+    return status;
+}
+
+// After the refusals: the weights on first use, the text's ids, the prefix, the frames, the codes, the waveform in pieces, the file.
+fn stages[&i, &h, &x, &y, &c, &e, &r, &o, &w, &s, &t, &ws, &wd, &v, &l](io: &!i Io, heap: &!h Heap, exec: &x Exec(""), sdir: &y Dir, clock: &c Clock, env: &e [byte], root: &r [byte], out: &o [byte], work: &w [byte], snap: &s [byte], wt: &t [byte], wst: &ws [byte], wdc: &wd [byte], have_t: bool, have_s: bool, have_d: bool, voice: &v [byte], language: &l [byte], seed: int, most_given: int) -> [io_write, err_write, heap, exec_under, clock, poll] int {
+    let t0 = clock_ms(clock);
+    if have_t == false {
+        var l = stage.add_arg(heap, buffer.empty(heap, 256), "lm");
+        l = stage.add_arg(heap, l, "tables");
+        l = transcribe.add_kv(heap, l, "", snap, "model.safetensors");
+        l = stage.add_arg(heap, l, wt);
+        if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "the prefix's tables, once", l, env) != 0 {
+            return 1;
+        }
+        l = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+        l = stage.add_arg(heap, l, "tokenizer");
+        l = stage.add_arg(heap, l, snap);
+        l = transcribe.add_kv(heap, l, "", wt, "tokenizer.json");
+        if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "the tokenizer's file, once", l, env) != 0 {
+            return 1;
+        }
+    }
+    if have_s == false {
+        var l = stage.add_arg(heap, buffer.empty(heap, 256), "step");
+        l = stage.add_arg(heap, l, "weights");
+        l = transcribe.add_kv(heap, l, "", snap, "model.safetensors");
+        l = stage.add_arg(heap, l, wst);
+        if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "the language models' weights, once", l, env) != 0 {
+            return 1;
+        }
+    }
+    if have_d == false {
+        var l = stage.add_arg(heap, buffer.empty(heap, 256), "decoder");
+        l = stage.add_arg(heap, l, "weights");
+        l = transcribe.add_kv(heap, l, "", snap, "speech_tokenizer/model.safetensors");
+        l = stage.add_arg(heap, l, wdc);
+        if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "the decoder's weights, once", l, env) != 0 {
+            return 1;
+        }
+    }
+    // the text's ids, then the prompt's
+    var l1 = stage.add_arg(heap, buffer.empty(heap, 256), "tokens");
+    l1 = transcribe.add_kv(heap, l1, "", wt, "tokenizer.json");
+    l1 = transcribe.add_kv(heap, l1, "", work, "text.txt");
+    l1 = transcribe.add_kv(heap, l1, "", work, "tok.txt");
+    if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "tokens", l1, env) != 0 {
+        return 1;
+    }
+    var l2 = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+    l2 = stage.add_arg(heap, l2, "prompt");
+    l2 = transcribe.add_kv(heap, l2, "", work, "tok.txt");
+    l2 = stage.add_arg(heap, l2, voice);
+    l2 = stage.add_arg(heap, l2, language);
+    l2 = transcribe.add_kv(heap, l2, "", work, "ids.txt");
+    let (s2, tokens, lang, spk) = transcribe.numbers(io, heap, exec, sdir, clock, "tts", "prompt", l2, env, "text ", "language ", "speaker ");
+    if s2 != 0 {
+        return 1;
+    }
+    // the prefix's rows
+    var l3 = stage.add_arg(heap, buffer.empty(heap, 256), "lm");
+    l3 = stage.add_arg(heap, l3, "inputs");
+    l3 = stage.add_arg(heap, l3, "talker");
+    l3 = stage.add_arg(heap, l3, wt);
+    l3 = transcribe.add_kv(heap, l3, "", work, "lm");
+    l3 = transcribe.add_kv(heap, l3, "", work, "ids.txt");
+    l3 = stage.add_arg(heap, l3, "-");
+    l3 = shared.put_num(heap, l3, lang);
+    l3 = shared.put_num(heap, l3, spk);
+    let (s3, prefix, u1, u2) = transcribe.numbers(io, heap, exec, sdir, clock, "tts", "prefix", l3, env, "prefix ", "", "");
+    if s3 != 0 {
+        return 1;
+    }
+    // the budget of frames: --most, or 8 a token of the text and 40 (docs/audio.md section 29), no more than a request holds; the last of its steps may be the end token's
+    var most = most_given;
+    if most == 0 {
+        most = tokens * 8 + 40;
+        if prefix + most > most_steps() {
+            most = most_steps() - prefix;
+        }
+    }
+    let steps = prefix + most;
+    if steps > most_steps() {
+        var m = buffer.append(heap, buffer.empty(heap, 192), "the prefix (");
+        m = shared.push_int(heap, m, prefix);
+        m = buffer.append(heap, m, " rows) and the budget of frames (");
+        m = shared.push_int(heap, m, most);
+        m = buffer.append(heap, m, ") are more than the ");
+        m = shared.push_int(heap, m, most_steps());
+        m = buffer.append(heap, m, " steps a request holds: a shorter text, or a smaller --most");
+        shared.refuse_buf(io, heap, m);
+        return 1;
+    }
+    let positions = (steps + 63) / 64 * 64;
+    var l4 = stage.add_arg(heap, buffer.empty(heap, 256), "step");
+    l4 = stage.add_arg(heap, l4, "inputs");
+    l4 = transcribe.add_kv(heap, l4, "", work, "step");
+    l4 = transcribe.add_kv(heap, l4, "", work, "lm/x0.f32");
+    l4 = transcribe.add_kv(heap, l4, "", work, "lm/pad.f32");
+    l4 = shared.put_num(heap, l4, prefix);
+    l4 = shared.put_num(heap, l4, steps);
+    l4 = shared.put_num(heap, l4, positions);
+    l4 = stage.add_arg(heap, l4, "seed");
+    l4 = shared.put_num(heap, l4, seed);
+    l4 = stage.add_arg(heap, l4, "-");
+    if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "steps' tables", l4, env) != 0 {
+        return 1;
+    }
+    // a step a request until a step answers the end token (2,150, which the session prints as the id 2151): the steps after it are not run
+    var l5 = stage.add_arg(heap, buffer.empty(heap, 512), "until");
+    l5 = stage.add_arg(heap, l5, "2.151e3");
+    l5 = shared.put_num(heap, l5, steps);
+    l5 = transcribe.add_kv(heap, l5, "", root, "models/qwen3_tts_step.model");
+    l5 = transcribe.add_kv(heap, l5, "CHX=", root, "tests/chx");
+    l5 = transcribe.add_kv(heap, l5, "QW=", root, "examples/qwen");
+    l5 = transcribe.add_kv(heap, l5, "TR=", root, "examples/train");
+    l5 = transcribe.add_kv(heap, l5, "WORK=", work, "step");
+    l5 = transcribe.add_kv(heap, l5, "WDIR=", wst, "");
+    l5 = transcribe.add_kn(heap, l5, "T=", positions);
+    l5 = transcribe.add_kn(heap, l5, "NS=", steps);
+    if transcribe.quiet(io, heap, exec, sdir, clock, "tts-session", "frames (GPU)", l5, env) != 0 {
+        return 1;
+    }
+    var l6 = stage.add_arg(heap, buffer.empty(heap, 256), "step");
+    l6 = stage.add_arg(heap, l6, "codes");
+    l6 = transcribe.add_kv(heap, l6, "", work, "step");
+    l6 = shared.put_num(heap, l6, prefix);
+    l6 = transcribe.add_kv(heap, l6, "", work, "codes.txt");
+    let (s6, frames, u3, u4) = transcribe.numbers(io, heap, exec, sdir, clock, "tts", "codes", l6, env, "frames ", "", "");
+    if s6 != 0 {
+        var m = buffer.append(heap, buffer.empty(heap, 160), "the speech had a budget of ");
+        m = shared.push_int(heap, m, most);
+        if steps == most_steps() {
+            m = buffer.append(heap, m, " frames, the most a request holds; if it did not end in them, the text is too long for one request");
+        } else {
+            m = buffer.append(heap, m, " frames; if it did not end in them, pass --most with more");
+        }
+        shared.refuse_buf(io, heap, m);
+        return 1;
+    }
+    if frames < 1 {
+        shared.refuse_text(io, "the generation ended before its first frame: another --seed may not");
+        return 1;
+    }
+    // the waveform, in the reference's pieces: 300 frames, each with the 25 before it as context, whose samples are dropped
+    var start = 0;
+    while start < frames {
+        var end = start + piece();
+        if end > frames {
+            end = frames;
+        }
+        var ctx = start;
+        if start - context() > 0 {
+            ctx = context();
+        }
+        var l7 = stage.add_arg(heap, buffer.empty(heap, 256), "decoder");
+        l7 = stage.add_arg(heap, l7, "prepare");
+        l7 = stage.add_arg(heap, l7, wdc);
+        l7 = transcribe.add_kv(heap, l7, "", work, "dec");
+        l7 = transcribe.add_kv(heap, l7, "", work, "codes.txt");
+        l7 = shared.put_num(heap, l7, start - ctx);
+        l7 = shared.put_num(heap, l7, end - start + ctx);
+        let (s7, sp, u5, u6) = transcribe.numbers(io, heap, exec, sdir, clock, "tts", "decoder's inputs", l7, env, "SP=", "", "");
+        if s7 != 0 {
+            return 1;
+        }
+        var l8 = stage.add_arg(heap, buffer.empty(heap, 512), "1");
+        l8 = transcribe.add_kv(heap, l8, "", root, "models/qwen3_tts_decoder.model");
+        l8 = transcribe.add_kv(heap, l8, "CHX=", root, "tests/chx");
+        l8 = transcribe.add_kv(heap, l8, "WORK=", work, "dec");
+        l8 = transcribe.add_kv(heap, l8, "WDIR=", wdc, "");
+        l8 = transcribe.add_kn(heap, l8, "SP=", sp);
+        if transcribe.quiet(io, heap, exec, sdir, clock, "tts-session", "waveform (GPU)", l8, env) != 0 {
+            return 1;
+        }
+        var l9 = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+        l9 = stage.add_arg(heap, l9, "pcm");
+        l9 = transcribe.add_kv(heap, l9, "", work, "speech.pcm");
+        l9 = transcribe.add_kv(heap, l9, "", work, "dec/wave.f32");
+        l9 = shared.put_num(heap, l9, ctx * 1920);
+        l9 = shared.put_num(heap, l9, (end - start) * 1920);
+        if start == 0 {
+            l9 = stage.add_arg(heap, l9, "new");
+        } else {
+            l9 = stage.add_arg(heap, l9, "more");
+        }
+        if transcribe.quiet(io, heap, exec, sdir, clock, "tts", "samples", l9, env) != 0 {
+            return 1;
+        }
+        start = end;
+    }
+    var l10 = stage.add_arg(heap, buffer.empty(heap, 256), "front");
+    l10 = stage.add_arg(heap, l10, "wav");
+    l10 = transcribe.add_kv(heap, l10, "", work, "speech.pcm");
+    l10 = transcribe.add_kv(heap, l10, "", out, "speech.wav");
+    let (s10, samples, u7, u8) = transcribe.numbers(io, heap, exec, sdir, clock, "tts", "wav file", l10, env, "samples ", "", "");
+    if s10 != 0 {
+        return 1;
+    }
+    let cs = (clock_ms(clock) - t0 + 5) / 10;
+    let sc = (samples + 120) / 240;
+    var d = buffer.append(heap, buffer.empty(heap, 192), "done: ");
+    d = buffer.append(heap, d, out);
+    d = buffer.append(heap, d, " (speech.wav, ");
+    d = shared.push_int(heap, d, sc / 100);
+    d = buffer.push(heap, d, byte_of(46));
+    d = transcribe.push2(heap, d, sc % 100);
+    d = buffer.append(heap, d, " s of speech) in ");
+    d = shared.push_int(heap, d, cs / 100);
+    d = buffer.push(heap, d, byte_of(46));
+    d = transcribe.push2(heap, d, cs % 100);
+    d = buffer.append(heap, d, " s\n");
+    borrow d as &db in {
+        io.write_all(io, buffer.bytes(db));
+    }
+    buffer.drop(heap, d);
+    return 0;
+}
