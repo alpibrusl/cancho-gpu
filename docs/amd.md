@@ -72,7 +72,7 @@ Issue #9 offered two ways: reuse `nvidia-ada`'s CUDA C through ROCm's compatibil
 | H3 | the emulator at a width from the target; the test of what 64 lanes do to the CUDA text | H1's cases agree with the interpreter under the emulator (section 7) |
 | H4 | the 64-bit shuffle mask in the HIP dialect, and the shuffling kernels no longer refused (as designed: the lowering's width from the target row; section 7 measured that the trees need no change) | the shuffling kernels emit and agree under the emulator at 64; the two targets' goldens unchanged (section 8) |
 | H5 | the product without `wmma` | the 29 emit and agree under the emulator (section 9) |
-| H6 | the first run on an MI300X: hipRTC compiles every golden `.hip`, the device cases against the interpreter, the unconfirmed items of section 1 answered in this document | a `results/` directory and this document corrected in place |
+| H6 | (prepared, section 10) the first run on an MI300X: hipRTC compiles every golden `.hip`, the device cases against the interpreter, the unconfirmed items of section 1 answered in this document | a `results/` directory and this document corrected in place |
 | H7 | a model on the card (Qwen3.8-27B through `cancho-gpu-serve`), with its speed | after H6, and only then is a number published |
 
 H1 to H5 need no AMD hardware and no credit. H6 is one script on the pattern of `scripts/gcp/cuda_test.sh` (`docs/cloud.md`), with its cost guard rails.
@@ -148,6 +148,21 @@ That last line is the opposite of what sections 2 and 3.1 reckoned, and they are
 
 **Not done.** `mma` of an f32 operand is still refused for this target with CUDA's message, though this lowering would not need the refusal. The four cases without a reference were not run at full size.
 
-## 10. What this does not claim
+## 10. H6, prepared and not run
+
+The run on a card is two scripts, written and tested without a card and without an account. **Nothing was rented, no `doctl` was run, and no credit was activated.**
+
+* `scripts/amd/remote_hip.sh` runs on any machine with an AMD GPU and ROCm. Its steps: the machine (ROCm's version, the card, the two libraries); the toolchain (the install functions of `scripts/gcp/remote_cuda.sh`, read as a library: one path for both vendors); **`hiprtc`**, every golden `.hip` through the real hipRTC (`scripts/amd/hiprtc_check.c`), with how many of the failures name `__half`; **`wave`**, one hand-written kernel on the card (`tests/emu/wave_selftest.c` with `real`), which prints the card's `warpSize` and says whether a shuffle there is the one section 7's emulator models; **`device_cases`**, every case that emits HIP through the card against the interpreter, with the launch's arguments by `kernelParams` and by `extra` if the first case fails that way. `results/answers.txt` gathers what section 1 marks unconfirmed.
+* `scripts/amd/hip_test.sh` creates one `gpu-mi300x1-192gb` Droplet with `doctl`, ships `git archive HEAD`, runs the script above over ssh, brings `results/` home and deletes the Droplet. `DRY_RUN=1` prints every command and runs none.
+
+**Read on 2026-11-25, in DigitalOcean's documentation, and never used here:** the size slug `gpu-mi300x1-192gb`; the MI300X on demand in Atlanta (ATL1) only, for which `atl1` is this document's guess at the slug; $2.59 an hour, billed by the second with a minimum of 60 seconds; "Powering off a GPU Droplet does not stop billing. To end billing, destroy the GPU Droplet."; `doctl compute droplet list` shows GPU Droplets only with `--gpus`. The image is **[unconfirmed]**: one page names `gpu-amd-base` (Ubuntu 24.04, ROCm 10.0) and is the newest, another names `digitaloceanai-rocmjupyter` (ROCm 6.4.0), a third says Ubuntu 22.04; the script takes `IMAGE`, and `doctl compute image list-distribution` on the account is what settles it. Whether an account needs approval or a quota for a GPU Droplet was not found.
+
+**The guard rails, and where they end.** DigitalOcean has no deletion after a time limit of its own, unlike Google's `--max-run-duration`. So every rail is the launcher's process: the Droplet is deleted on exit, on a failed run and on SIGINT, SIGTERM and SIGHUP, found by name among the Droplets tagged `cancho-gpu-test`, and a watchdog deletes it after `MAX_RUN` minutes (90). **If that process is killed outright, or its machine sleeps or loses power, nothing deletes the Droplet and it bills at $2.59 an hour until someone does**: `scripts/amd/hip_test.sh sweep` lists what is left and `DELETE=1` deletes it. At the reported $100 of credit that is about 38 hours, and a forgotten Droplet spends all of it in a day and a half.
+
+**Checked** (`tests/amd-cloud.sh`, in the gate): the launcher against a stub `doctl`, `ssh` and `scp` (a dry run runs nothing; create, run, delete in that order; deletion when the remote run fails, on SIGTERM and at the time cap; refusal before anything is created without a key or with a bad cap; `sweep`), and `remote_hip.sh` with the emulator's libraries in place of AMD's (3 kernels compile, the wave is 64 lanes, 3 cases agree). **What that cannot show:** that DigitalOcean accepts these commands, that the image has what the script expects (`/opt/rocm`, a C compiler, `apt`), that the toolchain installs there, or anything about hipRTC. The first run will be spent on those, which is why its first invocation should be `STEPS='machine toolchain' MAX_RUN=20`.
+
+**What the first run costs** is not known: no run of this length was timed on any card here. The cap bounds it: `MAX_RUN=90` is at most $3.89 an attempt at the price read.
+
+## 11. What this does not claim
 
 No AMD GPU has run a kernel of this project, no AMD compiler has read the HIP text of sections 5, 8 and 9 (a CPU compiler has), and the shim of section 6 has called only a mock and an emulator. The dialect's differences are read from documentation, not observed. Speed on AMD is unknown, and without the matrix units (3.3) the matrix products will be slower than the card allows. Radeon and the Ryzen AI processors (32-lane waves, where the CUDA width holds) are not a target here: a row for them is one line once H1 to H3 exist, and a machine to run it on is what is missing.
