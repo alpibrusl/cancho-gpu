@@ -1,0 +1,21 @@
+// The samples of Qwen3-TTS's codec decoder (docs/audio.md section 22, S1c): y[t] = clamp(x[t, 0] + b, -lim, lim) for s positions, bm to a threadgroup. x is the last convolution's output, c columns of which the
+// first is the waveform (conv1d_f.chx makes outputs in 32s); b is its bias, one value. The surface has no clamp: lim - relu(2 lim - relu(v + lim)), which is v rounded once at v + lim inside [-lim, lim] and the ends
+// exactly outside, for every finite v. The model's lim is 1; the test's is 0.25, so that its inputs pass both ends. `m1` is the constant -1 (the surface has no negative literal).
+algo wave(s, c, bm, lim, m1)
+  in  x: f32[s, c]
+  in  b: f32[1, 1]
+  out y: f32[s, 1]
+{
+  grid i over s / bm
+  let v  = load x[i * bm, 0 ; bm, 1]
+  let bb = load b
+  let w  = v + bb
+  let lo = relu (w + lim)
+  let t  = lo * m1
+  let hi = relu (t + 2 * lim)
+  let u  = hi * m1
+  store u + lim -> y[i * bm, 0]
+}
+
+schedule wave for apple-m-series { threads 256 }
+schedule wave for nvidia-ada     { threads 256 }

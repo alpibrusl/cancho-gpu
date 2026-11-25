@@ -1,0 +1,2 @@
+nvidia-ada: y [6, 16] = mean 0.0389, peak 0.8295, first [0.0, 0.0, 0.0, 0.0]
+apple-m-series: y [6, 16] = mean 0.0389, peak 0.8295, first [0.0, 0.0, 0.0, 0.0]

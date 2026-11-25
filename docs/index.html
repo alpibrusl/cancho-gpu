@@ -66,7 +66,7 @@ code { font-family: var(--mono); font-size: .9em; background: var(--soft); paddi
 .btn.ghost { color: var(--accent); }
 .btn.ghost:hover { background: var(--soft); }
 
-/* what runs today: four tiles, each a real output over one line of numbers */
+/* what runs today: four tiles, each a real output over one line of numbers, and a wide one with four clips to play */
 .runs { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: 3rem; text-align: left; }
 .run { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; }
 .run .pic { aspect-ratio: 16 / 10; background: #0d1117; display: grid; place-items: center; overflow: hidden; }
@@ -76,6 +76,12 @@ code { font-family: var(--mono); font-size: .9em; background: var(--soft); paddi
 .run .k { font: 600 .74rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .run b.big { display: block; font: 700 1.55rem/1.15 var(--font); letter-spacing: -.03em; margin: .15rem 0 .3rem; }
 .run p { color: var(--muted); font-size: .9rem; margin: 0; }
+.run.wide { grid-column: 1 / -1; }
+.voices { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.5rem), 1fr)); padding: 1.1rem; background: var(--soft); border-bottom: 1px solid var(--line); }
+.voice { margin: 0; min-width: 0; display: flex; flex-direction: column; gap: .45rem; }
+.voice blockquote { margin: 0; font-size: .95rem; line-height: 1.4; flex: 1; }
+.voice .who { font: 600 .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.voice audio { width: 100%; height: 2.4rem; }
 .pic text { font: 12px var(--mono); fill: #9aa5b5; } .pic .us { fill: #7ea2ff; } .pic .them { fill: #3a4352; } .pic .hi { fill: #e8eaee; } .pic .wave { stroke: #7ea2ff; stroke-width: 3; stroke-linecap: round; }
 
 .cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); margin-top: 2rem; }
@@ -176,6 +182,15 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: .5rem 1.6rem; }
       </svg></div>
       <figcaption><span class="k">Speech to text &middot; Qwen3-ASR-1.7B</span><b class="big">16 s of speech in 3 s</b><p>The reference's transcript to the letter on its two clips. Clips over 152 s are refused.</p></figcaption>
     </figure>
+    <figure class="run wide">
+      <div class="voices">
+        <figure class="voice"><span class="who">Ryan &middot; English &middot; 8.6 s</span><blockquote lang="en">Write a kernel once. The compiler checks it, and then that kernel says this sentence on the GPU of a Mac.</blockquote><audio controls preload="none" src="assets/speech-en.m4a" aria-label="The English sentence, spoken."></audio></figure>
+        <figure class="voice"><span class="who">Serena &middot; German &middot; 4.6 s</span><blockquote lang="de">Guten Morgen! Die Stra&szlig;enbahn f&auml;hrt heute &uuml;ber die alte Br&uuml;cke am Fluss.</blockquote><audio controls preload="none" src="assets/speech-de.m4a" aria-label="The German sentence, spoken."></audio></figure>
+        <figure class="voice"><span class="who">Aiden &middot; Spanish &middot; 5.3 s</span><blockquote lang="es">Hola. Esta voz se ha generado en la GPU de un Mac, a partir de una sola frase.</blockquote><audio controls preload="none" src="assets/speech-es.m4a" aria-label="The Spanish sentence, spoken."></audio></figure>
+        <figure class="voice"><span class="who">Vivian &middot; Chinese &middot; 4.3 s</span><blockquote lang="zh">&#20170;&#22825;&#22825;&#27668;&#24456;&#22909;&#65292;&#25105;&#20204;&#21435;&#20844;&#22253;&#25955;&#27493;&#21543;&#12290;</blockquote><audio controls preload="none" src="assets/speech-zh.m4a" aria-label="The Chinese sentence, spoken."></audio></figure>
+      </div>
+      <figcaption><span class="k">Text to speech &middot; Qwen3-TTS-12Hz-1.7B</span><b class="big">21 s of speech in 10.5 s</b><p>These four clips were spoken by the kernels, each from the sentence above it. The recogniser in the tile before this one hears every one as its text; nobody has scored how the voices sound. Texts over 110 tokens are refused.</p></figcaption>
+    </figure>
   </div>
 </div>
 
@@ -190,7 +205,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: .5rem 1.6rem; }
 </section>
 
 <section id="stories">
-  <div class="center"><h2>Four things that were actually run.</h2>
+  <div class="center"><h2>Five things that were actually run.</h2>
   <p class="sub">Each is a real command, with what it shows and what it does not.</p></div>
 <!--stories-->
   <div class="stories">
@@ -212,6 +227,11 @@ $ scripts/media video "a red fox running ..." -o out/fox</pre>
 <pre class="code">$ scripts/media transcribe clip.wav -o out/clip
 $ cat out/clip/transcript.txt</pre>
       <p class="note">Shows: Qwen3-ASR-1.7B on the GPU, giving the reference's transcript to the letter on its two clips, 16.2 s of speech in 3.0 s from a cold start (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/audio.md">audio.md</a>). Does not show: a word error rate on a test set, or clips over 152 s, which are refused.</p></article>
+    <article class="story"><h3>A sentence to a voice</h3>
+<pre class="code">$ scripts/media speak "Good morning." -o out/hello \
+    --voice ryan --language english
+$ open out/hello/speech.wav</pre>
+      <p class="note">Shows: Qwen3-TTS-12Hz-1.7B on the GPU, 20.8 s of speech in 10.5 s from a cold start; 20 files of 20, in six of its nine voices and six of its ten languages, were transcribed back to their text (<a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/audio.md">audio.md</a> 29). Does not show: that a file always says its text (the speech is sampled, and one early sample added a phrase), how good the voices are, or texts over 110 tokens, which are refused.</p></article>
   </div>
 <!--/stories-->
 </section>
@@ -373,7 +393,7 @@ schedule k for nvidia-ada { threads 32 }</pre>
     <div class="yes"><h3>Built</h3><ul>
       <li>The compiler: parser, checker, CUDA C and Metal emitters, a CPU interpreter, and device paths for both targets</li>
       <li>Qwen3.8-27B served over <code>/v1/chat/completions</code>, with streaming, a prefix cache and the model's own draft head</li>
-      <li>Text to image and photo editing (Qwen-Image-2.1-Turbo), video from a prompt (FastWan2.2-TI2V-5B), speech to text (Qwen3-ASR-1.7B), through <code>scripts/media</code></li>
+      <li>Text to image and photo editing (Qwen-Image-2.1-Turbo), video from a prompt (FastWan2.2-TI2V-5B), speech to text (Qwen3-ASR-1.7B) and text to speech (Qwen3-TTS-12Hz-1.7B), through <code>scripts/media</code></li>
       <li>Training on the GPU: a GPT, a CNN, Qwen2.5 with LoRA and full fine-tuning, each held to torch or peft</li>
     </ul></div>
     <div class="no"><h3>Not yet</h3><ul>
@@ -381,7 +401,7 @@ schedule k for nvidia-ada { threads 32 }</pre>
       <li>Any number from a second machine: everything here is one Apple M4 Max</li>
       <li>Concurrent requests, tools and stop sequences in the server</li>
       <li>An image as fast as mflux's, prose as fast as Ollama's, a CNN step as fast as torch's</li>
-      <li>Speech synthesis (the decoder's kernels are being built) and music</li>
+      <li>Speech from a cloned voice or an instruction, a text over 110 tokens, and music</li>
     </ul></div>
   </div>
 </section>
@@ -432,7 +452,7 @@ build/cancho-gpu emit tests/chx/softmax.chx out r=16 n=256</pre>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/design.md">Design</a>: how the compiler is built and what it cost</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/serving.md">Serving</a>: the endpoint, the cache, the drafts, against Ollama</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/diffusion.md">Diffusion</a>: images, edits and video, stage by stage</li>
-    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/audio.md">Audio</a>: recognition built, speech in progress</li>
+    <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/audio.md">Audio</a>: recognition and speech, both built</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/cli.md">The media command</a>: image, edit, video, transcribe</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/resident.md">Sessions</a>: training on the device, every number with its conditions</li>
     <li><a href="https://github.com/alpibrusl/cancho-gpu/blob/main/docs/device.md">Device</a>: driving a GPU, and what stays unproven</li>

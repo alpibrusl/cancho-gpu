@@ -617,6 +617,27 @@ def amax_id(r, nq, v1):
     return [v1 - gm[i * nq] for i in range(r)]
 
 
+def samp_pen(nq, invt, rp):
+    """A draw's logits (docs/audio.md section 26): the repetition penalty where seen, the temperature, the forbidden entries added."""
+    l, seen, add = lcg([nq * 64, nq * 64, nq * 64])
+    return [(l[j] + seen[j] * ((l[j] / rp if l[j] > 0 else l[j] * rp) - l[j])) * invt + add[j] for j in range(nq * 64)]
+
+
+def samp_rank(nq):
+    yc, yr = lcg([nq * 64, nq * 64])
+    return [float(sum(1 for v in yr if v > yc[j])) for j in range(nq * 64)]
+
+
+def samp_keep(n, k, lo):
+    cnt, y, g = lcg([n, n, n])
+    return [y[j] + g[j] if k - cnt[j] > 0 else -lo for j in range(n)]
+
+
+def seen_or(c):
+    seen, idv, jrow, m = lcg([c, 1, c, 1])
+    return [max(seen[j], m[0] * max(0.0, 1 - abs(jrow[j] - idv[0]))) for j in range(c)]
+
+
 def conv1d_f(s_, cin, cout, k, dl):
     """A causal convolution of k taps with a dilation (docs/audio.md section 20): y[t, co] = sum_j sum_ci w[co, j cin + ci] x[t + j dl, ci]."""
     x, w = lcg([(s_ + (k - 1) * dl) * cin, cout * k * cin])
@@ -917,6 +938,10 @@ def new_checks():
     ok &= check("dec_post_n vn r=2", got["vn"], want_v)
     ok &= check("amax_cand r=2 nq=4", run("amax_cand", ["r=2", "nq=4", "G=2"])["c"], amax_cand(2, 4))
     ok &= check("amax_id r=3 nq=4", run("amax_id", ["r=3", "nq=4", "v1=3"])["id"], amax_id(3, 4, 3))
+    ok &= check("samp_pen nq=4", run("samp_pen", ["nq=4", "G=2", "invt=1.25", "rp=1.5", "irp=0.6666666666666666"])["y"], samp_pen(4, 1.25, 1.5))
+    ok &= check("samp_rank nq=4", run("samp_rank", ["nq=4"])["cnt"], samp_rank(4))
+    ok &= check("samp_keep n=256 k=0.05", run("samp_keep", ["n=256", "k=0.05", "bm=64", "lo=4"])["z"], samp_keep(256, 0.05, 4))
+    ok &= check("seen_or c=64", run("seen_or", ["c=64", "bc=32"])["y"], seen_or(64))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -933,7 +958,16 @@ def new_checks():
     (xs,) = lcg([32])
     ok &= check("sin_scaled r=4 n=8", run("sin_scaled", ["r=4", "n=8"])["y"], [math.sin(256.0 * v) for v in xs])
     xs, sa, sb = lcg([4 * 16, 16, 16])
-    ok &= check("snake s=4 c=16 bn=8", run("snake", ["s=4", "c=16", "bn=8"])["y"], [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
+    ok &= check("snake s=4 c=16 bn=8 g=0", run("snake", ["s=4", "c=16", "bn=8", "g=0"])["y"], [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
+    # S1c (docs/audio.md section 22): the rows in front that a kernel leaves as zeros, the bias that pads, SwiGLU in f32, and the clamp of the samples
+    ok &= check("snake s=4 c=16 bn=8 g=3", run("snake", ["s=4", "c=16", "bn=8", "g=3"])["y"], [0.0] * 48 + [xs[i * 16 + j] + math.sin(xs[i * 16 + j] * sa[j]) ** 2 * sb[j] for i in range(4) for j in range(16)])
+    xs, bs = lcg([4 * 16, 16])
+    ok &= check("bias_pad s=4 c=16 g=2 bn=8", run("bias_pad", ["s=4", "c=16", "g=2", "bn=8"])["y"], [0.0] * 32 + [xs[i * 16 + j] + bs[j] for i in range(4) for j in range(16)])
+    ok &= check("bias_pad s=4 c=16 g=0 bn=8", run("bias_pad", ["s=4", "c=16", "g=0", "bn=8"])["y"], [xs[i * 16 + j] + bs[j] for i in range(4) for j in range(16)])
+    gs, us = lcg([6 * 32, 6 * 32])
+    ok &= check("dit_swiglu_f s=6 n=32 bn=16", run("dit_swiglu_f", ["s=6", "n=32", "bn=16"])["y"], [g / (1.0 + math.exp(-g)) * u for g, u in zip(gs, us)])
+    xs, bs = lcg([16 * 4, 1])
+    ok &= check("wave s=16 c=4 bm=4 lim=0.25", run("wave", ["s=16", "c=4", "bm=4", "lim=0.25", "m1=-1"])["y"], [min(max(xs[i * 4] + bs[0], -0.25), 0.25) for i in range(16)])
     got = run("colbcast", ["r=8", "c=16"])
     x, sc, tt = lcg([128, 8, 16])
     ok &= check("colbcast r=8 c=16", got["y"], [x[i * 16 + j] * sc[i] + tt[j] for i in range(8) for j in range(16)])
@@ -1076,7 +1110,17 @@ MUTANTS = [
     ("sin_scaled.chx", "store sin b -> y", "store tanh b -> y", "sin is a tanh"),
     ("sin_scaled.chx", "let b = a * 256", "let b = a * 255", "sin_scaled scales by 255"),
     ("snake.chx", "let u = &sn * bv", "let u = &v * bv", "snake has x sin where the square of the sine is"),
-    ("snake.chx", "store v + t -> y[i, j * bn]", "store v - t -> y[i, j * bn]", "snake subtracts the periodic part"),
+    ("snake.chx", "store v + t -> y[i + g, j * bn]", "store v + t -> y[i, j * bn]", "snake writes over the rows in front"),
+    ("bias_pad.chx", "store v + bb -> y[i + g, j * bn]", "store v + bb -> y[i, j * bn]", "bias_pad writes over the rows in front"),
+    ("bias_pad.chx", "store v + bb -> y[i + g, j * bn]", "store v - bb -> y[i + g, j * bn]", "bias_pad subtracts the bias"),
+    ("bias_pad.chx", "let bb = load b[0, j * bn ; 1, bn]", "let bb = load b[0, 0 ; 1, bn]", "bias_pad reads every tile's bias from the first"),
+    ("dit_swiglu_f.chx", "let sg = sigmoid &gt", "let sg = sigmoid &ut", "dit_swiglu_f gates by the sigmoid of u"),
+    ("dit_swiglu_f.chx", "store a * ut -> y[i, j * bn]", "store a + ut -> y[i, j * bn]", "dit_swiglu_f adds u"),
+    ("wave.chx", "let hi = relu (t + 2 * lim)", "let hi = t + 2 * lim", "wave does not clamp at the top"),
+    ("wave.chx", "let lo = relu (w + lim)", "let lo = w + lim", "wave does not clamp at the bottom"),
+    ("wave.chx", "let w  = v + bb", "let w  = v - bb", "wave subtracts the bias"),
+    ("wave.chx", "load x[i * bm, 0 ; bm, 1]", "load x[i * bm, 1 ; bm, 1]", "wave reads the second column"),
+    ("snake.chx", "store v + t -> y[i + g, j * bn]", "store v - t -> y[i + g, j * bn]", "snake subtracts the periodic part"),
     ("snake.chx", "let w = &v * av", "let w = &v + av", "snake adds a where it multiplies"),
     ("activations.chx", "store tanh &a -> t", "store relu &a -> t", "tanh is a relu"),
     ("gates_rows.chx", "let ng = z1 - mm", "let ng = z1 + mm", "gates_rows decays upwards"),
@@ -1098,6 +1142,17 @@ MUTANTS = [
     ("dec_post_n.chx", "let qe = qm * (1 / 128)", "let qe = qm * (1 / 64)", "dec_post_n takes q's mean square over 64"),
     ("amax_cand.chx", "let eq = on - st", "let eq = on + st", "amax_cand keeps the ranks of the columns under the maximum, twice"),
     ("amax_id.chx", "store o - a -> id[i, 0]", "store o + a -> id[i, 0]", "amax_id adds the rank"),
+    ("samp_pen.chx", "let pp = p * irp", "let pp = p * rp", "samp_pen multiplies a positive logit by the penalty"),
+    ("samp_pen.chx", "let sd = s * d", "let sd = s + d", "samp_pen adds what was seen to the penalty's change"),
+    ("samp_pen.chx", "let u  = t * invt", "let u  = t", "samp_pen leaves the temperature out"),
+    ("samp_pen.chx", "store u + m -> y[qb * G, 0]", "store u - m -> y[qb * G, 0]", "samp_pen subtracts the forbidden entries' addend"),
+    ("samp_rank.chx", "let dn = zn - d", "let dn = d - zn", "samp_rank counts the smaller entries"),
+    ("samp_rank.chx", "let r  = load yr[p, 0 ; 1, 64]", "let r  = load yr[q, 0 ; 1, 64]", "samp_rank compares every chunk with its own"),
+    ("samp_keep.chx", "let d   = kk - c", "let d   = c - kk", "samp_keep keeps the entries with k or more larger ones"),
+    ("samp_keep.chx", "let s   = a + nz", "let s   = a - nz", "samp_keep subtracts the noise"),
+    ("samp_keep.chx", "store t - big -> z[q * bm, 0]", "store t + big -> z[q * bm, 0]", "samp_keep raises what it drops"),
+    ("seen_or.chx", "let g  = oh * mm", "let g  = oh + mm", "seen_or adds the flag"),
+    ("seen_or.chx", "let e  = g - &s", "let e  = g + &s", "seen_or adds what was seen twice"),
 ]
 
 
