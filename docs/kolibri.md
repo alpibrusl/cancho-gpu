@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; no layer runs yet)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; no layer runs yet)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -62,7 +62,7 @@ Qwen's weights are BF16 and exact in f16, and every stage of `docs/audio.md` ran
 
 * **K0. The reference** **[done, section 2]**.
 * **K1. `dequant_q4` in the language** **[done, section 8]**: the operation, its float64 test and mutants, the kernels `dq_q4` (a window of 4-bit weights to an f32 scratch) and the product after it, against the reference's own dequantisation of one expert, to the bit. Refused inside a product until it is fused, with a rule tag. **[corrected in section 8: not refused; a product takes it]**
-* **K2. A window chosen by a value, in the session**: a directive that binds an input at `index x stride` of a resident file, the index read from a buffer the step computed; the CPU session and the Metal one agree; an index outside the file is a refusal with a rule tag, never a read.
+* **K2. A window chosen by a value, in the session** **[done, section 9]**: a directive that binds an input at `index x stride` of a resident file, the index read from a buffer the step computed; the CPU session and the Metal one agree; an index outside the file is a refusal with a rule tag, never a read.
 * **K3. One MoE layer**: the router, the six, the experts and the shared one, from the reference's row before the layer to its row after it; then the dense MLP of layers 0 and 1.
 * **K4. One attention layer of each kind** (sliding with rotary; indexed with NVFP4 keys and values; one that reads another layer's), then **the 50 layers as one cached step**, teacher-forced on the reference's ids: the stream after every layer and the logits. Bound, as `docs/audio.md` S2: the arg max at every row whose two best are clear, and the differences over the 50 largest reported.
 * **K5. The host**: the weights from the GGUF (the nibbles repacked, the scales, Q6_K, Q4_1's second term), the tokenizer, the prompt.
@@ -96,3 +96,31 @@ Two kernels: `dq_q4` (a window of 4-bit weights to an f32 matrix) and `matvec_q4
 * **On the Metal GPU against the interpreter** (`scripts/metal-kernels.sh`'s cases, by hand): `dq_q4` 1.2e-7 of a peak of 1.98 with rows' scales that are not ones (three factors, one rounding apart); the products 1.3e-6, 8.4e-7 and 1.5e-6 of their peaks at 512 x 2,560, 2,560 x 512 and 6,144 x 2,560.
 * **A refusal:** scales that are bytes (`error[type]: q4 values must be I8 and their scales F16`, `tests/reject/type-q4.chx`).
 * **Not done:** Q4_1 and Q6_K (the host's, K5); the host's repacking is a scratch script here, not a program; CUDA and HIP texts are emitted and held by goldens but ran nowhere; no path of its own in the reduction, so a large product (the attention's 6,144 x 2,560) is the plain element-by-element form, whose time against NVFP4's is not measured.
+
+## 9. K2: a table picked by a value **[measured, 2026-11-25, M4 Max]**
+
+**The design, as it was found in the sources before the code:** a session already binds a parameter at an offset of a larger buffer. That is a `table` (`docs/resident.md` section 12): a file of blocks of which repetition `j` reads block `j mod S`, bound on Metal with `cgpu_arg_at`. Choosing an expert is the same thing with another rule for the block. So K2 is not a new directive but a clause:
+
+```
+table P.PARAM FILE BLOCKS [f32|f16|i8] by Q.OUT SLOT
+```
+
+The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` is about to run; `Q` is listed before `P`. **A value that is not a block of the table (past it, negative, a fraction, 1e30) is `error[session]` and nothing is read.** `src/session.cho` (the clause, its checks, the CPU step) and `device/metal-session-main.cho` (the read-back and the offset), about 150 lines.
+
+* **On the device the value is read back**: one wait and one download for an output in a repetition, however many tables it picks (a layer's 18 share one). The kernels stay as they are: an expert's product is `matvec_q4_rows` on a parameter of 512 x 2,560, and never knows there are 384.
+* **Binary tables of the same file are one buffer**, as resident files already were: a layer's six programs pick from one copy of its 384 experts, not six.
+* **`i8` tables**, which the 4-bit codes need.
+
+**Six experts of the file** (layer 10's `gate` matrices, all 384 as one table of 251 MB of codes and one of 31 MB of scales; the six the reference chose for token 20 of the German run, 203, 253, 118, 11, 240 and 367, given as a kernel's output; one input row; the Metal session):
+
+| | |
+|---|---|
+| the six products against float64 (peaks 0.14 to 0.23) | worst **3.6e-8**, each |
+| the session's whole process, with its upload of 283 MB | 0.07 s |
+
+**`tests/pick.sh`** (16 checks; the CPU session in the gate, the Metal session by hand: all 16 on both): three programs each adding the block a slot names; the slot read and not the first value; a picked table beside one that steps; picks that change from step to step through a carried sum; a table of codes and one of scales picked together into `dq_q4`, both blocks exact; the four values that are not a block, refused; six refusals of the session file (picked by a later program, a slot past the output, by a parameter that is only read, by a program that is not there, a slot that is not whole, no slot).
+
+**Mutants, by hand, each killed by that test:** the CPU session reading block 0 whatever the value (5 checks fail), reading the output's first value and not the slot (4), reading the last block for a value past the table (1), and the Metal session keeping the first repetition's values (the stepped case fails).
+
+* **A crash on the way, fixed before any of this was measured:** the first form decoded the value into the interpreter's memory, where a device session's outputs have no place (their offset is -1); with one program it happened to run and with two it trapped. The value is now read from the downloaded bytes. The stepped case and the three-program case of `tests/pick.sh` on the Metal session are what hold it; they are by hand, so **nothing in the gate runs the device's read-back** (the gate has no GPU, and its mock driver computes nothing a pick could read).
+* **Not done:** the time of the read-back in a real step (48 waits a token) is not measured: K4's; CUDA's and the other device sessions do not have the clause; a picked table is uploaded whole, so a table over the session's 512 MiB staging pool is refused as any binary table is (an expert file is 251 MB).

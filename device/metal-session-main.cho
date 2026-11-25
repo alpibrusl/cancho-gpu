@@ -133,6 +133,8 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
     let bufs = mem.list(m);
     let groups = mem.list(m);
     let rfiles = mem.list(m);
+    // (file name, bytes, buffer) of the binary tables uploaded so far
+    let tfiles = mem.list(m);
     var q = 0;
     while q < mem.size(m, progs) {
         let pr = mem.get(m, progs, q);
@@ -201,13 +203,31 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                 k = k + 1;
             }
             var table_blocks = 1;
+            var tpath = 0 - 1;
+            var mytable = 0 - 1;
             k = 0;
             while k < mem.size(m, tables) {
                 let tb = mem.get(m, tables, k);
                 if m[tb] == q && m[tb + 1] == i {
                     table_blocks = m[tb + 3];
+                    mytable = tb;
+                    if m[tb + 2] < 0 {
+                        tpath = m[tb + 4];
+                    }
                 }
                 k = k + 1;
+            }
+            // a binary table that several programs read (an expert picked from the same file by each of a layer's six: docs/kolibri.md K2) is one buffer, uploaded once
+            if shared < 0 && tpath >= 0 {
+                k = 0;
+                while k < mem.size(m, tfiles) {
+                    let tf = mem.get(m, tfiles, k);
+                    if m[tf + 1] == table_blocks * m[g + 3] * kinds.size_bytes(m[g]) && text.eq(t, m[tf], tpath) {
+                        shared = m[tf + 2];
+                        m[mytable + 8] = 1;
+                    }
+                    k = k + 1;
+                }
             }
             // a binary resident file that two programs read (the weights of a layer, which its forward and its backward both take) is one buffer: read-only parameters of the same file and size share it.
             // A carry's destination is written, so it is never shared (docs/resident.md section 23.4).
@@ -247,6 +267,9 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                 if rpath >= 0 {
                     mem.push(m, rfiles, mem.rec3(m, rpath, m[g + 3] * kinds.size_bytes(m[g]), buf));
                 }
+                if tpath >= 0 {
+                    mem.push(m, tfiles, mem.rec3(m, tpath, table_blocks * m[g + 3] * kinds.size_bytes(m[g]), buf));
+                }
             }
             i = i + 1;
         }
@@ -259,7 +282,9 @@ fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
         let tb = mem.get(m, tables, tq);
         let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
         let mark = m[mem.text_slot()];
-        if m[tb + 2] < 0 {
+        if m[tb + 8] == 1 {
+            // the buffer is an earlier table's, which sent the file
+        } else if m[tb + 2] < 0 {
             // a binary table: the file's bytes are the device's, and go up as they are
             let want = m[g + 3] * m[tb + 3] * kinds.size_bytes(m[g]);
             let (ftop, fgot, fsize) = fileio.prefix(m, t, fs, text.bytes(t, m[tb + 4]), want + 1);
@@ -345,6 +370,9 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
     let tables = m[sess + session.s_tables()];
     var rep = 0;
     while rep < reps {
+        // the outputs read back for picked tables in this repetition: (program, param, the place of its bytes in the byte pool)
+        let fresh = mem.list(m);
+        let rep_mark = m[mem.text_slot()];
         var q = 0;
         while q < mem.size(m, progs) {
             let pr = mem.get(m, progs, q);
@@ -359,7 +387,39 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
                     let tb = mem.get(m, tables, tk);
                     if m[tb] == q && m[tb + 1] == i {
                         let g = mem.get(m, m[pr + 2], i);
-                        offset = m[sess + session.s_count()] % m[tb + 3] * m[g + 3] * kinds.size_bytes(m[g]);
+                        var block = m[sess + session.s_count()] % m[tb + 3];
+                        if m[tb + 5] >= 0 {
+                            // a picked table (docs/kolibri.md K2): the value is read back from the device, once for an output in a repetition, after what was encoded so far has run
+                            let sg = mem.get(m, m[mem.get(m, progs, m[tb + 5]) + 2], m[tb + 6]);
+                            // the output's bytes stay in the byte pool until the repetition ends: a device session's outputs have no place in the interpreter's memory
+                            var spot = 0 - 1;
+                            var fk = 0;
+                            while fk < mem.size(m, fresh) {
+                                let fr = mem.get(m, fresh, fk);
+                                if m[fr] == m[tb + 5] && m[fr + 1] == m[tb + 6] {
+                                    spot = m[fr + 2];
+                                }
+                                fk = fk + 1;
+                            }
+                            if spot < 0 {
+                                if metal.cgpu_sync(ffi) < 0 {
+                                    return device_fail(m, t, ffi, "waiting for the kernels");
+                                }
+                                let bytes = m[sg + 3] * 4;
+                                spot = devcodec.reserve(m, bytes);
+                                if metal.cgpu_download(ffi, buffer_of(m, bufs, m[tb + 5], m[tb + 6]), t[spot..spot + bytes]) < 0 {
+                                    return device_fail(m, t, ffi, "reading a picked value back");
+                                }
+                                mem.push(m, fresh, mem.rec3(m, m[tb + 5], m[tb + 6], spot));
+                            }
+                            let w0 = spot + 4 * m[tb + 7];
+                            let word = int_of(t[w0]) | int_of(t[w0 + 1]) << 8 | int_of(t[w0 + 2]) << 16 | int_of(t[w0 + 3]) << 24;
+                            block = session.picked_block(m, t, f32.from_bits32(word), m[tb + 3]);
+                            if block < 0 {
+                                return 0 - 1;
+                            }
+                        }
+                        offset = block * m[g + 3] * kinds.size_bytes(m[g]);
                     }
                     tk = tk + 1;
                 }
@@ -379,6 +439,7 @@ fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], ffi: 
             }
             q = q + 1;
         }
+        m[mem.text_slot()] = rep_mark;
         m[sess + session.s_count()] = m[sess + session.s_count()] + 1;
         rep = rep + 1;
     }
