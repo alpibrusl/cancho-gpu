@@ -235,7 +235,7 @@ nvrtcResult nvrtcCompileProgram(void *p, int n, const char *const *opts) {
         fputs("\n", f);
         fputs(ents, f);
         fclose(f);
-        char cmd[3000];
+        char cmd[4096];
         char tmp_so[950];
         snprintf(tmp_so, sizeof tmp_so, "%s.%d", so, (int)getpid());
         /* --fmad=true is NVRTC's default: a*b+c contracts to an fma. The
