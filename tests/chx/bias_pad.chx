@@ -1,0 +1,16 @@
+// The bias of a product or a convolution, stored after g rows that are left as they are (docs/audio.md section 22, S1c): y[g + t, ch] = x[t, ch] + b[ch] for s positions (rows) of c channels, bn channels to a
+// threadgroup. The g rows in front are the zeros a causal convolution reads before its first position (conv1d_f.chx, dwconv_f.chx): a session's buffer is made of zeros and nothing writes them. With b all zeros
+// this is the copy that only makes room for them.
+algo bias_pad(s, c, g, bn)
+  in  x: f32[s, c]
+  in  b: f32[1, c]
+  out y: f32[g + s, c]
+{
+  grid i over s, j over c / bn
+  let v = load x[i, j * bn ; 1, bn]
+  let bb = load b[0, j * bn ; 1, bn]
+  store v + bb -> y[i + g, j * bn]
+}
+
+schedule bias_pad for apple-m-series { threads 256 }
+schedule bias_pad for nvidia-ada     { threads 256 }

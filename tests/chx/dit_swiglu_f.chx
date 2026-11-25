@@ -1,0 +1,17 @@
+// dit_swiglu.chx with an f32 output (docs/audio.md section 22, S1c): y = silu(g) * u for s rows of n, bn columns to a threadgroup. The codec decoder's transformer runs in f32 throughout: its products are
+// conv1d_f.chx with one tap, which reads f32, and rounding this to f16 moves the waveform past its bound.
+algo dit_swiglu_f(s, n, bn)
+  in  g: f32[s, n]
+  in  u: f32[s, n]
+  out y: f32[s, n]
+{
+  grid i over s, j over n / bn
+  let gt = load g[i, j * bn ; 1, bn]
+  let ut = load u[i, j * bn ; 1, bn]
+  let sg = sigmoid &gt
+  let a  = gt * sg
+  store a * ut -> y[i, j * bn]
+}
+
+schedule dit_swiglu_f for apple-m-series { threads 256 }
+schedule dit_swiglu_f for nvidia-ada     { threads 256 }
