@@ -1,0 +1,27 @@
+// The first of the three kernels that draw a code as torch's `generate` does (docs/audio.md section 26): a row of logits l, seen as chunks of 64 as samp_max.chx reads it, through the repetition penalty, the
+// temperature and the forbidden entries: y = (l + seen (pen(l) - l)) invt + add, with pen(l) = l / rp where l is positive and l rp where it is not (irp = 1 / rp). seen is 1 at the ids drawn before
+// (seen_or.chx) and 0 elsewhere; add is 0, or -1e9 at an entry that may not be drawn (a table: which entries depends on the step). With seen and add zeros it is the temperature alone.
+algo samp_pen(nq, G, invt, rp, irp)
+  in  l:    f32[nq, 64]
+  in  seen: f32[nq, 64]
+  in  add:  f32[nq, 64]
+  out y:    f32[nq, 64]
+{
+  grid qb over nq / G
+  let a  = load l[qb * G, 0 ; G, 64]
+  let s  = load seen[qb * G, 0 ; G, 64]
+  let m  = load add[qb * G, 0 ; G, 64]
+  let p  = relu &a
+  let n  = &a - &p
+  let pp = p * irp
+  let nn = n * rp
+  let pe = pp + nn
+  let d  = pe - &a
+  let sd = s * d
+  let t  = a + sd
+  let u  = t * invt
+  store u + m -> y[qb * G, 0]
+}
+
+schedule samp_pen for apple-m-series { threads 256 }
+schedule samp_pen for nvidia-ada     { threads 128 }

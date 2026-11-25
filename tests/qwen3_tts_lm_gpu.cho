@@ -561,6 +561,21 @@ fn inputs_talker[&i, &h, &f, &g](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), args
             qasr_host.put_file(heap, fs, work, "x0", 0 - 1, ".f32", false, contents(xr), q);
         }
         unbox_slice(heap, x0);
+        // P(pad) alone: what the step of models/qwen3_tts_step.model adds to the row it makes of a frame's codes (docs/audio.md section 26)
+        let padrow = box_slice(heap, 2048, 0.0);
+        borrow pr as &pp in {
+            borrow mut padrow as &!pw in {
+                var k = 0;
+                while k < 2048 && pad + k < len(contents(pp)) {
+                    contents(pw)[k] = contents(pp)[pad + k];
+                    k = k + 1;
+                }
+            }
+        }
+        borrow padrow as &pd in {
+            qasr_host.put_file(heap, fs, work, "pad", 0 - 1, ".f32", false, contents(pd), q);
+        }
+        unbox_slice(heap, padrow);
         unbox_slice(heap, pr);
         tables(heap, fs, work, sp, rows, 0, mutant == 2, mutant == 1, false, q);
         bad = q[0];

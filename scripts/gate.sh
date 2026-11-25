@@ -38,6 +38,7 @@ CANCHO="$CANCHO" tests/qwen3_asr_step.sh
 CANCHO="$CANCHO" tests/qwen3_asr_front.sh
 CANCHO="$CANCHO" tests/qwen3_tts_decoder.sh
 CANCHO="$CANCHO" tests/qwen3_tts_lm.sh
+CANCHO="$CANCHO" tests/qwen3_tts_step.sh
 tests/tokenizer.sh
 python3 tests/tokenizer_hf.py "${CANCHO_GPU:-build/cancho-gpu}"
 python3 tests/detokenize_hf.py "${CANCHO_GPU:-build/cancho-gpu}"

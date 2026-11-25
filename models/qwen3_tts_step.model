@@ -1,0 +1,337 @@
+# Qwen3-TTS-12Hz-1.7B generating, a frame a step (docs/audio.md section 26, stage S3): the talker's step with caches of the keys and values (the recognition's, models/qwen3_asr_step.model, at this model's
+# head), the draw of the frame's first code, the code predictor's 16 rows unrolled in the same step with a draw after each of rows 1 to 15, and the next frame's row made of the 16 codes. A model file
+# (docs/resident.md section 31) with tables (a block a step) and carries. A request of N runs N steps; ids_out.f32 after a checkpoint is [16, NS], row i the ids (1-based) drawn for code i, a column a step.
+#
+#     cancho-gpu-metal-session models/qwen3_tts_step.model CHX=<tests/chx> QW=<examples/qwen> TR=<examples/train> WORK=<tables> WDIR=<weights> T=<the talker's positions, a multiple of 64> NS=<steps in the tables>
+#
+# The step's row is the prefix's own while it lasts (xtab, with mtab 1) and then the row the step before made: the sum of the 16 codes' embeddings plus P(pad). A draw is torch's (samp_pen.chx,
+# samp_rank.chx, samp_keep.chx, then the arg max of the recognition's step): the logits through the repetition penalty (the talker's alone), the temperature and the forbidden entries, the K largest kept,
+# a row of noise added (a table: -log of an exponential an entry), the arg max. The predictor's row p reads the caches its row p - 1 wrote, by links, and row 0 starts from zeros: nothing of it is carried.
+# FORCE=1 puts the reference's code in place of each draw for what follows it (ids_mix.chx, the tables tf<p> and force); the ids answered are the device's own draws either way.
+# PROBE=1 also saves the talker's draw before its arg max (pen.f32, z.f32) for the by-hand comparison with the reference's probabilities.
+text CHX = tests/chx
+text QW = examples/qwen
+text TR = examples/train
+text WORK = .
+text WDIR = .
+text INVT = 1.1111111111111112
+text RP = 1.05
+text IRP = 0.9523809523809523
+const T = 128
+const NS = 128
+const NL = 28
+const D = 2048
+const FF = 6144
+const V = 3072
+const PL = 5
+const PD = 1024
+const PF = 3072
+const PV = 2048
+const PT = 64
+const K = 50
+const FORCE = 0
+const PROBE = 0
+
+# a draw from a row of v logits at src: D${p}_id.id is the id drawn, D${p}_on.y what goes on (the forced code with FORCE=1). The talker's draw (p 0) has the penalty and a table of forbidden entries.
+block draw(p, src, v)
+    program D${p}_pen $CHX/samp_pen.chx nq=${v / 64} G=2 invt=$INVT rp=$RP irp=$IRP
+    link $src -> D${p}_pen.l
+    if p == 0
+        link so.y -> D0_pen.seen
+        table D0_pen.add $WORK/addt.f32 $NS f32
+    else
+        resident D${p}_pen.seen $WORK/zero${v}.f32 f32
+        resident D${p}_pen.add $WORK/zero${v}.f32 f32
+    end
+    program D${p}_rk $CHX/samp_rank.chx nq=${v / 64}
+    link D${p}_pen.y -> D${p}_rk.yc
+    link D${p}_pen.y -> D${p}_rk.yr
+    program D${p}_kp $CHX/samp_keep.chx n=$v k=$K bm=256 lo=1000000000
+    link D${p}_rk.cnt -> D${p}_kp.cnt
+    link D${p}_pen.y -> D${p}_kp.y
+    table D${p}_kp.g $WORK/g${p}.f32 $NS f32
+    program D${p}_m1 $CHX/samp_max.chx r=1 nq=${v / 64} G=2
+    link D${p}_kp.z -> D${p}_m1.l
+    resident D${p}_m1.mk $WORK/zero${v}.f32 f32
+    program D${p}_g1 $CHX/samp_gmax.chx r=1 nq=${v / 64}
+    link D${p}_m1.cm -> D${p}_g1.cm
+    program D${p}_cd $CHX/amax_cand.chx r=1 nq=${v / 64} G=2
+    link D${p}_kp.z -> D${p}_cd.l
+    link D${p}_g1.gmb -> D${p}_cd.gmb
+    resident D${p}_cd.rk $WORK/rank${v}.f32 f32
+    program D${p}_m2 $CHX/samp_max.chx r=1 nq=${v / 64} G=2
+    link D${p}_cd.c -> D${p}_m2.l
+    resident D${p}_m2.mk $WORK/zero${v}.f32 f32
+    program D${p}_g2 $CHX/samp_gmax.chx r=1 nq=${v / 64}
+    link D${p}_m2.cm -> D${p}_g2.cm
+    program D${p}_id $CHX/amax_id.chx r=1 nq=${v / 64} v1=${v + 1}
+    link D${p}_g2.gmb -> D${p}_id.gm
+    # the device's own draw into slot p of the frame's 16
+    program R${p} $CHX/tok_acc.chx r=1 s=16
+    if p == 0
+        resident R0.acc $WORK/zero16.f32 f32
+    else
+        link R${p - 1}.y -> R${p}.acc
+    end
+    link D${p}_id.id -> R${p}.ids
+    resident R${p}.sel $WORK/gsel${p}.f32 f32
+    resident R${p}.keep $WORK/gkeep${p}.f32 f32
+    if FORCE == 1
+        program D${p}_on $CHX/ids_mix.chx r=1
+        link D${p}_id.id -> D${p}_on.s
+        table D${p}_on.tf $WORK/tf${p}.f32 $NS f32
+        table D${p}_on.m $WORK/force.f32 $NS f32
+        program G${p} $CHX/tok_acc.chx r=1 s=16
+        if p == 0
+            resident G0.acc $WORK/zero16.f32 f32
+        else
+            link G${p - 1}.y -> G${p}.acc
+        end
+        link D${p}_on.y -> G${p}.ids
+        resident G${p}.sel $WORK/gsel${p}.f32 f32
+        resident G${p}.keep $WORK/gkeep${p}.f32 f32
+    end
+end
+
+# the id that goes on from draw p
+block on(p, dst)
+    if FORCE == 1
+        link D${p}_on.y -> $dst
+    else
+        link D${p}_id.id -> $dst
+    end
+end
+
+# ---- the talker's step
+program xin $CHX/row_mix.chx n=$D bn=1024
+table xin.xt $WORK/xtab.f32 $NS f32
+resident xin.xe $WORK/zero${D}.f32 f32
+table xin.m $WORK/mtab.f32 $NS f32
+
+block layer(i)
+    program rmsa${i} $QW/rms_h.chx r=1 c=$D bm=1 eps=0.000001
+    if i == 0
+        link xin.y -> rmsa0.x
+    else
+        link rb${i - 1}.y -> rmsa${i}.x
+    end
+    resident rmsa${i}.gain $WDIR/n1_${i}.f32 f32
+    program qkv${i} $CHX/matvec_rows_f16h.chx m=1 n=4096 k=$D
+    link rmsa${i}.y -> qkv${i}.x
+    resident qkv${i}.w $WDIR/qkv${i}.f16 f16
+    program post${i} $CHX/dec_post_n.chx r=1
+    link qkv${i}.y -> post${i}.y
+    resident post${i}.qw $WDIR/nq${i}.f32 f32
+    resident post${i}.kw $WDIR/nk${i}.f32 f32
+    table post${i}.cs $WORK/cos.f32 $NS f32
+    table post${i}.sn $WORK/sin.f32 $NS f32
+    program kwk${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$T ts=64 d=128
+    resident kwk${i}.c $WORK/zcache.f32 f32
+    link post${i}.kn -> kwk${i}.nw
+    table kwk${i}.sel $WORK/sel.f32 $NS f32
+    table kwk${i}.keep $WORK/keep.f32 $NS f32
+    carry kwk${i}.y -> kwk${i}.c
+    program kwv${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$T ts=64 d=128
+    resident kwv${i}.c $WORK/zcache.f32 f32
+    link post${i}.vn -> kwv${i}.nw
+    table kwv${i}.sel $WORK/sel.f32 $NS f32
+    table kwv${i}.keep $WORK/keep.f32 $NS f32
+    carry kwv${i}.y -> kwv${i}.c
+    program as${i} $CHX/attention_scores_b.chx nb=1 nkv=8 g=2 t=$T ts=64 d=128 tmax=$T
+    link post${i}.q -> as${i}.q
+    link kwk${i}.y -> as${i}.k
+    table as${i}.mask $WORK/mask.f32 $NS f32
+    program ap${i} $CHX/attention_pv_b.chx nb=1 nkv=8 g=2 t=$T dw=16 d=128 tmax=$T
+    link as${i}.sc -> ap${i}.sc
+    link kwv${i}.y -> ap${i}.v
+    program ca${i} $TR/cast_h.chx r=1 c=2048 bm=1
+    link ap${i}.o -> ca${i}.x
+    program op${i} $CHX/matvec_rows_f16h.chx m=1 n=$D k=2048
+    link ca${i}.y -> op${i}.x
+    resident op${i}.w $WDIR/wo${i}.f16 f16
+    program ra${i} $QW/res_add.chx r=1 c=$D bm=1
+    link op${i}.y -> ra${i}.z
+    if i == 0
+        link xin.y -> ra0.res
+    else
+        link rb${i - 1}.y -> ra${i}.res
+    end
+    program rmsb${i} $QW/rms_h.chx r=1 c=$D bm=1 eps=0.000001
+    link ra${i}.y -> rmsb${i}.x
+    resident rmsb${i}.gain $WDIR/n2_${i}.f32 f32
+    program gu${i} $CHX/matvec_rows_f16h.chx m=1 n=${2 * FF} k=$D
+    link rmsb${i}.y -> gu${i}.x
+    resident gu${i}.w $WDIR/gu${i}.f16 f16
+    program sw${i} $QW/swiglu_h.chx r=1 f=$FF bm=1 bc=256
+    link gu${i}.y -> sw${i}.gu
+    program dp${i} $CHX/matvec_rows_f16h.chx m=1 n=$D k=$FF
+    link sw${i}.y -> dp${i}.x
+    resident dp${i}.w $WDIR/wd${i}.f16 f16
+    program rb${i} $QW/res_add.chx r=1 c=$D bm=1
+    link dp${i}.y -> rb${i}.z
+    link ra${i}.y -> rb${i}.res
+end
+
+repeat i in 0 .. NL
+    use layer(i)
+end
+
+program rmsf $QW/rms_h.chx r=1 c=$D bm=1 eps=0.000001
+link rb${NL - 1}.y -> rmsf.x
+resident rmsf.gain $WDIR/nf.f32 f32
+program head $CHX/matvec_rows_f16h.chx m=1 n=$V k=$D
+link rmsf.y -> head.x
+resident head.w $WDIR/head.f16 f16
+
+# the first codes drawn before this step: the one the step before drew is added here (its flag, valid, is 0 while the step before was still in the prefix), and the draw reads the result
+program so $CHX/seen_or.chx c=$V bc=256
+resident so.seen $WORK/zero${V}.f32 f32
+resident so.id $WORK/one1.f32 f32
+resident so.jrow $WORK/jrow${V}.f32 f32
+table so.m $WORK/valid.f32 $NS f32
+carry so.y -> so.seen
+use draw(0, "head.y", V)
+if FORCE == 1
+    carry D0_on.y -> so.id
+else
+    carry D0_id.id -> so.id
+end
+if PROBE == 1
+    save D0_pen.y $WORK/pen.f32 f32
+    save D0_kp.z $WORK/z.f32 f32
+end
+
+# ---- the predictor: row p of the frame, 2,048 wide at src, through the projection and the five layers; the caches of row p - 1 linked
+block prow(p, src)
+    program P${p}_pj $CHX/matvec_rows_f16h.chx m=1 n=$PD k=2048
+    link $src -> P${p}_pj.x
+    resident P${p}_pj.w $WDIR/pproj.f16 f16
+    program P${p}_pb $QW/res_add.chx r=1 c=$PD bm=1
+    link P${p}_pj.y -> P${p}_pb.z
+    resident P${p}_pb.res $WDIR/pproj_b.f32 f32
+    repeat i in 0 .. PL
+        program P${p}_rmsa${i} $QW/rms_h.chx r=1 c=$PD bm=1 eps=0.000001
+        if i == 0
+            link P${p}_pb.y -> P${p}_rmsa0.x
+        else
+            link P${p}_rb${i - 1}.y -> P${p}_rmsa${i}.x
+        end
+        resident P${p}_rmsa${i}.gain $WDIR/pn1_${i}.f32 f32
+        program P${p}_qkv${i} $CHX/matvec_rows_f16h.chx m=1 n=4096 k=$PD
+        link P${p}_rmsa${i}.y -> P${p}_qkv${i}.x
+        resident P${p}_qkv${i}.w $WDIR/pqkv${i}.f16 f16
+        program P${p}_post${i} $CHX/dec_post_n.chx r=1
+        link P${p}_qkv${i}.y -> P${p}_post${i}.y
+        resident P${p}_post${i}.qw $WDIR/pnq${i}.f32 f32
+        resident P${p}_post${i}.kw $WDIR/pnk${i}.f32 f32
+        resident P${p}_post${i}.cs $WORK/pcos${p}.f32 f32
+        resident P${p}_post${i}.sn $WORK/psin${p}.f32 f32
+        program P${p}_kwk${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$PT ts=$PT d=128
+        if p == 0
+            resident P0_kwk${i}.c $WORK/pzcache.f32 f32
+        else
+            link P${p - 1}_kwk${i}.y -> P${p}_kwk${i}.c
+        end
+        link P${p}_post${i}.kn -> P${p}_kwk${i}.nw
+        resident P${p}_kwk${i}.sel $WORK/psel${p}.f32 f32
+        resident P${p}_kwk${i}.keep $WORK/pkeep${p}.f32 f32
+        program P${p}_kwv${i} $CHX/kv_write_b.chx nb=1 nkv=8 tmax=$PT ts=$PT d=128
+        if p == 0
+            resident P0_kwv${i}.c $WORK/pzcache.f32 f32
+        else
+            link P${p - 1}_kwv${i}.y -> P${p}_kwv${i}.c
+        end
+        link P${p}_post${i}.vn -> P${p}_kwv${i}.nw
+        resident P${p}_kwv${i}.sel $WORK/psel${p}.f32 f32
+        resident P${p}_kwv${i}.keep $WORK/pkeep${p}.f32 f32
+        program P${p}_as${i} $CHX/attention_scores_b.chx nb=1 nkv=8 g=2 t=$PT ts=$PT d=128 tmax=$PT
+        link P${p}_post${i}.q -> P${p}_as${i}.q
+        link P${p}_kwk${i}.y -> P${p}_as${i}.k
+        resident P${p}_as${i}.mask $WORK/pmask${p}.f32 f32
+        program P${p}_ap${i} $CHX/attention_pv_b.chx nb=1 nkv=8 g=2 t=$PT dw=16 d=128 tmax=$PT
+        link P${p}_as${i}.sc -> P${p}_ap${i}.sc
+        link P${p}_kwv${i}.y -> P${p}_ap${i}.v
+        program P${p}_ca${i} $TR/cast_h.chx r=1 c=2048 bm=1
+        link P${p}_ap${i}.o -> P${p}_ca${i}.x
+        program P${p}_op${i} $CHX/matvec_rows_f16h.chx m=1 n=$PD k=2048
+        link P${p}_ca${i}.y -> P${p}_op${i}.x
+        resident P${p}_op${i}.w $WDIR/pwo${i}.f16 f16
+        program P${p}_ra${i} $QW/res_add.chx r=1 c=$PD bm=1
+        link P${p}_op${i}.y -> P${p}_ra${i}.z
+        if i == 0
+            link P${p}_pb.y -> P${p}_ra0.res
+        else
+            link P${p}_rb${i - 1}.y -> P${p}_ra${i}.res
+        end
+        program P${p}_rmsb${i} $QW/rms_h.chx r=1 c=$PD bm=1 eps=0.000001
+        link P${p}_ra${i}.y -> P${p}_rmsb${i}.x
+        resident P${p}_rmsb${i}.gain $WDIR/pn2_${i}.f32 f32
+        program P${p}_gu${i} $CHX/matvec_rows_f16h.chx m=1 n=${2 * PF} k=$PD
+        link P${p}_rmsb${i}.y -> P${p}_gu${i}.x
+        resident P${p}_gu${i}.w $WDIR/pgu${i}.f16 f16
+        program P${p}_sw${i} $QW/swiglu_h.chx r=1 f=$PF bm=1 bc=256
+        link P${p}_gu${i}.y -> P${p}_sw${i}.gu
+        program P${p}_dp${i} $CHX/matvec_rows_f16h.chx m=1 n=$PD k=$PF
+        link P${p}_sw${i}.y -> P${p}_dp${i}.x
+        resident P${p}_dp${i}.w $WDIR/pwd${i}.f16 f16
+        program P${p}_rb${i} $QW/res_add.chx r=1 c=$PD bm=1
+        link P${p}_dp${i}.y -> P${p}_rb${i}.z
+        link P${p}_ra${i}.y -> P${p}_rb${i}.res
+    end
+end
+
+# row 0: the talker's row after its final norm
+use prow(0, "rmsf.y")
+# row p, 1 to 15: the embedding of the code before (the talker's table for the first code, the predictor's table p - 2 after it), then head p - 1 and the draw of code p
+repeat p in 1 .. 16
+    if p == 1
+        program P1_oh $QW/onehot_h.chx r=1 c=$V bc=128
+        resident P1_oh.jrow $WORK/jrow${V}.f32 f32
+        program P1_em $CHX/matvec_rows_f16h.chx m=1 n=2048 k=$V
+        resident P1_em.w $WDIR/embt.f16 f16
+    else
+        program P${p}_oh $QW/onehot_h.chx r=1 c=$PV bc=128
+        resident P${p}_oh.jrow $WORK/jrow${PV}.f32 f32
+        program P${p}_em $CHX/matvec_rows_f16h.chx m=1 n=2048 k=$PV
+        resident P${p}_em.w $WDIR/pembt${p - 2}.f16 f16
+    end
+    use on(p - 1, "P${p}_oh.ids")
+    link P${p}_oh.y -> P${p}_em.x
+    program P${p}_ce $TR/cast_h.chx r=1 c=2048 bm=1
+    link P${p}_em.y -> P${p}_ce.x
+    use prow(p, "P${p}_ce.y")
+    program P${p}_nf $QW/rms_h.chx r=1 c=$PD bm=1 eps=0.000001
+    link P${p}_rb${PL - 1}.y -> P${p}_nf.x
+    resident P${p}_nf.gain $WDIR/pnf.f32 f32
+    program P${p}_hd $CHX/matvec_rows_f16h.chx m=1 n=$PV k=$PD
+    link P${p}_nf.y -> P${p}_hd.x
+    resident P${p}_hd.w $WDIR/phead${p - 1}.f16 f16
+    use draw(p, "P${p}_hd.y", PV)
+end
+
+# ---- the next frame's row: the 16 ids that go on as one one-hot of 16 x V, a product with the 16 tables side by side (the predictor's padded to V columns), plus P(pad)
+program nxo $QW/onehot_h.chx r=16 c=$V bc=128
+if FORCE == 1
+    link G15.y -> nxo.ids
+else
+    link R15.y -> nxo.ids
+end
+resident nxo.jrow $WORK/jrow${V}.f32 f32
+program nxe $CHX/matvec_rows_f16h.chx m=1 n=$D k=${16 * V}
+link nxo.y -> nxe.x
+resident nxe.w $WDIR/sumt.f16 f16
+program nx $QW/res_add.chx r=1 c=$D bm=1
+link nxe.y -> nx.z
+resident nx.res $WORK/pad.f32 f32
+carry nx.y -> xin.xe
+
+# ---- the answer: the frame's 16 draws into column j of [16, NS]
+program ac $CHX/tok_acc.chx r=16 s=$NS
+resident ac.acc $WORK/acc0.f32 f32
+link R15.y -> ac.ids
+table ac.sel $WORK/accsel.f32 $NS f32
+table ac.keep $WORK/acckeep.f32 $NS f32
+carry ac.y -> ac.acc
+save ac.y $WORK/ids_out.f32 f32
+steps
+answer D0_id.id
