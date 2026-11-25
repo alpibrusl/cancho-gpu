@@ -44,6 +44,15 @@ i=0; while [ $i -lt 16 ]; do head -c 2097152 /dev/zero > "$T/w/cb$i.f32"; i=$((i
 head -c 524288 /dev/zero > "$T/w/cbp0.f32"; head -c 524288 /dev/zero > "$T/w/cbp1.f32"
 want "prepare" 0 prepare "$T/w" "$T/k" "$T/codes.txt"
 if [ "$(cat "$T/out")" = "SP=128 frames 65 samples 124800" ]; then echo "ok   prepare says SP=128 frames 65 samples 124800"; else echo "FAIL prepare said: $(cat "$T/out")"; fail=1; fi
+# a window of the clip (docs/audio.md section 28: the reference decodes in pieces): frames 40 to 64
+mkdir -p "$T/kw"
+want "prepare, a window" 0 prepare "$T/w" "$T/kw" "$T/codes.txt" 40 25
+if [ "$(cat "$T/out")" = "SP=64 frames 25 samples 48000" ]; then echo "ok   prepare of a window says SP=64 frames 25 samples 48000"; else echo "FAIL prepare of a window said: $(cat "$T/out")"; fail=1; fi
+want "prepare, a window past the clip" 101 prepare "$T/w" "$T/kw" "$T/codes.txt" 41 25
+want "prepare, a window of no frames" 101 prepare "$T/w" "$T/kw" "$T/codes.txt" 0 0
+want "prepare, a window of 385 frames" 101 prepare "$T/w" "$T/kw" "$T/long.txt" 0 385
+want "prepare, a window of a clip of 385 frames" 0 prepare "$T/w" "$T/kw" "$T/long.txt" 1 384
+want "prepare, a window and a mutant that is weights'" 101 prepare "$T/w" "$T/kw" "$T/codes.txt" 0 8 3
 for f in "x0.f32 266240" "cs.f32 16384" "sn.f32 16384" "amask.f32 1048576" "ones0.f32 1024" "ones1.f32 2048"; do
   set -- $f
   size=$(wc -c < "$T/k/$1" | tr -d ' ')

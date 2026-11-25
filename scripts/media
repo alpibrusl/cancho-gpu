@@ -30,13 +30,14 @@ case "${1:-}" in
   rewrite) cho=1 ;;
   video) cho=1 ;;
   transcribe) cho=2 ;;
+  speak) cho=2 ;;
 esac
 # a chain of clips (`video --segments`, `--then`, `--no-correct`) is still tools/media.py's; one clip from a picture (`video --image`) is cancho's
 for a in "$@"; do case "$a" in --segments|--then|--no-correct) [ "${1:-}" = video ] && cho=0 ;; esac; done
-# `transcribe` (docs/audio.md section 16) is cancho's alone: there is no Python of it to fall back on
+# `transcribe` and `speak` (docs/audio.md sections 16 and 28) are cancho's alone: there is no Python of it to fall back on
 if [ $cho = 2 ]; then
   if [ ! -x "$HERE/build/media" ] || [ "${CANCHO_MEDIA_IMPL:-}" = python ]; then
-    echo "media: transcribe is build/media's alone (there is no Python of it): build it with \`CANCHO=<pinned cancho> scripts/build-media.sh\`, and leave CANCHO_MEDIA_IMPL unset" >&2
+    echo "media: $1 is build/media's alone (there is no Python of it): build it with \`CANCHO=<pinned cancho> scripts/build-media.sh\`, and leave CANCHO_MEDIA_IMPL unset" >&2
     exit 2
   fi
   cho=1

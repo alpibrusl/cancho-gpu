@@ -59,6 +59,16 @@ done
 # causal over the 17 rows: row 5 sees key 5 and not key 6; row 40, past the sequence, sees key 16 and not key 17 (-1e9 is the bytes 28 6b 6e ce)
 m="$T/k/mask.f32"
 if [ "$(at $m $((5 * 64 + 5))) $(at $m $((5 * 64 + 6))) $(at $m $((40 * 64 + 16))) $(at $m $((40 * 64 + 17)))" = "00000000 286b6ece 00000000 286b6ece" ]; then echo "ok   the talker's mask is causal over its rows"; else echo "FAIL the talker's mask"; fail=1; fi
+# a prefix alone (`-` for the codes), and with no language (0): one row shorter (docs/audio.md section 28)
+mkdir -p "$T/kp"
+want "inputs talker, no codes" 0 inputs talker "$T/w" "$T/kp" "$T/ids.txt" - 2050 3061
+if [ "$(cat "$T/out")" = "SP=64 rows 13 prefix 13 frames 0" ]; then echo "ok   a prefix alone says SP=64 rows 13 prefix 13 frames 0"; else echo "FAIL a prefix alone said: $(cat "$T/out")"; fail=1; fi
+want "inputs talker, no codes and no language" 0 inputs talker "$T/w" "$T/kp" "$T/ids.txt" - 0 3061
+if [ "$(cat "$T/out")" = "SP=64 rows 12 prefix 12 frames 0" ]; then echo "ok   with no language says SP=64 rows 12 prefix 12 frames 0"; else echo "FAIL with no language said: $(cat "$T/out")"; fail=1; fi
+want "inputs talker, a language that is neither a codec id nor 0" 101 inputs talker "$T/w" "$T/kp" "$T/ids.txt" - 1 3061
+want "tables, too few arguments" 100 tables "$T/not.safetensors"
+want "tables, a relative path" 102 tables "$T/not.safetensors" w
+want "tables, not a checkpoint" 104 tables "$T/not.safetensors" "$T/e"
 # the predictor: 4 frames are 64 rows, from a hidden file of 5 rows, the frames' from row 1
 zeros "$T/hidden.f32" 40960
 put "$T/hidden.f32" '\000\000\200\077' $((2 * 2048 + 3))
