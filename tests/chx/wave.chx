@@ -19,3 +19,4 @@ algo wave(s, c, bm, lim, m1)
 
 schedule wave for apple-m-series { threads 256 }
 schedule wave for nvidia-ada     { threads 256 }
+schedule wave for amd-cdna3      { threads 256 }

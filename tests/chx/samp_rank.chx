@@ -25,3 +25,4 @@ algo samp_rank(nq)
 
 schedule samp_rank for apple-m-series { threads 256 }
 schedule samp_rank for nvidia-ada     { threads 128 }
+schedule samp_rank for amd-cdna3      { threads 128 }
