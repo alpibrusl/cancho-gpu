@@ -1,0 +1,142 @@
+# Kolibri 1.1, the MLP half of one layer (docs/kolibri.md section 10, stage K3): from the row after the layer's attention (x.f32) to the row after the layer (out.y, saved as out.f32).
+# MOE=1 is a layer of 2 to 49: the router's NE logits, the K experts it names read from tables of NE blocks (docs/resident.md: `table ... by`), and the shared expert. MOE=0 is layer 0 or 1: one SwiGLU
+# MLP of FF. Q41=1 when the layer's `down` matrices are ggml's Q4_1 (layers 0 to 5): the offsets `m + 8 d` are an f32 matrix a group of 32 columns wide, multiplied by the activation's group sums.
+#
+#     cancho-gpu-metal-session models/kolibri_mlp.model CHX=<tests/chx> W=<the layer's files> MOE=<0|1> Q41=<0|1>
+#
+# SAVE=1 writes mlp_out.f32, out.f32 and the router's route_out.f32, idx_out.f32, wt_out.f32 at a checkpoint; ANS=1 answers the six indices and weights before the row. F32= F16= I8= (empty)
+# reads every file as text, and D, NE, EH, K, FF, BN make a small layer: tests/moe.sh, in the gate.
+#
+# The layer's files (the host's, K5; by hand in K3): x.f32, ffn_norm.f32, post_norm.f32, ones_h.f32 and ones_d.f32 (the rows' scales of dequant_q4: ones), and for a matrix NAME its codes NAME.q4
+# (two a byte, low nibble first, in the matrix's order), its scales NAME.s (f16, one a group of 32) and, in Q4_1, its offsets NAME.c (f32). MOE=1: route.f32, bias.f32, ar.f32 (0 .. NE - 1),
+# sl.f32 (0 .. K - 1), the shared expert's sh.gate, sh.up, sh.down, and the experts' ex.gate, ex.up, ex.down, each NE blocks. MOE=0: dn.gate, dn.up, dn.down.
+text CHX = tests/chx
+text W = .
+const D = 2560
+const NE = 384
+const EH = 512
+const K = 6
+const FF = 3584
+const MOE = 1
+const Q41 = 0
+const SAVE = 1
+const ANS = 0
+const BN = 256
+text F32 = f32
+text F16 = f16
+text I8 = i8
+
+# a `down` product named n: resident files of the name `pre` (pick < 0), or blocks of tables picked by slot `pick` of pk.idx.
+block down(n, src, pre, h, pick)
+    program $n $CHX/matvec_q4_rows.chx n=$D k=$h
+    link $src -> $n.x
+    resident $n.wg $W/ones_d.f32 $F32
+    if pick < 0
+        resident $n.wq $W/$pre.down.q4 $I8
+        resident $n.ws $W/$pre.down.s $F16
+    else
+        table $n.wq $W/$pre.down.q4 $NE $I8 by pk.idx $pick
+        table $n.ws $W/$pre.down.s $NE $F16 by pk.idx $pick
+    end
+end
+
+# one SwiGLU MLP of h hidden, numbered p (an expert's slot, K the shared one): E${p}_y.y is down(silu(gate n) * (up n)), n the normed row.
+block mlp(p, pre, h, pick)
+    program E${p}_g $CHX/matvec_q4_rows.chx n=$h k=$D
+    link nrm.y -> E${p}_g.x
+    program E${p}_u $CHX/matvec_q4_rows.chx n=$h k=$D
+    link nrm.y -> E${p}_u.x
+    if pick < 0
+        resident E${p}_g.wq $W/$pre.gate.q4 $I8
+        resident E${p}_g.ws $W/$pre.gate.s $F16
+        resident E${p}_u.wq $W/$pre.up.q4 $I8
+        resident E${p}_u.ws $W/$pre.up.s $F16
+    else
+        table E${p}_g.wq $W/$pre.gate.q4 $NE $I8 by pk.idx $pick
+        table E${p}_g.ws $W/$pre.gate.s $NE $F16 by pk.idx $pick
+        table E${p}_u.wq $W/$pre.up.q4 $NE $I8 by pk.idx $pick
+        table E${p}_u.ws $W/$pre.up.s $NE $F16 by pk.idx $pick
+    end
+    resident E${p}_g.wg $W/ones_h.f32 $F32
+    resident E${p}_u.wg $W/ones_h.f32 $F32
+    program E${p}_a $CHX/swiglu.chx n=$h
+    link E${p}_g.y -> E${p}_a.g
+    link E${p}_u.y -> E${p}_a.u
+    if Q41
+        use down("E${p}_d", "E${p}_a.y", pre, h, pick)
+        program E${p}_s $CHX/group_sum.chx k=$h G=32
+        link E${p}_a.y -> E${p}_s.x
+        program E${p}_y $CHX/matvec_res.chx n=$D k=${h / 32}
+        link E${p}_s.s -> E${p}_y.x
+        link E${p}_d.y -> E${p}_y.r
+        if pick < 0
+            resident E${p}_y.w $W/$pre.down.c $F32
+        else
+            table E${p}_y.w $W/$pre.down.c $NE $F32 by pk.idx $pick
+        end
+    else
+        use down("E${p}_y", "E${p}_a.y", pre, h, pick)
+    end
+end
+
+# the norm after and the residual, from the MLP's output src
+block tail(src)
+    program pn $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+    link $src -> pn.x
+    resident pn.w $W/post_norm.f32 $F32
+    program out $CHX/step_add.chx n=$D
+    resident out.w $W/x.f32 $F32
+    link pn.y -> out.d
+    if SAVE
+        save $src $W/mlp_out.f32 $F32
+        save out.wo $W/out.f32 $F32
+    end
+end
+
+program nrm $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
+resident nrm.x $W/x.f32 $F32
+resident nrm.w $W/ffn_norm.f32 $F32
+if MOE
+    program rt $CHX/matvec_rows.chx n=$NE k=$D
+    link nrm.y -> rt.x
+    resident rt.w $W/route.f32 $F32
+    program zb $CHX/step_add.chx n=$NE
+    link rt.y -> zb.w
+    resident zb.d $W/bias.f32 $F32
+    program rk $CHX/moe_rank.chx nq=${NE / 64}
+    link zb.wo -> rk.yc
+    link zb.wo -> rk.yr
+    resident rk.ic $W/ar.f32 $F32
+    resident rk.ir $W/ar.f32 $F32
+    program pk $CHX/moe_pick.chx n=$NE k=$K
+    link rk.cnt -> pk.cnt
+    link rt.y -> pk.lg
+    resident pk.ar $W/ar.f32 $F32
+    resident pk.sl $W/sl.f32 $F32
+    use mlp(K, "sh", EH, -1)
+    repeat j in 0 .. K
+        use mlp(j, "ex", EH, j)
+        program m$j $CHX/axpy_slot.chx n=$D bn=$BN k=$K j=$j
+        if j == 0
+            link E${K}_y.y -> m0.m
+        else
+            link m${j - 1}.mo -> m$j.m
+        end
+        link E${j}_y.y -> m$j.y
+        link pk.wt -> m$j.wt
+    end
+    use tail("m${K - 1}.mo")
+    if SAVE
+        save rt.y $W/route_out.f32 $F32
+        save pk.idx $W/idx_out.f32 $F32
+        save pk.wt $W/wt_out.f32 $F32
+    end
+else
+    use mlp(0, "dn", FF, -1)
+    use tail("E0_y.y")
+end
+if ANS && MOE
+    answer pk.idx
+    answer pk.wt
+end
+answer out.wo

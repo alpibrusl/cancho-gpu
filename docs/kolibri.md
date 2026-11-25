@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; no layer runs yet)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; no attention runs yet)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -63,7 +63,7 @@ Qwen's weights are BF16 and exact in f16, and every stage of `docs/audio.md` ran
 * **K0. The reference** **[done, section 2]**.
 * **K1. `dequant_q4` in the language** **[done, section 8]**: the operation, its float64 test and mutants, the kernels `dq_q4` (a window of 4-bit weights to an f32 scratch) and the product after it, against the reference's own dequantisation of one expert, to the bit. Refused inside a product until it is fused, with a rule tag. **[corrected in section 8: not refused; a product takes it]**
 * **K2. A window chosen by a value, in the session** **[done, section 9]**: a directive that binds an input at `index x stride` of a resident file, the index read from a buffer the step computed; the CPU session and the Metal one agree; an index outside the file is a refusal with a rule tag, never a read.
-* **K3. One MoE layer**: the router, the six, the experts and the shared one, from the reference's row before the layer to its row after it; then the dense MLP of layers 0 and 1.
+* **K3. One MoE layer** **[done, section 10]**: the router, the six, the experts and the shared one, from the reference's row before the layer to its row after it; then the dense MLP of layers 0 and 1.
 * **K4. One attention layer of each kind** (sliding with rotary; indexed with NVFP4 keys and values; one that reads another layer's), then **the 50 layers as one cached step**, teacher-forced on the reference's ids: the stream after every layer and the logits. Bound, as `docs/audio.md` S2: the arg max at every row whose two best are clear, and the differences over the 50 largest reported.
 * **K5. The host**: the weights from the GGUF (the nibbles repacked, the scales, Q6_K, Q4_1's second term), the tokenizer, the prompt.
 * **K6. Generation** with the sampler, stopping at the end token (`scripts/tts-session until`'s way), and the time a token.
@@ -124,3 +124,50 @@ The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` 
 
 * **A crash on the way, fixed before any of this was measured:** the first form decoded the value into the interpreter's memory, where a device session's outputs have no place (their offset is -1); with one program it happened to run and with two it trapped. The value is now read from the downloaded bytes. The stepped case and the three-program case of `tests/pick.sh` on the Metal session are what hold it; they are by hand, so **nothing in the gate runs the device's read-back** (the gate has no GPU, and its mock driver computes nothing a pick could read).
 * **Not done:** the time of the read-back in a real step (48 waits a token) is not measured: K4's; CUDA's and the other device sessions do not have the clause; a picked table is uploaded whole, so a table over the session's 512 MiB staging pool is refused as any binary table is (an expert file is 251 MB).
+
+## 10. K3: a layer's MLP half, the mixture of experts and the dense one **[measured, 2026-11-25, M4 Max]**
+
+**The design, before the code.** The half is from the row after a layer's attention (`mid`, which the reference of section 2 did not keep: its scratch copy now does, with the router's logits and the MLP's output before its norm, in `r3/`) to the row after the layer. It is a model file, `models/kolibri_mlp.model`, of kernels that exist and four that do not:
+
+| step | kernel |
+|---|---|
+| the norm before | `rmsnorm_rows` |
+| the router: 384 logits, f32 weights | `matvec_rows` |
+| plus the biases | `step_add` |
+| each entry's place among them | **`moe_rank`**: `samp_rank` with the ties broken by index, as the reference's stable sort breaks them. With `samp_rank` itself two equal logits would share a place, a slot would hold the sum of two indices and the next slot none: a wrong expert read without a refusal |
+| the six indices and `sigmoid(logit)` of each | **`moe_pick`** |
+| an expert: `gate` and `up` (512 x 2,560), the activation, `down` (2,560 x 512) | `matvec_q4_rows` twice, `swiglu`, `matvec_q4_rows`; the three matrices' codes and scales are tables of 384 blocks picked `by` the index's slot (K2) |
+| the layer's sum | **`axpy_slot`**: `m + wt[j] y`, starting from the shared expert's output |
+| a `down` matrix in Q4_1 (layers 0 to 5) | `code d + m` is `(code - 8) d + (m + 8 d)`: the first term is the Q4_0 product, the second is constant over a group of 32 columns, so it is **`group_sum`** (the activation's 16 or 112 group sums) and a `matvec_res` with the offsets `m + 8 d` as an f32 matrix of 2,560 x 16 (or x 112), which the host writes |
+| the norm after and the residual | `rmsnorm_rows`, `step_add` |
+
+* **Correct first, with the fewest new kernels**: an expert is five programs, a layer about 40, a token about 1,900 launches (23 ms at section 27 of `docs/audio.md`'s 12 microseconds) **[reckoned]** **[measured below as a request of its own: 1.2 ms a layer, 57 ms a token's 50 halves, which is over this]**. `gate`, `up` and the activation as one kernel, and `down` with its weight, would make it three; that is K6's, when a token is timed.
+* **The offsets are not exact**: `m + 8 d` of two f16 values is rounded to f32 when their exponents are far apart, so a Q4_1 weight read this way can differ from the reference's `code d + m` in its last bit. Measured below, not assumed away.
+* **The router is f32 here and float64 in the reference.** The six agree unless the sixth and seventh are closer than the products' rounding; the margin is measured on every choice of the run.
+* **The bound**: the row after the layer against the reference's, relative to the row's peak, at 1e-4; the six indices the reference's own.
+* **In the gate** (no GPU, no model): the four kernels against float64 (`tests/kernels.py`) with mutants, and `tests/moe.sh`, a small layer of the model file on the CPU session against awk's arithmetic, ties included.
+
+**Every layer's half, every token of the German run** (the weights by hand from the file, a scratch script; the Metal session, a process a half):
+
+| | |
+|---|---|
+| halves run: 50 layers x 39 tokens | 1,950 |
+| the row after the layer against the reference's, of the row's peak | worst **2.1e-6** (bound 1e-4) |
+| the MLP's output before its norm | worst 4.9e-7 |
+| the six experts, in order, of 1,872 choices | **the reference's, 1,872 of 1,872** |
+| their weights | within 9.4e-8 |
+| the router's logits against the reference's float64 | within 1.8e-6 |
+| layers 0 and 1 (dense, `down` in Q4_1) and 2 to 5 (experts' `down` in Q4_1) | within 5.7e-7: the offsets as `m + 8 d` cost nothing that shows |
+
+* **The six agreed, but not by a wide margin everywhere**: the smallest gap between a sixth and a seventh logit in the run is 3.0e-6, and the device's logits are up to 1.8e-6 from the reference's. A token whose gap is under the products' rounding would take another sixth expert than the reference, with a weight that is almost the same; neither would be wrong. It did not happen in 1,872 choices.
+* **Time, measured as requests of one half each** (the session answering the row's 2,560 numbers as text every time, so this is over what a half costs inside a step): **1.2 ms a mixture-of-experts half** (41 programs and the read-back of the six), **0.9 ms a dense one** (9 programs, three products of 3,584 x 2,560), from 200 and 1,000 requests, two runs each. A token's 50 halves are then at most 57 ms: **the 23 ms reckoned above was low**, and section 5's 10 to 20 tokens a second is at its lower end before the attention is counted. The session's whole process with a layer's 850 MB of tables is 0.14 s.
+* **No staging limit was met**: section 9 said a picked table is bound by the session's 512 MiB pool. A layer's three tables of 251 MB are each under it, and together (850 MB) they ran.
+
+**The four kernels** against float64 (`tests/kernels.py`, in the gate) and on the Metal GPU against the interpreter (`scripts/metal-kernels.sh`, by hand: 0, 6.3e-7, 0, 8.9e-8 of their peaks). **Mutants, by hand, eight, each killed by a number**: `moe_rank` counting the smaller entries, comparing a chunk only with itself; `moe_pick` taking the next place too, weighing by the logit, summing logits for indices; `axpy_slot` with the first slot's weight, reading every tile from the first; `group_sum` summing the first group. Two more were first written so that they did not compile, and were replaced.
+
+**`tests/moe.sh`** (in the gate, the CPU session; the Metal session by hand: all 6 on both): a layer 64 wide with 128 experts of 64, three taken, every file text, against awk's double arithmetic of the definition, as a mixture of experts and as the dense MLP, each with `down` in Q4_0 and in Q4_1's form. Two pairs of router rows are equal, one across the chunks of 64 and one at the third place.
+
+* **The tie mutant does what the design said it would**: with the ties not broken the three are 75, 0 and 120, the sums of the equal pairs' indices and an empty slot, read as experts without a refusal. `tests/kernels.py` cannot see it (made-up logits are never equal); `tests/moe.sh` kills it.
+* **Nine mutants of the model file, by hand, each killed by that test**: every expert weighed by slot 0's weight; every expert picked by slot 0; the sum started from an expert and not the shared one; the places taken of the logits without their biases; the weights of the logits with them; the Q4_1 offsets multiplying the activation and not its group sums; the residual the normed row; `up` reading `gate`'s matrix; an expert's `down` scales picked by slot 0.
+* **The test was too weak at first, and a mutant found it**: the made-up codes repeated with the block's size, so all 128 experts were one matrix and "every expert picked by slot 0" passed the Q4_0 case. The codes and scales no longer repeat in a block.
+* **Not done:** the weights are still written by a scratch script, not a program (K5); the layer's two halves are not joined and nothing here is a step (K4); an expert is five programs where three would do; the time is of requests, not of a step; CUDA and HIP texts are emitted and held by goldens but ran nowhere, and their sessions have no `table ... by`.

@@ -1,0 +1,3 @@
+nvidia-ada: cnt [128] = mean 57.1562, peak 127.0000, first [124.0, 124.0, 58.0, 41.0]
+apple-m-series: cnt [128] = mean 57.1562, peak 127.0000, first [124.0, 124.0, 58.0, 41.0]
+amd-cdna3: cnt [128] = mean 57.1562, peak 127.0000, first [124.0, 124.0, 58.0, 41.0]

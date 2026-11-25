@@ -1,0 +1,14 @@
+// s_g = the sum of x over group g of G columns (docs/kolibri.md K3): the row a Q4_1 matrix's offsets multiply. ggml's Q4_1 value is code * d + m, which is (code - 8) d + (m + 8 d): the first term is
+// matvec_q4_rows.chx's product, and the second, constant over a group of 32, is a product of the groups' offsets with these sums. A threadgroup a group.
+algo group_sum(k, G)
+  in  x: f32[1, k]
+  out s: f32[k / G]
+{
+  grid g over k / G
+  let a = load x[0, g * G ; 1, G]
+  store rowsum a -> s[g]
+}
+
+schedule group_sum for apple-m-series { threads 64 }
+schedule group_sum for nvidia-ada     { threads 64 }
+schedule group_sum for amd-cdna3      { threads 64 }

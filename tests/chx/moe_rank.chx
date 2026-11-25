@@ -1,0 +1,43 @@
+// The place of each of a router's logits among them (docs/kolibri.md K3): cnt_i is how many entries come before entry i in a stable sort from the largest, the larger ones and, of the equal ones, those
+// with a smaller index. So the counts are 0 .. n - 1 once each whatever the values, and moe_pick.chx's slot j has one entry. samp_rank.chx with the ties broken: the row y is read twice, as a column of
+// nq * 64 (yc) and as nq chunks of 64 (yr), and so is the table of the entries' own indices 0 .. n - 1 (ic, ir), which the host writes. An entry that is not a number counts as equal to every other.
+algo moe_rank(nq)
+  in  yc:  f32[nq * 64, 1]
+  in  yr:  f32[nq, 64]
+  in  ic:  f32[nq * 64, 1]
+  in  ir:  f32[nq, 64]
+  out cnt: f32[nq * 64]
+{
+  grid q over nq
+  let acc = zeros f32[64, 64]
+  let acc = for p in 0 .. nq with acc {
+    let c  = load yc[q * 64, 0 ; 64, 1]
+    let z  = zeros f32[64, 64]
+    let cb = z + c
+    let r  = load yr[p, 0 ; 1, 64]
+    let d  = cb - r
+    let zn = zeros f32[64, 64]
+    let dn = zn - &d
+    let gt = step dn
+    let lt = step d
+    let o  = zeros f32[64, 64]
+    let on = o + 1.0
+    let ne = &gt + lt
+    let eq = on - ne
+    let ci = load ic[q * 64, 0 ; 64, 1]
+    let zi = zeros f32[64, 64]
+    let ib = zi + ci
+    let ri = load ir[p, 0 ; 1, 64]
+    let di = ib - ri
+    let ea = step di
+    let ti = eq * ea
+    let a2 = acc + gt
+    yield a2 + ti
+  }
+  let s = rowsum acc
+  store s -> cnt[q * 64]
+}
+
+schedule moe_rank for apple-m-series { threads 256 }
+schedule moe_rank for nvidia-ada     { threads 128 }
+schedule moe_rank for amd-cdna3      { threads 128 }

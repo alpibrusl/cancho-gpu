@@ -662,3 +662,15 @@ tests/chx/matvec_q4_rows.chx n=2560 k=512
 tests/chx/matvec_q4_rows.chx n=6144 k=2560
 tests/chx/dq_q4.chx n=8 k=64 bn=4 bk=32 --run
 tests/chx/matvec_q4_rows.chx n=16 k=64 --run
+# K3 (docs/kolibri.md section 10): a mixture-of-experts layer's choice and sum. moe_rank: the place of each of the router's 384 logits, ties to the smaller index; moe_pick: the six indices and weights;
+# axpy_slot: an expert's output added with its slot's weight; group_sum: the group sums a Q4_1 matrix's offsets multiply (an expert's 512, the dense MLP's 3,584). Held to float64 by tests/kernels.py,
+# and tests/moe.sh for the ties.
+tests/chx/moe_rank.chx nq=6
+tests/chx/moe_pick.chx n=384 k=6
+tests/chx/axpy_slot.chx n=2560 bn=256 k=6 j=5
+tests/chx/group_sum.chx k=512 G=32
+tests/chx/group_sum.chx k=3584 G=32
+tests/chx/moe_rank.chx nq=2 --run
+tests/chx/moe_pick.chx n=128 k=6 --run
+tests/chx/axpy_slot.chx n=64 bn=16 k=6 j=4 --run
+tests/chx/group_sum.chx k=256 G=32 --run

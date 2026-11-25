@@ -1,0 +1,19 @@
+// mo = m + wt[j] y over a row of n: an expert's output added to the layer's sum with the weight the router gave it (docs/kolibri.md K3). wt is moe_pick.chx's k weights and j the expert's slot, a
+// constant of the program. bn columns a threadgroup.
+algo axpy_slot(n, bn, k, j)
+  in  m:  f32[1, n]
+  in  y:  f32[1, n]
+  in  wt: f32[k, 1]
+  out mo: f32[1, n]
+{
+  grid c over n / bn
+  let a = load m[0, c * bn ; 1, bn]
+  let b = load y[0, c * bn ; 1, bn]
+  let w = load wt[j, 0 ; 1, 1]
+  let p = b * w
+  store a + p -> mo[0, c * bn]
+}
+
+schedule axpy_slot for apple-m-series { threads 128 }
+schedule axpy_slot for nvidia-ada     { threads 128 }
+schedule axpy_slot for amd-cdna3      { threads 128 }

@@ -650,6 +650,30 @@ def samp_keep(n, k, lo):
     return [y[j] + g[j] if k - cnt[j] > 0 else -lo for j in range(n)]
 
 
+def moe_rank(nq):
+    """Each entry's place in a stable sort from the largest (docs/kolibri.md K3): the larger ones, and the equal ones with a smaller index."""
+    n = nq * 64
+    yc, yr, ic, ir = lcg([n, n, n, n])
+    return [float(sum(1 if yr[j] > yc[i] else (1 if yr[j] == yc[i] and ic[i] - ir[j] > 0 else 0) for j in range(n))) for i in range(n)]
+
+
+def moe_pick(n, k):
+    """Slot j: the index of the entry whose place is j (within a half), and sigmoid of its logit."""
+    cnt, lg, ar, sl = lcg([n, n, n, k])
+    eq = [[1.0 if sl[j] - cnt[i] + 0.5 > 0 and cnt[i] - sl[j] + 0.5 > 0 else 0.0 for i in range(n)] for j in range(k)]
+    return [sum(eq[j][i] * ar[i] for i in range(n)) for j in range(k)], [sum(eq[j][i] * sigmoid_(lg[i]) for i in range(n)) for j in range(k)]
+
+
+def axpy_slot(n, k, j):
+    m, y, wt = lcg([n, n, k])
+    return [m[c] + wt[j] * y[c] for c in range(n)]
+
+
+def group_sum(k, G):
+    (x,) = lcg([k])
+    return [sum(x[g * G:(g + 1) * G]) for g in range(k // G)]
+
+
 def seen_or(c):
     seen, idv, jrow, m = lcg([c, 1, c, 1])
     return [max(seen[j], m[0] * max(0.0, 1 - abs(jrow[j] - idv[0]))) for j in range(c)]
@@ -963,6 +987,19 @@ def new_checks():
     ok &= check("dq_q4 n=4 k=128", run("dq_q4", ["n=4", "k=128", "bn=2", "bk=64"])["w"], dq_q4(4, 128))
     ok &= check("matvec_q4_rows n=16 k=64", run("matvec_q4_rows", ["n=16", "k=64"])["y"], matvec_q4(16, 64))
     ok &= check("matvec_q4_rows n=8 k=320", run("matvec_q4_rows", ["n=8", "k=320"])["y"], matvec_q4(8, 320))
+    # K3 (docs/kolibri.md section 10): the router's six and the layer's sum
+    ok &= check("moe_rank nq=2", run("moe_rank", ["nq=2"])["cnt"], moe_rank(2))
+    ok &= check("moe_rank nq=6", run("moe_rank", ["nq=6"])["cnt"], moe_rank(6))
+    pk = run("moe_pick", ["n=128", "k=6"]); pi, pw = moe_pick(128, 6)
+    ok &= check("moe_pick n=128 k=6 idx", pk["idx"], pi)
+    ok &= check("moe_pick n=128 k=6 wt", pk["wt"], pw)
+    pk = run("moe_pick", ["n=64", "k=3"]); pi, pw = moe_pick(64, 3)
+    ok &= check("moe_pick n=64 k=3 idx", pk["idx"], pi)
+    ok &= check("moe_pick n=64 k=3 wt", pk["wt"], pw)
+    ok &= check("axpy_slot n=64 k=6 j=4", run("axpy_slot", ["n=64", "bn=16", "k=6", "j=4"])["mo"], axpy_slot(64, 6, 4))
+    ok &= check("axpy_slot n=96 k=3 j=0", run("axpy_slot", ["n=96", "bn=32", "k=3", "j=0"])["mo"], axpy_slot(96, 3, 0))
+    ok &= check("group_sum k=256 G=32", run("group_sum", ["k=256", "G=32"])["s"], group_sum(256, 32))
+    ok &= check("group_sum k=96 G=16", run("group_sum", ["k=96", "G=16"])["s"], group_sum(96, 16))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -1172,6 +1209,14 @@ MUTANTS = [
     ("samp_pen.chx", "let sd = s * d", "let sd = s + d", "samp_pen adds what was seen to the penalty's change"),
     ("samp_pen.chx", "let u  = t * invt", "let u  = t", "samp_pen leaves the temperature out"),
     ("samp_pen.chx", "store u + m -> y[qb * G, 0]", "store u - m -> y[qb * G, 0]", "samp_pen subtracts the forbidden entries' addend"),
+    ("moe_rank.chx", "let dn = zn - &d", "let dn = &d - zn", "moe_rank counts the smaller entries"),
+    ("moe_rank.chx", "let r  = load yr[p, 0 ; 1, 64]", "let r  = load yr[q, 0 ; 1, 64]", "moe_rank compares every chunk with its own"),
+    ("moe_pick.chx", "let b  = nd + 0.5", "let b  = nd + 1.5", "moe_pick's slot takes the place after its own too"),
+    ("moe_pick.chx", "let sg = sigmoid l", "let sg = l * 1.0", "moe_pick weighs by the logit and not its sigmoid"),
+    ("moe_pick.chx", "let i  = load ar", "let i  = load lg", "moe_pick sums the logits and not the indices"),
+    ("axpy_slot.chx", "let w = load wt[j, 0 ; 1, 1]", "let w = load wt[0, 0 ; 1, 1]", "axpy_slot weighs every expert by the first slot's weight"),
+    ("axpy_slot.chx", "let b = load y[0, c * bn ; 1, bn]", "let b = load y[0, 0 ; 1, bn]", "axpy_slot reads every tile of y from the first"),
+    ("group_sum.chx", "let a = load x[0, g * G ; 1, G]", "let a = load x[0, 0 ; 1, G]", "group_sum sums the first group for every group"),
     ("samp_rank.chx", "let dn = zn - d", "let dn = d - zn", "samp_rank counts the smaller entries"),
     ("samp_rank.chx", "let r  = load yr[p, 0 ; 1, 64]", "let r  = load yr[q, 0 ; 1, 64]", "samp_rank compares every chunk with its own"),
     ("samp_keep.chx", "let d   = kk - c", "let d   = c - kk", "samp_keep keeps the entries with k or more larger ones"),
