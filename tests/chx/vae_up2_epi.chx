@@ -32,3 +32,4 @@ algo vae_up2_epi(h, w, c, r, r2)
 
 schedule vae_up2_epi for apple-m-series { threads 128 }
 schedule vae_up2_epi for nvidia-ada     { threads 128 }
+schedule vae_up2_epi for amd-cdna3     { threads 128 }

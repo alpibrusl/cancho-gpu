@@ -27,3 +27,4 @@ algo kv_import(nsrc, nkv, g, t, ts, d)
 
 schedule kv_import for apple-m-series { threads 256 }
 schedule kv_import for nvidia-ada     { threads 256 }
+schedule kv_import for amd-cdna3     { threads 256 }

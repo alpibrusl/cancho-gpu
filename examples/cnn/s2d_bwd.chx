@@ -25,3 +25,4 @@ algo s2d_bwd(n, h, w, c, wb)
 
 schedule s2d_bwd for apple-m-series { threads 128 }
 schedule s2d_bwd for nvidia-ada     { threads 128 }
+schedule s2d_bwd for amd-cdna3     { threads 128 }

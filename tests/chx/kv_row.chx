@@ -14,3 +14,4 @@ algo kv_row(nkv, tmax, d)
 
 schedule kv_row for apple-m-series { threads 256 }
 schedule kv_row for nvidia-ada     { threads 256 }
+schedule kv_row for amd-cdna3     { threads 256 }

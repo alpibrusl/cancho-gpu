@@ -12,3 +12,4 @@ algo add2g(r, c, bm, g)
 
 schedule add2g for apple-m-series { threads 128 }
 schedule add2g for nvidia-ada     { threads 128 }
+schedule add2g for amd-cdna3     { threads 128 }

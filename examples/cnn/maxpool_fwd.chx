@@ -115,3 +115,4 @@ algo maxpool_fwd(rp, c, wp, g, bm)
 
 schedule maxpool_fwd for apple-m-series { threads 128 }
 schedule maxpool_fwd for nvidia-ada     { threads 128 }
+schedule maxpool_fwd for amd-cdna3     { threads 128 }

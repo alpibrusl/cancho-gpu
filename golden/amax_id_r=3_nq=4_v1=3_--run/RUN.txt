@@ -1,2 +1,3 @@
 nvidia-ada: id [3, 1] = mean 2.9912, peak 3.4796, first [3.4795973, 2.5899706, 2.9039]
 apple-m-series: id [3, 1] = mean 2.9912, peak 3.4796, first [3.4795973, 2.5899706, 2.9039]
+amd-cdna3: id [3, 1] = mean 2.9912, peak 3.4796, first [3.4795973, 2.5899706, 2.9039]

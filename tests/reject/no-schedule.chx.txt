@@ -6,4 +6,4 @@ algo k
   let a = load x
   store a -> y
 }
-schedule k for amd-cdna3 { threads 64 }
+schedule k for nvidia-hopper { threads 64 }

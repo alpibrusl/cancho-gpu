@@ -12,3 +12,4 @@ algo vae_mask_add(n)
 
 schedule vae_mask_add for apple-m-series { threads 256 }
 schedule vae_mask_add for nvidia-ada     { threads 256 }
+schedule vae_mask_add for amd-cdna3     { threads 256 }

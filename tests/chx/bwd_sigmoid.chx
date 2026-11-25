@@ -17,3 +17,4 @@ algo bwd_sigmoid(r, n)
 
 schedule bwd_sigmoid for apple-m-series { threads 128 }
 schedule bwd_sigmoid for nvidia-ada     { threads 128 }
+schedule bwd_sigmoid for amd-cdna3     { threads 128 }

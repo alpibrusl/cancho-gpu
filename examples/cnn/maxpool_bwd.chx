@@ -128,3 +128,4 @@ algo maxpool_bwd(rp, c, wp, g, bm)
 
 schedule maxpool_bwd for apple-m-series { threads 128 }
 schedule maxpool_bwd for nvidia-ada     { threads 128 }
+schedule maxpool_bwd for amd-cdna3     { threads 128 }

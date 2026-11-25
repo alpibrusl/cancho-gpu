@@ -13,3 +13,4 @@ algo gap2_bwd(n, h, w, c, rc)
 
 schedule gap2_bwd for apple-m-series { threads 128 }
 schedule gap2_bwd for nvidia-ada     { threads 128 }
+schedule gap2_bwd for amd-cdna3     { threads 128 }

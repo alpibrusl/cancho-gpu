@@ -17,3 +17,4 @@ algo wsum_mask(ns, r, k, bm, bn)
 
 schedule wsum_mask for apple-m-series { threads 128 }
 schedule wsum_mask for nvidia-ada     { threads 128 }
+schedule wsum_mask for amd-cdna3     { threads 128 }

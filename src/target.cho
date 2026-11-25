@@ -4,8 +4,9 @@ module target;
 // The hardware table, as data. A target is a record
 // `[name, simd_width, max_threads_per_threadgroup, max_threadgroup_bytes,
 //   async_copy, split_barriers]`. Only the two rows with a backend are
-// named on the command line, but the table carries all four, so a schedule
-// for the others still type-checks.
+// named to `run` and to a session, and `emit` lowers for those two and for
+// `amd-cdna3` (docs/amd.md); the table carries all four, so a schedule for
+// `nvidia-hopper` still type-checks.
 
 import mem;
 import text;

@@ -19,3 +19,4 @@ algo vae_avg2(h, w, c, r, r2, g2)
 
 schedule vae_avg2 for apple-m-series { threads 128 }
 schedule vae_avg2 for nvidia-ada     { threads 128 }
+schedule vae_avg2 for amd-cdna3     { threads 128 }

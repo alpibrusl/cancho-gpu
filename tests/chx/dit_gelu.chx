@@ -21,3 +21,4 @@ algo dit_gelu(s, n, bn)
 
 schedule dit_gelu for apple-m-series { threads 256 }
 schedule dit_gelu for nvidia-ada     { threads 256 }
+schedule dit_gelu for amd-cdna3     { threads 256 }

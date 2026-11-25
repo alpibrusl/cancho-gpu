@@ -26,3 +26,4 @@ algo dit_stats_comb(nh, nq, nc, qs)
 
 schedule dit_stats_comb for apple-m-series { threads 64 }
 schedule dit_stats_comb for nvidia-ada     { threads 128 }
+schedule dit_stats_comb for amd-cdna3     { threads 128 }

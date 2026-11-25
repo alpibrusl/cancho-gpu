@@ -11,3 +11,4 @@ algo dit_rows2h(m, n, bn)
 
 schedule dit_rows2h for apple-m-series { threads 256 }
 schedule dit_rows2h for nvidia-ada     { threads 256 }
+schedule dit_rows2h for amd-cdna3     { threads 256 }

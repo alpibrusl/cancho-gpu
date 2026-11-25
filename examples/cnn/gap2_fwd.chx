@@ -19,3 +19,4 @@ algo gap2_fwd(n, h, w, c, g, rc)
 
 schedule gap2_fwd for apple-m-series { threads 128 }
 schedule gap2_fwd for nvidia-ada     { threads 128 }
+schedule gap2_fwd for amd-cdna3     { threads 128 }

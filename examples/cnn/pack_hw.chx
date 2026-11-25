@@ -23,3 +23,4 @@ algo pack_hw(n2, h, w, cin, cp, g)
 
 schedule pack_hw for apple-m-series { threads 128 }
 schedule pack_hw for nvidia-ada     { threads 128 }
+schedule pack_hw for amd-cdna3     { threads 128 }

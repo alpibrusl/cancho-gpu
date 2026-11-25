@@ -22,3 +22,4 @@ algo dit_wan_gate_res(s, n)
 
 schedule dit_wan_gate_res for apple-m-series { threads 256 }
 schedule dit_wan_gate_res for nvidia-ada     { threads 256 }
+schedule dit_wan_gate_res for amd-cdna3     { threads 256 }

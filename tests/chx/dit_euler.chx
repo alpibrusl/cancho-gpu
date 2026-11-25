@@ -20,3 +20,4 @@ algo dit_euler(s, n)
 
 schedule dit_euler for apple-m-series { threads 64 }
 schedule dit_euler for nvidia-ada     { threads 64 }
+schedule dit_euler for amd-cdna3     { threads 64 }

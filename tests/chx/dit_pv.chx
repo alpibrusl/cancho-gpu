@@ -29,3 +29,4 @@ algo dit_pv(nh, nq, t, qs, cs, dw, d)
 
 schedule dit_pv for apple-m-series { threads 256 }
 schedule dit_pv for nvidia-ada     { threads 128 }
+schedule dit_pv for amd-cdna3     { threads 128 }

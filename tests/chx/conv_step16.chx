@@ -294,3 +294,4 @@ algo conv_step16(c)
 
 schedule conv_step16 for apple-m-series { threads 256 bc 256 }
 schedule conv_step16 for nvidia-ada     { threads 256 bc 256 }
+schedule conv_step16 for amd-cdna3     { threads 256 bc 256 }

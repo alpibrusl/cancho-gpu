@@ -27,3 +27,4 @@ algo rope_rows(m, r, h, p)
 
 schedule rope_rows for apple-m-series { threads 128 br 1 }
 schedule rope_rows for nvidia-ada     { threads 128 br 1 }
+schedule rope_rows for amd-cdna3     { threads 128 br 1 }

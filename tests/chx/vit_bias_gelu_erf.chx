@@ -47,3 +47,4 @@ algo vit_bias_gelu_erf(s, n, bn, m1)
 
 schedule vit_bias_gelu_erf for apple-m-series { threads 256 }
 schedule vit_bias_gelu_erf for nvidia-ada     { threads 256 }
+schedule vit_bias_gelu_erf for amd-cdna3     { threads 256 }

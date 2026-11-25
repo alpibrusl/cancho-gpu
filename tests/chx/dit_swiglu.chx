@@ -17,3 +17,4 @@ algo dit_swiglu(s, n, bn)
 
 schedule dit_swiglu for apple-m-series { threads 256 }
 schedule dit_swiglu for nvidia-ada     { threads 256 }
+schedule dit_swiglu for amd-cdna3     { threads 256 }
