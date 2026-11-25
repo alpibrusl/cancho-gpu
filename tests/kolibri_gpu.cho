@@ -3,8 +3,9 @@ edition 5;
 // `kolibri_gpu` -- the host side of Kolibri 1.1's cached step (models/kolibri_step.model; docs/kolibri.md section 12, stage K5), in cancho: the files the session reads, from the model's GGUF.
 //
 //     kolibri_gpu weights <gguf> <dir>
-//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions>
+//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps>]
 //     kolibri_gpu argmax  <f32 file>
+//     kolibri_gpu ids     <f32 file> <from>
 //
 // `weights` writes what the model file calls W, a tensor a chunk at a time. For layer i: the norms' weights copied (a<i>.norm.f32, a<i>.qn.f32, a<i>.kn.f32, a<i>.pn.f32, m<i>.ffn_norm.f32,
 // m<i>.post_norm.f32), the router (m<i>.route.f32, m<i>.bias.f32), and each 4-bit matrix NAME as NAME.q4 (its codes two a byte, low nibble first, in the matrix's order: ggml keeps a block of 32 as
@@ -14,6 +15,9 @@ edition 5;
 // thresholds, what the scale grows by past each, and a 1 where a scale at the threshold goes up). Which layers are dense, which have keys and which tensors are Q4_1 are the file's to say.
 // `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised), cos.f32 and sin.f32, sel.f32 and keep.f32,
 // mask.f32 (the file's window) and maskg.f32, zcache.f32. `positions` is the caches' length, a multiple of 64 no shorter than the ids.
+// For a generating step (GEN=1, section 13) `weights` also writes emb.q4 and emb.s (the embedding matrix, picked by the id), rank.f32, zmk.f32 and one1.f32, and `inputs` idtab.f32 and mtab.f32
+// (the prompt's ids and their mask, a step each), accsel.f32, acckeep.f32, acc0.f32 and id0.f32, for `steps` steps (the ids' count if not given; x0.f32 has rows of zeros past the prompt).
+// `ids` prints the whole numbers of a saved ids_out.f32 from an index on, on one line.
 // `argmax` prints `argmax <index> value <v> margin <v - the second largest>` for a file of f32: the next token from the session's saved logits.
 //
 // Exit 0; 1 with every refusal as `error[<rule>]: <message>` (kolibri-read, kolibri-meta, kolibri-tensor, kolibri-ids, kolibri-write, or the GGUF reader's own); 2 for a usage mistake
@@ -392,8 +396,8 @@ fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: 
     return 0;
 }
 
-// `n` times the f32 `x` (or, `ramp`, 0, 1, 2 ...) to `path`.
-fn fill[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, n: int, x: float, ramp: bool) -> [fs_write(""), file_write] int {
+// `n` times the f32 `x` (or, `ramp` 1, the numbers 0, 1, 2 ...; `ramp` 2, n, n - 1 ... 1) to `path`.
+fn fill[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, n: int, x: float, ramp: int) -> [fs_write(""), file_write] int {
     let sc = m[file + 4];
     var done = 0;
     var fresh = true;
@@ -404,8 +408,10 @@ fn fill[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path:
         }
         var i = 0;
         while i < k {
-            if ramp {
+            if ramp == 1 {
                 put32(t, sc + 4 * i, float_of(done + i));
+            } else if ramp == 2 {
+                put32(t, sc + 4 * i, float_of(n - done - i));
             } else {
                 put32(t, sc + 4 * i, x);
             }
@@ -501,18 +507,33 @@ fn weights[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     if src < 0 {
         return 0 - 1;
     }
-    var bad = fill(m, t, fs, file, text.f1(m, t, "$/ones_d.f32", dir), d, 1.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_h.f32", dir), eh, 1.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_f.f32", dir), ff, 1.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_qkv.f32", dir), (nq + 2 * nkv) * hd, 1.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_q.f32", dir), nq * hd, 1.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/one64.f32", dir), hd / 2, 1.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/zero64.f32", dir), hd / 2, 0.0, false) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ar.f32", dir), ne, 0.0, true) < 0;
-    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/sl.f32", dir), used, 0.0, true) < 0;
+    var bad = fill(m, t, fs, file, text.f1(m, t, "$/ones_d.f32", dir), d, 1.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_h.f32", dir), eh, 1.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_f.f32", dir), ff, 1.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_qkv.f32", dir), (nq + 2 * nkv) * hd, 1.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ones_q.f32", dir), nq * hd, 1.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/one64.f32", dir), hd / 2, 1.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/zero64.f32", dir), hd / 2, 0.0, 0) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/ar.f32", dir), ne, 0.0, 1) < 0;
+    bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/sl.f32", dir), used, 0.0, 1) < 0;
     bad = bad || e4m3_table(m, t, fs, file, text.f1(m, t, "$/e4m3.f32", dir)) < 0;
     bad = bad || copy_f32(m, t, fs, file, text.lit(m, t, "output_norm.weight"), text.f1(m, t, "$/fnorm.f32", dir), d) < 0;
     bad = bad || q6k(m, t, fs, file, text.lit(m, t, "output.weight"), text.f1(m, t, "$/head.f32", dir)) < 0;
+    // what a generating step reads (section 13): the embedding matrix as blocks a session picks by the id, the arg max's ranks (V - j for column j) and its mask of no padding
+    if !bad {
+        let emb = tensor(m, t, g, text.lit(m, t, "token_embd.weight"), 2, 2);
+        bad = emb < 0 || q4_one(m, t, fs, file, text.lit(m, t, "token_embd.weight"), text.f1(m, t, "$/emb", dir), true, 2) < 0;
+        if !bad {
+            let v = m[emb + 6] / cols(m, t, emb);
+            bad = cols(m, t, emb) != d || v % 64 != 0;
+            if bad {
+                err.fail(m, t, "kolibri-tensor", text.lit(m, t, "the embedding is not a multiple of 64 rows of the model's width"));
+            }
+            bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/rank.f32", dir), v, 0.0, 2) < 0;
+            bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/zmk.f32", dir), v, 0.0, 0) < 0;
+            bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/one1.f32", dir), 1, 1.0, 0) < 0;
+        }
+    }
     if bad {
         return 0 - 1;
     }
@@ -644,6 +665,23 @@ fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path
     return 0;
 }
 
+// The whole number of at most 7 digits `h`, or -1.
+fn count_of[&t](t: &!t [byte], h: int) -> [] int {
+    var v = 0;
+    var digits = text.size(h) > 0 && text.size(h) < 8;
+    var k = 0;
+    while digits && k < text.size(h) {
+        let c = text.at(t, h, k);
+        digits = c >= 48 && c <= 57;
+        v = v * 10 + c - 48;
+        k = k + 1;
+    }
+    if !digits {
+        return 0 - 1;
+    }
+    return v;
+}
+
 fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, fs_write(""), file_write, args] int {
     let file = open_gguf(m, t, fs, arg(args, 2));
     if file < 0 {
@@ -662,17 +700,8 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     if d % 32 != 0 || d > 65536 || hd % 2 != 0 || hd > 4096 || base <= 1.0 {
         return err.fail(m, t, "kolibri-meta", text.lit(m, t, "the file's widths are not ones this program writes tables for"));
     }
-    let positions = text.from_bytes(m, t, arg(args, 5));
-    var tt = 0;
-    var digits = text.size(positions) > 0 && text.size(positions) < 8;
-    var k = 0;
-    while digits && k < text.size(positions) {
-        let c = text.at(t, positions, k);
-        digits = c >= 48 && c <= 57;
-        tt = tt * 10 + c - 48;
-        k = k + 1;
-    }
-    if !digits || tt < 64 || tt % 64 != 0 || tt > 1048576 {
+    let tt = count_of(t, text.from_bytes(m, t, arg(args, 5)));
+    if tt < 64 || tt % 64 != 0 || tt > 1048576 {
         return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the positions are a multiple of 64, at most 1048576"));
     }
     let emb = tensor(m, t, g, text.lit(m, t, "token_embd.weight"), 2, 2);
@@ -694,24 +723,41 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     if ns > tt {
         return err.fail(m, t, "kolibri-ids", text.n2(m, t, "$ ids do not fit caches of $ positions", ns, tt));
     }
+    // the steps of the tables: the ids', or more (a generating step goes on past the prompt)
+    var nst = ns;
+    if arg_count(args) == 7 {
+        nst = count_of(t, text.from_bytes(m, t, arg(args, 6)));
+        if nst < ns || nst > tt {
+            return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the steps are no fewer than the ids and no more than the positions"));
+        }
+    }
     let sc = m[file + 4];
     let out = sc + in_cap();
     let x0 = text.f1(m, t, "$/x0.f32", dir);
     let row = d / 32 * 18;
     var s = 0;
-    while s < ns {
-        if fetch(m, t, fs, file, data_at(m, file, emb) + mem.get(m, ids, s) * row, row, text.lit(m, t, "token_embd.weight")) < 0 {
+    while s < nst {
+        if s < ns && fetch(m, t, fs, file, data_at(m, file, emb) + mem.get(m, ids, s) * row, row, text.lit(m, t, "token_embd.weight")) < 0 {
             return 0 - 1;
         }
         var b = 0;
         while b < d / 32 {
             let p = sc + 18 * b;
-            let scale = half_at(t, p);
+            var scale = 0.0;
+            if s < ns {
+                scale = half_at(t, p);
+            }
             var j = 0;
             while j < 16 {
                 let q = int_of(t[p + 2 + j]);
-                put32(t, out + 4 * (32 * b + j), float_of((q & 15) - 8) * scale);
-                put32(t, out + 4 * (32 * b + 16 + j), float_of((q >> 4) - 8) * scale);
+                // a step past the prompt has a row of zeros here: its row is the one the step picks
+                if s < ns {
+                    put32(t, out + 4 * (32 * b + j), float_of((q & 15) - 8) * scale);
+                    put32(t, out + 4 * (32 * b + 16 + j), float_of((q >> 4) - 8) * scale);
+                } else {
+                    put32(t, out + 4 * (32 * b + j), 0.0);
+                    put32(t, out + 4 * (32 * b + 16 + j), 0.0);
+                }
                 j = j + 1;
             }
             b = b + 1;
@@ -721,17 +767,38 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
         }
         s = s + 1;
     }
-    var bad = table(m, t, fs, file, text.f1(m, t, "$/sel.f32", dir), ns, tt, 0, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keep.f32", dir), ns, tt, 1, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/mask.f32", dir), ns, tt, 2, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/maskg.f32", dir), ns, tt, 3, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/cos.f32", dir), ns, hd / 2, 4, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), ns, hd / 2, 5, window, base) < 0;
+    var bad = table(m, t, fs, file, text.f1(m, t, "$/sel.f32", dir), nst, tt, 0, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keep.f32", dir), nst, tt, 1, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/mask.f32", dir), nst, tt, 2, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/maskg.f32", dir), nst, tt, 3, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/cos.f32", dir), nst, hd / 2, 4, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), nst, hd / 2, 5, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zcache.f32", dir), nkv * hd, tt, 6, window, base) < 0;
+    // a generating step's: the prompt's ids and their mask a step, the collector's selectors and its empty row, the id before the first
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/accsel.f32", dir), nst, nst, 0, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/acckeep.f32", dir), nst, nst, 1, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/acc0.f32", dir), 1, nst, 6, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/id0.f32", dir), 1, 1, 6, window, base) < 0;
     if bad {
         return 0 - 1;
     }
+    s = 0;
+    while s < nst {
+        if s < ns {
+            put32(t, sc + 4 * s, float_of(mem.get(m, ids, s)));
+            put32(t, out + 4 * s, 1.0);
+        } else {
+            put32(t, sc + 4 * s, 0.0);
+            put32(t, out + 4 * s, 0.0);
+        }
+        s = s + 1;
+    }
+    if put(m, t, fs, text.f1(m, t, "$/idtab.f32", dir), true, sc, 4 * nst) < 0 || put(m, t, fs, text.f1(m, t, "$/mtab.f32", dir), true, out, 4 * nst) < 0 {
+        return 0 - 1;
+    }
     io.write_all(io, "steps ");
+    io.write_all(io, text.bytes(t, text.num(m, t, nst)));
+    io.write_all(io, " prompt ");
     io.write_all(io, text.bytes(t, text.num(m, t, ns)));
     io.write_all(io, "\n");
     return 0;
@@ -795,6 +862,31 @@ fn argmax[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     return 0;
 }
 
+// The whole numbers of a file of f32 from index `from` on, on one line: the ids a generating session saved.
+fn ids_of[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
+    let name = text.from_bytes(m, t, arg(args, 2));
+    let from = count_of(t, text.from_bytes(m, t, arg(args, 3)));
+    let sc = m[mem.text_slot()];
+    m[mem.text_slot()] = sc + in_cap();
+    let got = fileio.read_at(t, fs, arg(args, 2), 0, sc, in_cap());
+    if from < 0 || got < 4 || got % 4 != 0 || got == in_cap() || from > got / 4 {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "cannot read $ as a row of f32 from that index", name));
+    }
+    let parts = mem.list(m);
+    var k = from;
+    while k < got / 4 {
+        let x = word_at(t, sc + 4 * k);
+        if !(x >= 0.0) || x > 1000000000.0 || !f32.is_whole(x) {
+            return err.fail(m, t, "kolibri-read", text.f1(m, t, "$ has a value that is not an id", name));
+        }
+        mem.push(m, parts, text.num(m, t, f32.to_count(x)));
+        k = k + 1;
+    }
+    io.write_all(io, text.bytes(t, text.joined(m, t, parts, " ")));
+    io.write_all(io, "\n");
+    return 0;
+}
+
 fn is_word[&a](x: &a [byte], y: &static [byte]) -> [] bool {
     if len(x) != len(y) {
         return false;
@@ -827,13 +919,15 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
     var status = 0 - 2;
     if arg_count(args) == 4 && is_word(arg(args, 1), "weights") {
         status = weights(m, t, io, fs, args);
-    } else if arg_count(args) == 6 && is_word(arg(args, 1), "inputs") {
+    } else if (arg_count(args) == 6 || arg_count(args) == 7) && is_word(arg(args, 1), "inputs") {
         status = inputs(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "argmax") {
         status = argmax(m, t, io, fs, args);
+    } else if arg_count(args) == 4 && is_word(arg(args, 1), "ids") {
+        status = ids_of(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> | argmax <f32 file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps>] | argmax <f32 file> | ids <f32 file> <from>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {

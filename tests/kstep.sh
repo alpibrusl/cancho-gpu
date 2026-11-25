@@ -1,8 +1,9 @@
 #!/bin/sh
 # tests/kstep.sh [session binary] -- models/kolibri_step.model (docs/kolibri.md K4) as a small model, on the CPU session (the gate) or, given its binary, the Metal one (by hand): ten layers 64 wide
-# with 4 query heads over 2 key/value heads of 128, 64 experts of 32 of which 2 are taken, a head of 64, every file text, four steps. Layers 0 and 1 have the dense MLP, 4 is indexed (no positions,
+# with 4 query heads over 2 key/value heads of 128, 64 experts of 32 of which 2 are taken, a head of 128, every file text, four steps. Layers 0 and 1 have the dense MLP, 4 is indexed (no positions,
 # its keys and values rounded to NVFP4) and 9 reads layer 4's caches; the mask's window is 2 keys, so it bites from the third step. Held to awk's double arithmetic of the definition: the row after
 # the last layer at every step, and after the last step the row after every layer and the logits.
+# Then the same model generating (GEN=1): from a prompt of two ids, the id each step chooses, awk's arg max over awk's logits.
 # First fp4_round.chx alone on values that sit on its thresholds, where tests/kernels.py's made-up table and values never are: ties go to even, the scale stays in [2^-9, 448].
 # KSTEP_MODEL=<file> runs another model file: the mutants of the model, by hand.
 set -eu
@@ -56,8 +57,8 @@ mutant() { # name, sed expression
 mutant "the largest magnitude is 5" 's|let w7  = s7 \* 2.0|let w7  = s7 * 1.0|'
 mutant "a value at 0.75 goes down" 's|let b2  = &ng + 0.75|let b2  = \&ng + 0.7500001|'
 
-D=64; NQ=4; NKV=2; NE=64; EH=32; K=2; NS=4; WIN=2; NL=10
-awk -v D=$D -v NQ=$NQ -v NKV=$NKV -v NE=$NE -v EH=$EH -v K=$K -v NS=$NS -v WIN=$WIN -v NL=$NL -v W="$T/w" -v X="$T/x" '
+D=64; NQ=4; NKV=2; NE=64; EH=32; K=2; NS=4; WIN=2; NL=10; V=128
+awk -v D=$D -v NQ=$NQ -v NKV=$NKV -v NE=$NE -v EH=$EH -v K=$K -v NS=$NS -v WIN=$WIN -v NL=$NL -v V=$V -v W="$T/w" -v X="$T/x" '
 function rne(v,   f, d) { f = int(v); d = v - f; if (d > 0.5 || (d == 0.5 && f % 2 == 1)) f++; return f }
 function e4m3(x,   e, p) { if (x < 2^-9) x = 2^-9; if (x > 448) x = 448; e = -9; p = 2^-9; while (p * 2 <= x) { p *= 2; e++ } if (e < -6) return rne(x / 2^-9) * 2^-9; x = rne(x / p * 8) / 8 * p; return x > 448 ? 448 : x }
 function e2m1(m,   st) { if (m > 6) m = 6; st = m < 2 ? 0.5 : (m < 4 ? 1 : 2); return rne(m / st) * st }
@@ -130,7 +131,7 @@ BEGIN {
       emit("m" l ".ex.gate", m0 + 9, NE * EH, D, 0); emit("m" l ".ex.up", m0 + 10, NE * EH, D, 0); emit("m" l ".ex.down", m0 + 11, NE * D, EH, l < 6)
     }
   }
-  vec("fnorm.f32", 999, D); f = W "/head.f32"; for (r = 0; r < D; r++) for (c = 0; c < D; c++) printf "%s ", hd(r, c) > f; close(f)
+  vec("fnorm.f32", 999, D); f = W "/head.f32"; for (r = 0; r < V; r++) for (c = 0; c < D; c++) printf "%s ", hd(r, c) > f; close(f)
   # (the E4M3 table is the one the first part of this test wrote.) The run: rows, positions, masks.
   for (s = 0; s < NS; s++) {
     for (c = 0; c < D; c++) { X0[s, c] = ((c * 37 + s * 23 + 11) % 29 - 14) / 8; printf "%s ", X0[s, c] > (X "/x0.f32") }
@@ -141,11 +142,20 @@ BEGIN {
   for (s = 0; s < NS; s++) { for (c = 0; c < D; c++) x[c] = X0[s, c]
     for (l = 0; l < NL; l++) { layer(l, s); if (s == NS - 1) for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (X "/want_out" l ".txt") }
     for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (X "/want_ans.txt") }
-  rms(x, 999, D, fnv); for (r = 0; r < D; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; printf "%.9g\n", z > (X "/want_logits.txt") }
+  rms(x, 999, D, fnv); for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; printf "%.9g\n", z > (X "/want_logits.txt") }
+  # GEN=1 (section 13): the same model from a prompt of two ids; the row of a step is the row its id has in the 4-bit embedding matrix, and past the prompt the id is the arg max of the step before
+  emit("emb", 998, V, D, 0); ones("one1.f32", 1, 1); ones("zmk.f32", V, 0); for (r = 0; r < V; r++) printf "%d ", V - r > (W "/rank.f32")
+  PID[0] = 5; PID[1] = 77; printf "0 " > (X "/id0.f32")
+  for (s = 0; s < NS; s++) { printf "%d ", (s < 2 ? PID[s] : 0) > (X "/idtab.f32"); printf "%d ", (s < 2) > (X "/mtab.f32"); printf "0 " > (X "/acc0.f32")
+    for (c = 0; c < NS; c++) { printf "%d ", (c == s) > (X "/accsel.f32"); printf "%d ", (c != s) > (X "/acckeep.f32") } }
+  for (s = 0; s < NS; s++) { id = s < 2 ? PID[s] : nxt; for (c = 0; c < D; c++) x[c] = wv(998, D, id, c, 0)
+    for (l = 0; l < NL; l++) layer(l, s)
+    rms(x, 999, D, fnv); nxt = 0; best = -1e30; for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; if (z > best) { best = z; nxt = r } }
+    printf "%d\n", nxt > (X "/want_ids.txt") }
 }
-function hd(r, c) { return ((r * 29 + c * 13) % 31 - 15) / 32 }'
+function hd(r, c) { return ((r * 29 + c * 13) % 31 - 15) / 32 + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) / 64 }'
 run() { # the model file's extra arguments
-  { i=0; while [ $i -lt $NS ]; do echo 1; i=$((i + 1)); done; echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$T/x" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$D BN=32 T=64 NS=$NS L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
+  { i=0; while [ $i -lt $NS ]; do echo 1; i=$((i + 1)); done; echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$T/x" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$V BN=32 T=64 NS=$NS L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
   head -n $NS "$T/out.txt" | head -c 200000 | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got_ans.txt" || true
 }
 col() { od -A n -v -t fF "$1" | tr -s ' \n' '\n\n' | grep -v '^$' > "$2" || true; }   # a save is binary f32 whatever the session's files are
@@ -160,5 +170,12 @@ l=0; while [ $l -lt $NL ]; do
 done
 if [ -f "$T/x/logits.f32" ]; then col "$T/x/logits.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
 same "the logits at the last step" "$T/got.txt" "$T/x/want_logits.txt"
+# the step feeding itself: the id each of the four steps chose, as answered and as collected
+run GEN=1 SAVE=0
+same "generating from two ids: the id each step chose, exactly" "$T/got_ans.txt" "$T/x/want_ids.txt" 0
+if [ -f "$T/x/ids_out.f32" ]; then col "$T/x/ids_out.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
+same "the same ids collected on the device" "$T/got.txt" "$T/x/want_ids.txt" 0
+# the four ids must differ and lie in both 64-entry chunks of the vocabulary, or a step that ignores its id, or an arg max that looks at the first chunk only, would pass
+if [ "$(sort -u "$T/x/want_ids.txt" | wc -l)" -lt 2 ] || [ "$(awk '$1 < 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ] || [ "$(awk '$1 >= 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ]; then echo "FAIL the reference's four ids do not differ or are all in one chunk: $(tr '\n' ' ' < "$T/x/want_ids.txt")"; fail=1; fi
 [ "$fail" -eq 0 ] && echo "kstep: ok"
 exit $fail
