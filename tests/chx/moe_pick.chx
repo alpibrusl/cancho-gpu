@@ -1,0 +1,35 @@
+// The k experts a token takes and their weights (docs/kolibri.md K3). cnt is moe_rank.chx's place of each of the n entries (0 the largest of the logits plus their biases), lg the router's logits
+// themselves, ar the entries' indices 0 .. n - 1 and sl the slots 0 .. k - 1 (tables the host writes). Slot j gets the index of the entry whose place is j and sigmoid of its logit: the weights are not
+// normalised. The indices are whole numbers in f32, read back by a session's `table ... by` (docs/resident.md), which refuses one that is not a block.
+algo moe_pick(n, k)
+  in  cnt: f32[1, n]
+  in  lg:  f32[1, n]
+  in  ar:  f32[1, n]
+  in  sl:  f32[k, 1]
+  out idx: f32[k]
+  out wt:  f32[k]
+{
+  let c  = load cnt
+  let s  = load sl
+  let z  = zeros f32[k, n]
+  let sb = z + s
+  let d  = sb - c
+  let a  = &d + 0.5
+  let zn = zeros f32[k, n]
+  let nd = zn - d
+  let b  = nd + 0.5
+  let sa = step a
+  let st = step b
+  let eq = sa * st
+  let i  = load ar
+  let l  = load lg
+  let sg = sigmoid l
+  let pi = &eq * i
+  let pw = eq * sg
+  store rowsum pi -> idx
+  store rowsum pw -> wt
+}
+
+schedule moe_pick for apple-m-series { threads 256 }
+schedule moe_pick for nvidia-ada     { threads 256 }
+schedule moe_pick for amd-cdna3      { threads 256 }

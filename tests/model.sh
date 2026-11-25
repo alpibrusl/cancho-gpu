@@ -66,6 +66,10 @@ tag=pred1088; check qwen3_tts_lm CHX=/chx WORK=/w WDIR=/wd SP=1088 D=1024 FF=307
 # Qwen3-TTS a frame a step (docs/audio.md section 26): S0's 92 steps free, and with the reference's codes forced and the talker's draw saved.
 tag=free128; check qwen3_tts_step CHX=/chx QW=/qw TR=/tr WORK=/w WDIR=/wd T=128 NS=92
 tag=forced128; check qwen3_tts_step CHX=/chx QW=/qw TR=/tr WORK=/w WDIR=/wd T=128 NS=92 FORCE=1 PROBE=1
+# Kolibri 1.1, a layer's MLP half (docs/kolibri.md section 10): a mixture-of-experts layer, one with its down matrices in Q4_1, and the dense MLP of layers 0 and 1.
+tag=moe;     check kolibri_mlp CHX=/chx W=/w
+tag=moe41;   check kolibri_mlp CHX=/chx W=/w Q41=1
+tag=dense;   check kolibri_mlp CHX=/chx W=/w MOE=0 Q41=1
 # The video transformer at 17 frames of 640 x 352: the f16 programs (the expansion models/wan_dit.model had before PREC existed) and the f32-operand ones (docs/diffusion.md section 6, V3c).
 tag=f16;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1
 tag=f32;     check wan_dit CHX=/chx WORK=/w WDIR=/wd S=1152 T=512 NB=30 HEAD=1 PREC=1 GEMM=gemm_mma_f LNM=dit_wan_lnmod_f LN=vit_ln_f GELU=vit_bias_gelu_f ROPE=dit_rope16_f SCO=dit_scores_mma_f PVM=dit_pv_mma_f AT=f32
