@@ -5,7 +5,8 @@ edition 5;
 //
 //     cancho-gpu-device run <file.chx> [name=value ...]
 //
-// Compiles the program for `nvidia-ada` as `emit` does, runs the
+// Compiles the program for `nvidia-ada` as `emit` does (for `amd-cdna3`
+// when the device is HIP's, docs/amd.md), runs the
 // interpreter over the made-up inputs, then compiles the emitted source
 // with NVRTC, uploads the same inputs, launches the kernel, reads the
 // writable parameters back and prints both summaries and the worst
@@ -265,7 +266,13 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
     if unit < 0 {
         return cli.report(m, t, io);
     }
-    let tg = target.nvidia_ada(m, t);
+    // The target is the device's: `amd-cdna3` in HIP when the shim would open a HIP runtime (docs/amd.md section 3.4).
+    var tg = target.nvidia_ada(m, t);
+    var d = dialect.cuda();
+    if cuda.cgpu_backend(ffi) == 1 {
+        tg = target.amd_cdna3(m, t);
+        d = dialect.hip();
+    }
     let compiled = elab.compile(m, t, unit, target.name(m, tg), vals);
     if compiled < 0 {
         return cli.report(m, t, io);
@@ -279,7 +286,7 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
             return cli.report(m, t, io);
         }
     }
-    let l = lower.lower(m, t, prog, tg, dialect.cuda(), m[s + 1], m[s + 3], m[s + 4], m[s + 5], m[s + 7]);
+    let l = lower.lower(m, t, prog, tg, d, m[s + 1], m[s + 3], m[s + 4], m[s + 5], m[s + 7]);
     if l < 0 {
         return cli.report(m, t, io);
     }

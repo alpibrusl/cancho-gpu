@@ -45,6 +45,7 @@ answers an `int64_t` (≥ 0 a handle or a count, < 0 a failure whose text
 
 | Entry | Does |
 |---|---|
+| `cgpu_backend()` | which runtime the process would open, starting nothing: 0 CUDA, 1 AMD's HIP (`docs/amd.md` section 6, where the same entry points drive `libamdhip64` and hipRTC) |
 | `cgpu_open()` | `dlopen` the driver (`libcuda.so.1`) and NVRTC, `cuInit`, device 0, a context |
 | `cgpu_compile(src)` | NVRTC to PTX for the device's own `compute_XY`, then `cuModuleLoadData`: a module |
 | `cgpu_function(module, name)` | `cuModuleGetFunction`: a function |

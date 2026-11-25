@@ -13,6 +13,20 @@
  * this builds and links anywhere and a machine without them gets an
  * answer instead of a link error. CANCHOGPU_LIBCUDA and CANCHOGPU_LIBNVRTC
  * name other libraries (the mock in tests/mock/ does).
+ *
+ * The same entry points drive AMD's HIP (docs/amd.md section 3.4): its
+ * runtime and hipRTC have the driver's and NVRTC's shapes, so their
+ * functions are loaded into the same slots under their own names
+ * (`hip_open`) and the bookkeeping below does not know which it holds.
+ * Where the shapes differ it asks `g.hip`: no context (HIP's is
+ * deprecated), no architecture option (hipRTC takes the device's), the
+ * error text as a result and not through a pointer. A device pointer is
+ * `void *` there and a 64-bit integer here; both travel as one integer
+ * register on x86-64 and AArch64, which is every machine either runs on.
+ * CANCHOGPU_LIBHIP and CANCHOGPU_LIBHIPRTC name the libraries.
+ *
+ * Read from ROCm's documentation, checked against the mock, never run
+ * against the real libraries (docs/amd.md section 1).
  */
 #include <dlfcn.h>
 #include <stdint.h>
@@ -62,6 +76,10 @@ static struct {
     nvrtcResult (*nvrtcGetProgramLogSize)(nvrtcProgram, size_t *);
     nvrtcResult (*nvrtcGetProgramLog)(nvrtcProgram, char *);
     nvrtcResult (*nvrtcDestroyProgram)(nvrtcProgram *);
+    /* HIP only. */
+    int hip, probed;
+    CUresult (*hipSetDevice)(int);
+    const char *(*hipGetErrorString)(CUresult);
     CUcontext ctx;
     char arch[32];
     CUmodule modules[MAX_MODULES];
@@ -83,11 +101,13 @@ static int64_t fail(const char *what, const char *detail) {
 
 static int64_t cu_fail(const char *what, CUresult r) {
     const char *s = NULL;
-    if (g.cuGetErrorString) {
+    if (g.hip && g.hipGetErrorString) {
+        s = g.hipGetErrorString(r);
+    } else if (g.cuGetErrorString) {
         g.cuGetErrorString(r, &s);
     }
     char detail[256];
-    snprintf(detail, sizeof detail, "%s (CUresult %d)", s ? s : "unknown error", r);
+    snprintf(detail, sizeof detail, "%s (%s %d)", s ? s : "unknown error", g.hip ? "hipError_t" : "CUresult", r);
     return fail(what, detail);
 }
 
@@ -123,14 +143,102 @@ static void *open_first(const char *env, const char *const *names) {
         }                                                                   \
     } while (0)
 
+/* A slot filled from a symbol of another name: HIP's, into the driver's. */
+#define SYM_AS(lib, slot, name)                                             \
+    do {                                                                    \
+        *(void **)(&g.slot) = dlsym(g.lib, name);                           \
+        if (!g.slot) {                                                      \
+            return fail("missing symbol", name);                            \
+        }                                                                   \
+    } while (0)
+
+static const char *const cu_names[] = {"libcuda.so.1", "libcuda.so", NULL};
+static const char *const hip_names[] = {"libamdhip64.so", "libamdhip64.so.7", "libamdhip64.so.6",
+                                        "/opt/rocm/lib/libamdhip64.so", NULL};
+
+/* Which runtime this process drives, decided once and without starting it:
+ * HIP when CANCHOGPU_LIBHIP names one; CUDA when CANCHOGPU_LIBCUDA does, or
+ * when a CUDA driver opens; else HIP if its runtime opens; else CUDA, whose
+ * absence `cgpu_open` then reports. */
+static void probe(void) {
+    if (g.probed) {
+        return;
+    }
+    g.probed = 1;
+    if (getenv("CANCHOGPU_LIBHIP")) {
+        g.hip = 1;
+        g.cu_lib = open_first("CANCHOGPU_LIBHIP", hip_names);
+        return;
+    }
+    g.cu_lib = open_first("CANCHOGPU_LIBCUDA", cu_names);
+    if (!g.cu_lib && !getenv("CANCHOGPU_LIBCUDA")) {
+        void *h = open_first("CANCHOGPU_LIBHIP", hip_names);
+        if (h) {
+            g.hip = 1;
+            g.cu_lib = h;
+        } else {
+            /* Leave the CUDA driver's reason as the last dlerror. */
+            dlopen(cu_names[0], RTLD_NOW | RTLD_LOCAL);
+        }
+    }
+}
+
+/* 1 when the device is HIP's, 0 when it is CUDA's. Opens nothing but the library. */
+int64_t cgpu_backend(void) {
+    probe();
+    return g.hip;
+}
+
+static int64_t hip_open(void) {
+    static const char *const rtc_names[] = {"libhiprtc.so", "libhiprtc.so.7", "/opt/rocm/lib/libhiprtc.so",
+                                            "libamdhip64.so", NULL};
+    if (!g.cu_lib) {
+        return fail("no HIP runtime", dlerror());
+    }
+    g.rtc_lib = open_first("CANCHOGPU_LIBHIPRTC", rtc_names);
+    if (!g.rtc_lib) {
+        return fail("no hipRTC", dlerror());
+    }
+    SYM_AS(cu_lib, cuInit, "hipInit");
+    SYM_AS(cu_lib, hipSetDevice, "hipSetDevice");
+    SYM_AS(cu_lib, cuModuleLoadData, "hipModuleLoadData");
+    SYM_AS(cu_lib, cuModuleGetFunction, "hipModuleGetFunction");
+    SYM_AS(cu_lib, cuMemAlloc_v2, "hipMalloc");
+    SYM_AS(cu_lib, cuMemFree_v2, "hipFree");
+    SYM_AS(cu_lib, cuMemcpyHtoD_v2, "hipMemcpyHtoD");
+    SYM_AS(cu_lib, cuMemcpyDtoH_v2, "hipMemcpyDtoH");
+    SYM_AS(cu_lib, cuCtxSynchronize, "hipDeviceSynchronize");
+    SYM_AS(cu_lib, cuLaunchKernel, "hipModuleLaunchKernel");
+    SYM_AS(cu_lib, hipGetErrorString, "hipGetErrorString");
+    SYM_AS(rtc_lib, nvrtcCreateProgram, "hiprtcCreateProgram");
+    SYM_AS(rtc_lib, nvrtcCompileProgram, "hiprtcCompileProgram");
+    SYM_AS(rtc_lib, nvrtcGetPTXSize, "hiprtcGetCodeSize");
+    SYM_AS(rtc_lib, nvrtcGetPTX, "hiprtcGetCode");
+    SYM_AS(rtc_lib, nvrtcGetProgramLogSize, "hiprtcGetProgramLogSize");
+    SYM_AS(rtc_lib, nvrtcGetProgramLog, "hiprtcGetProgramLog");
+    SYM_AS(rtc_lib, nvrtcDestroyProgram, "hiprtcDestroyProgram");
+    CUresult r = g.cuInit(0);
+    if (r) {
+        return cu_fail("hipInit", r);
+    }
+    if ((r = g.hipSetDevice(0))) {
+        return cu_fail("hipSetDevice", r);
+    }
+    /* No context to hold: a mark that the device is open. */
+    g.ctx = (CUcontext)&g;
+    return 0;
+}
+
 int64_t cgpu_open(void) {
-    static const char *const cu_names[] = {"libcuda.so.1", "libcuda.so", NULL};
     static const char *const rtc_names[] = {"libnvrtc.so", "libnvrtc.so.12",
                                             "/usr/local/cuda/lib64/libnvrtc.so", NULL};
     if (g.ctx) {
         return 0;
     }
-    g.cu_lib = open_first("CANCHOGPU_LIBCUDA", cu_names);
+    probe();
+    if (g.hip) {
+        return hip_open();
+    }
     if (!g.cu_lib) {
         return fail("no CUDA driver", dlerror());
     }
@@ -180,16 +288,19 @@ int64_t cgpu_open(void) {
     return 0;
 }
 
-/* NVRTC has no include path of its own; cuda_fp16.h is in the toolkit's. */
+/* NVRTC has no include path of its own; cuda_fp16.h is in the toolkit's. The same for hipRTC and
+ * hip/hip_fp16.h under ROCm's root. */
 static int include_flags(char flags[][512], int max) {
-    const char *roots[] = {getenv("CUDA_HOME"), getenv("CUDA_PATH"), "/usr/local/cuda", "/usr", NULL};
+    const char *cu_roots[] = {getenv("CUDA_HOME"), getenv("CUDA_PATH"), "/usr/local/cuda", "/usr", NULL};
+    const char *hip_roots[] = {getenv("ROCM_PATH"), getenv("HIP_PATH"), "/opt/rocm", "/usr", NULL};
+    const char **roots = g.hip ? hip_roots : cu_roots;
     int n = 0;
     for (int i = 0; i < 4 && n < max; i++) {
         if (!roots[i]) {
             continue;
         }
         char probe[512];
-        snprintf(probe, sizeof probe, "%s/include/cuda_fp16.h", roots[i]);
+        snprintf(probe, sizeof probe, "%s/include/%s", roots[i], g.hip ? "hip/hip_fp16.h" : "cuda_fp16.h");
         FILE *f = fopen(probe, "r");
         if (f) {
             fclose(f);
@@ -211,19 +322,28 @@ int64_t cgpu_compile(const char *src_p, int64_t src_n) {
         return fail("cgpu_compile", "out of memory");
     }
     nvrtcProgram prog = NULL;
-    if (g.nvrtcCreateProgram(&prog, src, "kernel.cu", 0, NULL, NULL)) {
+    if (g.nvrtcCreateProgram(&prog, src, g.hip ? "kernel.hip" : "kernel.cu", 0, NULL, NULL)) {
         free(src);
-        return fail("nvrtcCreateProgram", NULL);
+        return fail(g.hip ? "hiprtcCreateProgram" : "nvrtcCreateProgram", NULL);
     }
+    /* NVRTC is told the device's architecture. hipRTC takes the device's own, and is told one only
+     * when CANCHOGPU_HIP_ARCH names it (a machine with no supported GPU needs that). */
     char arch[64];
-    snprintf(arch, sizeof arch, "--gpu-architecture=%s", g.arch);
+    int n_opt = 1;
+    if (!g.hip) {
+        snprintf(arch, sizeof arch, "--gpu-architecture=%s", g.arch);
+    } else if (getenv("CANCHOGPU_HIP_ARCH")) {
+        snprintf(arch, sizeof arch, "--gpu-architecture=%s", getenv("CANCHOGPU_HIP_ARCH"));
+    } else {
+        n_opt = 0;
+    }
     char incs[4][512];
     int n_inc = include_flags(incs, 4);
     const char *opts[5] = {arch};
     for (int i = 0; i < n_inc; i++) {
-        opts[1 + i] = incs[i];
+        opts[n_opt + i] = incs[i];
     }
-    if (g.nvrtcCompileProgram(prog, 1 + n_inc, opts)) {
+    if (g.nvrtcCompileProgram(prog, n_opt + n_inc, opts)) {
         size_t n = 0;
         g.nvrtcGetProgramLogSize(prog, &n);
         char *log = malloc(n + 1);
@@ -253,7 +373,7 @@ int64_t cgpu_compile(const char *src_p, int64_t src_n) {
     CUresult r = g.cuModuleLoadData(&mod, ptx);
     free(ptx);
     if (r) {
-        return cu_fail("cuModuleLoadData", r);
+        return cu_fail(g.hip ? "hipModuleLoadData" : "cuModuleLoadData", r);
     }
     g.modules[g.n_modules] = mod;
     return g.n_modules++;
@@ -274,7 +394,7 @@ int64_t cgpu_function(int64_t module, const char *name_p, int64_t name_n) {
     CUresult r = g.cuModuleGetFunction(&f, g.modules[module], name);
     free(name);
     if (r) {
-        return cu_fail("cuModuleGetFunction", r);
+        return cu_fail(g.hip ? "hipModuleGetFunction" : "cuModuleGetFunction", r);
     }
     g.functions[g.n_functions] = f;
     return g.n_functions++;
@@ -290,7 +410,7 @@ int64_t cgpu_alloc(int64_t bytes) {
     CUdeviceptr p = 0;
     CUresult r = g.cuMemAlloc_v2(&p, (size_t)bytes);
     if (r) {
-        return cu_fail("cuMemAlloc", r);
+        return cu_fail(g.hip ? "hipMalloc" : "cuMemAlloc", r);
     }
     g.buffers[g.n_buffers] = p;
     g.sizes[g.n_buffers] = bytes;
@@ -347,11 +467,23 @@ int64_t cgpu_launch(int64_t fn, int64_t gx, int64_t gy, int64_t threads) {
     for (int64_t i = 0; i < MAX_ARGS; i++) {
         params[i] = i < g.n_args ? (void *)&g.args[i] : (void *)&none;
     }
-    CUresult r = g.cuLaunchKernel(g.functions[fn], (unsigned)gx, (unsigned)gy, 1, (unsigned)threads,
-                                  1, 1, 0, NULL, params, NULL);
+    CUresult r;
+    if (g.hip && getenv("CANCHOGPU_HIP_ARGS") && !strcmp(getenv("CANCHOGPU_HIP_ARGS"), "extra")) {
+        /* The other way a launch takes its arguments (CUDA's too): one packed buffer, here of pointers
+         * only, named through `extra`. For a hipModuleLaunchKernel that refuses `kernelParams`, which
+         * one page of ROCm's documentation says and no run here has shown (docs/amd.md section 1). */
+        size_t bytes = (size_t)g.n_args * sizeof g.args[0];
+        void *extra[] = {(void *)1 /* HIP_LAUNCH_PARAM_BUFFER_POINTER */, g.args,
+                         (void *)2 /* HIP_LAUNCH_PARAM_BUFFER_SIZE */, &bytes, (void *)0 /* _END */};
+        r = g.cuLaunchKernel(g.functions[fn], (unsigned)gx, (unsigned)gy, 1, (unsigned)threads, 1, 1, 0,
+                             NULL, NULL, extra);
+    } else {
+        r = g.cuLaunchKernel(g.functions[fn], (unsigned)gx, (unsigned)gy, 1, (unsigned)threads, 1, 1, 0,
+                             NULL, params, NULL);
+    }
     g.n_args = 0;
     if (r) {
-        return cu_fail("cuLaunchKernel", r);
+        return cu_fail(g.hip ? "hipModuleLaunchKernel" : "cuLaunchKernel", r);
     }
     r = g.cuCtxSynchronize();
     return r ? cu_fail("cuCtxSynchronize", r) : 0;
@@ -374,7 +506,9 @@ int64_t cgpu_close(void) {
         g.cuMemFree_v2(g.buffers[i]);
     }
     g.n_buffers = g.n_functions = g.n_modules = g.n_args = 0;
-    g.cuCtxDestroy_v2(g.ctx);
+    if (!g.hip) {
+        g.cuCtxDestroy_v2(g.ctx);
+    }
     g.ctx = NULL;
     return 0;
 }
