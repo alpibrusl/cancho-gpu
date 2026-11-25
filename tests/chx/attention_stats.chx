@@ -32,3 +32,4 @@ algo attention_stats(nkv, g, t, cs)
 
 schedule attention_stats for apple-m-series { threads 256 }
 schedule attention_stats for nvidia-ada     { threads 128 }
+schedule attention_stats for amd-cdna3      { threads 128 }

@@ -14,3 +14,4 @@ algo samp_cum(r, nq, bn)
 
 schedule samp_cum for apple-m-series { threads 256 bn 24 }
 schedule samp_cum for nvidia-ada     { threads 128 bn 8 }
+schedule samp_cum for amd-cdna3      { threads 128 bn 8 }

@@ -21,3 +21,4 @@ algo dit_scores_bias(nh, nq, t, qs, ts, d)
 
 schedule dit_scores_bias for apple-m-series { threads 512 }
 schedule dit_scores_bias for nvidia-ada     { threads 128 }
+schedule dit_scores_bias for amd-cdna3      { threads 128 }

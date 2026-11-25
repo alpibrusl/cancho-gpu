@@ -15,3 +15,4 @@ algo matvec_rows(n, k)
 
 schedule matvec_rows for apple-m-series { threads 256 bn 8 }
 schedule matvec_rows for nvidia-ada     { threads 128 bn 4 }
+schedule matvec_rows for amd-cdna3      { threads 128 bn 4 }

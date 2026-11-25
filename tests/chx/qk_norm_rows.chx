@@ -26,3 +26,4 @@ algo qk_norm_rows(m, nk, rows)
 
 schedule qk_norm_rows for apple-m-series { threads 128 }
 schedule qk_norm_rows for nvidia-ada     { threads 128 }
+schedule qk_norm_rows for amd-cdna3      { threads 128 }

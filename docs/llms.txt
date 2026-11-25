@@ -9,7 +9,7 @@
 - Media (a Mac with Apple Silicon): `scripts/media image "<prompt>" -o DIR --size WxH --seed N`, `scripts/media edit PHOTO "<instruction>" -o DIR`, `scripts/media video "<prompt>" -o DIR --frames 17 --size 640x352 [--precise]`, `scripts/media transcribe CLIP.wav -o DIR`, `scripts/media doctor`, `scripts/media models` (docs/cli.md). One model a task; any other `--model` is refused.
 
 ## Facts that matter when calling it
-- Targets: nvidia-ada (CUDA C) and apple-m-series (Metal), each from the file's schedule. amd-cdna3 (HIP, docs/amd.md) is emitted for kernels that neither shuffle across lanes nor use `mma`, any other is refused `error[lowering]`; that text runs on a CPU emulator at 64 lanes and has never been compiled or run by AMD's tools.
+- Targets: nvidia-ada (CUDA C) and apple-m-series (Metal), each from the file's schedule. amd-cdna3 (HIP, docs/amd.md) is emitted for kernels that do not use `mma`, which are refused `error[lowering]`; that text runs on a CPU emulator at 64 lanes and has never been compiled or run by AMD's tools.
 - Text, Qwen3.8-27B (NVFP4, weights read from Ollama's store): 85, 100 and 113 tokens a second on three code requests with the model's own draft head, where Ollama 0.40.17 gave 81, 101 and 112 once warmed; on prose 46 against 57; about 27 without drafting (docs/serving.md 11.6).
 - Image, 1024 x 1024, 8 steps: 61 to 65 s; mflux 52 to 55 s on the same machine. The image is 0.16 of 255 from the float64 pipeline (torch's BF16: 4.75) (docs/diffusion.md).
 - Video, 17 frames of 640 x 352: about 21 s run in turn with mlx-video's 23.4 to 23.8 s; the pictures were not compared between engines. `--precise` runs the transformer's products with f32 operands, for 2 to 3 s more (docs/diffusion.md).

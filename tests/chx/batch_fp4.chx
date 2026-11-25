@@ -17,3 +17,4 @@ algo batch_fp4(b, n, k)
 
 schedule batch_fp4 for apple-m-series { threads 256 }
 schedule batch_fp4 for nvidia-ada     { threads 256 }
+schedule batch_fp4 for amd-cdna3      { threads 256 }

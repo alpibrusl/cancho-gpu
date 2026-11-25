@@ -26,3 +26,4 @@ algo attention_d64(nkv, g, t, d, tmax)
 
 schedule attention_d64 for apple-m-series { threads 256 }
 schedule attention_d64 for nvidia-ada     { threads 256 }
+schedule attention_d64 for amd-cdna3      { threads 256 }

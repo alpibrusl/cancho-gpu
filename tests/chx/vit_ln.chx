@@ -27,3 +27,4 @@ algo vit_ln(s, n)
 
 schedule vit_ln for apple-m-series { threads 256 }
 schedule vit_ln for nvidia-ada     { threads 256 }
+schedule vit_ln for amd-cdna3      { threads 256 }

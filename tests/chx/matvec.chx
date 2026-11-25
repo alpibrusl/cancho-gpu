@@ -13,3 +13,4 @@ algo matvec(n, k)
 
 schedule matvec for apple-m-series { threads 256 }
 schedule matvec for nvidia-ada     { threads 128 }
+schedule matvec for amd-cdna3      { threads 128 }

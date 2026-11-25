@@ -22,3 +22,4 @@ algo attention_scores_b(nb, nkv, g, t, ts, d, tmax)
 
 schedule attention_scores_b for apple-m-series { threads 512 }
 schedule attention_scores_b for nvidia-ada     { threads 128 }
+schedule attention_scores_b for amd-cdna3      { threads 128 }

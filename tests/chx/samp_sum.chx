@@ -19,3 +19,4 @@ algo samp_sum(r, nq, G, invt)
 
 schedule samp_sum for apple-m-series { threads 256 }
 schedule samp_sum for nvidia-ada     { threads 128 }
+schedule samp_sum for amd-cdna3      { threads 128 }

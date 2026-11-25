@@ -20,3 +20,4 @@ algo attention_pv_rows(nr, nkv, g, t, dw, d, tmax)
 
 schedule attention_pv_rows for apple-m-series { threads 1024 }
 schedule attention_pv_rows for nvidia-ada     { threads 128 }
+schedule attention_pv_rows for amd-cdna3      { threads 128 }

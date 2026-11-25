@@ -43,3 +43,4 @@ algo samp_pick(r, nq)
 
 schedule samp_pick for apple-m-series { threads 256 }
 schedule samp_pick for nvidia-ada     { threads 128 }
+schedule samp_pick for amd-cdna3      { threads 128 }

@@ -191,3 +191,4 @@ algo delta_step3(nk)
 
 schedule delta_step3 for apple-m-series { threads 256 br 8 }
 schedule delta_step3 for nvidia-ada     { threads 128 br 32 }
+schedule delta_step3 for amd-cdna3      { threads 128 br 32 }

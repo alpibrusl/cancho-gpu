@@ -41,6 +41,9 @@ pub fn barrier[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
 }
 
 pub fn shuffle[&m, &t](m: &!m [int], t: &!t [byte], d: int, value: int, src: int) -> [] int {
+    if is_hip(d) {
+        return text.f2(m, t, "__shfl_sync(0xffffffffffffffffull, $, $)", value, src);
+    }
     if is_cuda(d) {
         return text.f2(m, t, "__shfl_sync(0xffffffffu, $, $)", value, src);
     }
@@ -59,6 +62,11 @@ pub fn fp4_lookup[&m, &t](m: &!m [int], t: &!t [byte], d: int, nibble: int) -> [
 }
 
 pub fn shuffle_down[&m, &t](m: &!m [int], t: &!t [byte], d: int, value: int, delta: int) -> [] int {
+    // HIP's mask names the 64 lanes of a wave (gfx9). The steps are the ones CUDA gets: a tree over 32 lanes is
+    // right on a wave of 64, measured on the emulator (docs/amd.md section 7).
+    if is_hip(d) {
+        return text.f2(m, t, "__shfl_down_sync(0xffffffffffffffffull, $, $)", value, delta);
+    }
     if is_cuda(d) {
         return text.f2(m, t, "__shfl_down_sync(0xffffffffu, $, $)", value, delta);
     }

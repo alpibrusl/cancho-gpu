@@ -40,3 +40,4 @@ algo attention(nkv, g, t, d, tmax)
 
 schedule attention for apple-m-series { threads 256 }
 schedule attention for nvidia-ada     { threads 256 }
+schedule attention for amd-cdna3      { threads 256 }

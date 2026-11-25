@@ -119,12 +119,12 @@ CASES
 rm -f "$WORK/log"
 CANCHOGPU_HIP_ARCH=gfx942 hip_run "$BIN" run "$ROOT/tests/chx/ported/silu_mul.chx" >/dev/null 2>&1 || true
 grep -q '^compile-hip kernel.hip --gpu-architecture=gfx942$' "$WORK/log" || { echo "hip: the architecture asked for did not reach hipRTC: $(cat "$WORK/log")"; fail=1; }
-# A kernel the HIP dialect cannot say yet is refused before the runtime is touched (docs/amd.md slice H4).
+# A kernel the HIP dialect cannot say yet is refused before the runtime is touched (docs/amd.md slice H5).
 rm -f "$WORK/log"
 status=0
-hip_run "$BIN" run "$ROOT/tests/reject/lowering-shuffle-hip.chx" n=4096 eps=1e-5 >/dev/null 2>"$WORK/err" || status=$?
+hip_run "$BIN" run "$ROOT/tests/reject/lowering-mma-hip.chx" m=128 n=128 k=64 >/dev/null 2>"$WORK/err" || status=$?
 if [ "$status" -ne 1 ] || ! grep -q '^error\[lowering\]' "$WORK/err" || [ -e "$WORK/log" ]; then
-  echo "hip: a shuffling kernel: expected error[lowering] and no compile, exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
+  echo "hip: a kernel that uses mma: expected error[lowering] and no compile, exit 1; got exit $status: $(cat "$WORK/err")"; fail=1
 fi
 # No runtime, and a runtime without hipRTC: refusals, not traps.
 status=0

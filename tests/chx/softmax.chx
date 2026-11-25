@@ -18,3 +18,4 @@ algo softmax(r, n)
 
 schedule softmax for apple-m-series { threads 256 }
 schedule softmax for nvidia-ada     { threads 256 }
+schedule softmax for amd-cdna3      { threads 256 }

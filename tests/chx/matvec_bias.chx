@@ -16,3 +16,4 @@ algo matvec_bias(n, k)
 
 schedule matvec_bias for apple-m-series { threads 256 bn 8 }
 schedule matvec_bias for nvidia-ada     { threads 128 bn 4 }
+schedule matvec_bias for amd-cdna3      { threads 128 bn 4 }
