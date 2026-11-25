@@ -1,0 +1,80 @@
+// r rows of n rounded to NVFP4 as a model's code rounds them (docs/kolibri.md K4: the keys and values of Kolibri 1.1's indexed layers), groups of 16: the group's scale is max|x| / 6 rounded to FP8 E4M3
+// (never under 2^-9 nor over 448), and each value over the scale is rounded to an E2M1 magnitude (0, 0.5, 1, 1.5, 2, 3, 4, 6), ties to even as the reference's rounding has them: of the seven
+// thresholds, a value AT 0.75, 1.75 or 3.5 goes up (`1 - step(t - m)`) and one at 0.25, 1.25, 2.5 or 5 down (`step(m - t)`).
+// tb is the host's table of E4M3's 125 thresholds: row 0 the thresholds (the midpoints of neighbouring values), row 1 what the scale grows by past each, row 2 a 1 where a scale AT the threshold goes up.
+// The scale is 2^-9 plus the increments passed; every partial sum is a multiple of 2^-9 under 448, exact in f32.
+algo fp4_round(r, n)
+  in  x:  f32[r, n]
+  in  tb: f32[3, 125]
+  out y:  f32[r, n]
+{
+  grid i over r, j over n / 16
+  let b   = load x[i, j * 16 ; 1, 16]
+  let zb  = zeros f32[1, 16]
+  let nb  = zb - &b
+  let pa  = relu &b
+  let na  = relu nb
+  let ab  = pa + na
+  let mx  = rowmax ab
+  let s   = mx / 6.0
+  let th  = load tb[0, 0 ; 1, 125]
+  let ic  = load tb[1, 0 ; 1, 125]
+  let up  = load tb[2, 0 ; 1, 125]
+  let z   = zeros f32[1, 125]
+  let sb  = z + s
+  let d   = sb - th
+  let zn  = zeros f32[1, 125]
+  let dn  = zn - &d
+  let gt  = step d
+  let lt  = step dn
+  let o   = zeros f32[1, 125]
+  let on  = o + 1.0
+  let ne  = &gt + lt
+  let eq  = on - ne
+  let te  = eq * up
+  let pas = gt + te
+  let inc = pas * ic
+  let sm  = rowsum inc
+  let sc  = sm + 0.001953125
+  let v   = b / &sc
+  let zv  = zeros f32[1, 16]
+  let nv  = zv - &v
+  let sp  = step &v
+  let sq  = step &nv
+  let sg  = sp - sq
+  let mp  = relu v
+  let mn  = relu nv
+  let m   = mp + mn
+  let a1  = &m - 0.25
+  let a3  = &m - 1.25
+  let a5  = &m - 2.5
+  let a7  = &m - 5.0
+  let zm  = zeros f32[1, 16]
+  let ng  = zm - m
+  let b2  = &ng + 0.75
+  let b4  = &ng + 1.75
+  let b6  = ng + 3.5
+  let s1  = step a1
+  let s3  = step a3
+  let s5  = step a5
+  let s7  = step a7
+  let g2  = step b2
+  let g4  = step b4
+  let g6  = step b6
+  let h0  = s1 + s3
+  let hg  = g2 + g4
+  let h1  = h0 - hg
+  let h2  = h1 + 2.0
+  let hf  = h2 * 0.5
+  let w5  = s5 - g6
+  let w6  = w5 + 1.0
+  let w7  = s7 * 2.0
+  let w8  = w6 + w7
+  let val = hf + w8
+  let sv  = sg * val
+  store sv * sc -> y[i, j * 16]
+}
+
+schedule fp4_round for apple-m-series { threads 128 }
+schedule fp4_round for nvidia-ada     { threads 128 }
+schedule fp4_round for amd-cdna3      { threads 128 }

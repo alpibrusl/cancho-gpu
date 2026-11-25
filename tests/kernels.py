@@ -607,6 +607,45 @@ def dec_post_n(r):
     return q, kn, vn
 
 
+def dec_post_g(r, nq, nkv):
+    """dec_post_n with the head counts as parameters (docs/kolibri.md K4): nq q, nkv k and nkv v slots of 128 a row."""
+    sl = nq + 2 * nkv
+    y, qw, kw, cs, sn = lcg([r * sl * 128, 128, 128, r * 64, r * 64])
+    q, kn, vn = [], [], []
+    for i in range(r):
+        def rot(slot, w):
+            row = y[(i * sl + slot) * 128:(i * sl + slot + 1) * 128]
+            rs = 1 / math.sqrt(sum(v * v for v in row) / 128 + 1e-6)
+            a = [row[c] * rs * w[c] for c in range(128)]
+            return ([a[c] * cs[i * 64 + c] - a[64 + c] * sn[i * 64 + c] for c in range(64)] + [a[64 + c] * cs[i * 64 + c] + a[c] * sn[i * 64 + c] for c in range(64)])
+        for h in range(nq):
+            q += rot(h, qw)
+        for h in range(nkv):
+            kn += rot(nq + h, kw)
+        for h in range(nkv):
+            vn += y[(i * sl + nq + nkv + h) * 128:(i * sl + nq + nkv + h + 1) * 128]
+    return q, kn, vn
+
+
+def fp4_round(r, n):
+    """NVFP4 rounding in groups of 16 with whatever table the kernel is given (docs/kolibri.md K4): the scale is 2^-9 plus the increments of the thresholds max|x| / 6 has passed (or sits on, where the
+    table's third row says up), and a value over it goes to the nearest of 0, 0.5, 1, 1.5, 2, 3, 4, 6, ties to even. The made-up table is not E4M3's: tests/kstep.sh holds that, and the ties."""
+    x, tb = lcg([r * n, 3 * 125])
+    th, ic, up = tb[:125], tb[125:250], tb[250:]
+    out = []
+    for g in range(r * n // 16):
+        b = x[g * 16:(g + 1) * 16]
+        s = max(abs(v) for v in b) / 6
+        sc = 2.0 ** -9 + sum(ic[t] * (1.0 if s > th[t] else (up[t] if s == th[t] else 0.0)) for t in range(125))
+        for v in b:
+            m = abs(v / sc); e = 0.0
+            for t, d, ge in ((0.25, 0.5, 0), (0.75, 0.5, 1), (1.25, 0.5, 0), (1.75, 0.5, 1), (2.5, 1.0, 0), (3.5, 1.0, 1), (5.0, 2.0, 0)):
+                if m > t or (ge and m == t):
+                    e += d
+            out.append(math.copysign(e, v / sc) * sc if e else 0.0)
+    return out
+
+
 def amax_cand(r, nq):
     l, gmb, rk = lcg([r * nq * 64, r * nq, nq * 64])
     return [rk[q * 64 + c] * (0.0 if gmb[i * nq + q] - l[(i * nq + q) * 64 + c] > 0 else 1.0) for i in range(r) for q in range(nq) for c in range(64)]
@@ -1000,6 +1039,18 @@ def new_checks():
     ok &= check("axpy_slot n=96 k=3 j=0", run("axpy_slot", ["n=96", "bn=32", "k=3", "j=0"])["mo"], axpy_slot(96, 3, 0))
     ok &= check("group_sum k=256 G=32", run("group_sum", ["k=256", "G=32"])["s"], group_sum(256, 32))
     ok &= check("group_sum k=96 G=16", run("group_sum", ["k=96", "G=16"])["s"], group_sum(96, 16))
+    got = run("dec_post_g", ["r=2", "nq=6", "nkv=2"])
+    want_q, want_k, want_v = dec_post_g(2, 6, 2)
+    ok &= check("dec_post_g q r=2 nq=6 nkv=2", got["q"], want_q)
+    ok &= check("dec_post_g kn r=2 nq=6 nkv=2", got["kn"], want_k)
+    ok &= check("dec_post_g vn r=2 nq=6 nkv=2", got["vn"], want_v)
+    got = run("dec_post_g", ["r=1", "nq=48", "nkv=4"])
+    want_q, want_k, want_v = dec_post_g(1, 48, 4)
+    ok &= check("dec_post_g q r=1 nq=48 nkv=4", got["q"], want_q)
+    ok &= check("dec_post_g kn r=1 nq=48 nkv=4", got["kn"], want_k)
+    ok &= check("dec_post_g vn r=1 nq=48 nkv=4", got["vn"], want_v)
+    ok &= check("fp4_round r=3 n=64", run("fp4_round", ["r=3", "n=64"])["y"], fp4_round(3, 64))
+    ok &= check("fp4_round r=4 n=128", run("fp4_round", ["r=4", "n=128"])["y"], fp4_round(4, 128))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -1217,6 +1268,17 @@ MUTANTS = [
     ("axpy_slot.chx", "let w = load wt[j, 0 ; 1, 1]", "let w = load wt[0, 0 ; 1, 1]", "axpy_slot weighs every expert by the first slot's weight"),
     ("axpy_slot.chx", "let b = load y[0, c * bn ; 1, bn]", "let b = load y[0, 0 ; 1, bn]", "axpy_slot reads every tile of y from the first"),
     ("group_sum.chx", "let a = load x[0, g * G ; 1, G]", "let a = load x[0, 0 ; 1, G]", "group_sum sums the first group for every group"),
+    ("dec_post_g.chx", "let k1 = load y[i * (nq + 2 * nkv) + nq, 0 ; nkv, 64]", "let k1 = load y[i * (nq + 2 * nkv), 0 ; nkv, 64]", "dec_post_g reads the keys' first halves from the queries"),
+    ("dec_post_g.chx", "let v0 = load y[i * (nq + 2 * nkv) + nq + nkv, 0 ; nkv, 128]", "let v0 = load y[i * (nq + 2 * nkv) + nq, 0 ; nkv, 128]", "dec_post_g copies the keys as the values"),
+    ("dec_post_g.chx", "let klo = u1 - u2", "let klo = u1 + u2", "dec_post_g's key rotation has the wrong sign"),
+    ("dec_post_g.chx", "let x1 = load kw[0, 0 ; 1, 64]", "let x1 = load qw[0, 0 ; 1, 64]", "dec_post_g norms k with q's weight"),
+    ("dec_post_g.chx", "let t4 = a1 * &s", "let t4 = a1 * &c", "dec_post_g rotates q's second half by the cosine twice"),
+    ("fp4_round.chx", "let s   = mx / 6.0", "let s   = mx / 4.0", "fp4_round's scale is the peak over 4"),
+    ("fp4_round.chx", "let b   = load x[i, j * 16 ; 1, 16]", "let b   = load x[i, 0 ; 1, 16]", "fp4_round rounds every group as the row's first"),
+    ("fp4_round.chx", "let sg  = sp - sq", "let sg  = sp + sq", "fp4_round loses the sign"),
+    ("fp4_round.chx", "let sc  = sm + 0.001953125", "let sc  = sm + 0.0", "fp4_round's scale starts at nothing"),
+    ("fp4_round.chx", "let inc = pas * ic", "let inc = pas + ic", "fp4_round adds every increment, passed or not"),
+    ("fp4_round.chx", "let a3  = &m - 1.25", "let a3  = &m - 1.0", "fp4_round's third threshold is at 1"),
     ("samp_rank.chx", "let dn = zn - d", "let dn = d - zn", "samp_rank counts the smaller entries"),
     ("samp_rank.chx", "let r  = load yr[p, 0 ; 1, 64]", "let r  = load yr[q, 0 ; 1, 64]", "samp_rank compares every chunk with its own"),
     ("samp_keep.chx", "let d   = kk - c", "let d   = c - kk", "samp_keep keeps the entries with k or more larger ones"),

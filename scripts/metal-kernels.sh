@@ -161,6 +161,8 @@ moe_rank nq=6
 moe_pick n=384 k=6
 axpy_slot n=2560 bn=256 k=6 j=5
 group_sum k=3584 G=32
+dec_post_g r=1 nq=48 nkv=4
+fp4_round r=4 n=128
 f16:conv_cols t=5 f=3 c=32 wp=8 r=40
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64
