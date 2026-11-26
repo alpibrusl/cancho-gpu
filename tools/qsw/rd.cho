@@ -11,6 +11,10 @@ import std.bytes;
 pub fn read_file[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte]) -> [heap, fs_read(""), file_read] (buffer.Buffer, int) {
     var out = buffer.empty(heap, 4096);
     var trouble = 0;
+    // a path the file verbs would stop the program on (`..` in it, or 4,096 bytes or more) is a file that cannot be read
+    if !fs_covers(fs, path) {
+        return (out, 22);
+    }
     match open_read(fs, path) {
         Opened::Failed(reason) => {
             trouble = reason;

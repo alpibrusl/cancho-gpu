@@ -421,13 +421,17 @@ fn with_inputs[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: &f
     let quantp = kern.path_join(heap, arg(args, iw), "l00.wqkv.q");
     var quantised = false;
     borrow quantp as &qp in {
-        match open_read(fs, buffer.bytes(qp)) {
-            Opened::Failed(reason) => {
-                quantised = false;
-            }
-            Opened::Ok(opened) => {
-                file_close(opened);
-                quantised = true;
+        if !fs_covers(fs, buffer.bytes(qp)) {
+            quantised = false;
+        } else {
+            match open_read(fs, buffer.bytes(qp)) {
+                Opened::Failed(reason) => {
+                    quantised = false;
+                }
+                Opened::Ok(opened) => {
+                    file_close(opened);
+                    quantised = true;
+                }
             }
         }
     }
@@ -569,7 +573,7 @@ fn split_command[&h, &i, &g, &f](heap: &!h Heap, io: &!i Io, args: &g Args, fs: 
                         status = refuse(heap, io, "qsw.input", "the gradients file does not hold the model's fused A and B matrices in f32");
                     } else {
                         borrow words as &wb in {
-                            if fs_write(fs, arg(args, io_), buffer.bytes(wb)) < 0 {
+                            if !fs_covers(fs, arg(args, io_)) || fs_write(fs, arg(args, io_), buffer.bytes(wb)) < 0 {
                                 status = refuse(heap, io, "qsw.write", "the output file cannot be written");
                             }
                         }

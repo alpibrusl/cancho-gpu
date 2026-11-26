@@ -18,6 +18,7 @@ import err;
 import cli;
 import session;
 import ckpt;
+import fileio;
 
 fn words() -> [] int {
     return 100000000;
@@ -65,7 +66,10 @@ fn run[&m, &t, &x, &i, &f, &a](m: &!m [int], t: &!t [byte], fm: &!x [float], io:
     }
     let file = arg(args, 1);
     let top = m[mem.text_slot()];
-    let got = fs_read(fs, file, t[top..len(t)]);
+    var got = 0 - 1;
+    if fileio.covers(fs, file) {
+        got = fs_read(fs, file, t[top..len(t)]);
+    }
     if got < 0 {
         io.error_all(io, "error[io]: cannot read ");
         io.error_all(io, file);

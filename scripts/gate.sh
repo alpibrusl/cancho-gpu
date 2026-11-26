@@ -40,6 +40,7 @@ CANCHO="$CANCHO" tests/qwen3_asr_text.sh
 CANCHO="$CANCHO" tests/qwen3_asr_step.sh
 CANCHO="$CANCHO" tests/kolibri_host.sh
 CANCHO="$CANCHO" tests/kolibri_cmd.sh
+CANCHO="$CANCHO" tests/paths.sh
 CANCHO="$CANCHO" tests/qwen3_asr_front.sh
 CANCHO="$CANCHO" tests/qwen3_tts_decoder.sh
 CANCHO="$CANCHO" tests/qwen3_tts_lm.sh

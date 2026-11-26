@@ -21,6 +21,9 @@ pub fn path_join[&h, &d, &n](heap: &!h Heap, dir: &d [byte], name: &n [byte]) ->
 }
 
 fn exists[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] bool {
+    if !fs_covers(fs, path) {
+        return false;
+    }
     match open_read(fs, path) {
         Opened::Failed(reason) => {
             return false;
@@ -177,7 +180,7 @@ pub fn kernel[&h, &f, &o, &r, &n, &w](heap: &!h Heap, fs: &f Fs(""), out: &o [by
                 }
                 borrow path as &pr in {
                     borrow body as &br in {
-                        if fs_write(fs, buffer.bytes(pr), buffer.bytes(br)) < 0 {
+                        if !fs_covers(fs, buffer.bytes(pr)) || fs_write(fs, buffer.bytes(pr), buffer.bytes(br)) < 0 {
                             trouble = 100;
                         }
                     }

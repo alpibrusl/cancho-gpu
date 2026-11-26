@@ -82,7 +82,8 @@ pub fn under[&h, &d, &n](heap: &!h Heap, dir: &d [byte], name: &n [byte]) -> [he
 
 // `mkdir -p` of the absolute path `path` (as os.makedirs(exist_ok=True)): 0 or an errno.
 pub fn make_all[&f, &t](fs: &f Fs(""), path: &t [byte]) -> [fs_read(""), dir_write] int {
-    if len(path) < 2 || int_of(path[0]) != 47 {
+    // a path the file verbs would stop the program on (`..` in it, or 4,096 bytes or more: docs/runtime.md section 11) is not made
+    if len(path) < 2 || int_of(path[0]) != 47 || !fs_covers(fs, path) {
         return 22;
     }
     var from = 1;

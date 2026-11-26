@@ -194,6 +194,9 @@ fn write_all[&w, &b](file: &!w File, bytes: &b [byte]) -> [file_write] int {
 // `t[at .. at + n]` to the file `path`, made or emptied when `fresh` and added to otherwise: 0, or -1 with a refusal.
 fn put[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, fresh: bool, at: int, n: int) -> [fs_write(""), file_write] int {
     var status = 0 - 1;
+    if !fileio.covers(fs, text.bytes(t, path)) {
+        return err.fail(m, t, "kolibri-write", text.f1(m, t, "cannot write $", path));
+    }
     if fresh {
         match open_write(fs, text.bytes(t, path)) {
             Opened::Ok(opened) => {
