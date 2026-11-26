@@ -13,8 +13,10 @@ edition 5;
 // a<i>.qkv (q, k and v one after another; a<i>.q where the layer has no keys of its own), a<i>.o, m<i>.dn.gate/up/down (a dense layer), m<i>.sh.* and m<i>.ex.* (the shared expert and the experts).
 // Once: head.f32 (the Q6_K head decoded), fnorm.f32, the ones (ones_d, ones_h, ones_f, ones_qkv, ones_q, one64), zero64, ar.f32, sl.f32 and e4m3.f32 (fp4_round.chx's table: E4M3's 125
 // thresholds, what the scale grows by past each, and a 1 where a scale at the threshold goes up). Which layers are dense, which have keys and which tensors are Q4_1 are the file's to say.
-// `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised), cos.f32 and sin.f32, sel.f32 and keep.f32,
-// mask.f32 (the file's window) and maskg.f32, zcache.f32. `positions` is the caches' length, a multiple of 64 no shorter than the ids.
+// `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised), cos.f32 and sin.f32; for the indexed layers
+// sel.f32, keep.f32, maskg.f32 and zcache.f32 over `positions` (their caches' length, a multiple of 64 no shorter than the ids); for the sliding layers, whose caches are a ring (section 15),
+// selw.f32, keepw.f32, mask.f32 and zcachew.f32 over the file's window rounded up to a multiple of 64. It refuses more steps than an indexed layer sees whole (`kolibri-context`): the file's
+// `indexer.top_k` and the model's 8 first and 128 last keys, which the file does not carry.
 // For a generating step (GEN=1, section 13) `weights` also writes emb.q4 and emb.s (the embedding matrix, picked by the id), rank.f32, zmk.f32 and one1.f32, and `inputs` idtab.f32 and mtab.f32
 // (the prompt's ids and their mask, a step each), accsel.f32, acckeep.f32, acc0.f32 and id0.f32, for `steps` steps (the ids' count if not given; x0.f32 has rows of zeros past the prompt).
 // For a sampling step (SAMP=1, section 14) `weights` also writes ciota.f32, cslot.f32, czero.f32, ctri.f32 and tri64.f32 (for the file's own top-k made a multiple of 24), and `inputs` u.f32: a uniform number a step
@@ -22,7 +24,7 @@ edition 5;
 // `ids` prints the whole numbers of a saved ids_out.f32 from an index on, on one line.
 // `argmax` prints `argmax <index> value <v> margin <v - the second largest>` for a file of f32: the next token from the session's saved logits.
 //
-// Exit 0; 1 with every refusal as `error[<rule>]: <message>` (kolibri-read, kolibri-meta, kolibri-tensor, kolibri-ids, kolibri-write, or the GGUF reader's own); 2 for a usage mistake
+// Exit 0; 1 with every refusal as `error[<rule>]: <message>` (kolibri-read, kolibri-meta, kolibri-tensor, kolibri-ids, kolibri-context, kolibri-write, or the GGUF reader's own); 2 for a usage mistake
 // (`error[kolibri-usage]`). No file reaches a trap: a length is checked against the bytes read before it is used, and a short read is a refusal.
 //
 // Built by scripts/build-kolibri.sh.
@@ -644,7 +646,8 @@ fn meta_float[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte])
     return 0.0;
 }
 
-// NS blocks of `width` f32 to `path`, entry (s, c) of kind `what`: 0 sel, 1 keep, 2 the window's mask, 3 the mask of every key so far, 4 cos, 5 sin, 6 zeros, 7 a one where c <= s (the matrix a cumulative sum is a product with).
+// NS blocks of `width` f32 to `path`, entry (s, c) of kind `what`: 0 sel and 1 keep (step s is at slot s mod width: a ring where there are more steps than slots), 2 the window's mask over a
+// ring's slots (slot c holds position s - ((s - c) mod width), seen when that is no step before the first and less than a window back), 3 the mask of every key so far, 4 cos, 5 sin, 6 zeros, 7 a one where c <= s (the matrix a cumulative sum is a product with).
 fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, ns: int, width: int, what: int, window: int, base: float) -> [fs_write(""), file_write] int {
     let sc = m[file + 4];
     var s = 0;
@@ -652,11 +655,13 @@ fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path
         var c = 0;
         while c < width {
             var x = 0.0;
-            if what == 0 && c == s {
+            // how many steps ago slot c was written, were the ring already full: c < width, so the sum is positive
+            let ago = (s - c + width) % width;
+            if what == 0 && c == s % width {
                 x = 1.0;
-            } else if what == 1 && c != s {
+            } else if what == 1 && c != s % width {
                 x = 1.0;
-            } else if what == 2 && (c > s || c <= s - window) {
+            } else if what == 2 && (ago > s || ago >= window) {
                 x = 0.0 - 1000000000.0;
             } else if what == 3 && c > s {
                 x = 0.0 - 1000000000.0;
@@ -712,10 +717,11 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     let hd = meta_int(m, t, g, "kolibri1.attention.key_length");
     let window = meta_int(m, t, g, "kolibri1.attention.sliding_window");
     let base = meta_float(m, t, g, "kolibri1.rope.freq_base");
-    if d < 0 || nkv < 0 || hd < 0 || window < 0 || err.failed(m) {
+    let top = meta_int(m, t, g, "kolibri1.attention.indexer.top_k");
+    if d < 0 || nkv < 0 || hd < 0 || window < 0 || top < 0 || err.failed(m) {
         return 0 - 1;
     }
-    if d % 32 != 0 || d > 65536 || hd % 2 != 0 || hd > 4096 || base <= 1.0 {
+    if d % 32 != 0 || d > 65536 || hd % 2 != 0 || hd > 4096 || base <= 1.0 || window < 1 || window > 1048576 || top > 1048576 {
         return err.fail(m, t, "kolibri-meta", text.lit(m, t, "the file's widths are not ones this program writes tables for"));
     }
     let tt = count_of(t, text.from_bytes(m, t, arg(args, 5)));
@@ -749,6 +755,14 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
             return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the steps are no fewer than the ids and no more than the positions"));
         }
     }
+    // past these an indexed layer's query attends to a selection of the keys (the indexer), which the step's model file does not have: the file's top_k, and the first 8 and the last 128
+    // keys, which are the model's configuration (index_num_sink_tokens, index_num_local_tokens) and not in the file
+    let whole = top + 8 + 128;
+    if nst > whole {
+        return err.fail(m, t, "kolibri-context", text.n2(m, t, "$ steps are past the $ positions an indexed layer sees whole: the indexer is not written", nst, whole));
+    }
+    // a sliding layer's ring: the window rounded up to a multiple of 64
+    let tw = (window + 63) / 64 * 64;
     let sc = m[file + 4];
     let out = sc + in_cap();
     let x0 = text.f1(m, t, "$/x0.f32", dir);
@@ -787,7 +801,10 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     }
     var bad = table(m, t, fs, file, text.f1(m, t, "$/sel.f32", dir), nst, tt, 0, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keep.f32", dir), nst, tt, 1, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/mask.f32", dir), nst, tt, 2, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/selw.f32", dir), nst, tw, 0, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keepw.f32", dir), nst, tw, 1, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/mask.f32", dir), nst, tw, 2, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zcachew.f32", dir), nkv * hd, tw, 6, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/maskg.f32", dir), nst, tt, 3, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/cos.f32", dir), nst, hd / 2, 4, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), nst, hd / 2, 5, window, base) < 0;

@@ -2,7 +2,7 @@
 # tests/kolibri_host.sh -- the host side of Kolibri 1.1's step (tests/kolibri_gpu.cho, docs/kolibri.md K5) without the model: it builds, and on a toy GGUF written here byte by byte (three layers 32
 # wide: a dense one, a mixture of 2 experts with its own keys, a mixture that reads layer 1's keys; 2 query heads over 1 key/value head of 16; a vocabulary of 64) every file `weights` and `inputs`
 # write is what awk's arithmetic of the formats says: the copied tensors, the repacked codes and the scales to the byte, the Q4_1 offsets, the decoded Q6_K head, the embedding rows and the tables
-# as numbers; the list of files is exactly the expected one. Then `argmax`, and the refusals, each with its rule and status 1 (2 for usage), none a trap.
+# as numbers; the list of files is exactly the expected one. Then `inputs` for 136 steps, twice round a sliding layer's ring of 64 slots (docs/kolibri.md section 15), `argmax`, and the refusals, each with its rule and status 1 (2 for usage), none a trap.
 set -eu
 cd "$(dirname "$0")/.."
 C="${CANCHO:-cancho}"
@@ -12,7 +12,7 @@ T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 fail=0
 : > "$T/fails"   # a line a failure of the two big checks, so that an `ok` is said only of a part that had none
-toy() { # out file, variant (none | notensor | nokv | f32q | wide | v8): the toy GGUF, and for `none` the expected files under $T/want with $T/manifest
+toy() { # out file, variant (none | notensor | nokv | f32q | wide | v8 | notop | w65): the toy GGUF, and for `none` the expected files under $T/want with $T/manifest
 awk -v T="$T" -v VAR="$2" '
 function rb(k, i) { return (i * 37 + 11 + 101 * int(i / 61) + 53 * k) % 256 }
 function tb(k, i,   j) { # byte i of tensor k: any byte, but an f16 field never has all its exponent bits set (no infinity, no NaN)
@@ -48,7 +48,7 @@ function mlp(l, suffix, pre,   a) { q41("blk." l ".ffn_gate" suffix ".weight", "
 function fillw(file, n, v, ramp,   i) { want(file, "vals"); for (i = 0; i < n; i++) printf "%s\n", ramp ? i : v > W; close(W) }
 BEGIN {
   NT = 0; DATA = 0; NB = 0; BYTES = T "/bytes.txt"; for (i = 1; i < 128; i++) ORD[sprintf("%c", i)] = i
-  D = 32; NQ = 2; NKV = 1; HD = 16; NE = 2; EH = 32; FF = 64; V = (VAR == "v8") ? 8 : 64; NL = 3; WIN = 2
+  D = 32; NQ = 2; NKV = 1; HD = 16; NE = 2; EH = 32; FF = 64; V = (VAR == "v8") ? 8 : 64; NL = 3; WIN = (VAR == "w65") ? 65 : 2
   for (l = 0; l < NL; l++) { p = "blk." l "."
     add(p "attn_norm.weight", 0, D); add(p "attn_q_norm.weight", 0, HD); add(p "post_attention_norm.weight", 0, D); add(p "ffn_norm.weight", 0, D); add(p "post_ffw_norm.weight", 0, D)
     add(p "attn_q.weight", 2, D, NQ * HD); add(p "attn_output.weight", 2, NQ * HD, D)
@@ -60,10 +60,10 @@ BEGIN {
   }
   add("token_embd.weight", 2, D, V); add("output.weight", 14, D, V); add("output_norm.weight", 0, D)
   # the header
-  out(71); out(71); out(85); out(70); u32(3); u64(NT); u64(15)
+  out(71); out(71); out(85); out(70); u32(3); u64(NT); u64(VAR == "notop" ? 15 : 16)
   kvu("kolibri1.block_count", NL); kvu("kolibri1.leading_dense_block_count", 1); kvu("kolibri1.embedding_length", D); kvu("kolibri1.expert_count", NE); kvu("kolibri1.expert_used_count", 1)
   kvu("kolibri1.expert_feed_forward_length", EH); kvu("kolibri1.feed_forward_length", FF); kvu("kolibri1.attention.head_count", NQ); kvu("kolibri1.attention.head_count_kv", NKV)
-  kvu("general.sampling.top_k", 2); kvu("kolibri1.attention.key_length", HD); kvu("kolibri1.attention.sliding_window", WIN); kvu("general.alignment", 32)
+  kvu("general.sampling.top_k", 2); kvu("kolibri1.attention.key_length", HD); kvu("kolibri1.attention.sliding_window", WIN); if (VAR != "notop") kvu("kolibri1.attention.indexer.top_k", 0); kvu("general.alignment", 32)
   str("kolibri1.attention.kv_source_map"); u32(9); u32(5); u64(NL); u32(0); u32(1); u32(1)
   str("kolibri1.rope.freq_base"); u32(6); out(0); out(64); out(28); out(70)       # 10000 as binary32
   for (k = 0; k < NT; k++) { str(NAME[k]); nd = 1 + (D1[k] > 0) + (D2[k] > 0); u32(nd); u64(D0[k]); if (D1[k]) u64(D1[k]); if (D2[k]) u64(D2[k]); u32(TY[k]); u64(OFF[k]) }
@@ -103,10 +103,22 @@ BEGIN {
   want("sel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
   want("keep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
   want("mask.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", ((c <= s && c > s - WIN) ? 0 : -1e9) > W; close(W)
+  want("selw.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
+  want("keepw.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
+  want("zcachew.f32", "vals"); for (c = 0; c < NKV * HD * 64; c++) printf "0\n" > W; close(W)
   want("maskg.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", (c <= s ? 0 : -1e9) > W; close(W)
   want("cos.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < HD / 2; c++) printf "%.9g\n", cos(s / 10000 ^ (c / (HD / 2))) > W; close(W)
   want("sin.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < HD / 2; c++) printf "%.9g\n", sin(s / 10000 ^ (c / (HD / 2))) > W; close(W)
   want("zcache.f32", "vals"); for (c = 0; c < NKV * HD * 64; c++) printf "0\n" > W; close(W)
+  # a run that goes round the ring of 64 slots twice (136 steps, the most this toy takes; caches of 192): the tables of the ring and of the indexed caches, not in the manifest. A slot holds
+  # the last position ps <= s with ps % 64 == c, if there is one, and is seen when that is in the window
+  NS = 136
+  W = T "/want/L_selw.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s % 64) > W; close(W)
+  W = T "/want/L_keepw.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s % 64) > W; close(W)
+  W = T "/want/L_mask.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) { for (ps = s; ps >= 0 && ps % 64 != c; ps--) ; printf "%s\n", ((ps >= 0 && s - ps < WIN) ? 0 : -1e9) > W } close(W)
+  W = T "/want/L_sel.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 192; c++) printf "%d\n", (c == s) > W; close(W)
+  W = T "/want/L_keep.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 192; c++) printf "%d\n", (c != s) > W; close(W)
+  W = T "/want/L_maskg.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 192; c++) printf "%s\n", (c <= s ? 0 : -1e9) > W; close(W)
 }'
 awk '{ printf "\\%03o", $1; if (NR % 512 == 0) printf "\n" } END { printf "\n" }' "$T/bytes.txt" | while IFS= read -r line; do printf "$line"; done > "$1"
 rm "$T/bytes.txt"
@@ -133,7 +145,17 @@ before=$(cat "$T/fails")
 printf '3 0\n7\n' > "$T/ids.txt"
 if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 7 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
 [ "$(cat "$T/out.txt")" = "steps 5 prompt 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the fourteen tables"
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the seventeen tables"
+# the ring gone round: 136 steps (the most an indexed layer of this toy sees whole) with caches of 192 positions
+before=$(cat "$T/fails"); mkdir "$T/xl"
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt"; then
+  for f in selw keepw mask sel keep maskg; do
+    if [ -f "$T/xl/$f.f32" ]; then od -A n -v -t fF "$T/xl/$f.f32" | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got.txt" || true; else : > "$T/got.txt"; fi
+    r=$(paste "$T/got.txt" "$T/want/L_$f.f32" | awk -v n="$(wc -l < "$T/want/L_$f.f32")" 'NF != 2 { bad = "a line of " NF " fields"; exit } $1 - $2 != 0 { bad = "value " NR ": " $1 ", wanted " $2; exit } END { if (bad != "") print bad; else if (NR != n) print NR " values, wanted " n; else print "ok" }')
+    if [ "$r" != ok ]; then echo "FAIL $f.f32 of 136 steps: $r"; fail=1; echo x >> "$T/fails"; fi
+  done
+else echo "FAIL inputs of 136 steps: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: 136 steps, twice round a ring of 64 slots: the ring's tables and the indexed caches' as awk has them"
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
 got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
@@ -181,6 +203,12 @@ refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad
 refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
 refuse "a seed that is not a number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 x
 refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65
+refuse "a step more than an indexed layer sees whole" kolibri-context 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 137
+toy "$T/v.gguf" notop
+refuse "no indexer.top_k in the metadata" kolibri-meta 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64
+# a window of 65 keys makes a ring of 128 slots, not 64
+toy "$T/v.gguf" w65
+if "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64 5 > "$T/out.txt" 2> "$T/err.txt" && [ "$(wc -c < "$T/r/selw.f32" | tr -d ' ')" = 2560 ] && [ "$(wc -c < "$T/r/mask.f32" | tr -d ' ')" = 2560 ] && [ "$(wc -c < "$T/r/zcachew.f32" | tr -d ' ')" = 8192 ]; then echo "ok   a window of 65 keys: a ring of 128 slots"; else echo "FAIL a window of 65 keys: the ring's tables are not 128 slots wide: $(head -c 200 "$T/err.txt")"; fail=1; fi
 toy "$T/v.gguf" v8
 refuse "an embedding that is not a multiple of 64 rows" kolibri-tensor 1 "$B" weights "$T/v.gguf" "$T/r"
 refuse "ids from past the file's end" kolibri-read 1 "$B" ids "$T/x/idtab.f32" 6
