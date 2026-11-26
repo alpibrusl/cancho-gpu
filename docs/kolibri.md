@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first step, 24 tokens a second)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -423,3 +423,90 @@ The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` 
 
 * **Not done:** more than one question and one answer (earlier turns, tool calls and their responses are in the template and not in `prompt`); the answer is printed when the run is over, not as it is written; the reasoning is not separated from the answer; contexts past 2,184 positions; no server, and nothing of `docs/serving.md`'s speed work (this model's file has no draft head); the first token takes 19 s every run, since the weights are read and the programs compiled each time; `min_p` and a repetition penalty (neither set in the file). **The model's answers were read, not scored**: three prompts.
 * **Still open from section 15**: a path with `..` in it stops `kolibri_gpu` and `cancho-gpu` with an illegal instruction. The script makes its own paths absolute before it passes them on, so the command does not reach it; a hand-typed call still does. **Fixed since** (`runtime.md` section 11).
+
+## 17. From a command to a model server for cancho-code and cancho-agent (plan, 2026-11-26)
+
+**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 is built (17.5).
+
+### 17.1 What the two clients send **[read from their sources, 2026-11-26]**
+
+| | cancho-code (`src/cancho_agent.cho`, `src/ollama.cho`) | cancho-agent (`src/openai.cho`, `src/model.cho`) |
+|---|---|---|
+| route | Ollama's `POST /api/generate`, plain HTTP, a literal IPv4 address, port 11434 by default | OpenAI's `POST /v1/chat/completions` |
+| request | `model`, `prompt` (its primer and the task as one text), `stream: false`, `think: false`, `options: {num_ctx, temperature: 0.2, num_predict}`. No `system`, no `messages`: **the server writes the chat template** | `model`, `max_tokens`, `messages` (system, user, assistant with `tool_calls`, tool with `tool_call_id`), `tools` (JSON schemas). No `stream`, no sampling option |
+| answer read | `response`, `done_reason` (`length` is retried), `prompt_eval_count`, `eval_count`; one body, by `Content-Length` or chunked | `choices[0].message.content` and `.tool_calls[].function.{name, arguments}` (**arguments a JSON string**), `finish_reason`, `usage` |
+| sizes | **the primer is 5,500 tokens by its documentation and was 10,666 Qwen tokens in its M8 runs**, prompts of about 11,000 with `num_ctx` 16,384; `num_predict` to 8,192 | a system message, a user message and at most four tool turns in its live program: hundreds of tokens |
+| waits | 30 s for the response's head after the request is sent, 30 s between bytes, 1,800 s an attempt | 120 s in its live programs |
+| what repeats | the primer, the same bytes at the head of every request | the conversation so far, a turn longer each time |
+
+* **cancho-code never sends a tool or a second turn**: it reads a program out of the text. What it needs is a long prompt, most of it the same as the last request's.
+* **cancho-agent's live programs call port 443 with TLS, hard-coded**: a local plain-HTTP server is not reachable from them as they are. That is a change in cancho-agent, not here, and it is not made by this plan.
+* **A wait of 30 s for the head** is shorter than a first answer can take here. The server must send its status line and headers as soon as the request is read, and the body chunked when it is done.
+
+### 17.2 What a step costs now **[measured, 2026-11-26, M4 Max; `CANCHOGPU_PROFILE`, the shim's own counters]**
+
+One prompt of 44 tokens and 34 greedy tokens after it (`scripts/kolibri --greedy --effort none`), 78 steps:
+
+| | |
+|---|---|
+| a step on the clock | about 78 ms (section 15; 82 tokens in 7 s again today) |
+| of it, the host waiting for the GPU | **53.6 ms**, in 49 waits: one read-back a layer for the experts the router chose, and the last |
+| of that, the GPU working | 47.2 ms |
+| the rest, about 22 ms | the host between the waits: `on_device` looks through every table of the session for every parameter of every program, each step (2,559 programs, 2,064 tables) **[read, not timed alone]** |
+
+The GPU's time by kernel (`CANCHOGPU_PROFILE=2`, every launch alone, 55 steps, 2,560 launches a step, 50.5 ms a step):
+
+| | launches a step | each | of the step |
+|---|---|---|---|
+| an expert's `gate` and `up` (512 x 2,560, 4-bit) | 672 | 19 us | 26% |
+| q, k and v (6,144 x 2,560) | 50 | 140 us | 14% |
+| the attention's output (2,560 x 7,168 or 6,144) | 50 | 150 us | 15% |
+| an expert's `down` | 336 | 12 us | 8% |
+| the head (128,000 x 2,560, f32) | 1 | 2.6 ms | 5% |
+| everything else: norms, adds, the router, the caches, the softmax | about 1,450 | 3 to 40 us | 32% |
+
+* **No kernel is the cost: the count is.** A third of the step is 1,450 launches of 3 to 40 microseconds, and another third is 1,008 expert products of 12 to 19: at these sizes a launch costs what it costs whatever it computes (section 8 measured an expert's product at 3 microseconds when nothing else runs between).
+* **The dense products are 30% and are one row each**: with several tokens in a pass they are read once for all of them.
+* **A prompt costs what an answer costs**, 78 ms a token: the head is the only thing a prompt's step could leave out. **cancho-code's primer would take 7 to 14 minutes**, every request.
+
+### 17.3 What stands between here and there
+
+| | now | needed |
+|---|---|---|
+| positions | 2,184 (no indexer) | 16,384 for cancho-code as it is run. To there the indexer chooses 2,048 keys a query among all of them, plus the first 8 and the last 128; its pool, a second choice by blocks of 16, starts only past 16,384 keys and is left out |
+| a run's tables | written by the host before the run, `steps x positions` for the selectors and the masks: 20 MB each at 2,184, **1 GB each at 16,384** | none that grows with the square: the selectors and masks computed in the step from the position |
+| a conversation | one a process: the ids and the draws are files read at the start | new ids at any request, a position to go back to |
+| the load | 19 s every run | once |
+| a prompt's speed | 13 tokens a second | several tokens a pass; and the prefix of the last request not computed again |
+| an answer's speed | 13 to 15 tokens a second | the host's 22 ms gone, fewer launches |
+| the wire | none | `/api/generate`, `/v1/chat/completions`, tools in the template and tool calls read out of the answer |
+
+### 17.4 Stages, each a gate
+
+* **S1. A step that takes a conversation as it comes.** The selectors and the masks are computed from the position by kernels (no `sel.f32`, `keep.f32`, `maskg.f32`, `mask.f32`, no accumulator of ids); the prompt's ids and the sampler's draws are a request's inputs, not files; a new request word **`seek N`** in both sessions puts the repetition count, and so every table's block, at `N`. A session then answers any number of conversations one after another, and can go back to a position: free while the sliding layers' ring still holds the window before it (the ring is made longer than the window by what a turn may take back). `scripts/kolibri` runs on it. **Gate**: `tests/kstep.sh` and `tests/kolibri_host.sh` as they are against awk, plus two conversations in one session and a seek back, each the fresh session's numbers; mutants. **By hand**: sections 15 and 16's runs again, the same ids.
+* **S2. The host's 22 ms** **[built, 17.5: it was 34]**. The tables of a parameter found once at setup, not at every step. **Gate**: `tests/session.py`'s cases unchanged. **Measured**: the step before and after.
+* **S3. The server.** `cancho-gpu-kolibri`: the session's engine in a program that listens (the code of `device/metal-session-main.cho` as a module, the HTTP of `device/serve-main.cho`), the model loaded once, one request at a time. `/api/generate` (the prompt as one user message of the template), `/v1/chat/completions` (system, user and assistant turns), `/health`; headers at once and the body chunked; `num_predict` and `max_tokens`; the reasoning apart from the answer. The last request's ids are kept: a request that starts with them continues from where they part (S1's seek). **Gate** (no model: the toy GGUF on the CPU session's engine): the routes, the template's turns against recorded bytes, the refusals, the prefix kept and not kept. **By hand**: cancho-code's own stub test pointed at it, and one real task.
+* **S4. Past 2,184 positions.** The indexer's choice of keys in the indexed layers; an indexed cache written a row at a time, not whole (9 MB a step at 2,240 would be 66 MB at 16,384, eight caches); the reference gets the indexer too. **Gate**: the small model with a choice of 3 keys among 16 against awk. **By hand**: the reference on one text past 2,184, layer by layer.
+* **S5. A prompt several tokens a pass.** The dense products as products of rows, the attention causal inside the pass (the kernels have a batch size that is 1 today), the experts still one launch a token each. Reckoned from 17.2: the dense third and the small launches shared, the experts not: **about 20 ms a token, 50 a second, unverified**. **Gate**: the pass against the step, to the bit where the sums allow.
+* **S6. Tools.** The template's tool descriptions and tool turns, written out as section 16 wrote the rest; `tool_calls` read out of the answer's text; `finish_reason: "tool_calls"`. **Gate**: recorded bytes from the model's template; made answers parsed.
+* **S7. Fewer launches a token.** An expert's `gate`, `up` and activation as one kernel and `down` with its weight (section 10 left it); the six experts' launches overlapped. Aimed at 17.2's two thirds.
+
+**Order**: S1 first, because S3 to S5 stand on it. S2 is small and can go with it. Then S3: with S1 to S3 cancho-agent's kind of request works and cancho-code's fits when its primer and task are under 2,184 tokens, which they are not. **cancho-code needs S4 and S5 as well**: until then its primer does not fit, and after S4 alone it would fit and take minutes.
+
+**What "good" would be, said before it is measured**: cancho-code's median request against Qwen2.5-1.5B on this machine was 3.7 s, its longest 169 s (its M8 note; no figure for the 27B was found). Reckoned for Kolibri after S5 and S3's kept prefix: a new task of 300 tokens after a kept primer 6 s, an answer of 500 tokens 30 to 40 s. **The first request after a start still pays the whole primer once**: 2 to 4 minutes at S5's reckoned speed, unless the kept prefix is also written to a file, which is not in this plan.
+
+**Not in this plan**: more than one request at a time; the indexer's pool (contexts past 16,384); streaming in cancho-code or cancho-agent (neither reads a stream); a draft head (the file has none); TLS; cancho-agent's hard-coded port.
+
+### 17.5 S2, built first: the host's share was 34 ms, not 22 **[measured, 2026-11-26, M4 Max]**
+
+`device/metal-session-main.cho`: `tables_by_program` lists each program's tables once after `setup`, and `on_device` looks through that list for a parameter instead of through all the session's tables. Nothing else changes: the same binding, the same read-back, the same order.
+
+| a greedy step after a prompt of 43 tokens, 34 steps, a request each, two runs each | median | range |
+|---|---|---|
+| before (`dd14e2e`) | 75.8 and 75.7 ms | 74.8 to 78.3 |
+| after | **42.2 and 40.7 ms** | 39.7 to 44.6 |
+
+* **13 tokens a second become 24**, and the 34 ids are the same ones. A prompt's token costs the same 42 ms.
+* **17.2 reckoned the host at 22 ms from a profiled run; it was 34.** The profiled run's 53.6 ms of waiting included the profile's own printing at each of 49 waits.
+* **What holds it**: the gate has no Metal GPU, so by hand on the Metal session: `tests/kstep.sh`, `tests/pick.sh`, `tests/moe.sh` and `tests/session.py --metal` pass as before. **Mutants, by hand, four, all killed** by `tests/pick.sh` and `tests/kstep.sh` on the Metal session: every table in the first program's list; a table in the list of the program after its own; the parameter not compared; the last table left out.
+* **Not done**: the CPU session (`src/session.cho`) binds its tables its own way and was not looked at; the 42 ms that are left were not profiled again.
