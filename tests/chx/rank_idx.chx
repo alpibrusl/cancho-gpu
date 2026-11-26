@@ -1,0 +1,42 @@
+// moe_rank.chx with the chunk's width b a parameter (docs/kolibri.md K6b: the places of a vocabulary's 2,000 chunk maxima, and 2,000 is not a multiple of 64): each of the nq * b entries' place in a
+// stable sort from the largest, that is the entries larger than it plus the equal ones with a smaller index (ic, ir: 0 .. nq * b - 1, the host's). No two entries share a place.
+algo rank_idx(nq, b)
+  in  yc:  f32[nq * b, 1]
+  in  yr:  f32[nq, b]
+  in  ic:  f32[nq * b, 1]
+  in  ir:  f32[nq, b]
+  out cnt: f32[nq * b]
+{
+  grid q over nq
+  let acc = zeros f32[b, b]
+  let acc = for p in 0 .. nq with acc {
+    let c  = load yc[q * b, 0 ; b, 1]
+    let z  = zeros f32[b, b]
+    let cb = z + c
+    let r  = load yr[p, 0 ; 1, b]
+    let d  = cb - r
+    let zn = zeros f32[b, b]
+    let dn = zn - &d
+    let gt = step dn
+    let lt = step d
+    let o  = zeros f32[b, b]
+    let on = o + 1.0
+    let ne = &gt + lt
+    let eq = on - ne
+    let ci = load ic[q * b, 0 ; b, 1]
+    let zi = zeros f32[b, b]
+    let ib = zi + ci
+    let ri = load ir[p, 0 ; 1, b]
+    let di = ib - ri
+    let ea = step di
+    let ti = eq * ea
+    let a2 = acc + gt
+    yield a2 + ti
+  }
+  let s = rowsum acc
+  store s -> cnt[q * b]
+}
+
+schedule rank_idx for apple-m-series { threads 64 }
+schedule rank_idx for nvidia-ada     { threads 64 }
+schedule rank_idx for amd-cdna3      { threads 64 }

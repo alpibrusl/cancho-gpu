@@ -1,9 +1,10 @@
 #!/bin/sh
 # tests/kstep.sh [session binary] -- models/kolibri_step.model (docs/kolibri.md K4) as a small model, on the CPU session (the gate) or, given its binary, the Metal one (by hand): ten layers 64 wide
-# with 4 query heads over 2 key/value heads of 128, 64 experts of 32 of which 2 are taken, a head of 128, every file text, four steps. Layers 0 and 1 have the dense MLP, 4 is indexed (no positions,
+# with 4 query heads over 2 key/value heads of 128, 64 experts of 32 of which 2 are taken, a head of 2,048, every file text, four steps. Layers 0 and 1 have the dense MLP, 4 is indexed (no positions,
 # its keys and values rounded to NVFP4) and 9 reads layer 4's caches; the mask's window is 2 keys, so it bites from the third step. Held to awk's double arithmetic of the definition: the row after
 # the last layer at every step, and after the last step the row after every layer and the logits.
-# Then the same model generating (GEN=1): from a prompt of two ids, the id each step chooses, awk's arg max over awk's logits.
+# Then the same model generating (GEN=1): from a prompt of two ids, the id each step chooses, awk's arg max over awk's logits; and sampling (SAMP=1): the id each step draws, awk's sampler of
+# the same definition with the same four uniform numbers.
 # First fp4_round.chx alone on values that sit on its thresholds, where tests/kernels.py's made-up table and values never are: ties go to even, the scale stays in [2^-9, 448].
 # KSTEP_MODEL=<file> runs another model file: the mutants of the model, by hand.
 set -eu
@@ -57,8 +58,8 @@ mutant() { # name, sed expression
 mutant "the largest magnitude is 5" 's|let w7  = s7 \* 2.0|let w7  = s7 * 1.0|'
 mutant "a value at 0.75 goes down" 's|let b2  = &ng + 0.75|let b2  = \&ng + 0.7500001|'
 
-D=64; NQ=4; NKV=2; NE=64; EH=32; K=2; NS=4; WIN=2; NL=10; V=128
-awk -v D=$D -v NQ=$NQ -v NKV=$NKV -v NE=$NE -v EH=$EH -v K=$K -v NS=$NS -v WIN=$WIN -v NL=$NL -v V=$V -v W="$T/w" -v X="$T/x" '
+D=64; NQ=4; NKV=2; NE=64; EH=32; K=2; NS=4; WIN=2; NL=10; V=2048; KC=24; TOPK=5; INVT=1.5; PC=0.4
+awk -v D=$D -v NQ=$NQ -v NKV=$NKV -v NE=$NE -v EH=$EH -v K=$K -v NS=$NS -v WIN=$WIN -v NL=$NL -v V=$V -v KCH=$KC -v TOPK=$TOPK -v INVT=$INVT -v PC=$PC -v W="$T/w" -v X="$T/x" '
 function rne(v,   f, d) { f = int(v); d = v - f; if (d > 0.5 || (d == 0.5 && f % 2 == 1)) f++; return f }
 function e4m3(x,   e, p) { if (x < 2^-9) x = 2^-9; if (x > 448) x = 448; e = -9; p = 2^-9; while (p * 2 <= x) { p *= 2; e++ } if (e < -6) return rne(x / 2^-9) * 2^-9; x = rne(x / p * 8) / 8 * p; return x > 448 ? 448 : x }
 function e2m1(m,   st) { if (m > 6) m = 6; st = m < 2 ? 0.5 : (m < 4 ? 1 : 2); return rne(m / st) * st }
@@ -152,8 +153,45 @@ BEGIN {
     for (l = 0; l < NL; l++) layer(l, s)
     rms(x, 999, D, fnv); nxt = 0; best = -1e30; for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; if (z > best) { best = z; nxt = r } }
     printf "%d\n", nxt > (X "/want_ids.txt") }
+  # SAMP=1 (section 14): the same, the id drawn. The KCH chunks of 64 with the largest maxima, of their candidates those with fewer than TOPK larger ones, of those the ones whose running mass from
+  # the smallest is over PC of the whole, and a uniform number through the cumulative sums in the gathered order.
+  for (r = 0; r < V / 64; r++) printf "%d ", r > (W "/ciota.f32"); for (r = 0; r < KCH; r++) { printf "%d ", r > (W "/cslot.f32"); for (c = 0; c < KCH; c++) printf "%d ", (c <= r) > (W "/ctri.f32") }
+  for (r = 0; r < KCH * 64; r++) printf "0 " > (W "/czero.f32"); for (r = 0; r < 64; r++) for (c = 0; c < 64; c++) printf "%d ", (c <= r) > (W "/tri64.f32")
+  # the uniform numbers: three given, and the last chosen by draw() to fall inside the mass of a candidate top-p dropped (see there)
+  split("0.03125 0.5 0.96875 -1", UU, " ")
+  for (s = 0; s < NS; s++) { id = s < 2 ? PID[s] : nxt; for (c = 0; c < D; c++) x[c] = wv(998, D, id, c, 0)
+    for (l = 0; l < NL; l++) layer(l, s)
+    rms(x, 999, D, fnv); am = 0; for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; LG[r] = z; if (z > LG[am]) am = r }
+    nxt = draw(UU[s + 1]); printf "%d\n", nxt > (X "/want_draws.txt"); if (s == NS - 1) for (r = 0; r < KCH; r++) { printf "%.9g\n", CU[r] > (X "/want_cum.txt"); printf "%d\n", CN[r] > (X "/want_cnt.txt") }
+    printf "%.17g ", (UU[s + 1] < 0 ? ULAST : UU[s + 1]) > (X "/u.f32"); printf "%d %d %d %d %s\n", nxt, am, K1, K2, DROPW > (X "/draw_stats.txt") }
+  # once more with no top-p (PC 0), the 4 largest and the same numbers: there the largest are what is drawn from, and a sampler that keeps one more shows. With top-p it did not, and not with 5
+  # either: the large logits of this head come in equal pairs, the fifth and sixth are equal, and 5 already keeps both (which is the rule: an entry equal to the last kept stays)
+  PC = 0; TOPK = 4; UU[NS] = ULAST
+  for (s = 0; s < NS; s++) { id = s < 2 ? PID[s] : nxt; for (c = 0; c < D; c++) x[c] = wv(998, D, id, c, 0)
+    for (l = 0; l < NL; l++) layer(l, s)
+    rms(x, 999, D, fnv); for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; LG[r] = z }
+    nxt = draw(UU[s + 1]); printf "%d\n", nxt > (X "/want_draws_k.txt"); if (s == NS - 1) for (r = 0; r < KCH; r++) printf "%.9g\n", CU[r] > (X "/want_cum_k.txt") }
 }
-function hd(r, c) { return ((r * 29 + c * 13) % 31 - 15) / 32 + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) / 64 }'
+function draw(uu,   dj, lk, q, c, r, best, used, n, j, i, done, gmax, nk, mm, mmax, tot, t, rs, tl, lc, col) {
+  for (q = 0; q < V / 64; q++) { cmx[q] = LG[q * 64]; for (c = 1; c < 64; c++) if (LG[q * 64 + c] > cmx[q]) cmx[q] = LG[q * 64 + c] }
+  for (r = 0; r < KCH; r++) { best = -1; for (q = 0; q < V / 64; q++) if (!(q in used) && (best < 0 || cmx[q] > cmx[best])) best = q; used[best] = 1; ORD[r] = best }
+  n = KCH * 64; for (j = 0; j < n; j++) { Y[j] = LG[ORD[int(j / 64)] * 64 + j % 64] * INVT; Z[j] = -1e9 }
+  K1 = 0; gmax = -1e30; for (j = 0; j < n; j++) { done = 0; for (i = 0; i < n && done < TOPK; i++) if (Y[i] > Y[j]) done++; if (done < TOPK) { Z[j] = Y[j]; KL[K1++] = j; if (Y[j] > gmax) gmax = Y[j] } }
+  mmax = 0; for (i = 0; i < K1; i++) { mm = 0; for (j = 0; j < K1; j++) if (Z[KL[j]] <= Z[KL[i]]) mm += exp(Z[KL[j]] - gmax); M[i] = mm; if (mm > mmax) mmax = mm }
+  K2 = 0; for (r = 0; r < KCH; r++) CM[r] = 0; for (c = 0; c < n; c++) E[c] = 0
+  for (i = 0; i < K1; i++) if (M[i] > PC * mmax) { E[KL[i]] = exp(Z[KL[i]] - gmax); CM[int(KL[i] / 64)] += E[KL[i]]; K2++ }
+  tot = 0; for (r = 0; r < KCH; r++) { tot += CM[r]; CU[r] = tot }
+  # uu < 0: the number is chosen so that the target falls in the middle of where the largest candidate top-p dropped would lie, had it been kept (one that lies before some kept candidate in the gathered order: past the last there is no target): a step that counts columns in the candidates
+  # before top-p then stops at that column, and the right one does not. A multiple of 1/4096, exact in f32. (A mutant of the model file that did this drew the same ids until this was here.)
+  if (uu < 0) { lk = -1; for (i = 0; i < K1; i++) if (E[KL[i]] > 0 && KL[i] > lk) lk = KL[i]; dj = -1; for (i = 0; i < K1; i++) if (E[KL[i]] == 0 && KL[i] < lk && (dj < 0 || Z[KL[i]] > Z[dj])) dj = KL[i]
+    if (dj < 0) uu = 0.3125; else { r = int(dj / 64); lc = (r > 0 ? CU[r - 1] : 0); for (c = r * 64; c < dj; c++) lc += E[c]; uu = int((lc + exp(Z[dj] - gmax) / 2) / tot * 4096 + 0.5) / 4096; if (uu >= 1) uu = 4095 / 4096 }
+    ULAST = uu; DROPW = (dj < 0 ? 0 : exp(Z[dj] - gmax) / tot) }
+  t = uu * tot; rs = 0; for (r = 0; r < KCH; r++) if (CU[r] < t) rs++
+  for (r = 0; r < KCH; r++) { tl = CM[r] - CU[r] + t; lc = 0; CN[r] = 0; for (c = 0; c < 64; c++) { lc += E[r * 64 + c]; if (lc < tl) CN[r]++ } }
+  return ORD[rs] * 64 + CN[rs]
+}
+# the head: rows 2k and 2k + 1 are near each other, so that large logits come in pairs inside a chunk of 64 (a candidate top-p drops can then lie before one it keeps)
+function hd(r, c) { return ((int(r / 2) * 29 + c * 13) % 31 - 15) / 32 + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) / 64 }'
 run() { # the model file's extra arguments
   { i=0; while [ $i -lt $NS ]; do echo 1; i=$((i + 1)); done; echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$T/x" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$V BN=32 T=64 NS=$NS L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
   head -n $NS "$T/out.txt" | head -c 200000 | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got_ans.txt" || true
@@ -175,7 +213,20 @@ run GEN=1 SAVE=0
 same "generating from two ids: the id each step chose, exactly" "$T/got_ans.txt" "$T/x/want_ids.txt" 0
 if [ -f "$T/x/ids_out.f32" ]; then col "$T/x/ids_out.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
 same "the same ids collected on the device" "$T/got.txt" "$T/x/want_ids.txt" 0
-# the four ids must differ and lie in both 64-entry chunks of the vocabulary, or a step that ignores its id, or an arg max that looks at the first chunk only, would pass
-if [ "$(sort -u "$T/x/want_ids.txt" | wc -l)" -lt 2 ] || [ "$(awk '$1 < 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ] || [ "$(awk '$1 >= 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ]; then echo "FAIL the reference's four ids do not differ or are all in one chunk: $(tr '\n' ' ' < "$T/x/want_ids.txt")"; fail=1; fi
+# the four ids must differ and lie in more than one 64-entry chunk of the vocabulary, not all in the first, or a step that ignores its id, or an arg max that looks at the first chunk only, would pass
+run GEN=1 SAMP=1 SAVE=1 KC=$KC TOPK=$TOPK CB=16 PC=$PC INVT=$INVT
+same "sampling from two ids (temperature 2/3, the 5 largest, top-p 0.6): the id each step drew, exactly" "$T/got_ans.txt" "$T/x/want_draws.txt" 0
+# four draws tell little of a distribution (four mutants of the model file drew the same four): so also, at the last step, the gathered chunks' cumulative masses and every chunk's count of columns before the target
+if [ -f "$T/x/cum.f32" ]; then col "$T/x/cum.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
+same "the cumulative masses of the 24 gathered chunks at the last step" "$T/got.txt" "$T/x/want_cum.txt"
+if [ -f "$T/x/cnt.f32" ]; then col "$T/x/cnt.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
+same "the columns before the target in each gathered chunk, exactly" "$T/got.txt" "$T/x/want_cnt.txt" 0
+run GEN=1 SAMP=1 SAVE=1 KC=$KC TOPK=4 CB=16 PC=0.0 INVT=$INVT
+same "sampling with no top-p and the 4 largest: the id each step drew, exactly" "$T/got_ans.txt" "$T/x/want_draws_k.txt" 0
+if [ -f "$T/x/cum.f32" ]; then col "$T/x/cum.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
+same "its cumulative masses at the last step" "$T/got.txt" "$T/x/want_cum_k.txt"
+# the draws must not all be the arg max, top-p must drop something somewhere and keep more than one somewhere, and both at the last step, whose masses are compared: or a sampler that takes the largest, or one with no top-p, would pass
+if [ "$(awk '$1 != $2' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 < $3' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 > 1' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(tail -1 "$T/x/draw_stats.txt" | awk '{ print ($4 < $3 && $4 > 1 && $5 > 0.002) }')" != 1 ]; then echo "FAIL the reference's draws do not exercise the sampler (id, arg max, kept by top-k, kept by top-p, the dropped candidate's share of the mass): $(tr '\n' ';' < "$T/x/draw_stats.txt")"; fail=1; fi
+if [ "$(sort -u "$T/x/want_ids.txt" | wc -l)" -lt 2 ] || [ "$(awk '{ print int($1 / 64) }' "$T/x/want_ids.txt" | sort -u | wc -l)" -lt 2 ] || [ "$(awk '$1 >= 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ]; then echo "FAIL the reference's four ids do not differ or are all in one chunk: $(tr '\n' ' ' < "$T/x/want_ids.txt")"; fail=1; fi
 [ "$fail" -eq 0 ] && echo "kstep: ok"
 exit $fail

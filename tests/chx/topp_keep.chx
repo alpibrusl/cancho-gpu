@@ -1,0 +1,24 @@
+// Top-p's filter (docs/kolibri.md K6b): a candidate stays where its sum m (topp_mass.chx) is over c times the whole, c = 1 - p and the whole the largest m; the others get -lo, as the candidates
+// samp_keep.chx dropped already have (their m is 0). The largest candidate always stays.
+algo topp_keep(n, c, lo)
+  in  m:  f32[1, n]
+  in  z:  f32[1, n]
+  out zk: f32[1, n]
+{
+  let mt  = load m
+  let tot = rowmax &mt
+  let th  = tot * c
+  let d   = mt - th
+  let kp  = step d
+  let zt  = load z
+  let a   = zt * &kp
+  let o   = zeros f32[1, n]
+  let on  = o + 1.0
+  let off = on - kp
+  let big = off * lo
+  store a - big -> zk
+}
+
+schedule topp_keep for apple-m-series { threads 256 }
+schedule topp_keep for nvidia-ada     { threads 256 }
+schedule topp_keep for amd-cdna3      { threads 256 }

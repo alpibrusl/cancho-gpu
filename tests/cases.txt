@@ -685,3 +685,22 @@ tests/chx/matvec_q4_rows.chx n=7168 k=2560
 tests/chx/matvec_q4_rows.chx n=2560 k=6144
 tests/chx/dec_post_g.chx r=2 nq=6 nkv=2 --run
 tests/chx/fp4_round.chx r=3 n=64 --run
+# K6b (docs/kolibri.md section 14): a sampler for 128,000 columns. rank_idx: the places of the 2,000 chunk maxima; rank_onehot: the first 144 as a matrix; gather_chunks: those chunks by a product;
+# topp_mass and topp_keep: top-p as a weighted count over the 9,216 candidates; and S3's kernels at these sizes. Held to float64 by tests/kernels.py and to awk's sampler by tests/kstep.sh.
+tests/chx/rank_idx.chx nq=125 b=16
+tests/chx/rank_onehot.chx n=2000 k=144 bk=8
+tests/chx/gather_chunks.chx k=144 n=2000 bk=8 invt=1
+tests/chx/topp_mass.chx nq=144
+tests/chx/topp_keep.chx n=9216 c=0.01 lo=1000000000
+tests/chx/samp_rank.chx nq=144
+tests/chx/samp_keep.chx n=9216 k=128 bm=64 lo=1000000000
+tests/chx/samp_sum.chx r=1 nq=144 G=2 invt=1
+tests/chx/samp_cum.chx r=1 nq=144 bn=24
+tests/chx/samp_pick.chx r=1 nq=144
+tests/chx/samp_local.chx r=1 nq=144 G=2 invt=1
+tests/chx/samp_tok.chx r=1 nq=144
+tests/chx/rank_idx.chx nq=5 b=16 --run
+tests/chx/rank_onehot.chx n=80 k=8 bk=4 --run
+tests/chx/gather_chunks.chx k=8 n=20 bk=4 invt=0.8 --run
+tests/chx/topp_mass.chx nq=3 --run
+tests/chx/topp_keep.chx n=192 c=0.7 lo=5 --run

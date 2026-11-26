@@ -163,6 +163,11 @@ axpy_slot n=2560 bn=256 k=6 j=5
 group_sum k=3584 G=32
 dec_post_g r=1 nq=48 nkv=4
 fp4_round r=4 n=128
+rank_idx nq=125 b=16
+rank_onehot n=2000 k=144 bk=8
+gather_chunks k=144 n=2000 bk=8 invt=1
+topp_mass nq=144
+topp_keep n=9216 c=0.01 lo=1000000000
 f16:conv_cols t=5 f=3 c=32 wp=8 r=40
 vae_bias r=64 c=64
 vae_bias_res r=64 c=64
