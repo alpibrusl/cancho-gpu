@@ -3,9 +3,9 @@ edition 5;
 // `kolibri_gpu` -- the host side of Kolibri 1.1's cached step (models/kolibri_step.model; docs/kolibri.md section 12, stage K5), in cancho: the files the session reads, from the model's GGUF.
 //
 //     kolibri_gpu weights <gguf> <dir>
-//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps> [<seed>]]
+//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps>]
+//     kolibri_gpu draws   <seed> <count>
 //     kolibri_gpu argmax  <f32 file>
-//     kolibri_gpu ids     <f32 file> <from>
 //
 // `weights` writes what the model file calls W, a tensor a chunk at a time. For layer i: the norms' weights copied (a<i>.norm.f32, a<i>.qn.f32, a<i>.kn.f32, a<i>.pn.f32, m<i>.ffn_norm.f32,
 // m<i>.post_norm.f32), the router (m<i>.route.f32, m<i>.bias.f32), and each 4-bit matrix NAME as NAME.q4 (its codes two a byte, low nibble first, in the matrix's order: ggml keeps a block of 32 as
@@ -17,11 +17,10 @@ edition 5;
 // sel.f32, keep.f32, maskg.f32 and zcache.f32 over `positions` (their caches' length, a multiple of 64 no shorter than the ids); for the sliding layers, whose caches are a ring (section 15),
 // selw.f32, keepw.f32, mask.f32 and zcachew.f32 over the file's window rounded up to a multiple of 64. It refuses more steps than an indexed layer sees whole (`kolibri-context`): the file's
 // `indexer.top_k` and the model's 8 first and 128 last keys, which the file does not carry.
-// For a generating step (GEN=1, section 13) `weights` also writes emb.q4 and emb.s (the embedding matrix, picked by the id), rank.f32, zmk.f32 and one1.f32, and `inputs` idtab.f32 and mtab.f32
-// (the prompt's ids and their mask, a step each), accsel.f32, acckeep.f32, acc0.f32 and id0.f32, for `steps` steps (the ids' count if not given; x0.f32 has rows of zeros past the prompt).
-// For a sampling step (SAMP=1, section 14) `weights` also writes ciota.f32, cslot.f32, czero.f32, ctri.f32 and tri64.f32 (for the file's own top-k made a multiple of 24), and `inputs` u.f32: a uniform number a step
-// from the seed (1 if not given).
-// `ids` prints the whole numbers of a saved ids_out.f32 from an index on, on one line.
+// For a generating step (GEN=1, section 13) `weights` also writes emb.q4 and emb.s (the embedding matrix, picked by the id), rank.f32, zmk.f32 and one1.f32, and `inputs` id0.f32, for `steps`
+// steps (the ids' count if not given; x0.f32 has rows of zeros past the prompt). The ids and their mask are not files: they are each request's numbers (section 17, S1).
+// For a sampling step (SAMP=1, section 14) `weights` also writes ciota.f32, cslot.f32, czero.f32, ctri.f32 and tri64.f32 (for the file's own top-k made a multiple of 24). The step's uniform
+// number is a request's too: `draws` prints the first `count` of a seed, a line each, every digit of it (a number of 24 bits over 2^24, exact in f32).
 // For the command (scripts/kolibri, section 16): `prompt` prints the model's chat template for one user message (a text file), a reasoning effort (none, low, medium, high) and a system message
 // or none; `ends` prints the file's two end tokens (its eos and its padding token) and the most steps of a run; `say` prints the bytes of the quoted line `cancho-gpu detokenize` writes (`dec "..."`).
 // `argmax` prints `argmax <index> value <v> margin <v - the second largest>` for a file of f32: the next token from the session's saved logits.
@@ -819,43 +818,9 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/cos.f32", dir), nst, hd / 2, 4, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), nst, hd / 2, 5, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zcache.f32", dir), nkv * hd, tt, 6, window, base) < 0;
-    // a generating step's: the prompt's ids and their mask a step, the collector's selectors and its empty row, the id before the first
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/accsel.f32", dir), nst, nst, 0, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/acckeep.f32", dir), nst, nst, 1, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/acc0.f32", dir), 1, nst, 6, window, base) < 0;
+    // a generating step's: the id before the first
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/id0.f32", dir), 1, 1, 6, window, base) < 0;
     if bad {
-        return 0 - 1;
-    }
-    s = 0;
-    while s < nst {
-        if s < ns {
-            put32(t, sc + 4 * s, float_of(mem.get(m, ids, s)));
-            put32(t, out + 4 * s, 1.0);
-        } else {
-            put32(t, sc + 4 * s, 0.0);
-            put32(t, out + 4 * s, 0.0);
-        }
-        s = s + 1;
-    }
-    if put(m, t, fs, text.f1(m, t, "$/idtab.f32", dir), true, sc, 4 * nst) < 0 || put(m, t, fs, text.f1(m, t, "$/mtab.f32", dir), true, out, 4 * nst) < 0 {
-        return 0 - 1;
-    }
-    // a sampling step's uniform numbers (section 14), one a step, from the seed: x' = (1103515245 x + 12345) mod 2^31, the number its upper 24 bits over 2^24 (in [0, 1), exact in f32)
-    var x = 1;
-    if arg_count(args) == 8 {
-        x = count_of(t, text.from_bytes(m, t, arg(args, 7)));
-        if x < 0 {
-            return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the seed is a whole number of at most 7 digits"));
-        }
-    }
-    s = 0;
-    while s < nst {
-        x = (1103515245 * x + 12345) % 2147483648;
-        put32(t, sc + 4 * s, float_of(x / 128) / 16777216.0);
-        s = s + 1;
-    }
-    if put(m, t, fs, text.f1(m, t, "$/u.f32", dir), true, sc, 4 * nst) < 0 {
         return 0 - 1;
     }
     io.write_all(io, "steps ");
@@ -925,27 +890,33 @@ fn argmax[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
 }
 
 // The whole numbers of a file of f32 from index `from` on, on one line: the ids a generating session saved.
-fn ids_of[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
-    let name = text.from_bytes(m, t, arg(args, 2));
-    let from = count_of(t, text.from_bytes(m, t, arg(args, 3)));
-    let sc = m[mem.text_slot()];
-    m[mem.text_slot()] = sc + in_cap();
-    let got = fileio.read_at(t, fs, arg(args, 2), 0, sc, in_cap());
-    if from < 0 || got < 4 || got % 4 != 0 || got == in_cap() || from > got / 4 {
-        return err.fail(m, t, "kolibri-read", text.f1(m, t, "cannot read $ as a row of f32 from that index", name));
+// `draws <seed> <count>`: the uniform numbers of a sampling run's steps (section 14), from step 0, a line each. x' = (1103515245 x + 12345) mod 2^31, the number its upper 24 bits over 2^24:
+// in [0, 1) and exact in f32, and printed with all its 24 decimals, so the session reads the same f32.
+fn draws[&m, &t, &i, &a](m: &!m [int], t: &!t [byte], io: &!i Io, args: &a Args) -> [io_write, args] int {
+    var x = count_of(t, text.from_bytes(m, t, arg(args, 2)));
+    let n = count_of(t, text.from_bytes(m, t, arg(args, 3)));
+    if x < 0 || n < 0 {
+        return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the seed and the count are whole numbers of at most 7 digits"));
     }
-    let parts = mem.list(m);
-    var k = from;
-    while k < got / 4 {
-        let x = word_at(t, sc + 4 * k);
-        if !(x >= 0.0) || x > 1000000000.0 || !f32.is_whole(x) {
-            return err.fail(m, t, "kolibri-read", text.f1(m, t, "$ has a value that is not an id", name));
+    let line = m[mem.text_slot()];
+    m[mem.text_slot()] = line + 32;
+    var s = 0;
+    while s < n {
+        x = (1103515245 * x + 12345) % 2147483648;
+        var r = x / 128;
+        t[line] = byte_of(48);
+        t[line + 1] = byte_of(46);
+        var k = 0;
+        while k < 24 {
+            r = r * 10;
+            t[line + 2 + k] = byte_of(48 + r / 16777216);
+            r = r % 16777216;
+            k = k + 1;
         }
-        mem.push(m, parts, text.num(m, t, f32.to_count(x)));
-        k = k + 1;
+        t[line + 26] = byte_of(10);
+        io.write_all(io, t[line..line + 27]);
+        s = s + 1;
     }
-    io.write_all(io, text.bytes(t, text.joined(m, t, parts, " ")));
-    io.write_all(io, "\n");
     return 0;
 }
 
@@ -1112,12 +1083,12 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
     var status = 0 - 2;
     if arg_count(args) == 4 && is_word(arg(args, 1), "weights") {
         status = weights(m, t, io, fs, args);
-    } else if arg_count(args) >= 6 && arg_count(args) <= 8 && is_word(arg(args, 1), "inputs") {
+    } else if arg_count(args) >= 6 && arg_count(args) <= 7 && is_word(arg(args, 1), "inputs") {
         status = inputs(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "argmax") {
         status = argmax(m, t, io, fs, args);
-    } else if arg_count(args) == 4 && is_word(arg(args, 1), "ids") {
-        status = ids_of(m, t, io, fs, args);
+    } else if arg_count(args) == 4 && is_word(arg(args, 1), "draws") {
+        status = draws(m, t, io, args);
     } else if (arg_count(args) == 4 || arg_count(args) == 5) && is_word(arg(args, 1), "prompt") {
         status = prompt(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "ends") {
@@ -1126,7 +1097,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = say(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<seed>]] | argmax <f32 file> | ids <f32 file> <from> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps>] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {

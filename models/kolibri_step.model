@@ -20,8 +20,10 @@
 # An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl.chx: chunks of TS keys, no tile that grows with T). This file has no indexer: a run is at most the positions an
 # indexed layer sees whole (2,184 for Kolibri 1.1; the host refuses more).
 #
-# GEN=1 (with HEAD=1 and L0=0) generates: section 13; it reads emb.q4, emb.s, rank.f32, zmk.f32, one1.f32 of W and idtab.f32, mtab.f32, id0.f32, acc0.f32, accsel.f32, acckeep.f32 of X.
-# SAMP=1 (with GEN=1) draws the id instead of taking the arg max: section 14; it reads ciota.f32, cslot.f32, czero.f32, ctri.f32, tri64.f32 of W and u.f32 of X.
+# GEN=1 (with HEAD=1 and L0=0) generates: section 13; it reads emb.q4, emb.s, rank.f32, zmk.f32, one1.f32 of W and id0.f32 of X. A request is then `N ID MASK`: N steps on the id ID where MASK
+# is 1, on the id the step before chose where it is 0.
+# SAMP=1 (with GEN=1) draws the id instead of taking the arg max: section 14; it reads ciota.f32, cslot.f32, czero.f32, ctri.f32, tri64.f32 of W, and a request is `N ID MASK U`, U the step's
+# uniform number.
 # With SAMP=1, SAVE=1 also writes cum.f32 and cnt.f32.
 # SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, kn<i>.f32, vn<i>.f32 (the step's new rows as cached), o<i>.f32, and
 # idx<i>.f32, wt<i>.f32. F32= F16= I8= (empty) reads and writes every file as text, and D, NQ, NKV, NE, EH, K, FF, BN, V make a small model: tests/kstep.sh, in the gate.
@@ -301,13 +303,14 @@ block ffn(i)
     end
 end
 
-# GEN=1 (section 13): the step's id is the prompt's while its mask is 1 (idtab.f32, mtab.f32: a block a step) and then the id the step before chose; its row is that id's row of the embedding
-# matrix, the codes and scales picked by the id.
+# GEN=1 (section 13): the step's id is the request's when the request's mask is 1 and else the id the step before chose; its row is that id's row of the embedding matrix, the codes and scales
+# picked by the id. The id and the mask are the request's first two numbers after its count (section 17, S1: until then they were tables of a run, idtab.f32 and mtab.f32), so a session takes
+# any ids at any request; with `seek` it starts again, or goes back.
 if GEN
     program cur $CHX/row_mix.chx n=1 bn=1
-    table cur.xt $X/idtab.f32 $NS $F32
+    input cur.xt
     resident cur.xe $X/id0.f32 $F32
-    table cur.m $X/mtab.f32 $NS $F32
+    input cur.m
     program emb $CHX/dq_q4.chx n=1 k=$D bn=1 bk=32
     table emb.wq $W/emb.q4 $V $I8 by cur.y 0
     table emb.ws $W/emb.s $V $F16 by cur.y 0
@@ -388,7 +391,7 @@ if GEN
         link scu.cum -> spk.cum
         link ssm.cs -> spk.cs
         resident spk.iota $W/cslot.f32 $F32
-        table spk.u $X/u.f32 $NS $F32
+        input spk.u
         program slc $CHX/samp_local.chx r=1 nq=$KC G=2 invt=1
         link tpk.zk -> slc.l
         resident slc.mk $W/czero.f32 $F32
@@ -423,23 +426,11 @@ if GEN
         program aid $CHX/amax_id.chx r=1 nq=${V / 64} v1=$V
         link sgm2.gmb -> aid.gm
     end
-    # the ids of the request's steps collected in ids_out.f32
-    program ac $CHX/tok_acc.chx r=1 s=$NS
-    resident ac.acc $X/acc0.f32 $F32
-    if SAMP
-        link aid.tok -> ac.ids
-    else
-        link aid.id -> ac.ids
-    end
-    table ac.sel $X/accsel.f32 $NS $F32
-    table ac.keep $X/acckeep.f32 $NS $F32
     if SAMP
         carry aid.tok -> cur.xe
     else
         carry aid.id -> cur.xe
     end
-    carry ac.y -> ac.acc
-    save ac.y $X/ids_out.f32 $F32
 end
 steps
 # GEN=1 answers the id the step chose. ANS=1 answers the row after the last layer every step; ANS=0 the last layer's experts (K numbers), or that row where the last layer is dense.

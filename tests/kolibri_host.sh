@@ -6,8 +6,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 C="${CANCHO:-cancho}"
-CANCHO="$C" scripts/build-kolibri.sh
-B=build/kolibri_gpu
+# KOLIBRI_GPU=<binary> tests another build of the program and builds nothing: the mutants, by hand
+if [ -z "${KOLIBRI_GPU:-}" ]; then CANCHO="$C" scripts/build-kolibri.sh; fi
+B=${KOLIBRI_GPU:-build/kolibri_gpu}
 T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 fail=0
@@ -33,9 +34,12 @@ if [ "$(tr '\n' ';' < "$T/out.txt")" != "layer 0: its own keys, a dense MLP;laye
 [ "$(cat "$T/fails")" = "$before" ] && echo "ok   weights: $((split_at - 1)) files of a three-layer toy, each as awk has it, and no other"
 before=$(cat "$T/fails")
 printf '3 0\n7\n' > "$T/ids.txt"
-if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 7 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
 [ "$(cat "$T/out.txt")" = "steps 5 prompt 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the seventeen tables"
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the eleven tables"
+# draws: a seed's uniform numbers a line each, every decimal of a number of 24 bits over 2^24; awk prints the same 24 decimals of its own arithmetic
+if [ "$("$B" draws 7 5 2> "$T/err.txt")" = "$(cat "$T/want_draws.txt")" ]; then echo "ok   draws: the five numbers of seed 7, to the last decimal"; else echo "FAIL draws 7 5: $("$B" draws 7 5 2>&1 | head -c 300), wanted $(tr '\n' ' ' < "$T/want_draws.txt")"; fail=1; fi
+if [ "$("$B" draws 7 3)" = "$("$B" draws 7 5 | head -3)" ] && [ "$("$B" draws 8 3)" != "$("$B" draws 7 3)" ] && [ -z "$("$B" draws 7 0)" ] && [ "$("$B" draws 0 2 | wc -l | tr -d ' ')" = 2 ]; then echo "ok   draws: a shorter run is the start of a longer one, another seed is other numbers, none is none"; else echo "FAIL draws: a run's start, another seed or a count of 0"; fail=1; fi
 # the ring gone round: 136 steps (the most an indexed layer of this toy sees whole) with caches of 192 positions
 before=$(cat "$T/fails"); mkdir "$T/xl"
 if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt"; then
@@ -54,8 +58,6 @@ got=$("$B" argmax "$T/w/ones_d.f32" 2>&1)
 if [ "$got" = "argmax 0 value 1.0 margin 0.0" ]; then echo "ok   argmax of equal values is the first"; else echo "FAIL argmax of equal values: $got"; fail=1; fi
 got=$("$B" argmax "$T/w/sl.f32" 2>&1)
 if [ "$got" = "argmax 0 value 0.0 margin none" ]; then echo "ok   argmax of one value"; else echo "FAIL argmax of one value: $got"; fail=1; fi
-got=$("$B" ids "$T/x/idtab.f32" 1 2>&1)
-if [ "$got" = "0 7 0 0" ]; then echo "ok   ids from an index on"; else echo "FAIL ids: $got"; fail=1; fi
 refuse() { # name, rule, status, the command
   name=$1; rule=$2; want=$3; shift 3
   status=0; "$@" > "$T/out.txt" 2> "$T/err.txt" || status=$?
@@ -91,7 +93,11 @@ refuse "positions that are not a number" kolibri-usage 1 "$B" inputs "$T/toy.ggu
 awk 'BEGIN { for (i = 0; i < 65; i++) printf "1 " }' > "$T/bad.txt"
 refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
 refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
-refuse "a seed that is not a number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 x
+refuse "a seed, which inputs no longer takes" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 7
+refuse "a seed that is not a number" kolibri-usage 1 "$B" draws x 5
+refuse "a count that is not a number" kolibri-usage 1 "$B" draws 7 5x
+refuse "a seed of eight digits" kolibri-usage 1 "$B" draws 12345678 5
+refuse "draws with no count" kolibri-usage 2 "$B" draws 7
 refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65
 refuse "a step more than an indexed layer sees whole" kolibri-context 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 137
 toy "$T/v.gguf" notop
@@ -101,8 +107,6 @@ toy "$T/v.gguf" w65
 if "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64 5 > "$T/out.txt" 2> "$T/err.txt" && [ "$(wc -c < "$T/r/selw.f32" | tr -d ' ')" = 2560 ] && [ "$(wc -c < "$T/r/mask.f32" | tr -d ' ')" = 2560 ] && [ "$(wc -c < "$T/r/zcachew.f32" | tr -d ' ')" = 8192 ]; then echo "ok   a window of 65 keys: a ring of 128 slots"; else echo "FAIL a window of 65 keys: the ring's tables are not 128 slots wide: $(head -c 200 "$T/err.txt")"; fail=1; fi
 toy "$T/v.gguf" v8
 refuse "an embedding that is not a multiple of 64 rows" kolibri-tensor 1 "$B" weights "$T/v.gguf" "$T/r"
-refuse "ids from past the file's end" kolibri-read 1 "$B" ids "$T/x/idtab.f32" 6
-refuse "ids of a file whose values are not whole" kolibri-read 1 "$B" ids "$T/x/cos.f32" 0
 printf 'abc' > "$T/bad.f32"
 refuse "an f32 file of three bytes" kolibri-read 1 "$B" argmax "$T/bad.f32"
 : > "$T/bad.f32"
