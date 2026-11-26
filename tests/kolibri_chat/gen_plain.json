@@ -1,0 +1,1 @@
+{"model":"m","prompt":"Write a function that adds two numbers.","stream":false,"think":false,"options":{"num_ctx":8192,"temperature":0.2,"num_predict":1}}

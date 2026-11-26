@@ -1,0 +1,40 @@
+edition 5;
+module kdraw;
+
+// `kdraw` -- the uniform numbers a sampling step of Kolibri draws with (docs/kolibri.md section 14), one a step from a seed: the state becomes (1103515245 x + 12345) mod 2^31, and the
+// number is its upper 24 bits over 2^24, in [0, 1) and exact in f32. `kolibri_gpu draws` prints them and the server sends them (section 18): one definition for both.
+
+import mem;
+import text;
+
+// The state after one more step.
+pub fn step(x: int) -> [] int {
+    return (1103515245 * x + 12345) % 2147483648;
+}
+
+// The state after `n` steps from `x`.
+pub fn skip(x: int, n: int) -> [] int {
+    var y = x;
+    var k = 0;
+    while k < n {
+        y = step(y);
+        k = k + 1;
+    }
+    return y;
+}
+
+// The number of state `x` with all its 24 decimals, so that what reads it has the same f32: a text in the pool.
+pub fn text_of[&m, &t](m: &!m [int], t: &!t [byte], x: int) -> [] int {
+    let from = text.begin(m);
+    var r = x / 128;
+    text.put_byte(m, t, byte_of(48));
+    text.put_byte(m, t, byte_of(46));
+    var k = 0;
+    while k < 24 {
+        r = r * 10;
+        text.put_byte(m, t, byte_of(48 + r / 16777216));
+        r = r % 16777216;
+        k = k + 1;
+    }
+    return text.finish(m, from);
+}

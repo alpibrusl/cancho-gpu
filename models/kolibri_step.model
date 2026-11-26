@@ -17,7 +17,8 @@
 # X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64); for the indexed layers sel.f32 and keep.f32 (NS columns of T: the step's position and its complement), maskg.f32 (NS rows
 # of T: 0 on every key so far, -1e9 elsewhere), zcache.f32 (NKV * T * 128 zeros); for the sliding layers, whose caches are a ring of TW slots (section 15: the window rounded up to a multiple of TS;
 # step s writes slot s mod TW), selw.f32 and keepw.f32 (NS columns of TW), mask.f32 (NS rows of TW: 0 on the slots whose position is in the window), zcachew.f32 (NKV * TW * 128 zeros).
-# An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl.chx: chunks of TS keys, no tile that grows with T). This file has no indexer: a run is at most the positions an
+# An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl.chx: chunks of TS keys, no tile that grows with T), and so is a sliding layer's when its ring TW is over
+# SHORTW slots (640: past that the short form's tile does not fit a threadgroup). This file has no indexer: a run is at most the positions an
 # indexed layer sees whole (2,184 for Kolibri 1.1; the host refuses more).
 #
 # GEN=1 (with HEAD=1 and L0=0) generates: section 13; it reads emb.q4, emb.s, rank.f32, zmk.f32, one1.f32 of W and id0.f32 of X. A request is then `N ID MASK`: N steps on the id ID where MASK
@@ -33,6 +34,7 @@ text X = .
 const T = 64
 const TW = 576
 const TS = 64
+const SHORTW = 640
 const NS = 64
 const L0 = 0
 const NL = 50
@@ -153,8 +155,18 @@ block attn(i, s)
         link L${i}st.m -> L${i}ap.m
         link L${i}st.z -> L${i}ap.z
     else
-        program L${i}ap $CHX/attention_pv_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$TW dw=16 d=128 tmax=$TW
-        link L${i}as.sc -> L${i}ap.sc
+        if TW > SHORTW
+            # a ring too long for the short softmax's one tile (12 x TW scores a threadgroup): the long form, as an indexed layer's. A server's ring is as long as its positions (section 18)
+            program L${i}st $CHX/attention_stats.chx nkv=$NKV g=${NQ / NKV} t=$TW cs=$TS
+            link L${i}as.sc -> L${i}st.sc
+            program L${i}ap $CHX/attention_pvl.chx nkv=$NKV g=${NQ / NKV} t=$TW cs=$TS dw=16 d=128 tmax=$TW
+            link L${i}as.sc -> L${i}ap.sc
+            link L${i}st.m -> L${i}ap.m
+            link L${i}st.z -> L${i}ap.z
+        else
+            program L${i}ap $CHX/attention_pv_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$TW dw=16 d=128 tmax=$TW
+            link L${i}as.sc -> L${i}ap.sc
+        end
     end
     link L${s}kwv.y -> L${i}ap.v
     program L${i}op $CHX/matvec_q4_rows.chx n=$D k=${NQ * 128}

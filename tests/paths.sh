@@ -12,7 +12,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 B=${PATHS_BUILD:-$ROOT/build}
 if [ -z "${PATHS_BUILD:-}" ]; then
-  (cd "$ROOT" && CANCHO="${CANCHO:-cancho}" scripts/build-kolibri.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-qsw.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-session.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-device.sh > /dev/null) || { echo "FAIL paths: build"; exit 1; }
+  (cd "$ROOT" && CANCHO="${CANCHO:-cancho}" scripts/build-kolibri.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-qsw.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-session.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-device.sh > /dev/null && CANCHO="${CANCHO:-cancho}" scripts/build-kolibri-serve.sh cpu > /dev/null) || { echo "FAIL paths: build"; exit 1; }
 fi
 T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
@@ -97,6 +97,12 @@ refused "kolibri_gpu say: a file with .." "error\[kolibri-read\]" "$KG" say "$P"
 refused "kolibri_gpu weights: a directory with .." "error\[kolibri-write\]" "$KG" weights "$T/toy.gguf" "$T/a/../w"
 refused "kolibri_gpu inputs: an ids file with .." "error\[kolibri-" "$KG" inputs "$T/toy.gguf" "$T/a/../kids.txt" "$T/x" 64 3
 refused "kolibri_gpu inputs: a directory with .." "error\[kolibri-write\]" "$KG" inputs "$T/toy.gguf" "$T/kids.txt" "$T/a/../x" 64 3
+
+# --- the server of Kolibri: the GGUF and the model file it is started with (it refuses before it serves)
+KS=$B/cancho-gpu-kolibri-cpu
+printf 'program a %s/tests/chx/step_add.chx n=2\n' "$ROOT" > "$T/k.model"
+refused "cancho-gpu-kolibri-cpu: a GGUF with .." "error\[kolibri-read\]" "$KS" "$T/a/../toy.gguf" "$T/k.model" --port $((30000 + $$ % 20000))
+refused "cancho-gpu-kolibri-cpu: a model file with .." "error\[io\]" "$KS" "$ROOT/tests/tokenizer/toy-qwen2.gguf" "$T/a/../k.model" --port $((30000 + $$ % 20000)) --end 1
 
 # --- qsw: a model of one layer, 64 wide, with files of zeros
 Q=$B/qsw

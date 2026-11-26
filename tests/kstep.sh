@@ -275,6 +275,10 @@ l=0; while [ $l -lt $NL ]; do
 done
 if [ -f "$T/xl/logits.f32" ]; then col "$T/xl/logits.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
 same "the logits at the last of them" "$T/got.txt" "$T/xl/want_logits.txt"
+# a sliding layer's softmax in the long form, which the model file takes when the ring is over SHORTW slots (section 18: a server's ring is as long as its positions). The same 14 steps
+# with SHORTW=0: the same rows, since the two forms are one softmax
+REQ=""; CK=0; run SAVE=0 SHORTW=0
+same "the sliding layers in the long softmax (a ring over SHORTW slots): the row after the last layer at each of $NSL steps" "$T/got_ans.txt" "$T/xl/want_ans.txt"
 # seek with a ring that has wrapped (section 17, S1). After $NSL steps a sliding layer's $TWL slots hold the last $TWL positions: a step whose window lies in them runs again as it ran (the last
 # two here), the whole run again from 0 is the whole run, and one step further back is another answer, since the first key of its window was written over. That last is the limit, shown.
 { i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 2))"; echo 1; echo 1; echo "seek 0"; i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 3))"; echo 1; } > "$T/req_ring.txt"

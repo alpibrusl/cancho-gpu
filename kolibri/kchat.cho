@@ -1,0 +1,193 @@
+edition 5;
+module kchat;
+
+// `kchat` -- Kolibri 1.1's chat template (`tokenizer.chat_template` of its GGUF, the `chat_template` of its `tokenizer_config.json`), written out for the conversations the command and the
+// server take (docs/kolibri.md sections 16 and 18): a system message or none, user and assistant turns, a later system message, and the reasoning effort. Tools and tool turns are not written:
+// what calls this refuses them. `tests/kolibri_cmd.sh` holds `render` to the bytes the model's own template gives through jinja2, recorded by hand (golden/kolibri/).
+//
+// A message is a record of three: its role (`system`, `user`, `assistant`: the numbers below), its content, and for an assistant its reasoning (a text, or -1 for none given).
+
+import mem;
+import text;
+
+pub fn system() -> [] int {
+    return 0;
+}
+
+pub fn user() -> [] int {
+    return 1;
+}
+
+pub fn assistant() -> [] int {
+    return 2;
+}
+
+pub fn message[&m](m: &!m [int], role: int, content: int, reasoning: int) -> [] int {
+    return mem.rec3(m, role, content, reasoning);
+}
+
+// The efforts: 0 none (reasoning disabled), 1 low, 2 medium, 3 high. The template takes `minimal` for low and `xhigh` and `max` for high. -1 for another word.
+pub fn effort_of[&t](t: &!t [byte], h: int) -> [] int {
+    if text.is(t, h, "none") {
+        return 0;
+    }
+    if text.is(t, h, "low") || text.is(t, h, "minimal") {
+        return 1;
+    }
+    if text.is(t, h, "medium") {
+        return 2;
+    }
+    if text.is(t, h, "high") || text.is(t, h, "xhigh") || text.is(t, h, "max") {
+        return 3;
+    }
+    return 0 - 1;
+}
+
+fn put[&m, &t](m: &!m [int], t: &!t [byte], s: &static [byte]) -> [] int {
+    return text.lit(m, t, s);
+}
+
+fn is_blank(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12;
+}
+
+// `h` without its leading newlines, without its trailing ones (Python's `lstrip('\n')`, `rstrip('\n')`).
+fn lstrip_nl[&t](t: &!t [byte], h: int) -> [] int {
+    var a = 0;
+    while a < text.size(h) && text.at(t, h, a) == 10 {
+        a = a + 1;
+    }
+    return text.sub(h, a, text.size(h));
+}
+
+fn rstrip_nl[&t](t: &!t [byte], h: int) -> [] int {
+    var b = text.size(h);
+    while b > 0 && text.at(t, h, b - 1) == 10 {
+        b = b - 1;
+    }
+    return text.sub(h, 0, b);
+}
+
+// Whether `h` has anything but white space (Jinja's `trim`, as a truth).
+fn has_ink[&t](t: &!t [byte], h: int) -> [] bool {
+    var k = 0;
+    while k < text.size(h) {
+        if !is_blank(text.at(t, h, k)) {
+            return true;
+        }
+        k = k + 1;
+    }
+    return false;
+}
+
+// The first place of `needle` in `h` from `from` on, or -1.
+fn place[&t](t: &!t [byte], h: int, needle: &static [byte], from: int) -> [] int {
+    var p = from;
+    while p + len(needle) <= text.size(h) {
+        var k = 0;
+        while k < len(needle) && text.at(t, h, p + k) == int_of(needle[k]) {
+            k = k + 1;
+        }
+        if k == len(needle) {
+            return p;
+        }
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+// The last place of `needle` in `h`, or -1.
+fn last_place[&t](t: &!t [byte], h: int, needle: &static [byte]) -> [] int {
+    var at = 0 - 1;
+    var p = place(t, h, needle, 0);
+    while p >= 0 {
+        at = p;
+        p = place(t, h, needle, p + 1);
+    }
+    return at;
+}
+
+// An assistant turn's reasoning and content as the template takes them: the reasoning given, or what its content has before its first `</think>` (after the last `<think>` of that part),
+// the content then what follows the last `</think>`. `(reasoning or -1, content)`.
+pub fn split_reasoning[&t](t: &!t [byte], content: int, given: int) -> [] (int, int) {
+    if given >= 0 {
+        return (given, content);
+    }
+    let first = place(t, content, "</think>", 0);
+    if first < 0 {
+        return (0 - 1, content);
+    }
+    var head = rstrip_nl(t, text.sub(content, 0, first));
+    let open = last_place(t, head, "<think>");
+    if open >= 0 {
+        head = text.sub(head, open + 7, text.size(head));
+    }
+    let last = last_place(t, content, "</think>");
+    return (lstrip_nl(t, head), lstrip_nl(t, text.sub(content, last + 8, text.size(content))));
+}
+
+// The template for the messages `msgs` (a list of message records, not empty) and an effort, with the assistant's opening after them: a text in the pool. The messages' bytes are written
+// as they are: a message that contains `<|im_end|>` ends its own turn, as it does through the template.
+pub fn render[&m, &t](m: &!m [int], t: &!t [byte], msgs: int, effort: int) -> [] int {
+    let from = text.begin(m);
+    let n = mem.size(m, msgs);
+    let has_system = n > 0 && m[mem.get(m, msgs, 0)] == system();
+    put(m, t, "<|im_start|>system\n");
+    if has_system {
+        text.put_str(m, t, m[mem.get(m, msgs, 0) + 1]);
+        put(m, t, "\n\n");
+    }
+    put(m, t, "# Reasoning effort\n\n");
+    if effort == 0 {
+        put(m, t, "Reasoning is disabled. Proceed straight to answering according to the user's instructions.");
+    } else if effort == 1 {
+        put(m, t, "Reasoning effort is set to low. Think briefly through only the essential steps in the user's language, then proceed directly to the answer.");
+    } else if effort == 2 {
+        put(m, t, "Reasoning effort is set to medium. Think through the task methodically in the user's language, check key assumptions, and provide a well-supported answer.");
+    } else {
+        put(m, t, "Reasoning effort is set to high. Think carefully through the task in the user's language, validate key assumptions, consider plausible alternatives, and prioritize correctness and clarity.");
+    }
+    put(m, t, "<|im_end|>\n");
+    // the last question: the last user message (none: the last message). An assistant turn after it keeps its reasoning; one before it is written without.
+    var last_query = n - 1;
+    var k = n - 1;
+    var found = false;
+    while k >= 0 && !found {
+        if m[mem.get(m, msgs, k)] == user() {
+            last_query = k;
+            found = true;
+        }
+        k = k - 1;
+    }
+    k = 0;
+    while k < n {
+        let msg = mem.get(m, msgs, k);
+        if m[msg] == user() || m[msg] == system() && k > 0 {
+            if m[msg] == user() {
+                put(m, t, "<|im_start|>user\n");
+            } else {
+                put(m, t, "<|im_start|>system\n");
+            }
+            text.put_str(m, t, m[msg + 1]);
+            put(m, t, "<|im_end|>\n");
+        } else if m[msg] == assistant() {
+            let (reasoning, content) = split_reasoning(t, m[msg + 1], m[msg + 2]);
+            put(m, t, "<|im_start|>assistant\n");
+            if k > last_query {
+                put(m, t, "<think>\n");
+                if reasoning >= 0 && has_ink(t, reasoning) {
+                    text.put_str(m, t, lstrip_nl(t, rstrip_nl(t, reasoning)));
+                }
+                put(m, t, "\n</think>\n\n");
+            }
+            text.put_str(m, t, lstrip_nl(t, content));
+            put(m, t, "<|im_end|>\n");
+        }
+        k = k + 1;
+    }
+    put(m, t, "<|im_start|>assistant\n");
+    if effort == 0 {
+        put(m, t, "<think>\n\n</think>\n\n");
+    }
+    return text.finish(m, from);
+}

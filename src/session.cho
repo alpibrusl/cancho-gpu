@@ -1302,6 +1302,34 @@ pub fn print_count[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, sess: in
     return 0;
 }
 
+// The first value of the first `answer`, as a request's line would print it (0 when the session has no answer).
+pub fn first_answer[&m, &x](m: &!m [int], fm: &!x [float], sess: int) -> [] float {
+    let answers = m[sess + s_answers()];
+    if mem.size(m, answers) == 0 {
+        return 0.0;
+    }
+    let a = mem.get(m, answers, 0);
+    let g = mem.get(m, m[mem.get(m, m[sess + s_progs()], m[a]) + 2], m[a + 1]);
+    return fm[m[g + 2]] * f32.from_bits(m[a + 2]) / f32.from_bits(m[a + 3]);
+}
+
+// A request line answered to its caller and not printed (the server of `docs/kolibri.md` section 18), on the CPU interpreter: a `seek`, whose answer is the repetition number, or steps,
+// whose answer is `first_answer`. `(0, the answer)`, or `(-1, 0)` with a refusal.
+pub fn ask[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: int, line: int) -> [] (int, float) {
+    let sought = seek_request(m, t, sess, line);
+    if sought < 0 {
+        return (0 - 1, 0.0);
+    }
+    if sought > 0 {
+        return (0, float_of(m[sess + s_count()]));
+    }
+    let (reps, rest) = take_steps(m, t, sess, line);
+    if reps < 0 || fill_inputs(m, t, fm, sess, rest) < 0 || run_steps(m, t, fm, sess, reps) < 0 {
+        return (0 - 1, 0.0);
+    }
+    return (0, first_answer(m, fm, sess));
+}
+
 // Answer the request `line` on the CPU interpreter. Answers 0, or -1 with a refusal.
 pub fn serve_line[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, sess: int, line: int) -> [io_write] int {
     let sought = seek_request(m, t, sess, line);

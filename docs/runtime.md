@@ -455,7 +455,7 @@ way it does for a file that is not there, so each program's refusal is the one i
 
 **How it is held.** `tests/paths.sh`, in the gate, no model and no GPU: each program is run with a path that has `..` in
 it at each place a path is taken, and one with 5,000 bytes of path; it must end with a status under 128 and a first line
-of standard error that carries the rule tag: 35 such cases (34 since `kolibri_gpu ids` was removed with the file it read, `docs/kolibri.md` section 17.6). Six fixtures that must succeed sit beside them, so a case is
+of standard error that carries the rule tag: 35 such cases (34 since `kolibri_gpu ids` was removed with the file it read, `docs/kolibri.md` section 17.6; 36 with the two files the server of its section 18 is started with). Six fixtures that must succeed sit beside them, so a case is
 refused for its path and for nothing before it. The Metal programs are tried where they are built and passed over where
 they are not. `build/media` has its two cases in `tests/media_stage.sh`, which has the tree it needs: a `--root` with
 `..`, and an output directory named `a..b` (the Python this program replaced makes that directory; this one cannot open
