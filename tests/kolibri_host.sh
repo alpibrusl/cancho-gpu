@@ -60,10 +60,10 @@ BEGIN {
   }
   add("token_embd.weight", 2, D, V); add("output.weight", 14, D, V); add("output_norm.weight", 0, D)
   # the header
-  out(71); out(71); out(85); out(70); u32(3); u64(NT); u64(14)
+  out(71); out(71); out(85); out(70); u32(3); u64(NT); u64(15)
   kvu("kolibri1.block_count", NL); kvu("kolibri1.leading_dense_block_count", 1); kvu("kolibri1.embedding_length", D); kvu("kolibri1.expert_count", NE); kvu("kolibri1.expert_used_count", 1)
   kvu("kolibri1.expert_feed_forward_length", EH); kvu("kolibri1.feed_forward_length", FF); kvu("kolibri1.attention.head_count", NQ); kvu("kolibri1.attention.head_count_kv", NKV)
-  kvu("kolibri1.attention.key_length", HD); kvu("kolibri1.attention.sliding_window", WIN); kvu("general.alignment", 32)
+  kvu("general.sampling.top_k", 2); kvu("kolibri1.attention.key_length", HD); kvu("kolibri1.attention.sliding_window", WIN); kvu("general.alignment", 32)
   str("kolibri1.attention.kv_source_map"); u32(9); u32(5); u64(NL); u32(0); u32(1); u32(1)
   str("kolibri1.rope.freq_base"); u32(6); out(0); out(64); out(28); out(70)       # 10000 as binary32
   for (k = 0; k < NT; k++) { str(NAME[k]); nd = 1 + (D1[k] > 0) + (D2[k] > 0); u32(nd); u64(D0[k]); if (D1[k]) u64(D1[k]); if (D2[k]) u64(D2[k]); u32(TY[k]); u64(OFF[k]) }
@@ -80,6 +80,10 @@ BEGIN {
   for (n = 0; n < V * D; n++) { o = int(n / 256) * 210; h = int((n % 256) / 128); r = n % 128; kq = int(r / 32); l = r % 32; qb = tb(k, o + h * 64 + l + (kq % 2 ? 32 : 0)); nib = kq < 2 ? qb % 16 : int(qb / 16); top = int(tb(k, o + 128 + h * 32 + l) / 4^kq) % 4
     s = tb(k, o + 192 + h * 8 + int(l / 16) + 2 * kq); if (s > 127) s -= 256; printf "%.9g\n", half(tb(k, o + 208), tb(k, o + 209)) * s * (nib + 16 * top - 32) > W } close(W)
   q41("token_embd.weight", "emb"); want("rank.f32", "vals"); for (i = 0; i < V; i++) printf "%d\n", V - i > W; close(W); fillw("zmk.f32", V, 0); fillw("one1.f32", 1, 1)
+  # for the sampler: the file says the 2 largest, made 24 chunks
+  fillw("ciota.f32", V / 64, 0, 1); fillw("cslot.f32", 24, 0, 1); fillw("czero.f32", 24 * 64, 0)
+  want("ctri.f32", "vals"); for (s = 0; s < 24; s++) for (c = 0; c < 24; c++) printf "%d\n", (c <= s) > W; close(W)
+  want("tri64.f32", "vals"); for (s = 0; s < 64; s++) for (c = 0; c < 64; c++) printf "%d\n", (c <= s) > W; close(W)
   for (l = 0; l < NL; l++) { p = "blk." l "."
     copy(p "attn_norm.weight", "a" l ".norm.f32"); copy(p "attn_q_norm.weight", "a" l ".qn.f32"); copy(p "post_attention_norm.weight", "a" l ".pn.f32"); copy(p "ffn_norm.weight", "m" l ".ffn_norm.f32"); copy(p "post_ffw_norm.weight", "m" l ".post_norm.f32")
     if (l < 2) { copy(p "attn_k_norm.weight", "a" l ".kn.f32"); THREE[1] = p "attn_q.weight"; THREE[2] = p "attn_k.weight"; THREE[3] = p "attn_v.weight"; q4(THREE, 3, "a" l ".qkv") } else q41(p "attn_q.weight", "a" l ".q")
@@ -94,6 +98,8 @@ BEGIN {
   want("accsel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < NS; c++) printf "%d\n", (c == s) > W; close(W)
   want("acckeep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < NS; c++) printf "%d\n", (c != s) > W; close(W)
   fillw("acc0.f32", NS, 0); fillw("id0.f32", 1, 0)
+  # the uniform numbers of seed 7: x becomes (1103515245 x + 12345) mod 2^31 (in pieces: the product does not fit a double), the upper 24 bits over 2^24
+  want("u.f32", "vals"); xx = 7; for (s = 0; s < NS; s++) { xh = int(xx / 65536); xl = xx % 65536; xx = ((((1103515245 * xh) % 2147483648) * 65536) % 2147483648 + (1103515245 * xl) % 2147483648 + 12345) % 2147483648; printf "%.9g\n", int(xx / 128) / 16777216 > W } close(W)
   want("sel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
   want("keep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
   want("mask.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", ((c <= s && c > s - WIN) ? 0 : -1e9) > W; close(W)
@@ -125,9 +131,9 @@ if [ "$(tr '\n' ';' < "$T/out.txt")" != "layer 0: its own keys, a dense MLP;laye
 [ "$(cat "$T/fails")" = "$before" ] && echo "ok   weights: $((split_at - 1)) files of a three-layer toy, each as awk has it, and no other"
 before=$(cat "$T/fails")
 printf '3 0\n7\n' > "$T/ids.txt"
-if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 7 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
 [ "$(cat "$T/out.txt")" = "steps 5 prompt 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the thirteen tables"
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the fourteen tables"
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
 got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
@@ -173,6 +179,7 @@ refuse "positions that are not a number" kolibri-usage 1 "$B" inputs "$T/toy.ggu
 awk 'BEGIN { for (i = 0; i < 65; i++) printf "1 " }' > "$T/bad.txt"
 refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
 refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
+refuse "a seed that is not a number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 x
 refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65
 toy "$T/v.gguf" v8
 refuse "an embedding that is not a multiple of 64 rows" kolibri-tensor 1 "$B" weights "$T/v.gguf" "$T/r"

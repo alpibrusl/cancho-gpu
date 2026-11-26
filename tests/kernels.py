@@ -696,6 +696,40 @@ def moe_rank(nq):
     return [float(sum(1 if yr[j] > yc[i] else (1 if yr[j] == yc[i] and ic[i] - ir[j] > 0 else 0) for j in range(n))) for i in range(n)]
 
 
+def rank_idx(nq, b):
+    """moe_rank with the chunk's width a parameter (docs/kolibri.md K6b)."""
+    n = nq * b
+    yc, yr, ic, ir = lcg([n, n, n, n])
+    return [float(sum(1 if yr[j] > yc[i] else (1 if yr[j] == yc[i] and ic[i] - ir[j] > 0 else 0) for j in range(n))) for i in range(n)]
+
+
+def rank_onehot(n, k):
+    """s[r][q] is 1 where entry q's place is within a half of r (a one-hot row when the places are whole numbers; the made-up ones are not)."""
+    cnt, sl = lcg([n, k])
+    return [1.0 if sl[r] - cnt[q] + 0.5 > 0 and cnt[q] - sl[r] + 0.5 > 0 else 0.0 for r in range(k) for q in range(n)]
+
+
+def gather_chunks(k, n, invt):
+    """c = (s l) invt and base = 64 (s io) - 1, as plain products (the made-up s is not one-hot)."""
+    s_, l, io = lcg([k * n, n * 64, n])
+    c = [sum(s_[r * n + q] * l[q * 64 + j] for q in range(n)) * invt for r in range(k) for j in range(64)]
+    base = [64 * sum(s_[r * n + q] * io[q] for q in range(n)) - 1 for r in range(k)]
+    return c, base
+
+
+def topp_mass(nq):
+    """For every candidate, the sum of exp(z_i - gm) over the candidates not larger than it, itself included."""
+    n = nq * 64
+    zc, zr, gm = lcg([n, n, nq])
+    return [sum(math.exp(zr[i] - gm[0]) for i in range(n) if zr[i] <= zc[j]) for j in range(n)]
+
+
+def topp_keep(n, c, lo):
+    m, z = lcg([n, n])
+    tot = max(m)
+    return [z[j] if m[j] - tot * c > 0 else -lo for j in range(n)]
+
+
 def moe_pick(n, k):
     """Slot j: the index of the entry whose place is j (within a half), and sigmoid of its logit."""
     cnt, lg, ar, sl = lcg([n, n, n, k])
@@ -1051,6 +1085,14 @@ def new_checks():
     ok &= check("dec_post_g vn r=1 nq=48 nkv=4", got["vn"], want_v)
     ok &= check("fp4_round r=3 n=64", run("fp4_round", ["r=3", "n=64"])["y"], fp4_round(3, 64))
     ok &= check("fp4_round r=4 n=128", run("fp4_round", ["r=4", "n=128"])["y"], fp4_round(4, 128))
+    ok &= check("rank_idx nq=5 b=16", run("rank_idx", ["nq=5", "b=16"])["cnt"], rank_idx(5, 16))
+    ok &= check("rank_idx nq=4 b=2", run("rank_idx", ["nq=4", "b=2"])["cnt"], rank_idx(4, 2))
+    ok &= check("rank_onehot n=80 k=8 bk=4", run("rank_onehot", ["n=80", "k=8", "bk=4"])["s"], rank_onehot(80, 8))
+    gc = run("gather_chunks", ["k=8", "n=20", "bk=4", "invt=0.8"]); wc, wb = gather_chunks(8, 20, 0.8)
+    ok &= check("gather_chunks k=8 n=20 c", gc["c"], wc)
+    ok &= check("gather_chunks k=8 n=20 base", gc["base"], wb)
+    ok &= check("topp_mass nq=3", run("topp_mass", ["nq=3"])["m"], topp_mass(3), tol=5e-5)  # sums of up to 192 terms, as large as 127: 5e-5 is 4e-7 of that
+    ok &= check("topp_keep n=192 c=0.7", run("topp_keep", ["n=192", "c=0.7", "lo=5"])["zk"], topp_keep(192, 0.7, 5))
     ok &= check("attention_scores_b nb=2 nkv=2 g=3 t=32 ts=16", run("attention_scores_b", ["nb=2", "nkv=2", "g=3", "t=32", "ts=16", "d=128", "tmax=40"])["sc"], attention_scores_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pv_b nb=2 nkv=2 g=3 t=32 dw=32", run("attention_pv_b", ["nb=2", "nkv=2", "g=3", "t=32", "dw=32", "d=128", "tmax=40"])["o"], attention_pv_b(2, 2, 3, 32, 128, 40))
     ok &= check("attention_pvl nkv=2 g=4 t=96 cs=16 dw=64", run("attention_pvl", ["nkv=2", "g=4", "t=96", "cs=16", "dw=64", "d=256", "tmax=100"])["o"], attention_pvl(2, 4, 96, 256, 100))
@@ -1279,6 +1321,18 @@ MUTANTS = [
     ("fp4_round.chx", "let sc  = sm + 0.001953125", "let sc  = sm + 0.0", "fp4_round's scale starts at nothing"),
     ("fp4_round.chx", "let inc = pas * ic", "let inc = pas + ic", "fp4_round adds every increment, passed or not"),
     ("fp4_round.chx", "let a3  = &m - 1.25", "let a3  = &m - 1.0", "fp4_round's third threshold is at 1"),
+    ("rank_idx.chx", "let dn = zn - &d", "let dn = &d - zn", "rank_idx counts the smaller entries"),
+    ("rank_idx.chx", "let r  = load yr[p, 0 ; 1, b]", "let r  = load yr[q, 0 ; 1, b]", "rank_idx compares every chunk with its own"),
+    ("rank_onehot.chx", "let b  = nd + 0.5", "let b  = nd + 1.5", "rank_onehot's row takes the place after its own too"),
+    ("rank_onehot.chx", "let r  = load sl[j * bk, 0 ; bk, 1]", "let r  = load sl[0, 0 ; bk, 1]", "rank_onehot gives every block of rows the first places"),
+    ("gather_chunks.chx", "store g * invt -> c[j * bk, 0]", "store g * 1.0 -> c[j * bk, 0]", "gather_chunks forgets the temperature"),
+    ("gather_chunks.chx", "let st = load s[j * bk, 0 ; bk, n]", "let st = load s[0, 0 ; bk, n]", "gather_chunks gathers the first rows for every block"),
+    ("gather_chunks.chx", "let m6 = m * 64.0", "let m6 = m * 1.0", "gather_chunks's base is the chunk's number, not its first column"),
+    ("topp_mass.chx", "let dn = zn - d", "let dn = d - zn", "topp_mass sums the candidates that are not smaller"),
+    ("topp_mass.chx", "let w  = le * e", "let w  = le + e", "topp_mass adds every candidate's mass, smaller or not"),
+    ("topp_mass.chx", "let r  = load zr[p, 0 ; 1, 64]", "let r  = load zr[q, 0 ; 1, 64]", "topp_mass sums over the candidate's own chunk only"),
+    ("topp_keep.chx", "let th  = tot * c", "let th  = tot * 1.0", "topp_keep keeps nothing but the whole"),
+    ("topp_keep.chx", "let a   = zt * &kp", "let a   = zt * 1.0", "topp_keep leaves a dropped candidate its value less lo"),
     ("samp_rank.chx", "let dn = zn - d", "let dn = d - zn", "samp_rank counts the smaller entries"),
     ("samp_rank.chx", "let r  = load yr[p, 0 ; 1, 64]", "let r  = load yr[q, 0 ; 1, 64]", "samp_rank compares every chunk with its own"),
     ("samp_keep.chx", "let d   = kk - c", "let d   = c - kk", "samp_keep keeps the entries with k or more larger ones"),

@@ -1,0 +1,24 @@
+// The k chunks of 64 a one-hot matrix names, gathered by a product (docs/kolibri.md K6b): c = (s l) invt, where l is a row of n * 64 logits seen as n chunks, s is rank_onehot.chx's [k, n] (a one in
+// each row) and invt 1 / temperature; a one times a value plus zeros is that value, exactly. base is each gathered chunk's first column in the vocabulary less one, 64 (s io) - 1 with io 0 .. n - 1:
+// what samp_tok.chx adds to a column's place in its chunk so that the id it writes is the vocabulary's, from 0. bk chunks a threadgroup.
+algo gather_chunks(k, n, bk, invt)
+  in  s:    f32[k, n]
+  in  l:    f32[n, 64]
+  in  io:   f32[n, 1]
+  out c:    f32[k, 64]
+  out base: f32[k, 1]
+{
+  grid j over k / bk
+  let st = load s[j * bk, 0 ; bk, n]
+  let lt = load l
+  let g  = matmul &st lt
+  store g * invt -> c[j * bk, 0]
+  let it = load io
+  let m  = matmul st it
+  let m6 = m * 64.0
+  store m6 - 1.0 -> base[j * bk, 0]
+}
+
+schedule gather_chunks for apple-m-series { threads 256 }
+schedule gather_chunks for nvidia-ada     { threads 256 }
+schedule gather_chunks for amd-cdna3      { threads 256 }

@@ -1,0 +1,36 @@
+// Top-p's sum for every candidate (docs/kolibri.md K6b): m_j is the sum of exp(z_i - max) over the candidates i that are not larger than candidate j, itself included: the running sum of the softmax,
+// sorted from the smallest, up to j, before the division by the whole. z is the row of nq * 64 candidates after the k largest were kept (the others -1e9, whose exp is 0), read as a column (zc) and
+// as chunks (zr); gm holds the row's maximum (samp_gmax.chx: its first entry is read). The largest candidate's m is the whole. topp_keep.chx keeps the candidates whose m is over (1 - p) of it.
+algo topp_mass(nq)
+  in  zc: f32[nq * 64, 1]
+  in  zr: f32[nq, 64]
+  in  gm: f32[1, nq]
+  out m:  f32[nq * 64]
+{
+  grid q over nq
+  let acc = zeros f32[64, 64]
+  let acc = for p in 0 .. nq with acc {
+    let c  = load zc[q * 64, 0 ; 64, 1]
+    let z  = zeros f32[64, 64]
+    let cb = z + c
+    let r  = load zr[p, 0 ; 1, 64]
+    let d  = cb - &r
+    let zn = zeros f32[64, 64]
+    let dn = zn - d
+    let lt = step dn
+    let o  = zeros f32[64, 64]
+    let on = o + 1.0
+    let le = on - lt
+    let g  = load gm[0, 0 ; 1, 1]
+    let sh = r - g
+    let e  = exp sh
+    let w  = le * e
+    yield acc + w
+  }
+  let s = rowsum acc
+  store s -> m[q * 64]
+}
+
+schedule topp_mass for apple-m-series { threads 64 }
+schedule topp_mass for nvidia-ada     { threads 64 }
+schedule topp_mass for amd-cdna3      { threads 64 }

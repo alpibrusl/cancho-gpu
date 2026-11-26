@@ -1,0 +1,25 @@
+// The k first places as a matrix (docs/kolibri.md K6b): s[r, q] is 1 where entry q's place (cnt, rank_idx.chx: whole numbers, no two the same) is r, and 0 elsewhere. sl is 0 .. k - 1 (the host's).
+// A product with it gathers the k entries, or the k rows they name, in the order of their places: gather_chunks.chx. bk rows a threadgroup.
+algo rank_onehot(n, k, bk)
+  in  cnt: f32[1, n]
+  in  sl:  f32[k, 1]
+  out s:   f32[k, n]
+{
+  grid j over k / bk
+  let c  = load cnt
+  let r  = load sl[j * bk, 0 ; bk, 1]
+  let z  = zeros f32[bk, n]
+  let rb = z + r
+  let d  = rb - c
+  let a  = &d + 0.5
+  let zn = zeros f32[bk, n]
+  let nd = zn - d
+  let b  = nd + 0.5
+  let sa = step a
+  let st = step b
+  store sa * st -> s[j * bk, 0]
+}
+
+schedule rank_onehot for apple-m-series { threads 256 }
+schedule rank_onehot for nvidia-ada     { threads 256 }
+schedule rank_onehot for amd-cdna3      { threads 256 }
