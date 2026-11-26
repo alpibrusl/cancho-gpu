@@ -103,6 +103,6 @@ out=$(ask "$T/noprog.model" ""); case "$out" in "error[session]: line 5:"*) echo
 model frac "by ix.y 0.5" "by ix.y 1" "by ix.y 2"
 refused "a slot that is not a whole number" "$T/frac.model" "line 5: a table is picked \`by PROGRAM.OUT SLOT\`, the slot a whole number from 0"
 model words "by ix.y" "by ix.y 1" "by ix.y 2"
-refused "by with no slot" "$T/words.model" "line 5: table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [by PROGRAM.OUT SLOT]"
+refused "by with no slot" "$T/words.model" "line 5: table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [hold | by PROGRAM.OUT SLOT]"
 [ "$fail" -eq 0 ] && echo "pick: ok"
 exit $fail

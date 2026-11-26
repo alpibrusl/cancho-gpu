@@ -14,27 +14,25 @@
 # after another: codes two a byte, f16 scales a group of 32) or a<i>.q.q4 and .s where there are no keys, a<i>.o.q4 and .s; m<i>.ffn_norm.f32, m<i>.post_norm.f32 and the files of
 # models/kolibri_mlp.model with m<i>. before their names. Once: ones_d.f32, ones_h.f32, ones_f.f32, ones_qkv.f32, ones_q.f32 (dequant_q4's row scales), ar.f32 (0 .. NE - 1), sl.f32 (0 .. K - 1),
 # e4m3.f32 (fp4_round.chx's table), one64.f32 and zero64.f32 (an indexed layer's cos and sin), fnorm.f32, head.f32.
-# X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64); for the indexed layers sel.f32 and keep.f32 (NS columns of T: the step's position and its complement), maskg.f32 (NS rows
-# of T: 0 on every key so far, -1e9 elsewhere), zcache.f32 (NKV * T * 128 zeros); for the sliding layers, whose caches are a ring of TW slots (section 15: the window rounded up to a multiple of TS;
-# step s writes slot s mod TW), selw.f32 and keepw.f32 (NS columns of TW), mask.f32 (NS rows of TW: 0 on the slots whose position is in the window), zcachew.f32 (NKV * TW * 128 zeros).
-# An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl.chx: chunks of TS keys, no tile that grows with T), and so is a sliding layer's when its ring TW is over
-# SHORTW slots (640: past that the short form's tile does not fit a threadgroup). This file has no indexer: a run is at most the positions an
-# indexed layer sees whole (2,184 for Kolibri 1.1; the host refuses more).
+# X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64), pos.f32 (the NS positions, a number a step), iota.f32 (0 .. T - 1), maskw.f32 (TW rows of TW: row r is a
+# sliding layer's mask over its window at step r, and the last row at every step after: 0 on the keys in the window, -1e9 elsewhere). None of them grows with the square of the positions.
+# A cache is a roll (section 19.2): T positions, written a block a step and read through a window. TW is a sliding layer's window rounded up to a multiple of TS (576 for 513), and no
+# more than T. An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl_p.chx: chunks of TS keys, no tile that grows with T). This file has no indexer: a run is
+# at most the positions an indexed layer sees whole (2,184 for Kolibri 1.1; the host refuses more).
 #
 # GEN=1 (with HEAD=1 and L0=0) generates: section 13; it reads emb.q4, emb.s, rank.f32, zmk.f32, one1.f32 of W and id0.f32 of X. A request is then `N ID MASK`: N steps on the id ID where MASK
 # is 1, on the id the step before chose where it is 0.
 # SAMP=1 (with GEN=1) draws the id instead of taking the arg max: section 14; it reads ciota.f32, cslot.f32, czero.f32, ctri.f32, tri64.f32 of W, and a request is `N ID MASK U`, U the step's
 # uniform number.
 # With SAMP=1, SAVE=1 also writes cum.f32 and cnt.f32.
-# SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, kn<i>.f32, vn<i>.f32 (the step's new rows as cached), o<i>.f32, and
+# SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, o<i>.f32, and
 # idx<i>.f32, wt<i>.f32. F32= F16= I8= (empty) reads and writes every file as text, and D, NQ, NKV, NE, EH, K, FF, BN, V make a small model: tests/kstep.sh, in the gate.
 text CHX = tests/chx
 text W = .
 text X = .
-const T = 64
+const T = 576
 const TW = 576
 const TS = 64
-const SHORTW = 640
 const NS = 64
 const L0 = 0
 const NL = 50
@@ -63,22 +61,12 @@ text F32 = f32
 text F16 = f16
 text I8 = i8
 
-# one cache of layer i (n is kwk or kwv): this step's row written at the step's position (an indexed layer's T positions) or at the step's slot (a sliding layer's ring of TW)
-block cache(i, n, src)
-    if i % 5 == 4
-        program L${i}$n $CHX/kv_write_b.chx nb=1 nkv=$NKV tmax=$T ts=$TS d=128
-        resident L${i}$n.c $X/zcache.f32 $F32
-        link $src -> L${i}$n.nw
-        table L${i}$n.sel $X/sel.f32 $NS $F32
-        table L${i}$n.keep $X/keep.f32 $NS $F32
-    else
-        program L${i}$n $CHX/kv_write_b.chx nb=1 nkv=$NKV tmax=$TW ts=$TS d=128
-        resident L${i}$n.c $X/zcachew.f32 $F32
-        link $src -> L${i}$n.nw
-        table L${i}$n.sel $X/selw.f32 $NS $F32
-        table L${i}$n.keep $X/keepw.f32 $NS $F32
-    end
-    carry L${i}$n.y -> L${i}$n.c
+# The caches (section 19.2): a layer's keys and its values are each a roll of T positions, a block a position (the NKV heads' rows of 128 one after another), stored by the step and read
+# through windows: an indexed layer's all T, a sliding layer's the TW that end with the step's. One mask of T for the indexed layers, from the step's position.
+if NL > 0
+    program pm $CHX/pos_mask.chx t=$T ts=$TS
+    table pm.p $X/pos.f32 $NS $F32
+    resident pm.io $X/iota.f32 $F32
 end
 
 # the attention half of layer i, whose keys and values are layer s's: L${i}ra.wo is the row after it
@@ -113,13 +101,13 @@ block attn(i, s)
             program L${i}rv $CHX/fp4_round.chx r=$NKV n=128
             link L${i}po.vn -> L${i}rv.x
             resident L${i}rv.tb $W/e4m3.f32 $F32
-            use cache(i, "kwk", "L${i}rk.y")
-            use cache(i, "kwv", "L${i}rv.y")
+            store L${i}rk.y K${i} $T
+            store L${i}rv.y V${i} $T
         else
             table L${i}po.cs $X/cos.f32 $NS $F32
             table L${i}po.sn $X/sin.f32 $NS $F32
-            use cache(i, "kwk", "L${i}po.kn")
-            use cache(i, "kwv", "L${i}po.vn")
+            store L${i}po.kn K${i} $T
+            store L${i}po.vn V${i} $T
         end
     else
         program L${i}qp $CHX/matvec_q4_rows.chx n=${NQ * 128} k=$D
@@ -132,43 +120,33 @@ block attn(i, s)
         resident L${i}po.w $W/a${i}.qn.f32 $F32
     end
     if i % 5 == 4
-        program L${i}as $CHX/attention_scores_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$T ts=$TS d=128 tmax=$T
+        program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$T ts=$TS d=128
     else
-        program L${i}as $CHX/attention_scores_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$TW ts=$TS d=128 tmax=$TW
+        program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$TW ts=$TS d=128
     end
     if s == i
         link L${i}po.q -> L${i}as.q
     else
         link L${i}po.y -> L${i}as.q
     end
-    link L${s}kwk.y -> L${i}as.k
+    window L${i}as.k K${s}
     if i % 5 == 4
-        table L${i}as.mask $X/maskg.f32 $NS $F32
+        link pm.mask -> L${i}as.mask
     else
-        table L${i}as.mask $X/mask.f32 $NS $F32
+        table L${i}as.mask $X/maskw.f32 $TW $F32 hold
     end
     if i % 5 == 4
         program L${i}st $CHX/attention_stats.chx nkv=$NKV g=${NQ / NKV} t=$T cs=$TS
         link L${i}as.sc -> L${i}st.sc
-        program L${i}ap $CHX/attention_pvl.chx nkv=$NKV g=${NQ / NKV} t=$T cs=$TS dw=16 d=128 tmax=$T
+        program L${i}ap $CHX/attention_pvl_p.chx nkv=$NKV g=${NQ / NKV} t=$T cs=$TS dw=16 d=128
         link L${i}as.sc -> L${i}ap.sc
         link L${i}st.m -> L${i}ap.m
         link L${i}st.z -> L${i}ap.z
     else
-        if TW > SHORTW
-            # a ring too long for the short softmax's one tile (12 x TW scores a threadgroup): the long form, as an indexed layer's. A server's ring is as long as its positions (section 18)
-            program L${i}st $CHX/attention_stats.chx nkv=$NKV g=${NQ / NKV} t=$TW cs=$TS
-            link L${i}as.sc -> L${i}st.sc
-            program L${i}ap $CHX/attention_pvl.chx nkv=$NKV g=${NQ / NKV} t=$TW cs=$TS dw=16 d=128 tmax=$TW
-            link L${i}as.sc -> L${i}ap.sc
-            link L${i}st.m -> L${i}ap.m
-            link L${i}st.z -> L${i}ap.z
-        else
-            program L${i}ap $CHX/attention_pv_b.chx nb=1 nkv=$NKV g=${NQ / NKV} t=$TW dw=16 d=128 tmax=$TW
-            link L${i}as.sc -> L${i}ap.sc
-        end
+        program L${i}ap $CHX/attention_pv_p.chx nkv=$NKV g=${NQ / NKV} t=$TW dw=16 d=128
+        link L${i}as.sc -> L${i}ap.sc
     end
-    link L${s}kwv.y -> L${i}ap.v
+    window L${i}ap.v V${s}
     program L${i}op $CHX/matvec_q4_rows.chx n=$D k=${NQ * 128}
     link L${i}ap.o -> L${i}op.x
     resident L${i}op.wq $W/a${i}.o.q4 $I8
@@ -193,13 +171,6 @@ block attn(i, s)
         save L${i}ap.o $X/o${i}.f32 $F32
         if s == i
             save L${i}po.q $X/q${i}.f32 $F32
-            if i % 5 == 4
-                save L${i}rk.y $X/kn${i}.f32 $F32
-                save L${i}rv.y $X/vn${i}.f32 $F32
-            else
-                save L${i}po.kn $X/kn${i}.f32 $F32
-                save L${i}po.vn $X/vn${i}.f32 $F32
-            end
         else
             save L${i}po.y $X/q${i}.f32 $F32
         end

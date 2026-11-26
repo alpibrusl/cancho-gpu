@@ -122,6 +122,7 @@ pub fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], f
     let rfiles = mem.list(m);
     // (file name, bytes, buffer) of the binary tables uploaded so far
     let tfiles = mem.list(m);
+    let rollbufs = mem.list(m);
     var q = 0;
     while q < mem.size(m, progs) {
         let pr = mem.get(m, progs, q);
@@ -204,6 +205,26 @@ pub fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                 }
                 k = k + 1;
             }
+            // a roll (docs/resident.md section 33) is one buffer, zero at the start: the output stored in it and every window of it are that buffer, bound at a block when the program runs
+            if mytable >= 0 && m[mytable + session.t_way()] >= 2 {
+                tpath = 0 - 1;
+                k = 0;
+                while k < mem.size(m, rollbufs) {
+                    let rb = mem.get(m, rollbufs, k);
+                    if m[rb] == m[mytable + session.t_roll()] {
+                        shared = m[rb + 1];
+                    }
+                    k = k + 1;
+                }
+                if shared < 0 {
+                    shared = metal.cgpu_alloc(ffi, m[mytable + 3] * m[mytable + session.t_stride()] * kinds.size_bytes(m[g]));
+                    if shared < 0 || metal.cgpu_zero(ffi, shared) < 0 {
+                        let r = device_fail(m, t, ffi, "allocating a roll");
+                        return (0 - 1, 0 - 1);
+                    }
+                    mem.push(m, rollbufs, mem.rec2(m, m[mytable + session.t_roll()], shared));
+                }
+            }
             // a binary table that several programs read (an expert picked from the same file by each of a layer's six: docs/kolibri.md K2) is one buffer, uploaded once
             if shared < 0 && tpath >= 0 {
                 k = 0;
@@ -269,8 +290,8 @@ pub fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], f
         let tb = mem.get(m, tables, tq);
         let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
         let mark = m[mem.text_slot()];
-        if m[tb + 8] == 1 {
-            // the buffer is an earlier table's, which sent the file
+        if m[tb + 8] == 1 || m[tb + session.t_way()] >= 2 {
+            // the buffer is an earlier table's, which sent the file; or a roll's, which is zero
         } else if m[tb + 2] < 0 {
             // a binary table: the file's bytes are the device's, and go up as they are
             let want = m[g + 3] * m[tb + 3] * kinds.size_bytes(m[g]);
@@ -375,7 +396,10 @@ pub fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                     let tb = mem.get(m, tables, tk);
                     if m[tb + 1] == i {
                         let g = mem.get(m, m[pr + 2], i);
-                        var block = m[sess + session.s_count()] % m[tb + 3];
+                        var block = session.bound_block(m, t, sess, tb);
+                        if block < 0 {
+                            return 0 - 1;
+                        }
                         if m[tb + 5] >= 0 {
                             // a picked table (docs/kolibri.md K2): the value is read back from the device, once for an output in a repetition, after what was encoded so far has run
                             let sg = mem.get(m, m[mem.get(m, progs, m[tb + 5]) + 2], m[tb + 6]);
@@ -407,7 +431,7 @@ pub fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                                 return 0 - 1;
                             }
                         }
-                        offset = block * m[g + 3] * kinds.size_bytes(m[g]);
+                        offset = block * session.bound_stride(m, tb, m[g + 3]) * kinds.size_bytes(m[g]);
                     }
                     tk = tk + 1;
                 }

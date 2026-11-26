@@ -1,0 +1,23 @@
+// The second half of a decode step's attention over a cache that is a roll of positions (attention_scores_p.chx): for key/value head h, the softmax of the g x t scores (every
+// threadgroup of the head redoes it) and the product with the columns dc * dw .. (dc + 1) * dw of that head's values, which are columns h * d .. (h + 1) * d of the [t, nkv * d] cache.
+// attention_pv_b.chx with the cache turned.
+algo attention_pv_p(nkv, g, t, dw, d)
+  in  sc: f32[nkv * g, t]
+  in  v:  f32[t, nkv * d]
+  out o:  f32[nkv * g, d]
+{
+  grid h over nkv, dc over d / dw
+  let sm = load sc[h * g, 0 ; g, t]
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / z
+  let vt = load v[0, h * d + dc * dw ; t, dw]
+  let rr = matmul p vt
+  store rr -> o[h * g, dc * dw]
+}
+
+schedule attention_pv_p for apple-m-series { threads 1024 }
+schedule attention_pv_p for nvidia-ada     { threads 128 }
+schedule attention_pv_p for amd-cdna3      { threads 128 }

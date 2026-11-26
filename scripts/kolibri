@@ -68,7 +68,9 @@ if [ ! -f "$W/head.f32" ]; then
   mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
 fi
 mkdir -p "$D/x" || exit 1
-"$K" inputs "$G" "$D/ids.txt" "$D/x" $(((steps + 63) / 64 * 64)) "$steps" > /dev/null || exit $?
+# the session's tables are for every position the model sees whole, whatever the run's length: none of them grows with its square (docs/kolibri.md section 19.2)
+T=$(((whole + 63) / 64 * 64))
+"$K" inputs "$G" "$D/ids.txt" "$D/x" "$T" "$whole" > /dev/null || exit $?
 # a sampling step's uniform number, a line a step
 [ $samp -eq 0 ] || "$K" draws "$seed" "$steps" > "$D/draws.txt" || exit $?
 mkdir -p "$CACHE"
@@ -79,7 +81,7 @@ fi
 echo $$ > "$LOCK"; locked=1
 mkfifo "$D/in" "$D/ans" || exit 1
 # The session in a subshell that says `exit <status>` after it: a session that stops, at once or later, is then an answer to read and not a pipe nobody writes to.
-( "$SESSION" "$HERE/models/kolibri_step.model" CHX="$HERE/tests/chx" W="$W" X="$D/x" T=$(((steps + 63) / 64 * 64)) NS="$steps" GEN=1 SAMP=$samp SAVE=0 2> "$D/err.txt"; echo "exit $?" ) < "$D/in" > "$D/ans" &
+( "$SESSION" "$HERE/models/kolibri_step.model" CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" GEN=1 SAMP=$samp SAVE=0 2> "$D/err.txt"; echo "exit $?" ) < "$D/in" > "$D/ans" &
 trap '' PIPE
 exec 3> "$D/in" 4< "$D/ans"
 [ $samp -eq 0 ] || exec 5< "$D/draws.txt"

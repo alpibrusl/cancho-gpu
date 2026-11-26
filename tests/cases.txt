@@ -704,3 +704,14 @@ tests/chx/rank_onehot.chx n=80 k=8 bk=4 --run
 tests/chx/gather_chunks.chx k=8 n=20 bk=4 invt=0.8 --run
 tests/chx/topp_mass.chx nq=3 --run
 tests/chx/topp_keep.chx n=192 c=0.7 lo=5 --run
+# S4a (docs/kolibri.md section 19.2): the attention over a cache that is a roll of positions ([t, nkv * d], a position a row), and the mask of every key to a position. The three
+# attention kernels are attention_scores_b, attention_pv_b and attention_pvl with the cache turned; held to awk's arithmetic of the model by tests/kstep.sh, with mutants by hand.
+tests/chx/attention_scores_p.chx nkv=4 g=12 t=576 ts=64 d=128
+tests/chx/attention_pv_p.chx nkv=4 g=12 t=576 dw=16 d=128
+tests/chx/attention_scores_p.chx nkv=4 g=12 t=2240 ts=64 d=128
+tests/chx/attention_pvl_p.chx nkv=4 g=12 t=2240 cs=64 dw=16 d=128
+tests/chx/pos_mask.chx t=2240 ts=64
+tests/chx/attention_scores_p.chx nkv=2 g=2 t=8 ts=4 d=128 --run
+tests/chx/attention_pv_p.chx nkv=2 g=2 t=8 dw=64 d=128 --run
+tests/chx/attention_pvl_p.chx nkv=2 g=2 t=8 cs=4 dw=64 d=128 --run
+tests/chx/pos_mask.chx t=8 ts=4 --run

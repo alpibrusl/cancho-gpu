@@ -1,0 +1,25 @@
+// The scores of a decode step against a cache that is a roll of positions (docs/kolibri.md section 19.2): the cache is [t, nkv * d], position p's keys of the nkv key/value heads one
+// after another in row p, where attention_scores_b.chx's is [nkv * tmax, d], a head's positions together. So a stretch of positions is a stretch of rows, and what binds this kernel's
+// `k` can give it any t rows of a longer roll. The scores of the g query heads of head h against positions sp * ts .. (sp + 1) * ts,
+//
+//     sc = q k^T / sqrt(128) + mask        (d MUST be 128: the scale 0.08838834764831845 is a literal)
+//
+// are written to an [nkv * g, t] scratch for attention_pv_p.chx, or attention_stats.chx and attention_pvl_p.chx. One sequence.
+algo attention_scores_p(nkv, g, t, ts, d)
+  in  q:    f32[nkv * g, d]
+  in  k:    f32[t, nkv * d]
+  in  mask: f32[1, t]
+  out sc:   f32[nkv * g, t]
+{
+  grid h over nkv, sp over t / ts
+  let qt = load q[h * g, 0 ; g, d]
+  let kt = load k[sp * ts, h * d ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.08838834764831845
+  let mk = load mask[0, sp * ts ; 1, ts]
+  store sd + mk -> sc[h * g, sp * ts]
+}
+
+schedule attention_scores_p for apple-m-series { threads 512 }
+schedule attention_scores_p for nvidia-ada     { threads 128 }
+schedule attention_scores_p for amd-cdna3      { threads 128 }

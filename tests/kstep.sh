@@ -5,17 +5,18 @@
 # the last layer at every step, and after the last step the row after every layer and the logits.
 # Then the same model generating (GEN=1): from a prompt of two ids, the id each step chooses, awk's arg max over awk's logits; and sampling (SAMP=1): the id each step draws, awk's sampler of
 # the same definition with the same four uniform numbers.
-# Then (section 15) caches that wrap and chunk: the same ten layers for 14 steps with chunks of 4 keys, a window of 3 in a sliding layer's ring of 4 slots and indexed caches of 16, against the
-# same awk, which has no ring and no chunks: the row after the last layer at every step, the row after every layer and the logits at the last.
+# Then (sections 15 and 19.2) a window that slides and caches in chunks: the same ten layers for 14 steps with chunks of 4 keys, a window of 3 of which 4 are scanned and caches of 16
+# positions, against the same awk, which has no caches at all: the row after the last layer at every step, the row after every layer and the logits at the last. Then seeks back to
+# any step, each exact: a cache is a roll of positions, and a step run again reads what it read.
 # First fp4_round.chx alone on values that sit on its thresholds, where tests/kernels.py's made-up table and values never are: ties go to even, the scale stays in [2^-9, 448].
-# KSTEP_MODEL=<file> runs another model file: the mutants of the model, by hand.
+# KSTEP_MODEL=<file> runs another model file, KSTEP_CHX=<directory> other kernels: the mutants of the model and of its kernels, by hand.
 set -eu
 cd "$(dirname "$0")/.."
 B="${1:-build/cancho-gpu-session}"
 T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 fail=0
-CHX=$(pwd)/tests/chx
+CHX=${KSTEP_CHX:-$(pwd)/tests/chx}
 mkdir "$T/w" "$T/x" "$T/xl"
 awk -v T="$T" '
 function rne(v,   f, d) { f = int(v); d = v - f; if (d > 0.5 || (d == 0.5 && f % 2 == 1)) f++; return f }   # v >= 0, to the nearest whole number, ties to even
@@ -139,10 +140,10 @@ BEGIN {
   for (s = 0; s < NS; s++) {
     for (c = 0; c < D; c++) { X0[s, c] = ((c * 37 + s * 23 + 11) % 29 - 14) / 8; printf "%s ", X0[s, c] > (X "/x0.f32") }
     for (c = 0; c < 64; c++) { fr = s / (10000 ^ (c / 64)); CS[s, c] = cos(fr); SN[s, c] = sin(fr); printf "%.17g ", CS[s, c] > (X "/cos.f32"); printf "%.17g ", SN[s, c] > (X "/sin.f32") }
-    for (t = 0; t < 64; t++) { printf "%d ", (t == s) > (X "/sel.f32"); printf "%d ", (t != s) > (X "/keep.f32"); printf "%s ", ((t <= s && t > s - WIN) ? 0 : -1e9) > (X "/mask.f32"); printf "%s ", ((t <= s) ? 0 : -1e9) > (X "/maskg.f32")
-      printf "%d ", (t == s) > (X "/selw.f32"); printf "%d ", (t != s) > (X "/keepw.f32") }
+    printf "%d ", s > (X "/pos.f32")
   }
-  for (c = 0; c < NKV * 64 * 128; c++) { printf "0 " > (X "/zcache.f32"); printf "0 " > (X "/zcachew.f32") }
+  # the caches are rolls (section 19.2): the numbers of the positions, and the mask of a sliding layer over its window, a row a step while the window is not full
+  for (t = 0; t < 64; t++) { printf "%d ", t > (X "/iota.f32"); for (c = 0; c < 64; c++) printf "%s ", ((c <= t && c > t - WIN) ? 0 : -1e9) > (X "/maskw.f32") }
   for (s = 0; s < NS; s++) { for (c = 0; c < D; c++) x[c] = X0[s, c]
     for (l = 0; l < NL; l++) { layer(l, s); if (s == NS - 1) for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (X "/want_out" l ".txt") }
     for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (X "/want_ans.txt") }
@@ -180,10 +181,9 @@ BEGIN {
   for (s = 0; s < NSL; s++) {
     for (c = 0; c < D; c++) { X0[s, c] = ((c * 37 + s * 23 + 11) % 29 - 14) / 8; printf "%s ", X0[s, c] > (XL "/x0.f32") }
     for (c = 0; c < 64; c++) { fr = s / (10000 ^ (c / 64)); CS[s, c] = cos(fr); SN[s, c] = sin(fr); printf "%.17g ", CS[s, c] > (XL "/cos.f32"); printf "%.17g ", SN[s, c] > (XL "/sin.f32") }
-    for (t = 0; t < TL; t++) { printf "%d ", (t == s) > (XL "/sel.f32"); printf "%d ", (t != s) > (XL "/keep.f32"); printf "%s ", ((t <= s) ? 0 : -1e9) > (XL "/maskg.f32") }
-    for (t = 0; t < TWL; t++) { for (ps = s; ps >= 0 && ps % TWL != t; ps--) ; printf "%d ", (s % TWL == t) > (XL "/selw.f32"); printf "%d ", (s % TWL != t) > (XL "/keepw.f32"); printf "%s ", ((ps >= 0 && s - ps < WIN) ? 0 : -1e9) > (XL "/mask.f32") }
+    printf "%d ", s > (XL "/pos.f32")
   }
-  for (c = 0; c < NKV * TL * 128; c++) printf "0 " > (XL "/zcache.f32"); for (c = 0; c < NKV * TWL * 128; c++) printf "0 " > (XL "/zcachew.f32")
+  for (t = 0; t < TL; t++) printf "%d ", t > (XL "/iota.f32"); for (t = 0; t < TWL; t++) for (c = 0; c < TWL; c++) printf "%s ", ((c <= t && c > t - WIN) ? 0 : -1e9) > (XL "/maskw.f32")
   for (s = 0; s < NSL; s++) { for (c = 0; c < D; c++) x[c] = X0[s, c]
     for (l = 0; l < NL; l++) { layer(l, s); if (s == NSL - 1) for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (XL "/want_out" l ".txt") }
     for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (XL "/want_ans.txt") }
@@ -263,11 +263,11 @@ same "its cumulative masses at the last step" "$T/got.txt" "$T/x/want_cum_k.txt"
 # the draws must not all be the arg max, top-p must drop something somewhere and keep more than one somewhere, and both at the last step, whose masses are compared: or a sampler that takes the largest, or one with no top-p, would pass
 if [ "$(awk '$1 != $2' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 < $3' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 > 1' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(tail -1 "$T/x/draw_stats.txt" | awk '{ print ($4 < $3 && $4 > 1 && $5 > 0.002) }')" != 1 ]; then echo "FAIL the reference's draws do not exercise the sampler (id, arg max, kept by top-k, kept by top-p, the dropped candidate's share of the mass): $(tr '\n' ';' < "$T/x/draw_stats.txt")"; fail=1; fi
 if [ "$(sort -u "$T/x/want_ids.txt" | wc -l)" -lt 2 ] || [ "$(awk '{ print int($1 / 64) }' "$T/x/want_ids.txt" | sort -u | wc -l)" -lt 2 ] || [ "$(awk '$1 >= 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ]; then echo "FAIL the reference's four ids do not differ or are all in one chunk: $(tr '\n' ' ' < "$T/x/want_ids.txt")"; fail=1; fi
-# caches that wrap and chunk (section 15): 14 steps, so a sliding layer's ring of 4 slots is gone round three times and an indexed layer's 14 keys lie in four chunks of 4
+# a window that slides and caches in chunks (sections 15 and 19.2): 14 steps, so a sliding layer's window of 4 scanned keys has moved ten times and an indexed layer's 14 keys lie in four chunks of 4
 RX="$T/xl"; RN=$NSL; RT=$TL; RTW=$TWL; RTS=$TWL; REQ=""; CK=1
 run
 if [ ! -s "$T/got_ans.txt" ]; then echo "FAIL the session answered nothing with caches that wrap: $(head -c 300 "$T/err.txt")"; fail=1; fi
-same "a ring of $TWL slots for a window of $WINL, indexed caches of $TL in chunks of $TWL: the row after the last layer at each of $NSL steps" "$T/got_ans.txt" "$T/xl/want_ans.txt"
+same "a window of $WINL keys scanned as $TWL, caches of $TL positions in chunks of $TWL: the row after the last layer at each of $NSL steps" "$T/got_ans.txt" "$T/xl/want_ans.txt"
 l=0; while [ $l -lt $NL ]; do
   if [ -f "$T/xl/out$l.f32" ]; then col "$T/xl/out$l.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
   same "the row after layer $l at the last of them" "$T/got.txt" "$T/xl/want_out$l.txt" > "$T/q.txt"; grep FAIL "$T/q.txt" && fail=1
@@ -275,19 +275,18 @@ l=0; while [ $l -lt $NL ]; do
 done
 if [ -f "$T/xl/logits.f32" ]; then col "$T/xl/logits.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
 same "the logits at the last of them" "$T/got.txt" "$T/xl/want_logits.txt"
-# a sliding layer's softmax in the long form, which the model file takes when the ring is over SHORTW slots (section 18: a server's ring is as long as its positions). The same 14 steps
-# with SHORTW=0: the same rows, since the two forms are one softmax
-REQ=""; CK=0; run SAVE=0 SHORTW=0
-same "the sliding layers in the long softmax (a ring over SHORTW slots): the row after the last layer at each of $NSL steps" "$T/got_ans.txt" "$T/xl/want_ans.txt"
-# seek with a ring that has wrapped (section 17, S1). After $NSL steps a sliding layer's $TWL slots hold the last $TWL positions: a step whose window lies in them runs again as it ran (the last
-# two here), the whole run again from 0 is the whole run, and one step further back is another answer, since the first key of its window was written over. That last is the limit, shown.
-{ i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 2))"; echo 1; echo 1; echo "seek 0"; i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 3))"; echo 1; } > "$T/req_ring.txt"
+# seek over caches that are rolls (section 19.2). After $NSL steps every position is in its block, so a step runs again as it ran from any of them: the last two, the last three (where a
+# ring of $TWL slots had lost the window's first key and the answer was another: section 17.6), from the middle, and the whole run from 0
+{ i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 2))"; echo 2; echo "seek $((NSL - 3))"; echo 1; echo "seek 5"; echo 1; echo 1; echo "seek 0"; i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; } > "$T/req_ring.txt"
 REQ="$T/req_ring.txt"; CK=0; run SAVE=0
-lines $((NSL - 1)) $NSL "$T/want.txt"; lines $((NSL + 2)) $((NSL + 3)) "$T/got.txt"
-same "back two steps in a ring of $TWL slots that has wrapped: the two steps again, exactly" "$T/got.txt" "$T/want.txt" 0
-lines 1 $NSL "$T/want.txt"; lines $((NSL + 5)) $((2 * NSL + 4)) "$T/got.txt"
+lines $NSL $NSL "$T/want.txt"; lines $((NSL + 2)) $((NSL + 2)) "$T/got.txt"
+same "back two steps, both in one request: the last step's row again, exactly" "$T/got.txt" "$T/want.txt" 0
+lines $((NSL - 2)) $((NSL - 2)) "$T/want.txt"; lines $((NSL + 4)) $((NSL + 4)) "$T/got.txt"
+same "back three steps, past a window of $WINL: that step's row again, exactly" "$T/got.txt" "$T/want.txt" 0
+lines 6 7 "$T/want.txt"; lines $((NSL + 6)) $((NSL + 7)) "$T/got.txt"
+same "back to step 5: its row and the next again, exactly" "$T/got.txt" "$T/want.txt" 0
+lines 1 $NSL "$T/want.txt"; lines $((NSL + 9)) $((2 * NSL + 8)) "$T/got.txt"
 same "back to 0 after it: the $NSL steps again, exactly" "$T/got.txt" "$T/want.txt" 0
-lines $((NSL - 2)) $((NSL - 2)) "$T/want.txt"; lines $((2 * NSL + 6)) $((2 * NSL + 6)) "$T/got.txt"
-if [ -s "$T/got.txt" ] && ! cmp -s "$T/got.txt" "$T/want.txt"; then echo "ok   back three steps, past what the ring still holds: another answer (the limit, not a promise)"; else echo "FAIL back three steps in a ring of $TWL slots answered as the first time or not at all: the ring is not what the test thinks"; fail=1; fi
+[ -s "$T/got.txt" ] || { echo "FAIL the seeks answered nothing: $(head -c 300 "$T/err.txt")"; fail=1; }
 [ "$fail" -eq 0 ] && echo "kstep: ok"
 exit $fail
