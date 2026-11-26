@@ -1,0 +1,118 @@
+#!/bin/sh
+# Kolibri 1.1 on the Metal GPU, from a text to its answer (docs/kolibri.md section 16):
+#
+#     scripts/kolibri [--max N] [--greedy | --seed S] [--effort none|low|medium|high] [--system FILE] [--raw] [-o DIR] [--] TEXT
+#     scripts/kolibri ... -f FILE
+#
+# The text is one user message of the model's chat template (`--raw`: the text as it is, no template); the answer is printed, and a line of what was done goes to standard error. It samples
+# with the file's settings (temperature 1, the 128 largest, top-p 0.99) and the seed (1), or takes the arg max (`--greedy`), for at most N new tokens (256), and stops at either of the file's
+# two end tokens. A run is at most the 2,184 positions the model's indexed layers see whole. `-o DIR` keeps the run's files there (else a temporary directory, removed).
+# The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
+# written on the first run: 41 GB. One GPU job at a time, by the lock scripts/media takes.
+# For the gate (tests/kolibri_cmd.sh), which has no model and no GPU: KOLIBRI_SESSION and KOLIBRI_TOK name the session's and the tokenizer's programs.
+# Exit 0; 2 for a usage mistake; else the status of the program that failed, its refusal on standard error.
+HERE=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
+CACHE=${CANCHO_MEDIA_CACHE:-$HOME/.cache/cancho-media}
+G=${KOLIBRI_GGUF:-$CACHE/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf}
+W=${KOLIBRI_WEIGHTS:-$CACHE/kolibri-w}
+SESSION=${KOLIBRI_SESSION:-$HERE/build/cancho-gpu-metal-session}
+TOK=${KOLIBRI_TOK:-$HERE/build/cancho-gpu}
+K=$HERE/build/kolibri_gpu
+usage() { echo "kolibri: $1" >&2; echo "usage: scripts/kolibri [--max N] [--greedy | --seed S] [--effort none|low|medium|high] [--system FILE] [--raw] [-o DIR] [--] TEXT | -f FILE" >&2; exit 2; }
+number() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ ${#1} -le 7 ]; }
+max=256; samp=1; seed=1; effort=high; system=""; raw=0; out=""; file=""; text=""; have=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --max) [ $# -ge 2 ] && number "$2" && [ "$2" -ge 1 ] || usage "--max takes a whole number of new tokens, 1 or more"; max=$2; shift 2 ;;
+    --seed) [ $# -ge 2 ] && number "$2" || usage "--seed takes a whole number of at most 7 digits"; seed=$2; shift 2 ;;
+    --greedy) samp=0; shift ;;
+    --effort) [ $# -ge 2 ] || usage "--effort takes none, low, medium or high"; case "$2" in none|low|medium|high) effort=$2 ;; *) usage "--effort takes none, low, medium or high" ;; esac; shift 2 ;;
+    --system) [ $# -ge 2 ] && [ -f "$2" ] || usage "--system takes a file"; system=$2; shift 2 ;;
+    --raw) raw=1; shift ;;
+    -o) [ $# -ge 2 ] || usage "-o takes a directory"; out=$2; shift 2 ;;
+    -f) [ $# -ge 2 ] && [ -f "$2" ] || usage "-f takes a file"; file=$2; shift 2 ;;
+    --) shift; [ $# -eq 1 ] || usage "one text after --"; text=$1; have=1; shift ;;
+    -*) usage "no option $1" ;;
+    *) [ $have -eq 0 ] || usage "one text (quote it)"; text=$1; have=1; shift ;;
+  esac
+done
+if [ -n "$file" ]; then [ $have -eq 0 ] || usage "a text or -f FILE, not both"; else [ $have -eq 1 ] || usage "no text"; fi
+[ $raw -eq 0 ] || [ -z "$system" ] || usage "--raw writes no template: it takes no --system"
+[ -x "$K" ] || { echo "kolibri: build/kolibri_gpu is not built: CANCHO=<pinned cancho> scripts/build-kolibri.sh" >&2; exit 2; }
+[ -x "$SESSION" ] || { echo "kolibri: $SESSION is not built: scripts/build-metal-session.sh" >&2; exit 2; }
+[ -f "$G" ] || { echo "kolibri: the model's file is not at $G (KOLIBRI_GGUF names another)" >&2; exit 2; }
+# the run's directory, absolute and with no `..` in it
+if [ -n "$out" ]; then mkdir -p "$out" || exit 1; D=$(cd "$out" && pwd -P) || exit 1; else D=$(cd "$(mktemp -d)" && pwd -P) || exit 1; fi
+LOCK=$CACHE/gpu.lock
+cleanup() { [ -n "$out" ] || rm -rf "$D"; [ -z "${locked:-}" ] || rm -f "$LOCK"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+if [ -n "$file" ]; then cat "$file" > "$D/user.txt" || exit 1; else printf '%s' "$text" > "$D/user.txt"; fi
+if [ $raw -eq 1 ]; then cp "$D/user.txt" "$D/prompt.txt"
+elif [ -n "$system" ]; then cat "$system" > "$D/system.txt" || exit 1; "$K" prompt "$D/user.txt" "$effort" "$D/system.txt" > "$D/prompt.txt" || exit $?
+else "$K" prompt "$D/user.txt" "$effort" > "$D/prompt.txt" || exit $?; fi
+"$TOK" tokenize "${KOLIBRI_TOKENIZER:-$G}" "$D/prompt.txt" > "$D/tok.txt" || { rc=$?; head -1 "$D/tok.txt" >&2; exit $rc; }
+awk '/^ids / { for (i = 3; i <= NF; i++) printf "%s ", $i; printf "\n"; n++ } END { exit n == 1 ? 0 : 1 }' "$D/tok.txt" > "$D/ids.txt" || { echo "kolibri: the tokenizer did not print one line of ids" >&2; exit 1; }
+np=$(wc -w < "$D/ids.txt" | tr -d ' ')
+[ "$np" -ge 1 ] || { echo "kolibri: the text has no tokens" >&2; exit 2; }
+set -- $("$K" ends "$G") || exit 1
+[ $# -eq 3 ] || { "$K" ends "$G" > /dev/null; exit 1; }
+end1=$1; end2=$2; whole=$3
+# step np - 1 chooses the first new token: np - 1 + max steps, no more than the model sees whole
+[ "$np" -le "$whole" ] || { echo "kolibri: the prompt is $np tokens, more than the $whole positions this step holds" >&2; exit 2; }
+[ $((np - 1 + max)) -le "$whole" ] || max=$((whole - np + 1))
+steps=$((np - 1 + max))
+[ "$steps" -ge "$np" ] || steps=$np
+if [ ! -f "$W/head.f32" ]; then
+  echo "kolibri: writing the weights as the device reads them to $W (41 GB for Kolibri 1.1), once" >&2
+  mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
+fi
+mkdir -p "$D/x" || exit 1
+"$K" inputs "$G" "$D/ids.txt" "$D/x" $(((steps + 63) / 64 * 64)) "$steps" "$seed" > /dev/null || exit $?
+mkdir -p "$CACHE"
+if [ -e "$LOCK" ]; then
+  pid=$(cat "$LOCK" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "kolibri: another GPU job is running (pid $pid): one at a time" >&2; exit 2; fi
+fi
+echo $$ > "$LOCK"; locked=1
+mkfifo "$D/in" "$D/ans" || exit 1
+# The session in a subshell that says `exit <status>` after it: a session that stops, at once or later, is then an answer to read and not a pipe nobody writes to.
+( "$SESSION" "$HERE/models/kolibri_step.model" CHX="$HERE/tests/chx" W="$W" X="$D/x" T=$(((steps + 63) / 64 * 64)) NS="$steps" GEN=1 SAMP=$samp SAVE=0 2> "$D/err.txt"; echo "exit $?" ) < "$D/in" > "$D/ans" &
+trap '' PIPE
+exec 3> "$D/in" 4< "$D/ans"
+rc=""
+ask() { # a request: its answer in $a; 1 when the session has stopped
+  [ -z "$rc" ] || return 1
+  echo "$1" >&3 2>/dev/null || true
+  read -r a <&4 || { rc=1; return 1; }
+  case "$a" in "exit "*) rc=${a#exit }; return 1 ;; esac
+}
+t0=$(date +%s)
+# the prompt but its last token as one request, its answer not read as a token
+[ "$np" -le 1 ] || ask $((np - 1)) || true
+t1=$(date +%s)
+n=0; why="the limit of $max new tokens"
+while [ -z "$rc" ] && [ "$n" -lt "$max" ]; do
+  ask 1 || break
+  n=$((n + 1))
+  id=$(printf '%.0f' "$a" 2>/dev/null) || { bad=$a; break; }
+  if [ "$id" = "$end1" ] || [ "$id" = "$end2" ]; then why="the end token $id"; n=$((n - 1)); break; fi
+done
+t2=$(date +%s)
+[ -n "$rc" ] || [ -n "${bad:-}" ] || ask checkpoint || true
+exec 3>&-
+# what is left to read ends with the subshell's line
+while [ -z "$rc" ]; do read -r a <&4 || { rc=1; break; }; case "$a" in "exit "*) rc=${a#exit } ;; esac; done
+exec 4<&-
+wait
+if [ -n "${bad:-}" ]; then echo "kolibri: the session answered \`$bad\`, which is no id" >&2; exit 1; fi
+if [ "$rc" != 0 ]; then echo "kolibri: the session stopped (status $rc)" >&2; head -c 2000 "$D/err.txt" >&2; case "$rc" in ''|*[!0-9]*) rc=1 ;; esac; exit "$rc"; fi
+# the ids the steps chose, from the first new one; the answer is the n before the end token
+"$K" ids "$D/x/ids_out.f32" $((np - 1)) > "$D/all.txt" || exit $?
+awk -v n="$n" '{ for (i = 1; i <= n; i++) printf "%s ", $i; printf "\n" }' "$D/all.txt" > "$D/answer_ids.txt"
+if [ "$n" -gt 0 ]; then
+  "$TOK" detokenize "${KOLIBRI_TOKENIZER:-$G}" "$D/answer_ids.txt" > "$D/dec.txt" || exit $?
+  "$K" say "$D/dec.txt" || exit $?
+fi
+echo
+echo "kolibri: a prompt of $np tokens in $((t1 - t0)) s (with the first request's load); $n new tokens in $((t2 - t1)) s; stopped at $why" >&2

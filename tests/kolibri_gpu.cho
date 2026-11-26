@@ -22,6 +22,8 @@ edition 5;
 // For a sampling step (SAMP=1, section 14) `weights` also writes ciota.f32, cslot.f32, czero.f32, ctri.f32 and tri64.f32 (for the file's own top-k made a multiple of 24), and `inputs` u.f32: a uniform number a step
 // from the seed (1 if not given).
 // `ids` prints the whole numbers of a saved ids_out.f32 from an index on, on one line.
+// For the command (scripts/kolibri, section 16): `prompt` prints the model's chat template for one user message (a text file), a reasoning effort (none, low, medium, high) and a system message
+// or none; `ends` prints the file's two end tokens (its eos and its padding token) and the most steps of a run; `say` prints the bytes of the quoted line `cancho-gpu detokenize` writes (`dec "..."`).
 // `argmax` prints `argmax <index> value <v> margin <v - the second largest>` for a file of f32: the next token from the session's saved logits.
 //
 // Exit 0; 1 with every refusal as `error[<rule>]: <message>` (kolibri-read, kolibri-meta, kolibri-tensor, kolibri-ids, kolibri-context, kolibri-write, or the GGUF reader's own); 2 for a usage mistake
@@ -688,6 +690,11 @@ fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path
     return 0;
 }
 
+// The positions an indexed layer sees whole, for the file's `indexer.top_k`.
+fn whole_of(top: int) -> [] int {
+    return top + 8 + 128;
+}
+
 // The whole number of at most 7 digits `h`, or -1.
 fn count_of[&t](t: &!t [byte], h: int) -> [] int {
     var v = 0;
@@ -757,7 +764,7 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     }
     // past these an indexed layer's query attends to a selection of the keys (the indexer), which the step's model file does not have: the file's top_k, and the first 8 and the last 128
     // keys, which are the model's configuration (index_num_sink_tokens, index_num_local_tokens) and not in the file
-    let whole = top + 8 + 128;
+    let whole = whole_of(top);
     if nst > whole {
         return err.fail(m, t, "kolibri-context", text.n2(m, t, "$ steps are past the $ positions an indexed layer sees whole: the indexer is not written", nst, whole));
     }
@@ -939,6 +946,137 @@ fn ids_of[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     return 0;
 }
 
+// A file of at most 4 MiB as a text, or -1 with the refusal.
+fn whole_file[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] int {
+    let (top, got, size) = fileio.prefix(m, t, fs, path, 4194304);
+    if top < 0 || size > got {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "cannot read $ (or it is over 4 MiB)", text.from_bytes(m, t, path)));
+    }
+    return text.handle(top, got);
+}
+
+// The model's chat template (`tokenizer.chat_template`) for what scripts/kolibri asks: a system block with the system message, if there is one, and the reasoning sentence of the effort;
+// the user's message; the assistant's opening, and with no reasoning the empty think block. The messages' bytes are written as they are, as the template writes them.
+fn prompt[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
+    let effort = arg(args, 3);
+    let none = is_word(effort, "none");
+    if !none && !is_word(effort, "low") && !is_word(effort, "medium") && !is_word(effort, "high") {
+        return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the effort is none, low, medium or high"));
+    }
+    let user = whole_file(m, t, fs, arg(args, 2));
+    if user < 0 {
+        return 0 - 1;
+    }
+    var system = 0 - 1;
+    if arg_count(args) == 5 {
+        system = whole_file(m, t, fs, arg(args, 4));
+        if system < 0 {
+            return 0 - 1;
+        }
+    }
+    io.write_all(io, "<|im_start|>system\n");
+    if system >= 0 {
+        io.write_all(io, text.bytes(t, system));
+        io.write_all(io, "\n\n");
+    }
+    io.write_all(io, "# Reasoning effort\n\n");
+    if none {
+        io.write_all(io, "Reasoning is disabled. Proceed straight to answering according to the user's instructions.");
+    } else if is_word(effort, "low") {
+        io.write_all(io, "Reasoning effort is set to low. Think briefly through only the essential steps in the user's language, then proceed directly to the answer.");
+    } else if is_word(effort, "medium") {
+        io.write_all(io, "Reasoning effort is set to medium. Think through the task methodically in the user's language, check key assumptions, and provide a well-supported answer.");
+    } else {
+        io.write_all(io, "Reasoning effort is set to high. Think carefully through the task in the user's language, validate key assumptions, consider plausible alternatives, and prioritize correctness and clarity.");
+    }
+    io.write_all(io, "<|im_end|>\n<|im_start|>user\n");
+    io.write_all(io, text.bytes(t, user));
+    io.write_all(io, "<|im_end|>\n<|im_start|>assistant\n");
+    if none {
+        io.write_all(io, "<think>\n\n</think>\n\n");
+    }
+    return 0;
+}
+
+// The file's two end tokens, and the most steps a run may have (`inputs` refuses more), on one line: a generation stops at either token (the model's generation_config.json names both; in the
+// GGUF they are the eos and the padding token).
+fn ends[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
+    let file = open_gguf(m, t, fs, arg(args, 2));
+    if file < 0 {
+        return 0 - 1;
+    }
+    let g = m[file + 3];
+    let eos = meta_int(m, t, g, "tokenizer.ggml.eos_token_id");
+    let pad = meta_int(m, t, g, "tokenizer.ggml.padding_token_id");
+    let top = meta_int(m, t, g, "kolibri1.attention.indexer.top_k");
+    if eos < 0 || pad < 0 || top < 0 || err.failed(m) {
+        return 0 - 1;
+    }
+    io.write_all(io, text.bytes(t, text.num(m, t, eos)));
+    io.write_all(io, " ");
+    io.write_all(io, text.bytes(t, text.num(m, t, pad)));
+    io.write_all(io, " ");
+    io.write_all(io, text.bytes(t, text.num(m, t, whole_of(top))));
+    io.write_all(io, "\n");
+    return 0;
+}
+
+// A hexadecimal digit's value, or -1.
+fn hex_of(c: int) -> [] int {
+    if c >= 48 && c <= 57 {
+        return c - 48;
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87;
+    }
+    return 0 - 1;
+}
+
+// The bytes of the one line `dec "..."` that `cancho-gpu detokenize` writes for a line of ids: `\"` and `\\` are those two bytes, `\xhh` the byte hh, every other byte itself.
+fn say[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
+    let line = whole_file(m, t, fs, arg(args, 2));
+    if line < 0 {
+        return 0 - 1;
+    }
+    let n = text.size(line);
+    let at = text.start(line);
+    if n < 7 || !text.starts_with(t, line, "dec \"") || int_of(t[at + n - 2]) != 34 || int_of(t[at + n - 1]) != 10 {
+        return err.fail(m, t, "kolibri-read", text.lit(m, t, "the file is not one line `dec \"...\"`"));
+    }
+    let from = text.begin(m);
+    var k = 5;
+    var good = true;
+    while good && k < n - 2 {
+        let c = int_of(t[at + k]);
+        if c == 92 {
+            var d = 0 - 1;
+            if k + 1 < n - 2 {
+                d = int_of(t[at + k + 1]);
+            }
+            if d == 34 || d == 92 {
+                text.put_byte(m, t, byte_of(d));
+                k = k + 2;
+            } else if d == 120 && k + 3 < n - 2 && hex_of(int_of(t[at + k + 2])) >= 0 && hex_of(int_of(t[at + k + 3])) >= 0 {
+                text.put_byte(m, t, byte_of(hex_of(int_of(t[at + k + 2])) * 16 + hex_of(int_of(t[at + k + 3]))));
+                k = k + 4;
+            } else {
+                good = false;
+            }
+        } else if c == 34 || c < 32 || c >= 127 {
+            good = false;
+        } else {
+            text.put_byte(m, t, byte_of(c));
+            k = k + 1;
+        }
+    }
+    let out = text.finish(m, from);
+    if !good {
+        return err.fail(m, t, "kolibri-read", text.lit(m, t, "the quoted line has a byte or an escape `cancho-gpu detokenize` does not write"));
+    }
+    io.write_all(io, text.bytes(t, out));
+    return 0;
+}
+
 fn is_word[&a](x: &a [byte], y: &static [byte]) -> [] bool {
     if len(x) != len(y) {
         return false;
@@ -977,9 +1115,15 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = argmax(m, t, io, fs, args);
     } else if arg_count(args) == 4 && is_word(arg(args, 1), "ids") {
         status = ids_of(m, t, io, fs, args);
+    } else if (arg_count(args) == 4 || arg_count(args) == 5) && is_word(arg(args, 1), "prompt") {
+        status = prompt(m, t, io, fs, args);
+    } else if arg_count(args) == 3 && is_word(arg(args, 1), "ends") {
+        status = ends(m, t, io, fs, args);
+    } else if arg_count(args) == 3 && is_word(arg(args, 1), "say") {
+        status = say(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<seed>]] | argmax <f32 file> | ids <f32 file> <from>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<seed>]] | argmax <f32 file> | ids <f32 file> <from> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {
