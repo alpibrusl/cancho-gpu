@@ -258,7 +258,7 @@ def markdown(results, args, mach):
             "* **load s**: from starting to being ready to generate (for cancho-gpu: tokenizer, kernel compilation and "
             "the weights; for Ollama: the cold load its API reports; for MLX and transformers: reading the checkpoint).",
             "* **prefill tok/s**: prompt tokens over the time to the first generated token (it includes that token's own "
-            "computation). cancho-gpu takes the prompt eight tokens at a time; the others batch more.",
+            "computation). cancho-gpu's 0.5B runner takes the prompt a token at a time; its 27B runner in passes of several chunks of 16 and 8 tokens (`docs/serving.md` sections 8.7 and 9.3); the others batch more.",
             "* **decode tok/s**: generated tokens after the first over the time they took, as the runtime or this "
             "script measures it (`--timing` for cancho-gpu, MLX's own report, Ollama's `eval_duration`, the difference of "
             "two `generate` calls for transformers).",
