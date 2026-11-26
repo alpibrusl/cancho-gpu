@@ -1,8 +1,8 @@
 # Qwen3.8-27B in `.chx`
 
 > **Status: Qwen3.8-27B runs on a Metal GPU in cancho and agrees with the reference
-> implementation's golden log-probabilities (§4); 27.4 tokens a second, 39.9 with the model's
-> own draft head, against Ollama's 45.3 in the same benchmark run (§5, `docs/benchmark.md`).**
+> implementation's golden log-probabilities (§4); 27.9 tokens a second, 43.6 with the model's
+> own draft head, against Ollama's 45.5 in the same benchmark run (§5, `docs/benchmark.md`).**
 
 The model is `qwen3.8:27b-mlx`: 64 layers, hidden 5120, NVFP4 weights (4-bit E2M1 codes,
 an E4M3 scale per 16 values, one f32 scale per tensor), `model_type: qwen3_5`. It
