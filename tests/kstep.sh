@@ -5,6 +5,8 @@
 # the last layer at every step, and after the last step the row after every layer and the logits.
 # Then the same model generating (GEN=1): from a prompt of two ids, the id each step chooses, awk's arg max over awk's logits; and sampling (SAMP=1): the id each step draws, awk's sampler of
 # the same definition with the same four uniform numbers.
+# Then (section 15) caches that wrap and chunk: the same ten layers for 14 steps with chunks of 4 keys, a window of 3 in a sliding layer's ring of 4 slots and indexed caches of 16, against the
+# same awk, which has no ring and no chunks: the row after the last layer at every step, the row after every layer and the logits at the last.
 # First fp4_round.chx alone on values that sit on its thresholds, where tests/kernels.py's made-up table and values never are: ties go to even, the scale stays in [2^-9, 448].
 # KSTEP_MODEL=<file> runs another model file: the mutants of the model, by hand.
 set -eu
@@ -14,7 +16,7 @@ T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 fail=0
 CHX=$(pwd)/tests/chx
-mkdir "$T/w" "$T/x"
+mkdir "$T/w" "$T/x" "$T/xl"
 awk -v T="$T" '
 function rne(v,   f, d) { f = int(v); d = v - f; if (d > 0.5 || (d == 0.5 && f % 2 == 1)) f++; return f }   # v >= 0, to the nearest whole number, ties to even
 function e4m3(x,   e, p) { if (x < 2^-9) x = 2^-9; if (x > 448) x = 448; e = -9; p = 2^-9; while (p * 2 <= x) { p *= 2; e++ } if (e < -6) return rne(x / 2^-9) * 2^-9; x = rne(x / p * 8) / 8 * p; return x > 448 ? 448 : x }
@@ -58,8 +60,8 @@ mutant() { # name, sed expression
 mutant "the largest magnitude is 5" 's|let w7  = s7 \* 2.0|let w7  = s7 * 1.0|'
 mutant "a value at 0.75 goes down" 's|let b2  = &ng + 0.75|let b2  = \&ng + 0.7500001|'
 
-D=64; NQ=4; NKV=2; NE=64; EH=32; K=2; NS=4; WIN=2; NL=10; V=2048; KC=24; TOPK=5; INVT=1.5; PC=0.4
-awk -v D=$D -v NQ=$NQ -v NKV=$NKV -v NE=$NE -v EH=$EH -v K=$K -v NS=$NS -v WIN=$WIN -v NL=$NL -v V=$V -v KCH=$KC -v TOPK=$TOPK -v INVT=$INVT -v PC=$PC -v W="$T/w" -v X="$T/x" '
+D=64; NQ=4; NKV=2; NE=64; EH=32; K=2; NS=4; WIN=2; NL=10; V=2048; KC=24; TOPK=5; INVT=1.5; PC=0.4; NSL=14; WINL=3; TWL=4; TL=16
+awk -v D=$D -v NQ=$NQ -v NKV=$NKV -v NE=$NE -v EH=$EH -v K=$K -v NS=$NS -v WIN=$WIN -v NL=$NL -v V=$V -v KCH=$KC -v TOPK=$TOPK -v INVT=$INVT -v PC=$PC -v W="$T/w" -v X="$T/x" -v XL="$T/xl" -v NSL=$NSL -v WINL=$WINL -v TWL=$TWL -v TL=$TL '
 function rne(v,   f, d) { f = int(v); d = v - f; if (d > 0.5 || (d == 0.5 && f % 2 == 1)) f++; return f }
 function e4m3(x,   e, p) { if (x < 2^-9) x = 2^-9; if (x > 448) x = 448; e = -9; p = 2^-9; while (p * 2 <= x) { p *= 2; e++ } if (e < -6) return rne(x / 2^-9) * 2^-9; x = rne(x / p * 8) / 8 * p; return x > 448 ? 448 : x }
 function e2m1(m,   st) { if (m > 6) m = 6; st = m < 2 ? 0.5 : (m < 4 ? 1 : 2); return rne(m / st) * st }
@@ -137,9 +139,10 @@ BEGIN {
   for (s = 0; s < NS; s++) {
     for (c = 0; c < D; c++) { X0[s, c] = ((c * 37 + s * 23 + 11) % 29 - 14) / 8; printf "%s ", X0[s, c] > (X "/x0.f32") }
     for (c = 0; c < 64; c++) { fr = s / (10000 ^ (c / 64)); CS[s, c] = cos(fr); SN[s, c] = sin(fr); printf "%.17g ", CS[s, c] > (X "/cos.f32"); printf "%.17g ", SN[s, c] > (X "/sin.f32") }
-    for (t = 0; t < 64; t++) { printf "%d ", (t == s) > (X "/sel.f32"); printf "%d ", (t != s) > (X "/keep.f32"); printf "%s ", ((t <= s && t > s - WIN) ? 0 : -1e9) > (X "/mask.f32"); printf "%s ", ((t <= s) ? 0 : -1e9) > (X "/maskg.f32") }
+    for (t = 0; t < 64; t++) { printf "%d ", (t == s) > (X "/sel.f32"); printf "%d ", (t != s) > (X "/keep.f32"); printf "%s ", ((t <= s && t > s - WIN) ? 0 : -1e9) > (X "/mask.f32"); printf "%s ", ((t <= s) ? 0 : -1e9) > (X "/maskg.f32")
+      printf "%d ", (t == s) > (X "/selw.f32"); printf "%d ", (t != s) > (X "/keepw.f32") }
   }
-  for (c = 0; c < NKV * 64 * 128; c++) printf "0 " > (X "/zcache.f32")
+  for (c = 0; c < NKV * 64 * 128; c++) { printf "0 " > (X "/zcache.f32"); printf "0 " > (X "/zcachew.f32") }
   for (s = 0; s < NS; s++) { for (c = 0; c < D; c++) x[c] = X0[s, c]
     for (l = 0; l < NL; l++) { layer(l, s); if (s == NS - 1) for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (X "/want_out" l ".txt") }
     for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (X "/want_ans.txt") }
@@ -171,6 +174,20 @@ BEGIN {
     for (l = 0; l < NL; l++) layer(l, s)
     rms(x, 999, D, fnv); for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; LG[r] = z }
     nxt = draw(UU[s + 1]); printf "%d\n", nxt > (X "/want_draws_k.txt"); if (s == NS - 1) for (r = 0; r < KCH; r++) printf "%.9g\n", CU[r] > (X "/want_cum_k.txt") }
+  # section 15: NSL steps with a window of WINL keys. The tables are for the ring of TWL slots of a sliding layer (slot t holds the last position ps <= s with ps % TWL == t, if there is one, and is
+  # seen when that position is in the window) and the TL positions of an indexed one; layer() above knows neither a ring nor a chunk, only the window
+  WIN = WINL
+  for (s = 0; s < NSL; s++) {
+    for (c = 0; c < D; c++) { X0[s, c] = ((c * 37 + s * 23 + 11) % 29 - 14) / 8; printf "%s ", X0[s, c] > (XL "/x0.f32") }
+    for (c = 0; c < 64; c++) { fr = s / (10000 ^ (c / 64)); CS[s, c] = cos(fr); SN[s, c] = sin(fr); printf "%.17g ", CS[s, c] > (XL "/cos.f32"); printf "%.17g ", SN[s, c] > (XL "/sin.f32") }
+    for (t = 0; t < TL; t++) { printf "%d ", (t == s) > (XL "/sel.f32"); printf "%d ", (t != s) > (XL "/keep.f32"); printf "%s ", ((t <= s) ? 0 : -1e9) > (XL "/maskg.f32") }
+    for (t = 0; t < TWL; t++) { for (ps = s; ps >= 0 && ps % TWL != t; ps--) ; printf "%d ", (s % TWL == t) > (XL "/selw.f32"); printf "%d ", (s % TWL != t) > (XL "/keepw.f32"); printf "%s ", ((ps >= 0 && s - ps < WIN) ? 0 : -1e9) > (XL "/mask.f32") }
+  }
+  for (c = 0; c < NKV * TL * 128; c++) printf "0 " > (XL "/zcache.f32"); for (c = 0; c < NKV * TWL * 128; c++) printf "0 " > (XL "/zcachew.f32")
+  for (s = 0; s < NSL; s++) { for (c = 0; c < D; c++) x[c] = X0[s, c]
+    for (l = 0; l < NL; l++) { layer(l, s); if (s == NSL - 1) for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (XL "/want_out" l ".txt") }
+    for (c = 0; c < D; c++) printf "%.9g\n", x[c] > (XL "/want_ans.txt") }
+  rms(x, 999, D, fnv); for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; printf "%.9g\n", z > (XL "/want_logits.txt") }
 }
 function draw(uu,   dj, lk, q, c, r, best, used, n, j, i, done, gmax, nk, mm, mmax, tot, t, rs, tl, lc, col) {
   for (q = 0; q < V / 64; q++) { cmx[q] = LG[q * 64]; for (c = 1; c < 64; c++) if (LG[q * 64 + c] > cmx[q]) cmx[q] = LG[q * 64 + c] }
@@ -192,9 +209,10 @@ function draw(uu,   dj, lk, q, c, r, best, used, n, j, i, done, gmax, nk, mm, mm
 }
 # the head: rows 2k and 2k + 1 are near each other, so that large logits come in pairs inside a chunk of 64 (a candidate top-p drops can then lie before one it keeps)
 function hd(r, c) { return ((int(r / 2) * 29 + c * 13) % 31 - 15) / 32 + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) / 64 }'
+RX="$T/x"; RN=$NS; RT=64; RTW=64; RTS=64   # a run's tables, its steps, an indexed layer's positions, a sliding layer's slots, the keys a chunk
 run() { # the model file's extra arguments
-  { i=0; while [ $i -lt $NS ]; do echo 1; i=$((i + 1)); done; echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$T/x" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$V BN=32 T=64 NS=$NS L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
-  head -n $NS "$T/out.txt" | head -c 200000 | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got_ans.txt" || true
+  { i=0; while [ $i -lt $RN ]; do echo 1; i=$((i + 1)); done; echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$RX" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$V BN=32 T=$RT TW=$RTW TS=$RTS NS=$RN L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
+  head -n $RN "$T/out.txt" | head -c 200000 | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got_ans.txt" || true
 }
 col() { od -A n -v -t fF "$1" | tr -s ' \n' '\n\n' | grep -v '^$' > "$2" || true; }   # a save is binary f32 whatever the session's files are
 run
@@ -228,5 +246,17 @@ same "its cumulative masses at the last step" "$T/got.txt" "$T/x/want_cum_k.txt"
 # the draws must not all be the arg max, top-p must drop something somewhere and keep more than one somewhere, and both at the last step, whose masses are compared: or a sampler that takes the largest, or one with no top-p, would pass
 if [ "$(awk '$1 != $2' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 < $3' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 > 1' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(tail -1 "$T/x/draw_stats.txt" | awk '{ print ($4 < $3 && $4 > 1 && $5 > 0.002) }')" != 1 ]; then echo "FAIL the reference's draws do not exercise the sampler (id, arg max, kept by top-k, kept by top-p, the dropped candidate's share of the mass): $(tr '\n' ';' < "$T/x/draw_stats.txt")"; fail=1; fi
 if [ "$(sort -u "$T/x/want_ids.txt" | wc -l)" -lt 2 ] || [ "$(awk '{ print int($1 / 64) }' "$T/x/want_ids.txt" | sort -u | wc -l)" -lt 2 ] || [ "$(awk '$1 >= 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ]; then echo "FAIL the reference's four ids do not differ or are all in one chunk: $(tr '\n' ' ' < "$T/x/want_ids.txt")"; fail=1; fi
+# caches that wrap and chunk (section 15): 14 steps, so a sliding layer's ring of 4 slots is gone round three times and an indexed layer's 14 keys lie in four chunks of 4
+RX="$T/xl"; RN=$NSL; RT=$TL; RTW=$TWL; RTS=$TWL
+run
+if [ ! -s "$T/got_ans.txt" ]; then echo "FAIL the session answered nothing with caches that wrap: $(head -c 300 "$T/err.txt")"; fail=1; fi
+same "a ring of $TWL slots for a window of $WINL, indexed caches of $TL in chunks of $TWL: the row after the last layer at each of $NSL steps" "$T/got_ans.txt" "$T/xl/want_ans.txt"
+l=0; while [ $l -lt $NL ]; do
+  if [ -f "$T/xl/out$l.f32" ]; then col "$T/xl/out$l.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
+  same "the row after layer $l at the last of them" "$T/got.txt" "$T/xl/want_out$l.txt" > "$T/q.txt"; grep FAIL "$T/q.txt" && fail=1
+  l=$((l + 1))
+done
+if [ -f "$T/xl/logits.f32" ]; then col "$T/xl/logits.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
+same "the logits at the last of them" "$T/got.txt" "$T/xl/want_logits.txt"
 [ "$fail" -eq 0 ] && echo "kstep: ok"
 exit $fail
