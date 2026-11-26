@@ -1,0 +1,104 @@
+edition 5;
+
+// `httpc` -- a test's HTTP client, and no more than that (tests/kolibri_serve.sh): it sends the bytes of a file to a port of this machine and prints what comes back until the peer closes.
+//
+//     httpc <port> <file of a whole request>
+//
+// It speaks to 127.0.0.1 only. Exit 0; 1 when the file cannot be read, the port is no port, or nothing listens there.
+
+import std.io;
+import fileio;
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    release(ffi);
+    release(clock);
+    var status = 1;
+    borrow mut heap as &!h in {
+        var tb = box_slice(h, 8388608, byte_of(0));
+        borrow mut tb as &!tr in {
+            let t = contents(tr);
+            var port = 0;
+            var n = 0 - 1;
+            borrow args as &a in {
+                if arg_count(a) == 3 {
+                    let p = arg(a, 1);
+                    var k = 0;
+                    while k < len(p) && k < 6 && int_of(p[k]) >= 48 && int_of(p[k]) <= 57 {
+                        port = port * 10 + int_of(p[k]) - 48;
+                        k = k + 1;
+                    }
+                    if k < len(p) {
+                        port = 0;
+                    }
+                    borrow fs as &f in {
+                        if fileio.covers(f, arg(a, 2)) {
+                            n = fs_read(f, arg(a, 2), t[0..4194304]);
+                        }
+                    }
+                }
+            }
+            if port >= 1 && port <= 65535 && n >= 0 {
+                borrow net as &nn in {
+                    match tcp_connect(nn, "127.0.0.1", port) {
+                        Dialed::Ok(conn) => {
+                            var c = conn;
+                            borrow mut c as &!ch in {
+                                var off = 0;
+                                var up = true;
+                                while up && off < n {
+                                    match conn_write(ch, t[off..n]) {
+                                        Sent::Wrote(k) => {
+                                            off = off + k;
+                                        }
+                                        Sent::Again => {
+                                            up = false;
+                                        }
+                                        Sent::Failed(e) => {
+                                            up = false;
+                                        }
+                                    }
+                                }
+                                var got = 0;
+                                var open = up;
+                                while open && got < 4194304 {
+                                    match conn_read(ch, t[4194304 + got..8388608]) {
+                                        Received::Data(k) => {
+                                            got = got + k;
+                                        }
+                                        Received::End => {
+                                            open = false;
+                                        }
+                                        Received::Again => {
+                                            open = false;
+                                        }
+                                        Received::Failed(e) => {
+                                            open = false;
+                                        }
+                                    }
+                                }
+                                borrow mut io as &!i in {
+                                    io.write_all(i, t[4194304..4194304 + got]);
+                                }
+                                if up {
+                                    status = 0;
+                                }
+                            }
+                            conn_close(c);
+                        }
+                        Dialed::Failed(e) => {
+                            status = 1;
+                        }
+                    }
+                }
+            }
+        }
+        unbox_slice(h, tb);
+    }
+    release(heap);
+    release(net);
+    release(io);
+    release(fs);
+    release(args);
+    return status;
+}

@@ -1,0 +1,1 @@
+{"messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"One plus one?"},{"role":"assistant","content":"Two."},{"role":"user","content":"And plus one?"}],"max_tokens":1}

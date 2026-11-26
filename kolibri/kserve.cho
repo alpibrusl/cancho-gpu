@@ -1,0 +1,933 @@
+edition 5;
+module kserve;
+
+// `kserve` -- the server of Kolibri 1.1 without its engine (docs/kolibri.md section 18). It reads an HTTP request, turns it into the ids of a prompt, and then says, a line at a time, what
+// the session that holds the model must be asked (`seek 40`, `1 325 1 0.51...`: the request lines of models/kolibri_step.model) and takes the id each line answers, until the answer is
+// whole. It never runs a kernel: `cancho-gpu-kolibri` gives its lines to the Metal session's engine, `cancho-gpu-kolibri-cpu` to the CPU session's, and the gate runs the second on a session
+// that is no model.
+//
+// The routes: POST /api/generate (Ollama's), POST /v1/chat/completions (OpenAI's), GET /health, /v1/models, /api/tags. A connection carries one request.
+//
+// The server remembers the ids the session has run (`have`): a request's ids are compared with them, and the session goes back to where they part and runs the rest.
+//
+// The configuration is a record of 20 (`config`): 0 the port, 1 the model's name, 2 the key (a text, or -1), 3 the steps the session has tables for (its context), 4 a sliding layer's ring
+// (0: as long as the context, so it never wraps), 5 its window, 6 whether the session samples (a request line then carries a number to draw with), 7 and 8 the end tokens (-1: the file's),
+// 9 trace, 10 the GGUF's path, 11 the model file's, 12 the model file's definitions, 13 the tokenizer, 14 `have`, 15 how many ids of it are run, 16 the requests so far, 17 the default of
+// new tokens.
+
+import std.io;
+import std.json;
+import mem;
+import text;
+import err;
+import jstr;
+import chat;
+import fileio;
+import gguf;
+import bpe;
+import kchat;
+import kdraw;
+
+pub fn c_port() -> [] int {
+    return 0;
+}
+
+pub fn c_name() -> [] int {
+    return 1;
+}
+
+pub fn c_key() -> [] int {
+    return 2;
+}
+
+pub fn c_ctx() -> [] int {
+    return 3;
+}
+
+pub fn c_ring() -> [] int {
+    return 4;
+}
+
+pub fn c_window() -> [] int {
+    return 5;
+}
+
+pub fn c_samp() -> [] int {
+    return 6;
+}
+
+pub fn c_trace() -> [] int {
+    return 9;
+}
+
+pub fn c_gguf() -> [] int {
+    return 10;
+}
+
+pub fn c_model() -> [] int {
+    return 11;
+}
+
+pub fn c_defs() -> [] int {
+    return 12;
+}
+
+pub fn c_serial() -> [] int {
+    return 16;
+}
+
+// The largest request taken, in bytes.
+pub fn max_request() -> [] int {
+    return 4194304;
+}
+
+// The bytes of a GGUF read for its tokenizer.
+fn head_cap() -> [] int {
+    return 100663296;
+}
+
+pub fn usage_text() -> [] &static [byte] {
+    return " <gguf> <model file> [--port N] [--name MODEL] [--api-key KEY] [--ctx STEPS] [--ring SLOTS] [--window KEYS] [--greedy] [--end ID] [--max-new N] [--trace] [NAME=value ...]\n";
+}
+
+// A whole number of at most 9 digits, or -1.
+fn count_of[&t](t: &!t [byte], h: int) -> [] int {
+    var v = 0;
+    var digits = text.size(h) > 0 && text.size(h) < 10;
+    var k = 0;
+    while digits && k < text.size(h) {
+        let c = text.at(t, h, k);
+        digits = c >= 48 && c <= 57;
+        v = v * 10 + c - 48;
+        k = k + 1;
+    }
+    if !digits {
+        return 0 - 1;
+    }
+    return v;
+}
+
+// The configuration from the command line, or -1 for a usage mistake.
+pub fn config[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args) -> [args] int {
+    if arg_count(args) < 3 {
+        return 0 - 1;
+    }
+    let cfg = mem.grab(m, 20);
+    m[cfg + c_port()] = 11434;
+    m[cfg + c_name()] = text.lit(m, t, "kolibri-1.1");
+    m[cfg + c_key()] = 0 - 1;
+    m[cfg + c_ctx()] = 2184;
+    m[cfg + c_ring()] = 0;
+    m[cfg + c_window()] = 513;
+    m[cfg + c_samp()] = 1;
+    m[cfg + 7] = 0 - 1;
+    m[cfg + 8] = 0 - 1;
+    m[cfg + c_trace()] = 0;
+    m[cfg + c_gguf()] = text.from_bytes(m, t, arg(args, 1));
+    m[cfg + c_model()] = text.from_bytes(m, t, arg(args, 2));
+    m[cfg + c_defs()] = mem.list(m);
+    m[cfg + 15] = 0;
+    m[cfg + c_serial()] = 0;
+    m[cfg + 17] = 512;
+    var ai = 3;
+    while ai < arg_count(args) {
+        let w = text.from_bytes(m, t, arg(args, ai));
+        var v = 0 - 1;
+        if ai + 1 < arg_count(args) {
+            v = count_of(t, text.from_bytes(m, t, arg(args, ai + 1)));
+        }
+        if text.is(t, w, "--greedy") {
+            m[cfg + c_samp()] = 0;
+        } else if text.is(t, w, "--trace") {
+            m[cfg + c_trace()] = 1;
+        } else if text.is(t, w, "--name") && ai + 1 < arg_count(args) {
+            m[cfg + c_name()] = text.from_bytes(m, t, arg(args, ai + 1));
+            ai = ai + 1;
+        } else if text.is(t, w, "--api-key") && ai + 1 < arg_count(args) {
+            m[cfg + c_key()] = text.from_bytes(m, t, arg(args, ai + 1));
+            ai = ai + 1;
+        } else if text.is(t, w, "--port") && v >= 1 && v <= 65535 {
+            m[cfg + c_port()] = v;
+            ai = ai + 1;
+        } else if text.is(t, w, "--ctx") && v >= 1 && v <= 1048576 {
+            m[cfg + c_ctx()] = v;
+            ai = ai + 1;
+        } else if text.is(t, w, "--ring") && v >= 1 {
+            m[cfg + c_ring()] = v;
+            ai = ai + 1;
+        } else if text.is(t, w, "--window") && v >= 1 {
+            m[cfg + c_window()] = v;
+            ai = ai + 1;
+        } else if text.is(t, w, "--max-new") && v >= 1 {
+            m[cfg + 17] = v;
+            ai = ai + 1;
+        } else if text.is(t, w, "--end") && v >= 0 && m[cfg + 8] < 0 {
+            if m[cfg + 7] < 0 {
+                m[cfg + 7] = v;
+            } else {
+                m[cfg + 8] = v;
+            }
+            ai = ai + 1;
+        } else if text.index_of(t, w, '=', 0) > 0 && !text.starts_with(t, w, "--") {
+            mem.push(m, m[cfg + c_defs()], w);
+        } else {
+            return 0 - 1;
+        }
+        ai = ai + 1;
+    }
+    if m[cfg + c_ring()] > 0 && m[cfg + c_ring()] < m[cfg + c_window()] {
+        return 0 - 1;
+    }
+    return cfg;
+}
+
+fn meta_id[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte]) -> [] int {
+    let r = gguf.find_kv(m, t, g, name);
+    if r < 0 || !gguf.is_int(m[r + 2]) {
+        return 0 - 1;
+    }
+    let v = gguf.int_at(t, m[r + 3], m[r + 2]);
+    if v < 0 || v > 1000000000 {
+        return 0 - 1;
+    }
+    return v;
+}
+
+// The tokenizer and the end tokens of the GGUF, and the memory of what the session has run. 0, or -1 with a refusal.
+pub fn load[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), cfg: int) -> [fs_read(""), file_read] int {
+    let (top, got, size) = fileio.prefix(m, t, fs, text.bytes(t, m[cfg + c_gguf()]), head_cap());
+    if top < 0 {
+        return err.fail(m, t, "kolibri-read", text.f1(m, t, "cannot read $", m[cfg + c_gguf()]));
+    }
+    let g = gguf.parse(m, t, top, top + got);
+    if g < 0 {
+        return 0 - 1;
+    }
+    let tk = bpe.from_gguf(m, t, g);
+    if tk < 0 {
+        return 0 - 1;
+    }
+    m[cfg + 13] = tk;
+    if m[cfg + 7] < 0 {
+        m[cfg + 7] = meta_id(m, t, g, "tokenizer.ggml.eos_token_id");
+        m[cfg + 8] = meta_id(m, t, g, "tokenizer.ggml.padding_token_id");
+    }
+    if m[cfg + 7] < 0 {
+        return err.fail(m, t, "kolibri-meta", text.lit(m, t, "the file names no end token (tokenizer.ggml.eos_token_id), and no --end was given"));
+    }
+    m[cfg + 14] = mem.grab(m, m[cfg + c_ctx()]);
+    m[cfg + 15] = 0;
+    return 0;
+}
+
+// ---------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------
+
+fn lower(c: int) -> [] int {
+    if c >= 65 && c <= 90 {
+        return c + 32;
+    }
+    return c;
+}
+
+// The value of header `name` (lower case) in the head t[from..to) of a request, without the blanks around it, or -1.
+fn header[&t](t: &!t [byte], from: int, to: int, name: &static [byte]) -> [] int {
+    var p = from;
+    while p < to && t[p] != byte_of(10) {
+        p = p + 1;
+    }
+    p = p + 1;
+    while p < to {
+        var q = p;
+        while q < to && t[q] != byte_of(10) {
+            q = q + 1;
+        }
+        var k = 0;
+        var same = true;
+        while same && k < len(name) {
+            if p + k >= q || lower(int_of(t[p + k])) != int_of(name[k]) {
+                same = false;
+            }
+            k = k + 1;
+        }
+        if same && p + len(name) < q && t[p + len(name)] == byte_of(58) {
+            var a = p + len(name) + 1;
+            var b = q;
+            while a < b && (t[a] == byte_of(32) || t[a] == byte_of(9)) {
+                a = a + 1;
+            }
+            while b > a && (t[b - 1] == byte_of(32) || t[b - 1] == byte_of(9) || t[b - 1] == byte_of(13)) {
+                b = b - 1;
+            }
+            return text.handle(a, b - a);
+        }
+        p = q + 1;
+    }
+    return 0 - 1;
+}
+
+// The offset of the blank line that ends a head in t[from..to), or -1.
+fn head_end[&t](t: &!t [byte], from: int, to: int) -> [] int {
+    var p = from;
+    while p + 3 < to {
+        if t[p] == byte_of(13) && t[p + 1] == byte_of(10) && t[p + 2] == byte_of(13) && t[p + 3] == byte_of(10) {
+            return p;
+        }
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+// All of `h` to the peer; -1 when it is gone.
+pub fn send_all[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, h: int) -> [conn_write] int {
+    var off = 0;
+    let n = text.size(h);
+    while off < n {
+        match conn_write(ch, text.bytes(t, text.handle(text.start(h) + off, n - off))) {
+            Sent::Wrote(k) => {
+                off = off + k;
+            }
+            Sent::Again => {
+                return 0 - 1;
+            }
+            Sent::Failed(e) => {
+                return 0 - 1;
+            }
+        }
+    }
+    return 0;
+}
+
+fn reason(code: int) -> [] &static [byte] {
+    if code == 200 {
+        return "OK";
+    }
+    if code == 400 {
+        return "Bad Request";
+    }
+    if code == 401 {
+        return "Unauthorized";
+    }
+    if code == 404 {
+        return "Not Found";
+    }
+    if code == 405 {
+        return "Method Not Allowed";
+    }
+    if code == 413 {
+        return "Payload Too Large";
+    }
+    return "Internal Server Error";
+}
+
+// A whole answer: the status line, the headers and a JSON body.
+pub fn respond[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, body: int) -> [conn_write] int {
+    let head = text.f3(m, t, "HTTP/1.1 $ $\r\nContent-Type: application/json\r\nContent-Length: $\r\nConnection: close\r\n\r\n", text.num(m, t, code), text.from_bytes(m, t, reason(code)), text.num(m, t, text.size(body)));
+    if send_all(m, t, ch, head) < 0 {
+        return 0 - 1;
+    }
+    return send_all(m, t, ch, body);
+}
+
+// The head of an answer whose body comes later, as chunks: sent as soon as a request is known to be one the model will answer, since a client may wait only so long for a head.
+pub fn respond_head[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn) -> [conn_write] int {
+    return send_all(m, t, ch, text.lit(m, t, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"));
+}
+
+fn hex[&m, &t](m: &!m [int], t: &!t [byte], n: int) -> [] int {
+    let from = text.begin(m);
+    var shift = 28;
+    var seen = false;
+    while shift >= 0 {
+        let d = n >> shift & 15;
+        if d > 0 || seen || shift == 0 {
+            seen = true;
+            if d < 10 {
+                text.put_byte(m, t, byte_of(48 + d));
+            } else {
+                text.put_byte(m, t, byte_of(87 + d));
+            }
+        }
+        shift = shift - 4;
+    }
+    return text.finish(m, from);
+}
+
+// The body after `respond_head`: one chunk and the end.
+pub fn respond_body[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, body: int) -> [conn_write] int {
+    if send_all(m, t, ch, text.f1(m, t, "$\r\n", hex(m, t, text.size(body)))) < 0 || send_all(m, t, ch, body) < 0 {
+        return 0 - 1;
+    }
+    return send_all(m, t, ch, text.lit(m, t, "\r\n0\r\n\r\n"));
+}
+
+// The last refusal recorded, as a text; the record is cleared.
+pub fn last_error[&m, &t](m: &!m [int], t: &!t [byte]) -> [] int {
+    var msg = text.lit(m, t, "the request could not be processed");
+    let n = err.count(m);
+    if n > 0 {
+        let (rule, message) = err.nth(m, n - 1);
+        msg = message;
+    }
+    err.clear(m);
+    return msg;
+}
+
+// A request off the connection: `(0, start, the head's end, the body's length)`, or `(code, 0, 0, 0)` with the refusal recorded for an answer of that status, or `(-1, ...)` when the
+// peer is gone.
+pub fn read_request[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn) -> [conn_read] (int, int, int, int) {
+    let cap = max_request();
+    let buf = m[mem.text_slot()];
+    m[mem.text_slot()] = buf + cap;
+    var got = 0;
+    var he = 0 - 1;
+    var need = 0 - 1;
+    var open = true;
+    while open {
+        match conn_read(ch, t[buf + got..buf + cap]) {
+            Received::Data(k2) => {
+                got = got + k2;
+            }
+            Received::End => {
+                open = false;
+            }
+            Received::Again => {
+                open = false;
+            }
+            Received::Failed(e) => {
+                return (0 - 1, 0, 0, 0);
+            }
+        }
+        if he < 0 {
+            he = head_end(t, buf, buf + got);
+            if he >= 0 {
+                need = he + 4 - buf;
+                let cl = header(t, buf, he, "content-length");
+                if cl >= 0 {
+                    let v = count_of(t, cl);
+                    if v < 0 {
+                        let r = err.fail(m, t, "http", text.lit(m, t, "bad Content-Length"));
+                        return (400, 0, 0, 0);
+                    }
+                    need = need + v;
+                }
+                if need > cap {
+                    let r = err.fail(m, t, "http", text.lit(m, t, "the request is too large"));
+                    return (413, 0, 0, 0);
+                }
+            }
+        }
+        if he >= 0 && got >= need {
+            open = false;
+        } else if got >= cap {
+            let r = err.fail(m, t, "http", text.lit(m, t, "the request is too large"));
+            return (413, 0, 0, 0);
+        }
+    }
+    if he < 0 || got < need {
+        let r = err.fail(m, t, "http", text.lit(m, t, "the request is not whole"));
+        return (400, 0, 0, 0);
+    }
+    return (0, buf, he, need - (he + 4 - buf));
+}
+
+// ---------------------------------------------------------------------
+// A request's JSON
+// ---------------------------------------------------------------------
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: &static [byte]) -> [] int {
+    return err.fail(m, t, "kolibri-request", text.lit(m, t, msg));
+}
+
+// A string node's text.
+fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] int {
+    let (s, l) = chat.node_text(m, t, tape, hs, i);
+    return text.handle(s, l);
+}
+
+// The text of member `key` of object `obj`: -1 when it is not there or null, -2 with a refusal when it is not a string.
+fn member_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte]) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return 0 - 1;
+    }
+    if !json.is_string(m[tape..tape + words], v) {
+        let r = err.fail(m, t, "kolibri-request", text.f1(m, t, "`$` must be a string", text.lit(m, t, key)));
+        return 0 - 2;
+    }
+    return node_text(m, t, tape, hs, v);
+}
+
+// The whole number of member `key` of object `obj`, `dflt` when it is not there; a refusal is recorded when it is something else.
+fn member_int[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return dflt;
+    }
+    if json.is_int(m[tape..tape + words], v) && json.fits_int(t[hs..hs + n], m[tape..tape + words], v) {
+        return json.to_int(t[hs..hs + n], m[tape..tape + words], v);
+    }
+    let r = err.fail(m, t, "kolibri-request", text.f1(m, t, "`$` must be a whole number", text.lit(m, t, key)));
+    return dflt;
+}
+
+// A message's content: a string, or an array of parts of type text, their texts one after another. As it is, not trimmed: the template writes a message's bytes. -1 with a refusal.
+fn content_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, node: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    if node < 0 || json.is_null(m[tape..tape + words], node) {
+        return text.empty();
+    }
+    if json.is_string(m[tape..tape + words], node) {
+        return node_text(m, t, tape, hs, node);
+    }
+    if !json.is_array(m[tape..tape + words], node) {
+        return bad(m, t, "a message's content must be a string or an array of text parts");
+    }
+    let parts = mem.list(m);
+    let k = json.count(m[tape..tape + words], node);
+    var j = 0;
+    var item = json.at(m[tape..tape + words], node, 0);
+    while j < k {
+        if !json.is_object(m[tape..tape + words], item) {
+            return bad(m, t, "a content part must be an object");
+        }
+        let tx = json.get(t[hs..hs + n], m[tape..tape + words], item, "text");
+        if tx < 0 || !json.is_string(m[tape..tape + words], tx) {
+            return bad(m, t, "a content part must be a text: images, video and audio are not taken");
+        }
+        mem.push(m, parts, node_text(m, t, tape, hs, tx));
+        item = json.skip(m[tape..tape + words], item);
+        j = j + 1;
+    }
+    return text.joined(m, t, parts, "");
+}
+
+// The effort a request asks for: `reasoning_effort` (a word), `think` (true, false or a word), `enable_thinking` (true or false); none of them: no reasoning. -1 with a refusal.
+fn effort_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    var effort = 0;
+    let et = json.get(t[hs..hs + n], m[tape..tape + words], 0, "enable_thinking");
+    if et >= 0 && json.is_bool(m[tape..tape + words], et) && json.to_bool(m[tape..tape + words], et) {
+        effort = 3;
+    }
+    let th = json.get(t[hs..hs + n], m[tape..tape + words], 0, "think");
+    if th >= 0 && json.is_bool(m[tape..tape + words], th) {
+        effort = 0;
+        if json.to_bool(m[tape..tape + words], th) {
+            effort = 3;
+        }
+    } else if th >= 0 && json.is_string(m[tape..tape + words], th) {
+        effort = kchat.effort_of(t, node_text(m, t, tape, hs, th));
+    }
+    let re = json.get(t[hs..hs + n], m[tape..tape + words], 0, "reasoning_effort");
+    if re >= 0 && json.is_string(m[tape..tape + words], re) {
+        effort = kchat.effort_of(t, node_text(m, t, tape, hs, re));
+    }
+    if effort < 0 {
+        return bad(m, t, "the effort is none, minimal, low, medium, high, xhigh or max");
+    }
+    return effort;
+}
+
+// The messages of an OpenAI request as kchat's records, or -1 with a refusal.
+fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tools = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tools");
+    if tools >= 0 && json.is_array(m[tape..tape + words], tools) && json.count(m[tape..tape + words], tools) > 0 {
+        return bad(m, t, "tools are not taken yet");
+    }
+    let list = json.get(t[hs..hs + n], m[tape..tape + words], 0, "messages");
+    if list < 0 || !json.is_array(m[tape..tape + words], list) || json.count(m[tape..tape + words], list) == 0 {
+        return bad(m, t, "`messages` must be an array that is not empty");
+    }
+    let out = mem.list(m);
+    let total = json.count(m[tape..tape + words], list);
+    var users = 0;
+    var i = 0;
+    var msg = json.at(m[tape..tape + words], list, 0);
+    while i < total {
+        if !json.is_object(m[tape..tape + words], msg) {
+            return bad(m, t, "a message must be an object");
+        }
+        let rn = json.get(t[hs..hs + n], m[tape..tape + words], msg, "role");
+        if rn < 0 || !json.is_string(m[tape..tape + words], rn) {
+            return bad(m, t, "every message needs a role");
+        }
+        var role = 0 - 1;
+        if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "system") || json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "developer") {
+            role = kchat.system();
+        } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "user") {
+            role = kchat.user();
+            users = users + 1;
+        } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "assistant") {
+            role = kchat.assistant();
+        } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "tool") {
+            return bad(m, t, "tool messages are not taken yet");
+        } else {
+            return bad(m, t, "a message's role is system, user or assistant");
+        }
+        let calls = json.get(t[hs..hs + n], m[tape..tape + words], msg, "tool_calls");
+        if calls >= 0 && json.is_array(m[tape..tape + words], calls) && json.count(m[tape..tape + words], calls) > 0 {
+            return bad(m, t, "tool calls are not taken yet");
+        }
+        let content = content_of(m, t, tape, hs, n, json.get(t[hs..hs + n], m[tape..tape + words], msg, "content"));
+        if content < 0 {
+            return 0 - 1;
+        }
+        var reasoning = 0 - 1;
+        if role == kchat.assistant() {
+            reasoning = member_text(m, t, tape, hs, n, msg, "reasoning");
+            if reasoning == 0 - 1 {
+                reasoning = member_text(m, t, tape, hs, n, msg, "reasoning_content");
+            }
+            if reasoning == 0 - 2 {
+                return 0 - 1;
+            }
+        }
+        mem.push(m, out, kchat.message(m, role, content, reasoning));
+        msg = json.skip(m[tape..tape + words], msg);
+        i = i + 1;
+    }
+    if users == 0 {
+        return bad(m, t, "there is no user message");
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------
+// A job: one request the model answers
+// ---------------------------------------------------------------------
+//
+// A record of 16: 0 the route (1 /api/generate, 2 /v1/chat/completions), 1 the prompt's ids (a list), 2 where the session starts (the ids before it are kept), 3 the next step,
+// 4 what is awaited (0 nothing, 1 a seek's answer, 2 a step's), 5 the new ids (an array), 6 how many, 7 the most, 8 why it ended (0 not yet, 1 an end token, 2 the limit),
+// 9 the state the numbers to draw with come from, 10 the effort, 11 the model's name as the request gave it (or the server's), 12 when it was made (seconds), 13 the serial.
+
+pub fn j_route() -> [] int {
+    return 0;
+}
+
+pub fn j_prompt() -> [] int {
+    return 1;
+}
+
+pub fn j_start() -> [] int {
+    return 2;
+}
+
+pub fn j_count() -> [] int {
+    return 6;
+}
+
+// The job of the request whose body is t[hs..hs + n], on route 1 or 2, or -1 with a refusal (an answer of status 400).
+pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n: int, now: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        return err.fail(m, t, "kolibri-request", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(json.error_code(nodes)))));
+    }
+    if !json.is_object(m[tape..tape + words], 0) {
+        return bad(m, t, "the body must be a JSON object");
+    }
+    let effort = effort_of(m, t, tape, hs, n);
+    if effort < 0 {
+        return 0 - 1;
+    }
+    var prompt = 0 - 1;
+    var most = m[cfg + 17];
+    var seed = 0 - 1;
+    if route == 1 {
+        let p = member_text(m, t, tape, hs, n, 0, "prompt");
+        if p < 0 {
+            if p == 0 - 1 {
+                return bad(m, t, "`prompt` is missing");
+            }
+            return 0 - 1;
+        }
+        let sys = member_text(m, t, tape, hs, n, 0, "system");
+        if sys == 0 - 2 {
+            return 0 - 1;
+        }
+        let raw = json.get(t[hs..hs + n], m[tape..tape + words], 0, "raw");
+        if raw >= 0 && json.is_bool(m[tape..tape + words], raw) && json.to_bool(m[tape..tape + words], raw) {
+            prompt = p;
+        } else {
+            let msgs = mem.list(m);
+            if sys >= 0 {
+                mem.push(m, msgs, kchat.message(m, kchat.system(), sys, 0 - 1));
+            }
+            mem.push(m, msgs, kchat.message(m, kchat.user(), p, 0 - 1));
+            prompt = kchat.render(m, t, msgs, effort);
+        }
+        let opts = json.get(t[hs..hs + n], m[tape..tape + words], 0, "options");
+        if opts >= 0 && json.is_object(m[tape..tape + words], opts) {
+            most = member_int(m, t, tape, hs, n, opts, "num_predict", most);
+            seed = member_int(m, t, tape, hs, n, opts, "seed", seed);
+            // Ollama's -1 and -2: as many as there is room for
+            if most < 0 {
+                most = m[cfg + c_ctx()];
+            }
+        }
+    } else {
+        let st = json.get(t[hs..hs + n], m[tape..tape + words], 0, "stream");
+        if st >= 0 && json.is_bool(m[tape..tape + words], st) && json.to_bool(m[tape..tape + words], st) {
+            return bad(m, t, "a stream is not built: send `stream: false`");
+        }
+        let nc = member_int(m, t, tape, hs, n, 0, "n", 1);
+        if nc != 1 {
+            return bad(m, t, "only n = 1 is taken");
+        }
+        let msgs = messages_of(m, t, tape, hs, n);
+        if msgs < 0 {
+            return 0 - 1;
+        }
+        prompt = kchat.render(m, t, msgs, effort);
+        most = member_int(m, t, tape, hs, n, 0, "max_tokens", most);
+        most = member_int(m, t, tape, hs, n, 0, "max_completion_tokens", most);
+        seed = member_int(m, t, tape, hs, n, 0, "seed", seed);
+    }
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    if most < 1 {
+        return bad(m, t, "the most new tokens must be 1 or more");
+    }
+    var name = member_text(m, t, tape, hs, n, 0, "model");
+    if name == 0 - 2 {
+        return 0 - 1;
+    }
+    if name < 0 {
+        name = m[cfg + c_name()];
+    }
+    let ids = bpe.encode(m, t, m[cfg + 13], text.start(prompt), text.start(prompt) + text.size(prompt));
+    if ids < 0 {
+        return 0 - 1;
+    }
+    let np = mem.size(m, ids);
+    let ctx = m[cfg + c_ctx()];
+    if np < 1 {
+        return bad(m, t, "the prompt has no tokens");
+    }
+    if np > ctx {
+        return err.fail(m, t, "kolibri-context", text.n2(m, t, "the prompt is $ tokens, more than the $ positions the model holds here", np, ctx));
+    }
+    // step np - 1 chooses the first new token, and the last step is ctx - 1
+    if most > ctx - np + 1 {
+        most = ctx - np + 1;
+    }
+    // how much of what the session has run is this prompt's start: it goes on from there, but no further than the prompt's last token, whose step chooses the first new one
+    let have = m[cfg + 14];
+    let run = m[cfg + 15];
+    var same = 0;
+    while same < np && same < run && m[have + same] == mem.get(m, ids, same) {
+        same = same + 1;
+    }
+    var start = same;
+    if start > np - 1 {
+        start = np - 1;
+    }
+    // going back is exact while the ring of a sliding layer still holds the window before the position: when it has not wrapped, or when the position is at most ring - window behind
+    // the last step run (docs/kolibri.md section 17.6). Else from the start.
+    let ring = m[cfg + c_ring()];
+    if ring > 0 && run > ring && run - 1 - start > ring - m[cfg + c_window()] {
+        start = 0;
+    }
+    if seed < 0 {
+        seed = m[cfg + c_serial()];
+    }
+    let j = mem.grab(m, 16);
+    m[j] = route;
+    m[j + 1] = ids;
+    m[j + 2] = start;
+    m[j + 3] = start;
+    m[j + 4] = 0;
+    m[j + 5] = mem.grab(m, most);
+    m[j + 6] = 0;
+    m[j + 7] = most;
+    m[j + 8] = 0;
+    m[j + 9] = kdraw.skip(seed % 2147483648, start);
+    m[j + 10] = effort;
+    m[j + 11] = name;
+    m[j + 12] = now;
+    m[j + 13] = m[cfg + c_serial()];
+    return j;
+}
+
+// The next line for the session, or -1 when the answer is whole.
+pub fn next[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, j: int) -> [] int {
+    if m[j + 8] != 0 {
+        return 0 - 1;
+    }
+    // the session is at the step after the last it ran: a seek only when the job starts elsewhere
+    if m[j + 3] == m[j + 2] && m[j + 4] == 0 && m[j + 2] != m[cfg + 15] {
+        m[j + 4] = 1;
+        return text.n1(m, t, "seek $", m[j + 2]);
+    }
+    let k = m[j + 3];
+    let np = mem.size(m, m[j + 1]);
+    var id = 0;
+    var mask = 0;
+    if k < np {
+        id = mem.get(m, m[j + 1], k);
+        mask = 1;
+    }
+    m[j + 4] = 2;
+    if m[cfg + c_samp()] == 1 {
+        m[j + 9] = kdraw.step(m[j + 9]);
+        return text.f3(m, t, "1 $ $ $", text.num(m, t, id), text.num(m, t, mask), kdraw.text_of(m, t, m[j + 9]));
+    }
+    return text.n2(m, t, "1 $ $", id, mask);
+}
+
+// The answer of the line `next` gave. 0, or -1 with a refusal: the session answered what it cannot have.
+pub fn took[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, j: int, v: float) -> [] int {
+    let whole = v >= 0.0 && v < 1000000000.0 && float_of(truncate(v)) == v;
+    if m[j + 4] == 1 {
+        if !whole || truncate(v) != m[j + 2] {
+            return err.fail(m, t, "kolibri-session", text.lit(m, t, "the session did not go to the position asked"));
+        }
+        m[cfg + 15] = m[j + 2];
+        m[j + 4] = 0;
+        return 0;
+    }
+    let k = m[j + 3];
+    let np = mem.size(m, m[j + 1]);
+    // the id this step ran on is now the session's at position k
+    if k < np {
+        m[m[cfg + 14] + k] = mem.get(m, m[j + 1], k);
+    } else {
+        m[m[cfg + 14] + k] = m[m[j + 5] + k - np];
+    }
+    m[cfg + 15] = k + 1;
+    m[j + 3] = k + 1;
+    m[j + 4] = 0;
+    if k < np - 1 {
+        return 0;
+    }
+    if !whole || truncate(v) >= m[m[cfg + 13] + bpe.f_ids()] {
+        return err.fail(m, t, "kolibri-session", text.lit(m, t, "the session answered what is no id of the vocabulary"));
+    }
+    let id = truncate(v);
+    if id == m[cfg + 7] || id == m[cfg + 8] {
+        m[j + 8] = 1;
+        return 0;
+    }
+    m[m[j + 5] + m[j + 6]] = id;
+    m[j + 6] = m[j + 6] + 1;
+    if m[j + 6] >= m[j + 7] {
+        m[j + 8] = 2;
+    }
+    return 0;
+}
+
+// The answer's JSON, when `next` has said the job is done.
+pub fn body[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, j: int) -> [] int {
+    let ids = mem.list(m);
+    var k = 0;
+    while k < m[j + 6] {
+        mem.push(m, ids, m[m[j + 5] + k]);
+        k = k + 1;
+    }
+    let (s, l) = bpe.decode(m, t, m[cfg + 13], ids);
+    // an answer cut by the limit may end inside a character
+    let all = text.handle(s, chat.utf8_prefix(t, s, l));
+    var reasoning = 0 - 1;
+    var content = all;
+    if m[j + 10] > 0 {
+        let (r, c) = kchat.split_reasoning(t, all, 0 - 1);
+        reasoning = r;
+        content = c;
+    }
+    let np = mem.size(m, m[j + 1]);
+    var finish = "stop";
+    if m[j + 8] == 2 {
+        finish = "length";
+    }
+    if m[j] == 1 {
+        var think = text.empty();
+        if reasoning >= 0 {
+            think = text.f1(m, t, ",\"thinking\":\"$\"", chat.escape(m, t, reasoning));
+        }
+        return text.f6(m, t, "{\"model\":\"$\",\"response\":\"$\"$,\"done\":true,\"done_reason\":\"$\",\"prompt_eval_count\":$,\"eval_count\":$}", chat.escape(m, t, m[j + 11]), chat.escape(m, t, content), think, text.lit(m, t, finish), text.num(m, t, np), text.num(m, t, m[j + 6]));
+    }
+    return chat.completion_json(m, t, text.n1(m, t, "chatcmpl-$", m[j + 13]), m[j + 12], m[j + 11], reasoning, content, text.lit(m, t, finish), np, m[j + 6], m[j + 2]);
+}
+
+// ---------------------------------------------------------------------
+// A request, before the model
+// ---------------------------------------------------------------------
+
+// What to do with the request whose head is t[from..he) and whose body is the `blen` bytes after it: `(0, a job)` for the model; `(code, a JSON body)` for an answer at once.
+pub fn open[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, from: int, he: int, blen: int, now: int) -> [] (int, int) {
+    m[cfg + c_serial()] = m[cfg + c_serial()] + 1;
+    var a = from;
+    while a < he && t[a] != byte_of(32) {
+        a = a + 1;
+    }
+    let method = text.handle(from, a - from);
+    var b = a + 1;
+    while b < he && t[b] != byte_of(32) && t[b] != byte_of(13) && t[b] != byte_of(63) {
+        b = b + 1;
+    }
+    var path = text.empty();
+    if a < he {
+        path = text.handle(a + 1, b - a - 1);
+    }
+    let get = text.is(t, method, "GET");
+    let post = text.is(t, method, "POST");
+    if get && text.is(t, path, "/health") {
+        return (200, text.lit(m, t, "{\"status\":\"ok\"}"));
+    }
+    if m[cfg + c_key()] >= 0 {
+        let auth = header(t, from, he, "authorization");
+        if auth < 0 || !text.eq(t, auth, text.f1(m, t, "Bearer $", m[cfg + c_key()])) {
+            return (401, chat.error_json(m, t, text.lit(m, t, "a key is needed: Authorization: Bearer <key>"), "invalid_api_key"));
+        }
+    }
+    let name = chat.escape(m, t, m[cfg + c_name()]);
+    if text.is(t, path, "/v1/models") {
+        if !get {
+            return (405, chat.error_json(m, t, text.lit(m, t, "GET /v1/models"), "invalid_request_error"));
+        }
+        return (200, text.f2(m, t, "{\"object\":\"list\",\"data\":[{\"id\":\"$\",\"object\":\"model\",\"created\":$,\"owned_by\":\"cancho-gpu\"}]}", name, text.num(m, t, now)));
+    }
+    if text.is(t, path, "/api/tags") {
+        if !get {
+            return (405, chat.error_json(m, t, text.lit(m, t, "GET /api/tags"), "invalid_request_error"));
+        }
+        return (200, text.f2(m, t, "{\"models\":[{\"name\":\"$\",\"model\":\"$\"}]}", name, name));
+    }
+    var route = 0;
+    if text.is(t, path, "/api/generate") {
+        route = 1;
+    } else if text.is(t, path, "/v1/chat/completions") {
+        route = 2;
+    }
+    if route == 0 {
+        return (404, chat.error_json(m, t, text.lit(m, t, "no such route: POST /api/generate, POST /v1/chat/completions, GET /v1/models, GET /api/tags, GET /health"), "invalid_request_error"));
+    }
+    if !post {
+        return (405, chat.error_json(m, t, text.lit(m, t, "this route takes POST"), "invalid_request_error"));
+    }
+    let j = job(m, t, cfg, route, he + 4, blen, now);
+    if j < 0 {
+        return (400, chat.error_json(m, t, last_error(m, t), "invalid_request_error"));
+    }
+    return (0, j);
+}
+
+// The line a program writes for a request it has answered.
+pub fn log_line[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, from: int, he: int, code: int, j: int, ms: int) -> [] int {
+    var e = from;
+    while e < he && t[e] != byte_of(13) && t[e] != byte_of(10) {
+        e = e + 1;
+    }
+    let first = text.handle(from, e - from);
+    if j < 0 {
+        return text.f3(m, t, "$ -> $ in $ ms\n", first, text.num(m, t, code), text.num(m, t, ms));
+    }
+    return text.f6(m, t, "$ -> $: a prompt of $ tokens, $ of them kept, $ new, in $ ms\n", first, text.num(m, t, code), text.num(m, t, mem.size(m, m[j + 1])), text.num(m, t, m[j + 2]), text.num(m, t, m[j + 6]), text.num(m, t, ms));
+}

@@ -1,0 +1,12 @@
+<|im_start|>system
+# Reasoning effort
+
+Reasoning is disabled. Proceed straight to answering according to the user's instructions.<|im_end|>
+<|im_start|>user
+First part, second part.
+<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

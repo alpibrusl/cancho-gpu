@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":"One plus one?"},{"role":"assistant","content":"<think>\nIt is a sum.\n</think>\n\nTwo."},{"role":"user","content":"Sure?"}],"max_tokens":1}

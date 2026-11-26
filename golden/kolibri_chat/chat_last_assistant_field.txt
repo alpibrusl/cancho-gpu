@@ -1,0 +1,13 @@
+<|im_start|>system
+# Reasoning effort
+
+Reasoning effort is set to low. Think briefly through only the essential steps in the user's language, then proceed directly to the answer.<|im_end|>
+<|im_start|>user
+One plus one?<|im_end|>
+<|im_start|>assistant
+<think>
+A sum.
+</think>
+
+Two, I<|im_end|>
+<|im_start|>assistant

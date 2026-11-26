@@ -50,6 +50,12 @@ if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/
   done
 else echo "FAIL inputs of 136 steps: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
 [ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: 136 steps, twice round a ring of 64 slots: the ring's tables and the indexed caches' as awk has them"
+# a ring asked for (a server's is as long as its positions): 192 slots for 136 steps never wrap, so the ring's tables are the indexed caches' selectors, and its mask the window's keys
+mkdir "$T/xr"
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xr" 192 136 192 > /dev/null 2> "$T/err.txt" && cmp -s "$T/xr/selw.f32" "$T/xr/sel.f32" && cmp -s "$T/xr/keepw.f32" "$T/xr/keep.f32" && [ "$(wc -c < "$T/xr/zcachew.f32" | tr -d ' ')" = "$(wc -c < "$T/xr/zcache.f32" | tr -d ' ')" ] && ! cmp -s "$T/xr/selw.f32" "$T/xl/selw.f32"; then
+  od -A n -v -t fF "$T/xr/mask.f32" | tr -s ' \n' '\n\n' | grep -v '^$' | awk -v win="$(od -A n -v -t fF "$T/xl/mask.f32" | tr -s ' \n' '\n\n' | grep -v '^$' | awk 'NR <= 64 * 136 && NR > 64 * 135 && $1 == 0' | wc -l | tr -d ' ')" '{ s = int((NR - 1) / 192); c = (NR - 1) % 192; want = (c <= s && c > s - win) ? 0 : -1e9; if ($1 != want) { bad = "step " s " slot " c ": " $1; exit } } END { if (bad != "") print bad; else if (NR != 192 * 136) print NR " values"; else print "ok" }' > "$T/r.txt"
+  if [ "$(cat "$T/r.txt")" = ok ]; then echo "ok   inputs with a ring of 192 slots for 136 steps: a ring that never wraps has the positions' selectors, and its mask is the window's keys"; else echo "FAIL the mask of a ring of 192: $(cat "$T/r.txt")"; fail=1; fi
+else echo "FAIL inputs with a ring of 192: $(head -c 300 "$T/err.txt")"; fail=1; fi
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
 got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
@@ -93,7 +99,12 @@ refuse "positions that are not a number" kolibri-usage 1 "$B" inputs "$T/toy.ggu
 awk 'BEGIN { for (i = 0; i < 65; i++) printf "1 " }' > "$T/bad.txt"
 refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
 refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
-refuse "a seed, which inputs no longer takes" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 7
+refuse "a ring that is no multiple of 64" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 5 100
+refuse "a ring longer than the positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 128
+refuse "a ring that is no number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 x
+refuse "an argument after the ring" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 64 7
+toy "$T/v.gguf" w65
+refuse "a ring shorter than the window rounded up" kolibri-usage 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 192 5 64
 refuse "a seed that is not a number" kolibri-usage 1 "$B" draws x 5
 refuse "a count that is not a number" kolibri-usage 1 "$B" draws 7 5x
 refuse "a seed of eight digits" kolibri-usage 1 "$B" draws 12345678 5

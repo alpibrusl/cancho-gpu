@@ -1,0 +1,13 @@
+<|im_start|>system
+Du bist ein Bibliothekar.
+
+# Reasoning effort
+
+Reasoning is disabled. Proceed straight to answering according to the user's instructions.<|im_end|>
+<|im_start|>user
+Wie heißt du?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

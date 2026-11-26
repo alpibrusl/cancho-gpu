@@ -1,0 +1,57 @@
+#!/bin/sh
+# Kolibri 1.1 on the Metal GPU as a server (docs/kolibri.md section 18): Ollama's /api/generate and OpenAI's /v1/chat/completions, the model loaded once.
+#
+#     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]
+#
+# It writes the session's tables once (a few seconds, 170 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. The model samples with the file's
+# settings (temperature 1, the 128 largest, top-p 0.99) unless `--temperature T` (a number above 0) or `--greedy`: these are the session's, set here, and a request's are not read.
+# A conversation is at most the 2,184 positions the model's indexed layers see whole. It listens on every address of the host: `--api-key` on a network.
+# The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
+# written on the first run: 41 GB. One GPU job at a time, by the lock scripts/media takes.
+HERE=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
+CACHE=${CANCHO_MEDIA_CACHE:-$HOME/.cache/cancho-media}
+G=${KOLIBRI_GGUF:-$CACHE/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf}
+W=${KOLIBRI_WEIGHTS:-$CACHE/kolibri-w}
+SERVER=${KOLIBRI_SERVER:-$HERE/build/cancho-gpu-kolibri}
+K=$HERE/build/kolibri_gpu
+usage() { echo "kolibri-serve: $1" >&2; echo "usage: scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]" >&2; exit 2; }
+samp=1; invt=1; pass=""; port=11434
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --greedy) samp=0; shift ;;
+    --temperature) [ $# -ge 2 ] || usage "--temperature takes a number above 0"
+      invt=$(awk -v t="$2" 'BEGIN { if (t ~ /^[0-9]*\.?[0-9]+$/ && t + 0 > 0) printf "%.9g", 1 / t; else print "" }'); [ -n "$invt" ] || usage "--temperature takes a number above 0"; shift 2 ;;
+    --port) [ $# -ge 2 ] || usage "--port takes a port"; port=$2; pass="$pass --port $2"; shift 2 ;;
+    --api-key|--name|--max-new) [ $# -ge 2 ] || usage "$1 takes a value"; case "$2" in *[!A-Za-z0-9._:-]*) usage "$1 takes letters, digits and . _ : -" ;; esac; pass="$pass $1 $2"; shift 2 ;;
+    *) usage "no option $1" ;;
+  esac
+done
+case "$port" in ''|*[!0-9]*) usage "--port takes a port" ;; esac
+[ -x "$K" ] || { echo "kolibri-serve: build/kolibri_gpu is not built: CANCHO=<pinned cancho> scripts/build-kolibri.sh" >&2; exit 2; }
+[ -x "$SERVER" ] || { echo "kolibri-serve: $SERVER is not built: CANCHO=<pinned cancho> scripts/build-kolibri-serve.sh" >&2; exit 2; }
+[ -f "$G" ] || { echo "kolibri-serve: the model's file is not at $G (KOLIBRI_GGUF names another)" >&2; exit 2; }
+set -- $("$K" ends "$G") || exit 1
+[ $# -eq 3 ] || exit 1
+whole=$3
+T=$(((whole + 63) / 64 * 64))
+D=$(cd "$(mktemp -d)" && pwd -P) || exit 1
+LOCK=$CACHE/gpu.lock
+cleanup() { rm -rf "$D"; [ -z "${locked:-}" ] || rm -f "$LOCK"; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+if [ ! -f "$W/head.f32" ]; then
+  echo "kolibri-serve: writing the weights as the device reads them to $W (41 GB for Kolibri 1.1), once" >&2
+  mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
+fi
+# the tables of positions, for every step the model sees whole and a ring as long as the positions: it never wraps, so any position can be gone back to
+mkdir -p "$D/x" && echo 0 > "$D/ids.txt" || exit 1
+"$K" inputs "$G" "$D/ids.txt" "$D/x" "$T" "$whole" "$T" > /dev/null || exit $?
+mkdir -p "$CACHE"
+if [ -e "$LOCK" ]; then
+  pid=$(cat "$LOCK" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "kolibri-serve: another GPU job is running (pid $pid): one at a time" >&2; exit 2; fi
+fi
+echo $$ > "$LOCK"; locked=1
+greedy=""; [ $samp -eq 1 ] || greedy="--greedy"
+# shellcheck disable=SC2086
+"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" $greedy $pass CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" TW="$T" NS="$whole" GEN=1 SAMP=$samp SAVE=0 INVT="$invt"

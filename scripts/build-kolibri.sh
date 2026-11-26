@@ -4,5 +4,5 @@ set -e
 cd "$(dirname "$0")/.."
 mkdir -p build
 C="${CANCHO:-cancho}"
-"$C" build tests/kolibri_gpu.cho src/gguf.cho src/fileio.cho src/f32.cho src/mem.cho src/text.cho src/err.cho --std -o build/kolibri_gpu 2>&1 | grep -v "^ld: warning" || true
+"$C" build tests/kolibri_gpu.cho kolibri/kchat.cho kolibri/kdraw.cho src/gguf.cho src/fileio.cho src/f32.cho src/mem.cho src/text.cho src/err.cho --std -o build/kolibri_gpu 2>&1 | grep -v "^ld: warning" || true
 test -x build/kolibri_gpu

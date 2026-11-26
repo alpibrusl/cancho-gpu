@@ -3,7 +3,7 @@ edition 5;
 // `kolibri_gpu` -- the host side of Kolibri 1.1's cached step (models/kolibri_step.model; docs/kolibri.md section 12, stage K5), in cancho: the files the session reads, from the model's GGUF.
 //
 //     kolibri_gpu weights <gguf> <dir>
-//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps>]
+//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps> [<ring>]]
 //     kolibri_gpu draws   <seed> <count>
 //     kolibri_gpu argmax  <f32 file>
 //
@@ -38,6 +38,8 @@ import err;
 import fileio;
 import gguf;
 import f32;
+import kchat;
+import kdraw;
 
 fn words() -> [] int {
     return 4000000;
@@ -770,8 +772,16 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     if nst > whole {
         return err.fail(m, t, "kolibri-context", text.n2(m, t, "$ steps are past the $ positions an indexed layer sees whole: the indexer is not written", nst, whole));
     }
-    // a sliding layer's ring: the window rounded up to a multiple of 64
-    let tw = (window + 63) / 64 * 64;
+    // a sliding layer's ring: the window rounded up to a multiple of 64, or the slots asked for (a server's ring is as long as its positions, so that it never wraps and any position can
+    // be gone back to: docs/kolibri.md section 18)
+    var tw = (window + 63) / 64 * 64;
+    if arg_count(args) == 8 {
+        let ring = count_of(t, text.from_bytes(m, t, arg(args, 7)));
+        if ring < tw || ring % 64 != 0 || ring > tt {
+            return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the ring is a multiple of 64, no shorter than the window rounded up to one and no longer than the positions"));
+        }
+        tw = ring;
+    }
     let sc = m[file + 4];
     let out = sc + in_cap();
     let x0 = text.f1(m, t, "$/x0.f32", dir);
@@ -892,29 +902,20 @@ fn argmax[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
 // The whole numbers of a file of f32 from index `from` on, on one line: the ids a generating session saved.
 // `draws <seed> <count>`: the uniform numbers of a sampling run's steps (section 14), from step 0, a line each. x' = (1103515245 x + 12345) mod 2^31, the number its upper 24 bits over 2^24:
 // in [0, 1) and exact in f32, and printed with all its 24 decimals, so the session reads the same f32.
+// The numbers are `kolibri/kdraw.cho`'s, which the server sends too.
 fn draws[&m, &t, &i, &a](m: &!m [int], t: &!t [byte], io: &!i Io, args: &a Args) -> [io_write, args] int {
     var x = count_of(t, text.from_bytes(m, t, arg(args, 2)));
     let n = count_of(t, text.from_bytes(m, t, arg(args, 3)));
     if x < 0 || n < 0 {
         return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the seed and the count are whole numbers of at most 7 digits"));
     }
-    let line = m[mem.text_slot()];
-    m[mem.text_slot()] = line + 32;
+    let mark = m[mem.text_slot()];
     var s = 0;
     while s < n {
-        x = (1103515245 * x + 12345) % 2147483648;
-        var r = x / 128;
-        t[line] = byte_of(48);
-        t[line + 1] = byte_of(46);
-        var k = 0;
-        while k < 24 {
-            r = r * 10;
-            t[line + 2 + k] = byte_of(48 + r / 16777216);
-            r = r % 16777216;
-            k = k + 1;
-        }
-        t[line + 26] = byte_of(10);
-        io.write_all(io, t[line..line + 27]);
+        x = kdraw.step(x);
+        io.write_all(io, text.bytes(t, kdraw.text_of(m, t, x)));
+        io.write_all(io, "\n");
+        m[mem.text_slot()] = mark;
         s = s + 1;
     }
     return 0;
@@ -931,10 +932,10 @@ fn whole_file[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: 
 
 // The model's chat template (`tokenizer.chat_template`) for what scripts/kolibri asks: a system block with the system message, if there is one, and the reasoning sentence of the effort;
 // the user's message; the assistant's opening, and with no reasoning the empty think block. The messages' bytes are written as they are, as the template writes them.
+// The template itself is `kolibri/kchat.cho`, which the server uses too (docs/kolibri.md section 18).
 fn prompt[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
     let effort = arg(args, 3);
-    let none = is_word(effort, "none");
-    if !none && !is_word(effort, "low") && !is_word(effort, "medium") && !is_word(effort, "high") {
+    if !is_word(effort, "none") && !is_word(effort, "low") && !is_word(effort, "medium") && !is_word(effort, "high") {
         return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the effort is none, low, medium or high"));
     }
     let user = whole_file(m, t, fs, arg(args, 2));
@@ -948,27 +949,12 @@ fn prompt[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
             return 0 - 1;
         }
     }
-    io.write_all(io, "<|im_start|>system\n");
+    let msgs = mem.list(m);
     if system >= 0 {
-        io.write_all(io, text.bytes(t, system));
-        io.write_all(io, "\n\n");
+        mem.push(m, msgs, kchat.message(m, kchat.system(), system, 0 - 1));
     }
-    io.write_all(io, "# Reasoning effort\n\n");
-    if none {
-        io.write_all(io, "Reasoning is disabled. Proceed straight to answering according to the user's instructions.");
-    } else if is_word(effort, "low") {
-        io.write_all(io, "Reasoning effort is set to low. Think briefly through only the essential steps in the user's language, then proceed directly to the answer.");
-    } else if is_word(effort, "medium") {
-        io.write_all(io, "Reasoning effort is set to medium. Think through the task methodically in the user's language, check key assumptions, and provide a well-supported answer.");
-    } else {
-        io.write_all(io, "Reasoning effort is set to high. Think carefully through the task in the user's language, validate key assumptions, consider plausible alternatives, and prioritize correctness and clarity.");
-    }
-    io.write_all(io, "<|im_end|>\n<|im_start|>user\n");
-    io.write_all(io, text.bytes(t, user));
-    io.write_all(io, "<|im_end|>\n<|im_start|>assistant\n");
-    if none {
-        io.write_all(io, "<think>\n\n</think>\n\n");
-    }
+    mem.push(m, msgs, kchat.message(m, kchat.user(), user, 0 - 1));
+    io.write_all(io, text.bytes(t, kchat.render(m, t, msgs, kchat.effort_of(t, text.from_bytes(m, t, effort)))));
     return 0;
 }
 
@@ -1083,7 +1069,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
     var status = 0 - 2;
     if arg_count(args) == 4 && is_word(arg(args, 1), "weights") {
         status = weights(m, t, io, fs, args);
-    } else if arg_count(args) >= 6 && arg_count(args) <= 7 && is_word(arg(args, 1), "inputs") {
+    } else if arg_count(args) >= 6 && arg_count(args) <= 8 && is_word(arg(args, 1), "inputs") {
         status = inputs(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "argmax") {
         status = argmax(m, t, io, fs, args);
@@ -1097,7 +1083,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = say(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps>] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<ring>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {
