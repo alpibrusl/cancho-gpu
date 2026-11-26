@@ -67,6 +67,13 @@ rw() { # name, args...: stdout, errors and exit status of `rewrite` (no GPU)
   check "$name: errors" "$(grep -v '^$' "$T/c.err" | sed "s#$T#TMP#g")" "$(grep -v '^$' "$T/p.err" | sed "s#$T#TMP#g")"
 }
 both "image"                  image "a red fox" -o o
+# a path with `..` in it is refused, not a crash (docs/runtime.md section 11). The Python makes such a directory, so these two are build/media's alone.
+c_err=$( (cd "$W" && "$REPO/build/media" --root "$R/build/.." --cwd "$W" --home "$H" --py /bin/true --cache "$K" image "a fox" -o o) 2>&1 >/dev/null) && c_code=0 || c_code=$?
+check "--root with ..: exit" "$c_code" 2
+check "--root with ..: message" "$c_err" "media: --root is a path with no \`..\` in it"
+c_err=$(cho image "a fox" -o a..b 2>&1 >/dev/null) && c_code=0 || c_code=$?
+check "an output directory with two dots in its name: exit" "$c_code" 2
+check "an output directory with two dots in its name: message" "$c_err" "media: cannot create the output directory"
 # the `--` separator: the studio runs every job as `COMMAND -o DIR ... -- PICTURE PROMPT`, so what follows it is positional, whatever it looks like (argparse's rule)
 both "image after --"         image -o o -- "a red fox"
 both "image: a prompt that looks like a flag after --" image -o o -- -fox

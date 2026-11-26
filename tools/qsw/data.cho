@@ -42,7 +42,7 @@ pub fn save[&h, &f, &d, &n](heap: &!h Heap, fs: &f Fs(""), dir: &d [byte], name:
     var status = 0;
     borrow path as &pr in {
         borrow b as &br in {
-            if fs_write(fs, buffer.bytes(pr), buffer.bytes(br)) < 0 {
+            if !fs_covers(fs, buffer.bytes(pr)) || fs_write(fs, buffer.bytes(pr), buffer.bytes(br)) < 0 {
                 status = 1;
             }
         }

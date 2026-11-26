@@ -407,3 +407,68 @@ is 1, as the oracle's `max(1)` has it.
   98.8 to 99.4% bit-identical).
 * Not measured here: a real model's logits (the decode loops are in `docs/inference.md` and `docs/qwen35.md`); the
   speculative rules; a seed of 2^63 or more.
+
+## 11. A path the file verbs stop the program on
+
+**Found** while building `scripts/kolibri` (`kolibri.md` sections 15 and 16): `kolibri_gpu ends dir/../file.gguf` and
+`cancho-gpu gguf dir/../file.gguf` ended with an illegal instruction, status 132, nothing on standard error. A crash on an
+input is what `CLAUDE.md` rules out, and a script that builds a path from `$(dirname "$0")/..` meets it at once.
+
+**The cause is the language's, by design.** A cancho `Fs` traps on a path outside its bound, and a path is outside when it
+has two dots in a row anywhere in it (so `a..b` as well as `a/../b`) or is 4,096 bytes or more (cancho's
+`docs/processes.md` section 4.13, which has the whole rule). For a program that wants to refuse and go on, edition 9 has
+`fs_covers(fs, path)`: `true` exactly when the file verbs would take the path. It is emitted from the same check the trap
+uses, so the two cannot drift.
+
+**Measured before the change** (this repository at `941bd9b`, macOS arm64; `tests/paths.sh` of this section run on that
+commit's programs): of its 35 paths with `..` or of 5,000 bytes, **34 ended with status 132**, in `cancho-gpu` (every
+command that reads a file, and `emit`'s output directory), `cancho-gpu-session`, `cancho-gpu-device`,
+`cancho-gpu-metal-device`, `cancho-gpu-metal-session`, `kolibri_gpu` and `qsw`. The one that did not is a session file's
+`resident` path, which `session.cho` checks, as it does a `save` path, with its own copy of the rule (`unsafe_path`: a
+rule tag `session`). `build/media` did the same on a `--root` with `..` in it. Already safe: `studio/` and the speech
+and recognition programs, which ask `files.path_ok` (`studio/files.cho`, itself `fs_covers`) of every path.
+
+**What was chosen.** `fileio.covers(fs, path)` is `fs_covers` (`src/fileio.cho`, now edition 9, the edition that has it),
+and every open, whole-file read and whole-file write of a path a caller gave asks it first. On `false` the call fails the
+way it does for a file that is not there, so each program's refusal is the one it already had, with its rule tag:
+`error[io]: cannot read <path>` for most. The sources of `tools/qsw` and `tests/wan_enc/st.cho` are edition 9 and ask
+`fs_covers` themselves.
+
+| Where | What is asked first |
+|---|---|
+| `fileio.prefix`, `fileio.read_at` | every header, tensor and table read through them: GGUF, safetensors, tokenizer, logits, the session's residents and tables, the weights of the engines |
+| `src/main.cho`, `src/runcmd.cho` | the kernel file of `emit`, `check` and `run`; the files `emit` writes |
+| `src/session.cho` | the kernel file a `program` line names |
+| `session/main.cho`, `device/main.cho`, `device/metal-main.cho`, `device/metal-session-main.cho` | the file on the command line |
+| `tests/kolibri_gpu.cho` | every file it writes |
+| `tools/qsw` | the files it reads, the files it writes, and its two "is this file there" questions |
+| `tests/wan_enc/st.cho` | the safetensors file and the raw files it reads |
+| `media/media.cho`, `media/pathx.cho` | `--root`, under which `scripts/` and `build/` are opened; the directory `make_all` makes |
+
+**Chosen over:**
+
+| Alternative | Why not |
+|---|---|
+| The rule written in each program (as `session.cho`'s `unsafe_path` is) | a copy of a rule the compiler owns: it is right until the rule changes. `unsafe_path` is left as it is: its lines refuse before any file is opened and name the line of the session file |
+| Normalising the path (`a/../b` to `b`) | not the same file when `a` is a symbolic link, and `a..b` is a name with nothing to normalise |
+| A refusal of its own, saying why | 49 messages in these sources say "cannot read" or "cannot write"; the reason would be a second argument to each. Not done: see the last paragraph |
+
+**How it is held.** `tests/paths.sh`, in the gate, no model and no GPU: each program is run with a path that has `..` in
+it at each place a path is taken, and one with 5,000 bytes of path; it must end with a status under 128 and a first line
+of standard error that carries the rule tag: 35 such cases. Six fixtures that must succeed sit beside them, so a case is
+refused for its path and for nothing before it. The Metal programs are tried where they are built and passed over where
+they are not. `build/media` has its two cases in `tests/media_stage.sh`, which has the tree it needs: a `--root` with
+`..`, and an output directory named `a..b` (the Python this program replaced makes that directory; this one cannot open
+it, and says `cannot create the output directory`).
+
+**Mutants, by hand: 19 of the 21 questions taken out in turn, 18 killed** (17 by `tests/paths.sh`, each by a status 132; `media`'s two by
+`tests/media_stage.sh`). The survivor is `data.save` in `tools/qsw`: `qsw write` writes its kernel files to the output
+directory before it, so that question is never the first to meet the path; `qsw decode`, where it could be, needs a
+model of Qwen2.5-1.5B's shape.
+
+**Not done.**
+
+* The refusal does not say why. `cannot read /a/../f` is printed for a file that is there; the reader has to know the rule.
+* A path **built** by a program from a clean one (a directory and a name) is covered where it goes through the places
+  above; nothing checks a path once at the edge of each program.
+* `tests/wan_enc/st.cho`'s two questions are in no gate test: the programs that use it are not built by the gate.

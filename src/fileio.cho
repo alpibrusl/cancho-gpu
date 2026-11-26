@@ -1,4 +1,4 @@
-edition 5;
+edition 9;
 module fileio;
 
 // `fileio` -- reading the start of a file whose size is not the program's
@@ -12,6 +12,13 @@ module fileio;
 
 import mem;
 import text;
+
+// Whether the file verbs take `path` or stop the program (docs/runtime.md §11): `false` for a path of 4,096 bytes or more and for
+// one with two dots in a row anywhere in it. Every open, read, write, rename and removal of a path a caller gave asks this first and
+// refuses on `false` as it does for a file that is not there. It is the language's own answer (`fs_covers`), not a second copy of its rule.
+pub fn covers[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [] bool {
+    return fs_covers(fs, path);
+}
 
 // Read `want` bytes of the open file `hr` from `at` into `t[to..]`: the
 // count read, which is less than `want` only at the end of the file, or -1.
@@ -48,6 +55,9 @@ pub fn prefix[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: 
     var start = 0 - 1;
     var got = 0;
     var size = 0;
+    if !covers(fs, path) {
+        return (0 - 1, 0, 0);
+    }
     match open_read(fs, path) {
         Opened::Failed(e) => {
             return (0 - 1, 0, 0);
@@ -92,6 +102,9 @@ pub fn prefix[&m, &t, &f, &p](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: 
 // no handle between reads.
 pub fn read_at[&t, &f, &p](t: &!t [byte], fs: &f Fs(""), path: &p [byte], offset: int, to: int, want: int) -> [fs_read(""), file_read] int {
     var got = 0 - 1;
+    if !covers(fs, path) {
+        return got;
+    }
     match open_read(fs, path) {
         Opened::Failed(e) => {
             return 0 - 1;

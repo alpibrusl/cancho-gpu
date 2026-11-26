@@ -194,7 +194,10 @@ fn pick[&m, &t](m: &!m [int], t: &!t [byte], unit: int, want: int, have: bool, l
 // The source of a `.chx` file into the text pool: a handle, or -1 with a refusal.
 fn source[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, line: int) -> [fs_read("")] int {
     let top = m[mem.text_slot()];
-    let got = fs_read(fs, text.bytes(t, path), t[top..len(t)]);
+    var got = 0 - 1;
+    if fileio.covers(fs, text.bytes(t, path)) {
+        got = fs_read(fs, text.bytes(t, path), t[top..len(t)]);
+    }
     if got < 0 {
         return bad(m, t, line, text.f1(m, t, "cannot read $", path));
     }

@@ -16,6 +16,9 @@ fn read_at[&f, &p, &b](fs: &f Fs(""), path: &p [byte], at: int, n: int, into: &!
     if at < 0 || n < 0 || n > len(into) {
         return 0 - 1;
     }
+    if !fs_covers(fs, path) {
+        return 0 - 1;
+    }
     match open_read(fs, path) {
         Opened::Failed(e) => {
             return 0 - 1;
@@ -186,6 +189,9 @@ pub fn load_raw[&h, &f, &p](heap: &!h Heap, fs: &f Fs(""), path: &p [byte]) -> [
 
 // The size of the file at `path`, or -1.
 fn size_of[&f, &p](fs: &f Fs(""), path: &p [byte]) -> [fs_read(""), file_read] int {
+    if !fs_covers(fs, path) {
+        return 0 - 1;
+    }
     match open_read(fs, path) {
         Opened::Failed(e) => {
             return 0 - 1;

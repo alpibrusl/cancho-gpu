@@ -681,6 +681,9 @@ fn run[&i, &h, &f, &x, &c, &a](io: &!i Io, heap: &!h Heap, fs: &f Fs(""), exec: 
     var status = 100;
     if k >= n || len(root) == 0 || len(cwd) == 0 || len(home) == 0 || len(py) == 0 || len(cache) == 0 {
         io.error_all(io, "usage: media models | check image WxH PROMPT | check video WxH FRAMES FORCE | --root R --cwd C --home H --py P --cache K [--online] [--env N=V]... (image|edit) ...\n");
+    } else if !fs_covers(fs, root) {
+        // `scripts/` and `build/` are opened under it, and a path with `..` in it stops the program (docs/runtime.md section 11)
+        status = shared.refuse_text(io, "--root is a path with no `..` in it");
     } else {
         var py_entry = buffer.append(heap, buffer.empty(heap, 128), "CANCHO_MEDIA_PY=");
         py_entry = buffer.append(heap, py_entry, py);
