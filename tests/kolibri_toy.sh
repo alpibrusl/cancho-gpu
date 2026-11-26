@@ -83,13 +83,10 @@ BEGIN {
   # what `inputs` writes for the ids 3 0 7, five steps and caches of 64 positions (after the line `inputs` of the manifest)
   printf "inputs -\n" > (T "/manifest"); NP = 3; NS = 5; split("3 0 7", IDS, " "); k = ID["token_embd.weight"]
   want("x0.f32", "vals"); for (s = 1; s <= NS; s++) for (b = 0; b < D / 32; b++) { o = IDS[s] * (D / 32) * 18 + b * 18; for (i = 0; i < 32; i++) { c = i < 16 ? tb(k, o + 2 + i) % 16 : int(tb(k, o + 2 + i - 16) / 16); printf "%.9g\n", (s <= NP ? (c - 8) * half(tb(k, o), tb(k, o + 1)) : 0) > W } } close(W)
-  want("idtab.f32", "vals"); for (s = 1; s <= NS; s++) printf "%d\n", (s <= NP ? IDS[s] : 0) > W; close(W)
-  want("mtab.f32", "vals"); for (s = 1; s <= NS; s++) printf "%d\n", (s <= NP) > W; close(W)
-  want("accsel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < NS; c++) printf "%d\n", (c == s) > W; close(W)
-  want("acckeep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < NS; c++) printf "%d\n", (c != s) > W; close(W)
-  fillw("acc0.f32", NS, 0); fillw("id0.f32", 1, 0)
-  # the uniform numbers of seed 7: x becomes (1103515245 x + 12345) mod 2^31 (in pieces: the product does not fit a double), the upper 24 bits over 2^24
-  want("u.f32", "vals"); xx = 7; for (s = 0; s < NS; s++) { xh = int(xx / 65536); xl = xx % 65536; xx = ((((1103515245 * xh) % 2147483648) * 65536) % 2147483648 + (1103515245 * xl) % 2147483648 + 12345) % 2147483648; printf "%.9g\n", int(xx / 128) / 16777216 > W } close(W)
+  fillw("id0.f32", 1, 0)
+  # the uniform numbers of seed 7, which `draws` prints (not a file of `inputs`, so not in the manifest): x becomes (1103515245 x + 12345) mod 2^31 (in pieces: the product does not fit a
+  # double), the upper 24 bits over 2^24
+  W = T "/want_draws.txt"; xx = 7; for (s = 0; s < NS; s++) { xh = int(xx / 65536); xl = xx % 65536; xx = ((((1103515245 * xh) % 2147483648) * 65536) % 2147483648 + (1103515245 * xl) % 2147483648 + 12345) % 2147483648; printf "%.24f\n", int(xx / 128) / 16777216 > W } close(W)
   want("sel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
   want("keep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
   want("mask.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", ((c <= s && c > s - WIN) ? 0 : -1e9) > W; close(W)

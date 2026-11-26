@@ -1273,8 +1273,44 @@ pub fn run_steps[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess:
     return 0;
 }
 
+// The request `seek N` (`docs/kolibri.md` section 17, S1): the next repetition is the session's repetition `N`, so every table is read from block `N mod blocks` on. It runs no program and moves
+// no buffer: what the programs carried stays as the last repetition left it. 1 when the line is the word `seek` and the count was put; 0 when the line does not start with `seek`; -1 with a refusal.
+pub fn seek_request[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> [] int {
+    let words = tokens(m, t, line);
+    if mem.size(m, words) == 0 || !text.is(t, mem.get(m, words, 0), "seek") {
+        return 0;
+    }
+    if m[sess + s_steps()] == 0 {
+        return err.fail(m, t, "session", text.lit(m, t, "seek is for a session file with `steps`: this one has no repetition to count"));
+    }
+    if mem.size(m, words) != 2 {
+        return err.fail(m, t, "session", text.lit(m, t, "seek N takes one repetition number"));
+    }
+    let (ok, v) = runcmd.number(m, t, mem.get(m, words, 1));
+    if !ok || v < 0.0 || v >= 1000000000.0 || float_of(truncate(v)) != v {
+        return err.fail(m, t, "session", text.f1(m, t, "`$` is not a repetition number (a whole number from 0, below 10^9)", mem.get(m, words, 1)));
+    }
+    m[sess + s_count()] = truncate(v);
+    return 1;
+}
+
+// The answer of a `seek`: the repetition number the session is at.
+pub fn print_count[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, sess: int) -> [io_write] int {
+    io.write_all(io, text.bytes(t, text.num(m, t, m[sess + s_count()])));
+    io.write_all(io, "\n");
+    let _flushed = flush_out(io);
+    return 0;
+}
+
 // Answer the request `line` on the CPU interpreter. Answers 0, or -1 with a refusal.
 pub fn serve_line[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, sess: int, line: int) -> [io_write] int {
+    let sought = seek_request(m, t, sess, line);
+    if sought < 0 {
+        return 0 - 1;
+    }
+    if sought > 0 {
+        return print_count(m, t, io, sess);
+    }
     let (reps, rest) = take_steps(m, t, sess, line);
     if reps < 0 {
         return 0 - 1;

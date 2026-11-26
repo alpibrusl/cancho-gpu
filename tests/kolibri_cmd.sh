@@ -4,7 +4,7 @@
 #     gives through jinja2, recorded by hand;
 #  2. `kolibri_gpu ends` on the toy GGUF of tests/kolibri_toy.sh, `kolibri_gpu say` on quoted lines, and their refusals, each with its rule;
 #  3. scripts/kolibri itself with the toy GGUF, a tokenizer that is a stub (it prints the ids it is told to, and "detokenizes" ids to themselves joined by `-`) and a session that is a stub
-#     (it answers the ids it is told to, a step each, as a float's text, and writes them at a checkpoint): what it asks of the session, where it stops, what it prints, and what it refuses.
+#     (it answers the ids it is told to, a step each, as a float's text): what it asks of the session, where it stops, what it prints, and what it refuses.
 # What the model answers is not here: that is by hand, on the Metal GPU.
 # KOLIBRI_CMD=<a script in scripts/> runs another script: the mutants of the command, by hand.
 set -eu
@@ -73,20 +73,13 @@ EOS
 cat > "$T/session" <<'EOS'
 #!/bin/sh
 echo "$*" > "$STUB_DIR/args.txt"
-for a in "$@"; do case "$a" in X=*) X=${a#X=} ;; NS=*) NS=${a#NS=} ;; esac; done
 [ -z "${STUB_SESSION_FAILS:-}" ] || { echo "error[session]: the stub was told to fail" >&2; exit 3; }
 s=0; : > "$STUB_DIR/requests.txt"
 while read -r line; do
   echo "$line" >> "$STUB_DIR/requests.txt"
-  if [ "$line" = checkpoint ]; then
-    # ids_out.f32: the answers of the NS steps as binary32, little end first
-    echo $STUB_ANS | awk -v ns="$NS" '{ for (i = 1; i <= ns; i++) { v = (i <= NF) ? $i + 0 : 0; if (v == 0) { print "0 0 0 0"; continue } e = 0; while (2 ^ (e + 1) <= v) e++; b = (127 + e) * 2 ^ 23 + (v - 2 ^ e) * 2 ^ (23 - e)
-      printf "%d %d %d %d\n", b % 256, int(b / 256) % 256, int(b / 65536) % 256, int(b / 16777216) } }' | while read -r b0 b1 b2 b3; do printf "$(printf '\\%03o\\%03o\\%03o\\%03o' "$b0" "$b1" "$b2" "$b3")"; done > "$X/ids_out.f32"
-    echo saved
-  else
-    s=$((s + line))
-    echo $STUB_ANS | awk -v s="$s" '{ if ($s ~ /^[0-9]+$/) printf "%e\n", $s; else print $s }'
-  fi
+  # a request is `N ID MASK [U]`: the answer is the id of the last of its steps
+  s=$((s + ${line%% *}))
+  echo $STUB_ANS | awk -v s="$s" '{ if ($s ~ /^[0-9]+$/) printf "%e\n", $s; else print $s }'
 done
 EOS
 chmod +x "$T/tok" "$T/session"
@@ -105,28 +98,28 @@ has() { # name, file, a text it must have
 export STUB_IDS="3 0 7"
 # the prompt's three steps answer 1, 1 and (the last, the first new token) 9; then 4; then the eos
 export STUB_ANS="1 1 9 4 5 8 8 8"
-run "to the eos" 0 "a question" && { is "the answer is the ids before the eos" "$T/o.txt" "9-4"; is "the prompt but its last token is one request, then a step a request, then a checkpoint" "$T/stub/requests.txt" "2
-1
-1
-1
-checkpoint"; has "it says where it stopped" "$T/e.txt" "2 new tokens.*stopped at the end token 5"; has "the session samples, for as many steps as the toy sees whole (the prompt and 256 more would be past them)" "$T/stub/args.txt" "T=192 NS=136 GEN=1 SAMP=1 SAVE=0"; }
+set -- $("$B" draws 1 5)
+run "to the eos" 0 "a question" && { is "the answer is the ids before the eos" "$T/o.txt" "9-4"; is "a request a step: the prompt's ids with a mask of 1, then the id the step before chose, each with the seed's number for its step" "$T/stub/requests.txt" "1 3 1 $1
+1 0 1 $2
+1 7 1 $3
+1 0 0 $4
+1 0 0 $5"; has "it says where it stopped" "$T/e.txt" "2 new tokens.*stopped at the end token 5"; has "the session samples, for as many steps as the toy sees whole (the prompt and 256 more would be past them)" "$T/stub/args.txt" "T=192 NS=136 GEN=1 SAMP=1 SAVE=0"; }
 [ ! -e "$T/cache/gpu.lock" ] || { echo "FAIL the lock is left behind"; fail=1; }
 export STUB_ANS="1 1 9 6 5"
 run "to the padding token" 0 "a question" && { is "the padding token ends an answer too" "$T/o.txt" "9"; has "and is named" "$T/e.txt" "stopped at the end token 6"; }
 export STUB_ANS="1 1 5 9 9"
 run "an answer of nothing" 0 "a question" && { is "an end token first: an empty line" "$T/o.txt" ""; has "no new token" "$T/e.txt" "0 new tokens"; }
 export STUB_ANS="1 1 9 4 8 8 8 8"
-run "to the limit" 0 --max 2 --greedy "a question" && { is "the limit ends an answer, with all its ids" "$T/o.txt" "9-4"; is "two steps asked past the prompt" "$T/stub/requests.txt" "2
-1
-1
-checkpoint"; has "the limit is named" "$T/e.txt" "stopped at the limit of 2 new tokens"; has "the session takes the arg max, for the prompt and two steps" "$T/stub/args.txt" "T=64 NS=4 GEN=1 SAMP=0 SAVE=0"; }
+run "to the limit" 0 --max 2 --greedy "a question" && { is "the limit ends an answer, with all its ids" "$T/o.txt" "9-4"; is "the prompt's three steps and one past them, with no number to draw with" "$T/stub/requests.txt" "1 3 1
+1 0 1
+1 7 1
+1 0 0"; has "the limit is named" "$T/e.txt" "stopped at the limit of 2 new tokens"; has "the session takes the arg max, for the prompt and two steps" "$T/stub/args.txt" "T=64 NS=4 GEN=1 SAMP=0 SAVE=0"; }
 run "a limit under what the model sees whole" 0 --max 100 "a question" && has "the prompt but its last token, and 100 steps" "$T/stub/args.txt" "T=128 NS=102 "
 export STUB_IDS="7"
 export STUB_ANS="9 4 5"
-run "a prompt of one token" 0 "a" && { is "its first step is the first new token" "$T/o.txt" "9-4"; is "no request for the prompt" "$T/stub/requests.txt" "1
-1
-1
-checkpoint"; }
+run "a prompt of one token" 0 --greedy "a" && { is "its first step is the first new token" "$T/o.txt" "9-4"; is "the prompt's one step answers the first new token" "$T/stub/requests.txt" "1 7 1
+1 0 0
+1 0 0"; }
 export STUB_IDS="3 0 7"
 export STUB_ANS="1 1 9 5"
 # the template, the raw text, a system message, a file
@@ -139,7 +132,8 @@ run "a text that starts with a dash" 0 --raw -- "-x" && is "-- before a text tha
 # the seed reaches the uniform numbers
 run "seed 1" 0 -o "$T/r2" --seed 1 "a question" || true
 run "seed 2" 0 -o "$T/r3" --seed 2 "a question" || true
-if cmp -s "$T/r1/x/u.f32" "$T/r2/x/u.f32" && ! cmp -s "$T/r2/x/u.f32" "$T/r3/x/u.f32"; then echo "ok   the seed is 1 unless given, and another seed is other numbers"; else echo "FAIL the seed does not reach u.f32"; fail=1; fi
+if cmp -s "$T/r1/draws.txt" "$T/r2/draws.txt" && ! cmp -s "$T/r2/draws.txt" "$T/r3/draws.txt" && [ -s "$T/r3/draws.txt" ]; then echo "ok   the seed is 1 unless given, and another seed is other numbers"; else echo "FAIL the seed does not reach the numbers drawn with"; fail=1; fi
+run "seed 2 again" 0 --seed 2 "a question" && has "and the seed's numbers are the requests'" "$T/stub/requests.txt" "^1 3 1 $("$B" draws 2 1)\$"
 [ -f "$T/r1/answer_ids.txt" ] && [ -f "$T/r1/prompt.txt" ] && echo "ok   -o keeps the run's files" || { echo "FAIL -o keeps nothing"; fail=1; }
 # the weights, written when they are not there
 WDIR="$T/w2"

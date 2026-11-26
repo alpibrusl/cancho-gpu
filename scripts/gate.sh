@@ -83,6 +83,7 @@ python3 tests/dit_attention_seg.py "${CANCHO_GPU:-build/cancho-gpu}" --mutants
 CANCHO="$CANCHO" scripts/build-session.sh
 python3 tests/session.py build/cancho-gpu-session
 tests/pick.sh build/cancho-gpu-session
+tests/seek.sh build/cancho-gpu-session
 tests/moe.sh build/cancho-gpu-session
 tests/kstep.sh build/cancho-gpu-session
 sh tests/model.sh build/cancho-gpu-session

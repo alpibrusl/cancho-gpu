@@ -94,10 +94,9 @@ refused "kolibri_gpu prompt: a text with .." "error\[kolibri-read\]" "$KG" promp
 refused "kolibri_gpu prompt: a system text with .." "error\[kolibri-read\]" "$KG" prompt "$T/user.txt" none "$P"
 refused "kolibri_gpu ends: a file with .." "error\[kolibri-read\]" "$KG" ends "$P"
 refused "kolibri_gpu say: a file with .." "error\[kolibri-read\]" "$KG" say "$P"
-refused "kolibri_gpu ids: a file with .." "error\[kolibri-read\]" "$KG" ids "$P" 0
 refused "kolibri_gpu weights: a directory with .." "error\[kolibri-write\]" "$KG" weights "$T/toy.gguf" "$T/a/../w"
-refused "kolibri_gpu inputs: an ids file with .." "error\[kolibri-" "$KG" inputs "$T/toy.gguf" "$T/a/../kids.txt" "$T/x" 64 3 1
-refused "kolibri_gpu inputs: a directory with .." "error\[kolibri-write\]" "$KG" inputs "$T/toy.gguf" "$T/kids.txt" "$T/a/../x" 64 3 1
+refused "kolibri_gpu inputs: an ids file with .." "error\[kolibri-" "$KG" inputs "$T/toy.gguf" "$T/a/../kids.txt" "$T/x" 64 3
+refused "kolibri_gpu inputs: a directory with .." "error\[kolibri-write\]" "$KG" inputs "$T/toy.gguf" "$T/kids.txt" "$T/a/../x" 64 3
 
 # --- qsw: a model of one layer, 64 wide, with files of zeros
 Q=$B/qsw

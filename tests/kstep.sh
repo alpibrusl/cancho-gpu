@@ -150,8 +150,8 @@ BEGIN {
   # GEN=1 (section 13): the same model from a prompt of two ids; the row of a step is the row its id has in the 4-bit embedding matrix, and past the prompt the id is the arg max of the step before
   emit("emb", 998, V, D, 0); ones("one1.f32", 1, 1); ones("zmk.f32", V, 0); for (r = 0; r < V; r++) printf "%d ", V - r > (W "/rank.f32")
   PID[0] = 5; PID[1] = 77; printf "0 " > (X "/id0.f32")
-  for (s = 0; s < NS; s++) { printf "%d ", (s < 2 ? PID[s] : 0) > (X "/idtab.f32"); printf "%d ", (s < 2) > (X "/mtab.f32"); printf "0 " > (X "/acc0.f32")
-    for (c = 0; c < NS; c++) { printf "%d ", (c == s) > (X "/accsel.f32"); printf "%d ", (c != s) > (X "/acckeep.f32") } }
+  # a request a step: a step, its id and whether the id is the one of the request (the prompt) or the one the step before chose (section 17, S1); a second prompt for the conversations after one another
+  for (s = 0; s < NS; s++) { printf "1 %d %d\n", (s < 2 ? PID[s] : 0), (s < 2) > (X "/req_gen.txt"); printf "1 %d %d\n", (s < 2 ? 300 - 291 * s : 0), (s < 2) > (X "/req_b.txt") }
   for (s = 0; s < NS; s++) { id = s < 2 ? PID[s] : nxt; for (c = 0; c < D; c++) x[c] = wv(998, D, id, c, 0)
     for (l = 0; l < NL; l++) layer(l, s)
     rms(x, 999, D, fnv); nxt = 0; best = -1e30; for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; if (z > best) { best = z; nxt = r } }
@@ -166,7 +166,7 @@ BEGIN {
     for (l = 0; l < NL; l++) layer(l, s)
     rms(x, 999, D, fnv); am = 0; for (r = 0; r < V; r++) { z = 0; for (c = 0; c < D; c++) z += hd(r, c) * fnv[c]; LG[r] = z; if (z > LG[am]) am = r }
     nxt = draw(UU[s + 1]); printf "%d\n", nxt > (X "/want_draws.txt"); if (s == NS - 1) for (r = 0; r < KCH; r++) { printf "%.9g\n", CU[r] > (X "/want_cum.txt"); printf "%d\n", CN[r] > (X "/want_cnt.txt") }
-    printf "%.17g ", (UU[s + 1] < 0 ? ULAST : UU[s + 1]) > (X "/u.f32"); printf "%d %d %d %d %s\n", nxt, am, K1, K2, DROPW > (X "/draw_stats.txt") }
+    printf "1 %d %d %.17g\n", (s < 2 ? PID[s] : 0), (s < 2), (UU[s + 1] < 0 ? ULAST : UU[s + 1]) > (X "/req_samp.txt"); printf "%d %d %d %d %s\n", nxt, am, K1, K2, DROPW > (X "/draw_stats.txt") }
   # once more with no top-p (PC 0), the 4 largest and the same numbers: there the largest are what is drawn from, and a sampler that keeps one more shows. With top-p it did not, and not with 5
   # either: the large logits of this head come in equal pairs, the fifth and sixth are equal, and 5 already keeps both (which is the rule: an entry equal to the last kept stays)
   PC = 0; TOPK = 4; UU[NS] = ULAST
@@ -210,10 +210,12 @@ function draw(uu,   dj, lk, q, c, r, best, used, n, j, i, done, gmax, nk, mm, mm
 # the head: rows 2k and 2k + 1 are near each other, so that large logits come in pairs inside a chunk of 64 (a candidate top-p drops can then lie before one it keeps)
 function hd(r, c) { return ((int(r / 2) * 29 + c * 13) % 31 - 15) / 32 + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) / 64 }'
 RX="$T/x"; RN=$NS; RT=64; RTW=64; RTS=64   # a run's tables, its steps, an indexed layer's positions, a sliding layer's slots, the keys a chunk
+REQ=""; CK=1   # a file of request lines (none: RN requests of a step), and whether a checkpoint follows them
 run() { # the model file's extra arguments
-  { i=0; while [ $i -lt $RN ]; do echo 1; i=$((i + 1)); done; echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$RX" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$V BN=32 T=$RT TW=$RTW TS=$RTS NS=$RN L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
+  { if [ -n "$REQ" ]; then cat "$REQ"; else i=0; while [ $i -lt $RN ]; do echo 1; i=$((i + 1)); done; fi; [ $CK -eq 0 ] || echo checkpoint; } | "$B" "${KSTEP_MODEL:-models/kolibri_step.model}" CHX="$CHX" W="$T/w" X="$RX" D=$D NQ=$NQ NKV=$NKV NE=$NE EH=$EH K=$K FF=$D V=$V BN=32 T=$RT TW=$RTW TS=$RTS NS=$RN L0=0 NL=$NL HEAD=1 SAVE=1 ANS=1 F32= F16= I8= "$@" > "$T/out.txt" 2> "$T/err.txt" || true
   head -n $RN "$T/out.txt" | head -c 200000 | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got_ans.txt" || true
 }
+lines() { sed -n "$1,$2p" "$T/out.txt" | tr -s ' \n' '\n\n' | grep -v '^$' > "$3" || true; }   # the answers of requests $1 to $2 of the last run
 col() { od -A n -v -t fF "$1" | tr -s ' \n' '\n\n' | grep -v '^$' > "$2" || true; }   # a save is binary f32 whatever the session's files are
 run
 if [ ! -s "$T/got_ans.txt" ]; then echo "FAIL the session answered nothing: $(head -c 300 "$T/err.txt")"; fail=1; fi
@@ -226,11 +228,26 @@ l=0; while [ $l -lt $NL ]; do
 done
 if [ -f "$T/x/logits.f32" ]; then col "$T/x/logits.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
 same "the logits at the last step" "$T/got.txt" "$T/x/want_logits.txt"
-# the step feeding itself: the id each of the four steps chose, as answered and as collected
+# the step feeding itself: the id each of the four steps chose. A request is a step, its id and its mask (section 17, S1)
+REQ="$T/x/req_gen.txt"; CK=0
 run GEN=1 SAVE=0
 same "generating from two ids: the id each step chose, exactly" "$T/got_ans.txt" "$T/x/want_ids.txt" 0
-if [ -f "$T/x/ids_out.f32" ]; then col "$T/x/ids_out.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
-same "the same ids collected on the device" "$T/got.txt" "$T/x/want_ids.txt" 0
+# one session, conversations one after another. First another prompt in a session of its own, for what it answers
+REQ="$T/x/req_b.txt"; run GEN=1 SAVE=0
+cp "$T/got_ans.txt" "$T/want_b.txt"
+if cmp -s "$T/want_b.txt" "$T/x/want_ids.txt" || [ "$(wc -l < "$T/want_b.txt" | tr -d ' ')" -ne "$NS" ]; then echo "FAIL the second prompt's ids are the first's, or not $NS: a session that ignores a request's id would pass"; fail=1; fi
+# then: the first prompt, seek 0, the first prompt again, seek 0, the second prompt, and back to its third step. The step after a seek is given its id (the one the second step chose): what
+# the session carries is the id of the last step it ran, not of the step before the one sought
+{ cat "$T/x/req_gen.txt"; echo "seek 0"; cat "$T/x/req_gen.txt"; echo "seek 0"; cat "$T/x/req_b.txt"; echo "seek 2"; echo "1 $(sed -n 2p "$T/want_b.txt") 1"; sed -n '4,$p' "$T/x/req_b.txt"; } > "$T/req_conv.txt"
+REQ="$T/req_conv.txt"; run GEN=1 SAVE=0
+lines $((NS + 2)) $((2 * NS + 1)) "$T/got.txt"
+same "the same prompt again in one session, after seek 0: the same ids" "$T/got.txt" "$T/x/want_ids.txt" 0
+lines $((2 * NS + 3)) $((3 * NS + 2)) "$T/got.txt"
+same "another prompt after it: the ids of a session that starts with it" "$T/got.txt" "$T/want_b.txt" 0
+lines $((3 * NS + 4)) $((4 * NS + 1)) "$T/got.txt"
+sed -n '3,$p' "$T/want_b.txt" > "$T/want.txt"
+same "back to its third step (seek 2), the step given its id: the same ids from there" "$T/got.txt" "$T/want.txt" 0
+REQ="$T/x/req_samp.txt"; CK=1
 # the four ids must differ and lie in more than one 64-entry chunk of the vocabulary, not all in the first, or a step that ignores its id, or an arg max that looks at the first chunk only, would pass
 run GEN=1 SAMP=1 SAVE=1 KC=$KC TOPK=$TOPK CB=16 PC=$PC INVT=$INVT
 same "sampling from two ids (temperature 2/3, the 5 largest, top-p 0.6): the id each step drew, exactly" "$T/got_ans.txt" "$T/x/want_draws.txt" 0
@@ -247,7 +264,7 @@ same "its cumulative masses at the last step" "$T/got.txt" "$T/x/want_cum_k.txt"
 if [ "$(awk '$1 != $2' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 < $3' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(awk '$4 > 1' "$T/x/draw_stats.txt" | wc -l)" -eq 0 ] || [ "$(tail -1 "$T/x/draw_stats.txt" | awk '{ print ($4 < $3 && $4 > 1 && $5 > 0.002) }')" != 1 ]; then echo "FAIL the reference's draws do not exercise the sampler (id, arg max, kept by top-k, kept by top-p, the dropped candidate's share of the mass): $(tr '\n' ';' < "$T/x/draw_stats.txt")"; fail=1; fi
 if [ "$(sort -u "$T/x/want_ids.txt" | wc -l)" -lt 2 ] || [ "$(awk '{ print int($1 / 64) }' "$T/x/want_ids.txt" | sort -u | wc -l)" -lt 2 ] || [ "$(awk '$1 >= 64' "$T/x/want_ids.txt" | wc -l)" -eq 0 ]; then echo "FAIL the reference's four ids do not differ or are all in one chunk: $(tr '\n' ' ' < "$T/x/want_ids.txt")"; fail=1; fi
 # caches that wrap and chunk (section 15): 14 steps, so a sliding layer's ring of 4 slots is gone round three times and an indexed layer's 14 keys lie in four chunks of 4
-RX="$T/xl"; RN=$NSL; RT=$TL; RTW=$TWL; RTS=$TWL
+RX="$T/xl"; RN=$NSL; RT=$TL; RTW=$TWL; RTS=$TWL; REQ=""; CK=1
 run
 if [ ! -s "$T/got_ans.txt" ]; then echo "FAIL the session answered nothing with caches that wrap: $(head -c 300 "$T/err.txt")"; fail=1; fi
 same "a ring of $TWL slots for a window of $WINL, indexed caches of $TL in chunks of $TWL: the row after the last layer at each of $NSL steps" "$T/got_ans.txt" "$T/xl/want_ans.txt"
@@ -258,5 +275,15 @@ l=0; while [ $l -lt $NL ]; do
 done
 if [ -f "$T/xl/logits.f32" ]; then col "$T/xl/logits.f32" "$T/got.txt"; else : > "$T/got.txt"; fi
 same "the logits at the last of them" "$T/got.txt" "$T/xl/want_logits.txt"
+# seek with a ring that has wrapped (section 17, S1). After $NSL steps a sliding layer's $TWL slots hold the last $TWL positions: a step whose window lies in them runs again as it ran (the last
+# two here), the whole run again from 0 is the whole run, and one step further back is another answer, since the first key of its window was written over. That last is the limit, shown.
+{ i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 2))"; echo 1; echo 1; echo "seek 0"; i=0; while [ $i -lt $NSL ]; do echo 1; i=$((i + 1)); done; echo "seek $((NSL - 3))"; echo 1; } > "$T/req_ring.txt"
+REQ="$T/req_ring.txt"; CK=0; run SAVE=0
+lines $((NSL - 1)) $NSL "$T/want.txt"; lines $((NSL + 2)) $((NSL + 3)) "$T/got.txt"
+same "back two steps in a ring of $TWL slots that has wrapped: the two steps again, exactly" "$T/got.txt" "$T/want.txt" 0
+lines 1 $NSL "$T/want.txt"; lines $((NSL + 5)) $((2 * NSL + 4)) "$T/got.txt"
+same "back to 0 after it: the $NSL steps again, exactly" "$T/got.txt" "$T/want.txt" 0
+lines $((NSL - 2)) $((NSL - 2)) "$T/want.txt"; lines $((2 * NSL + 6)) $((2 * NSL + 6)) "$T/got.txt"
+if [ -s "$T/got.txt" ] && ! cmp -s "$T/got.txt" "$T/want.txt"; then echo "ok   back three steps, past what the ring still holds: another answer (the limit, not a promise)"; else echo "FAIL back three steps in a ring of $TWL slots answered as the first time or not at all: the ring is not what the test thinks"; fail=1; fi
 [ "$fail" -eq 0 ] && echo "kstep: ok"
 exit $fail

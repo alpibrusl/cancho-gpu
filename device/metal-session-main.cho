@@ -690,7 +690,16 @@ fn run[&m, &t, &x, &i, &f, &a, &g](m: &!m [int], t: &!t [byte], fm: &!x [float],
                         done = copy(m, t, io, ffi, sess, bufs, pairs);
                     }
                 }
+                var sought = 0;
                 if kind == 0 && kcopy == 0 {
+                    sought = session.seek_request(m, t, sess, text.handle(tmark, n));
+                    if sought < 0 {
+                        done = 0 - 1;
+                    } else if sought > 0 {
+                        done = session.print_count(m, t, io, sess);
+                    }
+                }
+                if kind == 0 && kcopy == 0 && sought == 0 {
                     let (reps, rest) = session.take_steps(m, t, sess, text.handle(tmark, n));
                     done = reps;
                     if done >= 0 {
