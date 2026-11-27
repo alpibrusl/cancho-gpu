@@ -101,7 +101,7 @@ ask() {
   chunked=0
   if grep -q "^Transfer-Encoding: chunked" "$T/head"; then
     chunked=1
-    awk 'NR == 1 { n = $0 } NR == 2 { b = $0 } NR == 3 { z = $0 } END { if (NR == 4 && z == "0" && sprintf("%x", length(b)) == n) print b; else print "NOT ONE CHUNK: " NR " lines, said " n ", is " length(b) }' "$T/body" > "$T/body2"; mv "$T/body2" "$T/body"
+    LC_ALL=C awk 'NR == 1 { n = $0 } NR == 2 { b = $0 } NR == 3 { z = $0 } END { if (NR == 4 && z == "0" && sprintf("%x", length(b)) == n) print b; else print "NOT ONE CHUNK: " NR " lines, said " n ", is " length(b) }' "$T/body" > "$T/body2"; mv "$T/body2" "$T/body"
   fi
 }
 # what the session was asked for the last request: the lines of the trace after it was sent
