@@ -1,7 +1,7 @@
 #!/bin/sh
 # Kolibri 1.1 on the Metal GPU as a server (docs/kolibri.md section 18): Ollama's /api/generate and OpenAI's /v1/chat/completions (with tools: section 21), the model loaded once.
 #
-#     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]
+#     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N] [--cache FILE]
 #
 # It writes the session's tables once (30 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. A prompt is read 16 tokens a pass (docs/kolibri.md
 # section 20) and answered a token a step. The model samples with the file's
@@ -9,20 +9,23 @@
 # A conversation is at most 16,384 positions (past them the model's indexer chooses from a pool, which is not written). It listens on every address of the host: `--api-key` on a network.
 # The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
 # written on the first run: 41 GB. One GPU job at a time, by the lock scripts/media takes.
+# `--cache FILE` keeps what a long prompt left in the model in FILE (180 KB a token: 2 GB for a prompt of 11,000) and takes it at the next start, so that a prefix sent
+# again after a restart is not read again (docs/kolibri.md section 28).
 HERE=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
 CACHE=${CANCHO_MEDIA_CACHE:-$HOME/.cache/cancho-media}
 G=${KOLIBRI_GGUF:-$CACHE/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf}
 W=${KOLIBRI_WEIGHTS:-$CACHE/kolibri-w}
 SERVER=${KOLIBRI_SERVER:-$HERE/build/cancho-gpu-kolibri}
 K=$HERE/build/kolibri_gpu
-usage() { echo "kolibri-serve: $1" >&2; echo "usage: scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]" >&2; exit 2; }
-samp=1; invt=1; pass=""; port=11434
+usage() { echo "kolibri-serve: $1" >&2; echo "usage: scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N] [--cache FILE]" >&2; exit 2; }
+samp=1; invt=1; pass=""; port=11434; cache=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --greedy) samp=0; shift ;;
     --temperature) [ $# -ge 2 ] || usage "--temperature takes a number above 0"
       invt=$(awk -v t="$2" 'BEGIN { if (t ~ /^[0-9]*\.?[0-9]+$/ && t + 0 > 0) printf "%.9g", 1 / t; else print "" }'); [ -n "$invt" ] || usage "--temperature takes a number above 0"; shift 2 ;;
     --port) [ $# -ge 2 ] || usage "--port takes a port"; port=$2; pass="$pass --port $2"; shift 2 ;;
+    --cache) [ $# -ge 2 ] && [ -n "$2" ] || usage "--cache takes a file"; cache=$2; shift 2 ;;
     --api-key|--name|--max-new) [ $# -ge 2 ] || usage "$1 takes a value"; case "$2" in *[!A-Za-z0-9._:-]*) usage "$1 takes letters, digits and . _ : -" ;; esac; pass="$pass $1 $2"; shift 2 ;;
     *) usage "no option $1" ;;
   esac
@@ -61,4 +64,6 @@ fi
 echo $$ > "$LOCK"; locked=1
 greedy=""; [ $samp -eq 1 ] || greedy="--greedy"
 # shellcheck disable=SC2086
-"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" --pass "$PB" $greedy $pass CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" ITOP="$itop" GEN=1 SAMP=$samp SAVE=0 INVT="$invt" PASS=1 PB="$PB" PTW="$ptw"
+# the file of the caches is an argument of its own: a path may have what a word of $pass may not
+if [ -n "$cache" ]; then set -- --cache "$cache"; else set --; fi
+"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" --pass "$PB" $greedy $pass "$@" CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" ITOP="$itop" GEN=1 SAMP=$samp SAVE=0 INVT="$invt" PASS=1 PB="$PB" PTW="$ptw"

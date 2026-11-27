@@ -25,6 +25,7 @@ import fileio;
 import chat;
 import session;
 import kserve;
+import kcache;
 
 fn words() -> [] int {
     return 100000000;
@@ -45,7 +46,7 @@ fn usage[&i](io: &!i Io) -> [err_write] int {
 }
 
 // One connection: its request read, answered at once or by the model, and a line said of it.
-fn handle[&m, &t, &x, &i, &k, &c](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, clock: &k Clock, ch: &!c Conn, cfg: int, sess: int) -> [err_write, clock, conn_read, conn_write] int {
+fn handle[&m, &t, &x, &i, &k, &c, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), clock: &k Clock, ch: &!c Conn, cfg: int, sess: int) -> [err_write, fs_write(""), file_write, clock, conn_read, conn_write] int {
     let t0 = clock_ms(clock);
     let (code, from, he, blen) = kserve.read_request(m, t, ch);
     if code < 0 {
@@ -99,10 +100,63 @@ fn handle[&m, &t, &x, &i, &k, &c](m: &!m [int], t: &!t [byte], fm: &!x [float], 
         kserve.respond_body(m, t, ch, kserve.body(m, t, cfg, what));
     }
     io.error_all(io, text.bytes(t, kserve.log_line(m, t, cfg, from, he, 200, what, clock_ms(clock) - t0)));
+    // the answer is gone: what the prompt left in the session is kept now, if it is worth a file
+    return keep(m, t, fm, io, fs, clock, cfg, sess, what);
+}
+
+// The caches of the file, if there is one and it is this server's, into the session (docs/kolibri.md section 28). A file that is not is said and left alone: never an error of
+// the start.
+fn restore[&m, &t, &x, &i, &f, &k](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), clock: &k Clock, cfg: int, sess: int) -> [err_write, fs_read(""), file_read, clock] int {
+    let path = m[cfg + kserve.c_cache()];
+    if path < 0 {
+        return 0;
+    }
+    let t0 = clock_ms(clock);
+    let mark = m[mem.top_slot()];
+    let tmark = m[mem.text_slot()];
+    let rolls = kcache.rolls(m, sess);
+    let (n, ids, off) = kcache.open(m, t, fs, path, m[cfg + kserve.c_gguf_bytes()], m[cfg + kserve.c_ctx()], kserve.vocab(m, cfg), rolls);
+    var took = n > 0;
+    if took {
+        took = kcache.read_cpu(m, t, fm, fs, path, off, rolls, n) == 0;
+    }
+    if took {
+        let (st, v) = session.ask(m, t, fm, sess, text.n1(m, t, "seek $", n));
+        took = st >= 0;
+    }
+    if took {
+        kserve.restored(m, cfg, n, ids);
+        io.error_all(io, text.bytes(t, text.f3(m, t, "took $ positions from $ in $ ms\n", text.num(m, t, n), path, text.num(m, t, clock_ms(clock) - t0))));
+    } else if n != 0 {
+        io.error_all(io, text.bytes(t, text.f2(m, t, "the cache $ is not taken: $\n", path, kserve.last_error(m, t))));
+    }
+    mem.release_to(m, mark);
+    m[mem.text_slot()] = tmark;
     return 0;
 }
 
-fn serve[&m, &t, &x, &i, &k, &l](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, clock: &k Clock, lh: &!l Listener, cfg: int, sess: int) -> [err_write, clock, conn_accept, conn_read, conn_write] int {
+// After a request: the caches to its prompt's end into the file, when the server says they are worth it. A write that fails is said, and nothing more.
+fn keep[&m, &t, &x, &i, &f, &k](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), clock: &k Clock, cfg: int, sess: int, j: int) -> [err_write, fs_write(""), file_write, clock] int {
+    let n = kserve.keeps(m, cfg, j);
+    if n == 0 {
+        return 0;
+    }
+    let t0 = clock_ms(clock);
+    let path = m[cfg + kserve.c_cache()];
+    let rolls = kcache.rolls(m, sess);
+    let hd = kcache.head(m, t, m[cfg + kserve.c_gguf_bytes()], m[cfg + kserve.c_ctx()], kserve.vocab(m, cfg), rolls, n, kserve.kept_ids(m, cfg));
+    let wrote = kcache.write_cpu(m, t, fm, fs, path, hd, rolls, n);
+    if wrote < 0 {
+        io.error_all(io, text.bytes(t, text.f2(m, t, "the cache $ is not written: $\n", path, kserve.last_error(m, t))));
+        return 0;
+    }
+    kserve.kept(m, cfg, n);
+    let l = mem.of4(m, text.num(m, t, n), path, text.num(m, t, wrote), text.num(m, t, clock_ms(clock) - t0));
+    io.error_all(io, text.bytes(t, text.fmt(m, t, "kept $ positions in $ ($ bytes) in $ ms\n", l)));
+    return 0;
+}
+
+fn serve[&m, &t, &x, &i, &k, &l, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), clock: &k Clock, lh: &!l Listener, cfg: int, sess: int) -> [err_write, fs_write(""), file_write, clock, conn_accept, conn_read, conn_write] int {
     // what the load allocated stays; what a request allocated is given back after it
     let mark_m = m[mem.top_slot()];
     let mark_t = m[mem.text_slot()];
@@ -114,7 +168,7 @@ fn serve[&m, &t, &x, &i, &k, &l](m: &!m [int], t: &!t [byte], fm: &!x [float], i
                 failures = 0;
                 var c = conn;
                 borrow mut c as &!ch in {
-                    stop = handle(m, t, fm, io, clock, ch, cfg, sess) < 0;
+                    stop = handle(m, t, fm, io, fs, clock, ch, cfg, sess) < 0;
                 }
                 conn_close(c);
             }
@@ -134,7 +188,7 @@ fn serve[&m, &t, &x, &i, &k, &l](m: &!m [int], t: &!t [byte], fm: &!x [float], i
     return 1;
 }
 
-fn run[&m, &t, &x, &i, &f, &k, &l](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), clock: &k Clock, lh: &!l Listener, cfg: int) -> [err_write, fs_read(""), file_read, clock, conn_accept, conn_read, conn_write] int {
+fn run[&m, &t, &x, &i, &f, &k, &l](m: &!m [int], t: &!t [byte], fm: &!x [float], io: &!i Io, fs: &f Fs(""), clock: &k Clock, lh: &!l Listener, cfg: int) -> [err_write, fs_read(""), file_read, fs_write(""), file_write, clock, conn_accept, conn_read, conn_write] int {
     if kserve.load(m, t, fs, cfg) < 0 {
         return cli.report(m, t, io);
     }
@@ -155,8 +209,9 @@ fn run[&m, &t, &x, &i, &f, &k, &l](m: &!m [int], t: &!t [byte], fm: &!x [float],
     if sess < 0 {
         return cli.report(m, t, io);
     }
+    restore(m, t, fm, io, fs, clock, cfg, sess);
     io.error_all(io, text.bytes(t, text.n1(m, t, "listening on port $ (every address of this host)\n", m[cfg + kserve.c_port()])));
-    return serve(m, t, fm, io, clock, lh, cfg, sess);
+    return serve(m, t, fm, io, fs, clock, lh, cfg, sess);
 }
 
 fn main(world: World) -> [] int {

@@ -1,0 +1,323 @@
+edition 5;
+module kcache;
+
+// `kcache` -- the caches of Kolibri 1.1's server kept in a file (docs/kolibri.md section 28): what a prompt left in the session, so that a start does not read it again. The state
+// is the session's rolls to a position, and the ids those positions were run on. This module is the file's form, its check against the server that reads it, and the transfer for
+// the CPU session; `kolibri/kcache_dev.cho` is the transfer for a device.
+//
+// The file is a head of lines and then the rolls' numbers:
+//
+//     kolibri-cache 1
+//     gguf <the model file's bytes>
+//     positions <the positions the session has>
+//     vocab <the vocabulary's ids>
+//     rolls <how many>
+//     <elements a position>            a line a roll, in the session's order
+//     kept <N>
+//     <id>                             N lines: the ids positions 0 .. N - 1 were run on
+//     data
+//
+// and after `data` and its newline, for each roll in order, its first N positions as f32, little-endian, as a device holds them.
+//
+// A roll here is a record of five: the program and the output that store it, its elements a position, its positions, and its place in the interpreter's memory (-1 on a device).
+
+import mem;
+import text;
+import err;
+import f32;
+import fileio;
+import ckpt;
+import session;
+
+// The largest head read: 8 MiB. A line an id for a million positions is under it, and it is under what a text of the pool can be long (a handle's length is under 2^24:
+// a head read 16 MiB at a time was a text of length 0, and the first cache of the real model was refused for its first line).
+pub fn head_cap() -> [] int {
+    return 8388608;
+}
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: int) -> [] int {
+    return err.fail(m, t, "kolibri-cache", msg);
+}
+
+// The session's rolls, each once (a roll stored in two phases is one roll), in the order of the session file.
+pub fn rolls[&m](m: &!m [int], sess: int) -> [] int {
+    let tables = m[sess + session.s_tables()];
+    let out = mem.list(m);
+    let seen = mem.list(m);
+    var k = 0;
+    while k < mem.size(m, tables) {
+        let tb = mem.get(m, tables, k);
+        if m[tb + session.t_way()] == 2 && !mem.contains(m, seen, m[tb + session.t_roll()]) {
+            mem.push(m, seen, m[tb + session.t_roll()]);
+            mem.push(m, out, mem.rec5(m, m[tb], m[tb + 1], m[tb + session.t_stride()], m[tb + 3], m[tb + 2]));
+        }
+        k = k + 1;
+    }
+    return out;
+}
+
+// The bytes of the rolls' first `n` positions.
+pub fn data_bytes[&m](m: &!m [int], rolls: int, n: int) -> [] int {
+    var total = 0;
+    var k = 0;
+    while k < mem.size(m, rolls) {
+        total = total + 4 * n * m[mem.get(m, rolls, k) + 2];
+        k = k + 1;
+    }
+    return total;
+}
+
+// The head for `n` positions run on the ids `ids[0 .. n)` (words of the pool), as a text.
+pub fn head[&m, &t](m: &!m [int], t: &!t [byte], gguf_bytes: int, positions: int, vocab: int, rolls: int, n: int, ids: int) -> [] int {
+    let lines = mem.list(m);
+    mem.push(m, lines, text.lit(m, t, "kolibri-cache 1"));
+    mem.push(m, lines, text.n1(m, t, "gguf $", gguf_bytes));
+    mem.push(m, lines, text.n1(m, t, "positions $", positions));
+    mem.push(m, lines, text.n1(m, t, "vocab $", vocab));
+    mem.push(m, lines, text.n1(m, t, "rolls $", mem.size(m, rolls)));
+    var k = 0;
+    while k < mem.size(m, rolls) {
+        mem.push(m, lines, text.num(m, t, m[mem.get(m, rolls, k) + 2]));
+        k = k + 1;
+    }
+    mem.push(m, lines, text.n1(m, t, "kept $", n));
+    k = 0;
+    while k < n {
+        mem.push(m, lines, text.num(m, t, m[ids + k]));
+        k = k + 1;
+    }
+    mem.push(m, lines, text.lit(m, t, "data\n"));
+    return text.joined(m, t, lines, "\n");
+}
+
+// The line of `h` that starts at `pos`: `(the line, the place after its newline)`, or `(-1, 0)` when no newline ends it.
+fn line_at[&t](t: &!t [byte], h: int, pos: int) -> [] (int, int) {
+    var e = pos;
+    while e < text.size(h) && text.at(t, h, e) != 10 {
+        e = e + 1;
+    }
+    if e >= text.size(h) {
+        return (0 - 1, 0);
+    }
+    return (text.sub(h, pos, e), e + 1);
+}
+
+// A whole number of at most 15 digits, or -1.
+fn count_of[&t](t: &!t [byte], h: int) -> [] int {
+    if text.size(h) < 1 || text.size(h) > 15 {
+        return 0 - 1;
+    }
+    var v = 0;
+    var k = 0;
+    while k < text.size(h) {
+        let c = text.at(t, h, k);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        v = v * 10 + c - 48;
+        k = k + 1;
+    }
+    return v;
+}
+
+// The number of a line `WORD NUMBER` of `h` at `pos`: `(the number, the place after)`, or `(-1, 0)`.
+fn field[&t](t: &!t [byte], h: int, pos: int, word: &static [byte]) -> [] (int, int) {
+    let (l, next) = line_at(t, h, pos);
+    if l < 0 || text.size(l) <= len(word) + 1 || !text.starts_with(t, l, word) || text.at(t, l, len(word)) != 32 {
+        return (0 - 1, 0);
+    }
+    return (count_of(t, text.sub(l, len(word) + 1, text.size(l))), next);
+}
+
+// The head `h` (the file's first bytes, all of them when the file is shorter than `head_cap`) of a file of `fsize` bytes, held to this server: `(N, the ids as words of the pool,
+// the place of the data in the file)`, or `(-1, 0, 0)` with a refusal that says what is not this server's. Nothing of the file is used before this passes.
+pub fn check[&m, &t](m: &!m [int], t: &!t [byte], h: int, fsize: int, gguf_bytes: int, positions: int, vocab: int, rolls: int) -> [] (int, int, int) {
+    let (magic, p0) = line_at(t, h, 0);
+    if magic < 0 || !text.is(t, magic, "kolibri-cache 1") {
+        let r = bad(m, t, text.lit(m, t, "it is not a cache of this version (its first line is not `kolibri-cache 1`)"));
+        return (0 - 1, 0, 0);
+    }
+    let (g, p1) = field(t, h, p0, "gguf");
+    let (ps, p2) = field(t, h, p1, "positions");
+    let (vc, p3) = field(t, h, p2, "vocab");
+    let (nr, p4) = field(t, h, p3, "rolls");
+    if g < 0 || ps < 0 || vc < 0 || nr < 0 {
+        let r = bad(m, t, text.lit(m, t, "its head is not whole (gguf, positions, vocab, rolls)"));
+        return (0 - 1, 0, 0);
+    }
+    if g != gguf_bytes {
+        let r = bad(m, t, text.n2(m, t, "it is of a model file of $ bytes, and this one is $", g, gguf_bytes));
+        return (0 - 1, 0, 0);
+    }
+    if ps != positions || vc != vocab {
+        let r = bad(m, t, text.fmt(m, t, "it is of a session of $ positions and $ ids, and this one has $ and $", mem.of4(m, text.num(m, t, ps), text.num(m, t, vc), text.num(m, t, positions), text.num(m, t, vocab))));
+        return (0 - 1, 0, 0);
+    }
+    if nr != mem.size(m, rolls) {
+        let r = bad(m, t, text.n2(m, t, "it has $ rolls, and this session $", nr, mem.size(m, rolls)));
+        return (0 - 1, 0, 0);
+    }
+    var pos = p4;
+    var k = 0;
+    while k < nr {
+        let (l, next) = line_at(t, h, pos);
+        var el = 0 - 1;
+        if l >= 0 {
+            el = count_of(t, l);
+        }
+        if el != m[mem.get(m, rolls, k) + 2] {
+            let r = bad(m, t, text.n1(m, t, "its roll $ has other elements a position than this session's", k));
+            return (0 - 1, 0, 0);
+        }
+        pos = next;
+        k = k + 1;
+    }
+    let (n, p5) = field(t, h, pos, "kept");
+    if n < 1 || n > positions {
+        let r = bad(m, t, text.lit(m, t, "the positions it keeps are none, or more than the session has"));
+        return (0 - 1, 0, 0);
+    }
+    k = 0;
+    while k < mem.size(m, rolls) {
+        if n > m[mem.get(m, rolls, k) + 3] {
+            let r = bad(m, t, text.lit(m, t, "it keeps more positions than a roll of this session has"));
+            return (0 - 1, 0, 0);
+        }
+        k = k + 1;
+    }
+    let ids = mem.grab(m, n);
+    pos = p5;
+    k = 0;
+    while k < n {
+        let (l, next) = line_at(t, h, pos);
+        var id = 0 - 1;
+        if l >= 0 {
+            id = count_of(t, l);
+        }
+        if id < 0 || id >= vocab {
+            let r = bad(m, t, text.n1(m, t, "the id of its position $ is no id of the vocabulary, or its head ends before it", k));
+            return (0 - 1, 0, 0);
+        }
+        m[ids + k] = id;
+        pos = next;
+        k = k + 1;
+    }
+    let (d, p6) = line_at(t, h, pos);
+    if d < 0 || !text.is(t, d, "data") {
+        let r = bad(m, t, text.lit(m, t, "its head does not end with `data`"));
+        return (0 - 1, 0, 0);
+    }
+    if fsize != p6 + data_bytes(m, rolls, n) {
+        let r = bad(m, t, text.n2(m, t, "it is $ bytes, and what its head says is $", fsize, p6 + data_bytes(m, rolls, n)));
+        return (0 - 1, 0, 0);
+    }
+    return (n, ids, p6);
+}
+
+// The file `path` read and checked: `(N, ids, the data's place)`; `(0, 0, 0)` when there is no file; `(-1, 0, 0)` with a refusal when there is one that is not this server's.
+pub fn open[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), path: int, gguf_bytes: int, positions: int, vocab: int, rolls: int) -> [fs_read(""), file_read] (int, int, int) {
+    let (top, got, fsize) = fileio.prefix(m, t, fs, text.bytes(t, path), head_cap());
+    if top == 0 - 1 {
+        return (0, 0, 0);
+    }
+    if top < 0 {
+        let r = bad(m, t, text.lit(m, t, "its head does not fit the server's memory"));
+        return (0 - 1, 0, 0);
+    }
+    return check(m, t, text.handle(top, got), fsize, gguf_bytes, positions, vocab, rolls);
+}
+
+// The floats a chunk of the transfer holds.
+fn chunk() -> [] int {
+    return 1048576;
+}
+
+// The CPU session's rolls to `n` positions into the file `path`, after the head `hd`: written beside it and renamed. The bytes written, or -1 with a refusal.
+pub fn write_cpu[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), path: int, hd: int, rolls: int, n: int) -> [fs_write(""), file_write] int {
+    if !fileio.covers(fs, text.bytes(t, path)) {
+        return bad(m, t, text.f1(m, t, "cannot write $", path));
+    }
+    let tmp = ckpt.tmp_path(m, t, path);
+    let mark = m[mem.text_slot()];
+    if len(t) - mark < 4 * chunk() {
+        return bad(m, t, text.lit(m, t, "the byte pool has no room for a chunk of the caches"));
+    }
+    var status = 0;
+    var total = 0;
+    match open_write(fs, text.bytes(t, tmp)) {
+        Opened::Ok(opened) => {
+            var out = opened;
+            borrow mut out as &!w in {
+                status = ckpt.write_all(w, text.bytes(t, hd));
+                total = text.size(hd);
+                var k = 0;
+                while k < mem.size(m, rolls) && status == 0 {
+                    let r = mem.get(m, rolls, k);
+                    let count = n * m[r + 2];
+                    var done = 0;
+                    while done < count && status == 0 {
+                        var piece = count - done;
+                        if piece > chunk() {
+                            piece = chunk();
+                        }
+                        var e = 0;
+                        while e < piece {
+                            let b = f32.bits32(fm[m[r + 4] + done + e]);
+                            t[mark + 4 * e] = byte_of(b & 255);
+                            t[mark + 4 * e + 1] = byte_of(b >> 8 & 255);
+                            t[mark + 4 * e + 2] = byte_of(b >> 16 & 255);
+                            t[mark + 4 * e + 3] = byte_of(b >> 24 & 255);
+                            e = e + 1;
+                        }
+                        status = ckpt.write_all(w, t[mark..mark + 4 * piece]);
+                        total = total + 4 * piece;
+                        done = done + piece;
+                    }
+                    k = k + 1;
+                }
+                if status == 0 {
+                    status = ckpt.sync_file(w);
+                }
+            }
+            file_close(out);
+        }
+        Opened::Failed(e) => {
+            status = e;
+        }
+    }
+    return ckpt.finish(m, t, fs, path, tmp, status, total);
+}
+
+// The file's rolls, from `off` on, into the CPU session's: `n` positions of each. 0, or -1 with a refusal (the file was checked: a read that fails now is the disk's).
+pub fn read_cpu[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f Fs(""), path: int, off: int, rolls: int, n: int) -> [fs_read(""), file_read] int {
+    let mark = m[mem.text_slot()];
+    if len(t) - mark < 4 * chunk() {
+        return bad(m, t, text.lit(m, t, "the byte pool has no room for a chunk of the caches"));
+    }
+    var at = off;
+    var k = 0;
+    while k < mem.size(m, rolls) {
+        let r = mem.get(m, rolls, k);
+        let count = n * m[r + 2];
+        var done = 0;
+        while done < count {
+            var piece = count - done;
+            if piece > chunk() {
+                piece = chunk();
+            }
+            if fileio.read_at(t, fs, text.bytes(t, path), at, mark, 4 * piece) != 4 * piece {
+                return bad(m, t, text.f1(m, t, "cannot read $", path));
+            }
+            var e = 0;
+            while e < piece {
+                let b = int_of(t[mark + 4 * e]) | int_of(t[mark + 4 * e + 1]) << 8 | int_of(t[mark + 4 * e + 2]) << 16 | int_of(t[mark + 4 * e + 3]) << 24;
+                fm[m[r + 4] + done + e] = f32.from_bits32(b);
+                e = e + 1;
+            }
+            at = at + 4 * piece;
+            done = done + piece;
+        }
+        k = k + 1;
+    }
+    return 0;
+}

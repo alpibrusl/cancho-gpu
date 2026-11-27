@@ -1,0 +1,116 @@
+edition 5;
+module kcache_dev;
+
+// `kcache_dev` -- the transfer of `kolibri/kcache.cho`'s file for the Metal session (docs/kolibri.md section 28): a roll is one buffer of the device, read back and sent up a
+// chunk at a time, f32 as the device holds them, so the file's bytes are the buffer's. `bufs` is the session's buffers, a list a program of a buffer a parameter.
+
+import mem;
+import text;
+import err;
+import fileio;
+import ckpt;
+import metal;
+
+// The bytes a chunk of the transfer holds.
+fn chunk() -> [] int {
+    return 67108864;
+}
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: int) -> [] int {
+    return err.fail(m, t, "kolibri-cache", msg);
+}
+
+fn buffer_of[&m](m: &!m [int], bufs: int, r: int) -> [] int {
+    return mem.get(m, mem.get(m, bufs, m[r]), m[r + 1]);
+}
+
+// The device's rolls to `n` positions into the file `path`, after the head `hd`: written beside it and renamed. The bytes written, or -1 with a refusal. What was launched
+// has run before a byte is read.
+pub fn write[&m, &t, &g, &f](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, hd: int, rolls: int, bufs: int, n: int) -> [ffi("libmetalgpu"), fs_write(""), file_write] int {
+    if !fileio.covers(fs, text.bytes(t, path)) {
+        return bad(m, t, text.f1(m, t, "cannot write $", path));
+    }
+    let tmp = ckpt.tmp_path(m, t, path);
+    let mark = m[mem.text_slot()];
+    if len(t) - mark < chunk() {
+        return bad(m, t, text.lit(m, t, "the byte pool has no room for a chunk of the caches"));
+    }
+    if metal.cgpu_sync(ffi) < 0 {
+        return bad(m, t, text.lit(m, t, "the device did not finish what was launched"));
+    }
+    var status = 0;
+    var total = 0;
+    var failed = false;
+    match open_write(fs, text.bytes(t, tmp)) {
+        Opened::Ok(opened) => {
+            var out = opened;
+            borrow mut out as &!w in {
+                status = ckpt.write_all(w, text.bytes(t, hd));
+                total = text.size(hd);
+                var k = 0;
+                while k < mem.size(m, rolls) && status == 0 && !failed {
+                    let r = mem.get(m, rolls, k);
+                    let bytes = 4 * n * m[r + 2];
+                    var off = 0;
+                    while off < bytes && status == 0 && !failed {
+                        var piece = bytes - off;
+                        if piece > chunk() {
+                            piece = chunk();
+                        }
+                        if metal.cgpu_download_at(ffi, buffer_of(m, bufs, r), off, t[mark..mark + piece]) < 0 {
+                            failed = true;
+                        } else {
+                            status = ckpt.write_all(w, t[mark..mark + piece]);
+                            total = total + piece;
+                        }
+                        off = off + piece;
+                    }
+                    k = k + 1;
+                }
+                if status == 0 && !failed {
+                    status = ckpt.sync_file(w);
+                }
+            }
+            file_close(out);
+        }
+        Opened::Failed(e) => {
+            status = e;
+        }
+    }
+    if failed {
+        let removed = ckpt.discard(t, fs, tmp);
+        return bad(m, t, text.lit(m, t, "the device did not give a roll back"));
+    }
+    return ckpt.finish(m, t, fs, path, tmp, status, total);
+}
+
+// The file's rolls, from `off` on, into the device's: `n` positions of each. 0, or -1 with a refusal (the file was checked: a read that fails now is the disk's or the device's).
+pub fn read[&m, &t, &g, &f](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), path: int, off: int, rolls: int, bufs: int, n: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let mark = m[mem.text_slot()];
+    if len(t) - mark < chunk() {
+        return bad(m, t, text.lit(m, t, "the byte pool has no room for a chunk of the caches"));
+    }
+    var at = off;
+    var k = 0;
+    while k < mem.size(m, rolls) {
+        let r = mem.get(m, rolls, k);
+        let bytes = 4 * n * m[r + 2];
+        var done = 0;
+        while done < bytes {
+            var piece = bytes - done;
+            if piece > chunk() {
+                piece = chunk();
+            }
+            if fileio.read_at(t, fs, text.bytes(t, path), at, mark, piece) != piece {
+                return bad(m, t, text.f1(m, t, "cannot read $", path));
+            }
+            if metal.cgpu_upload_at(ffi, buffer_of(m, bufs, r), done, t[mark..mark + piece]) < 0 {
+                return bad(m, t, text.lit(m, t, "the device did not take a roll"));
+            }
+            at = at + piece;
+            done = done + piece;
+        }
+        k = k + 1;
+    }
+    return 0;
+}
