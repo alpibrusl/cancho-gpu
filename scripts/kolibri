@@ -63,10 +63,12 @@ end1=$1; end2=$2; whole=$3; itop=$4
 [ $((np - 1 + max)) -le "$whole" ] || max=$((whole - np + 1))
 steps=$((np - 1 + max))
 [ "$steps" -ge "$np" ] || steps=$np
-if [ ! -f "$W/head.f32" ]; then
+if [ ! -f "$W/fnorm.f32" ]; then
   echo "kolibri: writing the weights as the device reads them to $W (41 GB for Kolibri 1.1), once" >&2
   mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
 fi
+# a directory written before the head was codes and scales has head.f32, which nothing reads: the head's three files alone
+if [ ! -f "$W/head.q" ] || [ ! -f "$W/head.s" ] || [ ! -f "$W/ones_v.f32" ]; then "$K" head "$G" "$W" > /dev/null || exit $?; fi
 mkdir -p "$D/x" || exit 1
 # the session's tables are for the most positions of a run, whatever this run's length: none of them grows with its square (docs/kolibri.md section 19.2)
 T=$(((whole + 63) / 64 * 64))

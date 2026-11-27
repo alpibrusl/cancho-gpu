@@ -255,7 +255,7 @@ fn substitute[&m, &t](m: &!m [int], t: &!t [byte], e: int, vals: int) -> [] int 
     if k == kinds.e_call() {
         return parser.node(m, k, m[e + 1], substitute(m, t, m[e + 2], vals), 0, 0, 0);
     }
-    if k == kinds.e_dequant_fp4() || k == kinds.e_dequant_q4() {
+    if k == kinds.e_dequant_fp4() || k == kinds.e_dequant_q4() || k == kinds.e_dequant_i8() {
         let q = substitute(m, t, m[e + 1], vals);
         let s = substitute(m, t, m[e + 2], vals);
         let g = substitute(m, t, m[e + 3], vals);
@@ -386,7 +386,7 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         set_space(m, cx, v, sp);
         return value(m, v, shape, dt);
     }
-    if k == kinds.e_dequant_fp4() || k == kinds.e_dequant_q4() {
+    if k == kinds.e_dequant_fp4() || k == kinds.e_dequant_q4() || k == kinds.e_dequant_i8() {
         let q = lower(m, t, st, env, cx, m[e + 1], name);
         if q < 0 {
             return 0 - 1;
@@ -405,7 +405,11 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
             return bad(m, t, "shape", text.f2(m, t, "`$`: 4-bit values are a 2-d tile, found $", name, sd(m, t, qs)));
         }
         let rows = mem.get(m, qs, 0);
-        let cols = 2 * mem.get(m, qs, 1);
+        // two 4-bit codes a byte, or one byte a code
+        var cols = 2 * mem.get(m, qs, 1);
+        if k == kinds.e_dequant_i8() {
+            cols = mem.get(m, qs, 1);
+        }
         let want_s = mem.of2(m, rows, cols / group);
         let want_g = mem.of1(m, rows);
         if !mem.same(m, ss, want_s) || !mem.same(m, gs, want_g) {
@@ -415,6 +419,9 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
         var ok = kinds.op_dequant_fp4();
         if k == kinds.e_dequant_q4() {
             ok = kinds.op_dequant_q4();
+        }
+        if k == kinds.e_dequant_i8() {
+            ok = kinds.op_dequant_i8();
         }
         let o = ir.make_op(m, ok, arg_of(m, m[e + 1], m[q]), arg_of(m, m[e + 2], m[s]), arg_of(m, m[e + 3], m[g]), group);
         let v = ir.emit(m, t, b, name, o);

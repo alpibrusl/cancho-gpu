@@ -11,7 +11,7 @@ edition 5;
 // m<i>.post_norm.f32), the router (m<i>.route.f32, m<i>.bias.f32), and each 4-bit matrix NAME as NAME.q4 (its codes two a byte, low nibble first, in the matrix's order: ggml keeps a block of 32 as
 // 16 low nibbles then 16 high ones), NAME.s (the f16 scales) and, for a Q4_1 tensor, NAME.c (the offsets `m + 8 d` as f32, so that `code d + m` is the Q4_0 product plus a small one):
 // a<i>.qkv (q, k and v one after another; a<i>.q where the layer has no keys of its own), a<i>.o, m<i>.dn.gate/up/down (a dense layer), m<i>.sh.* and m<i>.ex.* (the shared expert and the experts).
-// Once: head.f32 (the Q6_K head decoded), fnorm.f32, the ones (ones_d, ones_h, ones_f, ones_qkv, ones_q, one64), zero64, ar.f32, sl.f32 and e4m3.f32 (fp4_round.chx's table: E4M3's 125
+// Once: head.q, head.s and ones_v.f32 (the Q6_K head as codes and scales), fnorm.f32, the ones (ones_d, ones_h, ones_f, ones_qkv, ones_q, one64), zero64, ar.f32, sl.f32 and e4m3.f32 (fp4_round.chx's table: E4M3's 125
 // thresholds, what the scale grows by past each, and a 1 where a scale at the threshold goes up). Which layers are dense, which have keys and which tensors are Q4_1 are the file's to say.
 // `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised: a row an id, for a teacher-forced run),
 // cos.f32 and sin.f32 (a row a step) and maskw.f32 (a sliding layer's mask over its window, the file's window rounded up to a multiple of 64: a row a step until the window is full).
@@ -336,8 +336,10 @@ fn q4_one[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, nam
     return ty;
 }
 
-// The Q6_K head decoded to f32: a block of 210 bytes is 256 values, `d scale (q - 32)`, the 6-bit q split over 128 bytes of low nibbles and 64 of high pairs, 16 scales of a byte, d an f16.
-fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: int, path: int) -> [fs_read(""), file_read, fs_write(""), file_write] int {
+// The Q6_K head as codes and scales (docs/kolibri.md section 25): a block of 210 bytes is 256 values, `d scale (q - 32)`, the 6-bit q split over 128 bytes of low nibbles and 64 of
+// high pairs, 16 scales of a byte, d an f16. `path` gets a byte a value, q - 32, in the tensor's order; `spath` an f32 for each 16 values, `d scale`, which is exact: the value is a
+// code times its group's scale, and nothing is rounded here.
+fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: int, path: int, spath: int) -> [fs_read(""), file_read, fs_write(""), file_write] int {
     let r = tensor(m, t, m[file + 3], name, 14, 14);
     if r < 0 {
         return 0 - 1;
@@ -348,6 +350,8 @@ fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: 
     let blocks = m[r + 6] / 256;
     let sc = m[file + 4];
     let out = sc + in_cap();
+    // the scales of a chunk after its codes
+    let sout = out + 256 * 4096;
     var done = 0;
     while done < blocks {
         var nb = blocks - done;
@@ -366,7 +370,16 @@ fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: 
                 let ql = p + 64 * half;
                 let qh = p + 128 + 32 * half;
                 let ss = p + 192 + 8 * half;
-                let o = out + 4 * (256 * b + 128 * half);
+                let o = out + 256 * b + 128 * half;
+                var g = 0;
+                while g < 8 {
+                    var gs = int_of(t[ss + g]);
+                    if gs > 127 {
+                        gs = gs - 256;
+                    }
+                    put32(t, sout + 4 * (16 * b + 8 * half + g), d * float_of(gs));
+                    g = g + 1;
+                }
                 var l = 0;
                 while l < 32 {
                     let h = int_of(t[qh + l]);
@@ -385,12 +398,8 @@ fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: 
                         } else {
                             q = hi >> 4 | (h >> 6 & 3) << 4;
                         }
-                        var s = int_of(t[ss + is + 2 * k]);
-                        if s > 127 {
-                            s = s - 256;
-                        }
-                        // ggml's order, so that a zero has ggml's sign: (d scale) q
-                        put32(t, o + 4 * (l + 32 * k), d * float_of(s) * float_of(q - 32));
+                        // value l + 32 k of the half is in its group (l + 32 k) / 16, whose scale is byte is + 2 k: the groups are the scales' order
+                        t[o + l + 32 * k] = byte_of(q - 32 & 255);
                         k = k + 1;
                     }
                     l = l + 1;
@@ -399,12 +408,41 @@ fn q6k[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, name: 
             }
             b = b + 1;
         }
-        if put(m, t, fs, path, done == 0, out, 1024 * nb) < 0 {
+        if put(m, t, fs, path, done == 0, out, 256 * nb) < 0 || put(m, t, fs, spath, done == 0, sout, 64 * nb) < 0 {
             return 0 - 1;
         }
         done = done + nb;
     }
     return 0;
+}
+
+// The head's files: head.q and head.s (`q6k`) and ones_v.f32, a one for each row of the head. 0, or -1 with a refusal.
+fn head_files[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, dir: int) -> [fs_read(""), file_read, fs_write(""), file_write] int {
+    let name = text.lit(m, t, "output.weight");
+    let d = meta_int(m, t, m[file + 3], "kolibri1.embedding_length");
+    if d < 1 {
+        return 0 - 1;
+    }
+    let r = tensor(m, t, m[file + 3], name, 14, 14);
+    if r < 0 {
+        return 0 - 1;
+    }
+    if m[r + 6] % d != 0 || d % 16 != 0 {
+        return err.fail(m, t, "kolibri-tensor", text.f1(m, t, "the tensor `$` is not rows of the model's width, or the width is no multiple of 16", name));
+    }
+    if q6k(m, t, fs, file, name, text.f1(m, t, "$/head.q", dir), text.f1(m, t, "$/head.s", dir)) < 0 {
+        return 0 - 1;
+    }
+    return fill(m, t, fs, file, text.f1(m, t, "$/ones_v.f32", dir), m[r + 6] / d, 1.0, 0);
+}
+
+// `head <gguf> <dir>`: the head's files alone, for a directory `weights` wrote before the head was codes (it has head.f32, which nothing reads any more).
+fn head[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, fs_write(""), file_write, args] int {
+    let file = open_gguf(m, t, fs, arg(args, 2));
+    if file < 0 {
+        return 0 - 1;
+    }
+    return head_files(m, t, fs, file, text.from_bytes(m, t, arg(args, 3)));
 }
 
 // `n` times the f32 `x` (or, `ramp` 1, the numbers 0, 1, 2 ...; `ramp` 2, n, n - 1 ... 1) to `path`.
@@ -529,7 +567,7 @@ fn weights[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f F
     bad = bad || fill(m, t, fs, file, text.f1(m, t, "$/sl.f32", dir), used, 0.0, 1) < 0;
     bad = bad || e4m3_table(m, t, fs, file, text.f1(m, t, "$/e4m3.f32", dir)) < 0;
     bad = bad || copy_f32(m, t, fs, file, text.lit(m, t, "output_norm.weight"), text.f1(m, t, "$/fnorm.f32", dir), d) < 0;
-    bad = bad || q6k(m, t, fs, file, text.lit(m, t, "output.weight"), text.f1(m, t, "$/head.f32", dir)) < 0;
+    bad = bad || head_files(m, t, fs, file, dir) < 0;
     // what a generating step reads (section 13): the embedding matrix as blocks a session picks by the id, the arg max's ranks (V - j for column j) and its mask of no padding
     if !bad {
         let emb = tensor(m, t, g, text.lit(m, t, "token_embd.weight"), 2, 2);
@@ -1112,11 +1150,13 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = ends(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "say") {
         status = say(m, t, io, fs, args);
+    } else if arg_count(args) == 4 && is_word(arg(args, 1), "head") {
+        status = head(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "calls") {
         status = calls(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<pass>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file> | calls <file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | head <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<pass>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file> | calls <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {

@@ -1,0 +1,22 @@
+// y = x w^T for one row with weights that are byte codes (docs/kolibri.md section 25): matvec_q4_rows.chx with dequant_i8. wq is a signed byte a weight, ws an f32 scale for each
+// 16 weights of a row, wg an f32 for each row. Kolibri 1.1's head is ggml's Q6_K, which the host unpacks to this: a code less 32, and the block's scale times its group's.
+algo matvec_i8_rows(n, k)
+  in  x:  f32[1, k]
+  in  wq: i8[n, k]
+  in  ws: f32[n, k / 16]
+  in  wg: f32[n]
+  out y:  f32[1, n]
+  tile bn
+{
+  grid i over n / bn
+  let xt = load x
+  let q  = load wq[i * bn, 0 ; bn, k]
+  let s  = load ws[i * bn, 0 ; bn, k / 16]
+  let g  = load wg[i * bn ; bn]
+  let w  = dequant_i8 q s g 16
+  store matmul_nt xt w -> y[0, i * bn]
+}
+
+schedule matvec_i8_rows for apple-m-series { threads 256 bn 8 }
+schedule matvec_i8_rows for nvidia-ada     { threads 256 bn 8 }
+schedule matvec_i8_rows for amd-cdna3      { threads 256 bn 8 }

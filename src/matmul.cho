@@ -46,8 +46,20 @@ pub fn dq_q4[&m](m: &!m [int], s: int, row: int, cols: int, group: int, qe: int,
     return r;
 }
 
+// Whether the record is not NVFP4's: Q4_0's or the byte codes'. Only NVFP4 has the fragment paths, the staging and the wide loads.
 pub fn is_q4[&m](m: &!m [int], d: int) -> [] bool {
-    return m[d + 5] == 2;
+    return m[d + 5] != 1;
+}
+
+// The record of byte codes (`dequant_i8`): a code is the signed byte, the group's scale the f32 as it is; `qc` bytes a row.
+pub fn dq_i8[&m](m: &!m [int], s: int, row: int, cols: int, group: int, qe: int, qc: int, qview: int) -> [] int {
+    let r = dq(m, 0 - 1, s, row, cols, group, qe, qc, qview);
+    m[r + 5] = 3;
+    return r;
+}
+
+pub fn is_i8[&m](m: &!m [int], d: int) -> [] bool {
+    return m[d + 5] == 3;
 }
 
 // The two weights of the byte `bq` of codes, before the group's scale: `(first, second)`.
@@ -298,17 +310,24 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
             let byte = gen.at_index(m, t, qe, text.f1(m, t, "j * $u + p0 / 2u + u / 2u", n(m, t, qc)));
             let a1 = gen.read(m, t, oa, text.f1(m, t, "i * $u + p + 1u", n(m, t, kd)));
             gen.line_lit(m, t, g, "    float run = 0.0f;");
-            let (w0, w1) = pair_of(m, t, d);
-            var dec = text.lit(m, t, "const float2 w = fp4_pair(bq); ");
-            if is_q4(m, d) {
-                dec = text.empty();
-            }
-            let l = mem.of7(m, n(m, t, vec), byte, dec, av, w0, a1, w1);
-            gen.line(m, t, g, text.fmt(m, t, "    for (uint u = 0; u < $u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)($); $run += $ * $ + $ * $; }", l));
-            if is_q4(m, d) {
+            if is_i8(m, d) {
+                // a code a byte: each times its element
+                let code = gen.at_index(m, t, qe, text.f1(m, t, "j * $u + p0 + u", n(m, t, qc)));
+                gen.line(m, t, g, text.f3(m, t, "    for (uint u = 0; u < $u; ++u) { const uint p = p0 + u; run += $ * float((char)($)); }", n(m, t, vec), av, code));
                 gen.line_lit(m, t, g, "    s += run * sg;");
             } else {
-                gen.line_lit(m, t, g, "    s += run * (sg * 16384.0f);");
+                let (w0, w1) = pair_of(m, t, d);
+                var dec = text.lit(m, t, "const float2 w = fp4_pair(bq); ");
+                if is_q4(m, d) {
+                    dec = text.empty();
+                }
+                let l = mem.of7(m, n(m, t, vec), byte, dec, av, w0, a1, w1);
+                gen.line(m, t, g, text.fmt(m, t, "    for (uint u = 0; u < $u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)($); $run += $ * $ + $ * $; }", l));
+                if is_q4(m, d) {
+                    gen.line_lit(m, t, g, "    s += run * sg;");
+                } else {
+                    gen.line_lit(m, t, g, "    s += run * (sg * 16384.0f);");
+                }
             }
         }
         gen.line_lit(m, t, g, "}");
@@ -981,6 +1000,10 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
     var want = 8;
     if d >= 0 {
         want = 16;
+    }
+    if d >= 0 && is_i8(m, d) {
+        // byte codes have no form for several rows: the lazy expression, an element at a time
+        d = 0 - 1;
     }
     if d >= 0 && is_q4(m, d) {
         want = 2;

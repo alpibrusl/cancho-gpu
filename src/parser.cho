@@ -336,10 +336,13 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         }
         return node(m, kinds.e_mma(), c, a, b, layout, 0);
     }
-    if text.is(t, s, "dequant_fp4") || text.is(t, s, "dequant_q4") {
+    if text.is(t, s, "dequant_fp4") || text.is(t, s, "dequant_q4") || text.is(t, s, "dequant_i8") {
         var dk = kinds.e_dequant_fp4();
         if text.is(t, s, "dequant_q4") {
             dk = kinds.e_dequant_q4();
+        }
+        if text.is(t, s, "dequant_i8") {
+            dk = kinds.e_dequant_i8();
         }
         let q = atom(m, t, p);
         if q < 0 {

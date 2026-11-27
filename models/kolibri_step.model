@@ -361,9 +361,12 @@ if HEAD
     program fn $CHX/rmsnorm_rows.chx r=1 n=$D eps=0.000001
     link L${L0 + NL - 1}out.wo -> fn.x
     resident fn.w $W/fnorm.f32 $F32
-    program head $CHX/matvec_rows.chx n=$V k=$D
+    # the head's weights are codes of a byte and a scale for each 16 (docs/kolibri.md section 25: the file's Q6_K, a third of the bytes of f32)
+    program head $CHX/matvec_i8_rows.chx n=$V k=$D
     link fn.y -> head.x
-    resident head.w $W/head.f32 $F32
+    resident head.wq $W/head.q $I8
+    resident head.ws $W/head.s $F32
+    resident head.wg $W/ones_v.f32 $F32
     if SAVE
         save fn.y $X/final.f32 $F32
         save head.y $X/logits.f32 $F32

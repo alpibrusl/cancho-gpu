@@ -559,12 +559,21 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
     let group = m[o + 4];
     let sq = ir.shape(m, m[q]);
     let r = mem.get(m, sq, 0);
-    let c = 2 * mem.get(m, sq, 1);
+    var c = 2 * mem.get(m, sq, 1);
+    if k == kinds.op_dequant_i8() {
+        c = mem.get(m, sq, 1);
+    }
     let out = reg_tile(m, t, fm, kinds.f32(), mem.of2(m, r, c));
     if out < 0 {
         return 0 - 1;
     }
     var i = 0;
+    // byte codes: the code as it is, times the group's f32 scale, then the row's
+    while k == kinds.op_dequant_i8() && i < r * c {
+        let (row, cl) = (i / c, i % c);
+        fm[m[out + 1] + i] = f32.mul(f32.mul(fm[m[q + 1] + i], fm[m[sc + 1] + row * (c / group) + cl / group]), fm[m[gs + 1] + row]);
+        i = i + 1;
+    }
     while i < r * c {
         let (row, cl) = (i / c, i % c);
         let byte = truncate(fm[m[q + 1] + row * c / 2 + cl / 2]) & 255;

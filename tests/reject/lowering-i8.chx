@@ -1,0 +1,16 @@
+// RULE lowering
+// ARGS n=8 k=64
+algo k(n, k)
+  in  wq: i8[n, k]
+  in  ws: f32[n, k / 16]
+  in  wg: f32[n]
+  out w:  f32[n, k]
+{
+  let q = load wq
+  let s = load ws
+  let h = s * 2.0
+  let r = load wg
+  let x = dequant_i8 q h r 16
+  store x -> w
+}
+schedule k for nvidia-ada { threads 32 }
