@@ -1329,3 +1329,24 @@ A session with `steps` counts its repetitions from its first request, and a tabl
 
 * **What a seek does not do is the caller's to know**: a carried value is the last repetition's, not repetition `N - 1`'s. Kolibri's step carries the id it chose, so the step after a seek is given its id by the request (`docs/kolibri.md` section 17.6).
 * `tests/seek.sh` (in the gate on the CPU session; the Metal session by hand, the same 17 checks, exact): a table read again from 0, from a later block, past its blocks, after a request of several steps; a carried sum that goes on over a seek; two seeks; the seven refusals.
+
+## 33. Rolls: a buffer written a block a repetition, and read through windows (measured)
+
+A session that keeps what its steps computed (a decoder's keys and values, a position a step) did it with a kernel that rewrote the whole cache at every step, `c keep + new sel`, and two tables of one-hot rows, a row a step. That is the square of the positions in tables and the whole cache in writes: at 16,384 positions, 1 GB a table and 33 MB written a cache a step (`docs/kolibri.md` section 19.1). Three directives make the cache a thing the session knows, in both sessions:
+
+* **`store P.OUT NAME BLOCKS`**: a *roll* `NAME` of `BLOCKS` blocks, each the size of `P.OUT`, zero at the start. In repetition `j` the output of `P` is block `j`. On a device the output's buffer *is* the roll at that block: nothing is copied. A repetition past the last block is refused with the rule `session`, and the session ends.
+* **`window Q.PARAM NAME`**: `Q.PARAM`, `n` blocks long, is the `n` blocks of the roll that end with block `j`, or the first `n` while `j < n - 1`. A parameter as long as the roll is the roll from its start.
+* **`table P.PARAM FILE BLOCKS [type] hold`**: block `min(j, BLOCKS - 1)`, where a table takes `j mod BLOCKS`.
+
+**What the session file must hold to**, each a refusal otherwise:
+
+* a roll is stored once, by an output, and an output is stored in one roll;
+* a stored output is read through windows and in no other way (not linked, carried, answered, saved or aliased: its buffer is a place that moves);
+* a window is a whole number of the roll's blocks, of its element type, no more than the roll has, and its program is listed after the roll's, so that block `j` is written when it is read;
+* a roll is for a session with `steps`.
+
+**With `seek`** (section 32) a roll is a tape: the blocks stay. A step run again writes its block again. **A block after the repetition sought is still there**, and a window that reaches it reads it (the first `n` blocks while `j < n - 1`): what reads a roll masks by the position, as it had to with a cache.
+
+`tests/roll.sh` (in the gate on the CPU session; the Metal session by hand, the same 33 checks, exact): a roll read whole and through a window of two and of one block, two readers, a request of several steps, seeks back, to 0 and past blocks never written, `hold` against a table that goes round, a step and a seek past the roll's end, and 21 refusals of a session file. **Not tested**: a window whose element type is not the roll's (no two kernels here differ in it).
+
+**Use**: `models/kolibri_step.model`, whose 88 caches are rolls (`docs/kolibri.md` section 19).

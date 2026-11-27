@@ -113,8 +113,8 @@ export STUB_ANS="1 1 9 4 8 8 8 8"
 run "to the limit" 0 --max 2 --greedy "a question" && { is "the limit ends an answer, with all its ids" "$T/o.txt" "9-4"; is "the prompt's three steps and one past them, with no number to draw with" "$T/stub/requests.txt" "1 3 1
 1 0 1
 1 7 1
-1 0 0"; has "the limit is named" "$T/e.txt" "stopped at the limit of 2 new tokens"; has "the session takes the arg max, for the prompt and two steps" "$T/stub/args.txt" "T=64 NS=4 GEN=1 SAMP=0 SAVE=0"; }
-run "a limit under what the model sees whole" 0 --max 100 "a question" && has "the prompt but its last token, and 100 steps" "$T/stub/args.txt" "T=128 NS=102 "
+1 0 0"; has "the limit is named" "$T/e.txt" "stopped at the limit of 2 new tokens"; has "the session takes the arg max; its tables are for what the toy sees whole, whatever the run's length" "$T/stub/args.txt" "T=192 NS=136 GEN=1 SAMP=0 SAVE=0"; }
+run "a limit under what the model sees whole" 0 --max 100 "a question" && has "the same tables for a longer run" "$T/stub/args.txt" "T=192 NS=136 "
 export STUB_IDS="7"
 export STUB_ANS="9 4 5"
 run "a prompt of one token" 0 --greedy "a" && { is "its first step is the first new token" "$T/o.txt" "9-4"; is "the prompt's one step answers the first new token" "$T/stub/requests.txt" "1 7 1

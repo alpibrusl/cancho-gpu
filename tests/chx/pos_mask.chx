@@ -1,0 +1,23 @@
+// The mask of a decode step over a cache that holds every position (docs/kolibri.md section 19.2): 0 on the keys to the step's position, -1e9 on those after it,
+//
+//     mask[c] = -1e9 step(io[c] - p)
+//
+// from the position p (a table of one number a step) and io, the row 0, 1, 2, ... The mask was a table of a row a step, t x t numbers; this is t.
+algo pos_mask(t, ts)
+  in  p:    f32[1, 1]
+  in  io:   f32[1, t]
+  out mask: f32[1, t]
+{
+  grid j over t / ts
+  let b  = load io[0, j * ts ; 1, ts]
+  let pp = load p
+  let d  = b - pp
+  let s  = step d
+  let z  = zeros f32[1, ts]
+  let n  = z - s
+  store n * 1000000000.0 -> mask[0, j * ts]
+}
+
+schedule pos_mask for apple-m-series { threads 128 }
+schedule pos_mask for nvidia-ada     { threads 128 }
+schedule pos_mask for amd-cdna3     { threads 128 }

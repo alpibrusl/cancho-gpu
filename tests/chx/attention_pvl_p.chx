@@ -1,0 +1,32 @@
+// The product with v for any number of positions of a cache that is a roll of positions (attention_scores_p.chx): head i's g query heads, the columns dc * dw .. (dc + 1) * dw of its
+// values, which are columns i * d .. (i + 1) * d of the [t, nkv * d] cache,
+//
+//     o = sum over chunks of  exp(s - m) / z  v
+//
+// with the maximum m and the normaliser z of each query head from attention_stats.chx. attention_pvl.chx with the cache turned: one carried [g, dw] accumulator over chunks of cs
+// positions, no tile that grows with t.
+algo attention_pvl_p(nkv, g, t, cs, dw, d)
+  in  sc: f32[nkv * g, t]
+  in  m:  f32[nkv * g]
+  in  z:  f32[nkv * g]
+  in  v:  f32[t, nkv * d]
+  out o:  f32[nkv * g, d]
+{
+  grid i over nkv, dc over d / dw
+  let a0 = zeros f32[g, dw]
+  let acc = for c in 0 .. t / cs with a0 {
+    let sm = load sc[i * g, c * cs ; g, cs]
+    let mm = load m[i * g ; g]
+    let zz = load z[i * g ; g]
+    let sh = sm - mm
+    let e  = exp sh
+    let p  = e / zz
+    let vt = load v[c * cs, i * d + dc * dw ; cs, dw]
+    yield a0 + matmul p vt
+  }
+  store acc -> o[i * g, dc * dw]
+}
+
+schedule attention_pvl_p for apple-m-series { threads 256 }
+schedule attention_pvl_p for nvidia-ada     { threads 128 }
+schedule attention_pvl_p for amd-cdna3     { threads 128 }

@@ -3,7 +3,7 @@ edition 5;
 // `kolibri_gpu` -- the host side of Kolibri 1.1's cached step (models/kolibri_step.model; docs/kolibri.md section 12, stage K5), in cancho: the files the session reads, from the model's GGUF.
 //
 //     kolibri_gpu weights <gguf> <dir>
-//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps> [<ring>]]
+//     kolibri_gpu inputs  <gguf> <ids file> <dir> <positions> [<steps>]
 //     kolibri_gpu draws   <seed> <count>
 //     kolibri_gpu argmax  <f32 file>
 //
@@ -13,10 +13,11 @@ edition 5;
 // a<i>.qkv (q, k and v one after another; a<i>.q where the layer has no keys of its own), a<i>.o, m<i>.dn.gate/up/down (a dense layer), m<i>.sh.* and m<i>.ex.* (the shared expert and the experts).
 // Once: head.f32 (the Q6_K head decoded), fnorm.f32, the ones (ones_d, ones_h, ones_f, ones_qkv, ones_q, one64), zero64, ar.f32, sl.f32 and e4m3.f32 (fp4_round.chx's table: E4M3's 125
 // thresholds, what the scale grows by past each, and a 1 where a scale at the threshold goes up). Which layers are dense, which have keys and which tensors are Q4_1 are the file's to say.
-// `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised), cos.f32 and sin.f32; for the indexed layers
-// sel.f32, keep.f32, maskg.f32 and zcache.f32 over `positions` (their caches' length, a multiple of 64 no shorter than the ids); for the sliding layers, whose caches are a ring (section 15),
-// selw.f32, keepw.f32, mask.f32 and zcachew.f32 over the file's window rounded up to a multiple of 64. It refuses more steps than an indexed layer sees whole (`kolibri-context`): the file's
-// `indexer.top_k` and the model's 8 first and 128 last keys, which the file does not carry.
+// `inputs` writes a run's tables (X) for the ids of a text file (whole numbers, blanks between): x0.f32 (each id's embedding row, dequantised), cos.f32 and sin.f32 (a row a step),
+// pos.f32 (the steps' numbers), iota.f32 (the positions' numbers; `positions` is the caches' length, a multiple of 64 no shorter than the ids) and maskw.f32 (a sliding layer's mask over
+// its window, the file's window rounded up to a multiple of 64: a row a step until the window is full). Nothing of it grows with the square of the positions (section 19.2: the selectors
+// and masks that did are computed by the step or held by the session). It refuses more steps than an indexed layer sees whole (`kolibri-context`): the file's `indexer.top_k` and the
+// model's 8 first and 128 last keys, which the file does not carry.
 // For a generating step (GEN=1, section 13) `weights` also writes emb.q4 and emb.s (the embedding matrix, picked by the id), rank.f32, zmk.f32 and one1.f32, and `inputs` id0.f32, for `steps`
 // steps (the ids' count if not given; x0.f32 has rows of zeros past the prompt). The ids and their mask are not files: they are each request's numbers (section 17, S1).
 // For a sampling step (SAMP=1, section 14) `weights` also writes ciota.f32, cslot.f32, czero.f32, ctri.f32 and tri64.f32 (for the file's own top-k made a multiple of 24). The step's uniform
@@ -652,8 +653,8 @@ fn meta_float[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte])
     return 0.0;
 }
 
-// NS blocks of `width` f32 to `path`, entry (s, c) of kind `what`: 0 sel and 1 keep (step s is at slot s mod width: a ring where there are more steps than slots), 2 the window's mask over a
-// ring's slots (slot c holds position s - ((s - c) mod width), seen when that is no step before the first and less than a window back), 3 the mask of every key so far, 4 cos, 5 sin, 6 zeros, 7 a one where c <= s (the matrix a cumulative sum is a product with).
+// NS blocks of `width` f32 to `path`, entry (s, c) of kind `what`: 2 a sliding layer's mask over its window at step s while the window is not full (key c is seen when it is no later than
+// the step and less than a window back), 4 cos, 5 sin, 6 zeros, 7 a one where c <= s (the matrix a cumulative sum is a product with), 8 the step's number, 9 the column's.
 fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, ns: int, width: int, what: int, window: int, base: float) -> [fs_write(""), file_write] int {
     let sc = m[file + 4];
     var s = 0;
@@ -661,16 +662,12 @@ fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path
         var c = 0;
         while c < width {
             var x = 0.0;
-            // how many steps ago slot c was written, were the ring already full: c < width, so the sum is positive
-            let ago = (s - c + width) % width;
-            if what == 0 && c == s % width {
-                x = 1.0;
-            } else if what == 1 && c != s % width {
-                x = 1.0;
-            } else if what == 2 && (ago > s || ago >= window) {
+            if what == 2 && (c > s || c <= s - window) {
                 x = 0.0 - 1000000000.0;
-            } else if what == 3 && c > s {
-                x = 0.0 - 1000000000.0;
+            } else if what == 8 {
+                x = float_of(s);
+            } else if what == 9 {
+                x = float_of(c);
             } else if what == 7 && c <= s {
                 x = 1.0;
             } else if what == 4 || what == 5 {
@@ -772,15 +769,10 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     if nst > whole {
         return err.fail(m, t, "kolibri-context", text.n2(m, t, "$ steps are past the $ positions an indexed layer sees whole: the indexer is not written", nst, whole));
     }
-    // a sliding layer's ring: the window rounded up to a multiple of 64, or the slots asked for (a server's ring is as long as its positions, so that it never wraps and any position can
-    // be gone back to: docs/kolibri.md section 18)
-    var tw = (window + 63) / 64 * 64;
-    if arg_count(args) == 8 {
-        let ring = count_of(t, text.from_bytes(m, t, arg(args, 7)));
-        if ring < tw || ring % 64 != 0 || ring > tt {
-            return err.fail(m, t, "kolibri-usage", text.lit(m, t, "the ring is a multiple of 64, no shorter than the window rounded up to one and no longer than the positions"));
-        }
-        tw = ring;
+    // a sliding layer's window, rounded up to a multiple of 64: the keys its kernels scan (section 19.2), no more than the positions
+    let tw = (window + 63) / 64 * 64;
+    if tw > tt {
+        return err.fail(m, t, "kolibri-usage", text.n2(m, t, "the positions ($) are fewer than a sliding layer's window rounded up to a multiple of 64 ($)", tt, tw));
     }
     let sc = m[file + 4];
     let out = sc + in_cap();
@@ -818,16 +810,13 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
         }
         s = s + 1;
     }
-    var bad = table(m, t, fs, file, text.f1(m, t, "$/sel.f32", dir), nst, tt, 0, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keep.f32", dir), nst, tt, 1, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/selw.f32", dir), nst, tw, 0, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/keepw.f32", dir), nst, tw, 1, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/mask.f32", dir), nst, tw, 2, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zcachew.f32", dir), nkv * hd, tw, 6, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/maskg.f32", dir), nst, tt, 3, window, base) < 0;
+    // a sliding layer's mask over its window: a row a step while the window is not full, the last row at every step after (the session holds it)
+    var bad = table(m, t, fs, file, text.f1(m, t, "$/maskw.f32", dir), tw, tw, 2, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/cos.f32", dir), nst, hd / 2, 4, window, base) < 0;
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), nst, hd / 2, 5, window, base) < 0;
-    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zcache.f32", dir), nkv * hd, tt, 6, window, base) < 0;
+    // the step's position, and the positions' numbers: an indexed layer's mask is computed from them (pos_mask.chx)
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/pos.f32", dir), nst, 1, 8, window, base) < 0;
+    bad = bad || table(m, t, fs, file, text.f1(m, t, "$/iota.f32", dir), 1, tt, 9, window, base) < 0;
     // a generating step's: the id before the first
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/id0.f32", dir), 1, 1, 6, window, base) < 0;
     if bad {
@@ -1069,7 +1058,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
     var status = 0 - 2;
     if arg_count(args) == 4 && is_word(arg(args, 1), "weights") {
         status = weights(m, t, io, fs, args);
-    } else if arg_count(args) >= 6 && arg_count(args) <= 8 && is_word(arg(args, 1), "inputs") {
+    } else if arg_count(args) >= 6 && arg_count(args) <= 7 && is_word(arg(args, 1), "inputs") {
         status = inputs(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "argmax") {
         status = argmax(m, t, io, fs, args);
@@ -1083,7 +1072,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = say(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<ring>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps>] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {

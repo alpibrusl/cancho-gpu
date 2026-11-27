@@ -61,6 +61,55 @@ pub fn s_tables() -> [] int {
     return 6;
 }
 
+// A table record's later words, for what is bound by the repetition's number in another way than `j mod blocks` (docs/kolibri.md section 19.2, docs/resident.md section 33):
+// 9 the way (0 a table that steps; 1 a table that holds its last block, `hold`; 2 a `store`, the output that is block j of a roll; 3 a `window`, the blocks of a roll that end with j's),
+// 10 the elements of one block of the roll, 11 the roll's number, 12 the blocks of a window. For a roll, word 2 is the interpreter's place of the whole roll (-1 on a device),
+// word 3 its blocks and word 4 its name.
+pub fn t_way() -> [] int {
+    return 9;
+}
+
+pub fn t_stride() -> [] int {
+    return 10;
+}
+
+pub fn t_roll() -> [] int {
+    return 11;
+}
+
+// The block of the table, store or window `tb` (not a picked one) at the session's repetition, or -1 with a refusal: a roll has no block for a repetition past its last.
+pub fn bound_block[&m, &t](m: &!m [int], t: &!t [byte], sess: int, tb: int) -> [] int {
+    let j = m[sess + s_count()];
+    let way = m[tb + t_way()];
+    if way == 0 {
+        return j % m[tb + 3];
+    }
+    if way == 1 {
+        if j >= m[tb + 3] {
+            return m[tb + 3] - 1;
+        }
+        return j;
+    }
+    if j >= m[tb + 3] {
+        return err.fail(m, t, "session", text.f3(m, t, "the roll `$` has $ blocks: repetition $ is past them", m[tb + 4], text.num(m, t, m[tb + 3]), text.num(m, t, j)));
+    }
+    if way == 2 {
+        return j;
+    }
+    if j < m[tb + 12] {
+        return 0;
+    }
+    return j - m[tb + 12] + 1;
+}
+
+// The elements of one block of `tb`, whose parameter has `own` elements.
+pub fn bound_stride[&m](m: &!m [int], tb: int, own: int) -> [] int {
+    if m[tb + t_way()] >= 2 {
+        return m[tb + t_stride()];
+    }
+    return own;
+}
+
 // 1 when the first number of a request is the count of repetitions
 pub fn s_steps() -> [] int {
     return 7;
@@ -221,6 +270,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     let answer_raw = mem.list(m);
     let carry_raw = mem.list(m);
     let table_raw = mem.list(m);
+    let store_raw = mem.list(m);
+    let window_raw = mem.list(m);
     let save_raw = mem.list(m);
     let alias_raw = mem.list(m);
     var steps = 0;
@@ -327,12 +378,17 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 // `by PROGRAM.OUT SLOT` at the end: the block is the one that output's slot names, read when the table's program is about to run (docs/kolibri.md K2)
                 var nt = nw;
                 var picked = false;
+                var hold = 0;
                 if nw >= 7 && text.is(t, mem.get(m, words, nw - 3), "by") {
                     nt = nw - 3;
                     picked = true;
+                } else if nw >= 5 && text.is(t, mem.get(m, words, nw - 1), "hold") {
+                    // `hold` at the end: past its last block the table stays at it, where a table goes round (docs/resident.md section 33)
+                    nt = nw - 1;
+                    hold = 1;
                 }
                 if nt != 4 && !(nt == 5 && (text.is(t, mem.get(m, words, 4), "f32") || text.is(t, mem.get(m, words, 4), "f16") || text.is(t, mem.get(m, words, 4), "i8"))) {
-                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [by PROGRAM.OUT SLOT]"));
+                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [hold | by PROGRAM.OUT SLOT]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -342,7 +398,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 if !okb || blocks < 1.0 || blocks > 100000000.0 || float_of(truncate(blocks)) != blocks {
                     return bad(m, t, lineno, text.lit(m, t, "the blocks of a table are a positive whole number"));
                 }
-                let traw = mem.grab(m, 9);
+                let traw = mem.grab(m, 10);
+                m[traw + 9] = hold;
                 m[traw + 6] = 0 - 1;
                 m[traw + 7] = 0;
                 m[traw + 8] = 0;
@@ -372,6 +429,28 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     }
                 }
                 mem.push(m, table_raw, traw);
+            } else if text.is(t, head, "store") {
+                if nw != 4 {
+                    return bad(m, t, lineno, text.lit(m, t, "store PROGRAM.OUT ROLL BLOCKS"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                let (okb, blocks) = runcmd.number(m, t, mem.get(m, words, 3));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "store takes PROGRAM.OUT"));
+                }
+                if !okb || blocks < 1.0 || blocks > 100000000.0 || float_of(truncate(blocks)) != blocks {
+                    return bad(m, t, lineno, text.lit(m, t, "the blocks of a roll are a positive whole number"));
+                }
+                mem.push(m, store_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), truncate(blocks), lineno));
+            } else if text.is(t, head, "window") {
+                if nw != 3 {
+                    return bad(m, t, lineno, text.lit(m, t, "window PROGRAM.PARAM ROLL"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                if pn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "window takes PROGRAM.PARAM"));
+                }
+                mem.push(m, window_raw, mem.rec4(m, pn, an, mem.get(m, words, 2), lineno));
             } else if text.is(t, head, "save") {
                 if nw != 3 && !(nw == 4 && (text.is(t, mem.get(m, words, 3), "f32") || text.is(t, mem.get(m, words, 3), "f16"))) {
                     return bad(m, t, lineno, text.lit(m, t, "save PROGRAM.OUT FILE [f32|f16]"));
@@ -407,7 +486,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 steps = 1;
             } else {
-                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, steps, save, alias)", head));
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, store, window, steps, save, alias)", head));
             }
         }
     }
@@ -613,7 +692,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             if m[raw + 5] == 1 && dt != kinds.f32() || m[raw + 5] == 2 && dt != kinds.f16() || m[raw + 5] == 3 && dt != kinds.i8() {
                 return err.fail(m, t, "usage", text.f1(m, t, "`$` has another type than the binary file's flag says", m[raw + 1]));
             }
-            mem.push(m, tables, table_rec(m, pi, ai, 0 - 1, m[raw + 3], m[raw + 2], sp0, sa0, m[raw + 8]));
+            let dtb = table_rec(m, pi, ai, 0 - 1, m[raw + 3], m[raw + 2], sp0, sa0, m[raw + 8]);
+            m[dtb + t_way()] = m[raw + 9];
+            mem.push(m, tables, dtb);
         }
         if !direct {
             let whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
@@ -633,8 +714,104 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             if loaded < 0 {
                 return 0 - 1;
             }
-            mem.push(m, tables, table_rec(m, pi, ai, whole, m[raw + 3], 0, sp0, sa0, m[raw + 8]));
+            let ctb = table_rec(m, pi, ai, whole, m[raw + 3], 0, sp0, sa0, m[raw + 8]);
+            m[ctb + t_way()] = m[raw + 9];
+            mem.push(m, tables, ctb);
         }
+        i = i + 1;
+    }
+
+    // Rolls (docs/resident.md section 33). `store P.OUT NAME BLOCKS`: the output of P is block j of the roll NAME in repetition j. A roll is stored once, by an output; it is zero at the
+    // start. On the interpreter it is a region of BLOCKS times the output; on a device it is a buffer the device program allocates, and the output is that buffer at the block.
+    let rolls = mem.list(m);
+    i = 0;
+    while i < mem.size(m, store_raw) {
+        let raw = mem.get(m, store_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 4]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is not written by its kernel: a roll stores an output", m[raw + 1]));
+        }
+        var k = 0;
+        while k < mem.size(m, rolls) {
+            let other = mem.get(m, rolls, k);
+            if text.eq(t, m[other + 4], m[raw + 2]) {
+                return bad(m, t, m[raw + 4], text.f1(m, t, "the roll `$` is stored twice", m[raw + 2]));
+            }
+            if m[other] == pi && m[other + 1] == ai {
+                return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is stored twice", m[raw], m[raw + 1]));
+            }
+            k = k + 1;
+        }
+        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        var whole = 0 - 1;
+        if !device {
+            whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
+            if whole < 0 {
+                return err.fail(m, t, "session", text.lit(m, t, "the roll does not fit the interpreter's memory"));
+            }
+            var e = 0;
+            while e < m[g + 3] * m[raw + 3] {
+                fm[whole + e] = 0.0;
+                e = e + 1;
+            }
+        }
+        let rtb = table_rec(m, pi, ai, whole, m[raw + 3], m[raw + 2], 0 - 1, 0, 0);
+        m[rtb + t_way()] = 2;
+        m[rtb + t_stride()] = m[g + 3];
+        m[rtb + t_roll()] = mem.size(m, rolls);
+        mem.push(m, rolls, rtb);
+        mem.push(m, tables, rtb);
+        i = i + 1;
+    }
+    // `window Q.PARAM NAME`: Q.PARAM, n blocks long, is the n blocks of the roll that end with the repetition's (the first n while there are fewer). The roll's program is listed
+    // before Q, so that the block of the repetition is written when Q reads it.
+    i = 0;
+    while i < mem.size(m, window_raw) {
+        let raw = mem.get(m, window_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 3]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if ir.param_writable(m, prm) {
+            return bad(m, t, m[raw + 3], text.f1(m, t, "`$` is written by the kernel: it cannot be a window", m[raw + 1]));
+        }
+        let cell = mem.get(m, supplied, pi) + ai;
+        if m[cell] != 0 {
+            return bad(m, t, m[raw + 3], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
+        }
+        m[cell] = 5;
+        var roll = 0 - 1;
+        var k = 0;
+        while k < mem.size(m, rolls) {
+            if text.eq(t, m[mem.get(m, rolls, k) + 4], m[raw + 2]) {
+                roll = mem.get(m, rolls, k);
+            }
+            k = k + 1;
+        }
+        if roll < 0 {
+            return bad(m, t, m[raw + 3], text.f1(m, t, "`$` is not a roll of the session (store PROGRAM.OUT ROLL BLOCKS)", m[raw + 2]));
+        }
+        if m[roll] >= pi {
+            return bad(m, t, m[raw + 3], text.f2(m, t, "the roll `$` is stored by `$`, which is not listed before its reader", m[raw + 2], m[mem.get(m, progs, m[roll])]));
+        }
+        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        let sprm = mem.get(m, ir.p_params(m, m[mem.get(m, progs, m[roll]) + 1]), m[roll + 1]);
+        if ir.param_dtype(m, prm) != ir.param_dtype(m, sprm) {
+            return bad(m, t, m[raw + 3], text.f1(m, t, "`$` has another element type than the roll", m[raw + 1]));
+        }
+        let stride = m[roll + t_stride()];
+        if m[g + 3] % stride != 0 || m[g + 3] / stride > m[roll + 3] {
+            return bad(m, t, m[raw + 3], text.f3(m, t, "`$` has $ elements: a window is a whole number of the roll's blocks of $, and no more than the roll has", m[raw + 1], text.num(m, t, m[g + 3]), text.num(m, t, stride)));
+        }
+        let wtb = table_rec(m, pi, ai, m[roll + 2], m[roll + 3], m[raw + 2], 0 - 1, 0, 0);
+        m[wtb + t_way()] = 3;
+        m[wtb + t_stride()] = stride;
+        m[wtb + t_roll()] = m[roll + t_roll()];
+        m[wtb + 12] = m[g + 3] / stride;
+        mem.push(m, tables, wtb);
         i = i + 1;
     }
 
@@ -885,6 +1062,50 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         i = i + 1;
     }
 
+    // A stored output lives in the roll, at a block that moves: it is read through windows and in no other way.
+    i = 0;
+    while i < mem.size(m, rolls) {
+        let roll = mem.get(m, rolls, i);
+        var other = false;
+        var k = 0;
+        while k < mem.size(m, links) {
+            let l = mem.get(m, links, k);
+            other = other || m[l] == m[roll] && m[l + 1] == m[roll + 1];
+            k = k + 1;
+        }
+        k = 0;
+        while k < mem.size(m, carries) {
+            let c = mem.get(m, carries, k);
+            other = other || m[c] == m[roll] && m[c + 1] == m[roll + 1];
+            k = k + 1;
+        }
+        k = 0;
+        while k < mem.size(m, answers) {
+            let a = mem.get(m, answers, k);
+            other = other || m[a] == m[roll] && m[a + 1] == m[roll + 1];
+            k = k + 1;
+        }
+        k = 0;
+        while k < mem.size(m, saves) {
+            let sv = mem.get(m, saves, k);
+            other = other || m[sv] == m[roll] && m[sv + 1] == m[roll + 1];
+            k = k + 1;
+        }
+        k = 0;
+        while k < mem.size(m, aliases) {
+            let al = mem.get(m, aliases, k);
+            other = other || m[al] == m[roll] && m[al + 1] == m[roll + 1] || m[al + 2] == m[roll] && m[al + 3] == m[roll + 1];
+            k = k + 1;
+        }
+        if other {
+            return err.fail(m, t, "session", text.f1(m, t, "the output stored in the roll `$` is also linked, carried, answered, saved or aliased: a stored output is read through windows", m[roll + 4]));
+        }
+        i = i + 1;
+    }
+    if mem.size(m, rolls) > 0 && steps == 0 {
+        return err.fail(m, t, "session", text.lit(m, t, "a roll is for a session file with `steps`: its block is the repetition's"));
+    }
+
     let sess = mem.rec(m, 11);
     m[sess + s_progs()] = progs;
     m[sess + s_resident()] = resident;
@@ -903,7 +1124,11 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
 // The program `pname`'s parameter `aname`: (program index, parameter index, the parameter), or (-1, -1, -1) with a refusal.
 // A table's record (s_tables).
 fn table_rec[&m](m: &!m [int], pi: int, ai: int, whole: int, blocks: int, file: int, sp: int, sa: int, slot: int) -> [] int {
-    let r = mem.rec(m, 9);
+    let r = mem.rec(m, 13);
+    m[r + 9] = 0;
+    m[r + 10] = 0;
+    m[r + 11] = 0;
+    m[r + 12] = 0;
     m[r] = pi;
     m[r + 1] = ai;
     m[r + 2] = whole;
@@ -1169,9 +1394,45 @@ pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: i
             }
             l = l + 1;
         }
+        // a window of this program: the blocks of the roll that end with the repetition's; and a store's block must exist before its program runs
+        pk = 0;
+        while pk < mem.size(m, tables) {
+            let tb = mem.get(m, tables, pk);
+            if m[tb] == q && m[tb + t_way()] >= 2 {
+                let block = bound_block(m, t, sess, tb);
+                if block < 0 {
+                    return 0 - 1;
+                }
+                if m[tb + t_way()] == 3 {
+                    let g = mem.get(m, m[mem.get(m, progs, q) + 2], m[tb + 1]);
+                    let from = m[tb + 2] + m[tb + t_stride()] * block;
+                    var e = 0;
+                    while e < m[g + 3] {
+                        fm[m[g + 2] + e] = fm[from + e];
+                        e = e + 1;
+                    }
+                }
+            }
+            pk = pk + 1;
+        }
         let cur = mem.get(m, progs, q);
         if interp.execute(m, t, fm, m[cur + 1], m[cur + 2]) < 0 {
             return 0 - 1;
+        }
+        // a store of this program: its output is the roll's block of the repetition
+        pk = 0;
+        while pk < mem.size(m, tables) {
+            let tb = mem.get(m, tables, pk);
+            if m[tb] == q && m[tb + t_way()] == 2 {
+                let g = mem.get(m, m[mem.get(m, progs, q) + 2], m[tb + 1]);
+                let to = m[tb + 2] + m[tb + t_stride()] * m[sess + s_count()];
+                var e = 0;
+                while e < m[g + 3] {
+                    fm[to + e] = fm[m[g + 2] + e];
+                    e = e + 1;
+                }
+            }
+            pk = pk + 1;
         }
         q = q + 1;
     }
@@ -1243,10 +1504,13 @@ pub fn run_steps[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess:
         while k < mem.size(m, tables) {
             let tb = mem.get(m, tables, k);
             let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
-            let from = m[tb + 2] + m[g + 3] * (m[sess + s_count()] % m[tb + 3]);
+            var from = m[tb + 2];
+            if m[tb + t_way()] < 2 && m[tb + 5] < 0 {
+                from = from + m[g + 3] * bound_block(m, t, sess, tb);
+            }
             var e = 0;
-            // a picked table is read when its program is about to run (run_cpu), not here
-            while e < m[g + 3] && m[tb + 5] < 0 {
+            // a picked table is read when its program is about to run (run_cpu), not here; so is a window, and a store is written when its program has run
+            while e < m[g + 3] && m[tb + 5] < 0 && m[tb + t_way()] < 2 {
                 fm[m[g + 2] + e] = fm[from + e];
                 e = e + 1;
             }

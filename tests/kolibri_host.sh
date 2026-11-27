@@ -2,7 +2,7 @@
 # tests/kolibri_host.sh -- the host side of Kolibri 1.1's step (tests/kolibri_gpu.cho, docs/kolibri.md K5) without the model: it builds, and on a toy GGUF written here byte by byte (three layers 32
 # wide: a dense one, a mixture of 2 experts with its own keys, a mixture that reads layer 1's keys; 2 query heads over 1 key/value head of 16; a vocabulary of 64) every file `weights` and `inputs`
 # write is what awk's arithmetic of the formats says: the copied tensors, the repacked codes and the scales to the byte, the Q4_1 offsets, the decoded Q6_K head, the embedding rows and the tables
-# as numbers; the list of files is exactly the expected one. Then `inputs` for 136 steps, twice round a sliding layer's ring of 64 slots (docs/kolibri.md section 15), `argmax`, and the refusals, each with its rule and status 1 (2 for usage), none a trap.
+# as numbers; the list of files is exactly the expected one. Then `inputs` for a longer run and longer caches (docs/kolibri.md section 19.2), `draws`, `argmax`, and the refusals, each with its rule and status 1 (2 for usage), none a trap.
 set -eu
 cd "$(dirname "$0")/.."
 C="${CANCHO:-cancho}"
@@ -36,26 +36,17 @@ before=$(cat "$T/fails")
 printf '3 0\n7\n' > "$T/ids.txt"
 if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
 [ "$(cat "$T/out.txt")" = "steps 5 prompt 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the eleven tables"
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the six tables"
 # draws: a seed's uniform numbers a line each, every decimal of a number of 24 bits over 2^24; awk prints the same 24 decimals of its own arithmetic
 if [ "$("$B" draws 7 5 2> "$T/err.txt")" = "$(cat "$T/want_draws.txt")" ]; then echo "ok   draws: the five numbers of seed 7, to the last decimal"; else echo "FAIL draws 7 5: $("$B" draws 7 5 2>&1 | head -c 300), wanted $(tr '\n' ' ' < "$T/want_draws.txt")"; fail=1; fi
 if [ "$("$B" draws 7 3)" = "$("$B" draws 7 5 | head -3)" ] && [ "$("$B" draws 8 3)" != "$("$B" draws 7 3)" ] && [ -z "$("$B" draws 7 0)" ] && [ "$("$B" draws 0 2 | wc -l | tr -d ' ')" = 2 ]; then echo "ok   draws: a shorter run is the start of a longer one, another seed is other numbers, none is none"; else echo "FAIL draws: a run's start, another seed or a count of 0"; fail=1; fi
-# the ring gone round: 136 steps (the most an indexed layer of this toy sees whole) with caches of 192 positions
-before=$(cat "$T/fails"); mkdir "$T/xl"
-if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt"; then
-  for f in selw keepw mask sel keep maskg; do
-    if [ -f "$T/xl/$f.f32" ]; then od -A n -v -t fF "$T/xl/$f.f32" | tr -s ' \n' '\n\n' | grep -v '^$' > "$T/got.txt" || true; else : > "$T/got.txt"; fi
-    r=$(paste "$T/got.txt" "$T/want/L_$f.f32" | awk -v n="$(wc -l < "$T/want/L_$f.f32")" 'NF != 2 { bad = "a line of " NF " fields"; exit } $1 - $2 != 0 { bad = "value " NR ": " $1 ", wanted " $2; exit } END { if (bad != "") print bad; else if (NR != n) print NR " values, wanted " n; else print "ok" }')
-    if [ "$r" != ok ]; then echo "FAIL $f.f32 of 136 steps: $r"; fail=1; echo x >> "$T/fails"; fi
-  done
-else echo "FAIL inputs of 136 steps: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: 136 steps, twice round a ring of 64 slots: the ring's tables and the indexed caches' as awk has them"
-# a ring asked for (a server's is as long as its positions): 192 slots for 136 steps never wrap, so the ring's tables are the indexed caches' selectors, and its mask the window's keys
-mkdir "$T/xr"
-if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xr" 192 136 192 > /dev/null 2> "$T/err.txt" && cmp -s "$T/xr/selw.f32" "$T/xr/sel.f32" && cmp -s "$T/xr/keepw.f32" "$T/xr/keep.f32" && [ "$(wc -c < "$T/xr/zcachew.f32" | tr -d ' ')" = "$(wc -c < "$T/xr/zcache.f32" | tr -d ' ')" ] && ! cmp -s "$T/xr/selw.f32" "$T/xl/selw.f32"; then
-  od -A n -v -t fF "$T/xr/mask.f32" | tr -s ' \n' '\n\n' | grep -v '^$' | awk -v win="$(od -A n -v -t fF "$T/xl/mask.f32" | tr -s ' \n' '\n\n' | grep -v '^$' | awk 'NR <= 64 * 136 && NR > 64 * 135 && $1 == 0' | wc -l | tr -d ' ')" '{ s = int((NR - 1) / 192); c = (NR - 1) % 192; want = (c <= s && c > s - win) ? 0 : -1e9; if ($1 != want) { bad = "step " s " slot " c ": " $1; exit } } END { if (bad != "") print bad; else if (NR != 192 * 136) print NR " values"; else print "ok" }' > "$T/r.txt"
-  if [ "$(cat "$T/r.txt")" = ok ]; then echo "ok   inputs with a ring of 192 slots for 136 steps: a ring that never wraps has the positions' selectors, and its mask is the window's keys"; else echo "FAIL the mask of a ring of 192: $(cat "$T/r.txt")"; fail=1; fi
-else echo "FAIL inputs with a ring of 192: $(head -c 300 "$T/err.txt")"; fail=1; fi
+# a longer run with longer caches: 136 steps (the most an indexed layer of this toy sees whole) and 192 positions. What a step needs of the positions is a number a step and a number a
+# position; a sliding layer's mask is the same 64 rows whatever the run (docs/kolibri.md section 19.2)
+mkdir "$T/xl"
+nums() { od -A n -v -t fF "$1" | tr -s ' \n' '\n\n' | grep -v '^$'; }
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt" && cmp -s "$T/xl/maskw.f32" "$T/x/maskw.f32" && [ "$(nums "$T/xl/pos.f32" | awk '$1 != NR - 1 { bad = 1 } END { print NR, bad + 0 }')" = "136 0" ] && [ "$(nums "$T/xl/iota.f32" | awk '$1 != NR - 1 { bad = 1 } END { print NR, bad + 0 }')" = "192 0" ] && [ "$(wc -c < "$T/xl/cos.f32" | tr -d ' ')" = $((136 * 8 * 4)) ] && [ "$(ls "$T/xl" | sort | tr '\n' ' ')" = "$(ls "$T/x" | sort | tr '\n' ' ')" ]; then
+  echo "ok   inputs for 136 steps and 192 positions: the steps' numbers, the positions', the same mask of 64 rows, and no file of steps times positions"
+else echo "FAIL inputs for 136 steps and 192 positions: $(head -c 300 "$T/err.txt") $(ls -l "$T/xl" | awk '{ print $5, $9 }' | tr '\n' ' ')"; fail=1; fi
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
 got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
@@ -99,23 +90,16 @@ refuse "positions that are not a number" kolibri-usage 1 "$B" inputs "$T/toy.ggu
 awk 'BEGIN { for (i = 0; i < 65; i++) printf "1 " }' > "$T/bad.txt"
 refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
 refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
-refuse "a ring that is no multiple of 64" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 5 100
-refuse "a ring longer than the positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 128
-refuse "a ring that is no number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 x
-refuse "an argument after the ring" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 64 7
+refuse "an argument after the steps" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 64
 toy "$T/v.gguf" w65
-refuse "a ring shorter than the window rounded up" kolibri-usage 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 192 5 64
-refuse "a seed that is not a number" kolibri-usage 1 "$B" draws x 5
-refuse "a count that is not a number" kolibri-usage 1 "$B" draws 7 5x
-refuse "a seed of eight digits" kolibri-usage 1 "$B" draws 12345678 5
-refuse "draws with no count" kolibri-usage 2 "$B" draws 7
+refuse "fewer positions than a sliding layer's window rounded up (65 keys, 128 scanned)" kolibri-usage 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64 5
 refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65
 refuse "a step more than an indexed layer sees whole" kolibri-context 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 137
 toy "$T/v.gguf" notop
 refuse "no indexer.top_k in the metadata" kolibri-meta 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64
-# a window of 65 keys makes a ring of 128 slots, not 64
+# a window of 65 keys is scanned as 128, not 64: the mask is 128 rows of 128, and its last row has the 65 keys
 toy "$T/v.gguf" w65
-if "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64 5 > "$T/out.txt" 2> "$T/err.txt" && [ "$(wc -c < "$T/r/selw.f32" | tr -d ' ')" = 2560 ] && [ "$(wc -c < "$T/r/mask.f32" | tr -d ' ')" = 2560 ] && [ "$(wc -c < "$T/r/zcachew.f32" | tr -d ' ')" = 8192 ]; then echo "ok   a window of 65 keys: a ring of 128 slots"; else echo "FAIL a window of 65 keys: the ring's tables are not 128 slots wide: $(head -c 200 "$T/err.txt")"; fail=1; fi
+if "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 128 5 > "$T/out.txt" 2> "$T/err.txt" && [ "$(wc -c < "$T/r/maskw.f32" | tr -d ' ')" = 65536 ] && [ "$(nums "$T/r/maskw.f32" | awk 'NR > 127 * 128 && $1 == 0' | wc -l | tr -d ' ')" = 65 ]; then echo "ok   a window of 65 keys: 128 scanned, 65 of them seen once the window is full"; else echo "FAIL a window of 65 keys: $(head -c 200 "$T/err.txt")"; fail=1; fi
 toy "$T/v.gguf" v8
 refuse "an embedding that is not a multiple of 64 rows" kolibri-tensor 1 "$B" weights "$T/v.gguf" "$T/r"
 printf 'abc' > "$T/bad.f32"

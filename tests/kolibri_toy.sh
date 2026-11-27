@@ -87,25 +87,11 @@ BEGIN {
   # the uniform numbers of seed 7, which `draws` prints (not a file of `inputs`, so not in the manifest): x becomes (1103515245 x + 12345) mod 2^31 (in pieces: the product does not fit a
   # double), the upper 24 bits over 2^24
   W = T "/want_draws.txt"; xx = 7; for (s = 0; s < NS; s++) { xh = int(xx / 65536); xl = xx % 65536; xx = ((((1103515245 * xh) % 2147483648) * 65536) % 2147483648 + (1103515245 * xl) % 2147483648 + 12345) % 2147483648; printf "%.24f\n", int(xx / 128) / 16777216 > W } close(W)
-  want("sel.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
-  want("keep.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
-  want("mask.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", ((c <= s && c > s - WIN) ? 0 : -1e9) > W; close(W)
-  want("selw.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s) > W; close(W)
-  want("keepw.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s) > W; close(W)
-  want("zcachew.f32", "vals"); for (c = 0; c < NKV * HD * 64; c++) printf "0\n" > W; close(W)
-  want("maskg.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%s\n", (c <= s ? 0 : -1e9) > W; close(W)
+  want("pos.f32", "vals"); for (s = 0; s < NS; s++) printf "%d\n", s > W; close(W)
+  want("iota.f32", "vals"); for (c = 0; c < 64; c++) printf "%d\n", c > W; close(W)
+  want("maskw.f32", "vals"); for (s = 0; s < 64; s++) for (c = 0; c < 64; c++) printf "%s\n", ((c <= s && c > s - WIN) ? 0 : -1e9) > W; close(W)
   want("cos.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < HD / 2; c++) printf "%.9g\n", cos(s / 10000 ^ (c / (HD / 2))) > W; close(W)
   want("sin.f32", "vals"); for (s = 0; s < NS; s++) for (c = 0; c < HD / 2; c++) printf "%.9g\n", sin(s / 10000 ^ (c / (HD / 2))) > W; close(W)
-  want("zcache.f32", "vals"); for (c = 0; c < NKV * HD * 64; c++) printf "0\n" > W; close(W)
-  # a run that goes round the ring of 64 slots twice (136 steps, the most this toy takes; caches of 192): the tables of the ring and of the indexed caches, not in the manifest. A slot holds
-  # the last position ps <= s with ps % 64 == c, if there is one, and is seen when that is in the window
-  NS = 136
-  W = T "/want/L_selw.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c == s % 64) > W; close(W)
-  W = T "/want/L_keepw.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) printf "%d\n", (c != s % 64) > W; close(W)
-  W = T "/want/L_mask.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 64; c++) { for (ps = s; ps >= 0 && ps % 64 != c; ps--) ; printf "%s\n", ((ps >= 0 && s - ps < WIN) ? 0 : -1e9) > W } close(W)
-  W = T "/want/L_sel.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 192; c++) printf "%d\n", (c == s) > W; close(W)
-  W = T "/want/L_keep.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 192; c++) printf "%d\n", (c != s) > W; close(W)
-  W = T "/want/L_maskg.f32"; for (s = 0; s < NS; s++) for (c = 0; c < 192; c++) printf "%s\n", (c <= s ? 0 : -1e9) > W; close(W)
 }'
 awk '{ printf "\\%03o", $1; if (NR % 512 == 0) printf "\n" } END { printf "\n" }' "$T/bytes.txt" | while IFS= read -r line; do printf "$line"; done > "$1"
 rm "$T/bytes.txt"
