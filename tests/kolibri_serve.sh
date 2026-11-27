@@ -115,6 +115,7 @@ field() { sed -n "s/.*\"$1\":\([0-9a-z._\"-]*\)[,}].*/\1/p" "$T/body" | tr -d '"
 is() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: \`$(printf '%s' "$2" | head -c 300)\`, wanted \`$(printf '%s' "$3" | head -c 300)\`"; fail=1; fi; }
 has() { if grep -q -- "$2" "$T/body"; then echo "ok   $1"; else echo "FAIL $1: $(head -c 300 "$T/body")"; fail=1; fi; }
 body() { printf '%s' "$1" > "$T/b.json"; }
+ids_of_text() { printf '%s' "$1" > "$T/iot.txt"; ids_of "$T/iot.txt" | wc -l | tr -d ' '; }   # how many ids a text is
 ids_of() { "$ROOT/build/cancho-gpu" tokenize "$TOK" "$1" | awk '/^ids / { for (i = 3; i <= NF; i++) print $i }'; }   # the tokenizer's ids of a file's text, a line each
 # awk's answer to a prompt's ids (a file, a line each) with at most $2 new ids: a line `letters count reason`
 sim() { awk "$NEXT"' { p[n++] = $1 } END { id = p[n - 1]; s = n - 1; why = "length"; out = ""; k = 0; while (k < max) { a = nx(id) + s % 2; if (a == 858 || a == 859) { why = "stop"; break } out = out sprintf("%c", a); k++; id = a; s++ } print out, k, why }' max="$2" "$1"; }
@@ -457,7 +458,7 @@ big "100,000 messages, an assistant's with its reasoning every other" $O 400 "mo
 big "340,000 added tokens" $G 400 "more than the $CTX positions" 'print "{\"raw\":true,\"prompt\":\"" . ("<|im_start|>" x 340000) . "\"}"'
 body '{"prompt":"hi","raw":true,"options":{"num_predict":2}}'; ask POST $G "$T/b.json"; is "and a request after them is answered as before" "$code $(field eval_count)" "200 2"
 
-# --- 10. the caches kept in a file. The session: the id of each position goes into a roll, and a step's answer has two more where the last two positions' ids sum to an odd
+# --- 10. the caches kept in a file. The session: the id of each position goes into a roll, and a step's answer has two more where the last eight positions' ids sum to an odd
 # number, so what a step answers after a prompt depends on what the prompt left in the roll
 cat > "$T/roll.model" <<'EOM'
 text CHX = tests/chx
@@ -476,15 +477,25 @@ program st $CHX/step_add.chx n=1
 link cur.y -> st.w
 resident st.d $X/zero.txt
 store st.wo R $NS
-program gs $CHX/group_sum.chx k=2 G=2
+program gs $CHX/group_sum.chx k=8 G=8
 window gs.x R
 program an $CHX/step_add.chx n=1
 link nx.wo -> an.w
-table an.d $X/par.txt 1728 by gs.s 0
+table an.d $X/par.txt 6912 by gs.s 0
+# a second phase that stores the same roll, four positions a repetition: the roll is one roll in the file
+phase pass 4
+program ps $CHX/step_add.chx n=4
+input ps.w
+resident ps.d $X/zero4.txt
+store ps.wo R $NS
+program pa $CHX/step_add.chx n=1
+input pa.w
+resident pa.d $X/zero.txt
 steps
 answer an.wo
+answer pa.wo
 EOM
-awk 'BEGIN { for (i = 0; i < 1728; i++) print (i % 2) * 2 }' > "$T/par.txt"
+awk 'BEGIN { for (i = 0; i < 6912; i++) print (i % 2) * 2 }' > "$T/par.txt"
 CF="$T/cache.bin"
 rstart() { # the roll session's server, with the flags given: it listens when this returns
   stop; : > "$T/err"
@@ -500,7 +511,11 @@ printf '%s' "$LP" > "$T/lp.txt"; nlp=$(ids_of "$T/lp.txt" | wc -l | tr -d ' ')
 port=$((port + 1))
 # with no file: every position is asked for, and this is the answer
 rstart || exit 1
-ask POST $G "$T/lp.json"; a0=$(field response); is "with no --cache the prompt's $nlp positions are all run, and nothing is written" "$(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(ls "$CF" 2>/dev/null | wc -l | tr -d ' ')" "$nlp 0"
+# what the server answers, with no file, to the prompt less its last k words and two more (k = 1 .. 6), and to the prompt and a few words more
+k=1; while [ $k -le 6 ]; do awk -v p="$LP" -v k=$k 'BEGIN { n = split(p, w, " "); printf "{\"prompt\":\""; for (i = 1; i <= n - k; i++) printf "%s ", w[i]; printf "zz yy\",\"raw\":true}" }' > "$T/cut$k.json"; ask POST $G "$T/cut$k.json"; eval "ac$k=\$(field response)"; k=$((k + 1)); done
+awk -v p="$LP" 'BEGIN { printf "{\"prompt\":\"%s and more\",\"raw\":true}", p }' > "$T/lp2.json"
+ask POST $G "$T/lp2.json"; a2=$(field response)
+reset; ask POST $G "$T/lp.json"; a0=$(field response); is "with no --cache the prompt's $nlp positions are all run, and nothing is written" "$(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(ls "$CF" 2>/dev/null | wc -l | tr -d ' ')" "$nlp 0"
 # with a file: the prompt's caches are written after the answer
 rstart --cache "$CF" --cache-min 50 || exit 1
 ask POST $G "$T/lp.json"; is "with --cache the answer is the same" "$(field response)" "$a0"
@@ -514,8 +529,14 @@ rstart --cache "$CF" --cache-min 50 || exit 1
 said "a server started again takes the file's $nlp positions" "^took $nlp positions from $CF"
 ask POST $G "$T/lp.json"
 is "and the same prompt asks the session for its last token alone, from where the file left it" "$(asked | head -1) $(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(field response)" "seek $((nlp - 1)) 1 $a0"
+# the file's positions are the prompt's, each at its place: a prompt that parts from it k words before its end goes on from there, and answers what a server with no file does
+k=1; got=""; want=""; while [ $k -le 6 ]; do ask POST $G "$T/cut$k.json"; got="$got$(field response) "; eval "want=\"\$want\$ac$k \""; k=$((k + 1)); done
+is "six prompts that part from the file's at six places answer as with no file" "$got" "$want"
+# and a server started again whose first prompt is longer than the file: the session is at the file's end without being told to go there
+rstart --cache "$CF" --cache-min 5000 || exit 1
+ask POST $G "$T/lp2.json"; is "a first prompt that goes on past the file is run from the file's end, with the answer of a server with no file" "$(asked | head -1 | cut -d' ' -f1) $(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(field response)" "1 $(( $(ids_of_text "$LP and more") - nlp )) $a2"
+rstart --cache "$CF" --cache-min 50 || exit 1
 # a prompt that shares nine tenths with the file is not written; one that shares less is
-awk -v p="$LP" 'BEGIN { printf "{\"prompt\":\"%s and more\",\"raw\":true}", p }' > "$T/lp2.json"
 ask POST $G "$T/lp2.json"; sleep 0.2; if ! grep -q "^kept" "$T/err"; then echo "ok   a prompt that is the file's with a few tokens more is not written"; else echo "FAIL a prompt that shares its start was written"; fail=1; fi
 awk 'BEGIN { printf "{\"prompt\":\""; for (i = 0; i < 60; i++) printf "lazy dogs jump over %d ", i; printf "\",\"raw\":true}" }' > "$T/lp3.json"
 ask POST $G "$T/lp3.json"; sleep 0.2; said "a long prompt of another start is written over it" "^kept [0-9]* positions in $CF"
@@ -549,6 +570,7 @@ head -c 3000 /dev/urandom > "$CF"; notmine "random bytes" "not a cache of this v
 # a file that cannot be written is said, and the answer was given
 rstart --cache "$T/no/such/dir/c.bin" --cache-min 50 || exit 1
 ask POST $G "$T/lp.json"; sleep 0.2; is "a file that cannot be written: the answer is given" "$code $(field response)" "200 $a0"; said "and the failure is said" "^the cache .* is not written"
+ask GET /health; is "and the server goes on" "$code" 200
 port=$((port + 1))
 
 # --- 6. a session that refuses: a vocabulary of 800 ids where the template's own ids are over it
