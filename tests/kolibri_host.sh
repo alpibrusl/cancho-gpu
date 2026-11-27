@@ -36,7 +36,7 @@ before=$(cat "$T/fails")
 printf '3 0\n7\n' > "$T/ids.txt"
 if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/x" 64 5 > "$T/out.txt" 2> "$T/err.txt"; then check "$T/x" $((split_at + 1)) $((total + 1)); else echo "FAIL inputs: $(head -c 300 "$T/err.txt")"; fail=1; echo x >> "$T/fails"; fi
 [ "$(cat "$T/out.txt")" = "steps 5 prompt 3" ] || { echo "FAIL inputs says: $(cat "$T/out.txt")"; fail=1; echo x >> "$T/fails"; }
-[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, two steps past them, and the six tables"
+[ "$(cat "$T/fails")" = "$before" ] && echo "ok   inputs: the embedding rows of three ids, and the four tables for five steps"
 # draws: a seed's uniform numbers a line each, every decimal of a number of 24 bits over 2^24; awk prints the same 24 decimals of its own arithmetic
 if [ "$("$B" draws 7 5 2> "$T/err.txt")" = "$(cat "$T/want_draws.txt")" ]; then echo "ok   draws: the five numbers of seed 7, to the last decimal"; else echo "FAIL draws 7 5: $("$B" draws 7 5 2>&1 | head -c 300), wanted $(tr '\n' ' ' < "$T/want_draws.txt")"; fail=1; fi
 if [ "$("$B" draws 7 3)" = "$("$B" draws 7 5 | head -3)" ] && [ "$("$B" draws 8 3)" != "$("$B" draws 7 3)" ] && [ -z "$("$B" draws 7 0)" ] && [ "$("$B" draws 0 2 | wc -l | tr -d ' ')" = 2 ]; then echo "ok   draws: a shorter run is the start of a longer one, another seed is other numbers, none is none"; else echo "FAIL draws: a run's start, another seed or a count of 0"; fail=1; fi
@@ -44,8 +44,8 @@ if [ "$("$B" draws 7 3)" = "$("$B" draws 7 5 | head -3)" ] && [ "$("$B" draws 8 
 # position; a sliding layer's mask is the same 64 rows whatever the run (docs/kolibri.md section 19.2)
 mkdir "$T/xl"
 nums() { od -A n -v -t fF "$1" | tr -s ' \n' '\n\n' | grep -v '^$'; }
-if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt" && cmp -s "$T/xl/maskw.f32" "$T/x/maskw.f32" && [ "$(nums "$T/xl/pos.f32" | awk '$1 != NR - 1 { bad = 1 } END { print NR, bad + 0 }')" = "136 0" ] && [ "$(nums "$T/xl/iota.f32" | awk '$1 != NR - 1 { bad = 1 } END { print NR, bad + 0 }')" = "192 0" ] && [ "$(wc -c < "$T/xl/cos.f32" | tr -d ' ')" = $((136 * 8 * 4)) ] && [ "$(ls "$T/xl" | sort | tr '\n' ' ')" = "$(ls "$T/x" | sort | tr '\n' ' ')" ]; then
-  echo "ok   inputs for 136 steps and 192 positions: the steps' numbers, the positions', the same mask of 64 rows, and no file of steps times positions"
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt" && cmp -s "$T/xl/maskw.f32" "$T/x/maskw.f32" && cmp -s "$T/xl/x0.f32" "$T/x/x0.f32" && [ "$(wc -c < "$T/xl/cos.f32" | tr -d ' ')" = $((136 * 8 * 4)) ] && [ "$(ls "$T/xl" | sort | tr '\n' ' ')" = "$(ls "$T/x" | sort | tr '\n' ' ')" ]; then
+  echo "ok   inputs for 136 steps and 192 positions: the same mask of 64 rows and the same rows of the ids, a row of cos and sin a step, and no file of steps times positions"
 else echo "FAIL inputs for 136 steps and 192 positions: $(head -c 300 "$T/err.txt") $(ls -l "$T/xl" | awk '{ print $5, $9 }' | tr '\n' ' ')"; fail=1; fi
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
@@ -94,7 +94,8 @@ refuse "an argument after the steps" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "
 toy "$T/v.gguf" w65
 refuse "fewer positions than a sliding layer's window rounded up (65 keys, 128 scanned)" kolibri-usage 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64 5
 refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65
-refuse "a step more than an indexed layer sees whole" kolibri-context 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 137
+refuse "a step more than the keys the indexer chooses among without a pool" kolibri-context 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 16448 16385
+if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 16384 16384 > /dev/null 2> "$T/err.txt" && [ "$(wc -c < "$T/r/cos.f32" | tr -d ' ')" = $((16384 * 8 * 4)) ]; then echo "ok   16,384 steps are taken"; else echo "FAIL 16,384 steps: $(head -c 200 "$T/err.txt")"; fail=1; fi
 toy "$T/v.gguf" notop
 refuse "no indexer.top_k in the metadata" kolibri-meta 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64
 # a window of 65 keys is scanned as 128, not 64: the mask is 128 rows of 128, and its last row has the 65 keys

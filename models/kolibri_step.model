@@ -14,18 +14,18 @@
 # after another: codes two a byte, f16 scales a group of 32) or a<i>.q.q4 and .s where there are no keys, a<i>.o.q4 and .s; m<i>.ffn_norm.f32, m<i>.post_norm.f32 and the files of
 # models/kolibri_mlp.model with m<i>. before their names. Once: ones_d.f32, ones_h.f32, ones_f.f32, ones_qkv.f32, ones_q.f32 (dequant_q4's row scales), ar.f32 (0 .. NE - 1), sl.f32 (0 .. K - 1),
 # e4m3.f32 (fp4_round.chx's table), one64.f32 and zero64.f32 (an indexed layer's cos and sin), fnorm.f32, head.f32.
-# X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64), pos.f32 (the NS positions, a number a step), iota.f32 (0 .. T - 1), maskw.f32 (TW rows of TW: row r is a
+# X, a run's: x<i>.f32 (NS rows of D), cos.f32 and sin.f32 (NS rows of 64), maskw.f32 (TW rows of TW: row r is a
 # sliding layer's mask over its window at step r, and the last row at every step after: 0 on the keys in the window, -1e9 elsewhere). None of them grows with the square of the positions.
 # A cache is a roll (section 19.2): T positions, written a block a step and read through a window. TW is a sliding layer's window rounded up to a multiple of TS (576 for 513), and no
-# more than T. An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl_p.chx: chunks of TS keys, no tile that grows with T). This file has no indexer: a run is
-# at most the positions an indexed layer sees whole (2,184 for Kolibri 1.1; the host refuses more).
+# more than T. An indexed layer's softmax is the long form (attention_stats.chx, attention_pvl_p.chx: chunks of TS keys, no tile that grows with T). The indexer has no pool (section
+# 19.5): a run is at most the 16,384 keys past which the model's pool narrows the choice (the host refuses more).
 #
 # GEN=1 (with HEAD=1 and L0=0) generates: section 13; it reads emb.q4, emb.s, rank.f32, zmk.f32, one1.f32 of W and id0.f32 of X. A request is then `N ID MASK`: N steps on the id ID where MASK
 # is 1, on the id the step before chose where it is 0.
 # SAMP=1 (with GEN=1) draws the id instead of taking the arg max: section 14; it reads ciota.f32, cslot.f32, czero.f32, ctri.f32, tri64.f32 of W, and a request is `N ID MASK U`, U the step's
 # uniform number.
 # With SAMP=1, SAVE=1 also writes cum.f32 and cnt.f32.
-# SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, o<i>.f32, and
+# SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, o<i>.f32, ix<i>.f32 (an indexed layer's scores of its keys), and
 # idx<i>.f32, wt<i>.f32. F32= F16= I8= (empty) reads and writes every file as text, and D, NQ, NKV, NE, EH, K, FF, BN, V make a small model: tests/kstep.sh, in the gate.
 text CHX = tests/chx
 text W = .
@@ -33,6 +33,10 @@ text X = .
 const T = 576
 const TW = 576
 const TS = 64
+const ITOP = 2048
+const ISINK = 8
+const ILOCAL = 128
+const IH = 12
 const NS = 64
 const L0 = 0
 const NL = 50
@@ -62,12 +66,9 @@ text F16 = f16
 text I8 = i8
 
 # The caches (section 19.2): a layer's keys and its values are each a roll of T positions, a block a position (the NKV heads' rows of 128 one after another), stored by the step and read
-# through windows: an indexed layer's all T, a sliding layer's the TW that end with the step's. One mask of T for the indexed layers, from the step's position.
-if NL > 0
-    program pm $CHX/pos_mask.chx t=$T ts=$TS
-    table pm.p $X/pos.f32 $NS $F32
-    resident pm.io $X/iota.f32 $F32
-end
+# through windows: an indexed layer's all T, a sliding layer's the TW that end with the step's.
+# The indexer (section 19.5): an indexed layer's mask is chosen by the session from the scores of its keys (index_score.chx: its first IH query heads against key head 0, both rounded).
+# With more than ITOP + ISINK + ILOCAL keys to the step, the ITOP with the largest score, the first ISINK and the last ILOCAL; with no more, every key to the step.
 
 # the attention half of layer i, whose keys and values are layer s's: L${i}ra.wo is the row after it
 block attn(i, s)
@@ -120,6 +121,17 @@ block attn(i, s)
         resident L${i}po.w $W/a${i}.qn.f32 $F32
     end
     if i % 5 == 4
+        # the scores the layer's keys are chosen by: listed before the attention, whose mask the session writes from them
+        program L${i}rq $CHX/fp4_round.chx r=$NQ n=128
+        if s == i
+            link L${i}po.q -> L${i}rq.x
+        else
+            link L${i}po.y -> L${i}rq.x
+        end
+        resident L${i}rq.tb $W/e4m3.f32 $F32
+        program L${i}ix $CHX/index_score.chx nq=$NQ g=$IH nkv=$NKV t=$T ts=$TS d=128
+        link L${i}rq.y -> L${i}ix.q
+        window L${i}ix.k K${s}
         program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$T ts=$TS d=128
     else
         program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$TW ts=$TS d=128
@@ -131,7 +143,7 @@ block attn(i, s)
     end
     window L${i}as.k K${s}
     if i % 5 == 4
-        link pm.mask -> L${i}as.mask
+        choose L${i}as.mask by L${i}ix.s $ITOP $ISINK $ILOCAL
     else
         table L${i}as.mask $X/maskw.f32 $TW $F32 hold
     end
@@ -169,6 +181,9 @@ block attn(i, s)
     if SAVE > 1
         save L${i}ra.wo $X/mid${i}.f32 $F32
         save L${i}ap.o $X/o${i}.f32 $F32
+        if i % 5 == 4
+            save L${i}ix.s $X/ix${i}.f32 $F32
+        end
         if s == i
             save L${i}po.q $X/q${i}.f32 $F32
         else

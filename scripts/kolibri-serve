@@ -3,9 +3,9 @@
 #
 #     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]
 #
-# It writes the session's tables once (25 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. The model samples with the file's
+# It writes the session's tables once (10 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. The model samples with the file's
 # settings (temperature 1, the 128 largest, top-p 0.99) unless `--temperature T` (a number above 0) or `--greedy`: these are the session's, set here, and a request's are not read.
-# A conversation is at most the 2,184 positions the model's indexed layers see whole. It listens on every address of the host: `--api-key` on a network.
+# A conversation is at most 16,384 positions (past them the model's indexer chooses from a pool, which is not written). It listens on every address of the host: `--api-key` on a network.
 # The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
 # written on the first run: 41 GB. One GPU job at a time, by the lock scripts/media takes.
 HERE=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1
@@ -31,8 +31,8 @@ case "$port" in ''|*[!0-9]*) usage "--port takes a port" ;; esac
 [ -x "$SERVER" ] || { echo "kolibri-serve: $SERVER is not built: CANCHO=<pinned cancho> scripts/build-kolibri-serve.sh" >&2; exit 2; }
 [ -f "$G" ] || { echo "kolibri-serve: the model's file is not at $G (KOLIBRI_GGUF names another)" >&2; exit 2; }
 set -- $("$K" ends "$G") || exit 1
-[ $# -eq 3 ] || exit 1
-whole=$3
+[ $# -eq 4 ] || exit 1
+whole=$3; itop=$4
 T=$(((whole + 63) / 64 * 64))
 D=$(cd "$(mktemp -d)" && pwd -P) || exit 1
 LOCK=$CACHE/gpu.lock
@@ -43,7 +43,7 @@ if [ ! -f "$W/head.f32" ]; then
   echo "kolibri-serve: writing the weights as the device reads them to $W (41 GB for Kolibri 1.1), once" >&2
   mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
 fi
-# the tables of positions, for every step the model sees whole. The caches are rolls of positions (docs/kolibri.md section 19.2): any position can be gone back to
+# the tables of positions, for the most steps of a conversation. The caches are rolls of positions (docs/kolibri.md section 19.2): any position can be gone back to
 mkdir -p "$D/x" && echo 0 > "$D/ids.txt" || exit 1
 "$K" inputs "$G" "$D/ids.txt" "$D/x" "$T" "$whole" > /dev/null || exit $?
 mkdir -p "$CACHE"
@@ -54,4 +54,4 @@ fi
 echo $$ > "$LOCK"; locked=1
 greedy=""; [ $samp -eq 1 ] || greedy="--greedy"
 # shellcheck disable=SC2086
-"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" $greedy $pass CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" GEN=1 SAMP=$samp SAVE=0 INVT="$invt"
+"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" $greedy $pass CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" ITOP="$itop" GEN=1 SAMP=$samp SAVE=0 INVT="$invt"

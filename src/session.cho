@@ -27,6 +27,7 @@ import ir;
 import kinds;
 import runcmd;
 import model;
+import choose;
 
 // The session record's words.
 pub fn s_progs() -> [] int {
@@ -65,6 +66,8 @@ pub fn s_tables() -> [] int {
 // 9 the way (0 a table that steps; 1 a table that holds its last block, `hold`; 2 a `store`, the output that is block j of a roll; 3 a `window`, the blocks of a roll that end with j's),
 // 10 the elements of one block of the roll, 11 the roll's number, 12 the blocks of a window. For a roll, word 2 is the interpreter's place of the whole roll (-1 on a device),
 // word 3 its blocks and word 4 its name.
+// Way 4 is a `choose` (docs/resident.md section 34): the parameter is a mask the session writes from an output's numbers. Word 2 is a scratch of as many numbers in the interpreter's
+// memory, word 3 how many largest are taken, words 10 and 11 the program and the output of the scores, 12 the entries taken at the start, 13 those at the end, 14 the mask's length.
 pub fn t_way() -> [] int {
     return 9;
 }
@@ -100,6 +103,24 @@ pub fn bound_block[&m, &t](m: &!m [int], t: &!t [byte], sess: int, tb: int) -> [
         return 0;
     }
     return j - m[tb + 12] + 1;
+}
+
+// The mask of the `choose` record `tb` for the session's repetition, written into its parameter's numbers from the scores' (both in the interpreter's memory). 0, or -1 with a
+// refusal: the mask has no entry for a repetition past its last.
+pub fn choose_mask[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: int, tb: int) -> [] int {
+    let progs = m[sess + s_progs()];
+    let j = m[sess + s_count()];
+    if j >= m[tb + 14] {
+        return err.fail(m, t, "session", text.n2(m, t, "a chosen mask has $ entries: repetition $ is past them", m[tb + 14], j));
+    }
+    let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
+    let sg = mem.get(m, m[mem.get(m, progs, m[tb + 10]) + 2], m[tb + 11]);
+    return choose.mask(fm, m[tb + 2], m[sg + 2], m[g + 2], m[tb + 14], j, m[tb + 3], m[tb + 12], m[tb + 13]);
+}
+
+// Whether the `choose` record `tb` reads its scores at the session's repetition (a device session reads them back only then).
+pub fn choose_reads[&m](m: &!m [int], sess: int, tb: int) -> [] bool {
+    return choose.reads(m[sess + s_count()], m[tb + 3], m[tb + 12], m[tb + 13]);
 }
 
 // The elements of one block of `tb`, whose parameter has `own` elements.
@@ -271,6 +292,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     let carry_raw = mem.list(m);
     let table_raw = mem.list(m);
     let store_raw = mem.list(m);
+    let choose_raw = mem.list(m);
     let window_raw = mem.list(m);
     let save_raw = mem.list(m);
     let alias_raw = mem.list(m);
@@ -442,6 +464,31 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     return bad(m, t, lineno, text.lit(m, t, "the blocks of a roll are a positive whole number"));
                 }
                 mem.push(m, store_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), truncate(blocks), lineno));
+            } else if text.is(t, head, "choose") {
+                if nw != 7 || !text.is(t, mem.get(m, words, 2), "by") {
+                    return bad(m, t, lineno, text.lit(m, t, "choose PROGRAM.PARAM by PROGRAM.OUT TOP FIRST LAST"));
+                }
+                let (pn, an) = dotted(m, t, mem.get(m, words, 1));
+                let (spn, san) = dotted(m, t, mem.get(m, words, 3));
+                if pn < 0 || spn < 0 {
+                    return bad(m, t, lineno, text.lit(m, t, "choose takes PROGRAM.PARAM and PROGRAM.OUT"));
+                }
+                let craw = mem.grab(m, 8);
+                m[craw] = pn;
+                m[craw + 1] = an;
+                m[craw + 2] = spn;
+                m[craw + 3] = san;
+                m[craw + 7] = lineno;
+                var w = 4;
+                while w < 7 {
+                    let (okn, v) = runcmd.number(m, t, mem.get(m, words, w));
+                    if !okn || v < 0.0 || v > 100000000.0 || float_of(truncate(v)) != v || w == 4 && v < 1.0 {
+                        return bad(m, t, lineno, text.lit(m, t, "choose takes whole numbers: the largest taken (1 or more), those taken at the start and those at the end"));
+                    }
+                    m[craw + w] = truncate(v);
+                    w = w + 1;
+                }
+                mem.push(m, choose_raw, craw);
             } else if text.is(t, head, "window") {
                 if nw != 3 {
                     return bad(m, t, lineno, text.lit(m, t, "window PROGRAM.PARAM ROLL"));
@@ -486,7 +533,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 steps = 1;
             } else {
-                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, store, window, steps, save, alias)", head));
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, store, window, choose, steps, save, alias)", head));
             }
         }
     }
@@ -873,6 +920,60 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         i = i + 1;
     }
 
+    // `choose P.PARAM by Q.OUT TOP FIRST LAST` (docs/resident.md section 34): P.PARAM is a mask the session writes, when P is about to run in repetition j, from the f32 output Q.OUT
+    // of as many numbers; Q is listed before P.
+    i = 0;
+    while i < mem.size(m, choose_raw) {
+        let raw = mem.get(m, choose_raw, i);
+        let (pi, ai, prm) = locate(m, t, progs, m[raw], m[raw + 1], m[raw + 7]);
+        if pi < 0 {
+            return 0 - 1;
+        }
+        if ir.param_writable(m, prm) || ir.param_dtype(m, prm) != kinds.f32() {
+            return bad(m, t, m[raw + 7], text.f1(m, t, "`$` is not an f32 parameter the kernel reads: a mask is chosen for one", m[raw + 1]));
+        }
+        let cell = mem.get(m, supplied, pi) + ai;
+        if m[cell] != 0 {
+            return bad(m, t, m[raw + 7], text.f2(m, t, "`$.$` is supplied twice", m[raw], m[raw + 1]));
+        }
+        m[cell] = 6;
+        let (sp, sa, sprm) = locate(m, t, progs, m[raw + 2], m[raw + 3], m[raw + 7]);
+        if sp < 0 {
+            return 0 - 1;
+        }
+        if !ir.param_writable(m, sprm) || ir.param_dtype(m, sprm) != kinds.f32() {
+            return bad(m, t, m[raw + 7], text.f1(m, t, "`$` is not an f32 output: a mask is chosen by numbers a kernel wrote", m[raw + 3]));
+        }
+        if sp >= pi {
+            return bad(m, t, m[raw + 7], text.f2(m, t, "`$` is chosen by `$`, which is not listed before it", m[raw], m[raw + 2]));
+        }
+        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        let sg = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
+        if m[sg + 3] != m[g + 3] {
+            return bad(m, t, m[raw + 7], text.f2(m, t, "the mask has $ entries and the output that chooses it $", text.num(m, t, m[g + 3]), text.num(m, t, m[sg + 3])));
+        }
+        // the mask and the scores are numbers the session works on, in a device session too
+        if interp.materialise(m, t, fm, g) < 0 || interp.materialise(m, t, fm, sg) < 0 {
+            return 0 - 1;
+        }
+        let scratch = interp.falloc(m, fm, m[g + 3]);
+        if scratch < 0 {
+            return err.fail(m, t, "session", text.lit(m, t, "the choice does not fit the interpreter's memory"));
+        }
+        let ctb = table_rec(m, pi, ai, scratch, m[raw + 4], 0, 0 - 1, 0, 0);
+        m[ctb + t_way()] = 4;
+        m[ctb + 10] = sp;
+        m[ctb + 11] = sa;
+        m[ctb + 12] = m[raw + 5];
+        m[ctb + 13] = m[raw + 6];
+        m[ctb + 14] = m[g + 3];
+        mem.push(m, tables, ctb);
+        i = i + 1;
+    }
+    if mem.size(m, choose_raw) > 0 && steps == 0 {
+        return err.fail(m, t, "session", text.lit(m, t, "choose is for a session file with `steps`: the mask is the repetition's"));
+    }
+
     // Every read-only parameter is supplied.
     i = 0;
     while i < np {
@@ -1124,11 +1225,13 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
 // The program `pname`'s parameter `aname`: (program index, parameter index, the parameter), or (-1, -1, -1) with a refusal.
 // A table's record (s_tables).
 fn table_rec[&m](m: &!m [int], pi: int, ai: int, whole: int, blocks: int, file: int, sp: int, sa: int, slot: int) -> [] int {
-    let r = mem.rec(m, 13);
+    let r = mem.rec(m, 15);
     m[r + 9] = 0;
     m[r + 10] = 0;
     m[r + 11] = 0;
     m[r + 12] = 0;
+    m[r + 13] = 0;
+    m[r + 14] = 0;
     m[r] = pi;
     m[r + 1] = ai;
     m[r + 2] = whole;
@@ -1398,7 +1501,12 @@ pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: i
         pk = 0;
         while pk < mem.size(m, tables) {
             let tb = mem.get(m, tables, pk);
-            if m[tb] == q && m[tb + t_way()] >= 2 {
+            if m[tb] == q && m[tb + t_way()] == 4 {
+                if choose_mask(m, t, fm, sess, tb) < 0 {
+                    return 0 - 1;
+                }
+            }
+            if m[tb] == q && (m[tb + t_way()] == 2 || m[tb + t_way()] == 3) {
                 let block = bound_block(m, t, sess, tb);
                 if block < 0 {
                     return 0 - 1;
