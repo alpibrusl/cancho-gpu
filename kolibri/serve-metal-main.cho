@@ -58,6 +58,10 @@ fn handle[&m, &t, &x, &i, &k, &c, &g](m: &!m [int], t: &!t [byte], fm: &!x [floa
         return 0;
     }
     let (rc, what) = kserve.open(m, t, cfg, from, he, blen, clock_unix_ms(clock) / 1000);
+    if m[cfg + kserve.c_trace()] == 1 {
+        // what the request took of the pools to become a prompt's ids, or to be refused
+        io.error_all(io, text.bytes(t, text.n3(m, t, "pools $ words of $, $ bytes\n", m[mem.top_slot()], len(m), m[mem.text_slot()])));
+    }
     if rc > 0 {
         kserve.respond(m, t, ch, rc, what);
         io.error_all(io, text.bytes(t, kserve.log_line(m, t, cfg, from, he, rc, 0 - 1, clock_ms(clock) - t0)));

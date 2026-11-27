@@ -1,0 +1,15 @@
+tokenizer ids=865
+ids 2: 856 98
+dec "abab"
+ids 2: 859 100
+dec "pcdcd"
+ids 10: 856 98 337 32 859 100 857 32 337 858
+dec "ababab pcdcdcd abpcd"
+ids 10: 98 856 98 32 857 857 32 858 32 859
+dec "babab cdcd pcd pcdc"
+ids 22: 864 32 97 110 100 32 863 32 97 110 100 32 863 124 120 124 62 32 101 110 100 863
+dec "<|x|> and <|x and <|x|x|> end<|x"
+ids 17: 856 98 856 98 856 98 856 98 856 98 32 859 100 859 100 859 100
+dec "abababababababababab pcdcdpcdcdpcdcd"
+ids 3: 864 863 864
+dec "<|x|><|x<|x|>"
