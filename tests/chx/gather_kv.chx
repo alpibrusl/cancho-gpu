@@ -1,0 +1,26 @@
+// The keys and values an indexed layer attends to, gathered (docs/kolibri.md section 23): ix names n positions of caches that are rolls of positions ([t, c]: a position's nkv
+// heads one after another in its row), and ko and vo are those rows of k and of v, in ix's order. An entry of ix under 0 is no position: its row is row 0's and its mask -1e9,
+// where a position's is 0, so that attention_scores_p.chx's scores leave it out. The session's `choose ... index` writes ix. bn positions a threadgroup.
+algo gather_kv(t, n, c, bn)
+  in  k:  f32[t, c]
+  in  v:  f32[t, c]
+  in  ix: f32[1, n]
+  out ko: f32[n, c]
+  out vo: f32[n, c]
+  out mk: f32[1, n]
+{
+  grid j over n / bn
+  let kt = load k
+  let vt = load v
+  let it = load ix[0, j * bn ; 1, bn]
+  store gather kt &it -> ko[j * bn, 0]
+  store gather vt &it -> vo[j * bn, 0]
+  let a  = it + 0.5
+  let s  = step a
+  let u  = s - 1.0
+  store u * 1000000000.0 -> mk[0, j * bn]
+}
+
+schedule gather_kv for apple-m-series { threads 256 }
+schedule gather_kv for nvidia-ada     { threads 256 }
+schedule gather_kv for amd-cdna3      { threads 256 }

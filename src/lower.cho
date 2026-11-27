@@ -94,7 +94,7 @@ fn op_vars[&m](m: &!m [int], o: int, out: int) -> [] int {
         mem.push(m, out, ir.var_of(m[o + 1]));
         return 0;
     }
-    if k == kinds.op_matmul() || k == kinds.op_matmul_nt() {
+    if k == kinds.op_matmul() || k == kinds.op_matmul_nt() || k == kinds.op_gather() {
         mem.push(m, out, ir.var_of(m[o + 1]));
         mem.push(m, out, ir.var_of(m[o + 2]));
         return 0;
@@ -388,7 +388,36 @@ fn op[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
     if k == kinds.op_matmul() || k == kinds.op_matmul_nt() {
         return matmul.lower(m, t, g, x, o);
     }
+    if k == kinds.op_gather() {
+        return gather(m, t, g, x, o);
+    }
     return row_reduce(m, t, g, x, o);
+}
+
+// `gather a ix`: element e of the result is `a[ix[e / c], e % c]`, the row held to those of `a` (a negative index or one that is no number reads row 0, one past the end the
+// last row). Each thread writes its own elements; nothing is shared.
+fn gather[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {
+    let (a, b) = (m[o + 1], m[o + 2]);
+    let ta = gen.arg_ty(m, t, g, a);
+    if ta < 0 {
+        return 0 - 1;
+    }
+    let tb = gen.arg_ty(m, t, g, b);
+    if tb < 0 {
+        return 0 - 1;
+    }
+    let rows = mem.get(m, ir.shape(m, ta), 0);
+    let c = mem.get(m, ir.shape(m, ta), 1);
+    let count = mem.get(m, ir.shape(m, tb), 1) * c;
+    let ops = gen.operands(m, t, g, mem.of2(m, a, b), gen.flags2(m, false, false), count);
+    if ops < 0 {
+        return 0 - 1;
+    }
+    let ix = gen.read(m, t, mem.get(m, ops, 1), text.f1(m, t, "e / $u", n(m, t, c)));
+    let row = text.f2(m, t, "(uint)fmin(fmax(float($), 0.0f), $.0f)", ix, n(m, t, rows - 1));
+    let v = gen.read(m, t, mem.get(m, ops, 0), text.f3(m, t, "$ * $u + e % $u", row, n(m, t, c), n(m, t, c)));
+    let name = gen.declare_reg(m, t, g, x, reg(m, kinds.f32(), mem.of2(m, count / c, c)));
+    return gen.owned1(m, t, g, count, text.f2(m, t, "$[k] = $;", name, v));
 }
 
 fn fill[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int {

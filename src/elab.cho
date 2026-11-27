@@ -495,6 +495,14 @@ fn lower[&m, &t](m: &!m [int], t: &!t [byte], st: int, env: int, cx: int, e: int
             return 0 - 1;
         }
         let (ls, rs) = (m[l + 1], m[r + 1]);
+        if m[e + 1] == 2 {
+            if mem.size(m, ls) != 2 || mem.size(m, rs) != 2 || mem.get(m, rs, 0) != 1 {
+                return bad(m, t, "shape", text.f1(m, t, "`$`: a gather takes a 2-d tile and a row of indices", name));
+            }
+            let og = ir.make_op(m, kinds.op_gather(), arg_of(m, m[e + 2], m[l]), arg_of(m, m[e + 3], m[r]), kinds.f32(), 0);
+            let vg = ir.emit(m, t, b, name, og);
+            return value(m, vg, mem.of2(m, mem.get(m, rs, 1), mem.get(m, ls, 1)), kinds.f32());
+        }
         if mem.size(m, ls) != 2 || mem.size(m, rs) != 2 {
             return bad(m, t, "shape", text.f1(m, t, "`$`: a matmul takes 2-d tiles", name));
         }

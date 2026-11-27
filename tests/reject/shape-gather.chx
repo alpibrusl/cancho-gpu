@@ -1,0 +1,12 @@
+// RULE shape
+// ARGS n=8
+algo k(n)
+  in  a:  f32[16, 4]
+  in  ix: f32[2, n]
+  out y:  f32[n, 4]
+{
+  let at = load a
+  let it = load ix
+  store gather at it -> y
+}
+schedule k for nvidia-ada { threads 32 }

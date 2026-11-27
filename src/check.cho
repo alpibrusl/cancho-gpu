@@ -432,6 +432,28 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
         }
         return tc;
     }
+    if k == kinds.op_gather() {
+        let tys = args(m, t, c, mem.of2(m, m[o + 1], m[o + 2]));
+        if tys < 0 {
+            return 0 - 1;
+        }
+        let ta = tile_of(m, t, c, mem.get(m, tys, 0), "gather rows");
+        if ta < 0 {
+            return 0 - 1;
+        }
+        let tb = tile_of(m, t, c, mem.get(m, tys, 1), "gather indices");
+        if tb < 0 {
+            return 0 - 1;
+        }
+        if ir.dtype(m, ta) != kinds.f32() || ir.dtype(m, tb) != kinds.f32() {
+            return diag(m, t, c, "type", text.lit(m, t, "gather takes F32 rows and F32 indices"));
+        }
+        let (as_, bs) = (ir.shape(m, ta), ir.shape(m, tb));
+        if mem.size(m, as_) != 2 || mem.size(m, bs) != 2 || mem.get(m, bs, 0) != 1 {
+            return diag(m, t, c, "shape", text.lit(m, t, "gather takes a 2-d tile and a row of indices"));
+        }
+        return reg(m, kinds.f32(), mem.of2(m, mem.get(m, bs, 1), mem.get(m, as_, 1)));
+    }
     if k == kinds.op_matmul_nt() || k == kinds.op_matmul() {
         let tys = args(m, t, c, mem.of2(m, m[o + 1], m[o + 2]));
         if tys < 0 {

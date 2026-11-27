@@ -5,6 +5,9 @@
 # P.PARAM is written when P is about to run in repetition j: entry c is 0 when c <= j and c < FIRST, or c > j - LAST, or among the TOP largest of Q.OUT over the other entries to j
 # (a tie to the lower c); every other entry is -1e9. One program copies a row of a table (the scores of the step); another adds the chosen mask to zeros and answers it. The scores are
 # small whole numbers with many ties, a row a step, and awk says the mask by sorting: another way to the same rule than the session's selection. Then every refusal.
+#     choose P.PARAM by Q.OUT TOP FIRST LAST index
+# (docs/kolibri.md section 23) writes the same choice as a list: the entries the mask leaves at 0, their numbers rising, and -1 in the rest of P.PARAM's room. Held to the list
+# awk makes of its own mask.
 set -u
 cd "$(dirname "$0")/.."
 B="${1:-build/cancho-gpu-session}"
@@ -72,5 +75,24 @@ refused "scores that are no output" "chosen by numbers a kernel wrote" "$A" "$AW
 refused "scores of a program listed after the mask's" "not listed before it" "$Bp" "$BW" "choose b.d by a.wo 3 1 2" "$A" "$AW" "$AD" steps "answer b.wo"
 refused "scores of another length than the mask" "the mask has 8 entries and the output that chooses it 16" "$A" "$AW" "$AD" "program b $CHX/step_add.chx n=8" "resident b.w $T/z8.txt" "$CH" steps "answer b.wo"
 refused "choose in a session with no steps" "a session file with \`steps\`" "$A" "$AW" "resident a.d $T/z.txt" "$Bp" "$BW" "$CH" "answer b.wo"
+# --- the choice as a list
+runlist() { # n, top, first, last, room, name: the session answers the list of each of n steps
+  n=$1; scores "$n" > "$T/sc.txt"; zeros "$n" > "$T/z.txt"; zeros "$5" > "$T/zr.txt"
+  printf 'program a %s/step_add.chx n=%s\nresident a.w %s/z.txt\ntable a.d %s/sc.txt %s\nprogram b %s/step_add.chx n=%s\nresident b.w %s/zr.txt\nchoose b.d by a.wo %s %s %s index\nsteps\nanswer b.wo\n' "$CHX" "$n" "$T" "$T" "$n" "$CHX" "$5" "$T" "$2" "$3" "$4" > "$T/c.session"
+  i=0; while [ $i -lt "$n" ]; do echo 1; i=$((i + 1)); done | "$B" "$T/c.session" 2> "$T/err.txt" | awk '{ for (i = 1; i <= NF; i++) printf "%s%d", (i > 1 ? " " : ""), $i; printf ";" }' > "$T/got.txt"
+  want "$n" "$2" "$3" "$4" "$T/sc.txt" | tr ';' '\n' | awk -v room="$5" 'NF { k = 0; out = ""; for (c = 1; c <= NF; c++) if ($c == 0) { out = out (k ? " " : "") (c - 1); k++ } for (; k < room; k++) out = out (k ? " " : "") "-1"; printf "%s;", out }' > "$T/want.txt"
+  if cmp -s "$T/got.txt" "$T/want.txt" && [ -s "$T/got.txt" ]; then echo "ok   $6"; else echo "FAIL $6: $(head -c 300 "$T/err.txt") got $(cut -c1-200 "$T/got.txt") wanted $(cut -c1-200 "$T/want.txt")"; fail=1; fi
+}
+runlist 16 3 1 2 6 "as a list, 16 steps: the 3 largest, the first and the last 2, in rising order, and -1 where there are fewer; room for exactly the 6"
+runlist 16 3 1 2 9 "the same with room for 9: the rest is -1"
+runlist 32 6 2 5 16 "32 steps, the 6 largest, the first 2, the last 5, room for 16"
+runlist 16 5 0 3 8 "the 5 largest and the last 3"
+runlist 16 1 0 0 1 "the one largest: a list of one"
+zeros 5 > "$T/z5.txt"; zeros 6 > "$T/z6.txt"
+refused "a list with less room than can be chosen" "with room for the largest taken, those at the start and those at the end" "$A" "$AW" "$AD" "program b $CHX/step_add.chx n=5" "resident b.w $T/z5.txt" "choose b.d by a.wo 3 1 2 index" steps "answer b.wo"
+refused "an eighth word that is not index" "choose PROGRAM.PARAM by PROGRAM.OUT TOP FIRST LAST [index]" "$A" "$AW" "$AD" "program b $CHX/step_add.chx n=6" "resident b.w $T/z6.txt" "choose b.d by a.wo 3 1 2 list" steps "answer b.wo"
+refused "a ninth word" "choose PROGRAM.PARAM by PROGRAM.OUT TOP FIRST LAST [index]" "$A" "$AW" "$AD" "program b $CHX/step_add.chx n=6" "resident b.w $T/z6.txt" "choose b.d by a.wo 3 1 2 index index" steps "answer b.wo"
+out=$(printf '16\n1\n' | "$B" "$T/c.session" 2>&1 > /dev/null | head -c 300)
+case "$out" in "error[session]: a chosen mask has 16 entries: repetition 16 is past them"*) echo "ok   a step past the scores of a list: refused" ;; *) echo "FAIL a step past a list's scores: \`$out\`"; fail=1 ;; esac
 if [ $fail -ne 0 ]; then echo "FAIL choose"; exit 1; fi
 echo "choose: ok"

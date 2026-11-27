@@ -402,7 +402,7 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         }
         return node(m, kinds.e_stage(), d, e, 0, 0, 0);
     }
-    if text.is(t, s, "matmul_nt") || text.is(t, s, "matmul") {
+    if text.is(t, s, "matmul_nt") || text.is(t, s, "matmul") || text.is(t, s, "gather") {
         let a = atom(m, t, p);
         if a < 0 {
             return 0 - 1;
@@ -411,9 +411,13 @@ fn atom[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         if b < 0 {
             return 0 - 1;
         }
+        // the node of a product, whose second word says which: 0 `matmul`, 1 `matmul_nt`, 2 `gather` (rows of the first by the second)
         var nt = 0;
         if text.is(t, s, "matmul_nt") {
             nt = 1;
+        }
+        if text.is(t, s, "gather") {
+            nt = 2;
         }
         return node(m, kinds.e_matmul(), nt, a, b, 0, 0);
     }

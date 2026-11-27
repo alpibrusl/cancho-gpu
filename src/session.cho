@@ -69,6 +69,7 @@ pub fn s_tables() -> [] int {
 // word 3 its blocks and word 4 its name.
 // Way 4 is a `choose` (docs/resident.md section 34): the parameter is a mask the session writes from an output's numbers. Word 2 is a scratch of as many numbers in the interpreter's
 // memory, word 3 how many largest are taken, words 10 and 11 the program and the output of the scores, 12 the entries taken at the start, 13 those at the end, 14 the mask's length.
+// Word 6 is 1 for `choose ... index` (docs/kolibri.md section 23): the parameter is then the list of the entries chosen, not their mask, and word 14 the scores' length.
 pub fn t_way() -> [] int {
     return 9;
 }
@@ -128,7 +129,14 @@ pub fn choose_mask[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], ses
     // a phase of stride S: S masks one after another, row b the mask of repetition j + b from row b of the scores
     var b = 0;
     while b < rows {
-        let done = choose.mask(fm, m[tb + 2], m[sg + 2] + b * m[tb + 14], m[g + 2] + b * m[tb + 14], m[tb + 14], j + b, m[tb + 3], m[tb + 12], m[tb + 13]);
+        if m[tb + 6] == 1 {
+            let room = m[g + 3] / rows;
+            if choose.index(fm, m[tb + 2], m[sg + 2] + b * m[tb + 14], m[g + 2] + b * room, m[tb + 14], j + b, m[tb + 3], m[tb + 12], m[tb + 13], room) < 0 {
+                return err.fail(m, t, "session", text.lit(m, t, "a chosen list has no room for the entries chosen"));
+            }
+        } else {
+            let done = choose.mask(fm, m[tb + 2], m[sg + 2] + b * m[tb + 14], m[g + 2] + b * m[tb + 14], m[tb + 14], j + b, m[tb + 3], m[tb + 12], m[tb + 13]);
+        }
         b = b + 1;
     }
     return 0;
@@ -530,20 +538,25 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 mem.push(m, store_raw, mem.rec5(m, pn, an, mem.get(m, words, 2), truncate(blocks), lineno));
             } else if text.is(t, head, "choose") {
-                if nw != 7 || !text.is(t, mem.get(m, words, 2), "by") {
-                    return bad(m, t, lineno, text.lit(m, t, "choose PROGRAM.PARAM by PROGRAM.OUT TOP FIRST LAST"));
+                let listed = nw == 8 && text.is(t, mem.get(m, words, 7), "index");
+                if nw != 7 && !listed || !text.is(t, mem.get(m, words, 2), "by") {
+                    return bad(m, t, lineno, text.lit(m, t, "choose PROGRAM.PARAM by PROGRAM.OUT TOP FIRST LAST [index]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 let (spn, san) = dotted(m, t, mem.get(m, words, 3));
                 if pn < 0 || spn < 0 {
                     return bad(m, t, lineno, text.lit(m, t, "choose takes PROGRAM.PARAM and PROGRAM.OUT"));
                 }
-                let craw = mem.grab(m, 8);
+                let craw = mem.grab(m, 9);
                 m[craw] = pn;
                 m[craw + 1] = an;
                 m[craw + 2] = spn;
                 m[craw + 3] = san;
                 m[craw + 7] = lineno;
+                m[craw + 8] = 0;
+                if listed {
+                    m[craw + 8] = 1;
+                }
                 var w = 4;
                 while w < 7 {
                     let (okn, v) = runcmd.number(m, t, mem.get(m, words, w));
@@ -1097,14 +1110,20 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
         let sg = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
-        if m[sg + 3] != m[g + 3] {
+        let pst = phase.stride(m, phases, progs, pi);
+        if m[raw + 8] == 1 {
+            // a list: room in each row for every entry that can be chosen
+            if m[g + 3] % pst != 0 || m[sg + 3] % pst != 0 || m[g + 3] / pst < m[raw + 4] + m[raw + 5] + m[raw + 6] {
+                return bad(m, t, m[raw + 7], text.f2(m, t, "`$` has $ entries: a chosen list is a row for each of its phase's stride, with room for the largest taken, those at the start and those at the end", m[raw + 1], text.num(m, t, m[g + 3])));
+            }
+        } else if m[sg + 3] != m[g + 3] {
             return bad(m, t, m[raw + 7], text.f2(m, t, "the mask has $ entries and the output that chooses it $", text.num(m, t, m[g + 3]), text.num(m, t, m[sg + 3])));
         }
         // the mask and the scores are numbers the session works on, in a device session too
         if interp.materialise(m, t, fm, g) < 0 || interp.materialise(m, t, fm, sg) < 0 {
             return 0 - 1;
         }
-        let scratch = interp.falloc(m, fm, m[g + 3]);
+        let scratch = interp.falloc(m, fm, m[g + 3] + 2 * m[sg + 3]);
         if scratch < 0 {
             return err.fail(m, t, "session", text.lit(m, t, "the choice does not fit the interpreter's memory"));
         }
@@ -1115,12 +1134,12 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         m[ctb + 12] = m[raw + 5];
         m[ctb + 13] = m[raw + 6];
         // in a phase of stride S the mask is S rows, one for each repetition of the session
-        let pst = phase.stride(m, phases, progs, pi);
         if m[g + 3] % pst != 0 {
             return bad(m, t, m[raw + 7], text.f2(m, t, "`$` has $ entries: a chosen mask is a row for each of its phase's stride", m[raw + 1], text.num(m, t, m[g + 3])));
         }
         m[ctb + t_span()] = pst;
-        m[ctb + 14] = m[g + 3] / pst;
+        m[ctb + 14] = m[sg + 3] / pst;
+        m[ctb + 6] = m[raw + 8];
         mem.push(m, tables, ctb);
         i = i + 1;
     }

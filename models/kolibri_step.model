@@ -38,6 +38,9 @@ const ITOP = 2048
 const ISINK = 8
 const ILOCAL = 128
 const IH = 12
+# the keys an indexed layer attends to, gathered (docs/kolibri.md section 23): every key it can choose, a multiple of TS; IG positions a threadgroup of the gather
+const IK = (ITOP + ISINK + ILOCAL + TS - 1) / TS * TS
+const IG = 8
 const NS = 64
 const L0 = 0
 const NL = 50
@@ -137,33 +140,37 @@ block attn(i, s)
         program L${i}ix $CHX/index_score.chx nq=$NQ g=$IH nkv=$NKV t=$T ts=$TS d=128
         link L${i}rq.y -> L${i}ix.q
         window L${i}ix.k K${s}
-        program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$T ts=$TS d=128
+        # the keys and values of the positions chosen, gathered: the attention reads those IK rows and not the caches' T
+        program L${i}gk $CHX/gather_kv.chx t=$T n=$IK c=${NKV * 128} bn=$IG
+        window L${i}gk.k K${s}
+        window L${i}gk.v V${s}
+        choose L${i}gk.ix by L${i}ix.s $ITOP $ISINK $ILOCAL index
+        program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$IK ts=$TS d=128
+        link L${i}gk.ko -> L${i}as.k
+        link L${i}gk.mk -> L${i}as.mask
     else
         program L${i}as $CHX/attention_scores_p.chx nkv=$NKV g=${NQ / NKV} t=$TW ts=$TS d=128
+        window L${i}as.k K${s}
+        table L${i}as.mask $X/maskw.f32 $TW $F32 hold
     end
     if s == i
         link L${i}po.q -> L${i}as.q
     else
         link L${i}po.y -> L${i}as.q
     end
-    window L${i}as.k K${s}
     if i % 5 == 4
-        choose L${i}as.mask by L${i}ix.s $ITOP $ISINK $ILOCAL
-    else
-        table L${i}as.mask $X/maskw.f32 $TW $F32 hold
-    end
-    if i % 5 == 4
-        program L${i}st $CHX/attention_stats.chx nkv=$NKV g=${NQ / NKV} t=$T cs=$TS
+        program L${i}st $CHX/attention_stats.chx nkv=$NKV g=${NQ / NKV} t=$IK cs=$TS
         link L${i}as.sc -> L${i}st.sc
-        program L${i}ap $CHX/attention_pvl_p.chx nkv=$NKV g=${NQ / NKV} t=$T cs=$TS dw=16 d=128
+        program L${i}ap $CHX/attention_pvl_p.chx nkv=$NKV g=${NQ / NKV} t=$IK cs=$TS dw=16 d=128
         link L${i}as.sc -> L${i}ap.sc
         link L${i}st.m -> L${i}ap.m
         link L${i}st.z -> L${i}ap.z
+        link L${i}gk.vo -> L${i}ap.v
     else
         program L${i}ap $CHX/attention_pv_p.chx nkv=$NKV g=${NQ / NKV} t=$TW dw=16 d=128
         link L${i}as.sc -> L${i}ap.sc
+        window L${i}ap.v V${s}
     end
-    window L${i}ap.v V${s}
     program L${i}op $CHX/matvec_q4_rows.chx n=$D k=${NQ * 128}
     link L${i}ap.o -> L${i}op.x
     resident L${i}op.wq $W/a${i}.o.q4 $I8
@@ -535,30 +542,37 @@ block pattn(i, s)
         program PL${i}ix $CHX/index_score_b.chx r=$PB nq=$NQ g=$IH nkv=$NKV t=$T ts=$TS d=128
         link PL${i}rq.y -> PL${i}ix.q
         window PL${i}ix.k K${s}
-        program PL${i}as $CHX/attention_scores_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$T ts=$TS d=128
+        # each token's chosen keys and values, gathered: IK rows a token, as the step's (the same arithmetic on the same rows)
+        program PL${i}gk $CHX/gather_kv.chx t=$T n=${PB * IK} c=${NKV * 128} bn=$IG
+        window PL${i}gk.k K${s}
+        window PL${i}gk.v V${s}
+        choose PL${i}gk.ix by PL${i}ix.s $ITOP $ISINK $ILOCAL index
+        program PL${i}as $CHX/attention_scores_pg.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$IK ts=$TS d=128
+        link PL${i}gk.ko -> PL${i}as.k
+        link PL${i}gk.mk -> PL${i}as.mask
     else
         program PL${i}as $CHX/attention_scores_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$PTW ts=$TS d=128
+        window PL${i}as.k K${s}
+        table PL${i}as.mask $X/maskp.f32 ${PTW - PB + 2} $F32 hold
     end
     if s == i
         link PL${i}po.q -> PL${i}as.q
     else
         link PL${i}po.y -> PL${i}as.q
     end
-    window PL${i}as.k K${s}
     if i % 5 == 4
-        choose PL${i}as.mask by PL${i}ix.s $ITOP $ISINK $ILOCAL
-        program PL${i}st $CHX/attention_stats.chx nkv=${PB * NKV} g=${NQ / NKV} t=$T cs=$TS
+        program PL${i}st $CHX/attention_stats.chx nkv=${PB * NKV} g=${NQ / NKV} t=$IK cs=$TS
         link PL${i}as.sc -> PL${i}st.sc
-        program PL${i}ap $CHX/attention_pvl_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$T cs=$TS dw=16 d=128
+        program PL${i}ap $CHX/attention_pvl_pg.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$IK cs=$TS dw=16 d=128
         link PL${i}as.sc -> PL${i}ap.sc
         link PL${i}st.m -> PL${i}ap.m
         link PL${i}st.z -> PL${i}ap.z
+        link PL${i}gk.vo -> PL${i}ap.v
     else
-        table PL${i}as.mask $X/maskp.f32 ${PTW - PB + 2} $F32 hold
         program PL${i}ap $CHX/attention_pv_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$PTW dw=16 d=128
         link PL${i}as.sc -> PL${i}ap.sc
+        window PL${i}ap.v V${s}
     end
-    window PL${i}ap.v V${s}
     program PL${i}op $CHX/matmul_q4_pass.chx m=$PB n=$D k=${NQ * 128} bm=$PBM
     link PL${i}ap.o -> PL${i}op.x
     resident PL${i}op.wq $W/a${i}.o.q4 $I8

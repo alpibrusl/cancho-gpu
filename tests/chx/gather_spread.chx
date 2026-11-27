@@ -1,0 +1,18 @@
+// gather on indices of every kind (docs/kolibri.md section 23), for the cases a kernel is held to the interpreter by: the indices are ix * s + o, so that numbers from a narrow
+// range are rows all over a (and under 0, and past its last row, and between two whole numbers, where the row is the whole number below).
+algo gather_spread(t, n, c, bn, s, o)
+  in  a:  f32[t, c]
+  in  ix: f32[1, n]
+  out y:  f32[n, c]
+{
+  grid j over n / bn
+  let at = load a
+  let it = load ix[0, j * bn ; 1, bn]
+  let sc = it * s
+  let sh = sc + o
+  store gather at sh -> y[j * bn, 0]
+}
+
+schedule gather_spread for apple-m-series { threads 256 }
+schedule gather_spread for nvidia-ada     { threads 256 }
+schedule gather_spread for amd-cdna3      { threads 128 }
