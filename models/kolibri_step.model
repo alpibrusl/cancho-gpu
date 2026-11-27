@@ -282,16 +282,33 @@ block ffn(i)
         resident L${i}pk.ar $W/ar.f32 $F32
         resident L${i}pk.sl $W/sl.f32 $F32
         use mlp(i, K, "sh", EH, -1, "ones_h")
+        # the K experts the router chose as two programs, the pass's (docs/kolibri.md sections 20 and 24): every gate and up product with the activation, then every down product
+        # with its weight, added to the shared expert's row. L${i}D.mo is the row the mixture gives.
+        program L${i}G $CHX/expert${K}_gu.chx r=1 b=0 n=$EH k=$D
+        link L${i}nrm.y -> L${i}G.x
+        resident L${i}G.wg $W/ones_h.f32 $F32
+        if i < 6
+            program L${i}H $CHX/group_sum.chx k=${K * EH} G=32
+            link L${i}G.y -> L${i}H.x
+            program L${i}D $CHX/expert${K}_down41.chx r=1 b=0 n=$D k=$EH
+            link L${i}H.s -> L${i}D.s
+        else
+            program L${i}D $CHX/expert${K}_down.chx r=1 b=0 n=$D k=$EH
+        end
+        link L${i}G.y -> L${i}D.a
+        resident L${i}D.wg $W/ones_d.f32 $F32
+        link L${i}pk.wt -> L${i}D.wt
+        link L${i}E${K}_y.y -> L${i}D.m
         repeat j in 0 .. K
-            use mlp(i, j, "ex", EH, j, "ones_h")
-            program L${i}m$j $CHX/axpy_slot.chx n=$D bn=$BN k=$K j=$j
-            if j == 0
-                link L${i}E${K}_y.y -> L${i}m0.m
-            else
-                link L${i}m${j - 1}.mo -> L${i}m$j.m
+            table L${i}G.gq$j $W/m${i}.ex.gate.q4 $NE $I8 by L${i}pk.idx $j
+            table L${i}G.gs$j $W/m${i}.ex.gate.s $NE $F16 by L${i}pk.idx $j
+            table L${i}G.uq$j $W/m${i}.ex.up.q4 $NE $I8 by L${i}pk.idx $j
+            table L${i}G.us$j $W/m${i}.ex.up.s $NE $F16 by L${i}pk.idx $j
+            table L${i}D.dq$j $W/m${i}.ex.down.q4 $NE $I8 by L${i}pk.idx $j
+            table L${i}D.ds$j $W/m${i}.ex.down.s $NE $F16 by L${i}pk.idx $j
+            if i < 6
+                table L${i}D.dc$j $W/m${i}.ex.down.c $NE $F32 by L${i}pk.idx $j
             end
-            link L${i}E${j}_y.y -> L${i}m$j.y
-            link L${i}pk.wt -> L${i}m$j.wt
         end
         if SAVE > 1
             save L${i}pk.idx $X/idx${i}.f32 $F32
@@ -302,7 +319,7 @@ block ffn(i)
     if i < 2
         link L${i}E0_y.y -> L${i}pn.x
     else
-        link L${i}m${K - 1}.mo -> L${i}pn.x
+        link L${i}D.mo -> L${i}pn.x
     end
     resident L${i}pn.w $W/m${i}.post_norm.f32 $F32
     program L${i}out $CHX/step_add.chx n=$D
