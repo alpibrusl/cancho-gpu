@@ -43,8 +43,13 @@ kernel void expert6_down41_16_5_2560_512_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_a[(uint)(0) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * float(((float(((uint)(uchar)(char(p2_dq0[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p3_ds0[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))])))); }
+            const float rs = float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 512u; p0 += 512u) {
+                const uint grp = j * 16u + p0 / 32u;
+                const float sg = float(half(p3_ds0[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p2_dq0[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); run += float(float(p0_a[(uint)(0) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_a[(uint)(0) * 512u + (uint)(0) * 1u + ((i * 512u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
@@ -104,8 +109,13 @@ kernel void expert6_down41_16_5_2560_512_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_a[(uint)(1) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * float(((float(((uint)(uchar)(char(p5_dq1[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p6_ds1[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))])))); }
+            const float rs = float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 512u; p0 += 512u) {
+                const uint grp = j * 16u + p0 / 32u;
+                const float sg = float(half(p6_ds1[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p5_dq1[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); run += float(float(p0_a[(uint)(1) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_a[(uint)(1) * 512u + (uint)(0) * 1u + ((i * 512u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
@@ -165,8 +175,13 @@ kernel void expert6_down41_16_5_2560_512_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_a[(uint)(2) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * float(((float(((uint)(uchar)(char(p8_dq2[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p9_ds2[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))])))); }
+            const float rs = float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 512u; p0 += 512u) {
+                const uint grp = j * 16u + p0 / 32u;
+                const float sg = float(half(p9_ds2[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p8_dq2[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); run += float(float(p0_a[(uint)(2) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_a[(uint)(2) * 512u + (uint)(0) * 1u + ((i * 512u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
@@ -226,8 +241,13 @@ kernel void expert6_down41_16_5_2560_512_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_a[(uint)(3) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * float(((float(((uint)(uchar)(char(p11_dq3[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p12_ds3[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))])))); }
+            const float rs = float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 512u; p0 += 512u) {
+                const uint grp = j * 16u + p0 / 32u;
+                const float sg = float(half(p12_ds3[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p11_dq3[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); run += float(float(p0_a[(uint)(3) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_a[(uint)(3) * 512u + (uint)(0) * 1u + ((i * 512u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
@@ -287,8 +307,13 @@ kernel void expert6_down41_16_5_2560_512_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_a[(uint)(4) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * float(((float(((uint)(uchar)(char(p14_dq4[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p15_ds4[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))])))); }
+            const float rs = float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 512u; p0 += 512u) {
+                const uint grp = j * 16u + p0 / 32u;
+                const float sg = float(half(p15_ds4[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p14_dq4[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); run += float(float(p0_a[(uint)(4) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_a[(uint)(4) * 512u + (uint)(0) * 1u + ((i * 512u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);
@@ -348,8 +373,13 @@ kernel void expert6_down41_16_5_2560_512_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_a[(uint)(5) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * float(((float(((uint)(uchar)(char(p17_dq5[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p18_ds5[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))])))); }
+            const float rs = float(float(p20_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 512u; p0 += 512u) {
+                const uint grp = j * 16u + p0 / 32u;
+                const float sg = float(half(p18_ds5[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p17_dq5[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); run += float(float(p0_a[(uint)(5) * 512u + (uint)(0) * 1u + ((i * 512u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_a[(uint)(5) * 512u + (uint)(0) * 1u + ((i * 512u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);

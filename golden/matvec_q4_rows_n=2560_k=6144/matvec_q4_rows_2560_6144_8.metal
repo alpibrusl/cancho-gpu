@@ -24,8 +24,13 @@ kernel void matvec_q4_rows_2560_6144_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 6144u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(0) * 6144u + (uint)(0) * 1u + ((i * 6144u + p))])) * float(((float(((uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 3072u + (uint)(0) * 1u + ((((j * 6144u + p) / 6144u) * 3072u + ((j * 6144u + p) % 6144u) / 2u))])) >> (((j * 6144u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(half(p2_ws[(uint)(0 + 8 * gid) * 192u + (uint)(0) * 1u + ((((j * 6144u + p) / 6144u) * 192u + ((j * 6144u + p) % 6144u) / 32u))])) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 6144u + p) / 6144u) * 192u + ((j * 6144u + p) % 6144u) / 32u)) / 192u))])))); }
+            const float rs = float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 6144u; p0 += 512u) {
+                const uint grp = j * 192u + p0 / 32u;
+                const float sg = float(half(p2_ws[(uint)(0 + 8 * gid) * 192u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 3072u + (uint)(0) * 1u + ((j * 3072u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(0) * 6144u + (uint)(0) * 1u + ((i * 6144u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(0) * 6144u + (uint)(0) * 1u + ((i * 6144u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += simd_shuffle_down(s, d);

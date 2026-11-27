@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first steps: 24 tokens a second, one session for many conversations; section 18: the server, `scripts/kolibri-serve`, which cancho-code's own agent reaches and whose 2,184 positions its requests fill; section 19: caches as rolls of positions and the indexer: 16,384 positions, cancho-code's primer fits and its second task takes 7.6 s, its first 12 minutes; section 20: a prompt 16 tokens a pass: the primer in 191 s where it took 723, a second task in 3.9 s; section 21: tools: the template's block, calls and tool turns, `tool_calls` read out of an answer, and cancho-agent's own tool loop answered)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first steps: 24 tokens a second, one session for many conversations; section 18: the server, `scripts/kolibri-serve`, which cancho-code's own agent reaches and whose 2,184 positions its requests fill; section 19: caches as rolls of positions and the indexer: 16,384 positions, cancho-code's primer fits and its second task takes 7.6 s, its first 12 minutes; section 20: a prompt 16 tokens a pass: the primer in 191 s where it took 723, a second task in 3.9 s; section 21: tools: the template's block, calls and tool turns, `tool_calls` read out of an answer, and cancho-agent's own tool loop answered; section 22: a path for Q4_0 in the product: one row three times cheaper, a pass of 16 in 191 ms where it took 257, a step 7 to 13% cheaper, and the indexed layers now most of a step)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -426,7 +426,7 @@ The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` 
 
 ## 17. From a command to a model server for cancho-code and cancho-agent (plan, 2026-11-26)
 
-**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 (17.5), S1 (17.6), S3 (section 18), S4 (section 19), S5 (section 20) and S6 (section 21) are built.
+**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 (17.5), S1 (17.6), S3 (section 18), S4 (section 19), S5 (section 20), S6 (section 21) and S7 (section 22: the Q4_0 path; the experts' two launches in the step are not) are built.
 
 ### 17.1 What the two clients send **[read from their sources, 2026-11-26]**
 
@@ -799,7 +799,7 @@ A prompt's token costs what an answer's costs: 60 ms at 11,000 positions, twelve
 | an indexed layer's four kernels over 16,384 keys (the scores of the choice, the attention's scores, the softmax's statistics, the product with the values), one query | 1.54 ms |
 | the same four for 16 queries in a launch each | 6.67 ms: **0.42 ms a query** |
 
-* **Section 17.2 was wrong about what a token costs: it is not the count of launches.** A launch is 2 microseconds, so a step's 2,471 are 5 ms of its 42. What costs is the Q4_0 product, which decodes a weight at a time (section 8 said so and did not measure it): the six experts' products are 60% of a layer's 0.55 ms, q/k/v and the output product another 28%. **S7 as section 17.4 has it (fewer launches) is worth 5 ms at most; a path for Q4_0 in the product's reduction, as NVFP4 has, is worth more** (2 to 2.8 times on these shapes by the table). That is not this stage.
+* **Section 17.2 was wrong about what a token costs: it is not the count of launches.** A launch is 2 microseconds, so a step's 2,471 are 5 ms of its 42. What costs is the Q4_0 product, which decodes a weight at a time (section 8 said so and did not measure it): the six experts' products are 60% of a layer's 0.55 ms, q/k/v and the output product another 28%. **S7 as section 17.4 has it (fewer launches) is worth 5 ms at most; a path for Q4_0 in the product's reduction, as NVFP4 has, is worth more** (2 to 2.8 times on these shapes by the table). That is not this stage. **[22.2: built. The products are three times cheaper and a step 7 to 13%: the shares of a layer said in this bullet were too high, and the rest of a layer was not measured.]**
 * **Rows share the weights only in small tiles.** Eight rows at a weight cost 2 times one row; 32 rows cost 30 times. So a pass's dense products take their rows 8 a threadgroup.
 * **An expert's product does not get cheaper in a pass**: each token has its own six. Fused into two launches the six cost 118 us where they cost 192.
 * **The indexed layers' scan is 3.7 times cheaper a query when 16 queries share a launch.**
@@ -1010,3 +1010,74 @@ As designed, in `kolibri/ktool.cho` (new), `kolibri/kchat.cho` and `kolibri/kser
   * `/api/chat` (Ollama's route with tools) is not a route; no stream; `parallel_tool_calls` and `strict` are not read.
   * cancho-agent's own programs were not changed: the loop above ran from a scratch copy with one line changed. Its evaluation, if it has one, was not run.
   * The first request after a start (above).
+
+## 22. S7: a path for Q4_0 in the product (2026-11-27; the design is 20.1's two sentences, the rest was measured as it was built)
+
+Section 20.1 measured that a token's cost is the Q4_0 product, which decodes a weight at a time, and said what S7 should be: a path of its own in the product's reduction, as NVFP4 has. This section is that path, what it gave, and what it showed.
+
+### 22.1 What is built
+
+* **`dequant_q4` has a record** (`src/matmul.cho`, `src/lower.cho`), as `dequant_fp4` has: the codes' bytes, the group's scale, the row's. The two split reductions take it: **a lane reads a group's scale once, sums `x * (code - 8)` over its elements of the group, and multiplies the sum by the scale**, where before every element read its scale and its row's scale and multiplied by both. A byte of codes is two weights. No table, no helper, nothing a dialect has to have: the CUDA and the HIP are the same lines.
+* **One row** (`lower`'s split reduction: `matvec_q4_rows`, the experts' kernels): 16 elements a lane a step, half a group, as NVFP4.
+* **Several rows** (`batched_rows`: `matmul_q4_pass`): **2 elements a lane a step**, which is what was fastest (below). The fragment paths and the staging stay NVFP4's alone; where a Q4_0 product fits neither split reduction it takes the lazy expression, an element at a time, as before.
+* **Nothing of a kernel file changed.** The 15 recorded cases with `dequant_q4` in a product are other text, and no other case of the 642.
+
+### 22.2 Measured **[2026-11-27, M4 Max, the Metal GPU]**
+
+**Kernels alone**, as 20.1 measured them (a launch, with its 2.2 us):
+
+| | before | now |
+|---|---|---|
+| q, k and v for one row (7,168 x 2,560) | 79 us | **26 us** |
+| the attention's output product for one row (2,560 x 6,144) | 73 us | **25 us** |
+| an expert's `gate` (512 x 2,560); its `down` | 11.6, 8.4 us | 6.5, 7.7 us |
+| a token's six experts as the step runs them, 30 launches | 190 us | 126 us |
+| the six as the pass's two launches | 118 us | **46 us** |
+| the same shape with NVFP4 weights, for scale | 28 us | 28 us |
+| q, k and v for a pass's 16 rows | 303 us | **211 us** |
+| the output product for a pass's 16 rows | 273 us | **190 us** |
+
+* **One row is three times cheaper, and as cheap as NVFP4.**
+* **A pass's rows were already sharing the decode**, 8 rows a weight, so they gain less: 1.4 times. Sixteen rows of q, k and v are 293 million products in 211 us, and one row's 18 million take 26: a pass's product is twice as dense in the GPU's time as a row's, and the weights' decode is no longer what either waits for.
+* **The several-row form's speed depends on how many elements a lane takes a step, and not in order** (16 rows of q, k and v): 16 elements 442 us, 8 elements 283, 4 elements 425, **2 elements 211**; the element-at-a-time form before it 303. The same arithmetic written out with no loop and no array, 16 elements a step: 303 us, and 480 for the output product. **Why is not known**; 2 was taken because it was measured fastest on both shapes, on this GPU. One row is the same at 2, 4, 8, 16 and 32 (24 to 26 us).
+
+**The model**, the session alone, a prompt read through passes and then steps on its ids (`--greedy`):
+
+| | before | now |
+|---|---|---|
+| a pass of 16 at positions to 1,100 | 244 ms | **178 ms** |
+| a pass at positions to 3,950 | 257 ms | **191 ms**: 12 ms a token |
+| a step at 1,100 positions | 54.9 ms | **51.1 ms** |
+| a step at 3,950 positions | 62.1 ms | **53.9 ms** |
+| cancho-code's primer, 10,928 tokens through 683 passes | 188 s (20.3) | **143 s**: 215 ms a pass at the end |
+| a step at 10,950 positions | 61 ms (20.1, with the shim's profile on) | 63 ms: **not cheaper, and not compared like for like** |
+
+**A step's GPU time, from the shim's waits** (60 steps after 1,100 positions; 60 waits a step, 50 ms waited, 42 ms of the GPU):
+
+| | before (20.1) | now |
+|---|---|---|
+| a layer that is not indexed | 0.55 ms | **0.40 ms** |
+| an indexed layer, with what is before its mask | 2.2 ms | 2.45 ms |
+| the head and the arg max | 2.8 ms | 2.8 ms |
+
+* **A step is 7 to 13% cheaper, not twice.** 20.1 said the Q4_0 products were 88% of a plain layer's 0.55 ms (the experts 60%, q/k/v and the output 28%); **that was wrong**: with those products three times cheaper the layer is 0.40 ms. The kernels alone say the products were about 0.34 ms of it and are 0.18 now; the rest of a layer (the window's attention, the norms, the router, the choice) was never measured kernel by kernel.
+* **What a step waits for now is the ten indexed layers: 24.5 of the GPU's 42 ms.** Each scans its caches' 16,384 positions at any context (20.1: 1.54 ms for its four kernels), to read the 2,048 the mask keeps. That is the next thing, not this stage: the kept keys gathered and read alone, or the scan cut to the positions there are.
+* **The six experts as two launches in the step** would be 46 us where they are 126: 3.8 ms of a step's 51. Not built here.
+
+**Against the reference** (section 15's forks, the prefixes read through passes, as 20.3): the device goes as far as it did or further at each of the six prefixes (16 of 16, 16 of 16, 11 of 24, 4, **16 of 16 where it was 13**, 16 of 16). Against the kernels before, the ids of 1,140 positions through passes and steps are the same, and a run to 3,996 parts at one position: the sums are in another order, and section 20.3's tie applies.
+
+### 22.3 Found on the way: loading filled the server's pool **[measured]**
+
+The first prompt of more than about 1,000 tokens stopped the server built with the new path with an illegal instruction. It was not the path:
+
+* **Loading the model left 3% of the server's pool of words**: 96.9 of its 100 million before this stage, 99.96 with it. A session read, checked and lowered every program's kernel anew and kept all of it: 5,049 programs of about a hundred kernels. A request then had what was left, and one long enough ran out. **Before this stage the margin was 3 million words, by luck.**
+* **A kernel is now compiled once for all the programs that are it with the same constants** (`src/session.cho`): each program still has its own globals. After loading: **10.8 million words where there were 96.9, and 118 MB of text where there were 367.** The time to listening is the same 16 s: the weights are what it reads.
+* **A step at 10,950 positions is no cheaper than it was**, where one at 1,100 and at 3,950 is: something of a step grows with the positions, and it is not the products. Not looked into.
+
+### 22.4 Checks
+
+* **The emitted CUDA and HIP, run on the emulators** (the gate): the five small cases with a Q4_0 product agree with the interpreter, as every case did before; `tests/kernels.py`'s float64 references hold. The 15 recorded cases are re-recorded, and no other of the 642 changed.
+* **On the Metal GPU, by hand**: `tests/kstep.sh` passes and fails the same checks as before the path (it fails where a pass must be a step to the bit, which holds on the CPU session only: section 20.3); the real model, above.
+* **Mutants, by hand: 13, of which 12 killed.** Nine of the path, each by the emulated CUDA of those five cases: the second weight of a byte its first, a code its nibble less 7, a group's sum without its scale, the sums scaled as NVFP4's halves (in each form), the two weights of a byte swapped, the row's scale left out, a group of 16, the record marked NVFP4. Four of the shared kernels, by `tests/phase.sh` and `tests/kstep.sh`: a key without the constants, a key without the file, the first phase for every shared program. **The one that survives, a shared program without its lowered text, is the device session's alone**: the gate's session is the interpreter's, which reads none. By hand the real model's 5,049 programs run from about a hundred lowered texts.
+
+* **A pool that runs out is still a trap, in the server and in every program of this repository**, with no refusal and no rule tag. That is against the rule that no input reaches a crash; it is not fixed here, and it is not this model's alone.

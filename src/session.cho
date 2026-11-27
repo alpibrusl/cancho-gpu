@@ -329,6 +329,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         return 0 - 1;
     }
     let progs_raw = mem.list(m);
+    // for each program, its file and constants as the line has them: two programs with the same are one kernel, compiled once
+    let prog_keys = mem.list(m);
     let res_raw = mem.list(m);
     let link_raw = mem.list(m);
     let input_raw = mem.list(m);
@@ -373,6 +375,13 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     w = w + 1;
                 }
                 mem.push(m, progs_raw, mem.rec5(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno, mem.size(m, phases) - 1));
+                let key = mem.list(m);
+                w = 2;
+                while w < nw {
+                    mem.push(m, key, mem.get(m, words, w));
+                    w = w + 1;
+                }
+                mem.push(m, prog_keys, text.joined(m, t, key, " "));
             } else if text.is(t, head, "phase") {
                 let pr = phase.line(m, t, words, phases, mem.size(m, progs_raw), lineno);
                 if pr < 0 {
@@ -603,52 +612,76 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         return 0 - 1;
     }
 
-    // Compile every program once: records (name, prog, globals).
+    // Compile every program once: records (name, prog, globals). A kernel is read, checked and lowered once for all the programs that are it with the same constants (a model's
+    // layers are 5,000 programs of a hundred kernels: docs/kolibri.md section 22); each program has its own globals. `kernels` holds (key, prog, lowered).
     let progs = mem.list(m);
+    let kernels = mem.list(m);
     var i = 0;
     while i < mem.size(m, progs_raw) {
         let raw = mem.get(m, progs_raw, i);
         if prog_index(m, t, progs, m[raw]) >= 0 {
             return bad(m, t, m[raw + 3], text.f1(m, t, "the program `$` is named twice", m[raw]));
         }
-        let text_src = source(m, t, fs, m[raw + 1], m[raw + 3]);
-        if text_src < 0 {
-            return 0 - 1;
+        var known = 0 - 1;
+        var kq = 0;
+        while kq < mem.size(m, kernels) && known < 0 {
+            if text.eq(t, m[mem.get(m, kernels, kq)], mem.get(m, prog_keys, i)) {
+                known = mem.get(m, kernels, kq);
+            }
+            kq = kq + 1;
         }
-        let unit = parser.parse(m, t, text_src);
-        if unit < 0 {
-            return 0 - 1;
-        }
-        let tg = pick(m, t, unit, want, have, m[raw + 3]);
-        if tg < 0 {
-            return 0 - 1;
-        }
-        let compiled = elab.compile(m, t, unit, target.name(m, tg), m[raw + 2]);
-        if compiled < 0 {
-            return 0 - 1;
-        }
-        let prog = m[compiled];
-        if check.check(m, t, prog, tg) < 0 {
-            return 0 - 1;
-        }
-        var lowered = 0 - 1;
-        if device {
-            let sched = m[compiled + 1];
-            lowered = lower.lower(m, t, prog, tg, dialect.msl(), m[sched + 1], m[sched + 3], m[sched + 4], m[sched + 5], m[sched + 7]);
-            if lowered < 0 {
+        if known >= 0 {
+            var again = 0 - 1;
+            if device {
+                again = interp.globals_lazy(m, m[known + 1]);
+            } else {
+                again = interp.inputs(m, t, fm, m[known + 1]);
+            }
+            if again < 0 {
                 return 0 - 1;
             }
-        }
-        var globals = 0 - 1;
-        if device {
-            globals = interp.globals_lazy(m, prog);
+            mem.push(m, progs, mem.rec5(m, m[raw], m[known + 1], again, m[known + 2], m[raw + 4]));
         } else {
-            globals = interp.inputs(m, t, fm, prog);
+            let text_src = source(m, t, fs, m[raw + 1], m[raw + 3]);
+            if text_src < 0 {
+                return 0 - 1;
+            }
+            let unit = parser.parse(m, t, text_src);
+            if unit < 0 {
+                return 0 - 1;
+            }
+            let tg = pick(m, t, unit, want, have, m[raw + 3]);
+            if tg < 0 {
+                return 0 - 1;
+            }
+            let compiled = elab.compile(m, t, unit, target.name(m, tg), m[raw + 2]);
+            if compiled < 0 {
+                return 0 - 1;
+            }
+            let prog = m[compiled];
+            if check.check(m, t, prog, tg) < 0 {
+                return 0 - 1;
+            }
+            var lowered = 0 - 1;
+            if device {
+                let sched = m[compiled + 1];
+                lowered = lower.lower(m, t, prog, tg, dialect.msl(), m[sched + 1], m[sched + 3], m[sched + 4], m[sched + 5], m[sched + 7]);
+                if lowered < 0 {
+                    return 0 - 1;
+                }
+            }
+            var globals = 0 - 1;
+            if device {
+                globals = interp.globals_lazy(m, prog);
+            } else {
+                globals = interp.inputs(m, t, fm, prog);
+            }
+            if globals < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, kernels, mem.rec3(m, mem.get(m, prog_keys, i), prog, lowered));
+            mem.push(m, progs, mem.rec5(m, m[raw], prog, globals, lowered, m[raw + 4]));
         }
-        if globals < 0 {
-            return 0 - 1;
-        }
-        mem.push(m, progs, mem.rec5(m, m[raw], prog, globals, lowered, m[raw + 4]));
         i = i + 1;
     }
 

@@ -28,10 +28,14 @@ extern "C" __global__ void matmul_q4_pass_16_2560_512_8_8(
         const uint sgid = tid / 32u, lane = tid % 32u;
         float s[1][8];
         s[0][0] = 0.0f; s[0][1] = 0.0f; s[0][2] = 0.0f; s[0][3] = 0.0f; s[0][4] = 0.0f; s[0][5] = 0.0f; s[0][6] = 0.0f; s[0][7] = 0.0f;
-        for (uint p0 = lane * 8u; p0 < 512u; p0 += 256u) {
-            for (uint u = 0; u < 8u; u += 1u) {
+        for (uint p0 = lane * 2u; p0 < 512u; p0 += 64u) {
+            float sgr[1], mgr[1];
+            { const uint j = min(sgid * 1u + 0u, 7u); const uint grp = j * 16u + p0 / 32u; sgr[0] = float(__half(p2_ws[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((grp))])) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((j))])); mgr[0] = 0.0f; }
+            float run[1][8];
+            run[0][0] = 0.0f; run[0][1] = 0.0f; run[0][2] = 0.0f; run[0][3] = 0.0f; run[0][4] = 0.0f; run[0][5] = 0.0f; run[0][6] = 0.0f; run[0][7] = 0.0f;
+            for (uint u = 0; u < 2u; u += 2u) {
                 const uint p = p0 + u;
-                float xa[8][1];
+                float xa[8][2];
                 xa[0][0] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 0u))]));
                 xa[1][0] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 512u))]));
                 xa[2][0] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 1024u))]));
@@ -40,19 +44,28 @@ extern "C" __global__ void matmul_q4_pass_16_2560_512_8_8(
                 xa[5][0] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 2560u))]));
                 xa[6][0] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 3072u))]));
                 xa[7][0] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 3584u))]));
+                xa[0][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 1u))]));
+                xa[1][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 513u))]));
+                xa[2][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 1025u))]));
+                xa[3][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 1537u))]));
+                xa[4][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 2049u))]));
+                xa[5][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 2561u))]));
+                xa[6][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 3073u))]));
+                xa[7][1] = float(float(p0_x[(uint)(0 + 8 * gid2) * 512u + (uint)(0) * 1u + ((p + 3585u))]));
                 {
                     const uint j = min(sgid * 1u + 0u, 7u);
-                    const float w0 = float(((float(((uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 256u + ((j * 512u + p) % 512u) / 2u))])) >> (((j * 512u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p2_ws[(uint)(0 + 8 * gid) * 16u + (uint)(0) * 1u + ((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u))])) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 512u + p) / 512u) * 16u + ((j * 512u + p) % 512u) / 32u)) / 16u))]))));
-                    s[0][0] += xa[0][0] * w0;
-                    s[0][1] += xa[1][0] * w0;
-                    s[0][2] += xa[2][0] * w0;
-                    s[0][3] += xa[3][0] * w0;
-                    s[0][4] += xa[4][0] * w0;
-                    s[0][5] += xa[5][0] * w0;
-                    s[0][6] += xa[6][0] * w0;
-                    s[0][7] += xa[7][0] * w0;
+                    const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 256u + (uint)(0) * 1u + ((j * 256u + p0 / 2u + u / 2u))])); const float w0 = ((float(bq & 0xFu) - 8.0f)); const float w1 = ((float(bq >> 4u) - 8.0f));
+                    run[0][0] += xa[0][0] * w0 + xa[0][1] * w1;
+                    run[0][1] += xa[1][0] * w0 + xa[1][1] * w1;
+                    run[0][2] += xa[2][0] * w0 + xa[2][1] * w1;
+                    run[0][3] += xa[3][0] * w0 + xa[3][1] * w1;
+                    run[0][4] += xa[4][0] * w0 + xa[4][1] * w1;
+                    run[0][5] += xa[5][0] * w0 + xa[5][1] * w1;
+                    run[0][6] += xa[6][0] * w0 + xa[6][1] * w1;
+                    run[0][7] += xa[7][0] * w0 + xa[7][1] * w1;
                 }
             }
+            s[0][0] += run[0][0] * sgr[0]; s[0][1] += run[0][1] * sgr[0]; s[0][2] += run[0][2] * sgr[0]; s[0][3] += run[0][3] * sgr[0]; s[0][4] += run[0][4] * sgr[0]; s[0][5] += run[0][5] * sgr[0]; s[0][6] += run[0][6] * sgr[0]; s[0][7] += run[0][7] * sgr[0];
         }
         for (uint d = 16u; d > 0; d /= 2) s[0][0] += __shfl_down_sync(0xffffffffu, s[0][0], d);
         for (uint d = 16u; d > 0; d /= 2) s[0][1] += __shfl_down_sync(0xffffffffu, s[0][1], d);
