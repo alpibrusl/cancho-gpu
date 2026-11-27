@@ -1,0 +1,1 @@
+{"reasoning_effort":"high","messages":[{"role":"system","content":"Sei kurz."},{"role":"user","content":"Wie spät ist es?"}],"tools":[{"type":"function","function":{"name":"now","description":"The time.","parameters":{"type":"object","properties":{}}}}]}

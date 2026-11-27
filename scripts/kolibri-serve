@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kolibri 1.1 on the Metal GPU as a server (docs/kolibri.md section 18): Ollama's /api/generate and OpenAI's /v1/chat/completions, the model loaded once.
+# Kolibri 1.1 on the Metal GPU as a server (docs/kolibri.md section 18): Ollama's /api/generate and OpenAI's /v1/chat/completions (with tools: section 21), the model loaded once.
 #
 #     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]
 #

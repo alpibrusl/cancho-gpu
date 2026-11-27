@@ -1,0 +1,11 @@
+<tool_call>
+{"name": "get_weather", "arguments": {
+  "city": "Zürich"
+}}
+</tool_call>
+<tool_call>
+{"name": "multiply", "arguments": {
+  "a": 17,
+  "b": 23
+}}
+</tool_call>

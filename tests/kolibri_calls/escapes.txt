@@ -1,0 +1,1 @@
+q "x" \ 	 ä <tool_call>{"name":"a","arguments":{"s":"\u0001\\ ä"}}</tool_call> end

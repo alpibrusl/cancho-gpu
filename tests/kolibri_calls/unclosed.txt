@@ -1,0 +1,2 @@
+so: <tool_call>
+{"name": "read", "arguments": {"path": "a.txt"}}

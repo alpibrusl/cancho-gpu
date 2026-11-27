@@ -1,0 +1,5 @@
+I will look.
+<tool_call>
+{"name": "read", "arguments": {"path": "a.txt"}}
+</tool_call>
+Then I will say.

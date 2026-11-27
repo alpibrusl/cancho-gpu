@@ -39,6 +39,7 @@ import fileio;
 import gguf;
 import f32;
 import kchat;
+import ktool;
 import kdraw;
 
 fn words() -> [] int {
@@ -966,7 +967,23 @@ fn prompt[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
         mem.push(m, msgs, kchat.message(m, kchat.system(), system, 0 - 1));
     }
     mem.push(m, msgs, kchat.message(m, kchat.user(), user, 0 - 1));
-    io.write_all(io, text.bytes(t, kchat.render(m, t, msgs, kchat.effort_of(t, text.from_bytes(m, t, effort)))));
+    io.write_all(io, text.bytes(t, kchat.render(m, t, msgs, kchat.effort_of(t, text.from_bytes(m, t, effort)), 0 - 1)));
+    return 0;
+}
+
+// The message an answer's text is, read for tool calls as the server reads it (docs/kolibri.md section 21): `kolibri/ktool.cho`'s, with the ids of request 0. With no call, a message
+// of the text as it is.
+fn calls[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""), args: &a Args) -> [io_write, fs_read(""), file_read, args] int {
+    let all = whole_file(m, t, fs, arg(args, 2));
+    if all < 0 {
+        return 0 - 1;
+    }
+    let (content, found) = ktool.calls(m, t, all);
+    if mem.size(m, found) == 0 {
+        io.write_all(io, text.bytes(t, text.f1(m, t, "{\"role\":\"assistant\",\"content\":\"$\"}\n", ktool.escape(m, t, content))));
+        return 0;
+    }
+    io.write_all(io, text.bytes(t, text.f1(m, t, "$\n", ktool.message(m, t, 0 - 1, content, found, 0))));
     return 0;
 }
 
@@ -1095,9 +1112,11 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = ends(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "say") {
         status = say(m, t, io, fs, args);
+    } else if arg_count(args) == 3 && is_word(arg(args, 1), "calls") {
+        status = calls(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<pass>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<pass>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file> | calls <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {

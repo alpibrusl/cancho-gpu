@@ -1,0 +1,1 @@
+{"role":"assistant","content":"a <tool_call>\n{\"name\": \"x\", \"arguments\": [1]}\n</tool_call> b"}

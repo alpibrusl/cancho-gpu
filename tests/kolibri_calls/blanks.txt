@@ -1,0 +1,5 @@
+<tool_call>
+	 {"name":"a","arguments":{ }} 
+</tool_call>
+<tool_call>{"name":"b","arguments":{"k":null}}</tool_call> 
+	

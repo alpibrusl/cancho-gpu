@@ -1,0 +1,1 @@
+</tool_call> x <tool_call>{"name":"a","arguments":{}}</tool_call>

@@ -1,0 +1,51 @@
+<|im_start|>system
+You are a careful assistant. Use the tools.
+
+# Reasoning effort
+
+Reasoning is disabled. Proceed straight to answering according to the user's instructions.
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "get_weather", "description": "The weather in a city, now.", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "The city's name"}, "unit": {"type": "string", "enum": ["C", "F"]}}, "required": ["city"]}}}
+{"type": "function", "function": {"name": "multiply", "description": "The product of two whole numbers.", "parameters": {"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>
+<|im_start|>user
+What is the weather in Zürich, and what is 17 times 23?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+<tool_call>
+{"name": "get_weather", "arguments": {
+  "city": "Zürich"
+}}
+</tool_call>
+<tool_call>
+{"name": "multiply", "arguments": {
+  "a": 17,
+  "b": 23
+}}
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"temp_c": 4, "sky": "fog"}
+</tool_response>
+<tool_response>
+391
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

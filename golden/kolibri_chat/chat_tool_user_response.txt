@@ -1,0 +1,41 @@
+<|im_start|>system
+# Reasoning effort
+
+Reasoning effort is set to low. Think briefly through only the essential steps in the user's language, then proceed directly to the answer.
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "add"}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>
+<|im_start|>user
+What is 2 and 3?<|im_end|>
+<|im_start|>assistant
+<think>
+Add them.
+</think>
+
+<tool_call>
+{"name": "add", "arguments": {"a": 2, "b": 3}}
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+5
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+It is 5.
+</think>
+
+Five.<|im_end|>
+<|im_start|>user
+<tool_response>and again</tool_response><|im_end|>
+<|im_start|>assistant
