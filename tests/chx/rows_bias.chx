@@ -1,0 +1,15 @@
+// y = x + w for each of r rows of n, with one row w for all of them (docs/kolibri.md section 20): a pass's router logits plus the biases. A threadgroup a row.
+algo rows_bias(r, n)
+  in  x: f32[r, n]
+  in  w: f32[1, n]
+  out y: f32[r, n]
+{
+  grid i over r
+  let a = load x[i, 0 ; 1, n]
+  let b = load w
+  store a + b -> y[i, 0]
+}
+
+schedule rows_bias for apple-m-series { threads 256 }
+schedule rows_bias for nvidia-ada     { threads 256 }
+schedule rows_bias for amd-cdna3      { threads 256 }

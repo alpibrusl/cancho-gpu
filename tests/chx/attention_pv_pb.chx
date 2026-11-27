@@ -1,0 +1,22 @@
+// attention_pv_p.chx for r queries at once (docs/kolibri.md section 20): row b's head h, the softmax of its g x t scores and the product with the columns dc * dw .. (dc + 1) * dw
+// of that head's values.
+algo attention_pv_pb(r, nkv, g, t, dw, d)
+  in  sc: f32[r * nkv * g, t]
+  in  v:  f32[t, nkv * d]
+  out o:  f32[r * nkv * g, d]
+{
+  grid h over nkv, dc over d / dw, b over r
+  let sm = load sc[(b * nkv + h) * g, 0 ; g, t]
+  let mx = rowmax &sm
+  let sh = sm - mx
+  let e  = exp sh
+  let z  = rowsum &e
+  let p  = e / z
+  let vt = load v[0, h * d + dc * dw ; t, dw]
+  let rr = matmul p vt
+  store rr -> o[(b * nkv + h) * g, dc * dw]
+}
+
+schedule attention_pv_pb for apple-m-series { threads 1024 }
+schedule attention_pv_pb for nvidia-ada     { threads 128 }
+schedule attention_pv_pb for amd-cdna3      { threads 128 }

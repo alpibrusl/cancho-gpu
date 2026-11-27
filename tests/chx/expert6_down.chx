@@ -1,0 +1,84 @@
+// Written by scripts/gen-kolibri-kernels.sh: do not edit. The 6 experts' down products of one token, weighed by the router's weights and added to the token's row of the shared
+// expert's output, as one launch (docs/kolibri.md section 20): mo = m[b] + sum_e wt[b K + e] (a[e] de^T), Q4_0 weights. a is expert6_gu.chx's output.
+algo expert6_down(r, b, n, k)
+  in  a:   f32[6, k]
+  in  dq0: i8[n, k / 2]
+  in  ds0: f16[n, k / 32]
+  in  dq1: i8[n, k / 2]
+  in  ds1: f16[n, k / 32]
+  in  dq2: i8[n, k / 2]
+  in  ds2: f16[n, k / 32]
+  in  dq3: i8[n, k / 2]
+  in  ds3: f16[n, k / 32]
+  in  dq4: i8[n, k / 2]
+  in  ds4: f16[n, k / 32]
+  in  dq5: i8[n, k / 2]
+  in  ds5: f16[n, k / 32]
+  in  wg:  f32[n]
+  in  wt:  f32[r * 6, 1]
+  in  m:   f32[r, n]
+  out mo:  f32[1, n]
+  tile bn
+{
+  grid i over n / bn
+  let acc0 = load m[b, i * bn ; 1, bn]
+  let x0 = load a[0, 0 ; 1, k]
+  let q0 = load dq0[i * bn, 0 ; bn, k / 2]
+  let h0 = load ds0[i * bn, 0 ; bn, k / 32]
+  let g0 = load wg[i * bn ; bn]
+  let w0 = dequant_q4 q0 h0 g0 32
+  let p0 = matmul_nt x0 w0
+  let c0 = load wt[b * 6 + 0, 0 ; 1, 1]
+  let r0 = p0 * c0
+  let acc1 = acc0 + r0
+  let x1 = load a[1, 0 ; 1, k]
+  let q1 = load dq1[i * bn, 0 ; bn, k / 2]
+  let h1 = load ds1[i * bn, 0 ; bn, k / 32]
+  let g1 = load wg[i * bn ; bn]
+  let w1 = dequant_q4 q1 h1 g1 32
+  let p1 = matmul_nt x1 w1
+  let c1 = load wt[b * 6 + 1, 0 ; 1, 1]
+  let r1 = p1 * c1
+  let acc2 = acc1 + r1
+  let x2 = load a[2, 0 ; 1, k]
+  let q2 = load dq2[i * bn, 0 ; bn, k / 2]
+  let h2 = load ds2[i * bn, 0 ; bn, k / 32]
+  let g2 = load wg[i * bn ; bn]
+  let w2 = dequant_q4 q2 h2 g2 32
+  let p2 = matmul_nt x2 w2
+  let c2 = load wt[b * 6 + 2, 0 ; 1, 1]
+  let r2 = p2 * c2
+  let acc3 = acc2 + r2
+  let x3 = load a[3, 0 ; 1, k]
+  let q3 = load dq3[i * bn, 0 ; bn, k / 2]
+  let h3 = load ds3[i * bn, 0 ; bn, k / 32]
+  let g3 = load wg[i * bn ; bn]
+  let w3 = dequant_q4 q3 h3 g3 32
+  let p3 = matmul_nt x3 w3
+  let c3 = load wt[b * 6 + 3, 0 ; 1, 1]
+  let r3 = p3 * c3
+  let acc4 = acc3 + r3
+  let x4 = load a[4, 0 ; 1, k]
+  let q4 = load dq4[i * bn, 0 ; bn, k / 2]
+  let h4 = load ds4[i * bn, 0 ; bn, k / 32]
+  let g4 = load wg[i * bn ; bn]
+  let w4 = dequant_q4 q4 h4 g4 32
+  let p4 = matmul_nt x4 w4
+  let c4 = load wt[b * 6 + 4, 0 ; 1, 1]
+  let r4 = p4 * c4
+  let acc5 = acc4 + r4
+  let x5 = load a[5, 0 ; 1, k]
+  let q5 = load dq5[i * bn, 0 ; bn, k / 2]
+  let h5 = load ds5[i * bn, 0 ; bn, k / 32]
+  let g5 = load wg[i * bn ; bn]
+  let w5 = dequant_q4 q5 h5 g5 32
+  let p5 = matmul_nt x5 w5
+  let c5 = load wt[b * 6 + 5, 0 ; 1, 1]
+  let r5 = p5 * c5
+  let acc6 = acc5 + r5
+  store acc6 -> mo[0, i * bn]
+}
+
+schedule expert6_down for apple-m-series { threads 256 bn 8 }
+schedule expert6_down for nvidia-ada     { threads 256 bn 8 }
+schedule expert6_down for amd-cdna3      { threads 256 bn 8 }

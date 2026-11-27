@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first steps: 24 tokens a second, one session for many conversations; section 18: the server, `scripts/kolibri-serve`, which cancho-code's own agent reaches and whose 2,184 positions its requests fill; section 19: caches as rolls of positions and the indexer: 16,384 positions, cancho-code's primer fits and its second task takes 7.6 s, its first 12 minutes)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first steps: 24 tokens a second, one session for many conversations; section 18: the server, `scripts/kolibri-serve`, which cancho-code's own agent reaches and whose 2,184 positions its requests fill; section 19: caches as rolls of positions and the indexer: 16,384 positions, cancho-code's primer fits and its second task takes 7.6 s, its first 12 minutes; section 20: a prompt 16 tokens a pass: the primer in 191 s where it took 723, a second task in 3.9 s)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -123,7 +123,7 @@ The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` 
 **Mutants, by hand, each killed by that test:** the CPU session reading block 0 whatever the value (5 checks fail), reading the output's first value and not the slot (4), reading the last block for a value past the table (1), and the Metal session keeping the first repetition's values (the stepped case fails).
 
 * **A crash on the way, fixed before any of this was measured:** the first form decoded the value into the interpreter's memory, where a device session's outputs have no place (their offset is -1); with one program it happened to run and with two it trapped. The value is now read from the downloaded bytes. The stepped case and the three-program case of `tests/pick.sh` on the Metal session are what hold it; they are by hand, so **nothing in the gate runs the device's read-back** (the gate has no GPU, and its mock driver computes nothing a pick could read).
-* **Not done:** the time of the read-back in a real step (48 waits a token) is not measured: K4's; CUDA's and the other device sessions do not have the clause; a picked table is uploaded whole, so a table over the session's 512 MiB staging pool is refused as any binary table is (an expert file is 251 MB).
+* **Not done:** the time of the read-back in a real step (48 waits a token) is not measured: K4's; CUDA's and the other device sessions do not have the clause; a picked table is uploaded whole, so a table over the session's 512 MiB staging pool is refused as any binary table is (an expert file is 251 MB) **[since section 20.3 a binary table goes up a chunk at a time and is not held to the pool]**.
 
 ## 10. K3: a layer's MLP half, the mixture of experts and the dense one **[measured, 2026-11-25, M4 Max]**
 
@@ -426,7 +426,7 @@ The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` 
 
 ## 17. From a command to a model server for cancho-code and cancho-agent (plan, 2026-11-26)
 
-**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 (17.5), S1 (17.6), S3 (section 18) and S4 (section 19) are built.
+**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 (17.5), S1 (17.6), S3 (section 18), S4 (section 19) and S5 (section 20) are built.
 
 ### 17.1 What the two clients send **[read from their sources, 2026-11-26]**
 
@@ -465,7 +465,7 @@ The GPU's time by kernel (`CANCHOGPU_PROFILE=2`, every launch alone, 55 steps, 2
 | the head (128,000 x 2,560, f32) | 1 | 2.6 ms | 5% |
 | everything else: norms, adds, the router, the caches, the softmax | about 1,450 | 3 to 40 us | 32% |
 
-* **No kernel is the cost: the count is.** A third of the step is 1,450 launches of 3 to 40 microseconds, and another third is 1,008 expert products of 12 to 19: at these sizes a launch costs what it costs whatever it computes (section 8 measured an expert's product at 3 microseconds when nothing else runs between).
+* **No kernel is the cost: the count is.** **[wrong, section 20.1: a launch is 2 microseconds when timed in a stream of them, and the count is 5 ms of a step; what costs is the Q4_0 product's decoding of a weight at a time. The times of this table are of launches run alone, each with its own wait.]** A third of the step is 1,450 launches of 3 to 40 microseconds, and another third is 1,008 expert products of 12 to 19: at these sizes a launch costs what it costs whatever it computes (section 8 measured an expert's product at 3 microseconds when nothing else runs between).
 * **The dense products are 30% and are one row each**: with several tokens in a pass they are read once for all of them.
 * **A prompt costs what an answer costs**, 78 ms a token: the head is the only thing a prompt's step could leave out. **cancho-code's primer would take 7 to 14 minutes**, every request.
 
@@ -487,13 +487,13 @@ The GPU's time by kernel (`CANCHOGPU_PROFILE=2`, every launch alone, 55 steps, 2
 * **S2. The host's 22 ms** **[built, 17.5: it was 34]**. The tables of a parameter found once at setup, not at every step. **Gate**: `tests/session.py`'s cases unchanged. **Measured**: the step before and after.
 * **S3. The server** **[built, section 18]**. `cancho-gpu-kolibri`: the session's engine in a program that listens (the code of `device/metal-session-main.cho` as a module, the HTTP of `device/serve-main.cho`), the model loaded once, one request at a time. `/api/generate` (the prompt as one user message of the template), `/v1/chat/completions` (system, user and assistant turns), `/health`; headers at once and the body chunked; `num_predict` and `max_tokens`; the reasoning apart from the answer. The last request's ids are kept: a request that starts with them continues from where they part (S1's seek). **Gate** (no model: the toy GGUF on the CPU session's engine): the routes, the template's turns against recorded bytes, the refusals, the prefix kept and not kept. **By hand**: cancho-code's own stub test pointed at it, and one real task.
 * **S4. Past 2,184 positions** **[built, section 19: caches as rolls of positions, and the indexer; 16,384 positions, the pool not]**. The selectors and the masks computed in the step from the position (S1 left them tables); the indexer's choice of keys in the indexed layers; an indexed cache written a row at a time, not whole (9 MB a step at 2,240 would be 66 MB at 16,384, eight caches); the reference gets the indexer too. **Gate**: the small model with a choice of 3 keys among 16 against awk. **By hand**: the reference on one text past 2,184, layer by layer.
-* **S5. A prompt several tokens a pass.** The dense products as products of rows, the attention causal inside the pass (the kernels have a batch size that is 1 today), the experts still one launch a token each. Reckoned from 17.2: the dense third and the small launches shared, the experts not: **about 20 ms a token, 50 a second, unverified**. **Gate**: the pass against the step, to the bit where the sums allow.
+* **S5. A prompt several tokens a pass** **[built, section 20: 17 ms a token at 11,000 positions where a step is 60]**. The dense products as products of rows, the attention causal inside the pass (the kernels have a batch size that is 1 today), the experts still one launch a token each. Reckoned from 17.2: the dense third and the small launches shared, the experts not: **about 20 ms a token, 50 a second, unverified**. **Gate**: the pass against the step, to the bit where the sums allow.
 * **S6. Tools.** The template's tool descriptions and tool turns, written out as section 16 wrote the rest; `tool_calls` read out of the answer's text; `finish_reason: "tool_calls"`. **Gate**: recorded bytes from the model's template; made answers parsed.
-* **S7. Fewer launches a token.** An expert's `gate`, `up` and activation as one kernel and `down` with its weight (section 10 left it); the six experts' launches overlapped. Aimed at 17.2's two thirds.
+* **S7. Fewer launches a token.** An expert's `gate`, `up` and activation as one kernel and `down` with its weight (section 10 left it); the six experts' launches overlapped. Aimed at 17.2's two thirds. **[section 20.1: launches are not what a token costs. What S7 should be is a path for Q4_0 in the product's reduction, and the pass's two-launch experts in the step.]**
 
 **Order**: S1 first, because S3 to S5 stand on it. S2 is small and can go with it. Then S3: with S1 to S3 cancho-agent's kind of request works and cancho-code's fits when its primer and task are under 2,184 tokens, which they are not. **cancho-code needs S4 and S5 as well**: until then its primer does not fit, and after S4 alone it would fit and take minutes.
 
-**What "good" would be, said before it is measured**: cancho-code's median request against Qwen2.5-1.5B on this machine was 3.7 s, its longest 169 s (its M8 note; no figure for the 27B was found). Reckoned for Kolibri after S5 and S3's kept prefix: a new task of 300 tokens after a kept primer 6 s, an answer of 500 tokens 30 to 40 s. **The first request after a start still pays the whole primer once**: 2 to 4 minutes at S5's reckoned speed, unless the kept prefix is also written to a file, which is not in this plan.
+**What "good" would be, said before it is measured**: cancho-code's median request against Qwen2.5-1.5B on this machine was 3.7 s, its longest 169 s (its M8 note; no figure for the 27B was found). Reckoned for Kolibri after S5 and S3's kept prefix: a new task of 300 tokens after a kept primer 6 s, an answer of 500 tokens 30 to 40 s. **The first request after a start still pays the whole primer once**: 2 to 4 minutes at S5's reckoned speed, unless the kept prefix is also written to a file, which is not in this plan. **[measured, section 20.3: 191 s for the primer's 11,085 tokens; a second task after it 3.9 s]**
 
 **Not in this plan**: more than one request at a time; the indexer's pool (contexts past 16,384); streaming in cancho-code or cancho-agent (neither reads a stream); a draft head (the file has none); TLS; cancho-agent's hard-coded port.
 
@@ -765,3 +765,161 @@ Built as 19.5 says. `choose` is a directive of both sessions (`docs/resident.md`
 * **A token costs more at 11,000 positions than at 3,000** (65 to 69 ms against 53): the indexed layers scan the 16,384 positions of their caches whatever is in them, and the choice is made over what is there.
 
 * **Not done**: the control that would say whether the indexer widens a chain's drift from the reference (above); anything past 3,000 tokens against the reference, and a step's time at 16,000 positions; the pool, so nothing past 16,384; a NaN among the scores (`choose` puts it below every number: not tested); the answers' worth, here as in section 16.
+
+## 20. S5: a prompt several tokens a pass (design, 2026-11-27, written before the code; built, 20.3)
+
+A prompt's token costs what an answer's costs: 60 ms at 11,000 positions, twelve minutes for cancho-code's primer (section 19.6). This section is what was measured before the design, and the design.
+
+### 20.1 Where a step's time goes **[measured, 2026-11-27, M4 Max, the Metal GPU]**
+
+**A prompt of 10,900 tokens a request each, then 60 greedy steps**, with the shim's line a wait (`CANCHOGPU_PROFILE=1`, which costs about 3 ms a step itself):
+
+| | |
+|---|---|
+| a step at positions 500, 4,000, 10,900 | 54, 59, 61 ms |
+| waits a step | 60: one a layer for the experts the router chose, ten for the indexed layers' masks, the last |
+| the host waiting, of the last 60 steps | 55.2 ms a step |
+| of that, the GPU working | 47.6 ms |
+| a layer that is not indexed (its MLP and the next layer's attention, between two waits) | 0.55 ms of the GPU |
+| an indexed layer | 1.85 ms, and 0.37 before its mask is written |
+| the head and the arg max | 2.8 ms |
+| a wait itself, over the GPU's time in it | 0.125 ms, so 7.5 ms a step |
+
+**Kernels alone**, as sessions of one kernel on zeros, 300 to 5,000 launches a request (a launch of a kernel of one element is 2.2 microseconds; the times below include one):
+
+| | a launch |
+|---|---|
+| q, k and v for one row (`matvec_q4_rows`, 7,168 x 2,560) | 79 us |
+| the same for 8 rows, 16, 32 (the weights read once, every row of x read at every weight) | 160, 570, 2,394 us: **20, 36, 75 us a row** |
+| the attention's output product for one row (2,560 x 6,144), 8 rows, 16 | 73, 135, 1,019 us: 73, 17, 64 us a row |
+| the same shape with NVFP4 weights (`matvec_fp4_rows`, which has a path of its own in the reduction) | 28 us |
+| an expert's `gate` (512 x 2,560) in Q4_0, and in NVFP4; its `down` | 9.3, 4.7 and 6.2 us without the launch |
+| a token's six experts as today, 30 launches | 192 us |
+| the six as two launches (all `gate` and `up` products and the activation; all `down` products and the weighted sum) | 118 us |
+| an indexed layer's four kernels over 16,384 keys (the scores of the choice, the attention's scores, the softmax's statistics, the product with the values), one query | 1.54 ms |
+| the same four for 16 queries in a launch each | 6.67 ms: **0.42 ms a query** |
+
+* **Section 17.2 was wrong about what a token costs: it is not the count of launches.** A launch is 2 microseconds, so a step's 2,471 are 5 ms of its 42. What costs is the Q4_0 product, which decodes a weight at a time (section 8 said so and did not measure it): the six experts' products are 60% of a layer's 0.55 ms, q/k/v and the output product another 28%. **S7 as section 17.4 has it (fewer launches) is worth 5 ms at most; a path for Q4_0 in the product's reduction, as NVFP4 has, is worth more** (2 to 2.8 times on these shapes by the table). That is not this stage.
+* **Rows share the weights only in small tiles.** Eight rows at a weight cost 2 times one row; 32 rows cost 30 times. So a pass's dense products take their rows 8 a threadgroup.
+* **An expert's product does not get cheaper in a pass**: each token has its own six. Fused into two launches the six cost 118 us where they cost 192.
+* **The indexed layers' scan is 3.7 times cheaper a query when 16 queries share a launch.**
+* **A wait costs 0.125 ms whatever it waits for**, and a pass has as many as a step.
+
+**Reckoned from these for a pass of 16 tokens at 11,000 positions**, a token: the experts 5.7 ms (48 layers of 118 us), the indexed layers 4.2 ms, the dense products 1.8 ms, the waits and the small launches 1 ms: **about 13 ms where a step is 60, so the primer in about 2.5 minutes where it took 12. Unverified.** **[measured, 20.3: 17.2 ms a token, the primer's passes in 188 s]**
+
+### 20.2 The design
+
+**A pass is a second form of the step in the same session**: its programs take `PB` tokens (16) where the step's take one, read the same weights and write the same rolls. A prompt goes through passes while it has `PB` tokens and one more left, and through steps for the rest; its last token is always a step, which is what chooses the first new token.
+
+**The session gets phases** (`docs/resident.md` section 35):
+
+* **`phase NAME STRIDE`**: the programs after the line are the phase's; a request `NAME N ...` runs them alone, `N` times, and each time is `STRIDE` repetitions of the session. A request that starts with a count runs the programs before the first `phase` line, as before.
+* **A roll is stored by one output in each phase.** In a phase of stride `S` the output is `S` blocks, the repetition's and the `S - 1` after it; a window is the blocks that end with the last of those.
+* **`table ... span`**: the parameter is `S` blocks of the table, the repetition's and those after it (the rotary cos and sin of a pass's positions).
+* **`choose`** in a phase of stride `S` writes `S` masks one after another, row `b` for repetition `j + b`, from `S` rows of scores.
+* Links, carries, picks and choices stay inside a phase. `seek` is as it was: the count is the session's.
+
+**The pass's programs** (`models/kolibri_step.model` with `PASS=1`; `P` before each name):
+
+| | the step | the pass |
+|---|---|---|
+| the ids | the request's id or the carried one, its embedding row picked | `PB` ids of the request, a row picked each, then the rows as one matrix (`rows_cat`) |
+| norms, residuals, the rotary, the rounding, the activation | kernels of `r` rows | the same kernels with `r = PB` |
+| q/k/v, the attention's output, a dense layer's and the shared expert's products | `matvec_q4_rows` | **`matmul_q4_pass`**: the rows 8 a threadgroup, the weights' tile as it was |
+| the new keys and values | `store` a block | `store` `PB` blocks |
+| a sliding layer's mask | `maskw.f32`, a row a position, held | **`maskp.f32`**: `PB` rows over the window for each first position to `PTW - PB`, then one block held. The window scanned is `PTW`, the window and `PB - 1` more rounded up to chunks (576 for 513 and 16) |
+| the attention | `attention_scores_p`, `attention_pv_p`, `attention_stats`, `attention_pvl_p`, `index_score` | the same with a third grid axis over the pass's rows (`_pb`, `_b`); `attention_stats` as it is, with `PB` times the heads |
+| the router | `matvec_rows`, `moe_rank`, `moe_pick` | the same over rows (`matmul_rows_pass`, `moe_rank_b`, `moe_pick_b`): `PB x K` indices and weights, read back in one wait |
+| a token's `K` experts | 5 programs an expert | **2 programs a token**: `expertK_gu` (the `K` gate and up products of row `b` and the activation) and `expertK_down` (the `K` down products, weighed, added to row `b` of the shared expert's output); then `rows_cat` |
+| layer 49 and layer 48's MLP, the final norm, the head, the sampler | | not run: no cache is written after layer 48's attention, and a prompt's token chooses nothing |
+
+* **`expertK_gu`, `expertK_down`, `expertK_down41` (layers 2 to 5, whose `down` is Q4_1) and `rows_catB` have as many parameters as `K` or `PB`**, which a kernel file cannot say: they are written by `scripts/gen-kolibri-kernels.sh` for `K` 2 and 6 and `PB` 4 and 16 (the gate's small model and Kolibri), and a test holds the files to the script.
+* **The step keeps its kernels**: the fused expert kernels would take a third off its experts' time too, and that is left for the stage that takes the Q4_0 product on.
+* **The server** sends a prompt's tokens as `pass 1 ID ... ID` while it can, and the rest as steps. What it keeps of the last request, and where it parts from it, are as they were.
+
+**What a pass must equal.** After passes over a prefix, the caches are the step's, to the order of the sums in the products: so every step after them answers what it answers after steps. That is the bound.
+
+* **In the gate**: `tests/phase.sh`, the directives alone on both sessions with whole numbers (a phase's programs alone, the stride, a roll written by both phases, `span`, a chosen mask of several rows, each refusal). `tests/kstep.sh`: the small model with `PB=4`: 14 positions as steps, and the same through passes and steps in each split a prompt can have; the rows after the last layer and the logits of every step after a pass against the steps', and the ids. Mutants of the session, the kernels, the model file and the server's split.
+* **By hand, on the Metal GPU**: section 16's runs and section 19.6's prefixes through passes (the ids of the steps after them); a pass's time at 3,000 and 11,000 positions; cancho-code's two requests of section 19.6 again.
+
+**What it will not be**: faster for an answer's tokens (a step is a step); checked a pass at a time against the reference (the steps after it are); a pass of another size than 16 measured.
+
+### 20.3 Built and measured **[2026-11-27, M4 Max, the Metal GPU]**
+
+Built as 20.2 says. The session has phases (`docs/resident.md` section 35, `src/phase.cho`); `models/kolibri_step.model` with `PASS=1` has the phase `pass`, 2,559 programs beside the step's 2,490; `scripts/gen-kolibri-kernels.sh` writes the eight kernels that depend on `K` or on the pass's size; `kolibri_gpu inputs` takes a pass's tokens and writes its four tables; the server takes `--pass N`, and `scripts/kolibri-serve` starts it with 16.
+
+**Two things the larger session met, and what was done:**
+
+* **The Metal shim's table of compiled kernels (4,096) was passed**: a device session now compiles each distinct kernel once. Of the 5,049 programs most are the layer before's, or the token before's.
+* **An expert table (251 MB) no longer fit what was left of the server's 512 MiB of staging**, with twice the kernel texts held there. A binary table now goes up a chunk at a time, as a resident file does since `docs/resident.md` section 24, and is not held to the pool.
+
+**Time**, the session of the server (16,384 positions), greedy:
+
+| | steps | passes of 16 |
+|---|---|---|
+| a prompt's token at positions to 2,000 | 54 ms | **15.1 ms** (a pass 241 ms) |
+| the same at 3,500 to 10,900 | 59 to 61 ms | **17.0 to 17.5 ms** (a pass 272 to 280 ms) |
+| cancho-code's primer, 10,944 tokens | 723 s as section 19.6 ran it | **188 s** (684 passes) |
+| a prompt of 3,000 tokens | 170 s | 52 s |
+| start to listening | 12 s | 16 s |
+
+Where a pass's 244 ms go at the early positions (`CANCHOGPU_PROFILE=1`): the GPU works 219 ms of them, in 57 waits. A layer that is not indexed is 3.4 ms, **0.21 ms a token** where a step's is 0.55 and 20.1 reckoned 0.175; an indexed layer is 6.9 ms, and 3.1 ms before its masks are written.
+
+* **3.5 times, not the 4.6 reckoned.** The layer is a fifth over its reckoning, and past 2,184 keys the choice of 2,048 for 16 queries in ten layers adds 2 ms a token, which 20.1 did not count.
+* **The experts are now most of a prompt's token** (0.118 ms of a layer's 0.21 by 20.1's probe), and they are what a pass does not share.
+
+**cancho-code with its primer**, as in section 19.6 (its own agent and build, `--num-ctx 16384`, the primer's 10,950 tokens; the server through `scripts/kolibri-serve --temperature 0.2`):
+
+| | section 19.6 | now |
+|---|---|---|
+| the first task: a prompt of 11,085 tokens, none kept | 723 s | **191 s**; 17 new tokens |
+| the same prompt again (the agent's next samples) | | 1.2 s and 1.5 s, 11,084 kept |
+| a second task: 11,108 tokens, 11,027 kept | 7.6 s | **3.9 s**; 29 new tokens, taken on the first sample |
+
+* **Both files were fixed.** The first task's first two samples had no `edition` line and the agent threw them away; the third was `fn broken() -> [] int { return 0; }`. In 19.6 the first sample was taken. Three samples of one prompt at temperature 0.2 say nothing of passes: the prompt's caches were the first sample's for all three.
+* A chat request on the same server after them (49 tokens, 28 kept): "Die Hauptstadt von Italien ist Rom.", 1.0 s.
+
+**What a pass leaves in the caches.** In the gate, on the CPU session, a pass is the steps to the bit (below). On the Metal GPU it is another order of sums, and Kolibri turns the last bit of a sum into another token in two places: a 4-bit rounding on a tie (section 15) and a router's sixth and seventh logits on a tie (section 10).
+
+| by hand, the same prompt as steps and as passes with the steps that are left | |
+|---|---|
+| 600 tokens, then 16 greedy ids | the same 16 |
+| the row after every layer at the step of position 2,100 | layers 0 to 17 within 1.9e-6 of the row's peak; layer 18 1.5e-5; from layer 19 on 4e-3 to 1.2e-1 |
+| the scores of layer 4's 2,100 cached keys at that step, in the three layers that read them (4, 9, 14) | **the steps' to the bit, all 2,100, in all three**: layer 4's rounded keys are the same keys |
+| the same for layer 19's keys | 286 of 2,100 differ |
+| position 177, a pass's row against its step's, layer by layer | within 2e-7 through layer 6; **2e-2 at layer 7** |
+| the router of layer 7 there | its biased logits within 4.8e-7 of the step's, all 384. **The step's sixth and seventh are -0.3635528 and -0.3635530; the pass has both at -0.3635530, and the tie goes to the lower expert**: 180 where the step took 383, weights 0.085 and 0.098. The other five are the same, with the same weights |
+| 3,000 tokens: the predictions of the last 8 prompt steps, then 16 greedy ids | 7 of 8 the same; the first greedy id another, then 9 the same |
+
+* **A pass is the step's arithmetic within 5e-7, and the model amplifies that at a tie**: from the first token whose router is on one, the rows after it are another run's, as section 15 found between this device and the reference. Neither run is the wrong one.
+* **Against the reference**, the six prefixes of sections 15 and 19.6, read through passes, then greedy:
+
+| prefix | steps (sections 19.4, 19.6) | passes |
+|---|---|---|
+| 700, 1,300 | all 16 ids the reference's | all 16 |
+| 2,160 | the first 11 of 24 (the reference's two best 0.007 apart at the twelfth) | the first 11 of 24 |
+| 2,400 | the first 4 of 16 | the first 4 of 16 |
+| 2,700 | the first 13 of 16 | the first 13 of 16 |
+| 2,984 | all 16 | all 16 |
+
+**Read through passes the device leaves the reference where it left it read through steps**, at every one of the six. The prefixes took 20 to 46 s where the 2,160 took 92.
+
+**In the gate** (no model, no GPU):
+
+* `tests/phase.sh`, new, 48 checks: the directives alone on the CPU session with whole numbers (the Metal session by hand, the same 48).
+* `tests/kstep.sh`: the small model, with a layer more (eleven, so that the layer that reads layer 4's caches is not the last), with a pass of 4 beside the step, generating over 14 positions. Four splits of passes and steps (three passes then two steps; a step, a pass, a step, a pass, four steps; two passes, back to position 2, two passes over what is there; ten steps, back to 3, two passes over the steps' blocks): the ids of the steps after, and the last step's rows after layers 0, 4 and the last and its logits, **exactly** the all-steps run's. The last pass's four rows after three layers are its positions' steps' rows, exactly. And the eight generated kernels are what the script writes.
+* `tests/kolibri_serve.sh`, 84 checks (10 new): the lines a prompt is sent as against awk, from wherever the session starts; a prompt of 4, 5 and 6 tokens; the numbers a sampling step draws with after passes; a session whose pass answers another id; `--pass` with a session that has no phase.
+* `tests/kolibri_host.sh`: a pass's four tables against awk, with a window of 2 and of 65; five refusals.
+* `tests/cases.txt`: the 18 new kernel files at Kolibri's sizes and the small model's (30 cases); `golden/model/kolibri_step.pass.sha256`. The five recorded expansions of the model file without `PASS` are the same bytes.
+
+**Mutants, by hand: 97, of which 95 killed and two are no mutants.**
+
+* **Of the session's phases, 31**, by `tests/phase.sh` (two of them only on the Metal session: a CPU session has no read-back and no buffer of its own for a roll): a repetition that counts one; every program run whatever the request, and a phase's request running the session's own; a window that ends with the repetition's first block, and one that stays at the roll's start a repetition longer; a spanned table read in blocks of the parameter's size, and past its last block; a roll's last block not asked for; a chosen mask's rows all the first repetition's, all by the first row's scores, or only the first written; the scores read back only when the first row needs them; every phase's inputs taken, and its answers printed; a table of another phase's program read; the rules of the file, each taken out (two phases joined; a phase with no answer, a stride of 0, a request's word for a name, a name twice, no program, no `steps`; a roll stored twice in a phase, or with other blocks; a window of a roll its phase does not store; a stored output, a spanned parameter and a chosen mask that are no whole number of the stride; the second phase's store given a roll of its own).
+* **Of the kernels, 28**, by `tests/kstep.sh`: in each of the batched kernels the first row's data for every row (the rows of a product, the residual, the mask, the queries, the scores, the maxima, the router's logits and places), the first tile's weights, key head 0 and value head 0 for every head, the first chunk of values, no ReLU, no biases; in the generated ones the first row for every token, an expert's matrix for another's, no activation, the first token's weights and shared expert, an expert left out, no Q4_1 offsets, another expert's group sums, two rows exchanged, a row twice.
+* **Of the model file's pass, 17**, by `tests/kstep.sh`: a token's experts picked by the first token's slots, and by the slot after; a sliding layer's mask going round; keys stored as values; an indexed layer rotated, its keys not rounded, its indexer a key short and scoring against the values; a layer that reads another's caches reading the wrong layer's keys, and its values; the residual the normed row; a layer too few before the last that stores, and its MLP left out; the shared expert left out; the weights from the biased logits; a dense `down` without its offsets; the ids a slot late.
+* **Of the server, 11**, by `tests/kolibri_serve.sh`: a pass that leaves no token for the last step, and one only when two are left; a pass's ids from the token after, and its first id for all; a pass that does not pass its positions' numbers by; a pass counted as one position; its ids not kept; its answer not looked at; `--pass 1` taken; passes whether asked or not.
+* **Of `kolibri_gpu inputs`, 10**, by `tests/kolibri_host.sh`: the last block as the one before; the first token's mask for every token; a key more in the window; the token after seen; the scanned positions without the pass's tokens; a block fewer; zeros for the cos of a layer with no positions; a pass of 1, of 65, and one that scans more than the positions, each taken.
+* **The two that survive change nothing**: a carry of another phase made again (its program did not run, so it copies what is there), and the server's count of where the session is set a pass short (the step that always follows a pass sets it).
+* **Four gaps the mutants showed, closed**: a step at the last position was refused because the *phase's* spanned table ends there (no check ran a step that late: one does now); the small model's pass never ran a layer that reads another layer's caches, because with ten layers that layer is the last and a pass leaves it out (the runs with a pass have eleven layers now); a server that did not stop made the test wait for ever, where it must fail (it waits ten seconds); and the device's read-back of the scores for a mask whose first row needs none passed by a coincidence of the test's scores (a check with other counts, where the choice is not the first entries).
+
+* **Not done**: `scripts/kolibri` (the command) still sends a prompt a token a request; a pass of another size than 16 was not measured, nor a pass at 16,000 positions; the step keeps its five programs an expert (the two-launch form would take a third off its experts); the Q4_0 product still decodes a weight at a time, which is now most of a token, a prompt's or an answer's; an indexed layer scans all 16,384 positions of its caches at any context; the first request after a start is still three minutes, and nothing writes the caches to a file; the Metal programs are not in the gate.

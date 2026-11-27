@@ -1,0 +1,50 @@
+// Written by scripts/gen-kolibri-kernels.sh: do not edit. The 2 experts a token takes, each expert's gate and up products and the activation, as one launch (docs/kolibri.md section 20):
+// y[e] = silu(x ge^T) * (x ue^T) with Q4_0 weights (matvec_q4_rows.chx's product), x row b of r rows. The 4 matrices are tables the session picks by the router's choice.
+algo expert2_gu(r, b, n, k)
+  in  x:   f32[r, k]
+  in  gq0: i8[n, k / 2]
+  in  gs0: f16[n, k / 32]
+  in  uq0: i8[n, k / 2]
+  in  us0: f16[n, k / 32]
+  in  gq1: i8[n, k / 2]
+  in  gs1: f16[n, k / 32]
+  in  uq1: i8[n, k / 2]
+  in  us1: f16[n, k / 32]
+  in  wg:  f32[n]
+  out y:   f32[2, n]
+  tile bn
+{
+  grid i over n / bn
+  let x0 = load x[b, 0 ; 1, k]
+  let a0 = load gq0[i * bn, 0 ; bn, k / 2]
+  let b0 = load gs0[i * bn, 0 ; bn, k / 32]
+  let c0 = load wg[i * bn ; bn]
+  let d0 = load uq0[i * bn, 0 ; bn, k / 2]
+  let e0 = load us0[i * bn, 0 ; bn, k / 32]
+  let f0 = load wg[i * bn ; bn]
+  let w0 = dequant_q4 a0 b0 c0 32
+  let v0 = dequant_q4 d0 e0 f0 32
+  let g0 = matmul_nt &x0 w0
+  let u0 = matmul_nt x0 v0
+  let s0 = sigmoid &g0
+  let t0 = g0 * s0
+  store t0 * u0 -> y[0, i * bn]
+  let x1 = load x[b, 0 ; 1, k]
+  let a1 = load gq1[i * bn, 0 ; bn, k / 2]
+  let b1 = load gs1[i * bn, 0 ; bn, k / 32]
+  let c1 = load wg[i * bn ; bn]
+  let d1 = load uq1[i * bn, 0 ; bn, k / 2]
+  let e1 = load us1[i * bn, 0 ; bn, k / 32]
+  let f1 = load wg[i * bn ; bn]
+  let w1 = dequant_q4 a1 b1 c1 32
+  let v1 = dequant_q4 d1 e1 f1 32
+  let g1 = matmul_nt &x1 w1
+  let u1 = matmul_nt x1 v1
+  let s1 = sigmoid &g1
+  let t1 = g1 * s1
+  store t1 * u1 -> y[1, i * bn]
+}
+
+schedule expert2_gu for apple-m-series { threads 256 bn 8 }
+schedule expert2_gu for nvidia-ada     { threads 256 bn 8 }
+schedule expert2_gu for amd-cdna3      { threads 256 bn 8 }

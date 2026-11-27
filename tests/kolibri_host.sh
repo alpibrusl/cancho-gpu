@@ -47,6 +47,21 @@ nums() { od -A n -v -t fF "$1" | tr -s ' \n' '\n\n' | grep -v '^$'; }
 if "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xl" 192 136 > "$T/out.txt" 2> "$T/err.txt" && cmp -s "$T/xl/maskw.f32" "$T/x/maskw.f32" && cmp -s "$T/xl/x0.f32" "$T/x/x0.f32" && [ "$(wc -c < "$T/xl/cos.f32" | tr -d ' ')" = $((136 * 8 * 4)) ] && [ "$(ls "$T/xl" | sort | tr '\n' ' ')" = "$(ls "$T/x" | sort | tr '\n' ' ')" ]; then
   echo "ok   inputs for 136 steps and 192 positions: the same mask of 64 rows and the same rows of the ids, a row of cos and sin a step, and no file of steps times positions"
 else echo "FAIL inputs for 136 steps and 192 positions: $(head -c 300 "$T/err.txt") $(ls -l "$T/xl" | awk '{ print $5, $9 }' | tr '\n' ' ')"; fail=1; fi
+# a pass's tables (docs/kolibri.md section 20), when `inputs` is told a pass's tokens: its zeros, the cos and sin of a layer with no positions for its rows, and a sliding layer's masks
+# over the positions a pass scans (the window and the pass's other tokens, rounded up to 64): a block for each first position while the pass ends inside them, and one more for every
+# later one, where the scanned positions end with the pass's last token. awk says the masks; the run's other files are as they were.
+passmask() { awk -v WIN="$1" -v PB="$2" -v PTW="$3" 'BEGIN { for (j = 0; j <= PTW - PB + 1; j++) for (b = 0; b < PB; b++) { p = (j <= PTW - PB) ? j + b : PTW - PB + b; for (c = 0; c < PTW; c++) print ((c <= p && c > p - WIN) ? 0 : -1000000000) } }'; }
+whole() { nums "$1" | awk '{ print $1 + 0 }'; }
+mkdir "$T/xp" "$T/xq"
+if out=$("$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/xp" 64 5 4 2> "$T/err.txt") && [ "$out" = "steps 5 prompt 3 scanned 64" ] && [ "$(whole "$T/xp/maskp.f32")" = "$(passmask 2 4 64)" ] \
+  && [ "$(whole "$T/xp/zpb.f32" | tr '\n' ' ')" = "0 0 0 0 " ] && [ "$(whole "$T/xp/onep.f32" | sort | uniq -c | tr -s ' ')" = " 32 1" ] && [ "$(whole "$T/xp/zerop.f32" | sort | uniq -c | tr -s ' ')" = " 32 0" ] \
+  && cmp -s "$T/xp/cos.f32" "$T/x/cos.f32" && cmp -s "$T/xp/maskw.f32" "$T/x/maskw.f32" && [ "$(ls "$T/xp" | sort | tr '\n' ' ')" = "$({ ls "$T/x"; printf 'maskp.f32\nonep.f32\nzerop.f32\nzpb.f32\n'; } | sort | tr '\n' ' ')" ]; then
+  echo "ok   inputs for a pass of 4: its zeros, 4 rows of ones and of zeros, and awk's 62 blocks of 4 masks over the 64 positions it scans (a window of 2); the other files as they were"
+else echo "FAIL inputs for a pass of 4: \`${out:-}\` $(head -c 300 "$T/err.txt") $(ls -l "$T/xp" | awk '{ print $5, $9 }' | tr '\n' ' ')"; fail=1; fi
+toy "$T/w65.gguf" w65
+if out=$("$B" inputs "$T/w65.gguf" "$T/ids.txt" "$T/xq" 128 5 4 2> "$T/err.txt") && [ "$out" = "steps 5 prompt 3 scanned 128" ] && [ "$(whole "$T/xq/maskp.f32")" = "$(passmask 65 4 128)" ]; then
+  echo "ok   inputs for a pass of 4 with a window of 65: 128 positions scanned, awk's 126 blocks (the last for a pass past them, where the window is the 65 before each token)"
+else echo "FAIL inputs for a pass of 4, a window of 65: \`${out:-}\` $(head -c 300 "$T/err.txt")"; fail=1; fi
 # argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
 want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
 got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
@@ -90,7 +105,11 @@ refuse "positions that are not a number" kolibri-usage 1 "$B" inputs "$T/toy.ggu
 awk 'BEGIN { for (i = 0; i < 65; i++) printf "1 " }' > "$T/bad.txt"
 refuse "more ids than positions" kolibri-ids 1 "$B" inputs "$T/toy.gguf" "$T/bad.txt" "$T/r" 64
 refuse "fewer steps than ids" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 2
-refuse "an argument after the steps" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 64
+refuse "an argument after the pass" kolibri-usage 2 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 4 64
+refuse "a pass of one token" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 1
+refuse "a pass of 65 tokens" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 192 5 65
+refuse "a pass that is not a number" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 x
+refuse "a pass that scans more than the positions (a window of 2 and 63 more tokens, 128 scanned, of 64)" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 5 64
 toy "$T/v.gguf" w65
 refuse "fewer positions than a sliding layer's window rounded up (65 keys, 128 scanned)" kolibri-usage 1 "$B" inputs "$T/v.gguf" "$T/ids.txt" "$T/r" 64 5
 refuse "more steps than positions" kolibri-usage 1 "$B" inputs "$T/toy.gguf" "$T/ids.txt" "$T/r" 64 65

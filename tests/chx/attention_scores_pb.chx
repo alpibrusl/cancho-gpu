@@ -1,0 +1,20 @@
+// attention_scores_p.chx for r queries at once (docs/kolibri.md section 20): row b's g query heads of head h against positions sp * ts .. (sp + 1) * ts of a cache that is a roll of
+// positions, each row with its own mask over the positions. q is [r * nkv * g, d], a row's heads one after another; sc the same rows over t. d MUST be 128.
+algo attention_scores_pb(r, nkv, g, t, ts, d)
+  in  q:    f32[r * nkv * g, d]
+  in  k:    f32[t, nkv * d]
+  in  mask: f32[r, t]
+  out sc:   f32[r * nkv * g, t]
+{
+  grid h over nkv, sp over t / ts, b over r
+  let qt = load q[(b * nkv + h) * g, 0 ; g, d]
+  let kt = load k[sp * ts, h * d ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.08838834764831845
+  let mk = load mask[b, sp * ts ; 1, ts]
+  store sd + mk -> sc[(b * nkv + h) * g, sp * ts]
+}
+
+schedule attention_scores_pb for apple-m-series { threads 512 }
+schedule attention_scores_pb for nvidia-ada     { threads 128 }
+schedule attention_scores_pb for amd-cdna3      { threads 128 }

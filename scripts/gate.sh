@@ -87,6 +87,7 @@ tests/pick.sh build/cancho-gpu-session
 tests/seek.sh build/cancho-gpu-session
 tests/roll.sh build/cancho-gpu-session
 tests/choose.sh build/cancho-gpu-session
+tests/phase.sh build/cancho-gpu-session
 tests/moe.sh build/cancho-gpu-session
 tests/kstep.sh build/cancho-gpu-session
 sh tests/model.sh build/cancho-gpu-session

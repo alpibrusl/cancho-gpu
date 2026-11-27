@@ -1,0 +1,20 @@
+// y = x w^T + r for m rows with f32 weights, the rows bm a threadgroup (docs/kolibri.md section 20): matvec_res.chx for a pass of several tokens (a Q4_1 matrix's offsets against
+// the activations' group sums, added to the Q4_0 product).
+algo matmul_res_pass(m, n, k, bm)
+  in  x: f32[m, k]
+  in  w: f32[n, k]
+  in  r: f32[m, n]
+  out y: f32[m, n]
+  tile bn
+{
+  grid i over n / bn, j over m / bm
+  let xt = load x[j * bm, 0 ; bm, k]
+  let wt = load w[i * bn, 0 ; bn, k]
+  let rt = load r[j * bm, i * bn ; bm, bn]
+  let p  = matmul_nt xt wt
+  store p + rt -> y[j * bm, i * bn]
+}
+
+schedule matmul_res_pass for apple-m-series { threads 256 bn 8 }
+schedule matmul_res_pass for nvidia-ada     { threads 128 bn 4 }
+schedule matmul_res_pass for amd-cdna3      { threads 128 bn 4 }

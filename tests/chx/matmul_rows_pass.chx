@@ -1,0 +1,16 @@
+// y = x w^T for m rows with f32 weights, the rows bm a threadgroup (docs/kolibri.md section 20): matvec_rows.chx for a pass of several tokens (the router's logits).
+algo matmul_rows_pass(m, n, k, bm)
+  in  x: f32[m, k]
+  in  w: f32[n, k]
+  out y: f32[m, n]
+  tile bn
+{
+  grid i over n / bn, j over m / bm
+  let xt = load x[j * bm, 0 ; bm, k]
+  let wt = load w[i * bn, 0 ; bn, k]
+  store matmul_nt xt wt -> y[j * bm, i * bn]
+}
+
+schedule matmul_rows_pass for apple-m-series { threads 256 bn 8 }
+schedule matmul_rows_pass for nvidia-ada     { threads 128 bn 4 }
+schedule matmul_rows_pass for amd-cdna3      { threads 128 bn 4 }

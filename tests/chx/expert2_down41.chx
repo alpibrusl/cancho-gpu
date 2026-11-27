@@ -1,0 +1,49 @@
+// Written by scripts/gen-kolibri-kernels.sh: do not edit. expert2_down.chx where `down` is Q4_1 (docs/kolibri.md section 10: code d + m is (code - 8) d + (m + 8 d)): to each
+// expert's Q4_0 product is added s[e] ce^T, s the sums of a[e] over its groups of 32 (group_sum.chx) and ce the group offsets m + 8 d the host writes.
+algo expert2_down41(r, b, n, k)
+  in  a:   f32[2, k]
+  in  s:   f32[2, k / 32]
+  in  dq0: i8[n, k / 2]
+  in  ds0: f16[n, k / 32]
+  in  dc0: f32[n, k / 32]
+  in  dq1: i8[n, k / 2]
+  in  ds1: f16[n, k / 32]
+  in  dc1: f32[n, k / 32]
+  in  wg:  f32[n]
+  in  wt:  f32[r * 2, 1]
+  in  m:   f32[r, n]
+  out mo:  f32[1, n]
+  tile bn
+{
+  grid i over n / bn
+  let acc0 = load m[b, i * bn ; 1, bn]
+  let x0 = load a[0, 0 ; 1, k]
+  let q0 = load dq0[i * bn, 0 ; bn, k / 2]
+  let h0 = load ds0[i * bn, 0 ; bn, k / 32]
+  let g0 = load wg[i * bn ; bn]
+  let w0 = dequant_q4 q0 h0 g0 32
+  let y0 = matmul_nt x0 w0
+  let z0 = load s[0, 0 ; 1, k / 32]
+  let o0 = load dc0[i * bn, 0 ; bn, k / 32]
+  let p0 = y0 + matmul_nt z0 o0
+  let c0 = load wt[b * 2 + 0, 0 ; 1, 1]
+  let r0 = p0 * c0
+  let acc1 = acc0 + r0
+  let x1 = load a[1, 0 ; 1, k]
+  let q1 = load dq1[i * bn, 0 ; bn, k / 2]
+  let h1 = load ds1[i * bn, 0 ; bn, k / 32]
+  let g1 = load wg[i * bn ; bn]
+  let w1 = dequant_q4 q1 h1 g1 32
+  let y1 = matmul_nt x1 w1
+  let z1 = load s[1, 0 ; 1, k / 32]
+  let o1 = load dc1[i * bn, 0 ; bn, k / 32]
+  let p1 = y1 + matmul_nt z1 o1
+  let c1 = load wt[b * 2 + 1, 0 ; 1, 1]
+  let r1 = p1 * c1
+  let acc2 = acc1 + r1
+  store acc2 -> mo[0, i * bn]
+}
+
+schedule expert2_down41 for apple-m-series { threads 256 bn 8 }
+schedule expert2_down41 for nvidia-ada     { threads 256 bn 8 }
+schedule expert2_down41 for amd-cdna3      { threads 256 bn 8 }

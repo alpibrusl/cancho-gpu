@@ -1,0 +1,23 @@
+// Written by scripts/gen-kolibri-kernels.sh: do not edit. 4 rows of n as one matrix (docs/kolibri.md section 20): what each of a pass's tokens computed alone (its embedding row,
+// its experts' sum), for the kernels that take the pass's rows together. bn columns a threadgroup.
+algo rows_cat4(n, bn)
+  in  y0: f32[1, n]
+  in  y1: f32[1, n]
+  in  y2: f32[1, n]
+  in  y3: f32[1, n]
+  out o:  f32[4, n]
+{
+  grid c over n / bn
+  let t0 = load y0[0, c * bn ; 1, bn]
+  store t0 -> o[0, c * bn]
+  let t1 = load y1[0, c * bn ; 1, bn]
+  store t1 -> o[1, c * bn]
+  let t2 = load y2[0, c * bn ; 1, bn]
+  store t2 -> o[2, c * bn]
+  let t3 = load y3[0, c * bn ; 1, bn]
+  store t3 -> o[3, c * bn]
+}
+
+schedule rows_cat4 for apple-m-series { threads 128 }
+schedule rows_cat4 for nvidia-ada     { threads 128 }
+schedule rows_cat4 for amd-cdna3      { threads 128 }

@@ -25,6 +25,7 @@
 # SAMP=1 (with GEN=1) draws the id instead of taking the arg max: section 14; it reads ciota.f32, cslot.f32, czero.f32, ctri.f32, tri64.f32 of W, and a request is `N ID MASK U`, U the step's
 # uniform number.
 # With SAMP=1, SAVE=1 also writes cum.f32 and cnt.f32.
+# PASS=1 (with GEN=1) adds the phase `pass`, which takes PB tokens a repetition: section 20, and the comment before its blocks. With SAVE=1 it writes pout<i>.f32, the PB rows after layer i.
 # SAVE=1 writes out<i>.f32 (the row after layer i), final.f32 and logits.f32 at a checkpoint; SAVE=2 also mid<i>.f32, q<i>.f32, o<i>.f32, ix<i>.f32 (an indexed layer's scores of its keys), and
 # idx<i>.f32, wt<i>.f32. F32= F16= I8= (empty) reads and writes every file as text, and D, NQ, NKV, NE, EH, K, FF, BN, V make a small model: tests/kstep.sh, in the gate.
 text CHX = tests/chx
@@ -51,6 +52,10 @@ const GB = 8
 text PC = 0.01
 text INVT = 1
 const SAVE = 1
+const PASS = 0
+const PB = 16
+const PBM = 8
+const PTW = 576
 const ANS = 0
 const D = 2560
 const NQ = 48
@@ -430,8 +435,261 @@ if GEN
         carry aid.id -> cur.xe
     end
 end
+
+# PASS=1 (with GEN=1 and L0=0; section 20): a second form of the step, the phase `pass`, that takes PB tokens a repetition where the step takes one. It reads the step's weights and
+# stores into the step's rolls, PB blocks a repetition; a request is `pass 1 ID ... ID`, the repetition's PB ids. It runs no layer after the last that stores keys and values, and no head: a prompt's token chooses nothing. It reads zpb.f32 (PB zeros), onep.f32 and zerop.f32
+# (PB rows of one64.f32's and zero64.f32's) and maskp.f32 of X: block j is a sliding layer's PB masks over the PTW positions it scans when the pass starts at position j (its
+# window, the first PTW positions while the pass ends inside them and then the PTW that end with the pass's last), for j to PTW - PB, and one block more for every later j.
+# PTW is the window and PB - 1 more, rounded up to a multiple of TS. PBM rows of a dense product share a threadgroup.
+
+# a SwiGLU MLP of h hidden on the pass's PB rows, with resident weights (a dense layer's, or the shared expert's): y$nm.y is its PB rows
+block pmlp(i, nm, pre, h, ones)
+    program g$nm $CHX/matmul_q4_pass.chx m=$PB n=$h k=$D bm=$PBM
+    link PL${i}nrm.y -> g$nm.x
+    resident g$nm.wq $W/m${i}.$pre.gate.q4 $I8
+    resident g$nm.ws $W/m${i}.$pre.gate.s $F16
+    resident g$nm.wg $W/$ones.f32 $F32
+    program u$nm $CHX/matmul_q4_pass.chx m=$PB n=$h k=$D bm=$PBM
+    link PL${i}nrm.y -> u$nm.x
+    resident u$nm.wq $W/m${i}.$pre.up.q4 $I8
+    resident u$nm.ws $W/m${i}.$pre.up.s $F16
+    resident u$nm.wg $W/$ones.f32 $F32
+    program a$nm $CHX/swiglu.chx n=${PB * h}
+    link g$nm.y -> a$nm.g
+    link u$nm.y -> a$nm.u
+    if i < 6
+        program d$nm $CHX/matmul_q4_pass.chx m=$PB n=$D k=$h bm=$PBM
+        link a$nm.y -> d$nm.x
+        resident d$nm.wq $W/m${i}.$pre.down.q4 $I8
+        resident d$nm.ws $W/m${i}.$pre.down.s $F16
+        resident d$nm.wg $W/ones_d.f32 $F32
+        program s$nm $CHX/group_sum.chx k=${PB * h} G=32
+        link a$nm.y -> s$nm.x
+        program y$nm $CHX/matmul_res_pass.chx m=$PB n=$D k=${h / 32} bm=$PBM
+        link s$nm.s -> y$nm.x
+        link d$nm.y -> y$nm.r
+        resident y$nm.w $W/m${i}.$pre.down.c $F32
+    else
+        program y$nm $CHX/matmul_q4_pass.chx m=$PB n=$D k=$h bm=$PBM
+        link a$nm.y -> y$nm.x
+        resident y$nm.wq $W/m${i}.$pre.down.q4 $I8
+        resident y$nm.ws $W/m${i}.$pre.down.s $F16
+        resident y$nm.wg $W/ones_d.f32 $F32
+    end
+end
+
+# the pass's attention half of layer i, whose keys and values are layer s's: PL${i}ra.wo is the PB rows after it
+block pattn(i, s)
+    program PL${i}an $CHX/rmsnorm_rows.chx r=$PB n=$D eps=0.000001
+    if i == L0
+        link Pemb.o -> PL${i}an.x
+    else
+        link PL${i - 1}out.wo -> PL${i}an.x
+    end
+    resident PL${i}an.w $W/a${i}.norm.f32 $F32
+    if s == i
+        program PL${i}qkv $CHX/matmul_q4_pass.chx m=$PB n=${(NQ + 2 * NKV) * 128} k=$D bm=$PBM
+        link PL${i}an.y -> PL${i}qkv.x
+        resident PL${i}qkv.wq $W/a${i}.qkv.q4 $I8
+        resident PL${i}qkv.ws $W/a${i}.qkv.s $F16
+        resident PL${i}qkv.wg $W/ones_qkv.f32 $F32
+        program PL${i}po $CHX/dec_post_g.chx r=$PB nq=$NQ nkv=$NKV
+        link PL${i}qkv.y -> PL${i}po.y
+        resident PL${i}po.qw $W/a${i}.qn.f32 $F32
+        resident PL${i}po.kw $W/a${i}.kn.f32 $F32
+        if i % 5 == 4
+            resident PL${i}po.cs $X/onep.f32 $F32
+            resident PL${i}po.sn $X/zerop.f32 $F32
+            program PL${i}rk $CHX/fp4_round.chx r=${PB * NKV} n=128
+            link PL${i}po.kn -> PL${i}rk.x
+            resident PL${i}rk.tb $W/e4m3.f32 $F32
+            program PL${i}rv $CHX/fp4_round.chx r=${PB * NKV} n=128
+            link PL${i}po.vn -> PL${i}rv.x
+            resident PL${i}rv.tb $W/e4m3.f32 $F32
+            store PL${i}rk.y K${i} $T
+            store PL${i}rv.y V${i} $T
+        else
+            table PL${i}po.cs $X/cos.f32 $NS $F32 span
+            table PL${i}po.sn $X/sin.f32 $NS $F32 span
+            store PL${i}po.kn K${i} $T
+            store PL${i}po.vn V${i} $T
+        end
+    else
+        program PL${i}qp $CHX/matmul_q4_pass.chx m=$PB n=${NQ * 128} k=$D bm=$PBM
+        link PL${i}an.y -> PL${i}qp.x
+        resident PL${i}qp.wq $W/a${i}.q.q4 $I8
+        resident PL${i}qp.ws $W/a${i}.q.s $F16
+        resident PL${i}qp.wg $W/ones_q.f32 $F32
+        program PL${i}po $CHX/rmsnorm_rows.chx r=${PB * NQ} n=128 eps=0.000001
+        link PL${i}qp.y -> PL${i}po.x
+        resident PL${i}po.w $W/a${i}.qn.f32 $F32
+    end
+    if i % 5 == 4
+        program PL${i}rq $CHX/fp4_round.chx r=${PB * NQ} n=128
+        if s == i
+            link PL${i}po.q -> PL${i}rq.x
+        else
+            link PL${i}po.y -> PL${i}rq.x
+        end
+        resident PL${i}rq.tb $W/e4m3.f32 $F32
+        program PL${i}ix $CHX/index_score_b.chx r=$PB nq=$NQ g=$IH nkv=$NKV t=$T ts=$TS d=128
+        link PL${i}rq.y -> PL${i}ix.q
+        window PL${i}ix.k K${s}
+        program PL${i}as $CHX/attention_scores_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$T ts=$TS d=128
+    else
+        program PL${i}as $CHX/attention_scores_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$PTW ts=$TS d=128
+    end
+    if s == i
+        link PL${i}po.q -> PL${i}as.q
+    else
+        link PL${i}po.y -> PL${i}as.q
+    end
+    window PL${i}as.k K${s}
+    if i % 5 == 4
+        choose PL${i}as.mask by PL${i}ix.s $ITOP $ISINK $ILOCAL
+        program PL${i}st $CHX/attention_stats.chx nkv=${PB * NKV} g=${NQ / NKV} t=$T cs=$TS
+        link PL${i}as.sc -> PL${i}st.sc
+        program PL${i}ap $CHX/attention_pvl_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$T cs=$TS dw=16 d=128
+        link PL${i}as.sc -> PL${i}ap.sc
+        link PL${i}st.m -> PL${i}ap.m
+        link PL${i}st.z -> PL${i}ap.z
+    else
+        table PL${i}as.mask $X/maskp.f32 ${PTW - PB + 2} $F32 hold
+        program PL${i}ap $CHX/attention_pv_pb.chx r=$PB nkv=$NKV g=${NQ / NKV} t=$PTW dw=16 d=128
+        link PL${i}as.sc -> PL${i}ap.sc
+    end
+    window PL${i}ap.v V${s}
+    program PL${i}op $CHX/matmul_q4_pass.chx m=$PB n=$D k=${NQ * 128} bm=$PBM
+    link PL${i}ap.o -> PL${i}op.x
+    resident PL${i}op.wq $W/a${i}.o.q4 $I8
+    resident PL${i}op.ws $W/a${i}.o.s $F16
+    resident PL${i}op.wg $W/ones_d.f32 $F32
+    program PL${i}apn $CHX/rmsnorm_rows.chx r=$PB n=$D eps=0.000001
+    link PL${i}op.y -> PL${i}apn.x
+    resident PL${i}apn.w $W/a${i}.pn.f32 $F32
+    program PL${i}ra $CHX/step_add.chx n=${PB * D}
+    if i == L0
+        link Pemb.o -> PL${i}ra.w
+    else
+        link PL${i - 1}out.wo -> PL${i}ra.w
+    end
+    link PL${i}apn.y -> PL${i}ra.d
+end
+
+# the pass's MLP half of layer i, from PL${i}ra.wo: PL${i}out.wo is the PB rows after the layer. A token's K experts are two programs (expertK_gu.chx, expertK_down.chx), their
+# tables picked by the token's K slots of the router's choice; rows_catPB.chx puts the tokens' sums together.
+block pffn(i)
+    program PL${i}nrm $CHX/rmsnorm_rows.chx r=$PB n=$D eps=0.000001
+    link PL${i}ra.wo -> PL${i}nrm.x
+    resident PL${i}nrm.w $W/m${i}.ffn_norm.f32 $F32
+    if i < 2
+        use pmlp(i, "PL${i}E", "dn", FF, "ones_f")
+    else
+        program PL${i}rt $CHX/matmul_rows_pass.chx m=$PB n=$NE k=$D bm=$PBM
+        link PL${i}nrm.y -> PL${i}rt.x
+        resident PL${i}rt.w $W/m${i}.route.f32 $F32
+        program PL${i}zb $CHX/rows_bias.chx r=$PB n=$NE
+        link PL${i}rt.y -> PL${i}zb.x
+        resident PL${i}zb.w $W/m${i}.bias.f32 $F32
+        program PL${i}rnk $CHX/moe_rank_b.chx r=$PB nq=${NE / 64}
+        link PL${i}zb.y -> PL${i}rnk.yc
+        link PL${i}zb.y -> PL${i}rnk.yr
+        resident PL${i}rnk.ic $W/ar.f32 $F32
+        resident PL${i}rnk.ir $W/ar.f32 $F32
+        program PL${i}pk $CHX/moe_pick_b.chx r=$PB n=$NE k=$K
+        link PL${i}rnk.cnt -> PL${i}pk.cnt
+        link PL${i}rt.y -> PL${i}pk.lg
+        resident PL${i}pk.ar $W/ar.f32 $F32
+        resident PL${i}pk.sl $W/sl.f32 $F32
+        use pmlp(i, "PL${i}S", "sh", EH, "ones_h")
+        repeat b in 0 .. PB
+            program PL${i}G$b $CHX/expert${K}_gu.chx r=$PB b=$b n=$EH k=$D
+            link PL${i}nrm.y -> PL${i}G$b.x
+            resident PL${i}G$b.wg $W/ones_h.f32 $F32
+            if i < 6
+                program PL${i}H$b $CHX/group_sum.chx k=${K * EH} G=32
+                link PL${i}G$b.y -> PL${i}H$b.x
+                program PL${i}D$b $CHX/expert${K}_down41.chx r=$PB b=$b n=$D k=$EH
+                link PL${i}H$b.s -> PL${i}D$b.s
+            else
+                program PL${i}D$b $CHX/expert${K}_down.chx r=$PB b=$b n=$D k=$EH
+            end
+            link PL${i}G$b.y -> PL${i}D$b.a
+            resident PL${i}D$b.wg $W/ones_d.f32 $F32
+            link PL${i}pk.wt -> PL${i}D$b.wt
+            link yPL${i}S.y -> PL${i}D$b.m
+            repeat j in 0 .. K
+                table PL${i}G$b.gq$j $W/m${i}.ex.gate.q4 $NE $I8 by PL${i}pk.idx ${b * K + j}
+                table PL${i}G$b.gs$j $W/m${i}.ex.gate.s $NE $F16 by PL${i}pk.idx ${b * K + j}
+                table PL${i}G$b.uq$j $W/m${i}.ex.up.q4 $NE $I8 by PL${i}pk.idx ${b * K + j}
+                table PL${i}G$b.us$j $W/m${i}.ex.up.s $NE $F16 by PL${i}pk.idx ${b * K + j}
+                table PL${i}D$b.dq$j $W/m${i}.ex.down.q4 $NE $I8 by PL${i}pk.idx ${b * K + j}
+                table PL${i}D$b.ds$j $W/m${i}.ex.down.s $NE $F16 by PL${i}pk.idx ${b * K + j}
+                if i < 6
+                    table PL${i}D$b.dc$j $W/m${i}.ex.down.c $NE $F32 by PL${i}pk.idx ${b * K + j}
+                end
+            end
+        end
+        program PL${i}mo $CHX/rows_cat${PB}.chx n=$D bn=$BN
+        repeat b in 0 .. PB
+            link PL${i}D$b.mo -> PL${i}mo.y$b
+        end
+    end
+    program PL${i}pn $CHX/rmsnorm_rows.chx r=$PB n=$D eps=0.000001
+    if i < 2
+        link yPL${i}E.y -> PL${i}pn.x
+    else
+        link PL${i}mo.o -> PL${i}pn.x
+    end
+    resident PL${i}pn.w $W/m${i}.post_norm.f32 $F32
+    program PL${i}out $CHX/step_add.chx n=${PB * D}
+    link PL${i}ra.wo -> PL${i}out.w
+    link PL${i}pn.y -> PL${i}out.d
+    if SAVE
+        save PL${i}out.wo $X/pout${i}.f32 $F32
+    end
+end
+
+if PASS
+    phase pass $PB
+    # the pass's ids, the request's, as an output the embedding rows are picked by
+    program Pcur $CHX/step_add.chx n=$PB
+    input Pcur.w
+    resident Pcur.d $X/zpb.f32 $F32
+    repeat b in 0 .. PB
+        program Pe$b $CHX/dq_q4.chx n=1 k=$D bn=1 bk=32
+        table Pe$b.wq $W/emb.q4 $V $I8 by Pcur.wo $b
+        table Pe$b.ws $W/emb.s $V $F16 by Pcur.wo $b
+        resident Pe$b.wg $W/one1.f32 $F32
+    end
+    program Pemb $CHX/rows_cat${PB}.chx n=$D bn=$BN
+    repeat b in 0 .. PB
+        link Pe$b.w -> Pemb.y$b
+    end
+    # the layers to the last that stores keys and values: its attention half, and both halves of those before it
+    repeat i in L0 .. L0 + NL
+        if i < L0 + NL - 1 || i % 5 != 4 || i == 4 || i == 19 || i == 24 || i == 29
+            if i % 5 != 4 || i == 4 || i == 19 || i == 24 || i == 29
+                use pattn(i, i)
+            else
+                if i == 49 || i < 29
+                    use pattn(i, 4)
+                else
+                    use pattn(i, 29)
+                end
+            end
+            if i < L0 + NL - 2 || (i < L0 + NL - 1 && ((L0 + NL - 1) % 5 != 4 || L0 + NL == 5 || L0 + NL == 20 || L0 + NL == 25 || L0 + NL == 30))
+                use pffn(i)
+            end
+        end
+    end
+end
 steps
 # GEN=1 answers the id the step chose. ANS=1 answers the row after the last layer every step; ANS=0 the last layer's experts (K numbers), or that row where the last layer is dense.
+if PASS
+    # a pass answers its ids
+    answer Pcur.wo
+end
 if GEN
     if SAMP
         answer aid.tok

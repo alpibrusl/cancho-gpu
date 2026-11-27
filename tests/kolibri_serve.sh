@@ -9,7 +9,9 @@
 #  3. an answer: the ids after the prompt are awk's, it stops at either end token or at the limit, the counts are right, the head comes chunked;
 #  4. the prefix kept: what the session is asked when a request repeats, continues, or parts from the last one; with a ring shorter than the context, when going back is taken and when not;
 #  5. sampling: the numbers on the lines are `kolibri_gpu draws`' of the request's seed, at the steps' positions;
-#  6. a session that refuses stops the server, and the body says so.
+#  6. a session that refuses stops the server, and the body says so;
+#  7. passes (docs/kolibri.md section 20): with `--pass 4` and a session that has the phase, a prompt's tokens go four a line while there are four and one more, from wherever the
+#     session starts, and the answer is the one without passes.
 # What the model answers is not here: that is by hand, on the Metal GPU.
 # KSERVE=<binary> tests another build of the server and builds nothing (build/kolibri_gpu and build/httpc are then there already): the mutants, by hand.
 cd "$(dirname "$0")/.."
@@ -37,7 +39,9 @@ text X = .
 const V = 864
 const NS = 2048
 const SAMP = 0
+const PASS = 0
 text NEXT = next.txt
+text PD = zero4.txt
 program cur $CHX/row_mix.chx n=1 bn=1
 input cur.xt
 resident cur.xe $X/zero.txt
@@ -51,10 +55,19 @@ program nx $CHX/step_add.chx n=1
 table nx.d $X/$NEXT $V by cur.y 0
 table nx.w $X/pos.txt $NS
 carry nx.wo -> cur.xe
+if PASS
+    phase pass 4
+    program pc $CHX/step_add.chx n=4
+    input pc.w
+    resident pc.d $X/$PD
+end
 steps
 answer nx.wo
+if PASS
+    answer pc.wo
+end
 EOM
-echo 0 > "$T/zero.txt"
+echo 0 > "$T/zero.txt"; echo "0 0 0 0" > "$T/zero4.txt"; echo "1 1 1 1" > "$T/one4.txt"
 # an end token after some letters only: the template ends in a newline, whose id would else end every chat answer at once
 NEXT='function nx(i) { return (i % 7 == 3 && i >= 97) ? 858 : 97 + 2 * ((i * 5 + 1) % 12) }'
 awk "$NEXT"' BEGIN { for (i = 0; i < 864; i++) print nx(i) }' > "$T/next.txt"
@@ -301,6 +314,57 @@ ask GET /v1/models "" "Authorization: Bearer wrong"; is "with a key: a wrong one
 ask GET /v1/models "" "Authorization: Bearer s3cret"; is "with a key: the key" "$code" 200
 body '{"prompt":"hi","raw":true,"options":{"num_predict":1}}'; ask POST $G "$T/b.json"; is "with a key: a prompt with none is not run" "$code $(asked | wc -l | tr -d ' ')" "401 0"
 
+# the server's status when it has stopped by itself within ten seconds; 99 when it has not (and it is stopped)
+ended() { w=0; while [ $w -lt 100 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.1; w=$((w + 1)); done; if kill -0 "$pid" 2>/dev/null; then stop; st=99; else st=0; wait "$pid" 2>/dev/null || st=$?; pid=""; fi; }
+# --- 7. passes: the lines a prompt is sent as. awk says them from the ids, where the session starts and the pass's size: a pass while it leaves a token for the last step
+plan() { awk -v k="$2" -v pb=4 '{ id[n++] = $1 } END { while (n - 1 - k >= pb) { printf "pass 1"; for (b = 0; b < pb; b++) printf " %d", id[k + b]; printf "\n"; k += pb } for (; k < n; k++) print 1, id[k], 1 }' "$1"; }
+prompt_lines() { asked | grep -v '^seek' | awk '$1 == "pass" || $3 == 1'; }   # the lines of the prompt's tokens, among what was asked
+LONG='a b c d e f g h i j k l m n o p q r s t u v w x y z'
+start --greedy --max-new 5 --pass 4 PASS=1 || exit 1
+printf '%s' "$LONG" > "$T/p.txt"; ids_of "$T/p.txt" > "$T/p_ids.txt"; npl=$(wc -l < "$T/p_ids.txt" | tr -d ' ')
+awk -v p="$LONG" 'BEGIN { printf "{\"prompt\":\"%s\",\"raw\":true,\"options\":{\"num_predict\":5}}", p }' > "$T/long.json"
+ask POST $G "$T/long.json"; want=$(sim "$T/p_ids.txt" 5)
+is "a prompt of $npl tokens in passes of 4: the lines are awk's ($(( (npl - 1) / 4 )) passes, then the steps)" "$(prompt_lines)" "$(plan "$T/p_ids.txt" 0)"
+is "its answer is awk's, which knows no pass, and its counts" "$code $npl $(field prompt_eval_count) $(field response) $(field eval_count)" "200 $npl $npl ${want% *}"
+[ "$(prompt_lines | grep -c '^pass')" -ge 3 ] && [ "$(prompt_lines | grep -vc '^pass')" -ge 1 ] || { echo "FAIL the long prompt gives $(prompt_lines | grep -c '^pass') passes: the case shows nothing"; fail=1; }
+ask POST $G "$T/long.json"
+is "the same request again: back to its last token's step, no pass" "$(asked | head -2 | tr '\n' ';') $(asked | grep -c '^pass')" "seek $((npl - 1));1 $(tail -1 "$T/p_ids.txt") 1; 0"
+# a prompt that parts from it: from where they part, passes again
+for k in 9 5 4; do
+  awk -v p="$LONG" -v k="$k" 'BEGIN { n = split(p, w, " "); for (i = 1; i <= n; i++) printf "%s%s", (i > n - k ? "Z" : w[i]), (i < n ? " " : "") }' > "$T/p2.txt"
+  ids_of "$T/p2.txt" > "$T/p2_ids.txt"; part=$(paste "$T/p2_ids.txt" "$T/p_ids.txt" | awk '$1 != $2 { exit } { n++ } END { print n + 0 }'); np2=$(wc -l < "$T/p2_ids.txt" | tr -d ' ')
+  awk -v p="$(cat "$T/p2.txt")" 'BEGIN { printf "{\"prompt\":\"%s\",\"raw\":true,\"options\":{\"num_predict\":5}}", p }' > "$T/b2.json"
+  ask POST $G "$T/long.json"; ask POST $G "$T/b2.json"; want=$(sim "$T/p2_ids.txt" 5)
+  is "the last $k words changed ($part of $np2 ids kept): back to there, then awk's lines ($(plan "$T/p2_ids.txt" "$part" | grep -c '^pass') passes), and awk's answer" "$(asked | head -1);$(prompt_lines);$(field response) $(field eval_count)" "seek $part;$(plan "$T/p2_ids.txt" "$part");${want% *}"
+  field eval_count >> "$T/left.txt"
+done
+[ "$(sort -n "$T/left.txt" | tail -1)" -ge 1 ] || { echo "FAIL none of the prompts that part has an answer of a token or more: awk's answer was compared with nothing"; fail=1; }
+# the edge: with exactly four tokens to run and one more, a pass; with exactly four, steps
+: > "$T/edge.txt"
+for pe in "a b c d" "x y z" "one two three" "a b c d e"; do
+  printf '%s' "$pe" > "$T/pe.txt"; ids_of "$T/pe.txt" > "$T/pe_ids.txt"; npe=$(wc -l < "$T/pe_ids.txt" | tr -d ' ')
+  awk -v p="$(cat "$T/pe.txt")" 'BEGIN { printf "{\"prompt\":\"%s\",\"raw\":true,\"options\":{\"num_predict\":1}}", p }' > "$T/be.json"
+  reset; ask POST $G "$T/be.json"
+  [ "$(prompt_lines)" = "$(plan "$T/pe_ids.txt" 0)" ] && echo "$npe $(prompt_lines | grep -c '^pass')" >> "$T/edge.txt" || { echo "FAIL a prompt of $npe tokens: $(prompt_lines | tr '\n' ';')"; fail=1; }
+done
+is "a prompt of 4 tokens is four steps, one of 5 a pass and a step, one of 6 a pass and two" "$(sort -u "$T/edge.txt" | tr '\n' ';')" "4 0;5 1;6 1;"
+# sampling: a step after passes draws with the number of its position
+start --pass 4 PASS=1 SAMP=1 || exit 1
+awk -v p="$LONG" 'BEGIN { printf "{\"prompt\":\"%s\",\"raw\":true,\"options\":{\"num_predict\":3,\"seed\":7}}", p }' > "$T/long.json"
+ask POST $G "$T/long.json"
+np4=$(( (npl - 1) / 4 * 4 ))
+is "a sampling session with passes: the steps after $((np4 / 4)) passes carry the numbers of seed 7 from position $np4 on" "$(asked | awk '$1 != "pass" { print $4 }')" "$(build/kolibri_gpu draws 7 $((npl + 3)) | sed -n "$((np4 + 1)),$((np4 + $(asked | grep -vc '^pass')))p")"
+# a session whose pass answers another id than it was given: the server stops
+start --greedy --pass 4 PASS=1 PD=one4.txt || exit 1
+ask POST $G "$T/long.json"
+ended
+if [ "$code" = 200 ] && grep -q '"type":"server_error"' "$T/body" && [ "$st" -eq 1 ] && grep -q "^error\[kolibri-session\]: the session did not run the pass asked" "$T/err"; then echo "ok   a session whose pass does not answer its first id: said, and the server stops"; else echo "FAIL a pass that answers another id: status $code, exit $st, $(tail -2 "$T/err")"; fail=1; fi
+# a server told of passes whose session has none: the session's refusal
+start --greedy --pass 4 || exit 1
+ask POST $G "$T/long.json"
+ended
+if [ "$st" -eq 1 ] && grep -q "^error\[kolibri-session\]: .pass. is not a count of steps" "$T/err"; then echo "ok   --pass with a session that has no such phase: the session's refusal, and the server stops"; else echo "FAIL --pass with no phase: exit $st, $(tail -2 "$T/err")"; fail=1; fi
+
 # --- 6. a session that refuses: a vocabulary of 800 ids where the template's own ids are over it
 head -800 "$T/next.txt" > "$T/next800.txt"
 start --greedy V=800 NEXT=next800.txt || exit 1
@@ -308,12 +372,12 @@ body '{"prompt":"hi","options":{"num_predict":2}}'; ask POST $G "$T/b.json"
 st=0; wait "$pid" 2>/dev/null || st=$?; pid=""
 if [ "$code" = 200 ] && grep -q '"type":"server_error"' "$T/body" && [ "$st" -eq 1 ] && grep -q "^error\[kolibri-session\]" "$T/err"; then echo "ok   a session that refuses: said in the body, said on standard error, and the server stops with status 1"; else echo "FAIL a session that refuses: status $code, exit $st, $(head -c 200 "$T/body") $(tail -2 "$T/err")"; fail=1; fi
 # the command line
-for a in "" "$TOK" "$TOK $T/toy.model --port 0" "$TOK $T/toy.model --port x" "$TOK $T/toy.model --frob" "$TOK $T/toy.model --ring 4 --window 10" "$TOK $T/toy.model --end 1 --end 2 --end 3"; do
+for a in "" "$TOK" "$TOK $T/toy.model --port 0" "$TOK $T/toy.model --port x" "$TOK $T/toy.model --frob" "$TOK $T/toy.model --ring 4 --window 10" "$TOK $T/toy.model --end 1 --end 2 --end 3" "$TOK $T/toy.model --pass 1" "$TOK $T/toy.model --pass x"; do
   # shellcheck disable=SC2086
   "$B" $a > /dev/null 2> "$T/u.txt"; st=$?
   if [ $st -eq 2 ] && grep -q "^usage: " "$T/u.txt"; then :; else echo "FAIL the arguments \`$a\`: status $st, $(head -c 200 "$T/u.txt")"; fail=1; fi
 done
-echo "ok   seven command lines that are no command line: usage, status 2"
+echo "ok   nine command lines that are no command line: usage, status 2"
 "$B" "$T/none.gguf" "$T/toy.model" --port $port > /dev/null 2> "$T/u.txt"; is "a GGUF that is not there" "$? $(cut -d: -f1 "$T/u.txt" | head -1)" "1 error[kolibri-read]"
 "$B" "$TOK" "$T/none.model" --port $port --end 858 > /dev/null 2> "$T/u.txt"; is "a model file that is not there" "$? $(cut -d: -f1 "$T/u.txt" | head -1)" "1 error[io]"
 "$B" "$TOK" "$T/toy.model" --port $port > /dev/null 2> "$T/u.txt"; is "a GGUF that names no end token, and none given" "$? $(cut -d: -f1 "$T/u.txt" | head -1)" "1 error[kolibri-meta]"
