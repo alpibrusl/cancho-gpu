@@ -1,0 +1,34 @@
+// moe_pick.chx for r rows at once (docs/kolibri.md section 20): row b's k experts and their weights are entries b * k .. (b + 1) * k of idx and wt. A threadgroup a row.
+algo moe_pick_b(r, n, k)
+  in  cnt: f32[r, n]
+  in  lg:  f32[r, n]
+  in  ar:  f32[1, n]
+  in  sl:  f32[k, 1]
+  out idx: f32[r * k]
+  out wt:  f32[r * k]
+{
+  grid b over r
+  let c  = load cnt[b, 0 ; 1, n]
+  let s  = load sl
+  let z  = zeros f32[k, n]
+  let sb = z + s
+  let d  = sb - c
+  let a  = &d + 0.5
+  let zn = zeros f32[k, n]
+  let nd = zn - d
+  let e  = nd + 0.5
+  let sa = step a
+  let st = step e
+  let eq = sa * st
+  let i  = load ar
+  let l  = load lg[b, 0 ; 1, n]
+  let sg = sigmoid l
+  let pi = &eq * i
+  let pw = eq * sg
+  store rowsum pi -> idx[b * k]
+  store rowsum pw -> wt[b * k]
+}
+
+schedule moe_pick_b for apple-m-series { threads 256 }
+schedule moe_pick_b for nvidia-ada     { threads 256 }
+schedule moe_pick_b for amd-cdna3      { threads 256 }

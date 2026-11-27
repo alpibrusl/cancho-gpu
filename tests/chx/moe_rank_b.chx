@@ -1,0 +1,42 @@
+// moe_rank.chx for r rows at once (docs/kolibri.md section 20): the place of each of a row's nq * 64 logits among that row's. The rows are a second grid axis; the tables of the
+// entries' indices (ic, ir) are one row's, shared by all.
+algo moe_rank_b(r, nq)
+  in  yc:  f32[r * nq * 64, 1]
+  in  yr:  f32[r * nq, 64]
+  in  ic:  f32[nq * 64, 1]
+  in  ir:  f32[nq, 64]
+  out cnt: f32[r * nq * 64]
+{
+  grid q over nq, b over r
+  let acc = zeros f32[64, 64]
+  let acc = for p in 0 .. nq with acc {
+    let c  = load yc[(b * nq + q) * 64, 0 ; 64, 1]
+    let z  = zeros f32[64, 64]
+    let cb = z + c
+    let rw = load yr[b * nq + p, 0 ; 1, 64]
+    let d  = cb - rw
+    let zn = zeros f32[64, 64]
+    let dn = zn - &d
+    let gt = step dn
+    let lt = step d
+    let o  = zeros f32[64, 64]
+    let on = o + 1.0
+    let ne = &gt + lt
+    let eq = on - ne
+    let ci = load ic[q * 64, 0 ; 64, 1]
+    let zi = zeros f32[64, 64]
+    let ib = zi + ci
+    let ri = load ir[p, 0 ; 1, 64]
+    let di = ib - ri
+    let ea = step di
+    let ti = eq * ea
+    let a2 = acc + gt
+    yield a2 + ti
+  }
+  let s = rowsum acc
+  store s -> cnt[(b * nq + q) * 64]
+}
+
+schedule moe_rank_b for apple-m-series { threads 256 }
+schedule moe_rank_b for nvidia-ada     { threads 128 }
+schedule moe_rank_b for amd-cdna3      { threads 128 }

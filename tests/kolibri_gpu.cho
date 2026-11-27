@@ -653,16 +653,30 @@ fn meta_float[&m, &t](m: &!m [int], t: &!t [byte], g: int, name: &static [byte])
 }
 
 // NS blocks of `width` f32 to `path`, entry (s, c) of kind `what`: 2 a sliding layer's mask over its window at step s while the window is not full (key c is seen when it is no later than
-// the step and less than a window back), 4 cos, 5 sin, 6 zeros, 7 a one where c <= s (the matrix a cumulative sum is a product with).
+// the step and less than a window back), 4 cos, 5 sin, 6 zeros, 7 a one where c <= s (the matrix a cumulative sum is a product with), 8 ones.
+// A kind over 100 is a pass's masks for a sliding layer (docs/kolibri.md section 20), the pass of `what - 100` tokens: row s is token s mod pass of the pass that starts at position
+// s / pass, over the `width` positions the pass scans, which are the first `width` while the pass ends inside them and, in the last block, the `width` that end with its last token.
 fn table[&m, &t, &f](m: &!m [int], t: &!t [byte], fs: &f Fs(""), file: int, path: int, ns: int, width: int, what: int, window: int, base: float) -> [fs_write(""), file_write] int {
     let sc = m[file + 4];
     var s = 0;
     while s < ns {
+        // the position, among the scanned ones, of the token a pass's row is for
+        var at = 0;
+        if what > 100 {
+            at = s / (what - 100) + s % (what - 100);
+            if s / (what - 100) > width - (what - 100) {
+                at = width - (what - 100) + s % (what - 100);
+            }
+        }
         var c = 0;
         while c < width {
             var x = 0.0;
             if what == 2 && (c > s || c <= s - window) {
                 x = 0.0 - 1000000000.0;
+            } else if what > 100 && (c > at || c <= at - window) {
+                x = 0.0 - 1000000000.0;
+            } else if what == 8 {
+                x = 1.0;
             } else if what == 7 && c <= s {
                 x = 1.0;
             } else if what == 4 || what == 5 {
@@ -810,6 +824,20 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/sin.f32", dir), nst, hd / 2, 5, window, base) < 0;
     // a generating step's: the id before the first
     bad = bad || table(m, t, fs, file, text.f1(m, t, "$/id0.f32", dir), 1, 1, 6, window, base) < 0;
+    // a pass's (docs/kolibri.md section 20), when its tokens are given: its zeros, the cos and sin of a layer with no positions for its rows, and a sliding layer's masks over the
+    // positions a pass scans (the window and the pass's other tokens, rounded up to a multiple of 64): a block for each first position while the pass ends inside them, and one more
+    var ptw = 0;
+    if arg_count(args) >= 8 {
+        let pb = count_of(t, text.from_bytes(m, t, arg(args, 7)));
+        ptw = (window + pb - 1 + 63) / 64 * 64;
+        if pb < 2 || pb > 64 || ptw > tt {
+            return err.fail(m, t, "kolibri-usage", text.lit(m, t, "a pass is 2 to 64 tokens, and the window with them, rounded up to a multiple of 64, no more than the positions"));
+        }
+        bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zpb.f32", dir), 1, pb, 6, window, base) < 0;
+        bad = bad || table(m, t, fs, file, text.f1(m, t, "$/onep.f32", dir), pb, hd / 2, 8, window, base) < 0;
+        bad = bad || table(m, t, fs, file, text.f1(m, t, "$/zerop.f32", dir), pb, hd / 2, 6, window, base) < 0;
+        bad = bad || table(m, t, fs, file, text.f1(m, t, "$/maskp.f32", dir), (ptw - pb + 2) * pb, ptw, 100 + pb, window, base) < 0;
+    }
     if bad {
         return 0 - 1;
     }
@@ -817,6 +845,10 @@ fn inputs[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs
     io.write_all(io, text.bytes(t, text.num(m, t, nst)));
     io.write_all(io, " prompt ");
     io.write_all(io, text.bytes(t, text.num(m, t, ns)));
+    if ptw > 0 {
+        io.write_all(io, " scanned ");
+        io.write_all(io, text.bytes(t, text.num(m, t, ptw)));
+    }
     io.write_all(io, "\n");
     return 0;
 }
@@ -1051,7 +1083,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
     var status = 0 - 2;
     if arg_count(args) == 4 && is_word(arg(args, 1), "weights") {
         status = weights(m, t, io, fs, args);
-    } else if arg_count(args) >= 6 && arg_count(args) <= 7 && is_word(arg(args, 1), "inputs") {
+    } else if arg_count(args) >= 6 && arg_count(args) <= 8 && is_word(arg(args, 1), "inputs") {
         status = inputs(m, t, io, fs, args);
     } else if arg_count(args) == 3 && is_word(arg(args, 1), "argmax") {
         status = argmax(m, t, io, fs, args);
@@ -1065,7 +1097,7 @@ fn run[&m, &t, &i, &f, &a](m: &!m [int], t: &!t [byte], io: &!i Io, fs: &f Fs(""
         status = say(m, t, io, fs, args);
     }
     if status == 0 - 2 {
-        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps>] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
+        io.error_all(io, "error[kolibri-usage]: kolibri_gpu weights <gguf> <dir> | inputs <gguf> <ids file> <dir> <positions> [<steps> [<pass>]] | draws <seed> <count> | argmax <f32 file> | prompt <text file> <effort> [<system file>] | ends <gguf> | say <file>\n");
         return 2;
     }
     if status < 0 || err.failed(m) {

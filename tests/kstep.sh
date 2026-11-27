@@ -132,7 +132,8 @@ BEGIN {
   split("0.5 0.25 1.5 3 0.125 2 0.75 1 4 0.375 6 0.0625 1.25 0.5 3.5 2.5", SC, " ")
   ones("ones_d.f32", D, 1); ones("ones_h.f32", EH, 1); ones("ones_f.f32", D, 1); ones("ones_qkv.f32", (NQ + 2 * NKV) * 128, 1); ones("ones_q.f32", NQ * 128, 1); ones("one64.f32", 64, 1); ones("zero64.f32", 64, 0)
   for (e = 0; e < NE; e++) printf "%d ", e > (W "/ar.f32"); for (j = 0; j < K; j++) printf "%d ", j > (W "/sl.f32")
-  for (l = 0; l < NL; l++) { m0 = 20 * l; idx = (l % 5 == 4); own = (!idx || l == 4)
+  # (a layer more than NL: the runs with a pass, at the end, take NL + 1 layers, so that a layer that reads the caches of another is not the last)
+  for (l = 0; l <= NL; l++) { m0 = 20 * l; idx = (l % 5 == 4); own = (!idx || l == 4)
     vec("a" l ".norm.f32", m0 + 1, D); vec("a" l ".qn.f32", m0 + 2, 128); vec("a" l ".pn.f32", m0 + 4, D); vec("m" l ".ffn_norm.f32", m0 + 5, D); vec("m" l ".post_norm.f32", m0 + 6, D)
     if (own) { vec("a" l ".kn.f32", m0 + 3, 128); emit("a" l ".qkv", m0 + 1, (NQ + 2 * NKV) * 128, D, 0) } else emit("a" l ".q", m0 + 1, NQ * 128, D, 0)
     emit("a" l ".o", m0 + 2, D, NQ * 128, 0)
@@ -300,5 +301,50 @@ same "back to step 5: its row and the next again, exactly" "$T/got.txt" "$T/want
 lines 1 $NSL "$T/want.txt"; lines $((NSL + 9)) $((2 * NSL + 8)) "$T/got.txt"
 same "back to 0 after it: the $NSL steps again, exactly" "$T/got.txt" "$T/want.txt" 0
 [ -s "$T/got.txt" ] || { echo "FAIL the seeks answered nothing: $(head -c 300 "$T/err.txt")"; fail=1; }
+# a prompt several tokens a pass (section 20): the phase `pass` of $PB tokens beside the step, on the same $NSL positions, generating (the rows come from ids). What a pass leaves in the
+# caches is what its tokens' steps leave, so every step after passes answers, and saves, what it does after steps. The pass's own files, as the host writes them: $PB zeros, the cos and
+# sin of a layer with no positions for $PB rows, and a sliding layer's masks over the $PTWL positions a pass scans, a block for each first position to $((PTWL - PB)) and one more.
+# These runs have a layer more than the others ($((NL + 1))): a pass runs no layer after the last that stores keys and values, and with $NL the layer that reads layer 4's caches is that one.
+PB=4; PTWL=8; NL=$((NL + 1))
+# the kernels that have as many parameters as a token has experts or a pass has tokens are written by a script: the files are what it writes
+mkdir "$T/gen"; sh scripts/gen-kolibri-kernels.sh "$T/gen"
+genbad=""; for f in "$T"/gen/*.chx; do cmp -s "$f" "tests/chx/$(basename "$f")" || genbad="$genbad $(basename "$f")"; done
+if [ -z "$genbad" ] && [ "$(ls "$T/gen" | wc -l | tr -d ' ')" = 8 ]; then echo "ok   the 8 kernels of scripts/gen-kolibri-kernels.sh are the files in tests/chx"; else echo "FAIL tests/chx is not what scripts/gen-kolibri-kernels.sh writes:$genbad ($(ls "$T/gen" | wc -l | tr -d ' ') files)"; fail=1; fi
+awk -v PB=$PB -v PTW=$PTWL -v WIN=$WINL -v X="$T/xl" 'BEGIN {
+  for (b = 0; b < PB; b++) { printf "0 " > (X "/zpb.f32"); for (c = 0; c < 64; c++) { printf "1 " > (X "/onep.f32"); printf "0 " > (X "/zerop.f32") } }
+  for (j = 0; j <= PTW - PB + 1; j++) for (b = 0; b < PB; b++) { p = (j <= PTW - PB) ? j + b : PTW - PB + b; for (c = 0; c < PTW; c++) printf "%s ", ((c <= p && c > p - WIN) ? 0 : -1e9) > (X "/maskp.f32") }
+  printf "0 " > (X "/id0.f32") }'
+pid() { echo $((($1 * 397 + 5) % V)); }   # the id at a position: they differ, in many chunks of the vocabulary
+steps() { s=$1; while [ $s -le $2 ]; do echo "1 $(pid $s) 1"; s=$((s + 1)); done; }   # positions $1 to $2 as steps
+pass() { printf 'pass 1'; s=$1; while [ $s -lt $(($1 + PB)) ]; do printf ' %s' "$(pid $s)"; s=$((s + 1)); done; echo; }   # the $PB positions from $1 as a pass
+PASS="GEN=1 PASS=1 PB=$PB PBM=2 PTW=$PTWL"
+keep() { for f in out$((NL - 1)) out4 out0 logits; do col "$T/xl/$f.f32" "$T/$1.$f.txt"; done; }   # the last step's saves of a run
+steps 0 $((NSL - 1)) > "$T/req_p.txt"; REQ="$T/req_p.txt"; CK=1; run $PASS
+keep steps; cp "$T/got_ans.txt" "$T/steps.ids.txt"
+[ "$(wc -l < "$T/steps.ids.txt" | tr -d ' ')" = "$NSL" ] && [ "$(sort -u "$T/steps.ids.txt" | wc -l)" -ge 4 ] || { echo "FAIL the $NSL steps on ids answered $(tr '\n' ' ' < "$T/steps.ids.txt"): $(head -c 300 "$T/err.txt")"; fail=1; }
+after() { # name, the tolerance, the run's lines of answers that are steps' ids (first and last) and the steps they are (first): the ids and the last step's saves against the steps' run
+  lines $3 $4 "$T/got.txt"; sed -n "$(($5 + 1)),$(($5 + 1 + $4 - $3))p" "$T/steps.ids.txt" > "$T/want.txt"
+  same "$1: the ids of the steps after, exactly" "$T/got.txt" "$T/want.txt" 0
+  keep got
+  for f in out$((NL - 1)) out4 out0 logits; do same "$1: $f of the last step" "$T/got.$f.txt" "$T/steps.$f.txt" "$2" > "$T/q.txt"; grep FAIL "$T/q.txt" && fail=1; done
+  same "$1: the last step's logits" "$T/got.logits.txt" "$T/steps.logits.txt" "$2"
+}
+{ pass 0; pass 4; pass 8; steps 12 13; } > "$T/req_p.txt"; run $PASS
+after "three passes of $PB, then two steps" "${KSTEP_PASS_TOL:-0}" 4 5 12
+{ steps 0 0; pass 1; steps 5 5; pass 6; steps 10 13; } > "$T/req_p.txt"; run $PASS
+after "a step, a pass, a step, a pass (from positions 1 and 6: inside the scanned window, and past it), four steps" "${KSTEP_PASS_TOL:-0}" 5 8 10
+{ pass 0; pass 4; echo "seek 2"; pass 2; pass 6; steps 10 13; } > "$T/req_p.txt"; run $PASS
+after "two passes, back to position 2, two passes over what is there, four steps" "${KSTEP_PASS_TOL:-0}" 6 9 10
+{ steps 0 9; echo "seek 3"; pass 3; pass 7; steps 11 13; } > "$T/req_p.txt"; run $PASS
+after "ten steps, back to position 3, two passes over the steps' blocks, three steps" "${KSTEP_PASS_TOL:-0}" 14 16 11
+# a pass's own rows: the last pass's $PB rows after a layer are the rows of its positions' steps
+{ pass 0; pass 4; pass 8; } > "$T/req_p.txt"; run $PASS
+for l in 0 4 $((NL - 2)); do col "$T/xl/pout$l.f32" "$T/pass.$l.txt"; done
+b=0; while [ $b -lt $PB ]; do
+  steps 0 $((8 + b)) > "$T/req_p.txt"; run $PASS
+  for l in 0 4 $((NL - 2)); do col "$T/xl/out$l.f32" "$T/want.txt"; sed -n "$((b * D + 1)),$(((b + 1) * D))p" "$T/pass.$l.txt" > "$T/got.txt"
+    same "the third pass's row $b after layer $l is position $((8 + b))'s step's" "$T/got.txt" "$T/want.txt" "${KSTEP_PASS_TOL:-0}" > "$T/q.txt"; grep FAIL "$T/q.txt" && fail=1; done
+  b=$((b + 1)); done
+[ -s "$T/pass.0.txt" ] && [ "$(wc -l < "$T/pass.$((NL - 2)).txt" | tr -d ' ')" = $((PB * D)) ] && echo "ok   the third pass's rows after layers 0, 4 and $((NL - 2)) (which reads layer 4's caches) are its four positions' steps' rows" || { echo "FAIL the pass saved no rows: $(head -c 300 "$T/err.txt")"; fail=1; }
 [ "$fail" -eq 0 ] && echo "kstep: ok"
 exit $fail

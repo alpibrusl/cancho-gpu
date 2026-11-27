@@ -1,0 +1,22 @@
+// y = x w^T for m rows with ggml Q4_0 weights, the rows bm a threadgroup (docs/kolibri.md section 20): matvec_q4_rows.chx for a pass of several tokens. A threadgroup takes bm rows
+// of x and bn outputs and decodes each weight once for its rows. Measured on the Metal GPU at 7,168 x 2,560: 8 rows at a weight cost twice one row, 32 rows thirty times (every
+// row of x is read at every weight), so the rows are a grid axis and bm stays small. A row's arithmetic is matvec_q4_rows.chx's.
+algo matmul_q4_pass(m, n, k, bm)
+  in  x:  f32[m, k]
+  in  wq: i8[n, k / 2]
+  in  ws: f16[n, k / 32]
+  in  wg: f32[n]
+  out y:  f32[m, n]
+  tile bn
+{
+  grid i over n / bn, j over m / bm
+  let xt = load x[j * bm, 0 ; bm, k]
+  let q  = load wq[i * bn, 0 ; bn, k / 2]
+  let s  = load ws[i * bn, 0 ; bn, k / 32]
+  let g  = load wg[i * bn ; bn]
+  let w  = dequant_q4 q s g 32
+  store matmul_nt xt w -> y[j * bm, i * bn]
+}
+
+schedule matmul_q4_pass for apple-m-series { threads 256 bn 8 }
+schedule matmul_q4_pass for nvidia-ada     { threads 256 bn 8 }

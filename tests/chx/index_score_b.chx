@@ -1,0 +1,20 @@
+// index_score.chx for r queries at once (docs/kolibri.md section 20): row b's first g query heads against key head 0 of the positions sp * ts .. (sp + 1) * ts. q is [r * nq, d].
+algo index_score_b(r, nq, g, nkv, t, ts, d)
+  in  q: f32[r * nq, d]
+  in  k: f32[t, nkv * d]
+  out s: f32[r, t]
+{
+  grid sp over t / ts, b over r
+  let qt = load q[b * nq, 0 ; g, d]
+  let kt = load k[sp * ts, 0 ; ts, d]
+  let pr = matmul_nt qt kt
+  let rl = relu pr
+  let z  = zeros f32[1, g]
+  let on = z + 1.0
+  let cs = matmul on rl
+  store cs * 0.007365695637359871 -> s[b, sp * ts]
+}
+
+schedule index_score_b for apple-m-series { threads 512 }
+schedule index_score_b for nvidia-ada     { threads 128 }
+schedule index_score_b for amd-cdna3      { threads 128 }

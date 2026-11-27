@@ -28,6 +28,7 @@ import kinds;
 import runcmd;
 import model;
 import choose;
+import phase;
 
 // The session record's words.
 pub fn s_progs() -> [] int {
@@ -93,16 +94,24 @@ pub fn bound_block[&m, &t](m: &!m [int], t: &!t [byte], sess: int, tb: int) -> [
         }
         return j;
     }
-    if j >= m[tb + 3] {
-        return err.fail(m, t, "session", text.f3(m, t, "the roll `$` has $ blocks: repetition $ is past them", m[tb + 4], text.num(m, t, m[tb + 3]), text.num(m, t, j)));
+    // in a phase of stride S a repetition is the S blocks from j on: `last` is the last of them
+    let last = j + m[tb + t_span()] - 1;
+    if way == 5 {
+        if last >= m[tb + 3] {
+            return err.fail(m, t, "session", text.n2(m, t, "a spanned table has $ blocks: repetition $ is past them", m[tb + 3], last));
+        }
+        return j;
+    }
+    if last >= m[tb + 3] {
+        return err.fail(m, t, "session", text.f3(m, t, "the roll `$` has $ blocks: repetition $ is past them", m[tb + 4], text.num(m, t, m[tb + 3]), text.num(m, t, last)));
     }
     if way == 2 {
         return j;
     }
-    if j < m[tb + 12] {
+    if last < m[tb + 12] {
         return 0;
     }
-    return j - m[tb + 12] + 1;
+    return last - m[tb + 12] + 1;
 }
 
 // The mask of the `choose` record `tb` for the session's repetition, written into its parameter's numbers from the scores' (both in the interpreter's memory). 0, or -1 with a
@@ -110,23 +119,33 @@ pub fn bound_block[&m, &t](m: &!m [int], t: &!t [byte], sess: int, tb: int) -> [
 pub fn choose_mask[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: int, tb: int) -> [] int {
     let progs = m[sess + s_progs()];
     let j = m[sess + s_count()];
-    if j >= m[tb + 14] {
-        return err.fail(m, t, "session", text.n2(m, t, "a chosen mask has $ entries: repetition $ is past them", m[tb + 14], j));
+    let rows = m[tb + t_span()];
+    if j + rows - 1 >= m[tb + 14] {
+        return err.fail(m, t, "session", text.n2(m, t, "a chosen mask has $ entries: repetition $ is past them", m[tb + 14], j + rows - 1));
     }
     let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
     let sg = mem.get(m, m[mem.get(m, progs, m[tb + 10]) + 2], m[tb + 11]);
-    return choose.mask(fm, m[tb + 2], m[sg + 2], m[g + 2], m[tb + 14], j, m[tb + 3], m[tb + 12], m[tb + 13]);
+    // a phase of stride S: S masks one after another, row b the mask of repetition j + b from row b of the scores
+    var b = 0;
+    while b < rows {
+        let done = choose.mask(fm, m[tb + 2], m[sg + 2] + b * m[tb + 14], m[g + 2] + b * m[tb + 14], m[tb + 14], j + b, m[tb + 3], m[tb + 12], m[tb + 13]);
+        b = b + 1;
+    }
+    return 0;
 }
 
 // Whether the `choose` record `tb` reads its scores at the session's repetition (a device session reads them back only then).
 pub fn choose_reads[&m](m: &!m [int], sess: int, tb: int) -> [] bool {
-    return choose.reads(m[sess + s_count()], m[tb + 3], m[tb + 12], m[tb + 13]);
+    return choose.reads(m[sess + s_count()] + m[tb + t_span()] - 1, m[tb + 3], m[tb + 12], m[tb + 13]);
 }
 
-// The elements of one block of `tb`, whose parameter has `own` elements.
+// The elements of one block of `tb`, whose parameter has `own` elements: a roll's block; of a spanned table, the parameter's over the stride; else the parameter's.
 pub fn bound_stride[&m](m: &!m [int], tb: int, own: int) -> [] int {
-    if m[tb + t_way()] >= 2 {
+    if m[tb + t_way()] == 2 || m[tb + t_way()] == 3 {
         return m[tb + t_stride()];
+    }
+    if m[tb + t_way()] == 5 {
+        return own / m[tb + t_span()];
     }
     return own;
 }
@@ -149,6 +168,31 @@ pub fn s_saves() -> [] int {
 // alias records (root program, root param, program, param): the output of `program` lives in the buffer of the root output (docs/resident.md section 21.4)
 pub fn s_aliases() -> [] int {
     return 10;
+}
+
+// phase records (name, stride): the session's own programs are phase 0, of no name and stride 1 (docs/resident.md section 35)
+pub fn s_phases() -> [] int {
+    return 11;
+}
+
+// the phase the request being answered runs
+pub fn s_phase() -> [] int {
+    return 12;
+}
+
+// A table record's word 15: the stride of the phase its program is in.
+pub fn t_span() -> [] int {
+    return 15;
+}
+
+// The stride of the phase a request runs: how many repetitions of the session one of its repetitions is.
+pub fn stride_now[&m](m: &!m [int], sess: int) -> [] int {
+    return m[mem.get(m, m[sess + s_phases()], m[sess + s_phase()]) + 1];
+}
+
+// Whether program `q` is one of the phase the request runs.
+pub fn runs[&m](m: &!m [int], sess: int, q: int) -> [] bool {
+    return m[mem.get(m, m[sess + s_progs()], q) + 4] == m[sess + s_phase()];
 }
 
 fn space(c: int) -> [] bool {
@@ -296,6 +340,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     let window_raw = mem.list(m);
     let save_raw = mem.list(m);
     let alias_raw = mem.list(m);
+    // (name, stride, line, programs listed so far when it began): phase 0 is the session's own programs
+    let phases = mem.list(m);
+    mem.push(m, phases, mem.rec4(m, text.lit(m, t, ""), 1, 0, 0));
     var steps = 0;
     var pos = 0;
     var lineno = 0;
@@ -325,7 +372,12 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     mem.push(m, consts, c);
                     w = w + 1;
                 }
-                mem.push(m, progs_raw, mem.rec4(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno));
+                mem.push(m, progs_raw, mem.rec5(m, mem.get(m, words, 1), mem.get(m, words, 2), consts, lineno, mem.size(m, phases) - 1));
+            } else if text.is(t, head, "phase") {
+                let pr = phase.line(m, t, words, phases, mem.size(m, progs_raw), lineno);
+                if pr < 0 {
+                    return 0 - 1;
+                }
             } else if text.is(t, head, "resident") {
                 if nw != 3 && !(nw == 4 && (text.is(t, mem.get(m, words, 3), "f32") || text.is(t, mem.get(m, words, 3), "f16") || text.is(t, mem.get(m, words, 3), "i8"))) {
                     return bad(m, t, lineno, text.lit(m, t, "resident PROGRAM.PARAM FILE [f32|f16|i8]"));
@@ -408,9 +460,13 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                     // `hold` at the end: past its last block the table stays at it, where a table goes round (docs/resident.md section 33)
                     nt = nw - 1;
                     hold = 1;
+                } else if nw >= 5 && text.is(t, mem.get(m, words, nw - 1), "span") {
+                    // `span` at the end: the parameter is as many blocks one after another as its phase's stride (docs/resident.md section 35)
+                    nt = nw - 1;
+                    hold = 5;
                 }
                 if nt != 4 && !(nt == 5 && (text.is(t, mem.get(m, words, 4), "f32") || text.is(t, mem.get(m, words, 4), "f16") || text.is(t, mem.get(m, words, 4), "i8"))) {
-                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [hold | by PROGRAM.OUT SLOT]"));
+                    return bad(m, t, lineno, text.lit(m, t, "table PROGRAM.PARAM FILE BLOCKS [f32|f16|i8] [hold | span | by PROGRAM.OUT SLOT]"));
                 }
                 let (pn, an) = dotted(m, t, mem.get(m, words, 1));
                 if pn < 0 {
@@ -533,7 +589,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
                 }
                 steps = 1;
             } else {
-                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, store, window, choose, steps, save, alias)", head));
+                return bad(m, t, lineno, text.f1(m, t, "`$` is not a directive (program, resident, link, input, answer, carry, table, store, window, choose, steps, save, alias, phase)", head));
             }
         }
     }
@@ -542,6 +598,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
     }
     if mem.size(m, answer_raw) == 0 {
         return bad(m, t, lineno, text.lit(m, t, "the session has no answer"));
+    }
+    if phase.complete(m, t, phases, mem.size(m, progs_raw), steps) < 0 {
+        return 0 - 1;
     }
 
     // Compile every program once: records (name, prog, globals).
@@ -589,7 +648,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if globals < 0 {
             return 0 - 1;
         }
-        mem.push(m, progs, mem.rec4(m, m[raw], prog, globals, lowered));
+        mem.push(m, progs, mem.rec5(m, m[raw], prog, globals, lowered, m[raw + 4]));
         i = i + 1;
     }
 
@@ -677,6 +736,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if sp >= dp {
             return bad(m, t, m[raw + 4], text.lit(m, t, "a link goes from a program to one listed after it"));
         }
+        if phase.apart(m, t, progs, sp, dp, m[raw + 4], "a link") {
+            return 0 - 1;
+        }
         let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
         let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
         if m[gs + 3] != m[gd + 3] {
@@ -709,6 +771,15 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         m[cell] = 4;
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        // one block's elements: the parameter's, or with `span` the parameter's over its phase's stride
+        let pst = phase.stride(m, phases, progs, pi);
+        var bel = m[g + 3];
+        if m[raw + 9] == 5 {
+            if m[g + 3] % pst != 0 {
+                return bad(m, t, m[raw + 4], text.f2(m, t, "`$` has $ elements: a spanned parameter is a whole number of blocks for each of its phase's stride", m[raw + 1], text.num(m, t, m[g + 3])));
+            }
+            bel = m[g + 3] / pst;
+        }
         // a picked table: the output that names the block belongs to a program listed before the table's, and has the slot
         var sp0 = 0 - 1;
         var sa0 = 0;
@@ -722,6 +793,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             }
             if sp >= pi {
                 return bad(m, t, m[raw + 4], text.f2(m, t, "`$` is picked by `$`, which is not listed before it", m[raw], m[raw + 6]));
+            }
+            if phase.apart(m, t, progs, sp, pi, m[raw + 4], "a pick") {
+                return 0 - 1;
             }
             let sg = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
             if m[raw + 8] >= m[sg + 3] {
@@ -741,28 +815,30 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
             }
             let dtb = table_rec(m, pi, ai, 0 - 1, m[raw + 3], m[raw + 2], sp0, sa0, m[raw + 8]);
             m[dtb + t_way()] = m[raw + 9];
+            m[dtb + t_span()] = pst;
             mem.push(m, tables, dtb);
         }
         if !direct {
-            let whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
+            let whole = interp.falloc(m, fm, bel * m[raw + 3]);
             if whole < 0 {
                 return err.fail(m, t, "session", text.lit(m, t, "the table does not fit the interpreter's memory"));
             }
             var loaded = 0;
             if m[raw + 5] == 3 {
-                loaded = runcmd.load_i8(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+                loaded = runcmd.load_i8(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, bel * m[raw + 3]);
             } else if m[raw + 5] == 2 {
-                loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+                loaded = runcmd.load_f16(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, bel * m[raw + 3]);
             } else if m[raw + 5] == 1 {
-                loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+                loaded = runcmd.load_f32(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, bel * m[raw + 3]);
             } else {
-                loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, m[g + 3] * m[raw + 3]);
+                loaded = runcmd.load_one(m, t, fm, fs, text.bytes(t, m[raw + 2]), m[raw + 1], ir.param_dtype(m, prm), whole, bel * m[raw + 3]);
             }
             if loaded < 0 {
                 return 0 - 1;
             }
             let ctb = table_rec(m, pi, ai, whole, m[raw + 3], 0, sp0, sa0, m[raw + 8]);
             m[ctb + t_way()] = m[raw + 9];
+            m[ctb + t_span()] = pst;
             mem.push(m, tables, ctb);
         }
         i = i + 1;
@@ -781,34 +857,59 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if !ir.param_writable(m, prm) {
             return bad(m, t, m[raw + 4], text.f1(m, t, "`$` is not written by its kernel: a roll stores an output", m[raw + 1]));
         }
+        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
+        // in a phase of stride S the output is S blocks of the roll
+        let pst = phase.stride(m, phases, progs, pi);
+        if m[g + 3] % pst != 0 {
+            return bad(m, t, m[raw + 4], text.f2(m, t, "`$` has $ elements: a stored output is a block for each of its phase's stride", m[raw + 1], text.num(m, t, m[g + 3])));
+        }
+        // the roll's first store, when another phase stored it before: the same buffer, and it must be the same roll
+        var first = 0 - 1;
         var k = 0;
         while k < mem.size(m, rolls) {
             let other = mem.get(m, rolls, k);
-            if text.eq(t, m[other + 4], m[raw + 2]) {
-                return bad(m, t, m[raw + 4], text.f1(m, t, "the roll `$` is stored twice", m[raw + 2]));
-            }
             if m[other] == pi && m[other + 1] == ai {
                 return bad(m, t, m[raw + 4], text.f2(m, t, "`$.$` is stored twice", m[raw], m[raw + 1]));
             }
+            if text.eq(t, m[other + 4], m[raw + 2]) {
+                if m[mem.get(m, progs, m[other]) + 4] == m[mem.get(m, progs, pi) + 4] {
+                    return bad(m, t, m[raw + 4], text.f1(m, t, "the roll `$` is stored twice", m[raw + 2]));
+                }
+                if m[other + 3] != m[raw + 3] || m[other + t_stride()] != m[g + 3] / pst {
+                    return bad(m, t, m[raw + 4], text.f1(m, t, "the roll `$` is stored in another phase with other blocks, or blocks of another size", m[raw + 2]));
+                }
+                let oprm = mem.get(m, ir.p_params(m, m[mem.get(m, progs, m[other]) + 1]), m[other + 1]);
+                if ir.param_dtype(m, oprm) != ir.param_dtype(m, prm) {
+                    return bad(m, t, m[raw + 4], text.f1(m, t, "the roll `$` is stored in another phase with another element type", m[raw + 2]));
+                }
+                if first < 0 {
+                    first = other;
+                }
+            }
             k = k + 1;
         }
-        let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
         var whole = 0 - 1;
-        if !device {
-            whole = interp.falloc(m, fm, m[g + 3] * m[raw + 3]);
+        if first >= 0 {
+            whole = m[first + 2];
+        } else if !device {
+            whole = interp.falloc(m, fm, m[g + 3] / pst * m[raw + 3]);
             if whole < 0 {
                 return err.fail(m, t, "session", text.lit(m, t, "the roll does not fit the interpreter's memory"));
             }
             var e = 0;
-            while e < m[g + 3] * m[raw + 3] {
+            while e < m[g + 3] / pst * m[raw + 3] {
                 fm[whole + e] = 0.0;
                 e = e + 1;
             }
         }
         let rtb = table_rec(m, pi, ai, whole, m[raw + 3], m[raw + 2], 0 - 1, 0, 0);
         m[rtb + t_way()] = 2;
-        m[rtb + t_stride()] = m[g + 3];
+        m[rtb + t_stride()] = m[g + 3] / pst;
+        m[rtb + t_span()] = pst;
         m[rtb + t_roll()] = mem.size(m, rolls);
+        if first >= 0 {
+            m[rtb + t_roll()] = m[first + t_roll()];
+        }
         mem.push(m, rolls, rtb);
         mem.push(m, tables, rtb);
         i = i + 1;
@@ -831,15 +932,22 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         m[cell] = 5;
         var roll = 0 - 1;
+        var named = false;
         var k = 0;
         while k < mem.size(m, rolls) {
             if text.eq(t, m[mem.get(m, rolls, k) + 4], m[raw + 2]) {
-                roll = mem.get(m, rolls, k);
+                named = true;
+                if m[mem.get(m, progs, m[mem.get(m, rolls, k)]) + 4] == m[mem.get(m, progs, pi) + 4] {
+                    roll = mem.get(m, rolls, k);
+                }
             }
             k = k + 1;
         }
-        if roll < 0 {
+        if !named {
             return bad(m, t, m[raw + 3], text.f1(m, t, "`$` is not a roll of the session (store PROGRAM.OUT ROLL BLOCKS)", m[raw + 2]));
+        }
+        if roll < 0 {
+            return bad(m, t, m[raw + 3], text.f1(m, t, "the roll `$` is not stored in the window's phase", m[raw + 2]));
         }
         if m[roll] >= pi {
             return bad(m, t, m[raw + 3], text.f2(m, t, "the roll `$` is stored by `$`, which is not listed before its reader", m[raw + 2], m[mem.get(m, progs, m[roll])]));
@@ -857,6 +965,7 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         m[wtb + t_way()] = 3;
         m[wtb + t_stride()] = stride;
         m[wtb + t_roll()] = m[roll + t_roll()];
+        m[wtb + t_span()] = m[roll + t_span()];
         m[wtb + 12] = m[g + 3] / stride;
         mem.push(m, tables, wtb);
         i = i + 1;
@@ -883,6 +992,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         }
         if dp > sp {
             return bad(m, t, m[raw + 4], text.lit(m, t, "a carry goes from a program to one listed at or before it"));
+        }
+        if phase.apart(m, t, progs, sp, dp, m[raw + 4], "a carry") {
+            return 0 - 1;
         }
         let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
         let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
@@ -947,6 +1059,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if sp >= pi {
             return bad(m, t, m[raw + 7], text.f2(m, t, "`$` is chosen by `$`, which is not listed before it", m[raw], m[raw + 2]));
         }
+        if phase.apart(m, t, progs, sp, pi, m[raw + 7], "a choice") {
+            return 0 - 1;
+        }
         let g = mem.get(m, m[mem.get(m, progs, pi) + 2], ai);
         let sg = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
         if m[sg + 3] != m[g + 3] {
@@ -966,7 +1081,13 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         m[ctb + 11] = sa;
         m[ctb + 12] = m[raw + 5];
         m[ctb + 13] = m[raw + 6];
-        m[ctb + 14] = m[g + 3];
+        // in a phase of stride S the mask is S rows, one for each repetition of the session
+        let pst = phase.stride(m, phases, progs, pi);
+        if m[g + 3] % pst != 0 {
+            return bad(m, t, m[raw + 7], text.f2(m, t, "`$` has $ entries: a chosen mask is a row for each of its phase's stride", m[raw + 1], text.num(m, t, m[g + 3])));
+        }
+        m[ctb + t_span()] = pst;
+        m[ctb + 14] = m[g + 3] / pst;
         mem.push(m, tables, ctb);
         i = i + 1;
     }
@@ -1089,6 +1210,9 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         if sp >= dp {
             return bad(m, t, m[raw + 4], text.lit(m, t, "an alias goes from a program to one listed after it"));
         }
+        if phase.apart(m, t, progs, sp, dp, m[raw + 4], "an alias") {
+            return 0 - 1;
+        }
         let gs = mem.get(m, m[mem.get(m, progs, sp) + 2], sa);
         let gd = mem.get(m, m[mem.get(m, progs, dp) + 2], da);
         if m[gs] != m[gd] || m[gs + 3] != m[gd + 3] {
@@ -1207,7 +1331,12 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
         return err.fail(m, t, "session", text.lit(m, t, "a roll is for a session file with `steps`: its block is the repetition's"));
     }
 
-    let sess = mem.rec(m, 11);
+    if phase.answered(m, t, phases, progs, answers) < 0 {
+        return 0 - 1;
+    }
+    let sess = mem.rec(m, 13);
+    m[sess + s_phases()] = phases;
+    m[sess + s_phase()] = 0;
     m[sess + s_progs()] = progs;
     m[sess + s_resident()] = resident;
     m[sess + s_links()] = links;
@@ -1225,7 +1354,8 @@ pub fn open[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], fs: &f
 // The program `pname`'s parameter `aname`: (program index, parameter index, the parameter), or (-1, -1, -1) with a refusal.
 // A table's record (s_tables).
 fn table_rec[&m](m: &!m [int], pi: int, ai: int, whole: int, blocks: int, file: int, sp: int, sa: int, slot: int) -> [] int {
-    let r = mem.rec(m, 15);
+    let r = mem.rec(m, 16);
+    m[r + 15] = 1;
     m[r + 9] = 0;
     m[r + 10] = 0;
     m[r + 11] = 0;
@@ -1403,7 +1533,9 @@ pub fn input_count[&m](m: &!m [int], sess: int) -> [] int {
     while i < mem.size(m, inputs) {
         let rec = mem.get(m, inputs, i);
         let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
-        total = total + m[g + 3];
+        if runs(m, sess, m[rec]) {
+            total = total + m[g + 3];
+        }
         i = i + 1;
     }
     return total;
@@ -1423,7 +1555,7 @@ pub fn fill_inputs[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], ses
         let g = mem.get(m, m[mem.get(m, progs, m[rec]) + 2], m[rec + 1]);
         let dt = ir.param_dtype(m, mem.get(m, ir.p_params(m, prog), m[rec + 1]));
         var j = 0;
-        while j < m[g + 3] {
+        while j < m[g + 3] && runs(m, sess, m[rec]) {
             while pos < n && space(text.at(t, line, pos)) {
                 pos = pos + 1;
             }
@@ -1460,8 +1592,12 @@ pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: i
     let tables = m[sess + s_tables()];
     var q = 0;
     while q < mem.size(m, progs) {
-        // a picked table of this program: the block its output's slot names, now that the output's program has run
+        // a program of another phase than the request's does not run
         var pk = 0;
+        if !runs(m, sess, q) {
+            pk = mem.size(m, tables);
+        }
+        // a picked table of this program: the block its output's slot names, now that the output's program has run
         while pk < mem.size(m, tables) {
             let tb = mem.get(m, tables, pk);
             if m[tb] == q && m[tb + 5] >= 0 {
@@ -1483,7 +1619,7 @@ pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: i
         var l = 0;
         while l < mem.size(m, links) {
             let link = mem.get(m, links, l);
-            if m[link + 2] == q {
+            if m[link + 2] == q && runs(m, sess, q) {
                 let sp = mem.get(m, progs, m[link]);
                 let dp = mem.get(m, progs, q);
                 let gs = mem.get(m, m[sp + 2], m[link + 1]);
@@ -1499,6 +1635,9 @@ pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: i
         }
         // a window of this program: the blocks of the roll that end with the repetition's; and a store's block must exist before its program runs
         pk = 0;
+        if !runs(m, sess, q) {
+            pk = mem.size(m, tables);
+        }
         while pk < mem.size(m, tables) {
             let tb = mem.get(m, tables, pk);
             if m[tb] == q && m[tb + t_way()] == 4 {
@@ -1524,11 +1663,14 @@ pub fn run_cpu[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess: i
             pk = pk + 1;
         }
         let cur = mem.get(m, progs, q);
-        if interp.execute(m, t, fm, m[cur + 1], m[cur + 2]) < 0 {
+        if runs(m, sess, q) && interp.execute(m, t, fm, m[cur + 1], m[cur + 2]) < 0 {
             return 0 - 1;
         }
-        // a store of this program: its output is the roll's block of the repetition
+        // a store of this program: its output is the roll's block of the repetition (in a phase of stride S, its S blocks from there)
         pk = 0;
+        if !runs(m, sess, q) {
+            pk = mem.size(m, tables);
+        }
         while pk < mem.size(m, tables) {
             let tb = mem.get(m, tables, pk);
             if m[tb] == q && m[tb + t_way()] == 2 {
@@ -1559,7 +1701,7 @@ pub fn print_answers[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float
         let (scale_a, scale_b) = (f32.from_bits(m[a + 2]), f32.from_bits(m[a + 3]));
         let scratch = m[mem.text_slot()];
         var j = 0;
-        while j < m[g + 3] {
+        while j < m[g + 3] && runs(m, sess, m[a]) {
             if !first {
                 io.write_all(io, " ");
             }
@@ -1577,6 +1719,7 @@ pub fn print_answers[&m, &t, &x, &i](m: &!m [int], t: &!t [byte], fm: &!x [float
 
 // With `steps`, the request starts with the count of repetitions: (that count, the rest of the line), or (-1, the line) with a refusal. Without it, (1, the line).
 pub fn take_steps[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> [] (int, int) {
+    m[sess + s_phase()] = 0;
     if m[sess + s_steps()] == 0 {
         return (1, line);
     }
@@ -1585,9 +1728,24 @@ pub fn take_steps[&m, &t](m: &!m [int], t: &!t [byte], sess: int, line: int) -> 
     while pos < n && space(text.at(t, line, pos)) {
         pos = pos + 1;
     }
-    let start = pos;
+    var start = pos;
     while pos < n && !space(text.at(t, line, pos)) {
         pos = pos + 1;
+    }
+    // a request that starts with a phase's name runs that phase: its count is the next word (docs/resident.md section 35)
+    let named = phase.named(m, t, m[sess + s_phases()], text.sub(line, start, pos));
+    if named < 0 {
+        return (0 - 1, line);
+    }
+    if named > 0 {
+        m[sess + s_phase()] = named;
+        while pos < n && space(text.at(t, line, pos)) {
+            pos = pos + 1;
+        }
+        start = pos;
+        while pos < n && !space(text.at(t, line, pos)) {
+            pos = pos + 1;
+        }
     }
     if start == pos {
         let r = err.fail(m, t, "session", text.lit(m, t, "the request starts with the count of steps, and holds nothing"));
@@ -1613,12 +1771,18 @@ pub fn run_steps[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess:
             let tb = mem.get(m, tables, k);
             let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
             var from = m[tb + 2];
-            if m[tb + t_way()] < 2 && m[tb + 5] < 0 {
-                from = from + m[g + 3] * bound_block(m, t, sess, tb);
+            // a table that steps, holds or spans (not a picked one, a roll or a chosen mask), of a program of the request's phase
+            let plain = (m[tb + t_way()] < 2 || m[tb + t_way()] == 5) && m[tb + 5] < 0 && runs(m, sess, m[tb]);
+            if plain {
+                let block = bound_block(m, t, sess, tb);
+                if block < 0 {
+                    return 0 - 1;
+                }
+                from = from + bound_stride(m, tb, m[g + 3]) * block;
             }
             var e = 0;
             // a picked table is read when its program is about to run (run_cpu), not here; so is a window, and a store is written when its program has run
-            while e < m[g + 3] && m[tb + 5] < 0 && m[tb + t_way()] < 2 {
+            while e < m[g + 3] && plain {
                 fm[m[g + 2] + e] = fm[from + e];
                 e = e + 1;
             }
@@ -1633,13 +1797,13 @@ pub fn run_steps[&m, &t, &x](m: &!m [int], t: &!t [byte], fm: &!x [float], sess:
             let gs = mem.get(m, m[mem.get(m, progs, m[c]) + 2], m[c + 1]);
             let gd = mem.get(m, m[mem.get(m, progs, m[c + 2]) + 2], m[c + 3]);
             var e = 0;
-            while e < m[gd + 3] {
+            while e < m[gd + 3] && runs(m, sess, m[c]) {
                 fm[m[gd + 2] + e] = fm[m[gs + 2] + e];
                 e = e + 1;
             }
             k = k + 1;
         }
-        m[sess + s_count()] = m[sess + s_count()] + 1;
+        m[sess + s_count()] = m[sess + s_count()] + stride_now(m, sess);
         j = j + 1;
     }
     return 0;
@@ -1677,12 +1841,16 @@ pub fn print_count[&m, &t, &i](m: &!m [int], t: &!t [byte], io: &!i Io, sess: in
 // The first value of the first `answer`, as a request's line would print it (0 when the session has no answer).
 pub fn first_answer[&m, &x](m: &!m [int], fm: &!x [float], sess: int) -> [] float {
     let answers = m[sess + s_answers()];
-    if mem.size(m, answers) == 0 {
-        return 0.0;
+    var k = 0;
+    while k < mem.size(m, answers) {
+        let a = mem.get(m, answers, k);
+        if runs(m, sess, m[a]) {
+            let g = mem.get(m, m[mem.get(m, m[sess + s_progs()], m[a]) + 2], m[a + 1]);
+            return fm[m[g + 2]] * f32.from_bits(m[a + 2]) / f32.from_bits(m[a + 3]);
+        }
+        k = k + 1;
     }
-    let a = mem.get(m, answers, 0);
-    let g = mem.get(m, m[mem.get(m, m[sess + s_progs()], m[a]) + 2], m[a + 1]);
-    return fm[m[g + 2]] * f32.from_bits(m[a + 2]) / f32.from_bits(m[a + 3]);
+    return 0.0;
 }
 
 // A request line answered to its caller and not printed (the server of `docs/kolibri.md` section 18), on the CPU interpreter: a `seek`, whose answer is the repetition number, or steps,

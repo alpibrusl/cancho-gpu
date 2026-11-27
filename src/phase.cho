@@ -1,0 +1,108 @@
+edition 5;
+module phase;
+
+// `phase` -- the session directive `phase NAME STRIDE` (docs/resident.md section 35; docs/kolibri.md section 20): the programs after the line are a set of their own, which a
+// request `NAME N ...` runs alone, and one repetition of which is STRIDE repetitions of the session. The session's own programs, before the first `phase` line, are phase 0, of
+// no name and stride 1. This module holds what the session file's reading asks about phases; `src/session.cho` keeps the list and runs the programs.
+//
+// A phase's record is (name, stride, the line, the programs listed when it began). A program's record has its phase's number as word 4.
+
+import mem;
+import text;
+import err;
+import runcmd;
+
+fn bad[&m, &t](m: &!m [int], t: &!t [byte], line: int, msg: int) -> [] int {
+    return err.fail(m, t, "session", text.f2(m, t, "line $: $", text.num(m, t, line), msg));
+}
+
+// The line `phase NAME STRIDE`, its words in `words`: the phase is added to `phases`. 0, or -1 with a refusal.
+pub fn line[&m, &t](m: &!m [int], t: &!t [byte], words: int, phases: int, programs: int, lineno: int) -> [] int {
+    if mem.size(m, words) != 3 {
+        return bad(m, t, lineno, text.lit(m, t, "phase NAME STRIDE"));
+    }
+    let name = mem.get(m, words, 1);
+    let (isnum, nv) = runcmd.number(m, t, name);
+    if isnum || text.is(t, name, "seek") || text.is(t, name, "checkpoint") || text.is(t, name, "reload") || text.is(t, name, "copy") {
+        return bad(m, t, lineno, text.f1(m, t, "`$` cannot name a phase: a request that starts with it is a count or a request of the session's", name));
+    }
+    var k = 1;
+    while k < mem.size(m, phases) {
+        if text.eq(t, m[mem.get(m, phases, k)], name) {
+            return bad(m, t, lineno, text.f1(m, t, "the phase `$` is named twice", name));
+        }
+        k = k + 1;
+    }
+    let (ok, v) = runcmd.number(m, t, mem.get(m, words, 2));
+    if !ok || v < 1.0 || v > 65536.0 || float_of(truncate(v)) != v {
+        return bad(m, t, lineno, text.lit(m, t, "the stride of a phase is a whole number from 1 to 65,536"));
+    }
+    let last = mem.get(m, phases, mem.size(m, phases) - 1);
+    if m[last + 3] == programs {
+        return bad(m, t, lineno, text.lit(m, t, "a phase line follows no program: the session's own programs, and each phase's, are one or more"));
+    }
+    mem.push(m, phases, mem.rec4(m, name, truncate(v), lineno, programs));
+    return 0;
+}
+
+// After the last line: the last phase has a program, and a session with a phase has `steps`. 0, or -1 with a refusal.
+pub fn complete[&m, &t](m: &!m [int], t: &!t [byte], phases: int, programs: int, steps: int) -> [] int {
+    if mem.size(m, phases) == 1 {
+        return 0;
+    }
+    let last = mem.get(m, phases, mem.size(m, phases) - 1);
+    if m[last + 3] == programs {
+        return bad(m, t, m[last + 2], text.f1(m, t, "the phase `$` has no program", m[last]));
+    }
+    if steps == 0 {
+        return err.fail(m, t, "session", text.lit(m, t, "a phase is for a session file with `steps`: its stride is in repetitions"));
+    }
+    return 0;
+}
+
+// The stride of the phase program `pi` is in.
+pub fn stride[&m](m: &!m [int], phases: int, progs: int, pi: int) -> [] int {
+    return m[mem.get(m, phases, m[mem.get(m, progs, pi) + 4]) + 1];
+}
+
+// Whether the programs `a` and `b` are of two phases: then true, with a refusal that names what joins them (`a link`, `a carry`, ...).
+pub fn apart[&m, &t](m: &!m [int], t: &!t [byte], progs: int, a: int, b: int, lineno: int, what: &static [byte]) -> [] bool {
+    if m[mem.get(m, progs, a) + 4] == m[mem.get(m, progs, b) + 4] {
+        return false;
+    }
+    let r = bad(m, t, lineno, text.f3(m, t, "$ joins `$` and `$`, which are of two phases: a program reads what its own phase wrote", text.lit(m, t, what), m[mem.get(m, progs, a)], m[mem.get(m, progs, b)]));
+    return true;
+}
+
+// Every phase has an answer (`answers` holds records whose first word is a program). 0, or -1 with a refusal.
+pub fn answered[&m, &t](m: &!m [int], t: &!t [byte], phases: int, progs: int, answers: int) -> [] int {
+    var p = 0;
+    while p < mem.size(m, phases) {
+        var have = false;
+        var k = 0;
+        while k < mem.size(m, answers) {
+            have = have || m[mem.get(m, progs, m[mem.get(m, answers, k)]) + 4] == p;
+            k = k + 1;
+        }
+        if !have && p == 0 {
+            return err.fail(m, t, "session", text.lit(m, t, "the session's own programs, before the first phase, have no answer"));
+        }
+        if !have {
+            return bad(m, t, m[mem.get(m, phases, p) + 2], text.f1(m, t, "the phase `$` has no answer", m[mem.get(m, phases, p)]));
+        }
+        p = p + 1;
+    }
+    return 0;
+}
+
+// The phase a request's first word names: its number (1 or more), or 0 when the word names none (it is then the count of the session's own programs).
+pub fn named[&m, &t](m: &!m [int], t: &!t [byte], phases: int, word: int) -> [] int {
+    var k = 1;
+    while k < mem.size(m, phases) {
+        if text.eq(t, m[mem.get(m, phases, k)], word) {
+            return k;
+        }
+        k = k + 1;
+    }
+    return 0;
+}

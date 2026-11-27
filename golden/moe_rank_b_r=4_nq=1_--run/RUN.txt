@@ -1,0 +1,3 @@
+nvidia-ada: cnt [256] = mean 31.4883, peak 64.0000, first [64.0, 64.0, 24.0, 20.0]
+apple-m-series: cnt [256] = mean 31.4883, peak 64.0000, first [64.0, 64.0, 24.0, 20.0]
+amd-cdna3: cnt [256] = mean 31.4883, peak 64.0000, first [64.0, 64.0, 24.0, 20.0]

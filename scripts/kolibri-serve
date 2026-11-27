@@ -3,7 +3,8 @@
 #
 #     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N]
 #
-# It writes the session's tables once (10 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. The model samples with the file's
+# It writes the session's tables once (30 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. A prompt is read 16 tokens a pass (docs/kolibri.md
+# section 20) and answered a token a step. The model samples with the file's
 # settings (temperature 1, the 128 largest, top-p 0.99) unless `--temperature T` (a number above 0) or `--greedy`: these are the session's, set here, and a request's are not read.
 # A conversation is at most 16,384 positions (past them the model's indexer chooses from a pool, which is not written). It listens on every address of the host: `--api-key` on a network.
 # The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
@@ -45,7 +46,11 @@ if [ ! -f "$W/head.f32" ]; then
 fi
 # the tables of positions, for the most steps of a conversation. The caches are rolls of positions (docs/kolibri.md section 19.2): any position can be gone back to
 mkdir -p "$D/x" && echo 0 > "$D/ids.txt" || exit 1
-"$K" inputs "$G" "$D/ids.txt" "$D/x" "$T" "$whole" > /dev/null || exit $?
+# a pass's tokens: the model file's kernels are written for 16 (scripts/gen-kolibri-kernels.sh). `inputs` says how many positions a sliding layer scans in a pass
+PB=16
+set -- $("$K" inputs "$G" "$D/ids.txt" "$D/x" "$T" "$whole" "$PB") || exit 1
+[ $# -eq 6 ] && [ "$5" = scanned ] || { echo "kolibri-serve: kolibri_gpu inputs did not say what a pass scans" >&2; exit 1; }
+ptw=$6
 mkdir -p "$CACHE"
 if [ -e "$LOCK" ]; then
   pid=$(cat "$LOCK" 2>/dev/null)
@@ -54,4 +59,4 @@ fi
 echo $$ > "$LOCK"; locked=1
 greedy=""; [ $samp -eq 1 ] || greedy="--greedy"
 # shellcheck disable=SC2086
-"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" $greedy $pass CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" ITOP="$itop" GEN=1 SAMP=$samp SAVE=0 INVT="$invt"
+"$SERVER" "$G" "$HERE/models/kolibri_step.model" --ctx "$whole" --pass "$PB" $greedy $pass CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" ITOP="$itop" GEN=1 SAMP=$samp SAVE=0 INVT="$invt" PASS=1 PB="$PB" PTW="$ptw"

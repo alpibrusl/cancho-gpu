@@ -1,0 +1,26 @@
+// attention_pvl_p.chx for r queries at once (docs/kolibri.md section 20): row b's head i, the columns dc * dw .. (dc + 1) * dw of that head's values.
+algo attention_pvl_pb(r, nkv, g, t, cs, dw, d)
+  in  sc: f32[r * nkv * g, t]
+  in  m:  f32[r * nkv * g]
+  in  z:  f32[r * nkv * g]
+  in  v:  f32[t, nkv * d]
+  out o:  f32[r * nkv * g, d]
+{
+  grid i over nkv, dc over d / dw, b over r
+  let a0 = zeros f32[g, dw]
+  let acc = for c in 0 .. t / cs with a0 {
+    let sm = load sc[(b * nkv + i) * g, c * cs ; g, cs]
+    let mm = load m[(b * nkv + i) * g ; g]
+    let zz = load z[(b * nkv + i) * g ; g]
+    let sh = sm - mm
+    let e  = exp sh
+    let p  = e / zz
+    let vt = load v[c * cs, i * d + dc * dw ; cs, dw]
+    yield a0 + matmul p vt
+  }
+  store acc -> o[(b * nkv + i) * g, dc * dw]
+}
+
+schedule attention_pvl_pb for apple-m-series { threads 256 }
+schedule attention_pvl_pb for nvidia-ada     { threads 128 }
+schedule attention_pvl_pb for amd-cdna3      { threads 128 }
