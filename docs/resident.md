@@ -1373,6 +1373,14 @@ A session file is refused (`session`) when: the mask is not an f32 parameter the
 
 `tests/choose.sh` (in the gate on the CPU session; the Metal session by hand, the same 25 checks, exact): for eight settings, the mask of every step of a table of scores with many ties, against awk, which sorts where the session partitions; that the first setting has steps whose edge is a tie and steps whose edge is not (4 and 6); seeks; a step past the mask; 14 refusals. **Not tested**: a NaN among the scores (a session's text files hold no NaN).
 
+**The choice as a list** (`docs/kolibri.md` section 23, measured there):
+
+```
+choose P.PARAM by Q.OUT TOP FIRST LAST index
+```
+
+`P.PARAM` is then not a mask of as many entries as `Q.OUT` but a list: the numbers of the entries the mask would leave at 0, rising, and -1 in the rest of its room, which is no less than `TOP + FIRST + LAST` (a session file that gives it less is refused). A kernel gathers the rows the list names (`gather`, `docs/chx.md`) and works on those alone: Kolibri 1.1's indexed layers attend to 2,240 gathered rows where they scanned the caches' 16,384. In a phase of stride S the list is S rows. `tests/choose.sh` holds it to the list awk makes of its own mask.
+
 ## 35. Phases: a second set of programs in one session, and a repetition of several blocks (measured)
 
 A model that generates a token a repetition can read a prompt several tokens at a time: the same weights, the same caches, other kernels (`docs/kolibri.md` section 20). Two sessions would hold the weights twice. **New directive, in both sessions:**

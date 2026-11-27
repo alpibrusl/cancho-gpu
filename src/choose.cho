@@ -6,6 +6,8 @@ module choose;
 //
 // Entry c of the mask is 0 when c <= j and one of: c < first; c > j - last; among the `top` largest scores of the other entries to j, a tie going to the lower c. Every other entry
 // is -1e9. While j + 1 <= top + first + last every entry to j is 0 and the scores are not read (`reads` says which). A score that is no number is never among the largest.
+//
+// `choose ... index` writes the same choice as the entries' numbers (docs/kolibri.md section 23): `index` below.
 
 fn low() -> [] float {
     return 0.0 - 1000000000.0;
@@ -105,6 +107,29 @@ pub fn mask[&x](fm: &!x [float], scratch: int, sc: int, out: int, n: int, j: int
             fm[out + c] = low();
         }
         c = c + 1;
+    }
+    return 0;
+}
+
+// The same choice as a list: the entries the mask of repetition `j` leaves at 0, their numbers in rising order into fm[out ..], and -1 in what is left of its `room` entries.
+// fm[scratch ..] is 2 * `n` numbers of room. -1 when the entries chosen are more than `room` (the session refuses a `room` under top + first + last, so they are not).
+pub fn index[&x](fm: &!x [float], scratch: int, sc: int, out: int, n: int, j: int, top: int, first: int, last: int, room: int) -> [] int {
+    let done = mask(fm, scratch, sc, scratch + n, n, j, top, first, last);
+    var w = 0;
+    var c = 0;
+    while c < n {
+        if fm[scratch + n + c] == 0.0 {
+            if w >= room {
+                return 0 - 1;
+            }
+            fm[out + w] = float_of(c);
+            w = w + 1;
+        }
+        c = c + 1;
+    }
+    while w < room {
+        fm[out + w] = 0.0 - 1.0;
+        w = w + 1;
     }
     return 0;
 }

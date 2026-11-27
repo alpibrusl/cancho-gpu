@@ -416,6 +416,41 @@ fn op[&m, &t, &f](m: &!m [int], t: &!t [byte], fm: &!f [float], it: int, o: int)
     if k == kinds.op_mma() || k == kinds.op_matmul() || k == kinds.op_matmul_nt() {
         return matmul(m, t, fm, it, o);
     }
+    if k == kinds.op_gather() {
+        let a = operand(m, t, it, m[o + 1]);
+        if a < 0 {
+            return 0 - 1;
+        }
+        let b = operand(m, t, it, m[o + 2]);
+        if b < 0 {
+            return 0 - 1;
+        }
+        let rows = mem.get(m, ir.shape(m, m[a]), 0);
+        let c = mem.get(m, ir.shape(m, m[a]), 1);
+        let n = mem.get(m, ir.shape(m, m[b]), 1);
+        let out = reg_tile(m, t, fm, kinds.f32(), mem.of2(m, n, c));
+        if out < 0 {
+            return 0 - 1;
+        }
+        var e = 0;
+        while e < n {
+            // the row an index names, held to the rows there are: what is under 0 or no number is row 0
+            let v = fm[m[b + 1] + e];
+            var r = 0;
+            if v >= float_of(rows - 1) {
+                r = rows - 1;
+            } else if v > 0.0 {
+                r = truncate(v);
+            }
+            var j = 0;
+            while j < c {
+                fm[m[out + 1] + e * c + j] = fm[m[a + 1] + r * c + j];
+                j = j + 1;
+            }
+            e = e + 1;
+        }
+        return settle(m, fm, out);
+    }
     if k == kinds.op_binary() {
         let a = operand(m, t, it, m[o + 2]);
         if a < 0 {

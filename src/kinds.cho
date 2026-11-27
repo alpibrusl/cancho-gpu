@@ -332,6 +332,12 @@ pub fn op_dequant_q4() -> [] int {
     return 15;
 }
 
+// `gather a ix`: the rows of the 2-d tile `a` that the row `ix` names, one after another: row e of the result is row `ix[e]` of `a` (docs/kolibri.md section 23). An entry of
+// `ix` is a whole number in an f32, as every index in a kernel is; one under 0, over the last row or no number reads row 0 or the last, never outside `a`.
+pub fn op_gather() -> [] int {
+    return 16;
+}
+
 // --- IR statements
 pub fn st_let() -> [] int {
     return 1;

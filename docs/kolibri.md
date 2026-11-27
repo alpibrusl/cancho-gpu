@@ -1,4 +1,4 @@
-# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first steps: 24 tokens a second, one session for many conversations; section 18: the server, `scripts/kolibri-serve`, which cancho-code's own agent reaches and whose 2,184 positions its requests fill; section 19: caches as rolls of positions and the indexer: 16,384 positions, cancho-code's primer fits and its second task takes 7.6 s, its first 12 minutes; section 20: a prompt 16 tokens a pass: the primer in 191 s where it took 723, a second task in 3.9 s; section 21: tools: the template's block, calls and tool turns, `tool_calls` read out of an answer, and cancho-agent's own tool loop answered; section 22: a path for Q4_0 in the product: one row three times cheaper, a pass of 16 in 191 ms where it took 257, a step 7 to 13% cheaper, and the indexed layers now most of a step)
+# Kolibri 1.1 on the GPU (design, 2026-11-25; K0 done: the model is read and a reference written from its code continues a prompt sensibly; K1 done: its 4-bit weights are read in a kernel, one expert's matrix to the bit on the Metal GPU; K2 done: a session reads the experts a value names, six of a layer's 384 on the Metal GPU; K3 done: the MLP half of each of the 50 layers, the mixture of experts with its router, runs on the Metal GPU within 2.1e-6 of the reference; K4 done: the 50 layers run as one cached step on the Metal GPU, teacher-forced on the reference's 39 tokens: the stream within 8.5e-6, the logits within 3.9e-6, every first choice the reference's, 77 ms a token; K5 done: the host is a cancho program, its 41 GB of weight files the scratch script's to the byte, the tokenizer reads the model's file, and a text's next token on the device is the reference's; K6a done: the step feeds itself, and from both prompts the device's greedy tokens are the reference's, all 24 and all 8, at 74 ms a token; K6b done: the sampler (temperature, the 128 largest, top-p) is on the device, its 90 draws of two seeded runs the float64 definition's, 62 ms a token; K6c done: contexts to the 2,184 positions an indexed layer sees whole, 78 ms a token at any of them, every layer alone the reference's over 2,184 tokens but for 9 of 8.9 million 4-bit roundings that fall the other way on a tie and one router tie; the chain of 50 layers leaves the reference at the first such rounding, as the reference leaves itself when given it; K7 done: `scripts/kolibri "<text>"` answers through the model's chat template and stops at its end tokens, a greedy answer of 105 tokens with its reasoning the reference's token for token, 13 tokens a second; no indexer past 2,184, one question and one answer, no server; section 17: the plan from there to a model server for cancho-code and cancho-agent, and its first steps: 24 tokens a second, one session for many conversations; section 18: the server, `scripts/kolibri-serve`, which cancho-code's own agent reaches and whose 2,184 positions its requests fill; section 19: caches as rolls of positions and the indexer: 16,384 positions, cancho-code's primer fits and its second task takes 7.6 s, its first 12 minutes; section 20: a prompt 16 tokens a pass: the primer in 191 s where it took 723, a second task in 3.9 s; section 21: tools: the template's block, calls and tool turns, `tool_calls` read out of an answer, and cancho-agent's own tool loop answered; section 22: a path for Q4_0 in the product: one row three times cheaper, a pass of 16 in 191 ms where it took 257, a step 7 to 13% cheaper, and the indexed layers now most of a step; section 23: an indexed layer gathers the keys it chose and attends to those alone: a step 34 to 41 ms where it was 51 to 63, cancho-code's first request 119 s)
 
 What was **read** (the GGUF file's header and tensors with this repository's reader, the model's reference code, the converter that wrote the file) is marked **[read]**; what was run, **[measured]**, on one Apple M4 Max with 64 GB; arithmetic or judgment, **[reckoned]**. A claim that turns out false is corrected in place.
 
@@ -426,7 +426,7 @@ The block is the whole number in slot `SLOT` of `Q`'s f32 output, read when `P` 
 
 ## 17. From a command to a model server for cancho-code and cancho-agent (plan, 2026-11-26)
 
-**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 (17.5), S1 (17.6), S3 (section 18), S4 (section 19), S5 (section 20), S6 (section 21) and S7 (section 22: the Q4_0 path; the experts' two launches in the step are not) are built.
+**What is asked**: Kolibri 1.1 behind an endpoint that cancho-code and cancho-agent can use, at a speed that is usable. Section 16's command is none of that: one question, 2,184 positions, 19 s before every answer. This section is the plan, with what was read and measured before it. Of it, S2 (17.5), S1 (17.6), S3 (section 18), S4 (section 19), S5 (section 20), S6 (section 21) and S7 (section 22: the Q4_0 path; the experts' two launches in the step are not) are built, and after them section 23 (the indexed layers), which the plan did not have.
 
 ### 17.1 What the two clients send **[read from their sources, 2026-11-26]**
 
@@ -1072,7 +1072,7 @@ The first prompt of more than about 1,000 tokens stopped the server built with t
 
 * **Loading the model left 3% of the server's pool of words**: 96.9 of its 100 million before this stage, 99.96 with it. A session read, checked and lowered every program's kernel anew and kept all of it: 5,049 programs of about a hundred kernels. A request then had what was left, and one long enough ran out. **Before this stage the margin was 3 million words, by luck.**
 * **A kernel is now compiled once for all the programs that are it with the same constants** (`src/session.cho`): each program still has its own globals. After loading: **10.8 million words where there were 96.9, and 118 MB of text where there were 367.** The time to listening is the same 16 s: the weights are what it reads.
-* **A step at 10,950 positions is no cheaper than it was**, where one at 1,100 and at 3,950 is: something of a step grows with the positions, and it is not the products. Not looked into.
+* **A step at 10,950 positions is no cheaper than it was**, where one at 1,100 and at 3,950 is: something of a step grows with the positions, and it is not the products. Not looked into. **[23.3: it was in the indexed layers; with them gathering, a step there is 40.6 ms]**
 
 ### 22.4 Checks
 
@@ -1081,3 +1081,70 @@ The first prompt of more than about 1,000 tokens stopped the server built with t
 * **Mutants, by hand: 13, of which 12 killed.** Nine of the path, each by the emulated CUDA of those five cases: the second weight of a byte its first, a code its nibble less 7, a group's sum without its scale, the sums scaled as NVFP4's halves (in each form), the two weights of a byte swapped, the row's scale left out, a group of 16, the record marked NVFP4. Four of the shared kernels, by `tests/phase.sh` and `tests/kstep.sh`: a key without the constants, a key without the file, the first phase for every shared program. **The one that survives, a shared program without its lowered text, is the device session's alone**: the gate's session is the interpreter's, which reads none. By hand the real model's 5,049 programs run from about a hundred lowered texts.
 
 * **A pool that runs out is still a trap, in the server and in every program of this repository**, with no refusal and no rule tag. That is against the rule that no input reaches a crash; it is not fixed here, and it is not this model's alone.
+
+## 23. S8: an indexed layer reads the keys it chose, and no others (2026-11-27; measured before the design, 23.1; built, 23.3)
+
+Section 22 left the ten indexed layers as 24.5 of the GPU's 42 ms in a step. This section is what was measured of them, the design, and what was built.
+
+### 23.1 An indexed layer's four kernels, alone **[measured, 2026-11-27, M4 Max, the Metal GPU]**
+
+| a launch, with its 2.2 us | over 16,384 positions | over 2,048 |
+|---|---|---|
+| the scores the keys are chosen by (`index_score`) | 44 us | 9 us |
+| the attention's scores (`attention_scores_p`) | 145 us | 30 us |
+| the softmax's maximum and sum (`attention_stats`) | 417 us | 53 us |
+| the product with the values (`attention_pvl_p`) | 940 us | 71 us |
+
+* **Nine tenths of the layer is the softmax and the product over 16,384 positions of which at most 2,184 are not masked** (the 2,048 chosen, the first 8, the last 128): every other position's term is an `exp` of minus a thousand million, which is zero, and is computed.
+* **Choosing needs every position; attending does not.** The scores of the choice are 44 us of the 1,550.
+
+### 23.2 The design
+
+* **`gather a ix`, a new operation of the kernel language** (`docs/chx.md`): the rows of a 2-d tile that a row of indices names. An index is a whole number in an f32, as every index a kernel has; one under 0, past the last row or no number reads row 0 or the last row, never outside the tile. In the interpreter and in the three dialects.
+* **`choose P.PARAM by Q.OUT TOP FIRST LAST index`** (`docs/resident.md` section 34): the same choice as a list. The session writes the numbers of the entries the mask would leave at 0, rising, and -1 in what is left of the parameter's room, which must hold `TOP + FIRST + LAST`. In a phase of stride S, S rows.
+* **`gather_kv.chx`**: the chosen positions' keys and values out of the two caches into `[IK, 512]` each, and a mask that is -1e9 where the list says -1. `IK` is 2,240: every key a layer can choose (2,184), rounded up to the 64 the attention's kernels take a chunk.
+* **An indexed layer is then**: its scores of the choice over the caches' positions, as before; the session's list; the gather; and the attention's three kernels **over 2,240 rows, whatever the context**. The same kernels as before for a step; for a pass two new ones (`attention_scores_pg.chx`, `attention_pvl_pg.chx`) in which each of the 16 tokens has its own 2,240 rows.
+* **The pass gathers as the step does**, though its indexed layers already cost less a token (20.1): with the step alone gathering, a pass's sums were in another order than the steps' and the gate's check that a pass is the steps to the bit failed at the seventh digit. **[measured before deciding: with the pass gathering too it holds again]**
+* **What the choice is does not change**: the same positions, by the same rule, from the same scores. What changes is the order of the softmax's and the product's sums, so on the device the last bits.
+
+### 23.3 Built and measured **[2026-11-27, M4 Max, the Metal GPU]**
+
+As designed: `gather` in `src/parser.cho`, `src/elab.cho`, `src/check.cho`, `src/interp.cho`, `src/lower.cho`; the list in `src/choose.cho` and `src/session.cho`; three kernel files and a fourth for the cases (`gather_spread.chx`); `models/kolibri_step.model`. The gather of a step's 2,240 positions is 12 us alone, and the attention's three kernels over them 160.
+
+**The model**, the session alone, as 22.2 measured it (`--greedy`):
+
+| | before (22.2) | now |
+|---|---|---|
+| a step at 1,100 positions | 51.1 ms | **34.0 ms** |
+| a step at 3,950 positions | 53.9 ms | **37.2 ms** |
+| a step at 10,950 positions | 63 ms | **40.6 ms** |
+| a pass of 16 at positions to 1,100 | 178 ms | **127 ms**: 8 ms a token |
+| a pass at positions to 3,950 | 191 ms | **137 ms** |
+| cancho-code's primer, 10,928 tokens through 683 passes | 143 s | **110 s**: 167 ms a pass at the end |
+
+**cancho-code's own agent** on section 19.6's two tasks, the server sampling with the file's settings:
+
+| | S5 (20.3) | now |
+|---|---|---|
+| the first request with its primer (11,087 tokens, none kept) | 191 s | **119 s** |
+| a second task's first sample (11,104 tokens, 11,027 kept) | 3.9 s | **2.0 s** |
+| an answer of 800 tokens | | 33.2 s: **41.5 ms a token** |
+
+* **A step is a third cheaper at every context, and what section 22 could not explain is gone**: a step at 10,950 positions is 40.6 ms where it was 63. What grew with the positions was in the indexed layers.
+* **A step still grows with the positions**, 34 to 41 ms from 1,100 to 10,950, and a pass 127 to 167 ms: the scores of the choice are over every position of the caches, and the session reads them back to choose. Not looked into further.
+* **Against the reference** (section 15's forks through passes): the same as section 22 at each of the six prefixes (16 of 16, 16 of 16, 11 of 24, 4, 16 of 16, 16 of 16). Against section 22's kernels the ids are the same through 1,140 positions and part once in a run to 3,996 and once in one to 10,984: the sums' order, as before.
+* **The two tasks' whole times are not compared with S5's**: the samples were other samples, of other lengths (800 tokens where the limit cut them).
+
+### 23.4 Checks
+
+* **`tests/kstep.sh`** (the gate, the CPU session): the small model with its indexed layers gathering, held to awk's arithmetic of the definition, which has no gather and no list; a pass is the steps to the bit, as before. On the Metal session by hand it passes and fails the same checks as before this stage.
+* **`tests/choose.sh`**: the list at every step of five runs against the list awk makes of its own mask (rising order, -1 where there are fewer, room for exactly the entries and for more); three refusals, and a step past the scores. 34 checks (25 before).
+* **Nine new kernel cases**, each on the CUDA and the HIP emulator against the interpreter: `gather_kv`, the pass's two kernels, and `gather_spread`, whose indices are all over the tile, under 0, past its last row and between whole numbers. Two refused kernels (indices of two rows; rows that are no f32). The six recorded expansions of the model file are re-recorded.
+* **Mutants, by hand: 22, all killed.** Of the lowering, by the emulated CUDA: the next column, the next element's index, a row past the end not held, an index under 0 taken by its size, the index rounded. Of the interpreter: a row past the end the first (the emulator disagrees), the row one further, every column the first (the small model). Of the list: in falling order, padded with 0, the entries the mask leaves out, too little room taken, any eighth word taken for `index`, a mask written where a list was asked, and in a phase every row the first repetition's or written to the first row. Of the kernels and the model file: the gathered mask always 0, the values gathered from the keys, a pass's token reading the first token's keys or values, one fewer of the largest, no key at the end.
+
+* **Not done**:
+  * **The scores of the choice are still over every position of the caches**, and read back by the session to choose: what of a step still grows with the context.
+  * The six experts as two launches in the step (22.2: 3.8 ms).
+  * `gather` takes f32 rows and one row of indices; nothing else was needed.
+  * `attention_pvl_pb.chx` is no longer used by the model; its cases stay.
+  * A pool that runs out is still a trap (22.3). The Metal programs are not in the gate.

@@ -1,0 +1,27 @@
+// attention_pvl_pb.chx for values that were gathered a row at a time (docs/kolibri.md section 23): row b's t values are the rows b * t .. (b + 1) * t of v, beside the keys
+// attention_scores_pg.chx scored. A row's arithmetic is attention_pvl_p.chx's on its own values.
+algo attention_pvl_pg(r, nkv, g, t, cs, dw, d)
+  in  sc: f32[r * nkv * g, t]
+  in  m:  f32[r * nkv * g]
+  in  z:  f32[r * nkv * g]
+  in  v:  f32[r * t, nkv * d]
+  out o:  f32[r * nkv * g, d]
+{
+  grid i over nkv, dc over d / dw, b over r
+  let a0 = zeros f32[g, dw]
+  let acc = for c in 0 .. t / cs with a0 {
+    let sm = load sc[(b * nkv + i) * g, c * cs ; g, cs]
+    let mm = load m[(b * nkv + i) * g ; g]
+    let zz = load z[(b * nkv + i) * g ; g]
+    let sh = sm - mm
+    let e  = exp sh
+    let p  = e / zz
+    let vt = load v[b * t + c * cs, i * d + dc * dw ; cs, dw]
+    yield a0 + matmul p vt
+  }
+  store acc -> o[(b * nkv + i) * g, dc * dw]
+}
+
+schedule attention_pvl_pg for apple-m-series { threads 256 }
+schedule attention_pvl_pg for nvidia-ada     { threads 128 }
+schedule attention_pvl_pg for amd-cdna3      { threads 128 }

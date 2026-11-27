@@ -1,0 +1,22 @@
+// attention_scores_pb.chx for keys that were gathered a row at a time (docs/kolibri.md section 23): the r rows of a pass each have their own t keys, row b's the rows
+// b * t .. (b + 1) * t of k, which gather_kv.chx wrote from the positions the session chose for that row. A row's arithmetic is attention_scores_p.chx's on its own keys.
+//
+//     sc = q k^T / sqrt(128) + mask        (d MUST be 128: the scale 0.08838834764831845 is a literal)
+algo attention_scores_pg(r, nkv, g, t, ts, d)
+  in  q:    f32[r * nkv * g, d]
+  in  k:    f32[r * t, nkv * d]
+  in  mask: f32[r, t]
+  out sc:   f32[r * nkv * g, t]
+{
+  grid h over nkv, sp over t / ts, b over r
+  let qt = load q[(b * nkv + h) * g, 0 ; g, d]
+  let kt = load k[b * t + sp * ts, h * d ; ts, d]
+  let s  = matmul_nt qt kt
+  let sd = s * 0.08838834764831845
+  let mk = load mask[b, sp * ts ; 1, ts]
+  store sd + mk -> sc[(b * nkv + h) * g, sp * ts]
+}
+
+schedule attention_scores_pg for apple-m-series { threads 512 }
+schedule attention_scores_pg for nvidia-ada     { threads 128 }
+schedule attention_scores_pg for amd-cdna3      { threads 128 }
