@@ -51,8 +51,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p1_gq0[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p2_gs0[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p2_gs0[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_gq0[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -72,8 +77,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p3_uq0[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p4_us0[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p4_us0[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p3_uq0[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -120,8 +130,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p5_gq1[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p6_gs1[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p6_gs1[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p5_gq1[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -141,8 +156,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p7_uq1[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p8_us1[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p8_us1[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p7_uq1[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -189,8 +209,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p9_gq2[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p10_gs2[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p10_gs2[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p9_gq2[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -210,8 +235,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p11_uq2[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p12_us2[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p12_us2[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p11_uq2[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -258,8 +288,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p13_gq3[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p14_gs3[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p14_gs3[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p13_gq3[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -279,8 +314,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p15_uq3[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p16_us3[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p16_us3[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p15_uq3[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -327,8 +367,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p17_gq4[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p18_gs4[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p18_gs4[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p17_gq4[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -348,8 +393,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p19_uq4[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p20_us4[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p20_us4[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p19_uq4[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -396,8 +446,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p21_gq5[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p22_gs5[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p22_gs5[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p21_gq5[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);
@@ -417,8 +472,13 @@ extern "C" __global__ void expert6_gu_16_5_512_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p23_uq5[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p24_us5[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p25_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p24_us5[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p23_uq5[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(5) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);

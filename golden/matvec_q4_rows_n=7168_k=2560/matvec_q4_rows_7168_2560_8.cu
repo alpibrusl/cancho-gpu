@@ -29,8 +29,13 @@ extern "C" __global__ void matvec_q4_rows_7168_2560_8(
         float s = 0.0f;
         if (o < 8u) {
             const uint i = o / 8u, j = o % 8u;
-            for (uint p0 = lane * 8u; p0 < 2560u; p0 += 256u) {
-                for (uint u = 0; u < 8u; ++u) { const uint p = p0 + u; s += float(float(p0_x[(uint)(0) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * float(((float(((uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 1280u + ((j * 2560u + p) % 2560u) / 2u))])) >> (((j * 2560u + p) & 1u) * 4u)) & 0xFu) - 8.0f) * float(__half(p2_ws[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u))])) * float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((((((j * 2560u + p) / 2560u) * 80u + ((j * 2560u + p) % 2560u) / 32u)) / 80u))])))); }
+            const float rs = float(float(p3_wg[(uint)(0 + 8 * gid) * 1u + ((j))]));
+            for (uint p0 = lane * 16u; p0 < 2560u; p0 += 512u) {
+                const uint grp = j * 80u + p0 / 32u;
+                const float sg = float(__half(p2_ws[(uint)(0 + 8 * gid) * 80u + (uint)(0) * 1u + ((grp))])) * rs;
+                float run = 0.0f;
+                for (uint u = 0; u < 16u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)(char(p1_wq[(uint)(0 + 8 * gid) * 1280u + (uint)(0) * 1u + ((j * 1280u + p0 / 2u + u / 2u))])); run += float(float(p0_x[(uint)(0) * 2560u + (uint)(0) * 1u + ((i * 2560u + p))])) * (float(bq & 0xFu) - 8.0f) + float(float(p0_x[(uint)(0) * 2560u + (uint)(0) * 1u + ((i * 2560u + p + 1u))])) * (float(bq >> 4u) - 8.0f); }
+                s += run * sg;
             }
         }
         for (uint d = 16u; d > 0; d /= 2) s += __shfl_down_sync(0xffffffffu, s, d);

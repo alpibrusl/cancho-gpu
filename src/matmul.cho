@@ -3,15 +3,19 @@ module matmul;
 
 // Matrix products on the threads, not the matrix units (`matmul` and
 // `matmul_nt`, and the batched-row products), for the operands a `.chx`
-// file can produce. A lazy NVFP4 dequantisation is the one packed weight
-// format the surface has (`dequant_fp4`).
+// file can produce. A lazy dequantisation of 4-bit codes is the packed
+// weight format the surface has: NVFP4 (`dequant_fp4`) and ggml's Q4_0
+// (`dequant_q4`, docs/kolibri.md section 22).
 //
 // A dequantisation record (`Dq`) is
-// `[v, s, row, cols, group, packed, qe, qc, qview]`: the per-element
+// `[v, s, row, cols, group, format, qe, qc, qview]`: the per-element
 // value, the per-group scale (templated on the group index), the
-// row-only factor (templated on the row, or -1), and for NVFP4 the byte
-// template `qe`, the row length in bytes `qc` and the window of the
-// codes (or -1).
+// row-only factor (templated on the row, or -1), the format (1 NVFP4,
+// 2 Q4_0), the byte template `qe`, the row length in bytes `qc` and the
+// window of the codes (or -1). The split reductions (`lower`,
+// `batched_rows`) take both formats: a group's scale is read once and
+// multiplies the group's sum. The fragment paths and the staging are
+// NVFP4's alone.
 
 import mem;
 import text;
@@ -33,6 +37,33 @@ pub fn dq[&m](m: &!m [int], v: int, s: int, row: int, cols: int, group: int, qe:
     m[r + 7] = qc;
     m[r + 8] = qview;
     return r;
+}
+
+// The record of a Q4_0 dequantisation: a code is `nibble - 8`, the group's scale is the f16 as it is.
+pub fn dq_q4[&m](m: &!m [int], s: int, row: int, cols: int, group: int, qe: int, qc: int, qview: int) -> [] int {
+    let r = dq(m, 0 - 1, s, row, cols, group, qe, qc, qview);
+    m[r + 5] = 2;
+    return r;
+}
+
+pub fn is_q4[&m](m: &!m [int], d: int) -> [] bool {
+    return m[d + 5] == 2;
+}
+
+// The two weights of the byte `bq` of codes, before the group's scale: `(first, second)`.
+fn pair_of[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] (int, int) {
+    if is_q4(m, d) {
+        return (text.lit(m, t, "(float(bq & 0xFu) - 8.0f)"), text.lit(m, t, "(float(bq >> 4u) - 8.0f)"));
+    }
+    return (text.lit(m, t, "w.x"), text.lit(m, t, "w.y"));
+}
+
+// What a group's sum is multiplied by besides its scale: NVFP4's pairs come as halves of 2^14 times their value.
+fn unit_of[&m, &t](m: &!m [int], t: &!t [byte], d: int) -> [] int {
+    if is_q4(m, d) {
+        return text.empty();
+    }
+    return text.lit(m, t, " * 16384.0f");
 }
 
 fn n[&m, &t](m: &!m [int], t: &!t [byte], x: int) -> [] int {
@@ -215,6 +246,9 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
     if d >= 0 {
         want = 16;
     }
+    if d >= 0 && is_q4(m, d) {
+        want = 16;
+    }
     let vec = dq_vec(m, d, kd, lanes, want);
     if d >= 0 && !usable_dq(m, d, kd, vec) {
         d = 0 - 1;
@@ -230,7 +264,10 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
         gen.line(m, t, g, text.f2(m, t, "    const uint grp = j * $u + p0 / $u;", n(m, t, kd / gsz), n(m, t, gsz)));
         gen.line(m, t, g, text.f2(m, t, "    const float sg = $$;", gen.at_index_lit(m, t, m[d + 1], "grp"), rs));
         let (qe, qc) = (m[d + 6], m[d + 7]);
-        let wide = wide_fp4(m, t, g, qe, qc, kd, vec, oa, false);
+        var wide = 0 - 1;
+        if !is_q4(m, d) {
+            wide = wide_fp4(m, t, g, qe, qc, kd, vec, oa, false);
+        }
         if wide >= 0 {
             let (wq, xa) = (m[wide], m[wide + 1]);
             let w = gen.at_index(m, t, wq, text.f1(m, t, "j * $u + p0 / 2u", n(m, t, qc)));
@@ -261,8 +298,18 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] 
             let byte = gen.at_index(m, t, qe, text.f1(m, t, "j * $u + p0 / 2u + u / 2u", n(m, t, qc)));
             let a1 = gen.read(m, t, oa, text.f1(m, t, "i * $u + p + 1u", n(m, t, kd)));
             gen.line_lit(m, t, g, "    float run = 0.0f;");
-            gen.line(m, t, g, text.f4(m, t, "    for (uint u = 0; u < $u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)($); const float2 w = fp4_pair(bq); run += $ * w.x + $ * w.y; }", n(m, t, vec), byte, av, a1));
-            gen.line_lit(m, t, g, "    s += run * (sg * 16384.0f);");
+            let (w0, w1) = pair_of(m, t, d);
+            var dec = text.lit(m, t, "const float2 w = fp4_pair(bq); ");
+            if is_q4(m, d) {
+                dec = text.empty();
+            }
+            let l = mem.of7(m, n(m, t, vec), byte, dec, av, w0, a1, w1);
+            gen.line(m, t, g, text.fmt(m, t, "    for (uint u = 0; u < $u; u += 2u) { const uint p = p0 + u; const uint bq = (uint)(uchar)($); $run += $ * $ + $ * $; }", l));
+            if is_q4(m, d) {
+                gen.line_lit(m, t, g, "    s += run * sg;");
+            } else {
+                gen.line_lit(m, t, g, "    s += run * (sg * 16384.0f);");
+            }
         }
         gen.line_lit(m, t, g, "}");
     } else if vec > 1 {
@@ -302,7 +349,7 @@ fn frag_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, mm: 
     let frag = gen.frag(m, g);
     let threads = gen.threads(m, g);
     let d = gen.dq_of(m, g, ir.var_of(b));
-    if d == 0 || !dialect.fragments(gen.dia(m, g)) || mm > 8 || kd % 32 != 0 {
+    if d == 0 || is_q4(m, d) || !dialect.fragments(gen.dia(m, g)) || mm > 8 || kd % 32 != 0 {
         return 0 - 2;
     }
     if nn % (8 * frag) != 0 || nn / (8 * frag) > threads / 32 {
@@ -422,7 +469,7 @@ fn frag_rows_split[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int
     let frag = gen.frag(m, g);
     let ns = gen.threads(m, g) / 32;
     let d = gen.dq_of(m, g, ir.var_of(b));
-    if d == 0 || !dialect.fragments(gen.dia(m, g)) || mm > 32 || kd % 128 != 0 {
+    if d == 0 || is_q4(m, d) || !dialect.fragments(gen.dia(m, g)) || mm > 32 || kd % 128 != 0 {
         return 0 - 2;
     }
     if frag < 1 || nn != 8 * frag || ns < 2 {
@@ -585,7 +632,7 @@ fn frag_rows_wide[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int,
     let frag = gen.frag(m, g);
     let threads = gen.threads(m, g);
     let d = gen.dq_of(m, g, ir.var_of(b));
-    if d == 0 || !dialect.fragments(gen.dia(m, g)) || mm <= 8 || mm > 32 || kd % 32 != 0 {
+    if d == 0 || is_q4(m, d) || !dialect.fragments(gen.dia(m, g)) || mm <= 8 || mm > 32 || kd % 32 != 0 {
         return 0 - 2;
     }
     if nn % (8 * frag) != 0 || nn / (8 * frag) > threads / 32 {
@@ -935,6 +982,9 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
     if d >= 0 {
         want = 16;
     }
+    if d >= 0 && is_q4(m, d) {
+        want = 2;
+    }
     let vec = dq_vec(m, d, kd, lanes, want);
     if d >= 0 && !usable_dq(m, d, kd, vec) {
         d = 0 - 1;
@@ -946,9 +996,16 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
     if d >= 0 {
         let byte = gen.at_index(m, t, m[d + 6], text.f1(m, t, "j * $u + p0 / 2u + u / 2u", n(m, t, m[d + 7])));
         step = 2;
-        pre = text.f1(m, t, "const float2 bq = fp4_pair((uint)(uchar)($)); ", byte);
-        mem.push(m, weights, text.lit(m, t, "(bq.x * sgr[rr])"));
-        mem.push(m, weights, text.lit(m, t, "(bq.y * sgr[rr])"));
+        if is_q4(m, d) {
+            let (w0, w1) = pair_of(m, t, d);
+            pre = text.f1(m, t, "const uint bq = (uint)(uchar)($); ", byte);
+            mem.push(m, weights, text.f1(m, t, "($ * sgr[rr])", w0));
+            mem.push(m, weights, text.f1(m, t, "($ * sgr[rr])", w1));
+        } else {
+            pre = text.f1(m, t, "const float2 bq = fp4_pair((uint)(uchar)($)); ", byte);
+            mem.push(m, weights, text.lit(m, t, "(bq.x * sgr[rr])"));
+            mem.push(m, weights, text.lit(m, t, "(bq.y * sgr[rr])"));
+        }
     } else {
         mem.push(m, weights, gen.read(m, t, ob, text.f1(m, t, "j * $u + p", n(m, t, kd))));
     }
@@ -1000,7 +1057,7 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
         if m[d + 2] >= 0 {
             rs = text.f1(m, t, " * float($)", gen.at_index_lit(m, t, m[d + 2], "j"));
         }
-        rs = text.cat(m, t, rs, text.lit(m, t, " * 16384.0f"));
+        rs = text.cat(m, t, rs, unit_of(m, t, d));
         let sgrp = gen.at_index_lit(m, t, m[d + 1], "grp");
         if unroll {
             var rr = 0;
@@ -1020,7 +1077,7 @@ fn batched_rows[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, acc: int, m
         }
     }
     var wide = 0 - 1;
-    if d >= 0 && unroll {
+    if d >= 0 && unroll && !is_q4(m, d) {
         wide = wide_fp4(m, t, g, m[d + 6], m[d + 7], kd, vec, oa, true);
     }
     if wide >= 0 {

@@ -497,7 +497,7 @@ fn stage[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [] int 
 // group of 16 values. Answers the lines, or -1 where it does not apply.
 fn fp4_stage[&m, &t](m: &!m [int], t: &!t [byte], g: int, src: int, name: int, ty: int, ld_in: int) -> [] int {
     let d = gen.dq_of(m, g, src);
-    if d == 0 || m[d + 2] < 0 || m[d + 8] <= 0 {
+    if d == 0 || matmul.is_q4(m, d) || m[d + 2] < 0 || m[d + 8] <= 0 {
         return 0 - 1;
     }
     let (qe, qc, qv, row) = (m[d + 6], m[d + 7], m[d + 8], m[d + 2]);
@@ -811,10 +811,11 @@ fn dequant_fp4[&m, &t](m: &!m [int], t: &!t [byte], g: int, x: int, o: int) -> [
         let byte = gen.at_index(m, t, qe, text.f3(m, t, "(@I@ / $u) * $u + (@I@ % $u) / 2u", n(m, t, c), n(m, t, qc), n(m, t, c)));
         let nib = text.f1(m, t, "((uint)(uchar)($) >> ((@I@ & 1u) * 4u)) & 0xFu", byte);
         if q4 {
-            // Q4_0 (docs/kolibri.md K1): no table and no FP8 scale, and no record for a product's NVFP4 paths: a product takes the lazy expression as it takes any other
+            // Q4_0 (docs/kolibri.md K1): no table and no FP8 scale. A product's split reductions take its record (section 22); everything else takes the lazy expression
             let row_of = gen.at_index(m, t, ge, text.f1(m, t, "(@I@) / $u", n(m, t, per_row)));
             let gi = text.f4(m, t, "(@I@ / $u) * $u + (@I@ % $u) / $u", n(m, t, c), n(m, t, per_row), n(m, t, c), n(m, t, group));
             let e4 = text.f3(m, t, "((float($) - 8.0f) * float($) * float($))", nib, gen.at_index(m, t, se, gi), gen.at_index(m, t, row_of, gi));
+            gen.set_dq(m, g, x, matmul.dq_q4(m, text.f1(m, t, "float($)", se), ge, c, group, qe, qc, gen.view_of(m, g, ir.var_of(q))));
             gen.set_loc(m, g, x, gen.mk_loc(m, gen.l_lazy(), e4, reg(m, kinds.f32(), mem.of2(m, r, c)), 0));
             return 0;
         }
