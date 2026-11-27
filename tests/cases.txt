@@ -719,9 +719,10 @@ tests/chx/index_score.chx nq=48 g=12 nkv=4 t=16384 ts=64 d=128
 tests/chx/attention_scores_p.chx nkv=4 g=12 t=16384 ts=64 d=128
 tests/chx/attention_pvl_p.chx nkv=4 g=12 t=16384 cs=64 dw=16 d=128
 tests/chx/index_score.chx nq=4 g=2 nkv=2 t=8 ts=4 d=128 --run
-# Kolibri's pass of several tokens (docs/kolibri.md section 20): the step's kernels over the pass's rows, at Kolibri's sizes and at the small model's of tests/kstep.sh
-tests/chx/matmul_q4_pass.chx m=16 n=7168 k=2560 bm=8
-tests/chx/matmul_q4_pass.chx m=16 n=2560 k=6144 bm=8
+# Kolibri's pass of several tokens (docs/kolibri.md section 20): the step's kernels over the pass's rows, at the small model's sizes of tests/kstep.sh and at Kolibri's widths. Where
+# 16 rows of Kolibri's largest shapes would be minutes in the emulators (each case runs there: tests/cuda-emu.sh), the case has fewer rows or positions: the emitted text has the same form.
+tests/chx/matmul_q4_pass.chx m=16 n=512 k=2560 bm=8
+tests/chx/matmul_q4_pass.chx m=16 n=2560 k=512 bm=8
 tests/chx/matmul_q4_pass.chx m=4 n=32 k=64 bm=2 --run
 tests/chx/matmul_rows_pass.chx m=16 n=384 k=2560 bm=8
 tests/chx/matmul_rows_pass.chx m=4 n=64 k=64 bm=2 --run
@@ -734,13 +735,13 @@ tests/chx/moe_rank_b.chx r=4 nq=1 --run
 tests/chx/moe_pick_b.chx r=16 n=384 k=6
 tests/chx/moe_pick_b.chx r=4 n=64 k=2 --run
 tests/chx/attention_scores_pb.chx r=16 nkv=4 g=12 t=576 ts=64 d=128
-tests/chx/attention_scores_pb.chx r=16 nkv=4 g=12 t=16384 ts=64 d=128
+tests/chx/attention_scores_pb.chx r=4 nkv=4 g=12 t=4096 ts=64 d=128
 tests/chx/attention_scores_pb.chx r=4 nkv=2 g=2 t=8 ts=4 d=128 --run
-tests/chx/attention_pv_pb.chx r=16 nkv=4 g=12 t=576 dw=16 d=128
+tests/chx/attention_pv_pb.chx r=4 nkv=4 g=12 t=576 dw=16 d=128
 tests/chx/attention_pv_pb.chx r=4 nkv=2 g=2 t=8 dw=16 d=128 --run
-tests/chx/attention_pvl_pb.chx r=16 nkv=4 g=12 t=16384 cs=64 dw=16 d=128
+tests/chx/attention_pvl_pb.chx r=4 nkv=4 g=12 t=4096 cs=64 dw=16 d=128
 tests/chx/attention_pvl_pb.chx r=4 nkv=2 g=2 t=16 cs=4 dw=16 d=128 --run
-tests/chx/index_score_b.chx r=16 nq=48 g=12 nkv=4 t=16384 ts=64 d=128
+tests/chx/index_score_b.chx r=4 nq=48 g=12 nkv=4 t=4096 ts=64 d=128
 tests/chx/index_score_b.chx r=4 nq=4 g=2 nkv=2 t=16 ts=4 d=128 --run
 tests/chx/expert6_gu.chx r=16 b=5 n=512 k=2560
 tests/chx/expert2_gu.chx r=4 b=1 n=32 k=64 --run
