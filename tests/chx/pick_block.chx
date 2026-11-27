@@ -1,0 +1,18 @@
+// A block of a table that a number picks (docs/kolibri.md section 26): w is ne blocks of n rows, sel two numbers a kernel wrote, and y the two blocks they name, one after the
+// other. `pick` reads each number once, as a whole number held to 0 .. ne - 1; the loads are at rows that depend on it.
+algo pick_block(ne, n, k)
+  in  w:   f32[ne * n, k]
+  in  sel: f32[2]
+  out y:   f32[2 * n, k]
+{
+  pick e0 under ne from sel[0]
+  pick e1 under ne from sel[1]
+  let a = load w[e0 * n, 0 ; n, k]
+  store a -> y[0, 0]
+  let b = load w[e1 * n, 0 ; n, k]
+  store b -> y[n, 0]
+}
+
+schedule pick_block for apple-m-series { threads 64 }
+schedule pick_block for nvidia-ada     { threads 64 }
+schedule pick_block for amd-cdna3      { threads 64 }

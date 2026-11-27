@@ -1103,6 +1103,18 @@ pub fn lower[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int, d: int, th
     if ir.p_pid3(m, prog) >= 0 {
         gen.set_loc(m, g, ir.p_pid3(m, prog), gen.mk_loc(m, gen.l_index(), text.lit(m, t, "gid3"), 0, 0));
     }
+    // a picked index: a constant of the thread, read once from its parameter and held to its extent (what is under 0 or no number is 0)
+    let picks = ir.p_picks(m, prog);
+    var pk = 0;
+    while pk < mem.size(m, picks) {
+        let pr = mem.get(m, picks, pk);
+        let prm = ir.param(m, prog, m[pr + 2]);
+        let pname = text.f1(m, t, "pk$", n(m, t, pk));
+        let l = mem.of5(m, pname, n(m, t, m[pr + 2]), ir.param_name(m, prm), n(m, t, m[pr + 3]), n(m, t, m[pr + 1] - 1));
+        gen.line(m, t, g, text.fmt(m, t, "const uint $ = (uint)fmin(fmax(float(p$_$[$]), 0.0f), $.0f);", l));
+        gen.set_loc(m, g, m[pr], gen.mk_loc(m, gen.l_index(), pname, 0, 0));
+        pk = pk + 1;
+    }
     if block(m, t, g, ir.p_body(m, prog)) < 0 {
         return 0 - 1;
     }

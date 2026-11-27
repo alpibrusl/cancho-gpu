@@ -836,6 +836,25 @@ pub fn check[&m, &t](m: &!m [int], t: &!t [byte], prog: int, tg: int) -> [] int 
         m[r + 1] = 0;
         m[r + 2] = ir.p_grid3(m, prog) - 1;
     }
+    // a picked index: a number of an f32 parameter the kernel only reads, held to its extent
+    let picks = ir.p_picks(m, prog);
+    var pk = 0;
+    while pk < mem.size(m, picks) {
+        let pr = mem.get(m, picks, pk);
+        let prm = ir.param(m, prog, m[pr + 2]);
+        if ir.param_writable(m, prm) || ir.param_dtype(m, prm) != kinds.f32() {
+            diag(m, t, c, "type", text.f1(m, t, "a picked index is read from an F32 parameter the kernel does not write: `$` is not one", ir.param_name(m, prm)));
+        }
+        if m[pr + 1] < 1 || m[pr + 3] >= mem.product(m, ir.param_shape(m, prm)) {
+            diag(m, t, c, "bounds", text.f2(m, t, "a picked index is under 1 or more, from an element `$` has: element $", ir.param_name(m, prm), text.num(m, t, m[pr + 3])));
+        }
+        define(m, c, m[pr], ir.index_ty(), top);
+        let r = rng(m, c, m[pr]);
+        m[r] = 1;
+        m[r + 1] = 0;
+        m[r + 2] = m[pr + 1] - 1;
+        pk = pk + 1;
+    }
     block(m, t, c, ir.p_body(m, prog), mem.list(m));
     let peak = m[c + 6];
     let limit = target.max_threadgroup_bytes(m, tg);

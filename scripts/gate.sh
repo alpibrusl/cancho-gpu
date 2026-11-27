@@ -31,6 +31,7 @@ scripts/build-emu.sh
 python3 tests/cuda_emu_selftest.py
 CANCHO="$CANCHO" tests/cuda-emu.sh
 CANCHO="$CANCHO" tests/hip-emu.sh
+tests/given_emu.sh
 CANCHO="$CANCHO" tests/amd-cloud.sh
 tests/gguf.sh
 tests/safetensors.sh

@@ -284,32 +284,31 @@ block ffn(i)
         use mlp(i, K, "sh", EH, -1, "ones_h")
         # the K experts the router chose as two programs, the pass's (docs/kolibri.md sections 20 and 24): every gate and up product with the activation, then every down product
         # with its weight, added to the shared expert's row. L${i}D.mo is the row the mixture gives.
-        program L${i}G $CHX/expert${K}_gu.chx r=1 b=0 n=$EH k=$D
+        # The experts' matrices are resident, all NE of each, and the two kernels pick the K the router chose themselves (`pick`, section 26): the session reads nothing back.
+        program L${i}G $CHX/expert${K}_gu.chx r=1 b=0 n=$EH k=$D ne=$NE
         link L${i}nrm.y -> L${i}G.x
         resident L${i}G.wg $W/ones_h.f32 $F32
+        resident L${i}G.gq $W/m${i}.ex.gate.q4 $I8
+        resident L${i}G.gs $W/m${i}.ex.gate.s $F16
+        resident L${i}G.uq $W/m${i}.ex.up.q4 $I8
+        resident L${i}G.us $W/m${i}.ex.up.s $F16
+        link L${i}pk.idx -> L${i}G.sel
         if i < 6
             program L${i}H $CHX/group_sum.chx k=${K * EH} G=32
             link L${i}G.y -> L${i}H.x
-            program L${i}D $CHX/expert${K}_down41.chx r=1 b=0 n=$D k=$EH
+            program L${i}D $CHX/expert${K}_down41.chx r=1 b=0 n=$D k=$EH ne=$NE
             link L${i}H.s -> L${i}D.s
+            resident L${i}D.dc $W/m${i}.ex.down.c $F32
         else
-            program L${i}D $CHX/expert${K}_down.chx r=1 b=0 n=$D k=$EH
+            program L${i}D $CHX/expert${K}_down.chx r=1 b=0 n=$D k=$EH ne=$NE
         end
         link L${i}G.y -> L${i}D.a
         resident L${i}D.wg $W/ones_d.f32 $F32
+        resident L${i}D.dq $W/m${i}.ex.down.q4 $I8
+        resident L${i}D.ds $W/m${i}.ex.down.s $F16
         link L${i}pk.wt -> L${i}D.wt
         link L${i}E${K}_y.y -> L${i}D.m
-        repeat j in 0 .. K
-            table L${i}G.gq$j $W/m${i}.ex.gate.q4 $NE $I8 by L${i}pk.idx $j
-            table L${i}G.gs$j $W/m${i}.ex.gate.s $NE $F16 by L${i}pk.idx $j
-            table L${i}G.uq$j $W/m${i}.ex.up.q4 $NE $I8 by L${i}pk.idx $j
-            table L${i}G.us$j $W/m${i}.ex.up.s $NE $F16 by L${i}pk.idx $j
-            table L${i}D.dq$j $W/m${i}.ex.down.q4 $NE $I8 by L${i}pk.idx $j
-            table L${i}D.ds$j $W/m${i}.ex.down.s $NE $F16 by L${i}pk.idx $j
-            if i < 6
-                table L${i}D.dc$j $W/m${i}.ex.down.c $NE $F32 by L${i}pk.idx $j
-            end
-        end
+        link L${i}pk.idx -> L${i}D.sel
         if SAVE > 1
             save L${i}pk.idx $X/idx${i}.f32 $F32
             save L${i}pk.wt $X/wt${i}.f32 $F32
@@ -637,32 +636,30 @@ block pffn(i)
         resident PL${i}pk.sl $W/sl.f32 $F32
         use pmlp(i, "PL${i}S", "sh", EH, "ones_h")
         repeat b in 0 .. PB
-            program PL${i}G$b $CHX/expert${K}_gu.chx r=$PB b=$b n=$EH k=$D
+            program PL${i}G$b $CHX/expert${K}_gu.chx r=$PB b=$b n=$EH k=$D ne=$NE
             link PL${i}nrm.y -> PL${i}G$b.x
             resident PL${i}G$b.wg $W/ones_h.f32 $F32
+            resident PL${i}G$b.gq $W/m${i}.ex.gate.q4 $I8
+            resident PL${i}G$b.gs $W/m${i}.ex.gate.s $F16
+            resident PL${i}G$b.uq $W/m${i}.ex.up.q4 $I8
+            resident PL${i}G$b.us $W/m${i}.ex.up.s $F16
+            link PL${i}pk.idx -> PL${i}G$b.sel
             if i < 6
                 program PL${i}H$b $CHX/group_sum.chx k=${K * EH} G=32
                 link PL${i}G$b.y -> PL${i}H$b.x
-                program PL${i}D$b $CHX/expert${K}_down41.chx r=$PB b=$b n=$D k=$EH
+                program PL${i}D$b $CHX/expert${K}_down41.chx r=$PB b=$b n=$D k=$EH ne=$NE
                 link PL${i}H$b.s -> PL${i}D$b.s
+                resident PL${i}D$b.dc $W/m${i}.ex.down.c $F32
             else
-                program PL${i}D$b $CHX/expert${K}_down.chx r=$PB b=$b n=$D k=$EH
+                program PL${i}D$b $CHX/expert${K}_down.chx r=$PB b=$b n=$D k=$EH ne=$NE
             end
             link PL${i}G$b.y -> PL${i}D$b.a
             resident PL${i}D$b.wg $W/ones_d.f32 $F32
+            resident PL${i}D$b.dq $W/m${i}.ex.down.q4 $I8
+            resident PL${i}D$b.ds $W/m${i}.ex.down.s $F16
             link PL${i}pk.wt -> PL${i}D$b.wt
             link yPL${i}S.y -> PL${i}D$b.m
-            repeat j in 0 .. K
-                table PL${i}G$b.gq$j $W/m${i}.ex.gate.q4 $NE $I8 by PL${i}pk.idx ${b * K + j}
-                table PL${i}G$b.gs$j $W/m${i}.ex.gate.s $NE $F16 by PL${i}pk.idx ${b * K + j}
-                table PL${i}G$b.uq$j $W/m${i}.ex.up.q4 $NE $I8 by PL${i}pk.idx ${b * K + j}
-                table PL${i}G$b.us$j $W/m${i}.ex.up.s $NE $F16 by PL${i}pk.idx ${b * K + j}
-                table PL${i}D$b.dq$j $W/m${i}.ex.down.q4 $NE $I8 by PL${i}pk.idx ${b * K + j}
-                table PL${i}D$b.ds$j $W/m${i}.ex.down.s $NE $F16 by PL${i}pk.idx ${b * K + j}
-                if i < 6
-                    table PL${i}D$b.dc$j $W/m${i}.ex.down.c $NE $F32 by PL${i}pk.idx ${b * K + j}
-                end
-            end
+            link PL${i}pk.idx -> PL${i}D$b.sel
         end
         program PL${i}mo $CHX/rows_cat${PB}.chx n=$D bn=$BN
         repeat b in 0 .. PB

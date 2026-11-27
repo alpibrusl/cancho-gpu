@@ -1,42 +1,30 @@
 // Written by scripts/gen-kolibri-kernels.sh: do not edit. The 6 experts a token takes, each expert's gate and up products and the activation, as one launch (docs/kolibri.md section 20):
-// y[e] = silu(x ge^T) * (x ue^T) with Q4_0 weights (matvec_q4_rows.chx's product), x row b of r rows. The 12 matrices are tables the session picks by the router's choice.
-algo expert6_gu(r, b, n, k)
+// y[e] = silu(x ge^T) * (x ue^T) with Q4_0 weights (matvec_q4_rows.chx's product), x row b of r rows. The matrices are the layer's tables of ne experts; expert e of the token
+// is the one sel[b * 6 + e] names, the router's choice (moe_pick.chx's idx), which the kernel reads itself (section 26).
+algo expert6_gu(r, b, n, k, ne)
   in  x:   f32[r, k]
-  in  gq0: i8[n, k / 2]
-  in  gs0: f16[n, k / 32]
-  in  uq0: i8[n, k / 2]
-  in  us0: f16[n, k / 32]
-  in  gq1: i8[n, k / 2]
-  in  gs1: f16[n, k / 32]
-  in  uq1: i8[n, k / 2]
-  in  us1: f16[n, k / 32]
-  in  gq2: i8[n, k / 2]
-  in  gs2: f16[n, k / 32]
-  in  uq2: i8[n, k / 2]
-  in  us2: f16[n, k / 32]
-  in  gq3: i8[n, k / 2]
-  in  gs3: f16[n, k / 32]
-  in  uq3: i8[n, k / 2]
-  in  us3: f16[n, k / 32]
-  in  gq4: i8[n, k / 2]
-  in  gs4: f16[n, k / 32]
-  in  uq4: i8[n, k / 2]
-  in  us4: f16[n, k / 32]
-  in  gq5: i8[n, k / 2]
-  in  gs5: f16[n, k / 32]
-  in  uq5: i8[n, k / 2]
-  in  us5: f16[n, k / 32]
+  in  gq:  i8[ne * n, k / 2]
+  in  gs:  f16[ne * n, k / 32]
+  in  uq:  i8[ne * n, k / 2]
+  in  us:  f16[ne * n, k / 32]
   in  wg:  f32[n]
+  in  sel: f32[r * 6]
   out y:   f32[6, n]
   tile bn
 {
   grid i over n / bn
+  pick p0 under ne from sel[b * 6 + 0]
+  pick p1 under ne from sel[b * 6 + 1]
+  pick p2 under ne from sel[b * 6 + 2]
+  pick p3 under ne from sel[b * 6 + 3]
+  pick p4 under ne from sel[b * 6 + 4]
+  pick p5 under ne from sel[b * 6 + 5]
   let x0 = load x[b, 0 ; 1, k]
-  let a0 = load gq0[i * bn, 0 ; bn, k / 2]
-  let b0 = load gs0[i * bn, 0 ; bn, k / 32]
+  let a0 = load gq[p0 * n + i * bn, 0 ; bn, k / 2]
+  let b0 = load gs[p0 * n + i * bn, 0 ; bn, k / 32]
   let c0 = load wg[i * bn ; bn]
-  let d0 = load uq0[i * bn, 0 ; bn, k / 2]
-  let e0 = load us0[i * bn, 0 ; bn, k / 32]
+  let d0 = load uq[p0 * n + i * bn, 0 ; bn, k / 2]
+  let e0 = load us[p0 * n + i * bn, 0 ; bn, k / 32]
   let f0 = load wg[i * bn ; bn]
   let w0 = dequant_q4 a0 b0 c0 32
   let v0 = dequant_q4 d0 e0 f0 32
@@ -46,11 +34,11 @@ algo expert6_gu(r, b, n, k)
   let t0 = g0 * s0
   store t0 * u0 -> y[0, i * bn]
   let x1 = load x[b, 0 ; 1, k]
-  let a1 = load gq1[i * bn, 0 ; bn, k / 2]
-  let b1 = load gs1[i * bn, 0 ; bn, k / 32]
+  let a1 = load gq[p1 * n + i * bn, 0 ; bn, k / 2]
+  let b1 = load gs[p1 * n + i * bn, 0 ; bn, k / 32]
   let c1 = load wg[i * bn ; bn]
-  let d1 = load uq1[i * bn, 0 ; bn, k / 2]
-  let e1 = load us1[i * bn, 0 ; bn, k / 32]
+  let d1 = load uq[p1 * n + i * bn, 0 ; bn, k / 2]
+  let e1 = load us[p1 * n + i * bn, 0 ; bn, k / 32]
   let f1 = load wg[i * bn ; bn]
   let w1 = dequant_q4 a1 b1 c1 32
   let v1 = dequant_q4 d1 e1 f1 32
@@ -60,11 +48,11 @@ algo expert6_gu(r, b, n, k)
   let t1 = g1 * s1
   store t1 * u1 -> y[1, i * bn]
   let x2 = load x[b, 0 ; 1, k]
-  let a2 = load gq2[i * bn, 0 ; bn, k / 2]
-  let b2 = load gs2[i * bn, 0 ; bn, k / 32]
+  let a2 = load gq[p2 * n + i * bn, 0 ; bn, k / 2]
+  let b2 = load gs[p2 * n + i * bn, 0 ; bn, k / 32]
   let c2 = load wg[i * bn ; bn]
-  let d2 = load uq2[i * bn, 0 ; bn, k / 2]
-  let e2 = load us2[i * bn, 0 ; bn, k / 32]
+  let d2 = load uq[p2 * n + i * bn, 0 ; bn, k / 2]
+  let e2 = load us[p2 * n + i * bn, 0 ; bn, k / 32]
   let f2 = load wg[i * bn ; bn]
   let w2 = dequant_q4 a2 b2 c2 32
   let v2 = dequant_q4 d2 e2 f2 32
@@ -74,11 +62,11 @@ algo expert6_gu(r, b, n, k)
   let t2 = g2 * s2
   store t2 * u2 -> y[2, i * bn]
   let x3 = load x[b, 0 ; 1, k]
-  let a3 = load gq3[i * bn, 0 ; bn, k / 2]
-  let b3 = load gs3[i * bn, 0 ; bn, k / 32]
+  let a3 = load gq[p3 * n + i * bn, 0 ; bn, k / 2]
+  let b3 = load gs[p3 * n + i * bn, 0 ; bn, k / 32]
   let c3 = load wg[i * bn ; bn]
-  let d3 = load uq3[i * bn, 0 ; bn, k / 2]
-  let e3 = load us3[i * bn, 0 ; bn, k / 32]
+  let d3 = load uq[p3 * n + i * bn, 0 ; bn, k / 2]
+  let e3 = load us[p3 * n + i * bn, 0 ; bn, k / 32]
   let f3 = load wg[i * bn ; bn]
   let w3 = dequant_q4 a3 b3 c3 32
   let v3 = dequant_q4 d3 e3 f3 32
@@ -88,11 +76,11 @@ algo expert6_gu(r, b, n, k)
   let t3 = g3 * s3
   store t3 * u3 -> y[3, i * bn]
   let x4 = load x[b, 0 ; 1, k]
-  let a4 = load gq4[i * bn, 0 ; bn, k / 2]
-  let b4 = load gs4[i * bn, 0 ; bn, k / 32]
+  let a4 = load gq[p4 * n + i * bn, 0 ; bn, k / 2]
+  let b4 = load gs[p4 * n + i * bn, 0 ; bn, k / 32]
   let c4 = load wg[i * bn ; bn]
-  let d4 = load uq4[i * bn, 0 ; bn, k / 2]
-  let e4 = load us4[i * bn, 0 ; bn, k / 32]
+  let d4 = load uq[p4 * n + i * bn, 0 ; bn, k / 2]
+  let e4 = load us[p4 * n + i * bn, 0 ; bn, k / 32]
   let f4 = load wg[i * bn ; bn]
   let w4 = dequant_q4 a4 b4 c4 32
   let v4 = dequant_q4 d4 e4 f4 32
@@ -102,11 +90,11 @@ algo expert6_gu(r, b, n, k)
   let t4 = g4 * s4
   store t4 * u4 -> y[4, i * bn]
   let x5 = load x[b, 0 ; 1, k]
-  let a5 = load gq5[i * bn, 0 ; bn, k / 2]
-  let b5 = load gs5[i * bn, 0 ; bn, k / 32]
+  let a5 = load gq[p5 * n + i * bn, 0 ; bn, k / 2]
+  let b5 = load gs[p5 * n + i * bn, 0 ; bn, k / 32]
   let c5 = load wg[i * bn ; bn]
-  let d5 = load uq5[i * bn, 0 ; bn, k / 2]
-  let e5 = load us5[i * bn, 0 ; bn, k / 32]
+  let d5 = load uq[p5 * n + i * bn, 0 ; bn, k / 2]
+  let e5 = load us[p5 * n + i * bn, 0 ; bn, k / 32]
   let f5 = load wg[i * bn ; bn]
   let w5 = dequant_q4 a5 b5 c5 32
   let v5 = dequant_q4 d5 e5 f5 32

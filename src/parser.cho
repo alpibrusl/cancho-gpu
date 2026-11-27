@@ -586,6 +586,32 @@ fn block[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
                 going = eat_punct(m, t, p, ",");
             }
             mem.push(m, body, node(m, kinds.s_grid(), axes, 0, 0, 0, 0));
+        } else if eat_kw(m, t, p, "pick") {
+            let name = want_ident(m, t, p);
+            if name < 0 {
+                return 0 - 1;
+            }
+            if !eat_kw(m, t, p, "under") {
+                let at = here(m, t, p);
+                return err.fail(m, t, "syntax", text.f2(m, t, "$: expected `under` after `pick $`", at, name));
+            }
+            let ext = ce(m, t, p);
+            if ext < 0 {
+                return 0 - 1;
+            }
+            if !eat_kw(m, t, p, "from") {
+                let at = here(m, t, p);
+                return err.fail(m, t, "syntax", text.f1(m, t, "$: expected `from` and the parameter a picked index is read from", at));
+            }
+            let prm = want_ident(m, t, p);
+            if prm < 0 || want_punct(m, t, p, "[") < 0 {
+                return 0 - 1;
+            }
+            let el = ce(m, t, p);
+            if el < 0 || want_punct(m, t, p, "]") < 0 {
+                return 0 - 1;
+            }
+            mem.push(m, body, node(m, kinds.s_pick(), name, ext, prm, el, 0));
         } else if eat_kw(m, t, p, "yield") {
             let ys = mem.list(m);
             var going = true;
@@ -601,7 +627,7 @@ fn block[&m, &t](m: &!m [int], t: &!t [byte], p: int) -> [] int {
         } else {
             let at = here(m, t, p);
             let found = lexer.show(m, t, peek(m, p));
-            return err.fail(m, t, "syntax", text.f2(m, t, "$: expected `let`, `store`, `grid`, `yield` or `}`, found $", at, found));
+            return err.fail(m, t, "syntax", text.f2(m, t, "$: expected `let`, `store`, `grid`, `pick`, `yield` or `}`, found $", at, found));
         }
     }
     return body;

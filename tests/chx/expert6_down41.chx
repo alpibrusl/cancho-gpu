@@ -1,105 +1,98 @@
 // Written by scripts/gen-kolibri-kernels.sh: do not edit. expert6_down.chx where `down` is Q4_1 (docs/kolibri.md section 10: code d + m is (code - 8) d + (m + 8 d)): to each
 // expert's Q4_0 product is added s[e] ce^T, s the sums of a[e] over its groups of 32 (group_sum.chx) and ce the group offsets m + 8 d the host writes.
-algo expert6_down41(r, b, n, k)
+// The matrices are the layer's tables of ne experts, and the kernel picks the token's by sel, as expert6_gu.chx does.
+algo expert6_down41(r, b, n, k, ne)
   in  a:   f32[6, k]
   in  s:   f32[6, k / 32]
-  in  dq0: i8[n, k / 2]
-  in  ds0: f16[n, k / 32]
-  in  dc0: f32[n, k / 32]
-  in  dq1: i8[n, k / 2]
-  in  ds1: f16[n, k / 32]
-  in  dc1: f32[n, k / 32]
-  in  dq2: i8[n, k / 2]
-  in  ds2: f16[n, k / 32]
-  in  dc2: f32[n, k / 32]
-  in  dq3: i8[n, k / 2]
-  in  ds3: f16[n, k / 32]
-  in  dc3: f32[n, k / 32]
-  in  dq4: i8[n, k / 2]
-  in  ds4: f16[n, k / 32]
-  in  dc4: f32[n, k / 32]
-  in  dq5: i8[n, k / 2]
-  in  ds5: f16[n, k / 32]
-  in  dc5: f32[n, k / 32]
+  in  dq:  i8[ne * n, k / 2]
+  in  ds:  f16[ne * n, k / 32]
+  in  dc:  f32[ne * n, k / 32]
   in  wg:  f32[n]
   in  wt:  f32[r * 6, 1]
   in  m:   f32[r, n]
+  in  sel: f32[r * 6]
   out mo:  f32[1, n]
   tile bn
 {
   grid i over n / bn
+  pick p0 under ne from sel[b * 6 + 0]
+  pick p1 under ne from sel[b * 6 + 1]
+  pick p2 under ne from sel[b * 6 + 2]
+  pick p3 under ne from sel[b * 6 + 3]
+  pick p4 under ne from sel[b * 6 + 4]
+  pick p5 under ne from sel[b * 6 + 5]
   let acc0 = load m[b, i * bn ; 1, bn]
   let x0 = load a[0, 0 ; 1, k]
-  let q0 = load dq0[i * bn, 0 ; bn, k / 2]
-  let h0 = load ds0[i * bn, 0 ; bn, k / 32]
+  let q0 = load dq[p0 * n + i * bn, 0 ; bn, k / 2]
+  let h0 = load ds[p0 * n + i * bn, 0 ; bn, k / 32]
   let g0 = load wg[i * bn ; bn]
   let w0 = dequant_q4 q0 h0 g0 32
   let y0 = matmul_nt x0 w0
   let z0 = load s[0, 0 ; 1, k / 32]
-  let o0 = load dc0[i * bn, 0 ; bn, k / 32]
-  let p0 = y0 + matmul_nt z0 o0
+  let o0 = load dc[p0 * n + i * bn, 0 ; bn, k / 32]
+  let v0 = y0 + matmul_nt z0 o0
   let c0 = load wt[b * 6 + 0, 0 ; 1, 1]
-  let r0 = p0 * c0
+  let r0 = v0 * c0
   let acc1 = acc0 + r0
   let x1 = load a[1, 0 ; 1, k]
-  let q1 = load dq1[i * bn, 0 ; bn, k / 2]
-  let h1 = load ds1[i * bn, 0 ; bn, k / 32]
+  let q1 = load dq[p1 * n + i * bn, 0 ; bn, k / 2]
+  let h1 = load ds[p1 * n + i * bn, 0 ; bn, k / 32]
   let g1 = load wg[i * bn ; bn]
   let w1 = dequant_q4 q1 h1 g1 32
   let y1 = matmul_nt x1 w1
   let z1 = load s[1, 0 ; 1, k / 32]
-  let o1 = load dc1[i * bn, 0 ; bn, k / 32]
-  let p1 = y1 + matmul_nt z1 o1
+  let o1 = load dc[p1 * n + i * bn, 0 ; bn, k / 32]
+  let v1 = y1 + matmul_nt z1 o1
   let c1 = load wt[b * 6 + 1, 0 ; 1, 1]
-  let r1 = p1 * c1
+  let r1 = v1 * c1
   let acc2 = acc1 + r1
   let x2 = load a[2, 0 ; 1, k]
-  let q2 = load dq2[i * bn, 0 ; bn, k / 2]
-  let h2 = load ds2[i * bn, 0 ; bn, k / 32]
+  let q2 = load dq[p2 * n + i * bn, 0 ; bn, k / 2]
+  let h2 = load ds[p2 * n + i * bn, 0 ; bn, k / 32]
   let g2 = load wg[i * bn ; bn]
   let w2 = dequant_q4 q2 h2 g2 32
   let y2 = matmul_nt x2 w2
   let z2 = load s[2, 0 ; 1, k / 32]
-  let o2 = load dc2[i * bn, 0 ; bn, k / 32]
-  let p2 = y2 + matmul_nt z2 o2
+  let o2 = load dc[p2 * n + i * bn, 0 ; bn, k / 32]
+  let v2 = y2 + matmul_nt z2 o2
   let c2 = load wt[b * 6 + 2, 0 ; 1, 1]
-  let r2 = p2 * c2
+  let r2 = v2 * c2
   let acc3 = acc2 + r2
   let x3 = load a[3, 0 ; 1, k]
-  let q3 = load dq3[i * bn, 0 ; bn, k / 2]
-  let h3 = load ds3[i * bn, 0 ; bn, k / 32]
+  let q3 = load dq[p3 * n + i * bn, 0 ; bn, k / 2]
+  let h3 = load ds[p3 * n + i * bn, 0 ; bn, k / 32]
   let g3 = load wg[i * bn ; bn]
   let w3 = dequant_q4 q3 h3 g3 32
   let y3 = matmul_nt x3 w3
   let z3 = load s[3, 0 ; 1, k / 32]
-  let o3 = load dc3[i * bn, 0 ; bn, k / 32]
-  let p3 = y3 + matmul_nt z3 o3
+  let o3 = load dc[p3 * n + i * bn, 0 ; bn, k / 32]
+  let v3 = y3 + matmul_nt z3 o3
   let c3 = load wt[b * 6 + 3, 0 ; 1, 1]
-  let r3 = p3 * c3
+  let r3 = v3 * c3
   let acc4 = acc3 + r3
   let x4 = load a[4, 0 ; 1, k]
-  let q4 = load dq4[i * bn, 0 ; bn, k / 2]
-  let h4 = load ds4[i * bn, 0 ; bn, k / 32]
+  let q4 = load dq[p4 * n + i * bn, 0 ; bn, k / 2]
+  let h4 = load ds[p4 * n + i * bn, 0 ; bn, k / 32]
   let g4 = load wg[i * bn ; bn]
   let w4 = dequant_q4 q4 h4 g4 32
   let y4 = matmul_nt x4 w4
   let z4 = load s[4, 0 ; 1, k / 32]
-  let o4 = load dc4[i * bn, 0 ; bn, k / 32]
-  let p4 = y4 + matmul_nt z4 o4
+  let o4 = load dc[p4 * n + i * bn, 0 ; bn, k / 32]
+  let v4 = y4 + matmul_nt z4 o4
   let c4 = load wt[b * 6 + 4, 0 ; 1, 1]
-  let r4 = p4 * c4
+  let r4 = v4 * c4
   let acc5 = acc4 + r4
   let x5 = load a[5, 0 ; 1, k]
-  let q5 = load dq5[i * bn, 0 ; bn, k / 2]
-  let h5 = load ds5[i * bn, 0 ; bn, k / 32]
+  let q5 = load dq[p5 * n + i * bn, 0 ; bn, k / 2]
+  let h5 = load ds[p5 * n + i * bn, 0 ; bn, k / 32]
   let g5 = load wg[i * bn ; bn]
   let w5 = dequant_q4 q5 h5 g5 32
   let y5 = matmul_nt x5 w5
   let z5 = load s[5, 0 ; 1, k / 32]
-  let o5 = load dc5[i * bn, 0 ; bn, k / 32]
-  let p5 = y5 + matmul_nt z5 o5
+  let o5 = load dc[p5 * n + i * bn, 0 ; bn, k / 32]
+  let v5 = y5 + matmul_nt z5 o5
   let c5 = load wt[b * 6 + 5, 0 ; 1, 1]
-  let r5 = p5 * c5
+  let r5 = v5 * c5
   let acc6 = acc5 + r5
   store acc6 -> mo[0, i * bn]
 }
