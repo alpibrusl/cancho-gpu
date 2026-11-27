@@ -1,0 +1,26 @@
+<|im_start|>system
+# Reasoning effort
+
+Reasoning is disabled. Proceed straight to answering according to the user's instructions.<|im_end|>
+<|im_start|>user
+<tool_response>
+x
+</tool_response>
+<tool_response>
+y
+</tool_response><|im_end|>
+<|im_start|>user
+What were those?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+<tool_call>
+{"name": "f", "arguments": {}}
+</tool_call><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

@@ -1,0 +1,1 @@
+{"messages":[{"role":"tool","content":"x"},{"role":"tool","content":"y"},{"role":"user","content":"What were those?","tool_calls":[{"name":"zz","arguments":{}}]},{"role":"assistant","content":null,"tool_calls":[{"type":"function","function":{"name":"f","arguments":"{}"}}]}]}

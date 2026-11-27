@@ -2,10 +2,12 @@ edition 5;
 module kchat;
 
 // `kchat` -- Kolibri 1.1's chat template (`tokenizer.chat_template` of its GGUF, the `chat_template` of its `tokenizer_config.json`), written out for the conversations the command and the
-// server take (docs/kolibri.md sections 16 and 18): a system message or none, user and assistant turns, a later system message, and the reasoning effort. Tools and tool turns are not written:
-// what calls this refuses them. `tests/kolibri_cmd.sh` holds `render` to the bytes the model's own template gives through jinja2, recorded by hand (golden/kolibri/).
+// server take (docs/kolibri.md sections 16, 18 and 21): a system message or none, user and assistant turns, a later system message, the reasoning effort, and tools: their block, an
+// assistant's calls and the tool turns. `tests/kolibri_cmd.sh` and `tests/kolibri_serve.sh` hold `render` to the bytes the model's own template gives, recorded by hand (golden/kolibri/,
+// golden/kolibri_chat/).
 //
-// A message is a record of three: its role (`system`, `user`, `assistant`: the numbers below), its content, and for an assistant its reasoning (a text, or -1 for none given).
+// A message is a record of four: its role (`system`, `user`, `assistant`, `tool`: the numbers below), its content, for an assistant its reasoning (a text, or -1 for none given) and its
+// calls (a list of records (name, arguments), both texts, the arguments as they are written; or -1). What is JSON of a tool or a call is `kolibri/ktool.cho`'s: here they are texts.
 
 import mem;
 import text;
@@ -22,8 +24,17 @@ pub fn assistant() -> [] int {
     return 2;
 }
 
+pub fn tool() -> [] int {
+    return 3;
+}
+
 pub fn message[&m](m: &!m [int], role: int, content: int, reasoning: int) -> [] int {
-    return mem.rec3(m, role, content, reasoning);
+    return mem.rec4(m, role, content, reasoning, 0 - 1);
+}
+
+// An assistant's message with its calls.
+pub fn calling[&m](m: &!m [int], content: int, reasoning: int, calls: int) -> [] int {
+    return mem.rec4(m, assistant(), content, reasoning, calls);
 }
 
 // The efforts: 0 none (reasoning disabled), 1 low, 2 medium, 3 high. The template takes `minimal` for low and `xhigh` and `max` for high. -1 for another word.
@@ -126,9 +137,14 @@ pub fn split_reasoning[&t](t: &!t [byte], content: int, given: int) -> [] (int, 
     return (lstrip_nl(t, head), lstrip_nl(t, text.sub(content, last + 8, text.size(content))));
 }
 
-// The template for the messages `msgs` (a list of message records, not empty) and an effort, with the assistant's opening after them: a text in the pool. The messages' bytes are written
-// as they are: a message that contains `<|im_end|>` ends its own turn, as it does through the template.
-pub fn render[&m, &t](m: &!m [int], t: &!t [byte], msgs: int, effort: int) -> [] int {
+// Whether `h` is a tool's answer as the template writes one in a user turn: such a user message is not a question.
+fn is_response[&t](t: &!t [byte], h: int) -> [] bool {
+    return text.starts_with(t, h, "<tool_response>") && text.ends_with(t, h, "</tool_response>");
+}
+
+// The template for the messages `msgs` (a list of message records, not empty), an effort and the tools (a list of texts, a tool each as the template writes it, or -1 for none), with the
+// assistant's opening after them: a text in the pool. The messages' bytes are written as they are: a message that contains `<|im_end|>` ends its own turn, as it does through the template.
+pub fn render[&m, &t](m: &!m [int], t: &!t [byte], msgs: int, effort: int, tools: int) -> [] int {
     let from = text.begin(m);
     let n = mem.size(m, msgs);
     let has_system = n > 0 && m[mem.get(m, msgs, 0)] == system();
@@ -147,13 +163,23 @@ pub fn render[&m, &t](m: &!m [int], t: &!t [byte], msgs: int, effort: int) -> []
     } else {
         put(m, t, "Reasoning effort is set to high. Think carefully through the task in the user's language, validate key assumptions, consider plausible alternatives, and prioritize correctness and clarity.");
     }
+    if tools >= 0 && mem.size(m, tools) > 0 {
+        put(m, t, "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>");
+        var ti = 0;
+        while ti < mem.size(m, tools) {
+            put(m, t, "\n");
+            text.put_str(m, t, mem.get(m, tools, ti));
+            ti = ti + 1;
+        }
+        put(m, t, "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>");
+    }
     put(m, t, "<|im_end|>\n");
-    // the last question: the last user message (none: the last message). An assistant turn after it keeps its reasoning; one before it is written without.
+    // the last question: the last user message that is not a tool's answer (none: the last message). An assistant turn after it keeps its reasoning; one before it is written without.
     var last_query = n - 1;
     var k = n - 1;
     var found = false;
     while k >= 0 && !found {
-        if m[mem.get(m, msgs, k)] == user() {
+        if m[mem.get(m, msgs, k)] == user() && !is_response(t, m[mem.get(m, msgs, k) + 1]) {
             last_query = k;
             found = true;
         }
@@ -181,7 +207,32 @@ pub fn render[&m, &t](m: &!m [int], t: &!t [byte], msgs: int, effort: int) -> []
                 put(m, t, "\n</think>\n\n");
             }
             text.put_str(m, t, lstrip_nl(t, content));
+            // its calls, a newline before each but not before the first when there is no content (the content as it is, before its leading newlines are left out)
+            var ci = 0;
+            while m[msg + 3] >= 0 && ci < mem.size(m, m[msg + 3]) {
+                let call = mem.get(m, m[msg + 3], ci);
+                if ci > 0 || text.size(content) > 0 {
+                    put(m, t, "\n");
+                }
+                put(m, t, "<tool_call>\n{\"name\": \"");
+                text.put_str(m, t, m[call]);
+                put(m, t, "\", \"arguments\": ");
+                text.put_str(m, t, m[call + 1]);
+                put(m, t, "}\n</tool_call>");
+                ci = ci + 1;
+            }
             put(m, t, "<|im_end|>\n");
+        } else if m[msg] == tool() {
+            // a run of tool answers is one user turn
+            if k == 0 || m[mem.get(m, msgs, k - 1)] != tool() {
+                put(m, t, "<|im_start|>user");
+            }
+            put(m, t, "\n<tool_response>\n");
+            text.put_str(m, t, m[msg + 1]);
+            put(m, t, "\n</tool_response>");
+            if k == n - 1 || m[mem.get(m, msgs, k + 1)] != tool() {
+                put(m, t, "<|im_end|>\n");
+            }
         }
         k = k + 1;
     }

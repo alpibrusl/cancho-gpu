@@ -1,0 +1,1 @@
+{"role":"assistant","content":"<tool_call>{\"name\":\"a\",\"arguments\":{}} trailing</tool_call><tool_call>{\"name\":\"b\",\"arguments\":{}}{\"name\":\"c\",\"arguments\":{}}</tool_call>"}

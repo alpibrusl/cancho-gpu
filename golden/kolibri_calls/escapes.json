@@ -1,0 +1,1 @@
+{"role":"assistant","content":"q \"x\" \\ \u0001\b\f\r\t ä  end\u001f","tool_calls":[{"id":"call_0_0","type":"function","function":{"name":"a","arguments":"{\"s\":\"\\u0001\\\\ ä\"}"}}]}

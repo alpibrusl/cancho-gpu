@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b","reasoning_content":"one"},{"role":"user","content":"and it ends with </tool_response>"},{"role":"assistant","content":"c","reasoning_content":"two"}]}

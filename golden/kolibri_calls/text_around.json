@@ -1,0 +1,1 @@
+{"role":"assistant","content":"I will look.\n\nThen I will say.","tool_calls":[{"id":"call_0_0","type":"function","function":{"name":"read","arguments":"{\"path\": \"a.txt\"}"}}]}

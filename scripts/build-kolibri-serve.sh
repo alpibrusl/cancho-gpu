@@ -7,7 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CANCHO=${CANCHO:-cancho}
 CC=${CC:-clang}
 mkdir -p "$ROOT/build"
-K="$ROOT/kolibri/kchat.cho $ROOT/kolibri/kdraw.cho $ROOT/kolibri/kserve.cho"
+K="$ROOT/kolibri/kchat.cho $ROOT/kolibri/kdraw.cho $ROOT/kolibri/ktool.cho $ROOT/kolibri/kserve.cho"
 # shellcheck disable=SC2046,SC2086
 "$CANCHO" build $(ls "$ROOT"/src/*.cho | grep -v '/main\.cho$') $K "$ROOT"/kolibri/serve-cpu-main.cho --std -o "$ROOT/build/cancho-gpu-kolibri-cpu" 2>&1 | grep -v "^ld: warning" || true
 test -x "$ROOT/build/cancho-gpu-kolibri-cpu"

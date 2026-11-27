@@ -3,15 +3,17 @@
 #  1. `kolibri_gpu prompt` writes, for every case of tests/kolibri_prompt/ (X.user, X.effort and perhaps X.system), the bytes of golden/kolibri/X.txt: what the model's own chat template
 #     gives through jinja2, recorded by hand;
 #  2. `kolibri_gpu ends` on the toy GGUF of tests/kolibri_toy.sh, `kolibri_gpu say` on quoted lines, and their refusals, each with its rule;
+#  2b. `kolibri_gpu calls` writes, for every made answer of tests/kolibri_calls/, the message of golden/kolibri_calls/ (docs/kolibri.md section 21): the calls the server reads out of
+#     an answer, and what stays text;
 #  3. scripts/kolibri itself with the toy GGUF, a tokenizer that is a stub (it prints the ids it is told to, and "detokenizes" ids to themselves joined by `-`) and a session that is a stub
 #     (it answers the ids it is told to, a step each, as a float's text): what it asks of the session, where it stops, what it prints, and what it refuses.
 # What the model answers is not here: that is by hand, on the Metal GPU.
-# KOLIBRI_CMD=<a script in scripts/> runs another script: the mutants of the command, by hand.
+# KOLIBRI_CMD=<a script in scripts/> runs another script, and KOLIBRI_GPU=<binary> tests another build of kolibri_gpu in 1, 2 and 2b (and builds nothing): the mutants, by hand.
 set -eu
 cd "$(dirname "$0")/.."
 C="${CANCHO:-cancho}"
-CANCHO="$C" scripts/build-kolibri.sh
-B=build/kolibri_gpu
+[ -n "${KOLIBRI_GPU:-}" ] || CANCHO="$C" scripts/build-kolibri.sh
+B=${KOLIBRI_GPU:-build/kolibri_gpu}
 T=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$T"' EXIT
 fail=0
@@ -60,6 +62,18 @@ printf 'ids 3: 1 2 3\n' > "$T/q.txt";    refuse "a line that is not a decoded on
 printf 'dec "a"' > "$T/q.txt";           refuse "a line with no end" kolibri-read 1 "$B" say "$T/q.txt"
 : > "$T/q.txt";                          refuse "an empty file" kolibri-read 1 "$B" say "$T/q.txt"
 refuse "a file that is not there" kolibri-read 1 "$B" say "$T/nothing.txt"
+
+# 2b. the calls of a made answer
+n=0; bad=0
+for a in tests/kolibri_calls/*.txt; do
+  name=$(basename "$a" .txt); n=$((n + 1))
+  "$B" calls "$a" > "$T/c.json" 2> "$T/err.txt" || true
+  cmp -s "$T/c.json" "golden/kolibri_calls/$name.json" || { echo "FAIL calls $name: $(head -c 300 "$T/c.json") $(head -c 200 "$T/err.txt")"; bad=1; fail=1; }
+done
+[ $bad -eq 0 ] && [ $n -ge 22 ] && echo "ok   calls: $n made answers, each the message recorded (calls with their arguments as written, what is no call left as text)"
+[ "$(ls golden/kolibri_calls | wc -l | tr -d ' ')" = "$n" ] || { echo "FAIL golden/kolibri_calls has not a message for each answer"; fail=1; }
+refuse "calls on a file that is not there" kolibri-read 1 "$B" calls "$T/nothing.txt"
+refuse "calls with no file" kolibri-usage 2 "$B" calls
 
 # 3. the script. The stubs: a tokenizer that prints STUB_IDS for any text (and keeps the text), and prints ids back joined by `-`; a session that answers STUB_ANS, an id a step
 cat > "$T/tok" <<'EOS'

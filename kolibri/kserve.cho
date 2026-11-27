@@ -6,7 +6,8 @@ module kserve;
 // whole. It never runs a kernel: `cancho-gpu-kolibri` gives its lines to the Metal session's engine, `cancho-gpu-kolibri-cpu` to the CPU session's, and the gate runs the second on a session
 // that is no model.
 //
-// The routes: POST /api/generate (Ollama's), POST /v1/chat/completions (OpenAI's), GET /health, /v1/models, /api/tags. A connection carries one request.
+// The routes: POST /api/generate (Ollama's), POST /v1/chat/completions (OpenAI's, with tools: docs/kolibri.md section 21), GET /health, /v1/models, /api/tags. A connection carries
+// one request.
 //
 // The server remembers the ids the session has run (`have`): a request's ids are compared with them, and the session goes back to where they part and runs the rest.
 //
@@ -26,6 +27,7 @@ import fileio;
 import gguf;
 import bpe;
 import kchat;
+import ktool;
 import kdraw;
 
 pub fn c_port() -> [] int {
@@ -541,13 +543,87 @@ fn effort_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) ->
     return effort;
 }
 
+// The tools of an OpenAI request (docs/kolibri.md section 21): a list of texts, a tool each as the template writes it; empty when the request has none, or `tool_choice` is `none`. -1
+// with a refusal.
+fn tools_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let out = mem.list(m);
+    let choice = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tool_choice");
+    var written = true;
+    if choice >= 0 && !json.is_null(m[tape..tape + words], choice) {
+        if json.is_string(m[tape..tape + words], choice) && json.string_equals(t[hs..hs + n], m[tape..tape + words], choice, "none") {
+            written = false;
+        } else if !json.is_string(m[tape..tape + words], choice) || !json.string_equals(t[hs..hs + n], m[tape..tape + words], choice, "auto") {
+            return bad(m, t, "`tool_choice` is auto or none: nothing here holds the model to a call");
+        }
+    }
+    let tools = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tools");
+    if tools < 0 || json.is_null(m[tape..tape + words], tools) {
+        return out;
+    }
+    if !json.is_array(m[tape..tape + words], tools) {
+        return bad(m, t, "`tools` must be an array");
+    }
+    let total = json.count(m[tape..tape + words], tools);
+    var i = 0;
+    var tool = tools + 1;
+    while i < total {
+        if !json.is_object(m[tape..tape + words], tool) {
+            return bad(m, t, "a tool must be an object");
+        }
+        if written {
+            mem.push(m, out, ktool.dumps(m, t, tape, words, hs, tool));
+        }
+        tool = json.skip(m[tape..tape + words], tool);
+        i = i + 1;
+    }
+    return out;
+}
+
+// The calls of an assistant's message (node `calls`, an array) as kchat's records (name, arguments), or -1 with a refusal. A call is `{function: {name, arguments}}` or
+// `{name, arguments}`; its arguments are written as they are when a string, and as the template writes a value when anything else.
+fn calls_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, calls: int) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let out = mem.list(m);
+    let total = json.count(m[tape..tape + words], calls);
+    var i = 0;
+    var call = calls + 1;
+    while i < total {
+        if !json.is_object(m[tape..tape + words], call) {
+            return bad(m, t, "a tool call must be an object");
+        }
+        var src = call;
+        let f = json.get(t[hs..hs + n], m[tape..tape + words], call, "function");
+        if f >= 0 && !json.is_null(m[tape..tape + words], f) {
+            if !json.is_object(m[tape..tape + words], f) {
+                return bad(m, t, "a tool call's `function` must be an object");
+            }
+            src = f;
+        }
+        let name = json.get(t[hs..hs + n], m[tape..tape + words], src, "name");
+        if name < 0 || !json.is_string(m[tape..tape + words], name) {
+            return bad(m, t, "a tool call needs a `name` that is a string");
+        }
+        let args = json.get(t[hs..hs + n], m[tape..tape + words], src, "arguments");
+        if args < 0 {
+            return bad(m, t, "a tool call needs its `arguments`");
+        }
+        var written = 0;
+        if json.is_string(m[tape..tape + words], args) {
+            written = node_text(m, t, tape, hs, args);
+        } else {
+            written = ktool.dumps(m, t, tape, words, hs, args);
+        }
+        mem.push(m, out, mem.rec2(m, node_text(m, t, tape, hs, name), written));
+        call = json.skip(m[tape..tape + words], call);
+        i = i + 1;
+    }
+    return out;
+}
+
 // The messages of an OpenAI request as kchat's records, or -1 with a refusal.
 fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
     let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
-    let tools = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tools");
-    if tools >= 0 && json.is_array(m[tape..tape + words], tools) && json.count(m[tape..tape + words], tools) > 0 {
-        return bad(m, t, "tools are not taken yet");
-    }
     let list = json.get(t[hs..hs + n], m[tape..tape + words], 0, "messages");
     if list < 0 || !json.is_array(m[tape..tape + words], list) || json.count(m[tape..tape + words], list) == 0 {
         return bad(m, t, "`messages` must be an array that is not empty");
@@ -574,15 +650,26 @@ fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) 
         } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "assistant") {
             role = kchat.assistant();
         } else if json.string_equals(t[hs..hs + n], m[tape..tape + words], rn, "tool") {
-            return bad(m, t, "tool messages are not taken yet");
+            role = kchat.tool();
         } else {
-            return bad(m, t, "a message's role is system, user or assistant");
+            return bad(m, t, "a message's role is system, user, assistant or tool");
         }
+        var called = 0 - 1;
         let calls = json.get(t[hs..hs + n], m[tape..tape + words], msg, "tool_calls");
-        if calls >= 0 && json.is_array(m[tape..tape + words], calls) && json.count(m[tape..tape + words], calls) > 0 {
-            return bad(m, t, "tool calls are not taken yet");
+        if role == kchat.assistant() && calls >= 0 && !json.is_null(m[tape..tape + words], calls) {
+            if !json.is_array(m[tape..tape + words], calls) {
+                return bad(m, t, "`tool_calls` must be an array");
+            }
+            called = calls_of(m, t, tape, hs, n, calls);
+            if called < 0 {
+                return 0 - 1;
+            }
         }
-        let content = content_of(m, t, tape, hs, n, json.get(t[hs..hs + n], m[tape..tape + words], msg, "content"));
+        let cn = json.get(t[hs..hs + n], m[tape..tape + words], msg, "content");
+        if role == kchat.tool() && (cn < 0 || json.is_null(m[tape..tape + words], cn)) {
+            return bad(m, t, "a tool message needs its content");
+        }
+        let content = content_of(m, t, tape, hs, n, cn);
         if content < 0 {
             return 0 - 1;
         }
@@ -596,7 +683,11 @@ fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) 
                 return 0 - 1;
             }
         }
-        mem.push(m, out, kchat.message(m, role, content, reasoning));
+        if called >= 0 {
+            mem.push(m, out, kchat.calling(m, content, reasoning, called));
+        } else {
+            mem.push(m, out, kchat.message(m, role, content, reasoning));
+        }
         msg = json.skip(m[tape..tape + words], msg);
         i = i + 1;
     }
@@ -612,7 +703,8 @@ fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) 
 //
 // A record of 16: 0 the route (1 /api/generate, 2 /v1/chat/completions), 1 the prompt's ids (a list), 2 where the session starts (the ids before it are kept), 3 the next step,
 // 4 what is awaited (0 nothing, 1 a seek's answer, 2 a step's, 3 a pass's), 5 the new ids (an array), 6 how many, 7 the most, 8 why it ended (0 not yet, 1 an end token, 2 the limit),
-// 9 the state the numbers to draw with come from, 10 the effort, 11 the model's name as the request gave it (or the server's), 12 when it was made (seconds), 13 the serial.
+// 9 the state the numbers to draw with come from, 10 the effort, 11 the model's name as the request gave it (or the server's), 12 when it was made (seconds), 13 the serial, 14 whether
+// the prompt has a tools block (the answer is then read for calls).
 
 pub fn j_route() -> [] int {
     return 0;
@@ -648,6 +740,7 @@ pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n
     var prompt = 0 - 1;
     var most = m[cfg + 17];
     var seed = 0 - 1;
+    var tooled = 0;
     if route == 1 {
         let p = member_text(m, t, tape, hs, n, 0, "prompt");
         if p < 0 {
@@ -669,7 +762,7 @@ pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n
                 mem.push(m, msgs, kchat.message(m, kchat.system(), sys, 0 - 1));
             }
             mem.push(m, msgs, kchat.message(m, kchat.user(), p, 0 - 1));
-            prompt = kchat.render(m, t, msgs, effort);
+            prompt = kchat.render(m, t, msgs, effort, 0 - 1);
         }
         let opts = json.get(t[hs..hs + n], m[tape..tape + words], 0, "options");
         if opts >= 0 && json.is_object(m[tape..tape + words], opts) {
@@ -693,7 +786,14 @@ pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n
         if msgs < 0 {
             return 0 - 1;
         }
-        prompt = kchat.render(m, t, msgs, effort);
+        let tools = tools_of(m, t, tape, hs, n);
+        if tools < 0 {
+            return 0 - 1;
+        }
+        if mem.size(m, tools) > 0 {
+            tooled = 1;
+        }
+        prompt = kchat.render(m, t, msgs, effort, tools);
         most = member_int(m, t, tape, hs, n, 0, "max_tokens", most);
         most = member_int(m, t, tape, hs, n, 0, "max_completion_tokens", most);
         seed = member_int(m, t, tape, hs, n, 0, "seed", seed);
@@ -762,6 +862,7 @@ pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n
     m[j + 11] = name;
     m[j + 12] = now;
     m[j + 13] = m[cfg + c_serial()];
+    m[j + 14] = tooled;
     return j;
 }
 
@@ -893,6 +994,16 @@ pub fn body[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, j: int) -> [] int {
             think = text.f1(m, t, ",\"thinking\":\"$\"", chat.escape(m, t, reasoning));
         }
         return text.f6(m, t, "{\"model\":\"$\",\"response\":\"$\"$,\"done\":true,\"done_reason\":\"$\",\"prompt_eval_count\":$,\"eval_count\":$}", chat.escape(m, t, m[j + 11]), chat.escape(m, t, content), think, text.lit(m, t, finish), text.num(m, t, np), text.num(m, t, m[j + 6]));
+    }
+    if m[j + 14] == 1 {
+        // the calls of the answer (docs/kolibri.md section 21): an answer that has one says so, unless the limit cut it
+        let (outside, found) = ktool.calls(m, t, content);
+        if mem.size(m, found) > 0 {
+            if m[j + 8] != 2 {
+                finish = "tool_calls";
+            }
+            return chat.completion_of(m, t, text.n1(m, t, "chatcmpl-$", m[j + 13]), m[j + 12], m[j + 11], ktool.message(m, t, reasoning, outside, found, m[j + 13]), text.lit(m, t, finish), np, m[j + 6], m[j + 2]);
+        }
     }
     return chat.completion_json(m, t, text.n1(m, t, "chatcmpl-$", m[j + 13]), m[j + 12], m[j + 11], reasoning, content, text.lit(m, t, finish), np, m[j + 6], m[j + 2]);
 }

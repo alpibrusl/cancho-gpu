@@ -487,7 +487,11 @@ pub fn completion_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: in
     if reasoning >= 0 {
         think = text.f1(m, t, ",\"reasoning_content\":\"$\"", escape(m, t, reasoning));
     }
-    let message = text.f2(m, t, "{\"role\":\"assistant\",\"content\":\"$\"$}", escape(m, t, content), think);
+    return completion_of(m, t, id, created, model, text.f2(m, t, "{\"role\":\"assistant\",\"content\":\"$\"$}", escape(m, t, content), think), finish, prompt_tokens, completion_tokens, cached_tokens);
+}
+
+// The same around a message that is already JSON (one with tool calls: docs/kolibri.md section 21).
+pub fn completion_of[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int, model: int, message: int, finish: int, prompt_tokens: int, completion_tokens: int, cached_tokens: int) -> [] int {
     let head = text.f3(m, t, "{\"id\":\"$\",\"object\":\"chat.completion\",\"created\":$,\"model\":\"$\"", id, text.num(m, t, created), escape(m, t, model));
     let choice = text.f2(m, t, ",\"choices\":[{\"index\":0,\"message\":$,\"finish_reason\":\"$\"}]", message, finish);
     let usage = text.f4(m, t, ",\"usage\":{\"prompt_tokens\":$,\"completion_tokens\":$,\"total_tokens\":$,\"prompt_tokens_details\":{\"cached_tokens\":$}}}", text.num(m, t, prompt_tokens), text.num(m, t, completion_tokens), text.num(m, t, prompt_tokens + completion_tokens), text.num(m, t, cached_tokens));

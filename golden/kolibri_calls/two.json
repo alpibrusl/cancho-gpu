@@ -1,0 +1,1 @@
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_0_0","type":"function","function":{"name":"get_weather","arguments":"{\n  \"city\": \"Zürich\"\n}"}},{"id":"call_0_1","type":"function","function":{"name":"multiply","arguments":"{\n  \"a\": 17,\n  \"b\": 23\n}"}}]}

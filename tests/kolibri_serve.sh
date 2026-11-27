@@ -12,6 +12,8 @@
 #  6. a session that refuses stops the server, and the body says so;
 #  7. passes (docs/kolibri.md section 20): with `--pass 4` and a session that has the phase, a prompt's tokens go four a line while there are four and one more, from wherever the
 #     session starts, and the answer is the one without passes.
+#  8. tools (docs/kolibri.md section 21): with a session that answers a table's ids by position, so that an answer is any text: the calls of an answer in the body, its
+#     `finish_reason`, what is no call, and the turn sent back kept by the session.
 # What the model answers is not here: that is by hand, on the Metal GPU.
 # KSERVE=<binary> tests another build of the server and builds nothing (build/kolibri_gpu and build/httpc are then there already): the mutants, by hand.
 cd "$(dirname "$0")/.."
@@ -77,7 +79,7 @@ start() { # the server's flags: it listens when this returns
   stop; : > "$T/err"
   tries=0
   while [ $tries -lt 20 ]; do
-    "$B" "$TOK" "$T/toy.model" --port $port --ctx $CTX --end 858 --end 859 --trace "$@" CHX="$ROOT/tests/chx" X="$T" NS=$CTX 2> "$T/err" > /dev/null &
+    "$B" "$TOK" "$T/toy.model" --port $port --ctx $CTX --end 858 --end 859 --trace "$@" CHX="$ROOT/tests/chx" X="${XDIR:-$T}" NS=$CTX 2> "$T/err" > /dev/null &
     pid=$!
     w=0
     while [ $w -lt 200 ] && ! grep -q "^listening\|^error\|^usage" "$T/err" 2>/dev/null; do sleep 0.05; w=$((w + 1)); done
@@ -144,11 +146,25 @@ refuse "no messages" $O '{"model":"m"}' "messages. must be an array"
 refuse "messages that are empty" $O '{"messages":[]}' "messages. must be an array"
 refuse "a message that is no object" $O '{"messages":["hi"]}' "must be an object"
 refuse "a message with no role" $O '{"messages":[{"content":"hi"}]}' "needs a role"
-refuse "a role that is none" $O '{"messages":[{"role":"robot","content":"hi"}]}' "system, user or assistant"
+refuse "a role that is none" $O '{"messages":[{"role":"robot","content":"hi"}]}' "system, user, assistant or tool"
 refuse "no user message" $O '{"messages":[{"role":"system","content":"hi"}]}' "no user message"
-refuse "tools" $O '{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f"}}]}' "tools are not taken yet"
-refuse "a tool message" $O '{"messages":[{"role":"user","content":"hi"},{"role":"tool","content":"1"}]}' "tool messages are not taken yet"
-refuse "tool calls" $O '{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"1"}]},{"role":"user","content":"x"}]}' "tool calls are not taken yet"
+U='{"role":"user","content":"hi"}'
+refuse "tools that are no array" $O '{"messages":['"$U"'],"tools":{"name":"f"}}' "tools. must be an array"
+refuse "a tool that is no object" $O '{"messages":['"$U"'],"tools":[{"name":"f"},"g"]}' "a tool must be an object"
+refuse "a tool that is no object, with tool_choice none" $O '{"messages":['"$U"'],"tool_choice":"none","tools":[3]}' "a tool must be an object"
+refuse "tool_choice required" $O '{"messages":['"$U"'],"tool_choice":"required","tools":[{"name":"f"}]}' "tool_choice. is auto or none"
+refuse "tool_choice that names a function" $O '{"messages":['"$U"'],"tool_choice":{"type":"function","function":{"name":"f"}},"tools":[{"name":"f"}]}' "tool_choice. is auto or none"
+refuse "a tool message with no content" $O '{"messages":['"$U"',{"role":"tool","tool_call_id":"1"}]}' "a tool message needs its content"
+refuse "a tool message whose content is null" $O '{"messages":['"$U"',{"role":"tool","content":null}]}' "a tool message needs its content"
+refuse "tool calls that are no array" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":{"name":"f"}}]}' "tool_calls. must be an array"
+refuse "a tool call that is no object" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":["f"]}]}' "a tool call must be an object"
+refuse "a tool call whose function is no object" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":[{"function":"f"}]}]}' "function. must be an object"
+refuse "a tool call with no name" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":[{"function":{"arguments":"{}"}}]}]}' "needs a .name. that is a string"
+refuse "a tool call whose name is a number" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":[{"function":{"name":3,"arguments":"{}"}}]}]}' "needs a .name. that is a string"
+refuse "a tool call with no arguments" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":[{"function":{"name":"f"}}]}]}' "needs its .arguments."
+refuse "a second tool call that is none" $O '{"messages":['"$U"',{"role":"assistant","content":null,"tool_calls":[{"name":"f","arguments":{}},{"name":"g"}]}]}' "needs its .arguments."
+refuse "a string with half a surrogate pair" $O '{"messages":['"$U"'],"tools":[{"name":"\ud83d"}]}' "not JSON"
+refuse "a string with the second half of a surrogate pair alone" $O '{"messages":['"$U"'],"tools":[{"name":"\ude00"}]}' "not JSON"
 refuse "a stream" $O '{"messages":[{"role":"user","content":"hi"}],"stream":true}' "stream is not built"
 refuse "n = 2" $O '{"messages":[{"role":"user","content":"hi"}],"n":2}' "only n = 1"
 refuse "an image" $O '{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}' "must be a text"
@@ -179,7 +195,7 @@ for f in tests/kolibri_chat/*.json; do
   if [ "$code" != 200 ] || [ ! -s "$T/want_ids.txt" ] || ! cmp -s "$T/got_ids.txt" "$T/want_ids.txt"; then echo "FAIL the prompt of $name is not the template's: status $code, $(wc -l < "$T/got_ids.txt" | tr -d ' ') ids, wanted $(wc -l < "$T/want_ids.txt" | tr -d ' ') $(head -c 200 "$T/body")"; bad=1; fail=1; fi
   [ "$(field prompt_eval_count)$(field prompt_tokens)" = "$(wc -l < "$T/want_ids.txt" | tr -d ' ')" ] || { echo "FAIL $name: the prompt's count is $(field prompt_eval_count)$(field prompt_tokens)"; bad=1; fail=1; }
 done
-[ $bad -ne 0 ] || echo "ok   the prompts of $n requests are the model's template's, id for id (chat turns, reasoning kept and dropped, a later system message, parts, the efforts, Ollama's prompt and system, raw)"
+[ $bad -ne 0 ] || echo "ok   the prompts of $n requests are the model's template's, id for id (chat turns, reasoning kept and dropped, a later system message, parts, the efforts, Ollama's prompt and system, raw; tools, an assistant's calls, tool turns)"
 
 # --- 3. an answer
 answer() { # name, the prompt's text, the most new ids: a raw prompt through /api/generate against awk
@@ -364,6 +380,57 @@ start --greedy --pass 4 || exit 1
 ask POST $G "$T/long.json"
 ended
 if [ "$st" -eq 1 ] && grep -q "^error\[kolibri-session\]: .pass. is not a count of steps" "$T/err"; then echo "ok   --pass with a session that has no such phase: the session's refusal, and the server stops"; else echo "FAIL --pass with no phase: exit $st, $(tail -2 "$T/err")"; fail=1; fi
+
+# --- 8. tools: a session that answers what a table says at each position (its `next` is all zeros), so the answer to a request is the text put after its prompt
+mkdir "$T/x2"; cp "$T/zero.txt" "$T/zero4.txt" "$T/x2/"; awk 'BEGIN { for (i = 0; i < 864; i++) print 0 }' > "$T/x2/next.txt"
+scripted() { # the golden prompt of the request, the answer's text (a file), then the server's flags: a server whose session answers that text after that prompt, then an end token
+  ids_of "$1" > "$T/sp_ids.txt"; ids_of "$2" > "$T/sa_ids.txt"
+  snp=$(wc -l < "$T/sp_ids.txt" | tr -d ' '); sna=$(wc -l < "$T/sa_ids.txt" | tr -d ' ')
+  { awk -v n=$((snp - 1)) 'BEGIN { for (i = 0; i < n; i++) print 0 }'; cat "$T/sa_ids.txt"; echo 858; awk -v n=$((CTX - snp - sna)) 'BEGIN { for (i = 0; i < n; i++) print 0 }'; } > "$T/x2/pos.txt"
+  shift 2
+  XDIR="$T/x2" start --greedy --max-new 400 "$@"
+}
+KC=tests/kolibri_chat; GC=golden/kolibri_chat; KA=tests/kolibri_calls
+message() { sed -n 's/.*"message":\(.*\),"finish_reason":"\([a-z_]*\)".*/\2 \1/p' "$T/body"; }   # the finish reason and the message of the body
+scripted $GC/chat_tools.txt $KA/two.txt || exit 1
+ask POST $O $KC/chat_tools.json
+is "an answer of two calls: no content, the calls with the request's number in their ids and their arguments as the model wrote them, and it says tool_calls" "$code $(message)" "200 tool_calls $(sed 's/call_0_/call_1_/g' golden/kolibri_calls/two.json)"
+is "its counts" "$(field prompt_tokens) $(field completion_tokens)" "$snp $sna"
+# the turn sent back: the template writes the calls as the model wrote them, so the session goes on from after them
+ask POST $O $KC/chat_tool_turn.json
+is "the calls sent back as tool_calls, with their answers: the session goes on from where it is, after the prompt and the model's own turn, with that turn's end" "$code $(field cached_tokens) $(asked | head -1)" "200 $((snp + sna)) 1 858 1"
+ask POST $O $KC/chat_tools.json
+is "the next request's calls have its number" "$(message | grep -o 'call_[0-9]*_[0-9]*' | tr '\n' ' ')" "call_3_0 call_3_1 "
+# the limit: an answer cut after its calls says length and has them
+sed "s/\"max_tokens\":256/\"max_tokens\":$sna/" $KC/chat_tools.json > "$T/cut.json"; grep -q "\"max_tokens\":$sna," "$T/cut.json" || { echo "FAIL the request has no max_tokens to change"; fail=1; }
+reset; ask POST $O "$T/cut.json"
+is "an answer cut by the limit after its calls: length, with the calls" "$(message | cut -c1-60)" "$(printf '%s' 'length {"role":"assistant","content":null,"tool_calls":[{"id":"call_' | cut -c1-60)"
+sed "s/\"max_tokens\":256/\"max_tokens\":$((sna - 1))/" $KC/chat_tools.json > "$T/cut.json"
+reset; ask POST $O "$T/cut.json"
+is "cut inside the second call: length, the first call, and the rest as text" "$(message | grep -o 'length\|"name":"[a-z_]*"\|"content":"<tool_call>' | tr '\n' ' ')" 'length "content":"<tool_call> "name":"get_weather" '
+# a request with no tools block is not read for calls
+scripted $GC/chat_tools_none.txt $KA/two.txt || exit 1
+ask POST $O $KC/chat_tools_none.json
+is "tool_choice none: the answer is its text, whatever it holds" "$code $(message | cut -c1-70)" "200 stop $(printf '%s' '{"role":"assistant","content":"<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {' | cut -c1-65)"
+has "and it has no tool_calls" '"finish_reason":"stop"'; if grep -q '"tool_calls"' "$T/body"; then echo "FAIL tool_choice none: the body has tool_calls"; fail=1; fi
+# an answer with no call, and one whose block is none
+scripted $GC/chat_tools.txt $KA/plain.txt || exit 1
+ask POST $O $KC/chat_tools.json
+is "tools and an answer with no call: stop, the text as it is" "$(message)" "stop $(cat golden/kolibri_calls/plain.json)"
+scripted $GC/chat_tools.txt $KA/arguments_array.txt || exit 1
+ask POST $O $KC/chat_tools.json
+is "a block that is no call: stop, the text as it is" "$(message)" "stop $(cat golden/kolibri_calls/arguments_array.json)"
+# with reasoning: a call inside the reasoning is not one; the content is what is outside the call after it
+printf '<think>\nI need the time. <tool_call>{"name":"no","arguments":{}}</tool_call>\n</think>\n\nOne moment.\n<tool_call>\n{"name": "now", "arguments": {}}\n</tool_call>' > "$T/think.txt"
+scripted $GC/chat_tools_effort.txt "$T/think.txt" || exit 1
+ask POST $O $KC/chat_tools_effort.json
+is "with reasoning: the reasoning apart with its tags as text, the content outside the call, one call" "$(message)" 'tool_calls {"role":"assistant","content":"One moment.","reasoning_content":"I need the time. <tool_call>{\"name\":\"no\",\"arguments\":{}}</tool_call>","tool_calls":[{"id":"call_1_0","type":"function","function":{"name":"now","arguments":"{}"}}]}'
+# Ollama's route has no tools: an answer there is its text
+printf 'hi' > "$T/hi.txt"
+body '{"prompt":"hi","raw":true,"tools":[{"name":"f"}],"options":{"num_predict":300}}'
+scripted "$T/hi.txt" $KA/two.txt || exit 1
+ask POST $G "$T/b.json"
+is "/api/generate: an answer with a call is its text" "$(field done_reason) $(grep -c '"tool_calls"' "$T/body") $(grep -c '"response":"<tool_call>' "$T/body")" "stop 0 1"
 
 # --- 6. a session that refuses: a vocabulary of 800 ids where the template's own ids are over it
 head -800 "$T/next.txt" > "$T/next800.txt"

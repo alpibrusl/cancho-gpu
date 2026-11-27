@@ -1,0 +1,294 @@
+edition 5;
+module ktool;
+
+// `ktool` -- what of Kolibri 1.1's tools is JSON (docs/kolibri.md section 21): a value of a request written as the model's chat template writes it (`dumps`), the calls read out of an
+// answer's text (`calls`), and the message of an answer that has calls (`message`). The template's own text for tools is in `kolibri/kchat.cho`.
+
+import std.json;
+import mem;
+import text;
+import jstr;
+
+fn hex_digit(d: int) -> [] byte {
+    if d < 10 {
+        return byte_of(48 + d);
+    }
+    return byte_of(87 + d);
+}
+
+// `h` as the inside of a string as Python's `json.dumps(..., ensure_ascii=False)` writes it: the quote, the backslash and the bytes under 32 escaped, every other byte as itself. It is
+// also the inside of a JSON string.
+pub fn escape[&m, &t](m: &!m [int], t: &!t [byte], h: int) -> [] int {
+    let from = text.begin(m);
+    var k = 0;
+    while k < text.size(h) {
+        let c = text.at(t, h, k);
+        if c == 34 || c == 92 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(c));
+        } else if c == 10 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(110));
+        } else if c == 13 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(114));
+        } else if c == 9 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(116));
+        } else if c == 8 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(98));
+        } else if c == 12 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(102));
+        } else if c < 32 {
+            text.put_byte(m, t, byte_of(92));
+            text.put_byte(m, t, byte_of(117));
+            text.put_byte(m, t, byte_of(48));
+            text.put_byte(m, t, byte_of(48));
+            text.put_byte(m, t, hex_digit(c / 16));
+            text.put_byte(m, t, hex_digit(c % 16));
+        } else {
+            text.put_byte(m, t, byte_of(c));
+        }
+        k = k + 1;
+    }
+    return text.finish(m, from);
+}
+
+// A string node's text, decoded: in place when it has no escape.
+pub fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] int {
+    let from = hs + m[tape + 3 * i + 1];
+    let to = hs + m[tape + 3 * i + 2];
+    if json.string_plain(m[tape..tape + 3 * i + 3], i) {
+        return text.handle(from, to - from);
+    }
+    return jstr.decode(m, t, from, to);
+}
+
+fn quoted[&m, &t](m: &!m [int], t: &!t [byte], parts: int, tape: int, hs: int, i: int) -> [] int {
+    mem.push(m, parts, text.lit(m, t, "\""));
+    mem.push(m, parts, escape(m, t, node_text(m, t, tape, hs, i)));
+    return mem.push(m, parts, text.lit(m, t, "\""));
+}
+
+// Node `node` of the tape `m[tape..tape + words)` over `t[hs..]`, written as Python's `json.dumps(value, ensure_ascii=False)` writes it, which is transformers' `tojson`: the members in
+// the order they came, `, ` and `: ` between, strings by `escape`. A number is written as it came (Python writes `1e2` as `100.0`), and a member named twice twice (Python keeps the
+// last): docs/kolibri.md section 21.2. No recursion: the open arrays and objects are a list, an entry `2 * what is left + (1 for an object)`.
+pub fn dumps[&m, &t](m: &!m [int], t: &!t [byte], tape: int, words: int, hs: int, node: int) -> [] int {
+    let parts = mem.list(m);
+    let open = mem.list(m);
+    var i = node;
+    var more = true;
+    while more {
+        let k = json.kind(m[tape..tape + words], i);
+        var whole = true;
+        if k == 6 || k == 7 {
+            let n = json.count(m[tape..tape + words], i);
+            if k == 6 {
+                mem.push(m, parts, text.lit(m, t, "["));
+            } else {
+                mem.push(m, parts, text.lit(m, t, "{"));
+            }
+            mem.push(m, open, 2 * n + k - 6);
+            i = i + 1;
+            if n > 0 {
+                whole = false;
+                if k == 7 {
+                    quoted(m, t, parts, tape, hs, i);
+                    mem.push(m, parts, text.lit(m, t, ": "));
+                    i = i + 1;
+                }
+            } else {
+                // it is closed below, as a container whose last value is done
+                mem.set(m, open, mem.size(m, open) - 1, 2 + k - 6);
+            }
+        } else {
+            if k == 0 {
+                mem.push(m, parts, text.lit(m, t, "null"));
+            } else if k == 1 {
+                mem.push(m, parts, text.lit(m, t, "false"));
+            } else if k == 2 {
+                mem.push(m, parts, text.lit(m, t, "true"));
+            } else if k == 5 {
+                quoted(m, t, parts, tape, hs, i);
+            } else {
+                mem.push(m, parts, text.handle(hs + m[tape + 3 * i + 1], m[tape + 3 * i + 2] - m[tape + 3 * i + 1]));
+            }
+            i = i + 1;
+        }
+        // a value is done: its container has one fewer to come, and is closed when that was its last
+        while whole && mem.size(m, open) > 0 {
+            let top = mem.last(m, open);
+            let left = top / 2 - 1;
+            if left > 0 {
+                mem.set(m, open, mem.size(m, open) - 1, 2 * left + top % 2);
+                mem.push(m, parts, text.lit(m, t, ", "));
+                if top % 2 == 1 {
+                    quoted(m, t, parts, tape, hs, i);
+                    mem.push(m, parts, text.lit(m, t, ": "));
+                    i = i + 1;
+                }
+                whole = false;
+            } else {
+                if top % 2 == 1 {
+                    mem.push(m, parts, text.lit(m, t, "}"));
+                } else {
+                    mem.push(m, parts, text.lit(m, t, "]"));
+                }
+                mem.pop(m, open);
+            }
+        }
+        more = mem.size(m, open) > 0;
+    }
+    return text.joined(m, t, parts, "");
+}
+
+fn is_blank(c: int) -> [] bool {
+    return c == 32 || c == 9 || c == 10 || c == 13;
+}
+
+fn trimmed[&t](t: &!t [byte], h: int) -> [] int {
+    var a = 0;
+    var b = text.size(h);
+    while a < b && is_blank(text.at(t, h, a)) {
+        a = a + 1;
+    }
+    while b > a && is_blank(text.at(t, h, b - 1)) {
+        b = b - 1;
+    }
+    return text.sub(h, a, b);
+}
+
+// The first place of `needle` in `h` from `from` on, or -1.
+fn place[&t](t: &!t [byte], h: int, needle: &static [byte], from: int) -> [] int {
+    var p = from;
+    while p + len(needle) <= text.size(h) {
+        var k = 0;
+        while k < len(needle) && text.at(t, h, p + k) == int_of(needle[k]) {
+            k = k + 1;
+        }
+        if k == len(needle) {
+            return p;
+        }
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+// The call that `inside` (what is between the tags) is: a record (name, arguments), or -1 when it is none. A call is a JSON object with a `name` that is a string, not empty, and an
+// `arguments` that is an object (what is no object has no member, so none is looked for by name in it); the arguments are the bytes of that object as they are.
+fn call_of[&m, &t](m: &!m [int], t: &!t [byte], inside: int) -> [] int {
+    let hs = text.start(inside);
+    let n = text.size(inside);
+    if n < 2 {
+        return 0 - 1;
+    }
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        return 0 - 1;
+    }
+    let name = json.get(t[hs..hs + n], m[tape..tape + words], 0, "name");
+    let args = json.get(t[hs..hs + n], m[tape..tape + words], 0, "arguments");
+    if name < 0 || !json.is_string(m[tape..tape + words], name) || args < 0 || !json.is_object(m[tape..tape + words], args) {
+        return 0 - 1;
+    }
+    let nm = node_text(m, t, tape, hs, name);
+    if text.size(nm) == 0 {
+        return 0 - 1;
+    }
+    // the object's bytes: from the first `{` after its key (the node before it, a string whose range is inside its quotes) to the brace that closes it. The text is JSON, so a brace
+    // outside a string is a brace.
+    var p = hs + m[tape + 3 * (args - 1) + 2] + 1;
+    while p < hs + n && int_of(t[p]) != 123 {
+        p = p + 1;
+    }
+    let from = p;
+    var depth = 0;
+    var instr = false;
+    var done = false;
+    while p < hs + n && !done {
+        let c = int_of(t[p]);
+        if instr {
+            if c == 92 {
+                p = p + 1;
+            } else if c == 34 {
+                instr = false;
+            }
+        } else if c == 34 {
+            instr = true;
+        } else if c == 123 {
+            depth = depth + 1;
+        } else if c == 125 {
+            depth = depth - 1;
+            done = depth == 0;
+        }
+        p = p + 1;
+    }
+    if !done {
+        return 0 - 1;
+    }
+    return mem.rec2(m, nm, text.handle(from, p - from));
+}
+
+// The calls of an answer's text `all` (its reasoning already taken off): `(content, calls)`. `calls` is a list of records (name, arguments), one for each `<tool_call>` ... `</tool_call>`
+// whose inside is a call. With a call, `content` is what is outside the calls without the white space at its ends, or -1 when that is nothing; with none it is `all`. What is between the
+// tags and is no call, and a `<tool_call>` that is never closed, stay in the content.
+pub fn calls[&m, &t](m: &!m [int], t: &!t [byte], all: int) -> [] (int, int) {
+    let found = mem.list(m);
+    let outside = mem.list(m);
+    var from = 0;
+    var p = place(t, all, "<tool_call>", 0);
+    while p >= 0 {
+        let q = place(t, all, "</tool_call>", p + 11);
+        var c = 0 - 1;
+        if q >= 0 {
+            c = call_of(m, t, text.sub(all, p + 11, q));
+        }
+        if c >= 0 {
+            mem.push(m, found, c);
+            mem.push(m, outside, text.sub(all, from, p));
+            from = q + 12;
+            p = place(t, all, "<tool_call>", from);
+        } else {
+            p = place(t, all, "<tool_call>", p + 11);
+        }
+    }
+    if mem.size(m, found) == 0 {
+        return (all, found);
+    }
+    mem.push(m, outside, text.sub(all, from, text.size(all)));
+    let content = trimmed(t, text.joined(m, t, outside, ""));
+    if text.size(content) == 0 {
+        return (0 - 1, found);
+    }
+    return (content, found);
+}
+
+// The message of an answer with calls, as OpenAI's chat completions have it: the content (or -1: null), the reasoning (or -1: none), and for each call an id `call_<serial>_<k>`, its
+// name, and its arguments as a JSON string.
+pub fn message[&m, &t](m: &!m [int], t: &!t [byte], reasoning: int, content: int, found: int, serial: int) -> [] int {
+    let parts = mem.list(m);
+    if content < 0 {
+        mem.push(m, parts, text.lit(m, t, "{\"role\":\"assistant\",\"content\":null"));
+    } else {
+        mem.push(m, parts, text.f1(m, t, "{\"role\":\"assistant\",\"content\":\"$\"", escape(m, t, content)));
+    }
+    if reasoning >= 0 {
+        mem.push(m, parts, text.f1(m, t, ",\"reasoning_content\":\"$\"", escape(m, t, reasoning)));
+    }
+    mem.push(m, parts, text.lit(m, t, ",\"tool_calls\":["));
+    var k = 0;
+    while k < mem.size(m, found) {
+        let c = mem.get(m, found, k);
+        if k > 0 {
+            mem.push(m, parts, text.lit(m, t, ","));
+        }
+        mem.push(m, parts, text.f4(m, t, "{\"id\":\"call_$_$\",\"type\":\"function\",\"function\":{\"name\":\"$\",\"arguments\":\"$\"}}", text.num(m, t, serial), text.num(m, t, k), escape(m, t, m[c]), escape(m, t, m[c + 1])));
+        k = k + 1;
+    }
+    mem.push(m, parts, text.lit(m, t, "]}"));
+    return text.joined(m, t, parts, "");
+}

@@ -1,0 +1,3 @@
+a <tool_call>
+{"name": "x", "arguments": [1]}
+</tool_call> b

@@ -1,0 +1,1 @@
+<tool_call>{"arguments":{"q":"a } \" { </tool","n":[1,{"c":"}"}],"o":{"p":{}}},"id":7,"name":"s\u00e9\n\"x\""}</tool_call>
