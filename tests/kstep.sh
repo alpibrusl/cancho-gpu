@@ -144,7 +144,9 @@ BEGIN {
       emit("m" l ".ex.gate", m0 + 9, NE * EH, D, 0); emit("m" l ".ex.up", m0 + 10, NE * EH, D, 0); emit("m" l ".ex.down", m0 + 11, NE * D, EH, l < 6)
     }
   }
-  vec("fnorm.f32", 999, D); f = W "/head.f32"; for (r = 0; r < V; r++) for (c = 0; c < D; c++) printf "%s ", hd(r, c) > f; close(f)
+  # the head as the model has it (docs/kolibri.md section 25): a code a weight, a scale for each 16 of a row, a one a row
+  vec("fnorm.f32", 999, D); f = W "/head.q"; for (r = 0; r < V; r++) for (c = 0; c < D; c++) printf "%d ", hq(r, c) > f; close(f)
+  f = W "/head.s"; for (r = 0; r < V; r++) for (c = 0; c < D / 16; c++) printf "%s ", hs(r, c) > f; close(f); ones("ones_v.f32", V, 1)
   # (the E4M3 table is the one the first part of this test wrote.) The run: rows, positions, masks.
   for (s = 0; s < NS; s++) {
     for (c = 0; c < D; c++) { X0[s, c] = ((c * 37 + s * 23 + 11) % 29 - 14) / 8; printf "%s ", X0[s, c] > (X "/x0.f32") }
@@ -216,7 +218,11 @@ function draw(uu,   dj, lk, q, c, r, best, used, n, j, i, done, gmax, nk, mm, mm
   return ORD[rs] * 64 + CN[rs]
 }
 # the head: rows 2k and 2k + 1 are near each other, so that large logits come in pairs inside a chunk of 64 (a candidate top-p drops can then lie before one it keeps)
-function hd(r, c) { return ((int(r / 2) * 29 + c * 13) % 31 - 15) / 32 + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) / 64 }'
+# the head: hn is 64 times a weight, a whole number to 36 either way; hs the scale of a group, one of two by the row and the group; hq the code, a whole number to 72 either way
+function hn(r, c) { return 2 * ((int(r / 2) * 29 + c * 13) % 31 - 15) + ((r * 7) % 5 - 2) * ((c * 3 + r) % 7 - 3) }
+function hs(r, g) { if ((r + g) % 2 == 0) return 0.015625; return 0.0078125 }
+function hq(r, c) { if ((r + int(c / 16)) % 2 == 0) return hn(r, c); return 2 * hn(r, c) }
+function hd(r, c) { return hq(r, c) * hs(r, int(c / 16)) }'
 RX="$T/x"; RN=$NS; RT=64; RTW=64; RTS=64   # a run's tables, its steps, an indexed layer's positions, a sliding layer's slots, the keys a chunk
 IDX=""   # the indexer's constants, when a run has other than the model file's
 REQ=""; CK=1   # a file of request lines (none: RN requests of a step), and whether a checkpoint follows them

@@ -763,3 +763,9 @@ tests/chx/attention_scores_pg.chx r=4 nkv=4 g=12 t=320 ts=64 d=128
 tests/chx/attention_scores_pg.chx r=3 nkv=2 g=2 t=16 ts=8 d=128 --run
 tests/chx/attention_pvl_pg.chx r=4 nkv=4 g=12 t=320 cs=64 dw=16 d=128
 tests/chx/attention_pvl_pg.chx r=3 nkv=2 g=2 t=16 cs=8 dw=16 d=128 --run
+# S10 (docs/kolibri.md section 25): `dequant_i8`, weights that are a byte a code with an f32 scale for each 16. matvec_i8_rows: Kolibri 1.1's head (128,000 x 2,560 there; rows the
+# emulators run in seconds here), and a small one run; dq_i8: the dequantisation alone, to a tile.
+tests/chx/matvec_i8_rows.chx n=1024 k=2560
+tests/chx/matvec_i8_rows.chx n=16 k=64 --run
+tests/chx/matvec_i8_rows.chx n=8 k=16 --run
+tests/chx/dq_i8.chx n=8 k=64 bn=4 --run

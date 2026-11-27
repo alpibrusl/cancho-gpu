@@ -40,10 +40,12 @@ LOCK=$CACHE/gpu.lock
 cleanup() { rm -rf "$D"; [ -z "${locked:-}" ] || rm -f "$LOCK"; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-if [ ! -f "$W/head.f32" ]; then
+if [ ! -f "$W/fnorm.f32" ]; then
   echo "kolibri-serve: writing the weights as the device reads them to $W (41 GB for Kolibri 1.1), once" >&2
   mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
 fi
+# a directory written before the head was codes and scales has head.f32, which nothing reads: the head's three files alone
+if [ ! -f "$W/head.q" ] || [ ! -f "$W/head.s" ] || [ ! -f "$W/ones_v.f32" ]; then "$K" head "$G" "$W" > /dev/null || exit $?; fi
 # the tables of positions, for the most steps of a conversation. The caches are rolls of positions (docs/kolibri.md section 19.2): any position can be gone back to
 mkdir -p "$D/x" && echo 0 > "$D/ids.txt" || exit 1
 # a pass's tokens: the model file's kernels are written for 16 (scripts/gen-kolibri-kernels.sh). `inputs` says how many positions a sliding layer scans in a pass

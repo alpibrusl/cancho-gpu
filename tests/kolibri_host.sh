@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/kolibri_host.sh -- the host side of Kolibri 1.1's step (tests/kolibri_gpu.cho, docs/kolibri.md K5) without the model: it builds, and on a toy GGUF written here byte by byte (three layers 32
 # wide: a dense one, a mixture of 2 experts with its own keys, a mixture that reads layer 1's keys; 2 query heads over 1 key/value head of 16; a vocabulary of 64) every file `weights` and `inputs`
-# write is what awk's arithmetic of the formats says: the copied tensors, the repacked codes and the scales to the byte, the Q4_1 offsets, the decoded Q6_K head, the embedding rows and the tables
+# write is what awk's arithmetic of the formats says: the copied tensors, the repacked codes and the scales to the byte, the Q4_1 offsets, the Q6_K head as codes and scales, the embedding rows and the tables
 # as numbers; the list of files is exactly the expected one. Then `inputs` for a longer run and longer caches (docs/kolibri.md section 19.2), `draws`, `argmax`, and the refusals, each with its rule and status 1 (2 for usage), none a trap.
 set -eu
 cd "$(dirname "$0")/.."
@@ -62,10 +62,13 @@ toy "$T/w65.gguf" w65
 if out=$("$B" inputs "$T/w65.gguf" "$T/ids.txt" "$T/xq" 128 5 4 2> "$T/err.txt") && [ "$out" = "steps 5 prompt 3 scanned 128" ] && [ "$(whole "$T/xq/maskp.f32")" = "$(passmask 65 4 128)" ]; then
   echo "ok   inputs for a pass of 4 with a window of 65: 128 positions scanned, awk's 126 blocks (the last for a pass past them, where the window is the 65 before each token)"
 else echo "FAIL inputs for a pass of 4, a window of 65: \`${out:-}\` $(head -c 300 "$T/err.txt")"; fail=1; fi
-# argmax: the largest of the decoded head by awk, the first of equal values, a file of one value
-want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.f32")
-got=$("$B" argmax "$T/w/head.f32" 2>&1 | cut -d' ' -f1-2)
-if [ "$got" = "argmax $want" ]; then echo "ok   argmax of the head: $want"; else echo "FAIL argmax of the head: $got, wanted $want"; fail=1; fi
+# argmax: the largest of an f32 file (the head's scales) by awk, the first of equal values, a file of one value
+want=$(awk '{ if (NR == 1 || $1 > m) { m = $1; i = NR - 1 } } END { print i }' "$T/want/head.s")
+got=$("$B" argmax "$T/w/head.s" 2>&1 | cut -d' ' -f1-2)
+if [ "$got" = "argmax $want" ]; then echo "ok   argmax of the head's scales: $want"; else echo "FAIL argmax of the head's scales: $got, wanted $want"; fail=1; fi
+# head: the head's three files alone, into a directory that has none of them, are the ones weights writes
+mkdir "$T/h" && "$B" head "$T/toy.gguf" "$T/h" > /dev/null 2> "$T/err.txt"
+if cmp -s "$T/h/head.q" "$T/w/head.q" && cmp -s "$T/h/head.s" "$T/w/head.s" && cmp -s "$T/h/ones_v.f32" "$T/w/ones_v.f32" && [ "$(ls "$T/h" | wc -l | tr -d ' ')" = 3 ]; then echo "ok   head: head.q, head.s and ones_v.f32, the bytes weights writes, and nothing else"; else echo "FAIL head: $(ls "$T/h" | tr '\n' ' ') $(head -c 200 "$T/err.txt")"; fail=1; fi
 got=$("$B" argmax "$T/w/ones_d.f32" 2>&1)
 if [ "$got" = "argmax 0 value 1.0 margin 0.0" ]; then echo "ok   argmax of equal values is the first"; else echo "FAIL argmax of equal values: $got"; fail=1; fi
 got=$("$B" argmax "$T/w/sl.f32" 2>&1)

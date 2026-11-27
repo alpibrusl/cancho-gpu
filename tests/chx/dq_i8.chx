@@ -1,0 +1,19 @@
+// Byte codes dequantised to an f32 tile (docs/kolibri.md section 25): w = code * s[group of 16] * g[row], dq_q4.chx with dequant_i8. For the cases: the dequantisation where it is
+// not lazy in a product.
+algo dq_i8(n, k, bn)
+  in  wq: i8[n, k]
+  in  ws: f32[n, k / 16]
+  in  wg: f32[n]
+  out w:  f32[n, k]
+{
+  grid i over n / bn
+  let q = load wq[i * bn, 0 ; bn, k]
+  let s = load ws[i * bn, 0 ; bn, k / 16]
+  let r = load wg[i * bn ; bn]
+  let x = dequant_i8 q s r 16
+  store x -> w[i * bn, 0]
+}
+
+schedule dq_i8 for apple-m-series { threads 128 }
+schedule dq_i8 for nvidia-ada     { threads 128 }
+schedule dq_i8 for amd-cdna3      { threads 128 }

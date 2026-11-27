@@ -174,6 +174,11 @@ pub fn e_dequant_q4() -> [] int {
     return 16;
 }
 
+// `dequant_i8 q s g G`: codes that are signed bytes, one a weight, `code * s[group] * g[row]` with f32 scales (docs/kolibri.md section 25: ggml's Q6_K as the host unpacks it).
+pub fn e_dequant_i8() -> [] int {
+    return 31;
+}
+
 pub fn e_add_window() -> [] int {
     return 4;
 }
@@ -330,6 +335,10 @@ pub fn op_dequant_fp4() -> [] int {
 
 pub fn op_dequant_q4() -> [] int {
     return 15;
+}
+
+pub fn op_dequant_i8() -> [] int {
+    return 17;
 }
 
 // `gather a ix`: the rows of the 2-d tile `a` that the row `ix` names, one after another: row e of the result is row `ix[e]` of `a` (docs/kolibri.md section 23). An entry of

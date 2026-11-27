@@ -66,9 +66,13 @@ BEGIN {
   n = 0; for (k = 1; k < 8; k++) { ev[n] = k * 2^-9; od[n++] = k % 2 } for (e = -6; e < 8; e++) for (j = 0; j < 8; j++) { ev[n] = (1 + j / 8) * 2^e; od[n++] = j % 2 } for (j = 0; j < 7; j++) { ev[n] = (1 + j / 8) * 256; od[n++] = j % 2 }
   want("e4m3.f32", "vals"); for (i = 0; i < 125; i++) printf "%.17g\n", (ev[i] + ev[i + 1]) / 2 > W; for (i = 0; i < 125; i++) printf "%.17g\n", ev[i + 1] - ev[i] > W; for (i = 0; i < 125; i++) printf "%d\n", od[i] > W; close(W)
   copy("output_norm.weight", "fnorm.f32")
-  want("head.f32", "vals"); k = ID["output.weight"]
+  # the head (docs/kolibri.md section 25): a byte a value, its 6-bit code less 32, and an f32 for each 16 values, d of the block times the scale of the group
+  want("head.q", "bytes"); k = ID["output.weight"]
   for (n = 0; n < V * D; n++) { o = int(n / 256) * 210; h = int((n % 256) / 128); r = n % 128; kq = int(r / 32); l = r % 32; qb = tb(k, o + h * 64 + l + (kq % 2 ? 32 : 0)); nib = kq < 2 ? qb % 16 : int(qb / 16); top = int(tb(k, o + 128 + h * 32 + l) / 4^kq) % 4
-    s = tb(k, o + 192 + h * 8 + int(l / 16) + 2 * kq); if (s > 127) s -= 256; printf "%.9g\n", half(tb(k, o + 208), tb(k, o + 209)) * s * (nib + 16 * top - 32) > W } close(W)
+    printf "%d\n", (nib + 16 * top - 32 + 256) % 256 > W } close(W)
+  want("head.s", "vals")
+  for (n = 0; n < V * D / 16; n++) { o = int(n / 16) * 210; s = tb(k, o + 192 + n % 16); if (s > 127) s -= 256; printf "%.9g\n", half(tb(k, o + 208), tb(k, o + 209)) * s > W } close(W)
+  fillw("ones_v.f32", V, 1)
   q41("token_embd.weight", "emb"); want("rank.f32", "vals"); for (i = 0; i < V; i++) printf "%d\n", V - i > W; close(W); fillw("zmk.f32", V, 0); fillw("one1.f32", 1, 1)
   # for the sampler: the file says the 2 largest, made 24 chunks
   fillw("ciota.f32", V / 64, 0, 1); fillw("cslot.f32", 24, 0, 1); fillw("czero.f32", 24 * 64, 0)

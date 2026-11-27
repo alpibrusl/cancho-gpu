@@ -97,7 +97,7 @@ while read -r line; do
 done
 EOS
 chmod +x "$T/tok" "$T/session"
-mkdir "$T/w" "$T/cache" "$T/stub"; : > "$T/w/head.f32"
+mkdir "$T/w" "$T/cache" "$T/stub"; : > "$T/w/fnorm.f32"; : > "$T/w/head.q"; : > "$T/w/head.s"; : > "$T/w/ones_v.f32"
 run() { # name, status wanted, the script's arguments: its standard output in $T/o.txt, its line in $T/e.txt
   name=$1; want=$2; shift 2
   status=0; KOLIBRI_GGUF="$T/toy.gguf" KOLIBRI_WEIGHTS="${WDIR:-$T/w}" KOLIBRI_SESSION="$T/session" KOLIBRI_TOK="$T/tok" CANCHO_MEDIA_CACHE="$T/cache" STUB_DIR="$T/stub" "${KOLIBRI_CMD:-scripts/kolibri}" "$@" > "$T/o.txt" 2> "$T/e.txt" || status=$?
@@ -151,7 +151,10 @@ run "seed 2 again" 0 --seed 2 "a question" && has "and the seed's numbers are th
 [ -f "$T/r1/answer_ids.txt" ] && [ -f "$T/r1/prompt.txt" ] && echo "ok   -o keeps the run's files" || { echo "FAIL -o keeps nothing"; fail=1; }
 # the weights, written when they are not there
 WDIR="$T/w2"
-run "the first run" 0 "a question" && { [ -s "$T/w2/head.f32" ] && [ -f "$T/w2/a0.qkv.q4" ] && grep -q "writing the weights" "$T/e.txt" && echo "ok   weights that are not there are written, and it says so" || { echo "FAIL the weights are not written"; fail=1; }; }
+run "the first run" 0 "a question" && { [ -s "$T/w2/head.q" ] && [ -s "$T/w2/head.s" ] && [ -f "$T/w2/a0.qkv.q4" ] && grep -q "writing the weights" "$T/e.txt" && echo "ok   weights that are not there are written, and it says so" || { echo "FAIL the weights are not written"; fail=1; }; }
+# a directory from before the head was codes and scales: its three files alone are written, and the rest is left
+rm "$T/w2/head.q" "$T/w2/ones_v.f32"; : > "$T/w2/a0.qkv.q4"
+run "a directory with the old head" 0 "a question" && { [ -s "$T/w2/head.q" ] && [ -s "$T/w2/ones_v.f32" ] && [ ! -s "$T/w2/a0.qkv.q4" ] && ! grep -q "writing the weights" "$T/e.txt" && echo "ok   a directory without the head's codes gets them, and nothing else is written again" || { echo "FAIL the head's files are not written alone"; fail=1; }; }
 WDIR="$T/w"
 # the lock: a live job's is respected, a dead one's is not
 echo $$ > "$T/cache/gpu.lock"

@@ -569,6 +569,10 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
         if ir.dtype(m, tq) != kinds.i8() || ir.dtype(m, ts) != kinds.f16() {
             return diag(m, t, c, "type", text.lit(m, t, "q4 values must be I8 and their scales F16"));
         }
+    } else if k == kinds.op_dequant_i8() {
+        if ir.dtype(m, tq) != kinds.i8() || ir.dtype(m, ts) != kinds.f32() {
+            return diag(m, t, c, "type", text.lit(m, t, "byte codes must be I8 and their scales F32"));
+        }
     } else if ir.dtype(m, tq) != kinds.i8() || ir.dtype(m, ts) != kinds.i8() {
         return diag(m, t, c, "type", text.lit(m, t, "nvfp4 values and FP8 scales must be I8"));
     }
@@ -583,6 +587,9 @@ fn op_ty[&m, &t](m: &!m [int], t: &!t [byte], c: int, o: int) -> [] int {
     }
     if mem.size(m, qs) > 1 {
         cols = 2 * mem.get(m, qs, 1);
+        if k == kinds.op_dequant_i8() {
+            cols = mem.get(m, qs, 1);
+        }
     }
     let group = m[o + 4];
     let ok = mem.size(m, qs) == 2 && group > 0 && cols % group == 0 && mem.same(m, ir.shape(m, ts), mem.of2(m, r, cols / max1(group))) && mem.same(m, ir.shape(m, tg), mem.of1(m, r));
