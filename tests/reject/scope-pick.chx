@@ -1,0 +1,11 @@
+// RULE scope
+// ARGS n=4
+algo k(n)
+  in  w:   f32[8 * n, 4]
+  out y:   f32[n, 4]
+{
+  pick e under 8 from sel[0]
+  let a = load w[e * n, 0 ; n, 4]
+  store a -> y
+}
+schedule k for nvidia-ada { threads 32 }

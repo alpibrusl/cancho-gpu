@@ -1,0 +1,16 @@
+// RULE grid
+// ARGS n=4
+algo k(n)
+  in  w:   f32[8 * n, 4]
+  in  sel: f32[2]
+  out y:   f32[n, 4]
+{
+  let z = zeros f32[n, 4]
+  let acc = for c in 0 .. 2 with z {
+    pick e under 8 from sel[0]
+    let a = load w[e * n, 0 ; n, 4]
+    yield z + a
+  }
+  store acc -> y
+}
+schedule k for nvidia-ada { threads 32 }

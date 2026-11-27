@@ -743,12 +743,12 @@ tests/chx/attention_pvl_pb.chx r=4 nkv=4 g=12 t=4096 cs=64 dw=16 d=128
 tests/chx/attention_pvl_pb.chx r=4 nkv=2 g=2 t=16 cs=4 dw=16 d=128 --run
 tests/chx/index_score_b.chx r=4 nq=48 g=12 nkv=4 t=4096 ts=64 d=128
 tests/chx/index_score_b.chx r=4 nq=4 g=2 nkv=2 t=16 ts=4 d=128 --run
-tests/chx/expert6_gu.chx r=16 b=5 n=512 k=2560
-tests/chx/expert2_gu.chx r=4 b=1 n=32 k=64 --run
-tests/chx/expert6_down.chx r=16 b=5 n=2560 k=512
-tests/chx/expert2_down.chx r=4 b=1 n=64 k=32 --run
-tests/chx/expert6_down41.chx r=16 b=5 n=2560 k=512
-tests/chx/expert2_down41.chx r=4 b=1 n=64 k=32 --run
+tests/chx/expert6_gu.chx r=16 b=5 n=512 k=2560 ne=8
+tests/chx/expert2_gu.chx r=4 b=1 n=32 k=64 ne=8 --run
+tests/chx/expert6_down.chx r=16 b=5 n=2560 k=512 ne=8
+tests/chx/expert2_down.chx r=4 b=1 n=64 k=32 ne=8 --run
+tests/chx/expert6_down41.chx r=16 b=5 n=2560 k=512 ne=8
+tests/chx/expert2_down41.chx r=4 b=1 n=64 k=32 ne=8 --run
 tests/chx/rows_cat16.chx n=2560 bn=256
 tests/chx/rows_cat4.chx n=64 bn=32 --run
 # S8 (docs/kolibri.md section 23): `gather`, the rows of a tile an index names. gather_kv: an indexed layer's chosen keys and values (a step's 2,240 are the same kernel with more
@@ -769,3 +769,7 @@ tests/chx/matvec_i8_rows.chx n=1024 k=2560
 tests/chx/matvec_i8_rows.chx n=16 k=64 --run
 tests/chx/matvec_i8_rows.chx n=8 k=16 --run
 tests/chx/dq_i8.chx n=8 k=64 bn=4 --run
+# S11 (docs/kolibri.md section 26): `pick`, an index a kernel reads from a parameter. pick_block: two blocks of a table by two numbers. The expert kernels above pick their
+# experts so (ne experts resident).
+tests/chx/pick_block.chx ne=384 n=512 k=64
+tests/chx/pick_block.chx ne=5 n=2 k=4 --run

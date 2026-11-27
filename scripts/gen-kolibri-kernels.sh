@@ -1,6 +1,7 @@
 #!/bin/sh
 # scripts/gen-kolibri-kernels.sh [DIR] -- the kernels of Kolibri's pass that have as many parameters as a token has experts (K) or a pass has tokens (B), which a kernel file
 # cannot say (docs/kolibri.md section 20): written here for K = 2 and 6 and B = 4 and 16, the gate's small model and Kolibri 1.1, into DIR (tests/chx).
+# An expert's matrices are blocks of the layer's tables, all ne experts resident, and the kernel picks its K by the router's choice (`pick`, section 26): the session reads nothing back.
 #     expertK_gu.chx      the K experts' gate and up products of one row and the activation, a launch
 #     expertK_down.chx    their down products (Q4_0), weighed and added to the row of the shared expert's output, a launch
 #     expertK_down41.chx  the same where `down` is Q4_1 (layers 2 to 5): the offsets' product with the activations' group sums added
@@ -12,23 +13,26 @@ sched() { printf '\nschedule %s for apple-m-series { threads %s%s }\nschedule %s
 for K in 2 6; do
   {
     echo "// Written by scripts/gen-kolibri-kernels.sh: do not edit. The $K experts a token takes, each expert's gate and up products and the activation, as one launch (docs/kolibri.md section 20):"
-    echo "// y[e] = silu(x ge^T) * (x ue^T) with Q4_0 weights (matvec_q4_rows.chx's product), x row b of r rows. The $((2 * K)) matrices are tables the session picks by the router's choice."
-    echo "algo expert${K}_gu(r, b, n, k)"
+    echo "// y[e] = silu(x ge^T) * (x ue^T) with Q4_0 weights (matvec_q4_rows.chx's product), x row b of r rows. The matrices are the layer's tables of ne experts; expert e of the token"
+    echo "// is the one sel[b * $K + e] names, the router's choice (moe_pick.chx's idx), which the kernel reads itself (section 26)."
+    echo "algo expert${K}_gu(r, b, n, k, ne)"
     echo "  in  x:   f32[r, k]"
-    e=0; while [ $e -lt $K ]; do echo "  in  gq${e}: i8[n, k / 2]"; echo "  in  gs${e}: f16[n, k / 32]"; echo "  in  uq${e}: i8[n, k / 2]"; echo "  in  us${e}: f16[n, k / 32]"; e=$((e + 1)); done
+    echo "  in  gq:  i8[ne * n, k / 2]"; echo "  in  gs:  f16[ne * n, k / 32]"; echo "  in  uq:  i8[ne * n, k / 2]"; echo "  in  us:  f16[ne * n, k / 32]"
     echo "  in  wg:  f32[n]"
+    echo "  in  sel: f32[r * ${K}]"
     echo "  out y:   f32[${K}, n]"
     echo "  tile bn"
     echo "{"
     echo "  grid i over n / bn"
+    e=0; while [ $e -lt $K ]; do echo "  pick p${e} under ne from sel[b * ${K} + ${e}]"; e=$((e + 1)); done
     e=0; while [ $e -lt $K ]; do
       cat <<EOF
   let x${e} = load x[b, 0 ; 1, k]
-  let a${e} = load gq${e}[i * bn, 0 ; bn, k / 2]
-  let b${e} = load gs${e}[i * bn, 0 ; bn, k / 32]
+  let a${e} = load gq[p${e} * n + i * bn, 0 ; bn, k / 2]
+  let b${e} = load gs[p${e} * n + i * bn, 0 ; bn, k / 32]
   let c${e} = load wg[i * bn ; bn]
-  let d${e} = load uq${e}[i * bn, 0 ; bn, k / 2]
-  let e${e} = load us${e}[i * bn, 0 ; bn, k / 32]
+  let d${e} = load uq[p${e} * n + i * bn, 0 ; bn, k / 2]
+  let e${e} = load us[p${e} * n + i * bn, 0 ; bn, k / 32]
   let f${e} = load wg[i * bn ; bn]
   let w${e} = dequant_q4 a${e} b${e} c${e} 32
   let v${e} = dequant_q4 d${e} e${e} f${e} 32
@@ -52,37 +56,40 @@ EOF
         echo "// Written by scripts/gen-kolibri-kernels.sh: do not edit. expert${K}_down.chx where \`down\` is Q4_1 (docs/kolibri.md section 10: code d + m is (code - 8) d + (m + 8 d)): to each"
         echo "// expert's Q4_0 product is added s[e] ce^T, s the sums of a[e] over its groups of 32 (group_sum.chx) and ce the group offsets m + 8 d the host writes."
       fi
-      echo "algo ${name}(r, b, n, k)"
+      echo "// The matrices are the layer's tables of ne experts, and the kernel picks the token's by sel, as expert${K}_gu.chx does."
+      echo "algo ${name}(r, b, n, k, ne)"
       echo "  in  a:   f32[${K}, k]"
       [ $form = 0 ] || echo "  in  s:   f32[${K}, k / 32]"
-      e=0; while [ $e -lt $K ]; do echo "  in  dq${e}: i8[n, k / 2]"; echo "  in  ds${e}: f16[n, k / 32]"; [ $form = 0 ] || echo "  in  dc${e}: f32[n, k / 32]"; e=$((e + 1)); done
+      echo "  in  dq:  i8[ne * n, k / 2]"; echo "  in  ds:  f16[ne * n, k / 32]"; [ $form = 0 ] || echo "  in  dc:  f32[ne * n, k / 32]"
       echo "  in  wg:  f32[n]"
       echo "  in  wt:  f32[r * ${K}, 1]"
       echo "  in  m:   f32[r, n]"
+      echo "  in  sel: f32[r * ${K}]"
       echo "  out mo:  f32[1, n]"
       echo "  tile bn"
       echo "{"
       echo "  grid i over n / bn"
+      e=0; while [ $e -lt $K ]; do echo "  pick p${e} under ne from sel[b * ${K} + ${e}]"; e=$((e + 1)); done
       echo "  let acc0 = load m[b, i * bn ; 1, bn]"
       e=0; while [ $e -lt $K ]; do
         cat <<EOF
   let x${e} = load a[${e}, 0 ; 1, k]
-  let q${e} = load dq${e}[i * bn, 0 ; bn, k / 2]
-  let h${e} = load ds${e}[i * bn, 0 ; bn, k / 32]
+  let q${e} = load dq[p${e} * n + i * bn, 0 ; bn, k / 2]
+  let h${e} = load ds[p${e} * n + i * bn, 0 ; bn, k / 32]
   let g${e} = load wg[i * bn ; bn]
   let w${e} = dequant_q4 q${e} h${e} g${e} 32
 EOF
-        if [ $form = 0 ]; then echo "  let p${e} = matmul_nt x${e} w${e}"; else
+        if [ $form = 0 ]; then echo "  let v${e} = matmul_nt x${e} w${e}"; else
           cat <<EOF
   let y${e} = matmul_nt x${e} w${e}
   let z${e} = load s[${e}, 0 ; 1, k / 32]
-  let o${e} = load dc${e}[i * bn, 0 ; bn, k / 32]
-  let p${e} = y${e} + matmul_nt z${e} o${e}
+  let o${e} = load dc[p${e} * n + i * bn, 0 ; bn, k / 32]
+  let v${e} = y${e} + matmul_nt z${e} o${e}
 EOF
         fi
         cat <<EOF
   let c${e} = load wt[b * ${K} + ${e}, 0 ; 1, 1]
-  let r${e} = p${e} * c${e}
+  let r${e} = v${e} * c${e}
   let acc$((e + 1)) = acc${e} + r${e}
 EOF
         e=$((e + 1)); done

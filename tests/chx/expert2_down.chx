@@ -1,36 +1,38 @@
 // Written by scripts/gen-kolibri-kernels.sh: do not edit. The 2 experts' down products of one token, weighed by the router's weights and added to the token's row of the shared
 // expert's output, as one launch (docs/kolibri.md section 20): mo = m[b] + sum_e wt[b K + e] (a[e] de^T), Q4_0 weights. a is expert2_gu.chx's output.
-algo expert2_down(r, b, n, k)
+// The matrices are the layer's tables of ne experts, and the kernel picks the token's by sel, as expert2_gu.chx does.
+algo expert2_down(r, b, n, k, ne)
   in  a:   f32[2, k]
-  in  dq0: i8[n, k / 2]
-  in  ds0: f16[n, k / 32]
-  in  dq1: i8[n, k / 2]
-  in  ds1: f16[n, k / 32]
+  in  dq:  i8[ne * n, k / 2]
+  in  ds:  f16[ne * n, k / 32]
   in  wg:  f32[n]
   in  wt:  f32[r * 2, 1]
   in  m:   f32[r, n]
+  in  sel: f32[r * 2]
   out mo:  f32[1, n]
   tile bn
 {
   grid i over n / bn
+  pick p0 under ne from sel[b * 2 + 0]
+  pick p1 under ne from sel[b * 2 + 1]
   let acc0 = load m[b, i * bn ; 1, bn]
   let x0 = load a[0, 0 ; 1, k]
-  let q0 = load dq0[i * bn, 0 ; bn, k / 2]
-  let h0 = load ds0[i * bn, 0 ; bn, k / 32]
+  let q0 = load dq[p0 * n + i * bn, 0 ; bn, k / 2]
+  let h0 = load ds[p0 * n + i * bn, 0 ; bn, k / 32]
   let g0 = load wg[i * bn ; bn]
   let w0 = dequant_q4 q0 h0 g0 32
-  let p0 = matmul_nt x0 w0
+  let v0 = matmul_nt x0 w0
   let c0 = load wt[b * 2 + 0, 0 ; 1, 1]
-  let r0 = p0 * c0
+  let r0 = v0 * c0
   let acc1 = acc0 + r0
   let x1 = load a[1, 0 ; 1, k]
-  let q1 = load dq1[i * bn, 0 ; bn, k / 2]
-  let h1 = load ds1[i * bn, 0 ; bn, k / 32]
+  let q1 = load dq[p1 * n + i * bn, 0 ; bn, k / 2]
+  let h1 = load ds[p1 * n + i * bn, 0 ; bn, k / 32]
   let g1 = load wg[i * bn ; bn]
   let w1 = dequant_q4 q1 h1 g1 32
-  let p1 = matmul_nt x1 w1
+  let v1 = matmul_nt x1 w1
   let c1 = load wt[b * 2 + 1, 0 ; 1, 1]
-  let r1 = p1 * c1
+  let r1 = v1 * c1
   let acc2 = acc1 + r1
   store acc2 -> mo[0, i * bn]
 }

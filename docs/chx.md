@@ -44,6 +44,7 @@ block     := { stmt } '}'
 stmt      := 'let' NAME {',' NAME} '=' expr                    // several names only for a loop that carries as many tiles
            | 'store' expr '->' NAME [ '[' ce {',' ce} ']' ]    // a window of an output at these offsets
            | 'grid' NAME 'over' ce {',' NAME 'over' ce}        // the program instance's coordinates
+           | 'pick' NAME 'under' ce 'from' NAME '[' ce ']'        // an index read from a parameter
            | 'yield' expr {',' expr}                           // the value(s) of a loop body
 
 expr      := expr ('+'|'-') expr | expr ('*'|'/') expr | atom   // * and / bind tighter than + and -
@@ -112,6 +113,7 @@ integer, saturated to -128..127, NaN to 0 (the tie rule is §7).
 | `matmul a b` | `a b`, `[m,k] x [k,n]` to `[m,n]` |
 | `matmul_nt a b` | `a b^T`, `[m,k] x [n,k]` to `[m,n]` |
 | `dequant_i8 q s g G` | weights that are a signed byte a code: `[r,c]` i8 codes, `[r,c/G]` f32 scales and `[r]` f32 row scales to `[r,c]`, `code * s[group] * g[row]`. Lazy, its operands as they are loaded; a one-row `matmul_nt` reads a group's scale once |
+| `pick p under N from prm[E]` (a statement, outside any loop) | an index `p` whose value the kernel reads: element `E` of the f32 parameter `prm`, which it does not write, as a whole number held to `0 .. N - 1` (under 0 or no number: 0; a fraction: the whole number below). An offset may use it as it uses a grid's index, `p * n + i * bn`, and the bounds are checked for `0 .. N - 1` |
 | `gather a ix` | the rows of the 2-D f32 tile `a` that the row `ix` (`[1,n]`, f32) names: `[t,c]` and `[1,n]` to `[n,c]`, row `e` the row `ix[e]` of `a`. An index is a whole number in an f32 (a fraction is the whole number below); one under 0 or no number reads row 0, one past the last row the last: never outside `a` |
 | `mma c a b`, `mma_nn`, `mma_tn`, `mma_tt` | `c + a b^T`, accumulated (`mma`: `a` is `[m, k]`, `b` is `[n, k]`); the other spellings say that the operands are stored the other way round, so no transposed copy is needed: `mma_nn` is `c + a b` with `b` stored `[k, n]` (a layer's input gradient `dz w`), `mma_tn` is `c + a^T b` with `a` stored `[k, m]` and `b` `[k, n]` (a weight gradient `dz^T x`, summed over the batch `k`), `mma_tt` is `c + a^T b^T`. The operand tiles are as below; `a`, `b` are 2-D `f16` or `f32` tiles in `shared` memory (each its own type: f32 activations by f16 weights is `tests/chx/gemm_mma_f.chx`; **an f32 operand is lowered on Metal only** and refused on CUDA with `lowering`, whose `wmma` multiplies halves: `docs/diffusion.md` section 6, V3c; on the M4 Max it costs 1.5 to 1.9 times the f16 product, and a warp should hold half the fragments it holds in f16) and `c` an `f32` fragment (`frag`) tile; a fragment can be accumulated into, stored, or carried through a loop, and nothing else (`type`) |
 | `dequant_fp4 q s g G` | `[n,k]` weights from `q: i8[n,k/2]` (two NVFP4 e2m1 codes a byte, low nibble first), `s: i8[n,k/G]` (one e4m3 scale per group of `G`), `g: f32[n]` (one scale per row): `e2m1(code) * e4m3(scale) * g[row]` |

@@ -267,6 +267,11 @@ pub fn s_grid() -> [] int {
     return 42;
 }
 
+// `pick NAME under N from PARAM[E]`: an index whose value is a number a kernel reads, element E of the f32 parameter PARAM, held to 0 .. N - 1 (docs/kolibri.md section 26).
+pub fn s_pick() -> [] int {
+    return 46;
+}
+
 pub fn s_yield() -> [] int {
     return 43;
 }
