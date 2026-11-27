@@ -39,7 +39,7 @@ refuse "a system message that is not there" kolibri-read 1 "$B" prompt tests/kol
 refuse "prompt with no effort" kolibri-usage 2 "$B" prompt tests/kolibri_prompt/plain.user
 
 # 2. the end tokens, and a quoted line's bytes
-if [ "$("$B" ends "$T/toy.gguf" 2> "$T/err.txt")" = "5 6 136" ]; then echo "ok   ends: the toy's eos, its padding token and the most steps"; else echo "FAIL ends: $("$B" ends "$T/toy.gguf" 2>&1 | head -c 200)"; fail=1; fi
+if [ "$("$B" ends "$T/toy.gguf" 2> "$T/err.txt")" = "5 6 16384 0" ]; then echo "ok   ends: the toy's eos, its padding token, the most steps of a run and the keys its indexer takes"; else echo "FAIL ends: $("$B" ends "$T/toy.gguf" 2>&1 | head -c 200)"; fail=1; fi
 toy "$T/v.gguf" noeos
 refuse "a file with no eos token" kolibri-meta 1 "$B" ends "$T/v.gguf"
 toy "$T/v.gguf" notop
@@ -103,7 +103,7 @@ run "to the eos" 0 "a question" && { is "the answer is the ids before the eos" "
 1 0 1 $2
 1 7 1 $3
 1 0 0 $4
-1 0 0 $5"; has "it says where it stopped" "$T/e.txt" "2 new tokens.*stopped at the end token 5"; has "the session samples, for as many steps as the toy sees whole (the prompt and 256 more would be past them)" "$T/stub/args.txt" "T=192 NS=136 GEN=1 SAMP=1 SAVE=0"; }
+1 0 0 $5"; has "it says where it stopped" "$T/e.txt" "2 new tokens.*stopped at the end token 5"; has "the session samples, with tables for the most steps of a run, whatever this run's length" "$T/stub/args.txt" "T=16384 NS=16384 ITOP=0 GEN=1 SAMP=1 SAVE=0"; }
 [ ! -e "$T/cache/gpu.lock" ] || { echo "FAIL the lock is left behind"; fail=1; }
 export STUB_ANS="1 1 9 6 5"
 run "to the padding token" 0 "a question" && { is "the padding token ends an answer too" "$T/o.txt" "9"; has "and is named" "$T/e.txt" "stopped at the end token 6"; }
@@ -113,8 +113,8 @@ export STUB_ANS="1 1 9 4 8 8 8 8"
 run "to the limit" 0 --max 2 --greedy "a question" && { is "the limit ends an answer, with all its ids" "$T/o.txt" "9-4"; is "the prompt's three steps and one past them, with no number to draw with" "$T/stub/requests.txt" "1 3 1
 1 0 1
 1 7 1
-1 0 0"; has "the limit is named" "$T/e.txt" "stopped at the limit of 2 new tokens"; has "the session takes the arg max; its tables are for what the toy sees whole, whatever the run's length" "$T/stub/args.txt" "T=192 NS=136 GEN=1 SAMP=0 SAVE=0"; }
-run "a limit under what the model sees whole" 0 --max 100 "a question" && has "the same tables for a longer run" "$T/stub/args.txt" "T=192 NS=136 "
+1 0 0"; has "the limit is named" "$T/e.txt" "stopped at the limit of 2 new tokens"; has "the session takes the arg max; the same tables" "$T/stub/args.txt" "T=16384 NS=16384 ITOP=0 GEN=1 SAMP=0 SAVE=0"; }
+run "another limit" 0 --max 100 "a question" && has "the same tables for a longer run" "$T/stub/args.txt" "T=16384 NS=16384 "
 export STUB_IDS="7"
 export STUB_ANS="9 4 5"
 run "a prompt of one token" 0 --greedy "a" && { is "its first step is the first new token" "$T/o.txt" "9-4"; is "the prompt's one step answers the first new token" "$T/stub/requests.txt" "1 7 1
@@ -155,8 +155,8 @@ run "an option" 2 --fast "a" && has "an option that is not one" "$T/e.txt" "no o
 run "raw with a system" 2 --raw --system tests/kolibri_prompt/system.system "a" && has "--raw with --system" "$T/e.txt" "no --system"
 run "text and file" 2 -f tests/kolibri_prompt/plain.user "a" && has "a text and a file" "$T/e.txt" "not both"
 run "a seed" 2 --seed 12345678 "a" && has "a seed of eight digits" "$T/e.txt" "at most 7 digits"
-export STUB_IDS="$(awk 'BEGIN { for (i = 0; i < 137; i++) printf "1 " }')"
-run "a prompt too long" 2 "a" && has "a prompt of more tokens than the step holds" "$T/e.txt" "137 tokens, more than the 136"
+export STUB_IDS="$(awk 'BEGIN { for (i = 0; i < 16385; i++) printf "1 " }')"
+run "a prompt too long" 2 "a" && has "a prompt of more tokens than the step holds" "$T/e.txt" "16385 tokens, more than the 16384"
 export STUB_IDS="3 0 7"
 export STUB_SESSION_FAILS=1
 run "a session that fails" 3 "a" && has "the failure of the session is passed on, with its words" "$T/e.txt" "the stub was told to fail"

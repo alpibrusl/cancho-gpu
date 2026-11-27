@@ -1,0 +1,26 @@
+// The score an indexed layer's query gives each key, by which the keys it attends to are chosen (docs/kolibri.md section 19.5; Kolibri1_1Indexer.score): the sum over the first g
+// query heads of relu(q_h . k_c), k_c key head 0 of position c, both rounded to NVFP4 before they come here,
+//
+//     s[c] = (1 / (12 sqrt(128))) sum_h relu(q[h] . k[c])
+//
+// for the positions sp * ts .. (sp + 1) * ts of a cache that is a roll of positions ([t, nkv * d]: head 0 is the first d columns). The weight is the model's for 12 heads of 128; with
+// another g every score is scaled alike and the same keys are the largest. The session's `choose` reads s.
+algo index_score(nq, g, nkv, t, ts, d)
+  in  q: f32[nq, d]
+  in  k: f32[t, nkv * d]
+  out s: f32[1, t]
+{
+  grid sp over t / ts
+  let qt = load q[0, 0 ; g, d]
+  let kt = load k[sp * ts, 0 ; ts, d]
+  let pr = matmul_nt qt kt
+  let r  = relu pr
+  let z  = zeros f32[1, g]
+  let on = z + 1.0
+  let cs = matmul on r
+  store cs * 0.007365695637359871 -> s[0, sp * ts]
+}
+
+schedule index_score for apple-m-series { threads 512 }
+schedule index_score for nvidia-ada     { threads 128 }
+schedule index_score for amd-cdna3      { threads 128 }

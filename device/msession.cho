@@ -198,6 +198,10 @@ pub fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                 let tb = mem.get(m, tables, k);
                 if m[tb] == q && m[tb + 1] == i {
                     table_blocks = m[tb + 3];
+                    // a chosen mask is one parameter's worth: its record's third word is how many largest are taken, not blocks
+                    if m[tb + session.t_way()] == 4 {
+                        table_blocks = 1;
+                    }
                     mytable = tb;
                     if m[tb + 2] < 0 {
                         tpath = m[tb + 4];
@@ -206,7 +210,7 @@ pub fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                 k = k + 1;
             }
             // a roll (docs/resident.md section 33) is one buffer, zero at the start: the output stored in it and every window of it are that buffer, bound at a block when the program runs
-            if mytable >= 0 && m[mytable + session.t_way()] >= 2 {
+            if mytable >= 0 && (m[mytable + session.t_way()] == 2 || m[mytable + session.t_way()] == 3) {
                 tpath = 0 - 1;
                 k = 0;
                 while k < mem.size(m, rollbufs) {
@@ -291,7 +295,7 @@ pub fn setup[&m, &t, &x, &f, &s](m: &!m [int], t: &!t [byte], fm: &!x [float], f
         let g = mem.get(m, m[mem.get(m, progs, m[tb]) + 2], m[tb + 1]);
         let mark = m[mem.text_slot()];
         if m[tb + 8] == 1 || m[tb + session.t_way()] >= 2 {
-            // the buffer is an earlier table's, which sent the file; or a roll's, which is zero
+            // the buffer is an earlier table's, which sent the file; or a roll's, which is zero; or a mask the session writes at each repetition
         } else if m[tb + 2] < 0 {
             // a binary table: the file's bytes are the device's, and go up as they are
             let want = m[g + 3] * m[tb + 3] * kinds.size_bytes(m[g]);
@@ -396,7 +400,35 @@ pub fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                     let tb = mem.get(m, tables, tk);
                     if m[tb + 1] == i {
                         let g = mem.get(m, m[pr + 2], i);
-                        var block = session.bound_block(m, t, sess, tb);
+                        if m[tb + session.t_way()] == 4 {
+                            // a chosen mask (docs/resident.md section 34): what is encoded so far must have run before the mask's buffer is written, since the repetition before may
+                            // still read it; the scores are read back when the choice depends on them
+                            if metal.cgpu_sync(ffi) < 0 {
+                                return device_fail(m, t, ffi, "waiting for the kernels");
+                            }
+                            let sg = mem.get(m, m[mem.get(m, progs, m[tb + 10]) + 2], m[tb + 11]);
+                            let mark4 = m[mem.text_slot()];
+                            if session.choose_reads(m, sess, tb) {
+                                let sbytes = m[sg + 3] * 4;
+                                let sat = devcodec.reserve(m, sbytes);
+                                if metal.cgpu_download(ffi, buffer_of(m, bufs, m[tb + 10], m[tb + 11]), t[sat..sat + sbytes]) < 0 {
+                                    return device_fail(m, t, ffi, "reading the scores of a choice back");
+                                }
+                                devcodec.decode(m, t, fm, sg, sat);
+                            }
+                            if session.choose_mask(m, t, fm, sess, tb) < 0 {
+                                return 0 - 1;
+                            }
+                            let mat = devcodec.encode(m, t, fm, g);
+                            if metal.cgpu_upload(ffi, mem.get(m, mine, i), t[mat..mat + m[g + 3] * 4]) < 0 {
+                                return device_fail(m, t, ffi, "sending a chosen mask");
+                            }
+                            m[mem.text_slot()] = mark4;
+                        }
+                        var block = 0;
+                        if m[tb + session.t_way()] != 4 {
+                            block = session.bound_block(m, t, sess, tb);
+                        }
                         if block < 0 {
                             return 0 - 1;
                         }
@@ -432,6 +464,9 @@ pub fn on_device[&m, &t, &x, &f](m: &!m [int], t: &!t [byte], fm: &!x [float], f
                             }
                         }
                         offset = block * session.bound_stride(m, tb, m[g + 3]) * kinds.size_bytes(m[g]);
+                        if m[tb + session.t_way()] == 4 {
+                            offset = 0 - 1;
+                        }
                     }
                     tk = tk + 1;
                 }

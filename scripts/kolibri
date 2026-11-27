@@ -6,7 +6,7 @@
 #
 # The text is one user message of the model's chat template (`--raw`: the text as it is, no template); the answer is printed, and a line of what was done goes to standard error. It samples
 # with the file's settings (temperature 1, the 128 largest, top-p 0.99) and the seed (1), or takes the arg max (`--greedy`), for at most N new tokens (256), and stops at either of the file's
-# two end tokens. A run is at most the 2,184 positions the model's indexed layers see whole. `-o DIR` keeps the run's files there (else a temporary directory, removed).
+# two end tokens. A run is at most 16,384 positions (past them the model's indexer chooses from a pool, which is not written). `-o DIR` keeps the run's files there (else a temporary directory, removed).
 # The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
 # written on the first run: 41 GB. One GPU job at a time, by the lock scripts/media takes.
 # For the gate (tests/kolibri_cmd.sh), which has no model and no GPU: KOLIBRI_SESSION and KOLIBRI_TOK name the session's and the tokenizer's programs.
@@ -56,8 +56,8 @@ awk '/^ids / { for (i = 3; i <= NF; i++) printf "%s ", $i; printf "\n"; n++ } EN
 np=$(wc -w < "$D/ids.txt" | tr -d ' ')
 [ "$np" -ge 1 ] || { echo "kolibri: the text has no tokens" >&2; exit 2; }
 set -- $("$K" ends "$G") || exit 1
-[ $# -eq 3 ] || { "$K" ends "$G" > /dev/null; exit 1; }
-end1=$1; end2=$2; whole=$3
+[ $# -eq 4 ] || { "$K" ends "$G" > /dev/null; exit 1; }
+end1=$1; end2=$2; whole=$3; itop=$4
 # step np - 1 chooses the first new token: np - 1 + max steps, no more than the model sees whole
 [ "$np" -le "$whole" ] || { echo "kolibri: the prompt is $np tokens, more than the $whole positions this step holds" >&2; exit 2; }
 [ $((np - 1 + max)) -le "$whole" ] || max=$((whole - np + 1))
@@ -68,7 +68,7 @@ if [ ! -f "$W/head.f32" ]; then
   mkdir -p "$W" && "$K" weights "$G" "$W" > /dev/null || exit $?
 fi
 mkdir -p "$D/x" || exit 1
-# the session's tables are for every position the model sees whole, whatever the run's length: none of them grows with its square (docs/kolibri.md section 19.2)
+# the session's tables are for the most positions of a run, whatever this run's length: none of them grows with its square (docs/kolibri.md section 19.2)
 T=$(((whole + 63) / 64 * 64))
 "$K" inputs "$G" "$D/ids.txt" "$D/x" "$T" "$whole" > /dev/null || exit $?
 # a sampling step's uniform number, a line a step
@@ -81,7 +81,7 @@ fi
 echo $$ > "$LOCK"; locked=1
 mkfifo "$D/in" "$D/ans" || exit 1
 # The session in a subshell that says `exit <status>` after it: a session that stops, at once or later, is then an answer to read and not a pipe nobody writes to.
-( "$SESSION" "$HERE/models/kolibri_step.model" CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" GEN=1 SAMP=$samp SAVE=0 2> "$D/err.txt"; echo "exit $?" ) < "$D/in" > "$D/ans" &
+( "$SESSION" "$HERE/models/kolibri_step.model" CHX="$HERE/tests/chx" W="$W" X="$D/x" T="$T" NS="$whole" ITOP="$itop" GEN=1 SAMP=$samp SAVE=0 2> "$D/err.txt"; echo "exit $?" ) < "$D/in" > "$D/ans" &
 trap '' PIPE
 exec 3> "$D/in" 4< "$D/ans"
 [ $samp -eq 0 ] || exec 5< "$D/draws.txt"

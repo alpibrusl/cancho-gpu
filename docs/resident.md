@@ -1350,3 +1350,25 @@ A session that keeps what its steps computed (a decoder's keys and values, a pos
 `tests/roll.sh` (in the gate on the CPU session; the Metal session by hand, the same 33 checks, exact): a roll read whole and through a window of two and of one block, two readers, a request of several steps, seeks back, to 0 and past blocks never written, `hold` against a table that goes round, a step and a seek past the roll's end, and 21 refusals of a session file. **Not tested**: a window whose element type is not the roll's (no two kernels here differ in it).
 
 **Use**: `models/kolibri_step.model`, whose 88 caches are rolls (`docs/kolibri.md` section 19).
+
+## 34. `choose`: a mask the session writes from numbers a kernel wrote (measured)
+
+Some models attend to a choice of their keys: the ones with the largest of a score, and some that are always taken. Kolibri 1.1's indexed layers take 2,048 of up to 16,384 by rank, with a tie going to the earlier key (`docs/kolibri.md` section 19.5). Rank among thousands is not an operation of the kernel language, and on a device it is the square of the keys in comparisons. The session already reads a value back in the middle of a step, to pick a table's block (`docs/kolibri.md` K2). **New directive, in both sessions:**
+
+```
+choose P.PARAM by Q.OUT TOP FIRST LAST
+```
+
+`P.PARAM` is an f32 parameter the kernel reads; `Q.OUT` an f32 output of as many numbers, of a program listed before `P`. When `P` is about to run in repetition `j`, the session writes `P.PARAM`:
+
+* entry `c` is 0 when `c <= j` and one of: `c < FIRST`; `c > j - LAST`; among the `TOP` largest of `Q.OUT` over the other entries to `j`, a tie going to the lower `c`;
+* every other entry is -1e9;
+* while `j + 1 <= TOP + FIRST + LAST` every entry to `j` is 0, and `Q.OUT` is not read;
+* a number of `Q.OUT` that is no number (NaN) is never among the largest;
+* a repetition past the mask's last entry is refused, and the session ends.
+
+**On a device** the session first waits for what it has encoded (the repetition before may still read the mask's buffer), reads `Q.OUT` back when the choice depends on it, and sends the mask up. **The selection** (`src/choose.cho`) finds the `TOP`-th largest by partition, then takes what is above it and, of what equals it, the earliest that fill the count: no sort, and the order of equal scores is the order of the entries.
+
+A session file is refused (`session`) when: the mask is not an f32 parameter the kernel reads, or is supplied another way too; the scores are not an f32 output, or of another length, or of a program not listed before the mask's; `TOP` is not 1 or more, or `FIRST` or `LAST` not a whole number from 0; the session has no `steps`.
+
+`tests/choose.sh` (in the gate on the CPU session; the Metal session by hand, the same 25 checks, exact): for eight settings, the mask of every step of a table of scores with many ties, against awk, which sorts where the session partitions; that the first setting has steps whose edge is a tie and steps whose edge is not (4 and 6); seeks; a step past the mask; 14 refusals. **Not tested**: a NaN among the scores (a session's text files hold no NaN).

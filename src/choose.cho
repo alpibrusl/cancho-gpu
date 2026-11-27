@@ -1,0 +1,110 @@
+edition 5;
+module choose;
+
+// `choose` -- the mask of the session directive `choose P.PARAM by Q.OUT TOP FIRST LAST` (docs/resident.md section 34; docs/kolibri.md section 19.5), on numbers in the
+// interpreter's memory: which of the entries 0 .. j of a row are attended to. Both sessions call it; a device session reads the scores back first and sends the mask up after.
+//
+// Entry c of the mask is 0 when c <= j and one of: c < first; c > j - last; among the `top` largest scores of the other entries to j, a tie going to the lower c. Every other entry
+// is -1e9. While j + 1 <= top + first + last every entry to j is 0 and the scores are not read (`reads` says which). A score that is no number is never among the largest.
+
+fn low() -> [] float {
+    return 0.0 - 1000000000.0;
+}
+
+// Whether the mask of repetition `j` depends on the scores.
+pub fn reads(j: int, top: int, first: int, last: int) -> [] bool {
+    return j + 1 > top + first + last;
+}
+
+// The `k`-th largest (from 1) of fm[at .. at + n), which is put in another order.
+fn kth[&x](fm: &!x [float], at: int, n: int, k: int) -> [] float {
+    var lo = 0;
+    var hi = n - 1;
+    let want = k - 1;
+    while lo < hi {
+        // the middle one as the pivot, Hoare's partition, the larger first
+        let pivot = fm[at + (lo + hi) / 2];
+        var a = lo;
+        var b = hi;
+        while a <= b {
+            while fm[at + a] > pivot {
+                a = a + 1;
+            }
+            while fm[at + b] < pivot {
+                b = b - 1;
+            }
+            if a <= b {
+                let tmp = fm[at + a];
+                fm[at + a] = fm[at + b];
+                fm[at + b] = tmp;
+                a = a + 1;
+                b = b - 1;
+            }
+        }
+        if want <= b {
+            hi = b;
+        } else if want >= a {
+            lo = a;
+        } else {
+            return fm[at + want];
+        }
+    }
+    return fm[at + want];
+}
+
+// A score as it is compared: one that is no number is below every number.
+fn seen(v: float) -> [] float {
+    if v != v {
+        return 0.0 - 340000000000000000000000000000000000000.0;
+    }
+    return v;
+}
+
+// The mask of repetition `j` over `n` entries into fm[out ..], from the scores fm[sc ..]; fm[scratch ..] is `n` numbers of room. `j` is under `n`.
+pub fn mask[&x](fm: &!x [float], scratch: int, sc: int, out: int, n: int, j: int, top: int, first: int, last: int) -> [] int {
+    var c = 0;
+    while c < n {
+        if c <= j {
+            fm[out + c] = 0.0;
+        } else {
+            fm[out + c] = low();
+        }
+        c = c + 1;
+    }
+    if !reads(j, top, first, last) {
+        return 0;
+    }
+    // the entries that compete: first .. hi - 1, more than `top` of them
+    let hi = j + 1 - last;
+    let count = hi - first;
+    c = 0;
+    while c < count {
+        fm[scratch + c] = seen(fm[sc + first + c]);
+        c = c + 1;
+    }
+    let edge = kth(fm, scratch, count, top);
+    var above = 0;
+    c = first;
+    while c < hi {
+        if seen(fm[sc + c]) > edge {
+            above = above + 1;
+        }
+        c = c + 1;
+    }
+    // those above the edge, and of those at it the earliest that fill the rest
+    var left = top - above;
+    c = first;
+    while c < hi {
+        let v = seen(fm[sc + c]);
+        if v > edge {
+            fm[out + c] = 0.0;
+        } else if v == edge && left > 0 {
+            fm[out + c] = 0.0;
+            left = left - 1;
+        } else {
+            fm[out + c] = low();
+        }
+        c = c + 1;
+    }
+    return 0;
+}
