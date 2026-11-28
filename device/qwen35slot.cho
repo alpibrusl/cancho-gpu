@@ -61,10 +61,8 @@ pub fn snap_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalg
                     if metal.cgpu_download_at(ffi, e, 0, t[scr..scr + n]) < 0 || metal.cgpu_upload_at(ffi, snap, o, t[scr..scr + n]) < 0 {
                         return qwen35.device_fail(m, t, ffi, "copying a state");
                     }
-                } else {
-                    if metal.cgpu_download_at(ffi, snap, o, t[scr..scr + n]) < 0 || metal.cgpu_upload_at(ffi, e, 0, t[scr..scr + n]) < 0 {
-                        return qwen35.device_fail(m, t, ffi, "copying a state");
-                    }
+                } else if metal.cgpu_download_at(ffi, snap, o, t[scr..scr + n]) < 0 || metal.cgpu_upload_at(ffi, e, 0, t[scr..scr + n]) < 0 {
+                    return qwen35.device_fail(m, t, ffi, "copying a state");
                 }
                 o = o + n;
                 j = j + 1;
@@ -182,4 +180,3 @@ pub fn open_prefix[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmeta
     m[mem.text_slot()] = mark0;
     return 0;
 }
-
