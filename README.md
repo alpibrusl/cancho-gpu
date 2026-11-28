@@ -46,12 +46,10 @@ How it is built, what it cost and what the language made hard: [`docs/design.md`
 ## Quick start
 
 ```sh
-git clone https://github.com/alpibrusl/cancho
 git clone https://github.com/alpibrusl/cancho-gpu && cd cancho-gpu
 
-REV=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)    # the revision CI uses
-(cd ../cancho && git checkout "$REV" && cargo build --release -p cancho)
-export CANCHO=$PWD/../cancho/target/release/cancho
+curl -fsSL https://raw.githubusercontent.com/alpibrusl/cancho/main/scripts/install.sh | sh -s "$(sed -n 's/^cancho *= *"\([0-9a-f.]*\)".*/\1/p' cancho.toml)"    # the release CI uses
+export CANCHO=$HOME/.local/bin/cancho
 
 $CANCHO build                         # build/cancho-gpu
 mkdir -p out

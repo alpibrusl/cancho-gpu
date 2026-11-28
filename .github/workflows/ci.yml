@@ -11,34 +11,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The compiler these sources were written for: the commit pinned in
-      # cancho.toml, read from there so there is one place to change it.
-      - name: Read the compiler pin
-        id: pin
-        run: echo "rev=$(sed -n 's/^cancho = "\([0-9a-f]*\)".*/\1/p' cancho.toml)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache the compiler
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: ~/cancho-bin
-          key: cancho-${{ steps.pin.outputs.rev }}-ubuntu-24.04
-
-      - name: Check out cancho
-        if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: alpibrusl/cancho
-          ref: ${{ steps.pin.outputs.rev }}
-          path: cancho
-
-      - name: Build cancho
-        if: steps.cache.outputs.cache-hit != 'true'
+      # The compiler these sources were written for: the release pinned in
+      # cancho.toml, read from there so there is one place to change it, and
+      # installed prebuilt.
+      - name: Install the pinned compiler
         run: |
-          cd cancho
-          cargo build --release -p cancho
-          mkdir -p ~/cancho-bin
-          cp target/release/cancho ~/cancho-bin/
+          pin=$(sed -n 's/^cancho *= *"\([0-9a-f.]*\)".*/\1/p' cancho.toml)
+          test -n "$pin" || { echo "cancho.toml has no compiler pin" >&2; exit 1; }
+          curl -fsSL https://raw.githubusercontent.com/alpibrusl/cancho/main/scripts/install.sh | sh -s "$pin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # tests/chat.sh renders the model's chat template through jinja2 as its oracle.
       - name: jinja2
@@ -53,4 +34,4 @@ jobs:
           ~/media-oracle/bin/pip install -q pillow numpy
 
       - name: Gate
-        run: CANCHO=~/cancho-bin/cancho MEDIA_ORACLE_PY=~/media-oracle/bin/python scripts/gate.sh
+        run: CANCHO=$HOME/.local/bin/cancho MEDIA_ORACLE_PY=~/media-oracle/bin/python scripts/gate.sh
