@@ -104,7 +104,8 @@ build/cancho-gpu-front 8080 front/runners --env HOME=$HOME --env PATH=/usr/bin:/
 * **Its authority** (`front/authority.txt`, held by `front/check.sh`): `net_in("127.0.0.1:")`, `net_out("127.0.0.1:")`, `exec_under`,
   `exec_detached`, `child_signal`, `pipe_read`, `fs_read("")` (the open of the runner directory), `signals("INT,TERM")`, and **no
   foreign code**. It listens on loopback only [choice]: a client on another machine reaches it through something in front.
-* **`front/check.sh`**, 24 checks against two fake runners (`front/fake_runner.cho`, which answers fixed bytes and streams three events
+* **`front/check.sh`** (in the gate since 2026-11-28: `tests/front.sh`, which CI runs with checkouts of cancho's packages, cancho-web and
+  cancho-schema at `front/deps/revs`, `FRONT_REQUIRED=1`; locally it passes with a line saying so when a checkout is missing), 24 checks against two fake runners (`front/fake_runner.cho`, which answers fixed bytes and streams three events
   200 ms apart): the open and keyed routes, forwarding with the body byte for byte, a swap (one runner up after it), the refusals in
   OpenAI's form and `/api/generate`'s, a stream whose events arrive apart (not at its end), a runner that ends without an answer (502)
   and is started again, a request that waits its turn behind a stream, the runner ended with the front, the authority report. **Seven

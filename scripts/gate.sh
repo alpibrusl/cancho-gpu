@@ -15,7 +15,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CANCHO=${CANCHO:-cancho}
 cd "$ROOT"
-"$CANCHO" fmt --check src tests device tools media
+"$CANCHO" fmt --check src tests device tools media front
 tests/files.sh
 "$CANCHO" build
 "$CANCHO" test
@@ -126,4 +126,6 @@ python3 tests/qwen_quant.py build/cancho-gpu-session
 CANCHO="$CANCHO" scripts/build-qsw.sh
 python3 tests/qsw.py build/qsw
 CANCHO="$CANCHO" tests/authority.sh
+# cancho-gpu-front against fake runners (docs/one-server.md 7; tests/front.sh says what it needs)
+CANCHO="$CANCHO" tests/front.sh
 echo "gate: ok"

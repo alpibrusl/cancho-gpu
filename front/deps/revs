@@ -1,0 +1,4 @@
+# The revisions whose stores front/deps/*.lock pin (scripts/build-front.sh fetches from their checkouts; CI checks these out).
+# cancho's is cancho.toml's pin (its packages/http-server store).
+CANCHO_WEB_REV=e6e06df092c3fe33a595370dfa477b370ed654c8
+CANCHO_SCHEMA_REV=59a70285ff23af63a226bc56ff978feccb4cf8ca
