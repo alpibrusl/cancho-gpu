@@ -1159,3 +1159,73 @@ holds our drafting to our plain decoding).
 
 **Not done.** A test that fails when a server it started does not exit: the stuck processes went unnoticed for a
 day.
+
+## 12. A context of 16,384, checkpoints of the delta states, and Ollama's `/api/generate` (design, written before the code, 2026-11-28)
+
+> **Status: a design.** Marks as in section 7: **[measured]**, **[read]** (in the code or a document), **[estimate]**, **[choice]**.
+
+**Why.** cancho-code's evaluation (its `eval/m8_arm.py`: 13 items, a primer of `cancho agent-guidelines`, 16,384 of context, 2,048
+tokens an answer) sends prompts of about 11,000 to 12,000 tokens to Ollama's `/api/generate` **[measured: Kolibri's server log of that
+evaluation, 371 requests, 11,700 to 12,500 positions]**. This server takes 1,024 positions and has no such route (section 3), so Qwen3.8-27B
+could be put to that evaluation only through Ollama. This section is what it takes to put the model to it here.
+
+### 12.1 What is in the way
+
+1. **The context [read].** `qwen35.tmax()` is 1,024: the key and value caches, the masks, the draft head's caches and the ids of a
+   cache slot are sized by it, and attention is compiled for 256, 512 and 1,024 positions. `attention_pv.chx` and
+   `attention_pv_rows.chx` hold a head's `[g, t]` scores in one tile, whose ceiling is 1,364 positions at g = 6 (`docs/kernels.md` 4b).
+2. **The long route exists [read].** `attention_stats.chx` (the maximum and the normaliser of each query head, a chunk of positions at a
+   time) and `attention_pvl.chx` (the weighted sum, a carried `[g, dw]` tile) run after `attention_scores.chx` with no ceiling but the
+   cache; they ran at 16,640 positions at g = 4 for the 0.8B (`docs/weight-space.md` 14.5, `device/qwen08.cho`). Their layouts are this
+   engine's (`[nkv * tmax, d]` caches, `[nkv * g, t]` scores). For the rows of a prefill chunk, `attention_scores_rows.chx` already takes
+   any `t`; the statistics are `attention_stats.chx` over `nr * nkv * g` rows; **the weighted sum needs one new kernel,
+   `attention_pvl_rows.chx`**, `attention_pvl.chx` with a grid over the chunk's rows as `attention_pv_rows.chx` has.
+3. **The prefix cache keeps the delta states at two cuts of a chat [read]**: after the opener of the second message, and at the last
+   assistant opener (sections 7 and 8). A gated-delta layer cannot go back: a prompt that parts from the last one at position p is
+   read again from the last cut before p. cancho-code's prompt is **one user message** (the primer, then the task, then the attempts and
+   their compiler's answers) **[read: its `src/ollama.cho`]**, so both cuts are at its end, and a prompt that parts from the last one
+   anywhere inside it is read again from position 0: about 11,000 tokens.
+4. **The route [read].** cancho-code's agent sends `POST /api/generate` with `prompt`, `stream: false`, `think: false` and `options`
+   (`num_ctx`, `temperature`, `num_predict`), and reads `response`, `done_reason` and `error`.
+
+### 12.2 The design
+
+* **`tmax` 16,384 [choice]**, which is cancho-code's `num_ctx`. Every buffer sized by it grows with it: an attention layer's key or value
+  cache from 4 MiB to 64 MiB, so the engine's 16 layers and the draft head's one **2.2 GB** where they were 0.14 **[estimate, from
+  `kv_size()`]**.
+* **Attention past 1,024 positions takes the long route**, compiled for `t` = 2,048, 4,096, ..., 16,384 (eight sizes, the smallest that
+  covers the positions in use, as now). Up to 1,024 it is what it is now, kernel for kernel, so a short chat runs as fast as now. The
+  statistics are taken with `g` = 1 over the `nkv * g` rows (24 threadgroups where `g` = 6 would give 4) **[choice]**. In a module of its
+  own (`device/qwen35att.cho`): `qwen35.cho` has 1,980 lines of the 2,000 allowed.
+* **Checkpoints [choice].** While a prompt is read, the delta states are copied out at every multiple of 1,024 positions (a copy is
+  the 3 to 5 ms of section 7.9), to 15 per slot. A prompt that shares p positions with a slot's ids starts from the larger of the slot's
+  cuts and its last checkpoint at or before p: at most 1,023 positions are read again. A checkpoint is the delta layers' states, 163 MB
+  **[estimate: 48 layers of 3.1 MiB of state and two windows of 120 KiB]**, so 15 are 2.4 GB a slot.
+* **Memory.** A slot is then its key and value caches (2.2 GB), its two cuts and its 15 checkpoints (2.8 GB): **5 GB**. The default
+  number of slots goes from 4 to **2** **[choice]**: with the weights (14.6 GB), the draft head (2.7 GB) and the engine's own caches,
+  about 30 GB of the machine's 64 **[estimate]**. A slot's caches move through the host whole when another slot takes the engine
+  (`kv_copy`); they are copied in pieces of 8 MiB, so the text pool needs no 64 MiB scratch.
+* **`POST /api/generate`**, translated into the chat request it means: `system` (a system message), `prompt` (a user message), `think`
+  (a boolean or an effort, as on the chat route), `options.num_predict` (`max_tokens`; a negative one is "as many as fit"),
+  `options.temperature`, `top_p`, `top_k`, `seed`. `raw: true` takes the prompt as it is, with no template. `num_ctx` is read and not
+  used (the context is the server's). The answer is one JSON object: `model`, `created_at`, `response`, `thinking` when it thought,
+  `done`, `done_reason` (`stop` or `length`), `prompt_eval_count`, `eval_count`. **`stream: true` is refused** (400, with the reason);
+  a request without `stream` gets the whole answer, where Ollama would stream **[choice]**.
+
+### 12.3 What it should do, and how it is held
+
+* **Exit 1, the same tokens [measured, when built].** A prompt of under 1,024 tokens answers what it answers now (the same kernels).
+  A prompt of about 3,000 and one of about 12,000 answer, greedy, what the engine fed the same ids from position 0 answers; a request
+  that starts from a checkpoint answers what the same request does with the cache off. `tests/prefix_check.py` gains these cases.
+* **Exit 2, speed [measured, when built].** Decoding at 12,000 positions, and the cost of a chunk of the prefill there. **[estimate]**
+  The long route reads a layer's keys and values once a token: 2 x 64 MiB x 17 layers at 16,384 positions, about 5 ms a token at
+  400 GB/s, on a token of about 25 ms. The prefill's scores read the keys once for each row of a chunk (`attention_scores_rows.chx`
+  loads a row's tile from the cache), so a chunk of 16 rows at 8,000 positions reads about 1 GB a layer: **the prefill of a long prompt
+  will be slower than 244 tok/s, perhaps by half**. Measured, not assumed; a kernel that loads the keys once for the chunk is the next
+  step if it is.
+* **Exit 3, the evaluation.** cancho-code's 13 items, two runs each, against this server, as they were run against Ollama (6 of 26 runs
+  done, 1,490 of 5,054 graded cases, 81 minutes) and Kolibri (0 of 26, 399, 119 minutes).
+
+### 12.4 Not in it
+
+A stream on `/api/generate`, `/api/chat`, tools, and a context longer than 16,384.
