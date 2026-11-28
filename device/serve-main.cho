@@ -3,7 +3,7 @@ edition 5;
 // `cancho-gpu-serve` -- an OpenAI-compatible chat endpoint over Qwen3.8-27B on a Metal GPU
 // (`docs/serving.md`).
 //
-//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N]
+//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N] [--long-attention]
 //
 //     GET  /health                 {"status":"ok"}
 //     GET  /v1/models              the one model
@@ -30,6 +30,7 @@ import metal;
 import chat;
 import qwen35;
 import qwen35spec;
+import qwen35slot;
 
 fn words() -> [] int {
     return 100000000;
@@ -45,7 +46,7 @@ fn max_request() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N]\n");
+    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N] [--long-attention]\n");
     return 2;
 }
 
@@ -181,6 +182,14 @@ fn refuse[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, mess
     return respond(m, t, ch, code, chat.error_json(m, t, message, kind));
 }
 
+// A refusal in the form of the route: Ollama's `{"error": "..."}` on /api/generate, OpenAI's elsewhere.
+fn refuse_on[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, message: int, kind: &static [byte], ollama: bool) -> [conn_write] int {
+    if ollama {
+        return respond(m, t, ch, code, text.f1(m, t, "{\"error\":\"$\"}", chat.escape(m, t, message)));
+    }
+    return refuse(m, t, ch, code, message, kind);
+}
+
 // The message of the last refusal recorded, then forget them.
 fn last_error[&m, &t](m: &!m [int], t: &!t [byte]) -> [] int {
     var msg = text.lit(m, t, "the request could not be processed");
@@ -294,23 +303,24 @@ fn take[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, st: int, tok: int
 // The prefix cache (`docs/serving.md` sections 7 and 8). The cache is a record: 0 the number of slots, 1 the
 // resident slot (the one whose keys and values are the engine's own; -1 for none), 2 a scratch in `t`, 3 a
 // counter for "least recently used", 4 the first slot's address, 5 the tokens the latest request reused.
-// A slot is nine words: 0 valid, 1 c (the cut at the last assistant opener), 2 the address in `m` of its ids
-// (1,024 words, allocated at start: the bump allocator is rewound after each request), 3 the snapshot at c,
+// A slot is eleven words: 0 valid, 1 c (the cut at the last assistant opener), 2 the address in `m` of its ids
+// (`tmax()` words, allocated at start: the bump allocator is rewound after each request), 3 the snapshot at c,
 // 4 c0 (a second, earlier cut; 0 for none), 5 the snapshot at c0, 6 its copy of the key and value caches,
-// 7 whether that copy holds the rows of [0, c), 8 when it was last used.
+// 7 whether that copy holds the rows of [0, c), 8 when it was last used, 9 its checkpoints (a list of `ck_count()` snapshots: section 12),
+// 10 how many of them hold the states at ck_step(), 2 * ck_step(), ... of its ids.
 fn slot_words() -> [] int {
-    return 9;
+    return 11;
 }
 
 fn slot_at[&m](m: &!m [int], ca: int, i: int) -> [] int {
     return m[ca + 4] + slot_words() * i;
 }
 
-fn cache_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, n: int) -> [ffi("libmetalgpu")] int {
+fn cache_new[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, n: int) -> [ffi("libmetalgpu")] int {
     let ca = mem.grab(m, 6);
     m[ca] = n;
     m[ca + 1] = 0 - 1;
-    m[ca + 2] = qwen35.reserve(m, qwen35.kv_size());
+    m[ca + 2] = qwen35.reserve(m, qwen35slot.piece());
     m[ca + 3] = 0;
     m[ca + 4] = mem.grab(m, slot_words() * n);
     m[ca + 5] = 0;
@@ -320,12 +330,23 @@ fn cache_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, n: int)
         m[sl] = 0;
         m[sl + 1] = 0;
         m[sl + 2] = mem.grab(m, qwen35.tmax());
-        m[sl + 3] = qwen35.snap_new(m, ffi);
+        m[sl + 3] = qwen35slot.snap_new(m, t, ffi);
         m[sl + 4] = 0;
-        m[sl + 5] = qwen35.snap_new(m, ffi);
-        m[sl + 6] = qwen35.kv_new(m, ffi, eng);
+        m[sl + 5] = qwen35slot.snap_new(m, t, ffi);
+        m[sl + 6] = qwen35slot.kv_new(m, t, ffi, eng);
         m[sl + 7] = 0;
         m[sl + 8] = 0;
+        let cks = mem.list(m);
+        var j = 0;
+        while j < ck_count() {
+            mem.push(m, cks, qwen35slot.snap_new(m, t, ffi));
+            j = j + 1;
+        }
+        m[sl + 9] = cks;
+        m[sl + 10] = 0;
+        if err.failed(m) {
+            return 0 - 1;
+        }
         i = i + 1;
     }
     return ca;
@@ -416,7 +437,7 @@ fn park[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng
     if r >= 0 && r != but {
         let rs = slot_at(m, ca, r);
         if m[rs] == 1 && m[rs + 7] == 0 {
-            if qwen35.kv_copy(m, t, ffi, eng, m[rs + 6], m[ca + 2], 1) < 0 {
+            if qwen35slot.kv_copy(m, t, ffi, eng, m[rs + 6], m[ca + 2], 1) < 0 {
                 return 0 - 1;
             }
             m[rs + 7] = 1;
@@ -425,12 +446,50 @@ fn park[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng
     return 0;
 }
 
+// The checkpoints of a slot (docs/serving.md section 12): the delta states at every multiple of `ck_step()` positions of its prompt,
+// so that a prompt that parts from it inside a long message is read again from the last of them before it, not from its start.
+fn ck_step() -> [] int {
+    return 1024;
+}
+
+fn ck_count() -> [] int {
+    return qwen35.tmax() / ck_step() - 1;
+}
+
+// Feed ids[from..to) of a prompt of `n` ids into the engine for slot `ts`, taking the checkpoints it passes that the slot has not
+// got yet (one at each multiple of `ck_step()` under `n`, in order). The logits of the last go to `lg` (-1: none).
+fn feed_marked[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ca: int, ts: int, ids: int, from: int, to: int, n: int, lg: int, warm: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    var at = from;
+    var p = ck_step() * (m[ts + 10] + 1);
+    // a slot whose checkpoints stop before `from` (one that took another's earlier cut) takes no more: they are kept in order
+    while p >= at && p < to && p < n && m[ts + 10] < ck_count() {
+        if p > at {
+            if qwen35spec.feed(m, t, ffi, fs, eng, ids, at, p, 0 - 1, true, warm) < 0 {
+                return 0 - 1;
+            }
+            at = p;
+        }
+        if p == at {
+            if qwen35slot.snap_copy(m, t, ffi, eng, mem.get(m, m[ts + 9], m[ts + 10]), m[ca + 2], 1) < 0 {
+                return 0 - 1;
+            }
+            m[ts + 10] = m[ts + 10] + 1;
+        }
+        p = ck_step() * (m[ts + 10] + 1);
+    }
+    if to > at {
+        return qwen35spec.feed(m, t, ffi, fs, eng, ids, at, to, lg, true, warm);
+    }
+    return 0;
+}
+
 // The prompt in, with the cache: answers the tokens reused (0 on a miss), or -1.
 fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), eng: int, ca: int, ids: int, n_prompt: int, lg: int, warm: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
-    // The longest cut of any slot that is a prefix of this prompt.
+    // The longest prefix of this prompt that any slot can resume at: its cut c (kind 0), its earlier cut c0 (1) or a checkpoint (2).
     var hit = 0 - 1;
     var from = 0;
-    var at_c = false;
+    var kind = 0;
+    var ck = 0;
     var i = 0;
     while i < m[ca] {
         let sl = slot_at(m, ca, i);
@@ -438,18 +497,32 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
             if m[sl + 1] > from && m[sl + 1] < n_prompt && same_prefix(m, sl, ids, m[sl + 1]) {
                 hit = i;
                 from = m[sl + 1];
-                at_c = true;
-            } else if m[sl + 4] > from && m[sl + 4] < n_prompt && same_prefix(m, sl, ids, m[sl + 4]) {
+                kind = 0;
+            }
+            if m[sl + 4] > from && m[sl + 4] < n_prompt && same_prefix(m, sl, ids, m[sl + 4]) {
                 hit = i;
                 from = m[sl + 4];
-                at_c = false;
+                kind = 1;
+            }
+            var j = m[sl + 10];
+            while j > 0 {
+                let p = ck_step() * j;
+                if p > from && p < n_prompt && same_prefix(m, sl, ids, p) {
+                    hit = i;
+                    from = p;
+                    kind = 2;
+                    ck = j - 1;
+                    j = 0;
+                } else {
+                    j = j - 1;
+                }
             }
         }
         i = i + 1;
     }
-    // Where this conversation is written: the slot it continues, or another when it only shares the earlier cut.
+    // Where this conversation is written: the slot it continues (a cut c or a checkpoint), or another when it only shares the earlier cut.
     var target = hit;
-    if !at_c {
+    if hit < 0 || kind == 1 {
         target = victim(m, ca, hit);
     }
     let ts = slot_at(m, ca, target);
@@ -460,6 +533,9 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         m[ts] = 0;
         m[ca + 1] = target;
         qwen35.reset(m, t, ffi, eng);
+        m[ts + 1] = 0;
+        m[ts + 4] = 0;
+        m[ts + 10] = 0;
     } else {
         let hs = slot_at(m, ca, hit);
         if hit != m[ca + 1] {
@@ -467,7 +543,7 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
                 return 0 - 1;
             }
             m[ca + 1] = 0 - 1;
-            if qwen35.kv_copy(m, t, ffi, eng, m[hs + 6], m[ca + 2], 0) < 0 {
+            if qwen35slot.kv_copy(m, t, ffi, eng, m[hs + 6], m[ca + 2], 0) < 0 {
                 return 0 - 1;
             }
         } else if target != hit {
@@ -479,36 +555,44 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         m[ts] = 0;
         m[ca + 1] = target;
         var snap = m[hs + 3];
-        if !at_c {
+        if kind == 1 {
             snap = m[hs + 5];
+        } else if kind == 2 {
+            snap = mem.get(m, m[hs + 9], ck);
         }
-        if qwen35.snap_copy(m, t, ffi, eng, snap, m[ca + 2], 0) < 0 {
+        if qwen35slot.snap_copy(m, t, ffi, eng, snap, m[ca + 2], 0) < 0 {
             return 0 - 1;
         }
         if target != hit {
-            // the new conversation shares the earlier cut: its slot gets the same snapshot there
-            if qwen35.snap_copy(m, t, ffi, eng, m[ts + 5], m[ca + 2], 1) < 0 {
+            // the new conversation shares the earlier cut: its slot gets the same snapshot there, and no checkpoint yet
+            if qwen35slot.snap_copy(m, t, ffi, eng, m[ts + 5], m[ca + 2], 1) < 0 {
                 return 0 - 1;
             }
             m[ts + 4] = from;
+            m[ts + 10] = 0;
         }
-        if !at_c {
+        // what of the slot lies past `from` is another conversation's now
+        if m[ts + 1] > from {
             m[ts + 1] = 0;
         }
-        qwen35.open_prefix(m, t, ffi, eng, from);
+        if m[ts + 4] > from {
+            m[ts + 4] = 0;
+        }
+        if m[ts + 10] > from / ck_step() {
+            m[ts + 10] = from / ck_step();
+        }
+        qwen35slot.open_prefix(m, t, ffi, eng, from);
     }
     m[ts + 7] = 0;
     let cached = from;
     let c2 = cut_of(m, ids, n_prompt);
     if hit < 0 {
-        m[ts + 1] = 0;
-        m[ts + 4] = 0;
         let c0 = first_cut_of(m, ids, n_prompt);
         if c0 > 0 && c0 < c2 {
-            if qwen35spec.feed(m, t, ffi, fs, eng, ids, 0, c0, 0 - 1, true, warm) < 0 {
+            if feed_marked(m, t, ffi, fs, eng, ca, ts, ids, 0, c0, n_prompt, 0 - 1, warm) < 0 {
                 return 0 - 1;
             }
-            if qwen35.snap_copy(m, t, ffi, eng, m[ts + 5], m[ca + 2], 1) < 0 {
+            if qwen35slot.snap_copy(m, t, ffi, eng, m[ts + 5], m[ca + 2], 1) < 0 {
                 return 0 - 1;
             }
             m[ts + 4] = c0;
@@ -516,28 +600,25 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
         }
     }
     if c2 > from {
-        if qwen35spec.feed(m, t, ffi, fs, eng, ids, from, c2, 0 - 1, true, warm) < 0 {
+        if feed_marked(m, t, ffi, fs, eng, ca, ts, ids, from, c2, n_prompt, 0 - 1, warm) < 0 {
             return 0 - 1;
         }
-        if qwen35.snap_copy(m, t, ffi, eng, m[ts + 3], m[ca + 2], 1) < 0 {
+        if qwen35slot.snap_copy(m, t, ffi, eng, m[ts + 3], m[ca + 2], 1) < 0 {
             return 0 - 1;
         }
         m[ts + 1] = c2;
         from = c2;
     }
-    var top = m[ts + 1];
-    if m[ts + 4] > top {
-        top = m[ts + 4];
-    }
+    // the slot's ids are the whole prompt's: its cuts and its checkpoints are all prefixes of them
     i = 0;
-    while i < top {
+    while i < n_prompt {
         m[m[ts + 2] + i] = mem.get(m, ids, i);
         i = i + 1;
     }
-    if qwen35spec.feed(m, t, ffi, fs, eng, ids, from, n_prompt, lg, true, warm) < 0 {
+    if feed_marked(m, t, ffi, fs, eng, ca, ts, ids, from, n_prompt, n_prompt, lg, warm) < 0 {
         return 0 - 1;
     }
-    if top > 0 {
+    if m[ts + 1] > 0 || m[ts + 4] > 0 || m[ts + 10] > 0 {
         m[ts] = 1;
         m[ca + 3] = m[ca + 3] + 1;
         m[ts + 8] = m[ca + 3];
@@ -549,19 +630,19 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
 
 // One chat completion on the engine: the request record `r` (src/chat.cho), the connection to answer on.
 // Answers the number of tokens generated, or -1.
-fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int, use_spec: bool, slot: int) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
+fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int, use_spec: bool, slot: int, ollama: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
     let tk = qwen35spec.tokenizer(m, eng);
     let spec_on = use_spec && qwen35spec.has_head(m, eng);
     let prompt = m[r + chat.f_prompt()];
     let ids = bpe.encode(m, t, tk, text.start(prompt), text.start(prompt) + text.size(prompt));
     if ids < 0 {
-        refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
+        refuse_on(m, t, ch, 400, last_error(m, t), "invalid_request_error", ollama);
         return 0 - 1;
     }
     let n_prompt = mem.size(m, ids);
     let room = qwen35.tmax() - n_prompt;
     if room < 1 {
-        refuse(m, t, ch, 400, text.f2(m, t, "this model's context is $ tokens and the prompt has $", text.num(m, t, qwen35.tmax()), text.num(m, t, n_prompt)), "invalid_request_error");
+        refuse_on(m, t, ch, 400, text.f2(m, t, "this model's context is $ tokens and the prompt has $", text.num(m, t, qwen35.tmax()), text.num(m, t, n_prompt)), "invalid_request_error", ollama);
         return 0 - 1;
     }
     var max_new = m[r + chat.f_max_tokens()];
@@ -578,13 +659,13 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     if slot < 0 {
         qwen35.reset(m, t, ffi, eng);
         if qwen35spec.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true, spec_on) < 0 {
-            refuse(m, t, ch, 500, last_error(m, t), "server_error");
+            refuse_on(m, t, ch, 500, last_error(m, t), "server_error", ollama);
             return 0 - 1;
         }
     } else {
         cached = prefill_cached(m, t, ffi, fs, eng, slot, ids, n_prompt, lg, spec_on);
         if cached < 0 {
-            refuse(m, t, ch, 500, last_error(m, t), "server_error");
+            refuse_on(m, t, ch, 500, last_error(m, t), "server_error", ollama);
             return 0 - 1;
         }
         m[slot + 5] = cached;
@@ -697,6 +778,14 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
         rtext = trimmed(t, decode_from(m, t, tk, reasoning, 0));
     }
     let ctext = trimmed(t, decode_from(m, t, tk, content, 0));
+    if ollama {
+        var mname = model;
+        if m[r + chat.f_model()] > 0 {
+            mname = m[r + chat.f_model()];
+        }
+        respond(m, t, ch, 200, chat.generate_json(m, t, mname, rtext, ctext, finish, n_prompt, n));
+        return n;
+    }
     respond(m, t, ch, 200, chat.completion_json(m, t, id, created, model, rtext, ctext, finish, n_prompt, n, cached));
     return n;
 }
@@ -774,6 +863,8 @@ fn handle[&m, &t, &i, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], io: &!i Io, f
     var tokens = 0;
     let key = m[cfg + 3];
     let is_health = text.is(t, path, "/health");
+    // Ollama's route (docs/serving.md section 12): the same engine, an answer in Ollama's form
+    let is_gen = text.is(t, path, "/api/generate");
     var allowed = true;
     if key >= 0 && !is_health {
         let auth = header(t, buf, he, "authorization");
@@ -790,20 +881,25 @@ fn handle[&m, &t, &i, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], io: &!i Io, f
         respond(m, t, ch, 200, text.lit(m, t, "{\"status\":\"ok\"}"));
     } else if text.is(t, path, "/v1/models") {
         respond(m, t, ch, 200, text.f2(m, t, "{\"object\":\"list\",\"data\":[{\"id\":\"$\",\"object\":\"model\",\"created\":$,\"owned_by\":\"cancho-gpu\"}]}", chat.escape(m, t, model), text.num(m, t, clock_unix_ms(clock) / 1000)));
-    } else if text.is(t, path, "/v1/chat/completions") {
+    } else if text.is(t, path, "/v1/chat/completions") || is_gen {
         if !text.is(t, method, "POST") {
             status = 405;
             refuse(m, t, ch, 405, text.lit(m, t, "use POST"), "invalid_request_error");
         } else {
-            let r = chat.parse(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            var r = 0 - 1;
+            if is_gen {
+                r = chat.generate(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            } else {
+                r = chat.parse(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            }
             if r < 0 {
                 status = 400;
-                refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
+                refuse_on(m, t, ch, 400, last_error(m, t), "invalid_request_error", is_gen);
             } else {
                 if m[cfg + 6] >= 0 {
                     m[m[cfg + 6] + 5] = 0;
                 }
-                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial, m[cfg + 4] == 1, m[cfg + 6]);
+                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial, m[cfg + 4] == 1, m[cfg + 6], is_gen);
                 if tokens < 0 {
                     status = 500;
                 }
@@ -864,6 +960,7 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     if eng < 0 {
         return cli.report(m, t, io);
     }
+    m[eng + 222] = m[cfg + 8];
     // The batch kernels are compiled on first use otherwise, and a kernel is a record in `m`: one made while
     // handling a request would be given back with the request's memory.
     // (the kernels and buffers of a round of 7 drafts are records too: made here, not in the first request's memory)
@@ -872,7 +969,10 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     }
     if m[cfg + 5] == 1 {
         // Allocated here, before `serve` takes its mark, so it outlives every request.
-        m[cfg + 6] = cache_new(m, ffi, eng, m[cfg + 7]);
+        m[cfg + 6] = cache_new(m, t, ffi, eng, m[cfg + 7]);
+        if m[cfg + 6] < 0 {
+            return cli.report(m, t, io);
+        }
     }
     io.error_all(io, text.bytes(t, text.f2(m, t, "ready on port $ (loaded in $ ms)\n", text.num(m, t, port), text.num(m, t, clock_ms(clock) - t0))));
     if m[cfg + 3] < 0 {
@@ -897,9 +997,10 @@ fn main(world: World) -> [] int {
                 let t = contents(tr);
                 mem.init(m);
                 // cfg: 0 port, 1 model name, 2 think by default, 3 API key (a text handle, or -1), 4 draft head, 5 the
-                // prefix cache is on, 6 the cache (-1 when off), 7 its number of slots
-                let cfg = mem.grab(m, 8);
-                m[cfg + 7] = 4;
+                // prefix cache is on, 6 the cache (-1 when off), 7 its number of slots, 8 the long route of attention at every length
+                let cfg = mem.grab(m, 9);
+                m[cfg + 8] = 0;
+                m[cfg + 7] = 2;
                 m[cfg + 4] = 1;
                 m[cfg + 5] = 1;
                 m[cfg + 6] = 0 - 1;
@@ -917,6 +1018,8 @@ fn main(world: World) -> [] int {
                             m[cfg + 2] = 1;
                         } else if text.is(t, flag, "--no-spec") {
                             m[cfg + 4] = 0;
+                        } else if text.is(t, flag, "--long-attention") {
+                            m[cfg + 8] = 1;
                         } else if text.is(t, flag, "--no-prefix-cache") {
                             m[cfg + 5] = 0;
                         } else if ai + 1 < arg_count(a) && text.is(t, flag, "--cache-slots") {
