@@ -6,13 +6,15 @@ module qwen35slot;
 // conversation resumed at a position. Moved out of `device/qwen35.cho`, which is the engine.
 
 import mem;
+import text;
+import err;
 import f32;
 import metal;
 import qwen35;
 
-// The prefix cache (docs/serving.md section 7). A second set of buffers shaped like the delta layers' convolution
-// windows and states: a record of three lists indexed by layer (-1 for an attention layer, whose key and value
-// caches are not copied: they stay where they are).
+// The prefix cache (docs/serving.md section 7). A snapshot is one buffer that holds the delta layers' convolution windows and states one
+// after another, layer by layer (an attention layer's key and value caches are not copied: they stay where they are). One buffer and not
+// one a state: a buffer's handle must stay under 4,096 (`qwen35.at` keeps an offset above it), and a slot has 17 snapshots (section 12).
 pub fn snap_size(j: int) -> [] int {
     if j == 2 {
         return 4 * 48 * 128 * 128;
@@ -20,49 +22,51 @@ pub fn snap_size(j: int) -> [] int {
     return 4 * 3 * 10240;
 }
 
-pub fn snap_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
-    let a = mem.list(m);
-    let b = mem.list(m);
-    let c = mem.list(m);
+// A device buffer whose handle `qwen35.at` can carry, or -1 (with the refusal recorded).
+pub fn device_buffer[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), n: int) -> [ffi("libmetalgpu")] int {
+    let b = metal.cgpu_alloc(ffi, n);
+    if b < 0 {
+        return qwen35.device_fail(m, t, ffi, "allocating the prefix cache");
+    }
+    if b >= 4096 {
+        return err.fail(m, t, "serve-memory", text.lit(m, t, "the prefix cache needs more device buffers than an argument can name: take fewer --cache-slots"));
+    }
+    return b;
+}
+
+pub fn snap_new[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
+    var n = 0;
     var l = 0;
     while l < qwen35.layers() {
-        if qwen35.is_attention(l) {
-            mem.push(m, a, 0 - 1);
-            mem.push(m, b, 0 - 1);
-            mem.push(m, c, 0 - 1);
-        } else {
-            mem.push(m, a, metal.cgpu_alloc(ffi, snap_size(0)));
-            mem.push(m, b, metal.cgpu_alloc(ffi, snap_size(1)));
-            mem.push(m, c, metal.cgpu_alloc(ffi, snap_size(2)));
+        if !qwen35.is_attention(l) {
+            n = n + snap_size(0) + snap_size(1) + snap_size(2);
         }
         l = l + 1;
     }
-    return mem.rec3(m, a, b, c);
+    return device_buffer(m, t, ffi, n);
 }
 
 // Copy the delta layers' states between the engine and the snapshot through the host (3 to 5 ms; section 7.9):
 // `to_snap` 1 is engine to snapshot, 0 the way back. `scr` is a scratch of `snap_size(2)` bytes in `t`.
 pub fn snap_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, snap: int, scr: int, to_snap: int) -> [ffi("libmetalgpu")] int {
+    var o = 0;
     var l = 0;
     while l < qwen35.layers() {
         if !qwen35.is_attention(l) {
             var j = 0;
             while j < 3 {
                 let e = mem.get(m, m[eng + 93 + j], l);
-                let s = mem.get(m, m[snap + j], l);
                 let n = snap_size(j);
-                var from = e;
-                var to = s;
-                if to_snap == 0 {
-                    from = s;
-                    to = e;
+                if to_snap == 1 {
+                    if metal.cgpu_download_at(ffi, e, 0, t[scr..scr + n]) < 0 || metal.cgpu_upload_at(ffi, snap, o, t[scr..scr + n]) < 0 {
+                        return qwen35.device_fail(m, t, ffi, "copying a state");
+                    }
+                } else {
+                    if metal.cgpu_download_at(ffi, snap, o, t[scr..scr + n]) < 0 || metal.cgpu_upload_at(ffi, e, 0, t[scr..scr + n]) < 0 {
+                        return qwen35.device_fail(m, t, ffi, "copying a state");
+                    }
                 }
-                if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + n]) < 0 {
-                    return qwen35.device_fail(m, t, ffi, "copying a state");
-                }
-                if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + n]) < 0 {
-                    return qwen35.device_fail(m, t, ffi, "copying a state");
-                }
+                o = o + n;
                 j = j + 1;
             }
         }
@@ -82,19 +86,27 @@ pub fn piece() -> [] int {
     return 8388608;
 }
 
-pub fn kv_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
+pub fn kv_new[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
     let a = mem.list(m);
+    var n = 0;
     var l = 0;
     while l < qwen35.layers() {
         if qwen35.is_attention(l) {
-            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
-            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+            n = n + 2;
         }
         l = l + 1;
     }
     if m[eng + 114] == 1 {
-        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
-        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        n = n + 2;
+    }
+    var i = 0;
+    while i < n {
+        let b = device_buffer(m, t, ffi, kv_size());
+        if b < 0 {
+            return 0 - 1;
+        }
+        mem.push(m, a, b);
+        i = i + 1;
     }
     return a;
 }
