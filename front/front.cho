@@ -104,6 +104,42 @@ fn header_of[&a, &n](h: &a [byte], name: &n [byte]) -> [] &a [byte] {
     return h[0..0];
 }
 
+// What a chunked body holds: each chunk's bytes, its hexadecimal length and line breaks taken off, up to the last chunk (or the end
+// of what came, for a body cut short). A chunk's extensions after `;` are ignored, as RFC 9112 7.1.1 lets a recipient do.
+fn dechunk[&h, &b](heap: &!h Heap, body: &b [byte]) -> [heap] buffer.Buffer {
+    var out = buffer.empty(heap, len(body));
+    var at = 0;
+    var more = true;
+    while more && at < len(body) {
+        var n = 0;
+        var e = at;
+        var digits = true;
+        while e < len(body) && int_of(body[e]) != 13 {
+            let c = lower(int_of(body[e]));
+            if digits && c >= 48 && c <= 57 {
+                n = n * 16 + (c - 48);
+            } else if digits && c >= 97 && c <= 102 {
+                n = n * 16 + (c - 87);
+            } else {
+                digits = false;
+            }
+            e = e + 1;
+        }
+        let from = e + 2;
+        if n == 0 || from > len(body) {
+            more = false;
+        } else {
+            var to = from + n;
+            if to > len(body) {
+                to = len(body);
+            }
+            out = buffer.append(heap, out, body[from..to]);
+            at = to + 2;
+        }
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------
 // The models
 // ---------------------------------------------------------------------
@@ -716,7 +752,16 @@ fn serve[&h, &k, &l, &i, &n, &x, &d, &g, &t, &e, &y, &w](heap: &!h Heap, clock: 
                                 if len(ct) == 0 {
                                     ct = "application/json";
                                 }
-                                out = server.reply_as(heap, out, status, ct, r[he + 4..len(r)], keep, "");
+                                if index_of(header_of(r[0..he], "transfer-encoding"), "chunked") >= 0 {
+                                    // a runner that frames its answer in chunks (Kolibri's): the body is what the chunks hold
+                                    let whole_body = dechunk(heap, r[he + 4..len(r)]);
+                                    borrow whole_body as &wb in {
+                                        out = server.reply_as(heap, out, status, ct, buffer.bytes(wb), keep, "");
+                                    }
+                                    buffer.drop(heap, whole_body);
+                                } else {
+                                    out = server.reply_as(heap, out, status, ct, r[he + 4..len(r)], keep, "");
+                                }
                             }
                             borrow mut srv as &!sv in {
                                 borrow out as &ob in {

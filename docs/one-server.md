@@ -114,5 +114,20 @@ build/cancho-gpu-front 8080 front/runners --env HOME=$HOME --env PATH=/usr/bin:/
   `cancho/docs/native-sockets.md` 12.3 says it means the same as `"127.0.0.1:"` (any port on 127.0.0.1); the Rust compiler takes
   both (measured with a program of 20 lines: `"127.0.0.1"` exit 132, `"127.0.0.1:"` and the Rust compiler's build of either, 10). The
   front narrows to `"127.0.0.1:"`. For cancho.
-* **Not yet run: the real runners through the front** (section 5's same bytes, a swap's cost, the footprint); the GPU was busy with
-  cancho-code's evaluation.
+* **The real runners through the front [measured, one run each]** (`--model qwen3.8:27b-mlx qwen3.8 18801 --model kolibri-1.1
+  kolibri 18802 --greedy`):
+
+  | | |
+  |---|---|
+  | Qwen3.8-27B, greedy, `/v1/chat/completions` and `/api/generate` | the answer the runner gives asked directly, word for word |
+  | Kolibri 1.1, `/api/generate`, and `/v1/chat/completions` after it | the bytes the runner gives asked directly (`/api/generate`) |
+  | the first request, nothing up | Qwen 3.0 s (its load 1.9 s) |
+  | a swap to Kolibri | 24 to 27 s (its start, the weights, 12.8 s for the first request in the runner) |
+  | a swap back to Qwen | 4.6 to 4.8 s |
+  | what is up after a swap | the requested runner only (`pgrep`): Kolibri 45.2 GB, or Qwen 19.3 GB |
+  | the front itself | 1.4 MB |
+  | TERM to the front | the front and its runner gone |
+
+* **Found with the real runners: Kolibri's server frames its answer in chunks** (`Transfer-Encoding: chunked`, `kolibri/kserve.cho`),
+  which the front first passed on as if it were the body (`81\r\n{...}`). The front decodes a chunked whole answer now (`dechunk`), and
+  the fake runner answers `/api/generate` in two chunks, so `front/check.sh` holds it.

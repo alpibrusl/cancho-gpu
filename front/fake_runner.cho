@@ -7,7 +7,8 @@ edition 9;
 //     POST /v1/chat/completions   `{"runner":"NAME","got":<the body's length>}`; with `"stream":true` in the body, three events and
 //                                 `data: [DONE]`, a connection closed at the end (as the runners do); with `"die"` in it, the
 //                                 connection is closed with no answer
-//     POST /api/generate          `{"response":"NAME","done":true}`
+//     POST /api/generate          `{"response":"NAME","done":true}`, in two chunks (`Transfer-Encoding: chunked`, as Kolibri's server
+//                                 answers)
 //     anything else               404
 //
 // Each answer is `Connection: close`, as the runners' are.
@@ -158,13 +159,28 @@ fn one[&h, &c, &n, &k](heap: &!h Heap, ch: &!c Conn, name: &n [byte], clock: &k 
                 buffer.drop(heap, b);
             }
         } else if bytes.starts_with(req, "POST /api/generate ") {
-            var b = buffer.append(heap, buffer.empty(heap, 64), "{\"response\":\"");
+            // in two chunks, as Kolibri's server frames its answers
+            send_all(ch, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nd\r\n{\"response\":\"\r\n");
+            var b = buffer.empty(heap, 64);
             b = buffer.append(heap, b, name);
             b = buffer.append(heap, b, "\",\"done\":true}");
+            var c = buffer.empty(heap, 96);
             borrow b as &bb in {
-                whole(heap, ch, "200 OK", buffer.bytes(bb));
+                let x = buffer.bytes(bb);
+                // the length in hexadecimal, two digits (a name of under 200 bytes)
+                let hi = len(x) / 16;
+                let lo = len(x) % 16;
+                c = buffer.push(heap, c, byte_of(48 + hi + 39 * (hi / 10)));
+                c = buffer.push(heap, c, byte_of(48 + lo + 39 * (lo / 10)));
+                c = buffer.append(heap, c, "\r\n");
+                c = buffer.append(heap, c, x);
+                c = buffer.append(heap, c, "\r\n0\r\n\r\n");
+            }
+            borrow c as &cb in {
+                send_all(ch, buffer.bytes(cb));
             }
             buffer.drop(heap, b);
+            buffer.drop(heap, c);
         } else {
             whole(heap, ch, "404 Not Found", "{\"error\":\"no such route\"}");
         }

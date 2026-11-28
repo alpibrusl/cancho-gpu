@@ -18,4 +18,3 @@ performs
     signals_read
 never touches
     foreign code
-provably pure (219 of 397)

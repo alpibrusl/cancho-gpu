@@ -76,7 +76,7 @@ kill -TERM $pid
 wait $pid 2>/dev/null
 
 if [ -n "${CANCHO:-}" ] && [ -d "$ROOT/build/front-deps" ]; then
-  "$CANCHO" authority "$ROOT/front/front.cho" "$ROOT"/build/front-deps/*.cho --std 2>/dev/null | sed -n '/^performs/,/^provably/p' > "$W/authority.txt"
+  "$CANCHO" authority "$ROOT/front/front.cho" "$ROOT"/build/front-deps/*.cho --std 2>/dev/null | sed -n '/^performs/,/^provably/p' | grep -v '^provably' > "$W/authority.txt"
   check "the authority report is front/authority.txt" "$(diff "$W/authority.txt" "$ROOT/front/authority.txt" >/dev/null && echo same)" same
 fi
 if [ $failed -ne 0 ]; then echo "--- the front's log:"; tail -20 "$W/front.log"; fi
