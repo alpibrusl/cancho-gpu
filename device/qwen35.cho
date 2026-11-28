@@ -1795,13 +1795,17 @@ fn long_kernels[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
         if nr == 1 {
             mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_scores.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", ta), "ts", 32.0), "d", 256.0), "tmax", tm)));
         } else {
-            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_scores_hm.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", float_of(nr)), "rb", float_of(hm_rb(nr))), "t", ta), "ts", 32.0), "d", 256.0), "tmax", tm)));
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_scores_mma.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "nrg", 6 * nr), "t", ta), "d", 256.0), "tmax", tm)));
         }
-        mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_stats.chx", cv(m, t, cv(m, t, c2(m, t, "nkv", 24 * nr, "g", 1), "t", ta), "cs", 64.0)));
+        if nr == 1 {
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_stats.chx", cv(m, t, cv(m, t, c2(m, t, "nkv", 24 * nr, "g", 1), "t", ta), "cs", 64.0)));
+        } else {
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_stats_hm.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "nrg", 6 * nr), "t", ta), "cs", 64.0), "tmax", tm)));
+        }
         if nr == 1 {
             mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_pvl.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", ta), "cs", 64.0), "dw", 32.0), "d", 256.0), "tmax", tm)));
         } else {
-            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_pvl_hm.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", float_of(nr)), "rb", float_of(hm_rb(nr))), "t", ta), "cs", 64.0), "dw", 32.0), "d", 256.0), "tmax", tm)));
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_pv_mma.chx", cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "nrg", 6 * nr), "t", ta), "d", 256.0), "tmax", tm)));
         }
         tn = tn + long_step();
     }
@@ -1814,19 +1818,9 @@ fn long_kernels[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
     return ks;
 }
 
-// The rows of a block of the head-major kernels (docs/serving.md section 13): a tile of `hm_rb` rows of one head's queries against a
-// tile of keys, so the cache is read nr / hm_rb times a chunk.
-pub fn hm_rb(nr: int) -> [] int {
-    let most = 4;
-    if nr < most {
-        return nr;
-    }
-    return most;
-}
-
-// The rows of a chunk attending over the first `upto` positions by the long route with each key and value read once a block of rows
-// (section 13): q to head-major order, the scores against `maskg` (the masks repeated for the query heads, `mask_rows_g`), the
-// statistics, the weighted sum, and the output back to row-major order into `o`.
+// The rows of a chunk attending over the first `upto` positions by the long route on the matrix unit (section 13.2): q to head-major
+// order, the scores (unscaled, unmasked), the statistics and the weighted sum (each scaling by 1/16 and adding `maskg`, the masks
+// repeated for the query heads, `mask_rows_g`), and the output back to row-major order into `o`.
 pub fn long_rows_go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, ks: int, upto: int, q: int, kc: int, vc: int, maskg: int, sc: int, o: int) -> [ffi("libmetalgpu")] int {
     let j = 3 * ((upto - 1) / long_step());
     let x = 3 * (tmax() / long_step());
@@ -1836,9 +1830,9 @@ pub fn long_rows_go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, 
     let qhm = mem.get(m, bufs, 4);
     let ohm = mem.get(m, bufs, 5);
     go(m, ffi, mem.get(m, ks, x), q, qhm, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, mem.get(m, ks, j), qhm, kc, maskg, sc, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, mem.get(m, ks, j + 1), sc, bm, bz, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-    go(m, ffi, mem.get(m, ks, j + 2), sc, bm, bz, vc, ohm, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, mem.get(m, ks, j), qhm, kc, sc, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, mem.get(m, ks, j + 1), sc, maskg, bm, bz, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, mem.get(m, ks, j + 2), sc, maskg, bm, bz, vc, ohm, 0 - 1, 0 - 1);
     return go(m, ffi, mem.get(m, ks, x + 1), ohm, o, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
 }
 

@@ -1,0 +1,21 @@
+// The scores of a chunk's rows on the matrix unit (docs/serving.md section 13.2): head i's head-major queries (heads_major.chx: its
+// query heads of every row of the chunk, nrg = nr * g rows) against its keys, q k^T accumulated in f32, stored unscaled and unmasked
+// to a head-major [nkv * nrg, t] scratch (the accumulator cannot be touched after the product): attention_stats_hm.chx and
+// attention_pv_mma.chx scale by 1/16 (1/sqrt(256)) and add the mask where they read them, as dit_scores_mma.chx's readers do.
+algo attention_scores_mma(nkv, nrg, t, d, tmax)
+  in  q:  f32[nkv * nrg, d]
+  in  k:  f32[nkv * tmax, d]
+  out sc: f32[nkv * nrg, t]
+  tile bm, bn, bk
+{
+  grid i over nkv, r over nrg / bm, j over t / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. d / bk with acc {
+    let at = load q[i * nrg + r * bm, p * bk ; bm, bk] @shared
+    let wt = load k[i * tmax + j * bn, p * bk ; bn, bk] @shared
+    yield mma acc at wt
+  }
+  store acc -> sc[i * nrg + r * bm, j * bn]
+}
+
+schedule attention_scores_mma for apple-m-series { threads 128 warps 2 2 bm 16 bn 64 bk 32 }
