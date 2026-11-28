@@ -1287,7 +1287,10 @@ agent's reason was not looked into), as one of Kolibri's did.
 * The prefill's scores read the cache once a row of a chunk (12.3's estimate); a kernel that reads it once a chunk is the next step for
   the 128 tok/s of a tail. Decoding prose at 12,000 positions (29 tok/s) against Ollama's was not measured in one run.
 * `--cache-slots`' memory (about 5 GB a slot) is an estimate from the buffers' sizes; the footprint of a server with both slots in use
-  was not measured.
+  was not measured. *Measured 2026-11-28 (`vmmap`'s physical footprint, the matrix-unit server of section 13, the defaults): 16.4 GB
+  started, 19.5 after a short request, **23.5 after an 11,344-token prompt, 27.7 with a second of 13,549 tokens that shares nothing
+  with it** (the two slots in use, the first's caches parked), and the same after going back to the first. About 4 GB a long
+  conversation, under the estimate: a slot's buffers are touched as they are used, and a checkpoint past the prompt is never written.*
 * A stream on `/api/generate`; `/api/chat`.
 
 ## 13. A chunk reads the cache once (design, written before the code, 2026-11-28)
