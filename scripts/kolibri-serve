@@ -1,12 +1,12 @@
 #!/bin/sh
 # Kolibri 1.1 on the Metal GPU as a server (docs/kolibri.md section 18): Ollama's /api/generate and OpenAI's /v1/chat/completions (with tools: section 21), the model loaded once.
 #
-#     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N] [--cache FILE]
+#     scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N] [--cache FILE] [--loopback]
 #
 # It writes the session's tables once (30 MB in a temporary directory), starts build/cancho-gpu-kolibri and stays until that ends. A prompt is read 16 tokens a pass (docs/kolibri.md
 # section 20) and answered a token a step. The model samples with the file's
 # settings (temperature 1, the 128 largest, top-p 0.99) unless `--temperature T` (a number above 0) or `--greedy`: these are the session's, set here, and a request's are not read.
-# A conversation is at most 16,384 positions (past them the model's indexer chooses from a pool, which is not written). It listens on every address of the host: `--api-key` on a network.
+# A conversation is at most 16,384 positions (past them the model's indexer chooses from a pool, which is not written). It listens on every address of the host (`--api-key` on a network), or with `--loopback` on 127.0.0.1 only.
 # The model is $KOLIBRI_GGUF (~/.cache/cancho-media/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf); its weights as the device reads them are $KOLIBRI_WEIGHTS (~/.cache/cancho-media/kolibri-w),
 # written on the first run: 41 GB. One GPU job at a time, by the lock scripts/media takes.
 # `--cache FILE` keeps what a long prompt left in the model in FILE (180 KB a token: 2 GB for a prompt of 11,000) and takes it at the next start, so that a prefix sent
@@ -17,11 +17,12 @@ G=${KOLIBRI_GGUF:-$CACHE/kolibri-1.1-gguf/Kolibri-1.1-Q4_0.gguf}
 W=${KOLIBRI_WEIGHTS:-$CACHE/kolibri-w}
 SERVER=${KOLIBRI_SERVER:-$HERE/build/cancho-gpu-kolibri}
 K=$HERE/build/kolibri_gpu
-usage() { echo "kolibri-serve: $1" >&2; echo "usage: scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N] [--cache FILE]" >&2; exit 2; }
+usage() { echo "kolibri-serve: $1" >&2; echo "usage: scripts/kolibri-serve [--port N] [--greedy | --temperature T] [--api-key KEY] [--name MODEL] [--max-new N] [--cache FILE] [--loopback]" >&2; exit 2; }
 samp=1; invt=1; pass=""; port=11434; cache=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --greedy) samp=0; shift ;;
+    --loopback) pass="$pass --loopback"; shift ;;
     --temperature) [ $# -ge 2 ] || usage "--temperature takes a number above 0"
       invt=$(awk -v t="$2" 'BEGIN { if (t ~ /^[0-9]*\.?[0-9]+$/ && t + 0 > 0) printf "%.9g", 1 / t; else print "" }'); [ -n "$invt" ] || usage "--temperature takes a number above 0"; shift 2 ;;
     --port) [ $# -ge 2 ] || usage "--port takes a port"; port=$2; pass="$pass --port $2"; shift 2 ;;

@@ -1,9 +1,9 @@
-edition 5;
+edition 9;
 
 // `cancho-gpu-serve` -- an OpenAI-compatible chat endpoint over Qwen3.8-27B on a Metal GPU
 // (`docs/serving.md`).
 //
-//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N] [--long-attention]
+//     cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N] [--long-attention] [--loopback]
 //
 //     GET  /health                 {"status":"ok"}
 //     GET  /v1/models              the one model
@@ -14,7 +14,7 @@ edition 5;
 // template and the request and response JSON are `src/chat.cho`. A connection carries one request
 // (`Connection: close`).
 //
-// It listens on every address of the host (`tcp_listen` binds them all), so give it `--api-key` when the host
+// It listens on every address of the host (`tcp_listen` binds them all) unless `--loopback` (127.0.0.1 only: cancho-gpu-front's runner), so give it `--api-key` when the host
 // is on a network: with a key, every request but `/health` needs `Authorization: Bearer <key>`.
 //
 // Linked with `shim/canchogpu-metal.mm` (`scripts/build-serve.sh`).
@@ -46,7 +46,7 @@ fn max_request() -> [] int {
 }
 
 fn usage[&i](io: &!i Io) -> [err_write] int {
-    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N] [--long-attention]\n");
+    io.error_all(io, "usage: cancho-gpu-serve <ollama store> <kernel dir> [--port N] [--model NAME] [--api-key KEY] [--think] [--no-spec] [--no-prefix-cache] [--cache-slots N] [--long-attention] [--loopback]\n");
     return 2;
 }
 
@@ -975,7 +975,7 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
         }
     }
     io.error_all(io, text.bytes(t, text.f2(m, t, "ready on port $ (loaded in $ ms)\n", text.num(m, t, port), text.num(m, t, clock_ms(clock) - t0))));
-    if m[cfg + 3] < 0 {
+    if m[cfg + 3] < 0 && m[cfg + 9] == 0 {
         io.error_all(io, "warning: no --api-key, and this listens on every address of the host\n");
     }
     let status = serve(m, t, io, ffi, fs, clock, eng, lh, cfg);
@@ -983,8 +983,19 @@ fn run[&m, &t, &i, &f, &a, &g, &k, &l](m: &!m [int], t: &!t [byte], io: &!i Io, 
     return status;
 }
 
+// Listen on every address, or on 127.0.0.1 only (`--loopback`: a runner of cancho-gpu-front, docs/one-server.md).
+fn listen_on[&n](net: &n Net(""), port: int, loopback: bool) -> [net_in("")] Listening {
+    if loopback {
+        return tcp_listen_on(net, "127.0.0.1", port, 16, 0);
+    }
+    return tcp_listen(net, port, 16, 0);
+}
+
 fn main(world: World) -> [] int {
-    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(signals);
+    release(exec);
+    release(tty);
     let gpu = narrow(ffi, "libmetalgpu");
     var status = 0;
     var port = 8080;
@@ -998,8 +1009,9 @@ fn main(world: World) -> [] int {
                 mem.init(m);
                 // cfg: 0 port, 1 model name, 2 think by default, 3 API key (a text handle, or -1), 4 draft head, 5 the
                 // prefix cache is on, 6 the cache (-1 when off), 7 its number of slots, 8 the long route of attention at every length
-                let cfg = mem.grab(m, 9);
+                let cfg = mem.grab(m, 10);
                 m[cfg + 8] = 0;
+                m[cfg + 9] = 0;
                 m[cfg + 7] = 2;
                 m[cfg + 4] = 1;
                 m[cfg + 5] = 1;
@@ -1018,6 +1030,8 @@ fn main(world: World) -> [] int {
                             m[cfg + 2] = 1;
                         } else if text.is(t, flag, "--no-spec") {
                             m[cfg + 4] = 0;
+                        } else if text.is(t, flag, "--loopback") {
+                            m[cfg + 9] = 1;
                         } else if text.is(t, flag, "--long-attention") {
                             m[cfg + 8] = 1;
                         } else if text.is(t, flag, "--no-prefix-cache") {
@@ -1050,7 +1064,7 @@ fn main(world: World) -> [] int {
                     }
                 } else {
                     borrow net as &nn in {
-                        match tcp_listen(nn, port, 16, 0) {
+                        match listen_on(nn, port, m[cfg + 9] == 1) {
                             Listening::Ok(l) => {
                                 var listener = l;
                                 borrow mut listener as &!lh in {

@@ -329,6 +329,9 @@ body '{"prompt":"one two three","raw":true,"options":{"num_predict":3,"seed":8}}
 is "another seed, other numbers" "$(asked | awk 'NF == 4 { print $4 }')" "$(build/kolibri_gpu draws 8 "$nl")"
 body '{"prompt":"one two three","raw":true,"options":{"num_predict":3}}'; reset; ask POST $G "$T/b.json"; asked | awk 'NF == 4 { print $4 }' > "$T/u1.txt"; reset; ask POST $G "$T/b.json"; asked | awk 'NF == 4 { print $4 }' > "$T/u2.txt"
 if [ -s "$T/u1.txt" ] && ! cmp -s "$T/u1.txt" "$T/u2.txt"; then echo "ok   with no seed, two requests draw with different numbers"; else echo "FAIL two requests with no seed drew the same"; fail=1; fi
+start --greedy --loopback || exit 1
+is "--loopback: it says it listens on 127.0.0.1 only" "$(grep -c '(127.0.0.1 only)' "$T/err")" 1
+ask GET /health; is "--loopback: it answers there" "$code" 200
 start --greedy --api-key s3cret || exit 1
 ask GET /health; is "with a key: /health needs none" "$code" 200
 ask GET /v1/models; is "with a key: none given" "$code" 401

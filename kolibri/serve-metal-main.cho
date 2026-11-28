@@ -1,4 +1,4 @@
-edition 5;
+edition 9;
 
 // `cancho-gpu-kolibri` -- the server of Kolibri 1.1 on a Metal GPU (docs/kolibri.md section 18):
 //
@@ -11,7 +11,7 @@ edition 5;
 // The GGUF gives the tokenizer and the end tokens. The model file is a session file whose request is `N ID MASK` (`N ID MASK U` unless `--greedy`) and whose first answer is the id the step
 // chose: models/kolibri_step.model with GEN=1, its definitions after the flags. `--ctx` is the steps its tables hold (2,184), `--ring` and `--window` a sliding layer's slots and keys when
 // the ring is shorter than that (none: the ring never wraps, and any position can be gone back to). The server's logic is kolibri/kserve.cho; this program is its engine, the Metal session's (device/msession.cho). Linked with shim/canchogpu-metal.mm.
-// One request at a time; a connection carries one request. **It listens on every address of the host**: give it `--api-key` on a network.
+// One request at a time; a connection carries one request. **It listens on every address of the host**: give it `--api-key` on a network, or `--loopback` (127.0.0.1 only, as cancho-gpu-front's runner).
 // `--trace` writes each line given to the session to standard error.
 //
 // Built by scripts/build-kolibri-serve.sh.
@@ -218,14 +218,29 @@ fn run[&m, &t, &x, &i, &f, &k, &l, &g](m: &!m [int], t: &!t [byte], fm: &!x [flo
     }
     let ptabs = msession.tables_by_program(m, sess);
     restore(m, t, fm, io, fs, clock, ffi, cfg, sess, funcs, bufs, ptabs);
-    io.error_all(io, text.bytes(t, text.n1(m, t, "listening on port $ (every address of this host)\n", m[cfg + kserve.c_port()])));
+    if m[cfg + kserve.c_loopback()] == 1 {
+        io.error_all(io, text.bytes(t, text.n1(m, t, "listening on port $ (127.0.0.1 only)\n", m[cfg + kserve.c_port()])));
+    } else {
+        io.error_all(io, text.bytes(t, text.n1(m, t, "listening on port $ (every address of this host)\n", m[cfg + kserve.c_port()])));
+    }
     let status = serve(m, t, fm, io, fs, clock, lh, ffi, cfg, sess, funcs, bufs, ptabs);
     metal.cgpu_close(ffi);
     return status;
 }
 
+// Listen on every address, or on 127.0.0.1 only (`--loopback`: a runner of cancho-gpu-front, docs/one-server.md).
+fn listen_on[&n](net: &n Net(""), port: int, loopback: bool) -> [net_in("")] Listening {
+    if loopback {
+        return tcp_listen_on(net, "127.0.0.1", port, 16, 0);
+    }
+    return tcp_listen(net, port, 16, 0);
+}
+
 fn main(world: World) -> [] int {
-    let Split { io, ffi, fs, heap, args, net, clock } = split(world);
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(signals);
+    release(exec);
+    release(tty);
     let gpu = narrow(ffi, "libmetalgpu");
     var status = 0;
     borrow mut heap as &!h in {
@@ -249,7 +264,7 @@ fn main(world: World) -> [] int {
                         }
                     } else {
                         borrow net as &nn in {
-                            match tcp_listen(nn, m[cfg + kserve.c_port()], 16, 0) {
+                            match listen_on(nn, m[cfg + kserve.c_port()], m[cfg + kserve.c_loopback()] == 1) {
                                 Listening::Ok(l) => {
                                     var listener = l;
                                     borrow mut listener as &!lh in {

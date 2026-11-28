@@ -99,6 +99,9 @@ build/cancho-gpu-front 8080 front/runners --env HOME=$HOME --env PATH=/usr/bin:/
   `web.stream_head` and `web.chunk` as it comes. Up to 8 more wait their turn in an arena of 2 MiB a request; past that, a 503 with
   `Retry-After`. INT and TERM end the runner with the front (`signals("INT,TERM")`), so no model is left on the GPU. A runner's
   standard error is copied to the front's.
+* **The runners listen on 127.0.0.1 only** (2026-11-28: `--loopback`, which `cancho-gpu-serve` and `scripts/kolibri-serve` take and the
+  launchers pass): before it each listened on every address with no key, so a client on the network could go around the front. Measured
+  with `lsof`: `127.0.0.1:PORT` with the flag, `*:PORT` without. The two mains moved to edition 9 for `tcp_listen_on`.
 * **`front/runners/`**: the two runners, `qwen3.8` (`cancho-gpu-serve` on this checkout's kernels and Ollama's store) and `kolibri`
   (`scripts/kolibri-serve`), each a script of three lines.
 * **Its authority** (`front/authority.txt`, held by `front/check.sh`): `net_in("127.0.0.1:")`, `net_out("127.0.0.1:")`, `exec_under`,
