@@ -19,7 +19,8 @@ curl localhost:8080/v1/chat/completions -H 'Authorization: Bearer secret' -H 'Co
 | `--model NAME` | the id in answers and `/v1/models` (default `qwen3.8:27b-mlx`) |
 | `--think` | the model reasons first unless the request says otherwise |
 | `--no-prefix-cache` | turn off the prefix cache, which is on by default: it keeps the delta state at the end of each conversation's history and reuses it on the next turn (section 7) |
-| `--cache-slots N` | conversations the prefix cache keeps, 1 to 16 (default 4; section 8). Each slot is 468 MB of device memory, touched as it is used |
+| `--cache-slots N` | conversations the prefix cache keeps, 1 to 16 (default 2; section 8). Each slot is about 5 GB of device memory at the context of section 12 (its key and value caches and 17 snapshots of the delta states), touched as it is used. *Corrected 2026-11-28: it was 468 MB and a default of 4 at 1,024 positions.* |
+| `--long-attention` | a check: attention takes the long route of section 12 at every length, where it takes it past 1,024 positions otherwise |
 | `--no-spec` | no draft head: one token a pass (about 27 tok/s) and 2.7 GB less memory; by default the model's draft head is used (a chain of two drafts, three rows checked a pass): streaming a 128-token reply measured 35 tok/s with it against 24 without (one request; prose, code and a sampled answer at temperature 1 each 34.7-35.6 with it; 20.6-25 without; the machine had other jobs, load average 14) |
 
 **It listens on every address of the host** (`tcp_listen` binds them all; there is no way to ask for loopback),
@@ -27,7 +28,7 @@ so on a network use `--api-key`; without one it says so at startup.
 
 ## 1. What it takes
 
-`GET /health`, `GET /v1/models`, and `POST /v1/chat/completions` with:
+`GET /health`, `GET /v1/models`, `POST /api/generate` (section 12.2), and `POST /v1/chat/completions` with:
 
 * `messages`: roles `system` (first only), `user`, `assistant` (with an optional `reasoning_content`); a
   `content` that is a string or an array of `{"type":"text","text":...}` parts.
@@ -52,11 +53,11 @@ template renders an image part as a placeholder, this server refuses it.
 
 ## 3. Context, and what it costs
 
-The cache holds 1024 positions, and attention is compiled for 256, 512 and 1024 of them, the smallest that
-covers the conversation, so a short chat does not scan a long cache. The prompt must leave room for at least
-one token; `max_tokens` is cut to the room left and the answer then ends with `finish_reason: "length"`.
-Longer needs attention split across threadgroups, which the surface language cannot say yet (`docs/kernels.md`
-section 4).
+The cache holds 16,384 positions (section 12; *corrected 2026-11-28: it held 1,024, and "longer needs attention split across
+threadgroups, which the surface language cannot say yet" was true of a one-pass merge only: the long route of `docs/kernels.md` 4b
+needed no change to the language*). Attention is compiled for 256, 512 and 1024 positions, the smallest that covers the conversation,
+so a short chat does not scan a long cache, and past 1,024 for 2,048, 4,096, ... 16,384 by the long route. The prompt must leave room
+for at least one token; `max_tokens` is cut to the room left and the answer then ends with `finish_reason: "length"`.
 
 A request that does not continue the last conversation starts from nothing: the conversation is prefilled, sixteen tokens at a time and then eight (section 8.7; the prefix cache of section 7 keeps the last conversation's state; Ollama on the same requests is section 8). Measured on an M4 Max (one run, the machine otherwise quiet): a short prompt's first token
 arrives in about 0.35 s and the stream runs at 23.5 tokens a second; a 330-token prompt takes about 5 s before
@@ -1162,7 +1163,7 @@ day.
 
 ## 12. A context of 16,384, checkpoints of the delta states, and Ollama's `/api/generate` (design, written before the code, 2026-11-28)
 
-> **Status: a design.** Marks as in section 7: **[measured]**, **[read]** (in the code or a document), **[estimate]**, **[choice]**.
+> **Status: built (12.5); designed first.** Marks as in section 7: **[measured]**, **[read]** (in the code or a document), **[estimate]**, **[choice]**.
 
 **Why.** cancho-code's evaluation (its `eval/m8_arm.py`: 13 items, a primer of `cancho agent-guidelines`, 16,384 of context, 2,048
 tokens an answer) sends prompts of about 11,000 to 12,000 tokens to Ollama's `/api/generate` **[measured: Kolibri's server log of that
@@ -1208,8 +1209,9 @@ could be put to that evaluation only through Ollama. This section is what it tak
 * **`POST /api/generate`**, translated into the chat request it means: `system` (a system message), `prompt` (a user message), `think`
   (a boolean or an effort, as on the chat route), `options.num_predict` (`max_tokens`; a negative one is "as many as fit"),
   `options.temperature`, `top_p`, `top_k`, `seed`. `raw: true` takes the prompt as it is, with no template. `num_ctx` is read and not
-  used (the context is the server's). The answer is one JSON object: `model`, `created_at`, `response`, `thinking` when it thought,
-  `done`, `done_reason` (`stop` or `length`), `prompt_eval_count`, `eval_count`. **`stream: true` is refused** (400, with the reason);
+  used (the context is the server's). The answer is one JSON object: `model`, `response`, `thinking` when it thought,
+  `done`, `done_reason` (`stop` or `length`), `prompt_eval_count`, `eval_count`. *(Corrected 2026-11-28: the design listed
+  `created_at`; it is not written, and no client of this server reads it.)* **`stream: true` is refused** (400, with the reason);
   a request without `stream` gets the whole answer, where Ollama would stream **[choice]**.
 
 ### 12.3 What it should do, and how it is held
@@ -1229,3 +1231,59 @@ could be put to that evaluation only through Ollama. This section is what it tak
 ### 12.4 Not in it
 
 A stream on `/api/generate`, `/api/chat`, tools, and a context longer than 16,384.
+
+### 12.5 As built, and what it measured (2026-11-28, M4 Max)
+
+**What was built.** `qwen35.tmax()` is 16,384; past 1,024 positions a token's attention is `attention_scores.chx`, `attention_stats.chx`
+(24 threadgroups, one a query head) and `attention_pvl.chx`, and a chunk's rows the same with `attention_scores_rows.chx` and the new
+`tests/chx/attention_pvl_rows.chx` (eight sizes each, compiled at start: the server is ready 1.8 to 3.6 s after it starts, as before).
+The prefix cache's snapshot code moved to `device/qwen35slot.cho` (the engine's file is 1,896 lines); a snapshot is **one** buffer, and a
+slot has 15 checkpoints beside its two cuts. `/api/generate` is a chat request written from the generate body and parsed by `chat.parse`
+(`src/chat.cho`), so it is held to the same template; its refusals are `{"error": "..."}`.
+
+**Found while building.** A buffer's handle must stay under 4,096 (`qwen35.at` carries an offset above it): a snapshot of 144 buffers,
+17 a slot, passed it and the server trapped at the first request. `qwen35slot.device_buffer` refuses a handle over it
+(`error[serve-memory]`) and a snapshot is one buffer. And a miss chose the slot -1 (a fault of the new hit search), which wrote over the
+cache's own record; found by a crash, fixed before any measurement here.
+
+**Exit 1, the same tokens [measured].**
+* Prompts under 1,024 tokens (30 and 2,598 tokens; greedy): the same answer from the server before this change, from this one, and from
+  this one with `--long-attention` (the long route at every length).
+* A prompt of 11,344 tokens (the primer of cancho-code's evaluation and a question; greedy) answers a correct cancho function in 69 s from
+  nothing. After it, a prompt that parts from it in its last line reuses **11,264** positions (a checkpoint) and answers in **1.6 s**; one
+  edited in the middle reuses 5,120 and answers in 44 s; each of the three answers is the answer of a server with the cache off.
+  `tests/serve_long.sh` does all of this by hand (see 12.6 for its run).
+
+**Exit 2, speed [measured], one run each, the machine otherwise quiet but for the gate in some.**
+| | |
+|---|---|
+| reading 11,344 tokens from nothing | 69 s, **164 tok/s** (244 at under 1,000) |
+| new tokens after a checkpoint at 11,264 | 259 in 2.2 s, 659 in 5.3 s: **about 128 tok/s** a token more |
+| 512 tokens of code after 11,264 kept (greedy, the draft head on) | 8.7 to 9.5 s, **54 to 59 tok/s** |
+| 512 tokens of prose, the same | 17.5 to 17.9 s, **29 tok/s** |
+| one request of cancho-code's evaluation, on average (196 requests) | 860 tokens out, 11,525 kept, 36 s: **24 tok/s over the whole request** |
+
+**Exit 3, cancho-code's evaluation** (its 13 items, 2 runs each, its primer, `num_ctx` 16,384, 2,048 tokens an answer, `think: false`,
+temperature 0.2, the harness's acceptance check given a `CANCHO_CACHE` in a scratch copy, without which every unit is refused):
+
+| | Qwen3.8-27B in Ollama 0.40.17 | **Qwen3.8-27B here** | Kolibri 1.1 here (`docs/kolibri.md`) |
+|---|---|---|---|
+| runs done (every unit accepted) | 6 / 26 | **6 / 26** | 0 / 26 |
+| graded cases passed | 1,490 / 5,054 (29%) | **1,342 / 5,054 (27%)** | 399 / 5,054 (8%) |
+| units accepted | 57 of 84 | **64 of 92** | 25 of 76 |
+| model calls, tokens out | 237, 387 k | 195, 165 k | 370, 202 k |
+| time, all runs | 81 min | 123 min | 119 min |
+
+**The model writes cancho as well here as in Ollama**: the two are within what two runs at temperature 0.2 can tell apart (6 of 26 both;
+the items done are not the same ones: here `basics` once, `duration` once, `sortedmap` and `tokenbucket` twice). **It is slower**: Ollama
+wrote 387 k tokens in 81 minutes and this server 165 k in 123; at 12,000 positions a token costs more here, and each request reads
+its new tail at 128 tok/s. One run here ended `provider_error` (`ini`, run 1: every request of it answered 200 in this server's log; the
+agent's reason was not looked into), as one of Kolibri's did.
+
+### 12.6 Not done
+
+* The prefill's scores read the cache once a row of a chunk (12.3's estimate); a kernel that reads it once a chunk is the next step for
+  the 128 tok/s of a tail. Decoding prose at 12,000 positions (29 tok/s) against Ollama's was not measured in one run.
+* `--cache-slots`' memory (about 5 GB a slot) is an estimate from the buffers' sizes; the footprint of a server with both slots in use
+  was not measured.
+* A stream on `/api/generate`; `/api/chat`.
