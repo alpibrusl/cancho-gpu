@@ -68,21 +68,22 @@ stop
 # 3: the prefix cache with its checkpoints, against no cache
 start
 a=$(reused "$W/a.json"); b=$(reused "$W/b.json"); c=$(reused "$W/c.json"); b2=$(reused "$W/b.json")
-check "a first long prompt reuses nothing" "$(echo "$a" | jq -r '.[0]')" 0
-check "it answers as with no cache" "$(echo "$a" | jq -r '.[1]')" "$(cat "$W/a.nocache")"
-nb=$(echo "$b" | jq -r '.[0]')
+# (printf, not echo, below: sh's echo turns a JSON string's \n into a line break)
+check "a first long prompt reuses nothing" "$(printf '%s' "$a" | jq -r '.[0]')" 0
+check "it answers as with no cache" "$(printf '%s' "$a" | jq -r '.[1]')" "$(cat "$W/a.nocache")"
+nb=$(printf '%s' "$b" | jq -r '.[0]')
 check "one that parts from it at the end reuses a checkpoint, under 1,024 positions from the end" "$([ "$nb" -ge 9216 ] && [ $((nb % 1024)) -eq 0 ] && echo yes)" yes
-check "it answers as with no cache" "$(echo "$b" | jq -r '.[1]')" "$(cat "$W/b.nocache")"
-nc=$(echo "$c" | jq -r '.[0]')
+check "it answers as with no cache" "$(printf '%s' "$b" | jq -r '.[1]')" "$(cat "$W/b.nocache")"
+nc=$(printf '%s' "$c" | jq -r '.[0]')
 check "one edited in the middle reuses the checkpoint before the edit" "$([ "$nc" -ge 4096 ] && [ "$nc" -le 6144 ] && [ $((nc % 1024)) -eq 0 ] && echo yes)" yes
-check "it answers as with no cache" "$(echo "$c" | jq -r '.[1]')" "$(cat "$W/c.nocache")"
-check "the first again, after the edit, reuses what it shares with the edit" "$(echo "$b2" | jq -r '.[0]')" "$nc"
-check "and answers as with no cache" "$(echo "$b2" | jq -r '.[1]')" "$(cat "$W/b.nocache")"
+check "it answers as with no cache" "$(printf '%s' "$c" | jq -r '.[1]')" "$(cat "$W/c.nocache")"
+check "the first again, after the edit, reuses what it shares with the edit" "$(printf '%s' "$b2" | jq -r '.[0]')" "$nc"
+check "and answers as with no cache" "$(printf '%s' "$b2" | jq -r '.[1]')" "$(cat "$W/b.nocache")"
 
 # /api/generate
 g() { curl -s -w ' %{http_code}' "localhost:$PORT/api/generate" -d "$1"; }
 r=$(g '{"model":"m","prompt":"Name three colours.","stream":false,"think":false,"options":{"temperature":0,"num_predict":48,"num_ctx":16384}}')
-check "/api/generate answers in Ollama's form" "$(echo "$r" | sed 's/ [0-9]*$//' | jq -r '[.model, .done, .done_reason, .response] | @json')" "$(jq -n --arg r "$(cat "$W/s1.short")" '["m", true, "stop", $r] | @json' | jq -r .)"
+check "/api/generate answers in Ollama's form" "$(printf '%s' "$r" | sed 's/ [0-9]*$//' | jq -r '[.model, .done, .done_reason, .response] | @json')" "$(jq -n --arg r "$(cat "$W/s1.short")" '["m", true, "stop", $r] | @json' | jq -r .)"
 check "a stream is refused" "$(g '{"prompt":"x","stream":true}')" '{"error":"a stream is not built on /api/generate: send `stream: false`"} 400'
 check "a missing prompt is refused" "$(g '{"stream":false}')" '{"error":"`prompt` is missing"} 400'
 check "a prompt that is no string is refused" "$(g '{"prompt":5}')" '{"error":"`prompt` must be a string"} 400'

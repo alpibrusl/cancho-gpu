@@ -1252,7 +1252,9 @@ cache's own record; found by a crash, fixed before any measurement here.
 * A prompt of 11,344 tokens (the primer of cancho-code's evaluation and a question; greedy) answers a correct cancho function in 69 s from
   nothing. After it, a prompt that parts from it in its last line reuses **11,264** positions (a checkpoint) and answers in **1.6 s**; one
   edited in the middle reuses 5,120 and answers in 44 s; each of the three answers is the answer of a server with the cache off.
-  `tests/serve_long.sh` does all of this by hand (see 12.6 for its run).
+  `tests/serve_long.sh` does all of this by hand, on a text of its own (44,000 bytes of this document) and on `/api/generate`:
+  **17 checks, all passing** (one failed first on the script's own `echo`, which turned the answer's `\n` into a line break; fixed,
+  and that check run again alone).
 
 **Exit 2, speed [measured], one run each, the machine otherwise quiet but for the gate in some.**
 | | |
