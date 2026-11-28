@@ -785,3 +785,15 @@ tests/chx/dq_i8.chx n=8 k=64 bn=4 --run
 # experts so (ne experts resident).
 tests/chx/pick_block.chx ne=384 n=512 k=64
 tests/chx/pick_block.chx ne=5 n=2 k=4 --run
+# The head-major long route of a chunk's rows (docs/serving.md section 13), at the 27B's shape (nr = 16 and 8, rb = 4, a 16,384 cache)
+# and small with the interpreter.
+tests/chx/heads_major.chx nr=16 nkv=4 g=6 d=256
+tests/chx/rows_major.chx nr=16 nkv=4 g=6 d=256
+tests/chx/mask_rows_g.chx nr=16 g=6 ts=256 tmax=16384
+tests/chx/attention_scores_hm.chx nr=16 rb=4 nkv=4 g=6 t=2048 ts=32 d=256 tmax=16384
+tests/chx/attention_pvl_hm.chx nr=8 rb=4 nkv=4 g=6 t=2048 cs=64 dw=32 d=256 tmax=16384
+tests/chx/heads_major.chx nr=3 nkv=2 g=6 d=256 --run
+tests/chx/rows_major.chx nr=3 nkv=2 g=6 d=256 --run
+tests/chx/mask_rows_g.chx nr=3 g=6 ts=32 tmax=96 --run
+tests/chx/attention_scores_hm.chx nr=4 rb=2 nkv=2 g=6 t=64 ts=32 d=256 tmax=96 --run
+tests/chx/attention_pvl_hm.chx nr=4 rb=2 nkv=2 g=6 t=64 cs=16 dw=32 d=256 tmax=96 --run

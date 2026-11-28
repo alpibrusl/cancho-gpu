@@ -66,3 +66,5 @@ attention_pvl_rows_nr=16_nkv=4_g=6_t=2048_cs=64_dw=32_d=256_tmax=16384|noref|the
 attention_pvl_rows_nr=8_nkv=4_g=6_t=16384_cs=64_dw=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
 attention_scores_nkv=4_g=6_t=16384_ts=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
 attention_scores_rows_nr=16_nkv=4_g=6_t=16384_ts=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
+attention_pvl_hm_nr=8_rb=4_nkv=4_g=6_t=2048_cs=64_dw=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 13)
+attention_scores_hm_nr=16_rb=4_nkv=4_g=6_t=2048_ts=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 13)

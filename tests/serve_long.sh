@@ -72,7 +72,9 @@ a=$(reused "$W/a.json"); b=$(reused "$W/b.json"); c=$(reused "$W/c.json"); b2=$(
 check "a first long prompt reuses nothing" "$(printf '%s' "$a" | jq -r '.[0]')" 0
 check "it answers as with no cache" "$(printf '%s' "$a" | jq -r '.[1]')" "$(cat "$W/a.nocache")"
 nb=$(printf '%s' "$b" | jq -r '.[0]')
-check "one that parts from it at the end reuses a checkpoint, under 1,024 positions from the end" "$([ "$nb" -ge 9216 ] && [ $((nb % 1024)) -eq 0 ] && echo yes)" yes
+nt=$(curl -s "localhost:$PORT/v1/chat/completions" -d @"$W/b.json" | jq -r '.usage.prompt_tokens')
+# a checkpoint or the chat's cut, whichever is later: either way under 1,024 positions are read again, at a multiple of the chunk
+check "one that parts from it at the end reads under 1,024 positions again" "$([ "$nb" -ge $((nt - 1024)) ] && [ $((nb % 16)) -eq 0 ] && echo yes)" yes
 check "it answers as with no cache" "$(printf '%s' "$b" | jq -r '.[1]')" "$(cat "$W/b.nocache")"
 nc=$(printf '%s' "$c" | jq -r '.[0]')
 check "one edited in the middle reuses the checkpoint before the edit" "$([ "$nc" -ge 4096 ] && [ "$nc" -le 6144 ] && [ $((nc % 1024)) -eq 0 ] && echo yes)" yes

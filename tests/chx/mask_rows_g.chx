@@ -1,0 +1,15 @@
+// A chunk's masks, one a row ([nr, tmax], as the engine keeps them), with each row repeated g times ([nr * g, tmax]), for the
+// head-major scores of attention_scores_hm.chx, whose tile is a head's g query heads of rb rows (docs/serving.md section 13). Once a
+// chunk: the masks are the same at every layer.
+algo mask_rows_g(nr, g, ts, tmax)
+  in  mask: f32[nr, tmax]
+  out out:  f32[nr * g, tmax]
+{
+  grid r over nr, j over g, sp over tmax / ts
+  let x = load mask[r, sp * ts ; 1, ts]
+  store x -> out[r * g + j, sp * ts]
+}
+
+schedule mask_rows_g for apple-m-series { threads 256 }
+schedule mask_rows_g for nvidia-ada     { threads 128 }
+schedule mask_rows_g for amd-cdna3      { threads 128 }

@@ -1289,3 +1289,46 @@ agent's reason was not looked into), as one of Kolibri's did.
 * `--cache-slots`' memory (about 5 GB a slot) is an estimate from the buffers' sizes; the footprint of a server with both slots in use
   was not measured.
 * A stream on `/api/generate`; `/api/chat`.
+
+## 13. A chunk reads the cache once (design, written before the code, 2026-11-28)
+
+> **Status: built (13.1), and the design's reason was wrong: it gains 6%, not the half it aimed at.** Marks as in section 7.
+
+**What costs [measured, 12.5].** Past a checkpoint at 11,264 positions a prompt's new tokens go at about 128 tok/s, against 244 on a
+short prompt: about 59 ms more for each chunk of 16 rows. **[estimate]** `attention_scores_rows.chx` and `attention_pvl_rows.chx` load
+a row's tile of keys and of values from the cache for each of a chunk's 16 rows: at 11,000 positions a layer's keys are 45 MB, so
+16 rows x 16 layers x (keys + values) is about 23 GB a chunk, 57 ms at 400 GB/s. That is the whole difference. *(Corrected
+2026-11-28, measured in 13.1: it is not. Reading the cache once a block of 4 rows took 6% off; the time a long position costs is
+somewhere else, most likely the arithmetic of the scores and the weighted sum, which grows with the position whatever is read.)*
+
+**The design [choice].** The rows of a chunk read a key and a value once: the queries are made head-major (`heads_major.chx`: head
+i's query heads of row 0, then row 1, ...), so that `attention_scores_hm.chx` multiplies a tile of `rb` rows' queries of one head by a
+tile of keys; the masks are each row's repeated for its query heads (`mask_rows_g.chx`, once a pass: they are the same at every
+layer); `attention_stats.chx` is unchanged (it reads rows in any order); `attention_pvl_hm.chx` sums a head's values for `rb` rows at a
+time; `rows_major.chx` turns the output back. `rb` is measured, not assumed: 16 reads the cache once a chunk but gives the weighted sum
+4 x 8 threadgroups; 4 reads it four times and gives 128.
+
+**Held to.** The greedy answers of section 12.5 (an 11,344-token prompt, a checkpoint at the end and in the middle) the same as with
+the kernels of section 12, and `--long-attention` on short prompts the same as the one-tile kernels; goldens for the five kernels.
+
+### 13.1 As built, and what it measured (2026-11-28, M4 Max, one run each)
+
+`attention_scores_hm.chx`, `attention_pvl_hm.chx`, `heads_major.chx`, `rows_major.chx` and `mask_rows_g.chx` in place of
+`attention_scores_rows.chx` and `attention_pvl_rows.chx` on the long route of a chunk (`qwen35.long_rows_go`); the masks repeated once
+a pass. **The same tokens**: the greedy answers of 12.5's three prompts (11,344, 11,341 and 2,598 tokens, the cache off) and, with
+`--long-attention`, of two short ones are the old route's, word for word; `tests/serve_long.sh` (13.2).
+
+New tokens after a checkpoint at 11,264 positions, the seconds of a request (`max_tokens` 1):
+
+| rows a block (`hm_rb`) | 259 new | 659 new |
+|---|---|---|
+| (section 12's kernels: a block of 1 that reads the cache for every row) | 2.20 | 5.34 |
+| 16 (the cache read once a chunk) | 2.37 | 5.80 |
+| 8 | 2.10 | 5.10 |
+| **4 (kept)** | **2.07** | **5.01** |
+| 2 | 2.18 | 5.32 |
+
+**Reading the cache once a chunk is slower than reading it four times**: 16 rows a block leave the weighted sum 32 threadgroups. And
+the best block gains 6%: a token at 11,264 positions still costs 136 tok/s at the margin, where at 1,600 positions it is 215
+(400 tokens in 1.86 s there, 2.94 s here). What the 43 ms a chunk is, was not measured; the arithmetic grows with the position as the
+reads do, and it is the next thing to time (a profile of one pass by kernel, as section 11 did for a round).
