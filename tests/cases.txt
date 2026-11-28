@@ -380,6 +380,18 @@ tests/chx/attention_pvl.chx nkv=2 g=4 t=8704 cs=64 dw=32 d=256 tmax=8704
 tests/chx/attention_pvl.chx nkv=2 g=4 t=16640 cs=64 dw=32 d=256 tmax=16640
 tests/chx/attention_stats.chx nkv=2 g=4 t=96 cs=16 --run
 tests/chx/attention_pvl.chx nkv=2 g=4 t=96 cs=16 dw=64 d=256 tmax=100 --run
+# The 27B's long route (docs/serving.md section 12): one token's statistics a threadgroup a query head (nkv = 24, g = 1), its weighted sum,
+# and a chunk's rows (nr = 16 and 8) at t = 2,048 and 16,384 of a 16,384 cache; attention_pvl_rows at nr = 1 prints what attention_pvl prints.
+tests/chx/attention_scores.chx nkv=4 g=6 t=16384 ts=32 d=256 tmax=16384
+tests/chx/attention_stats.chx nkv=24 g=1 t=2048 cs=64
+tests/chx/attention_stats.chx nkv=24 g=1 t=16384 cs=64
+tests/chx/attention_stats.chx nkv=384 g=1 t=16384 cs=64
+tests/chx/attention_pvl.chx nkv=4 g=6 t=16384 cs=64 dw=32 d=256 tmax=16384
+tests/chx/attention_scores_rows.chx nr=16 nkv=4 g=6 t=16384 ts=32 d=256 tmax=16384
+tests/chx/attention_pvl_rows.chx nr=16 nkv=4 g=6 t=2048 cs=64 dw=32 d=256 tmax=16384
+tests/chx/attention_pvl_rows.chx nr=8 nkv=4 g=6 t=16384 cs=64 dw=32 d=256 tmax=16384
+tests/chx/attention_pvl_rows.chx nr=1 nkv=2 g=4 t=96 cs=16 dw=64 d=256 tmax=100 --run
+tests/chx/attention_pvl_rows.chx nr=3 nkv=2 g=6 t=64 cs=16 dw=32 d=256 tmax=96 --run
 # W1 in cancho, T3 (docs/weight-space.md section 14): the kernels at Qwen3.5-0.8B's shapes (hidden 1024, 24 layers: 18 gated-delta and 6 full-attention).
 # Gated-delta layer: 16 key heads and 16 value heads of 128 (delta_step1.chx, one value head per key head), a convolution over c = 6144 = 3 * 2048
 # channels, qk_norm rows 16 + 16 + 16 = 48, gates and gated_norm at h = 16. What they compute is held by tests/kernels.py (checks08), CPU interpreter and

@@ -498,6 +498,130 @@ pub fn completion_of[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int,
     return text.cat3(m, t, head, choice, usage);
 }
 
+// ---------------------------------------------------------------------
+// Ollama's /api/generate (docs/serving.md section 12)
+// ---------------------------------------------------------------------
+
+// Append `,"key":` and the token of node `v` (a number) to `parts`, when `v` is one; -1 with the refusal recorded when it is there and
+// is not a number.
+fn copy_number[&m, &t](m: &!m [int], t: &!t [byte], parts: int, tape: int, hs: int, n: int, obj: int, from: &static [byte], key: &static [byte]) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, from);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return 0;
+    }
+    if !json.is_number(m[tape..tape + words], v) {
+        return err.fail(m, t, "chat-request", text.f1(m, t, "`options.$` must be a number", text.lit(m, t, from)));
+    }
+    let a = hs + m[tape + 3 * v + 1];
+    let b = hs + m[tape + 3 * v + 2];
+    mem.push(m, parts, text.f2(m, t, ",\"$\":$", text.lit(m, t, key), text.handle(a, b - a)));
+    return 0;
+}
+
+// A string member `key` of the object at node 0, decoded: a text handle, -1 when it is absent, -2 with the refusal recorded when it is
+// not a string.
+fn string_member[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, key: &static [byte]) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let v = json.get(t[hs..hs + n], m[tape..tape + words], 0, key);
+    if v < 0 || json.is_null(m[tape..tape + words], v) {
+        return 0 - 1;
+    }
+    if !json.is_string(m[tape..tape + words], v) {
+        err.fail(m, t, "chat-request", text.f1(m, t, "`$` must be a string", text.lit(m, t, key)));
+        return 0 - 2;
+    }
+    let (s, l) = node_text(m, t, tape, hs, v);
+    return text.handle(s, l);
+}
+
+// Parse an /api/generate body `t[hs..hs + n]` into the record `parse` makes, by writing the chat request it means and parsing that:
+// `system` a system message, `prompt` a user message, `think` as on the chat route, `options.num_predict` (`max_tokens`; one under 1 is
+// as many as fit), `temperature`, `top_p`, `top_k` and `seed`. `raw: true` takes the prompt with no template. `stream: true` is refused:
+// the answer is one object (`generate_json`).
+pub fn generate[&m, &t](m: &!m [int], t: &!t [byte], hs: int, n: int, default_think: bool) -> [] int {
+    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let tape = mem.grab(m, words);
+    let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
+    if nodes < 0 {
+        let code = json.error_code(nodes);
+        return err.fail(m, t, "chat-json", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(code))));
+    }
+    if !json.is_object(m[tape..tape + words], 0) {
+        return bad(m, t, "the body must be a JSON object");
+    }
+    if flag(m, t, tape, hs, n, 0, "stream", 0) == 1 {
+        return bad(m, t, "a stream is not built on /api/generate: send `stream: false`");
+    }
+    let raw = flag(m, t, tape, hs, n, 0, "raw", 0);
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    let p = string_member(m, t, tape, hs, n, "prompt");
+    if p == 0 - 1 {
+        return bad(m, t, "`prompt` is missing");
+    }
+    let sys = string_member(m, t, tape, hs, n, "system");
+    let mo = string_member(m, t, tape, hs, n, "model");
+    if p < 0 || sys == 0 - 2 || mo == 0 - 2 {
+        return 0 - 1;
+    }
+    let parts = mem.list(m);
+    mem.push(m, parts, text.lit(m, t, "{\"messages\":["));
+    if sys >= 0 {
+        mem.push(m, parts, text.f1(m, t, "{\"role\":\"system\",\"content\":\"$\"},", escape(m, t, sys)));
+    }
+    mem.push(m, parts, text.f1(m, t, "{\"role\":\"user\",\"content\":\"$\"}]", escape(m, t, p)));
+    if mo >= 0 {
+        mem.push(m, parts, text.f1(m, t, ",\"model\":\"$\"", escape(m, t, mo)));
+    }
+    let th = json.get(t[hs..hs + n], m[tape..tape + words], 0, "think");
+    if th >= 0 && json.is_bool(m[tape..tape + words], th) {
+        if json.to_bool(m[tape..tape + words], th) {
+            mem.push(m, parts, text.lit(m, t, ",\"think\":true"));
+        } else {
+            mem.push(m, parts, text.lit(m, t, ",\"think\":false"));
+        }
+    } else if th >= 0 && json.is_string(m[tape..tape + words], th) {
+        let (s, l) = node_text(m, t, tape, hs, th);
+        mem.push(m, parts, text.f1(m, t, ",\"think\":\"$\"", escape(m, t, text.handle(s, l))));
+    } else if th >= 0 && !json.is_null(m[tape..tape + words], th) {
+        return bad(m, t, "`think` must be a boolean or an effort");
+    }
+    let opts = json.get(t[hs..hs + n], m[tape..tape + words], 0, "options");
+    if opts >= 0 && json.is_object(m[tape..tape + words], opts) {
+        let most = integer(m, t, tape, hs, n, opts, "num_predict", 0 - 1);
+        if most > 0 {
+            mem.push(m, parts, text.f1(m, t, ",\"max_tokens\":$", text.num(m, t, most)));
+        }
+        copy_number(m, t, parts, tape, hs, n, opts, "temperature", "temperature");
+        copy_number(m, t, parts, tape, hs, n, opts, "top_p", "top_p");
+        copy_number(m, t, parts, tape, hs, n, opts, "top_k", "top_k");
+        copy_number(m, t, parts, tape, hs, n, opts, "seed", "seed");
+    } else if opts >= 0 && !json.is_null(m[tape..tape + words], opts) {
+        return bad(m, t, "`options` must be an object");
+    }
+    if err.failed(m) {
+        return 0 - 1;
+    }
+    mem.push(m, parts, text.lit(m, t, "}"));
+    let body = text.joined(m, t, parts, "");
+    let r = parse(m, t, text.start(body), text.size(body), default_think);
+    if r >= 0 && raw == 1 {
+        m[r + f_prompt()] = p;
+    }
+    return r;
+}
+
+// The answer of /api/generate, Ollama's form: `thinking` when the model reasoned (`reasoning` >= 0), `done_reason` `stop` or `length`.
+pub fn generate_json[&m, &t](m: &!m [int], t: &!t [byte], model: int, reasoning: int, content: int, finish: int, prompt_tokens: int, completion_tokens: int) -> [] int {
+    var think = text.empty();
+    if reasoning >= 0 {
+        think = text.f1(m, t, ",\"thinking\":\"$\"", escape(m, t, reasoning));
+    }
+    return text.fmt(m, t, "{\"model\":\"$\",\"response\":\"$\"$,\"done\":true,\"done_reason\":\"$\",\"prompt_eval_count\":$,\"eval_count\":$}", mem.of6(m, escape(m, t, model), escape(m, t, content), think, finish, text.num(m, t, prompt_tokens), text.num(m, t, completion_tokens)));
+}
+
 // One server-sent event of a streaming answer: `delta` is the inside of the delta object (already JSON),
 // `finish` a text handle or -1 for null.
 pub fn chunk_json[&m, &t](m: &!m [int], t: &!t [byte], id: int, created: int, model: int, delta: int, finish: int) -> [] int {

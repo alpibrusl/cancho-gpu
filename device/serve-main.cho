@@ -182,6 +182,14 @@ fn refuse[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, mess
     return respond(m, t, ch, code, chat.error_json(m, t, message, kind));
 }
 
+// A refusal in the form of the route: Ollama's `{"error": "..."}` on /api/generate, OpenAI's elsewhere.
+fn refuse_on[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn, code: int, message: int, kind: &static [byte], ollama: bool) -> [conn_write] int {
+    if ollama {
+        return respond(m, t, ch, code, text.f1(m, t, "{\"error\":\"$\"}", chat.escape(m, t, message)));
+    }
+    return refuse(m, t, ch, code, message, kind);
+}
+
 // The message of the last refusal recorded, then forget them.
 fn last_error[&m, &t](m: &!m [int], t: &!t [byte]) -> [] int {
     var msg = text.lit(m, t, "the request could not be processed");
@@ -622,19 +630,19 @@ fn prefill_cached[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libm
 
 // One chat completion on the engine: the request record `r` (src/chat.cho), the connection to answer on.
 // Answers the number of tokens generated, or -1.
-fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int, use_spec: bool, slot: int) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
+fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), clock: &k Clock, eng: int, ch: &!c Conn, r: int, model: int, serial: int, use_spec: bool, slot: int, ollama: bool) -> [ffi("libmetalgpu"), fs_read(""), file_read, clock, conn_write] int {
     let tk = qwen35spec.tokenizer(m, eng);
     let spec_on = use_spec && qwen35spec.has_head(m, eng);
     let prompt = m[r + chat.f_prompt()];
     let ids = bpe.encode(m, t, tk, text.start(prompt), text.start(prompt) + text.size(prompt));
     if ids < 0 {
-        refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
+        refuse_on(m, t, ch, 400, last_error(m, t), "invalid_request_error", ollama);
         return 0 - 1;
     }
     let n_prompt = mem.size(m, ids);
     let room = qwen35.tmax() - n_prompt;
     if room < 1 {
-        refuse(m, t, ch, 400, text.f2(m, t, "this model's context is $ tokens and the prompt has $", text.num(m, t, qwen35.tmax()), text.num(m, t, n_prompt)), "invalid_request_error");
+        refuse_on(m, t, ch, 400, text.f2(m, t, "this model's context is $ tokens and the prompt has $", text.num(m, t, qwen35.tmax()), text.num(m, t, n_prompt)), "invalid_request_error", ollama);
         return 0 - 1;
     }
     var max_new = m[r + chat.f_max_tokens()];
@@ -651,13 +659,13 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     if slot < 0 {
         qwen35.reset(m, t, ffi, eng);
         if qwen35spec.feed(m, t, ffi, fs, eng, ids, 0, n_prompt, lg, true, spec_on) < 0 {
-            refuse(m, t, ch, 500, last_error(m, t), "server_error");
+            refuse_on(m, t, ch, 500, last_error(m, t), "server_error", ollama);
             return 0 - 1;
         }
     } else {
         cached = prefill_cached(m, t, ffi, fs, eng, slot, ids, n_prompt, lg, spec_on);
         if cached < 0 {
-            refuse(m, t, ch, 500, last_error(m, t), "server_error");
+            refuse_on(m, t, ch, 500, last_error(m, t), "server_error", ollama);
             return 0 - 1;
         }
         m[slot + 5] = cached;
@@ -770,6 +778,14 @@ fn complete[&m, &t, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
         rtext = trimmed(t, decode_from(m, t, tk, reasoning, 0));
     }
     let ctext = trimmed(t, decode_from(m, t, tk, content, 0));
+    if ollama {
+        var mname = model;
+        if m[r + chat.f_model()] > 0 {
+            mname = m[r + chat.f_model()];
+        }
+        respond(m, t, ch, 200, chat.generate_json(m, t, mname, rtext, ctext, finish, n_prompt, n));
+        return n;
+    }
     respond(m, t, ch, 200, chat.completion_json(m, t, id, created, model, rtext, ctext, finish, n_prompt, n, cached));
     return n;
 }
@@ -847,6 +863,8 @@ fn handle[&m, &t, &i, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], io: &!i Io, f
     var tokens = 0;
     let key = m[cfg + 3];
     let is_health = text.is(t, path, "/health");
+    // Ollama's route (docs/serving.md section 12): the same engine, an answer in Ollama's form
+    let is_gen = text.is(t, path, "/api/generate");
     var allowed = true;
     if key >= 0 && !is_health {
         let auth = header(t, buf, he, "authorization");
@@ -863,20 +881,25 @@ fn handle[&m, &t, &i, &f, &g, &k, &c](m: &!m [int], t: &!t [byte], io: &!i Io, f
         respond(m, t, ch, 200, text.lit(m, t, "{\"status\":\"ok\"}"));
     } else if text.is(t, path, "/v1/models") {
         respond(m, t, ch, 200, text.f2(m, t, "{\"object\":\"list\",\"data\":[{\"id\":\"$\",\"object\":\"model\",\"created\":$,\"owned_by\":\"cancho-gpu\"}]}", chat.escape(m, t, model), text.num(m, t, clock_unix_ms(clock) / 1000)));
-    } else if text.is(t, path, "/v1/chat/completions") {
+    } else if text.is(t, path, "/v1/chat/completions") || is_gen {
         if !text.is(t, method, "POST") {
             status = 405;
             refuse(m, t, ch, 405, text.lit(m, t, "use POST"), "invalid_request_error");
         } else {
-            let r = chat.parse(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            var r = 0 - 1;
+            if is_gen {
+                r = chat.generate(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            } else {
+                r = chat.parse(m, t, he + 4, got - (he + 4 - buf), m[cfg + 2] == 1);
+            }
             if r < 0 {
                 status = 400;
-                refuse(m, t, ch, 400, last_error(m, t), "invalid_request_error");
+                refuse_on(m, t, ch, 400, last_error(m, t), "invalid_request_error", is_gen);
             } else {
                 if m[cfg + 6] >= 0 {
                     m[m[cfg + 6] + 5] = 0;
                 }
-                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial, m[cfg + 4] == 1, m[cfg + 6]);
+                tokens = complete(m, t, ffi, fs, clock, eng, ch, r, model, serial, m[cfg + 4] == 1, m[cfg + 6], is_gen);
                 if tokens < 0 {
                     status = 500;
                 }
