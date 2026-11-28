@@ -61,3 +61,8 @@ matvec_fp4_few_m=3_n=10240_k=5120|noref|the interpreter's memory cannot hold the
 matvec_fp4_res_few_m=3_n=5120_k=17408|noref|the interpreter's memory cannot hold the tensors
 matvec_fp4_swiglu_few_m=3_n=17408_k=5120|noref|the interpreter's memory cannot hold the tensors
 conv_bias_gelu_erf_s=26624_n=480_bn=32_m1=-1|noref|the interpreter's memory cannot hold the tensors (the audio tower's second convolution at 30 s, docs/audio.md A1)
+attention_pvl_nkv=4_g=6_t=16384_cs=64_dw=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
+attention_pvl_rows_nr=16_nkv=4_g=6_t=2048_cs=64_dw=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
+attention_pvl_rows_nr=8_nkv=4_g=6_t=16384_cs=64_dw=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
+attention_scores_nkv=4_g=6_t=16384_ts=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
+attention_scores_rows_nr=16_nkv=4_g=6_t=16384_ts=32_d=256_tmax=16384|noref|the interpreter's memory cannot hold the tensors (a 16,384 cache: the 27B's long route, docs/serving.md 12)
