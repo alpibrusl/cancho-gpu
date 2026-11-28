@@ -1,0 +1,6 @@
+#!/bin/sh
+# The runner of Qwen3.8-27B for cancho-gpu-front: `cancho-gpu-serve` (docs/serving.md) on the store and kernels of this checkout.
+#     qwen3.8 --port N [flags of cancho-gpu-serve ...]
+# The front starts it here, with the environment it was given (`--env`): HOME is the user's, for Ollama's store.
+HERE=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+exec "$HERE/build/cancho-gpu-serve" "${QWEN_STORE:-$HOME/.ollama/models}" "$HERE/tests/chx" "$@"

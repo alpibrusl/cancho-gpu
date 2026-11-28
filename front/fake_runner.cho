@@ -1,0 +1,235 @@
+edition 9;
+
+// `fake-runner` -- a runner for the front's checks (front/check.sh), with no model: it answers what a runner answers, in a fixed way.
+//
+//     fake-runner --port N NAME
+//
+//     POST /v1/chat/completions   `{"runner":"NAME","got":<the body's length>}`; with `"stream":true` in the body, three events and
+//                                 `data: [DONE]`, a connection closed at the end (as the runners do); with `"die"` in it, the
+//                                 connection is closed with no answer
+//     POST /api/generate          `{"response":"NAME","done":true}`
+//     anything else               404
+//
+// Each answer is `Connection: close`, as the runners' are.
+
+import std.buffer;
+import std.bytes;
+import std.io;
+
+fn number_of[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn index_of[&a, &b](hay: &a [byte], needle: &b [byte]) -> [] int {
+    var i = 0;
+    while i + len(needle) <= len(hay) {
+        if bytes.equal(hay[i..i + len(needle)], needle) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn send_all[&c, &b](ch: &!c Conn, data: &b [byte]) -> [conn_write] int {
+    var at = 0;
+    while at < len(data) {
+        match conn_write(ch, data[at..len(data)]) {
+            Sent::Wrote(n) => {
+                at = at + n;
+            }
+            Sent::Again => {
+            }
+            Sent::Failed(e) => {
+                return 0 - 1;
+            }
+        }
+    }
+    return 0;
+}
+
+fn whole[&h, &c, &b](heap: &!h Heap, ch: &!c Conn, status: &static [byte], body: &b [byte]) -> [heap, conn_write] int {
+    var a = buffer.append(heap, buffer.empty(heap, 256), "HTTP/1.1 ");
+    a = buffer.append(heap, a, status);
+    a = buffer.append(heap, a, "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ");
+    a = buffer.push_nat(heap, a, len(body));
+    a = buffer.append(heap, a, "\r\n\r\n");
+    a = buffer.append(heap, a, body);
+    borrow a as &ab in {
+        send_all(ch, buffer.bytes(ab));
+    }
+    buffer.drop(heap, a);
+    return 0;
+}
+
+// One request on `ch`: read it whole (its head, then `Content-Length` bytes), answer it.
+fn one[&h, &c, &n, &k](heap: &!h Heap, ch: &!c Conn, name: &n [byte], clock: &k Clock) -> [heap, conn_read, conn_write, clock] int {
+    let room = box_slice(heap, 4194304, byte_of(0));
+    var got = 0;
+    var need = 0 - 1;
+    var open = true;
+    borrow mut room as &!rw in {
+        while open {
+            match conn_read(ch, contents(rw)[got..4194304]) {
+                Received::Data(k2) => {
+                    got = got + k2;
+                }
+                Received::End => {
+                    open = false;
+                }
+                Received::Again => {
+                }
+                Received::Failed(e) => {
+                    open = false;
+                }
+            }
+            if need < 0 {
+                let he = index_of(contents(rw)[0..got], "\r\n\r\n");
+                if he >= 0 {
+                    let cl = index_of(contents(rw)[0..he], "Content-Length: ");
+                    var length = 0;
+                    if cl >= 0 {
+                        var e = cl + 16;
+                        while e < he && int_of(contents(rw)[e]) != 13 {
+                            e = e + 1;
+                        }
+                        length = number_of(contents(rw)[cl + 16..e]);
+                    }
+                    need = he + 4 + length;
+                }
+            }
+            if need >= 0 && got >= need {
+                open = false;
+            }
+        }
+    }
+    borrow room as &rr in {
+        let req = contents(rr)[0..got];
+        let he = index_of(req, "\r\n\r\n");
+        var body = req[0..0];
+        if he >= 0 {
+            body = req[he + 4..len(req)];
+        }
+        if bytes.starts_with(req, "POST /v1/chat/completions ") {
+            if index_of(body, "\"die\"") >= 0 {
+                // no answer: the connection is closed by the caller
+            } else if index_of(body, "\"stream\":true") >= 0 {
+                send_all(ch, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
+                var k = 0;
+                while k < 3 {
+                    var ev = buffer.append(heap, buffer.empty(heap, 64), "data: {\"runner\":\"");
+                    ev = buffer.append(heap, ev, name);
+                    ev = buffer.append(heap, ev, "\",\"n\":");
+                    ev = buffer.push_nat(heap, ev, k);
+                    ev = buffer.append(heap, ev, "}\n\n");
+                    borrow ev as &eb in {
+                        send_all(ch, buffer.bytes(eb));
+                    }
+                    buffer.drop(heap, ev);
+                    // apart in time, so that a front that buffers a stream whole is seen
+                    let t0 = clock_ms(clock);
+                    while clock_ms(clock) - t0 < 200 {
+                    }
+                    k = k + 1;
+                }
+                send_all(ch, "data: [DONE]\n\n");
+            } else {
+                var b = buffer.append(heap, buffer.empty(heap, 64), "{\"runner\":\"");
+                b = buffer.append(heap, b, name);
+                b = buffer.append(heap, b, "\",\"got\":");
+                b = buffer.push_nat(heap, b, len(body));
+                b = buffer.append(heap, b, "}");
+                borrow b as &bb in {
+                    whole(heap, ch, "200 OK", buffer.bytes(bb));
+                }
+                buffer.drop(heap, b);
+            }
+        } else if bytes.starts_with(req, "POST /api/generate ") {
+            var b = buffer.append(heap, buffer.empty(heap, 64), "{\"response\":\"");
+            b = buffer.append(heap, b, name);
+            b = buffer.append(heap, b, "\",\"done\":true}");
+            borrow b as &bb in {
+                whole(heap, ch, "200 OK", buffer.bytes(bb));
+            }
+            buffer.drop(heap, b);
+        } else {
+            whole(heap, ch, "404 Not Found", "{\"error\":\"no such route\"}");
+        }
+    }
+    unbox_slice(heap, room);
+    return 0;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(fs);
+    release(signals);
+    release(exec);
+    release(tty);
+    var status = 2;
+    borrow args as &g in {
+        if arg_count(g) == 4 && bytes.equal(arg(g, 1), "--port") {
+            let port = number_of(arg(g, 2));
+            borrow net as &nn in {
+                match tcp_listen(nn, port, 16, 0) {
+                    Listening::Ok(l) => {
+                        var listener = l;
+                        var con = io;
+                        borrow mut con as &!c in {
+                            io.error_all(c, "fake runner listening\n");
+                        }
+                        release(con);
+                        borrow mut listener as &!lh in {
+                            borrow mut heap as &!h in {
+                                borrow clock as &k in {
+                                    while true {
+                                        match tcp_accept(lh) {
+                                            Accepted::Ok(conn) => {
+                                                var c = conn;
+                                                borrow mut c as &!ch in {
+                                                    one(h, ch, arg(g, 3), k);
+                                                }
+                                                conn_close(c);
+                                            }
+                                            Accepted::Again => {
+                                            }
+                                            Accepted::Failed(e) => {
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        listener_close(listener);
+                        status = 0;
+                    }
+                    Listening::Failed(e) => {
+                        status = 1;
+                        release(io);
+                    }
+                }
+            }
+        } else {
+            release(io);
+        }
+    }
+    release(net);
+    release(clock);
+    release(args);
+    release(heap);
+    return status;
+}

@@ -1,0 +1,1249 @@
+edition 9;
+
+// `cancho-gpu-front` -- one server for every model (docs/one-server.md): the routes declared once with cancho-web, each model's
+// engine a runner process started beneath a directory given at start, one runner on the GPU at a time.
+//
+//     cancho-gpu-front <port> <runner dir> [--api-key KEY] [--env NAME=VALUE ...]
+//                      --model NAME PROGRAM RUNNER-PORT [ARG ...] [--model ...]
+//
+// A runner is `PROGRAM --port RUNNER-PORT ARG ...`, a program in the runner directory (started there, with exactly the `--env`
+// variables), listening on 127.0.0.1:RUNNER-PORT. The front starts the runner of the model a request names (and ends the one that was
+// up first: they do not fit on the GPU together), forwards the request to it as it came, and passes the answer back, a stream as a
+// stream. It answers itself: `/health`, the models (`/v1/models`, `/api/tags`), the document (`/openapi.json`), and every refusal that
+// is about the request and not the prompt (no such route or model, a body that is no JSON object, a missing key), in the API's form.
+//
+//     GET  /health                  open
+//     GET  /v1/models               the models, OpenAI's form
+//     GET  /api/tags                the models, `/api/tags`' form
+//     POST /v1/chat/completions     forwarded; errors in OpenAI's form; `stream: true` comes back as events
+//     POST /api/generate            forwarded; errors as `{"error": "..."}`
+//     GET  /openapi.json            the document
+//
+// One request at a time goes to a runner, as a runner takes them; up to 8 more wait, held, in the order they came (a 503 past that).
+//
+// It listens on 127.0.0.1 only: a client on another machine reaches it through something that terminates TLS and holds the key in front.
+//
+// Authority: the network in and out on 127.0.0.1 only, the runners (`exec_under`, `exec_detached`, `child_signal`), the directory they are in
+// (`fs_read("")` for its open), and no `ffi`: the program that answers the network cannot touch the GPU.
+
+import std.buffer;
+import std.bytes;
+import std.conns;
+import std.http;
+import std.io;
+import std.json;
+import std.signals;
+import http.server;
+import schema;
+import web;
+
+fn number_of[&t](text: &t [byte]) -> [] int {
+    if len(text) == 0 || len(text) > 9 {
+        return 0 - 1;
+    }
+    var n = 0;
+    var i = 0;
+    while i < len(text) {
+        let c = int_of(text[i]);
+        if c < 48 || c > 57 {
+            return 0 - 1;
+        }
+        n = n * 10 + (c - 48);
+        i = i + 1;
+    }
+    return n;
+}
+
+fn index_of[&a, &b](hay: &a [byte], needle: &b [byte]) -> [] int {
+    var i = 0;
+    while i + len(needle) <= len(hay) {
+        if bytes.equal(hay[i..i + len(needle)], needle) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn lower(c: int) -> [] int {
+    if c >= 65 && c <= 90 {
+        return c + 32;
+    }
+    return c;
+}
+
+// The value of header `name` (lower case) in a response head `h`, or an empty slice.
+fn header_of[&a, &n](h: &a [byte], name: &n [byte]) -> [] &a [byte] {
+    var i = index_of(h, "\r\n");
+    while i >= 0 && i + 2 < len(h) {
+        let from = i + 2;
+        var e = from;
+        while e + 1 < len(h) && !(int_of(h[e]) == 13 && int_of(h[e + 1]) == 10) {
+            e = e + 1;
+        }
+        if e - from > len(name) && int_of(h[from + len(name)]) == 58 {
+            var same = true;
+            var k = 0;
+            while k < len(name) && same {
+                same = lower(int_of(h[from + k])) == int_of(name[k]);
+                k = k + 1;
+            }
+            if same {
+                var v = from + len(name) + 1;
+                while v < e && int_of(h[v]) == 32 {
+                    v = v + 1;
+                }
+                return h[v..e];
+            }
+        }
+        if e + 1 >= len(h) || e == from {
+            return h[0..0];
+        }
+        i = e;
+    }
+    return h[0..0];
+}
+
+// ---------------------------------------------------------------------
+// The models
+// ---------------------------------------------------------------------
+
+// The table: 5 ints a model (the argument of its name, of its program, its runner port, the first of its own arguments, how many),
+// up to `most_models()`; the arguments stay where `Args` holds them.
+fn most_models() -> [] int {
+    return 8;
+}
+
+fn model_width() -> [] int {
+    return 5;
+}
+
+// The runner's argument list: `--port RUNNER-PORT ARG ...`, each ended by a NUL.
+fn runner_args[&h, &g, &t](heap: &!h Heap, g: &g Args, table: &t [int], m: int) -> [heap, args] buffer.Buffer {
+    var b = buffer.append(heap, buffer.empty(heap, 256), "--port");
+    b = buffer.push(heap, b, byte_of(0));
+    b = buffer.push_nat(heap, b, table[m * model_width() + 2]);
+    b = buffer.push(heap, b, byte_of(0));
+    var k = 0;
+    while k < table[m * model_width() + 4] {
+        b = buffer.append(heap, b, arg(g, table[m * model_width() + 3] + k));
+        b = buffer.push(heap, b, byte_of(0));
+        k = k + 1;
+    }
+    return b;
+}
+
+// The model `body` names (its member `model`): its index, -1 when it names one not in the table, -2 when the body is no JSON object,
+// and `fallback` when it names none.
+fn model_of[&g, &t, &b, &p](g: &g Args, table: &t [int], count: int, body: &b [byte], tape: &!p [int], fallback: int) -> [args] int {
+    if 3 * len(body) + 3 > len(tape) {
+        return 0 - 2;
+    }
+    if json.parse(body, tape) < 0 || !json.is_object(tape, 0) {
+        return 0 - 2;
+    }
+    let v = json.get(body, tape, 0, "model");
+    if v < 0 {
+        return fallback;
+    }
+    if !json.is_string(tape, v) {
+        return 0 - 1;
+    }
+    var m = 0;
+    while m < count {
+        if json.string_equals(body, tape, v, arg(g, table[m * model_width()])) {
+            return m;
+        }
+        m = m + 1;
+    }
+    return 0 - 1;
+}
+
+fn models_openai[&h, &g, &t](heap: &!h Heap, g: &g Args, table: &t [int], count: int) -> [heap, args] buffer.Buffer {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "object");
+    w = json.put_string(heap, w, "list");
+    w = json.put_key(heap, w, "data");
+    w = json.begin_array(heap, w);
+    var m = 0;
+    while m < count {
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "id");
+        w = json.put_string(heap, w, arg(g, table[m * model_width()]));
+        w = json.put_key(heap, w, "object");
+        w = json.put_string(heap, w, "model");
+        w = json.put_key(heap, w, "owned_by");
+        w = json.put_string(heap, w, "cancho-gpu");
+        w = json.end_object(heap, w);
+        m = m + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.end_object(heap, w);
+    return json.finish(w);
+}
+
+fn models_tags[&h, &g, &t](heap: &!h Heap, g: &g Args, table: &t [int], count: int) -> [heap, args] buffer.Buffer {
+    var w = json.writer(heap, 256);
+    w = json.begin_object(heap, w);
+    w = json.put_key(heap, w, "models");
+    w = json.begin_array(heap, w);
+    var m = 0;
+    while m < count {
+        w = json.begin_object(heap, w);
+        w = json.put_key(heap, w, "name");
+        w = json.put_string(heap, w, arg(g, table[m * model_width()]));
+        w = json.put_key(heap, w, "model");
+        w = json.put_string(heap, w, arg(g, table[m * model_width()]));
+        w = json.end_object(heap, w);
+        m = m + 1;
+    }
+    w = json.end_array(heap, w);
+    w = json.end_object(heap, w);
+    return json.finish(w);
+}
+
+// ---------------------------------------------------------------------
+// The API
+// ---------------------------------------------------------------------
+
+fn op_health() -> [] int {
+    return 1;
+}
+
+fn op_models() -> [] int {
+    return 2;
+}
+
+fn op_tags() -> [] int {
+    return 3;
+}
+
+fn op_chat() -> [] int {
+    return 4;
+}
+
+fn op_generate() -> [] int {
+    return 5;
+}
+
+fn op_doc() -> [] int {
+    return 6;
+}
+
+fn openai_form() -> [] &static [byte] {
+    return "{\"error\":{\"message\":\"$\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}";
+}
+
+fn generate_form() -> [] &static [byte] {
+    return "{\"error\":\"$\"}";
+}
+
+fn setup[&h](heap: &!h Heap, keyed: bool) -> [heap] (schema.Schema, web.Api, buffer.Buffer) {
+    var s = schema.empty(heap);
+    let (s1, text) = schema.new_string(heap, s, 0, schema.int_max());
+    let (s2, health) = schema.new_object(heap, s1, false);
+    s = schema.add_field(heap, s2, health, "status", text, true);
+    let (s3, list) = schema.new_object(heap, s, false);
+    let (s4, request) = schema.new_object(heap, s3, false);
+    s = schema.add_field(heap, s4, request, "model", text, false);
+    let (s5, answer) = schema.new_object(heap, s, false);
+    let (s6, message) = schema.new_object(heap, s5, false);
+    s = schema.add_field(heap, s6, message, "message", text, true);
+    let (s7, error) = schema.new_object(heap, s, false);
+    s = schema.add_field(heap, s7, error, "error", message, true);
+
+    var api = web.empty(heap);
+    api = web.about(heap, api, "cancho-gpu's models", "One front for every model: a request is forwarded to the runner of the model it names, which is started for it.");
+    if keyed {
+        api = web.bearer_scheme(heap, api, "key", "the key given with --api-key");
+        api = web.default_require(heap, api, "key");
+    }
+    api = web.error_form(heap, api, 0 - 1, "application/json", openai_form());
+    let (a1, h1) = web.operation(heap, api, "GET", "/health", "health");
+    api = web.respond(heap, a1, h1, 200, "alive", health);
+    if keyed {
+        api = web.no_auth(heap, api, h1);
+    }
+    let (a2, h2) = web.operation(heap, api, "GET", "/v1/models", "listModels");
+    api = web.respond(heap, a2, h2, 200, "the models", list);
+    let (a3, h3) = web.operation(heap, api, "GET", "/api/tags", "listTags");
+    api = web.respond(heap, a3, h3, 200, "the models", list);
+    let (a4, h4) = web.operation(heap, api, "POST", "/v1/chat/completions", "chatCompletion");
+    api = web.body(heap, a4, h4, request);
+    api = web.respond(heap, api, h4, 200, "the answer (the runner's)", answer);
+    api = web.respond_stream(heap, api, h4, 200, "the answer as events, with `stream: true` (the runner's)", "text/event-stream", 0 - 1);
+    api = web.respond_error(heap, api, h4, 404, "no such model");
+    api = web.respond_error(heap, api, h4, 502, "the runner ended without an answer");
+    api = web.respond_error(heap, api, h4, 503, "too many requests are waiting");
+    let (a5, h5) = web.operation(heap, api, "POST", "/api/generate", "generate");
+    api = web.body(heap, a5, h5, request);
+    api = web.respond(heap, api, h5, 200, "the answer (the runner's)", answer);
+    api = web.error_form(heap, api, h5, "application/json", generate_form());
+    let (a6, h6) = web.internal(heap, api, "GET", "/openapi.json");
+    api = a6;
+    api = web.component(heap, api, "Error", error);
+    var doc = buffer.empty(heap, 16);
+    borrow api as &ar in {
+        borrow s as &sr in {
+            buffer.drop(heap, doc);
+            doc = web.openapi(heap, ar, sr, "cancho-gpu", "0.1.0");
+        }
+    }
+    return (s, api, doc);
+}
+
+// A refusal in the form of route `op`: the message escaped into the API's template.
+fn refusal[&h, &m](heap: &!h Heap, out: buffer.Buffer, op: int, status: int, message: &m [byte], keep: bool, extra: &static [byte]) -> [heap] buffer.Buffer {
+    var w = json.writer(heap, 64 + len(message));
+    w = json.put_string(heap, w, message);
+    let quoted = json.finish(w);
+    var body = buffer.empty(heap, 128 + len(message));
+    if op == op_generate() {
+        body = buffer.append(heap, body, "{\"error\":");
+        borrow quoted as &qb in {
+            body = buffer.append(heap, body, buffer.bytes(qb));
+        }
+        body = buffer.append(heap, body, "}");
+    } else {
+        body = buffer.append(heap, body, "{\"error\":{\"message\":");
+        borrow quoted as &qb in {
+            body = buffer.append(heap, body, buffer.bytes(qb));
+        }
+        body = buffer.append(heap, body, ",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}");
+    }
+    buffer.drop(heap, quoted);
+    var answer = out;
+    borrow body as &bb in {
+        answer = server.reply_as(heap, answer, status, "application/json", buffer.bytes(bb), keep, extra);
+    }
+    buffer.drop(heap, body);
+    return answer;
+}
+
+// The request a runner is sent: the route and the body as they came, a head of the front's own.
+fn runner_request[&h, &p, &b](heap: &!h Heap, path: &p [byte], body: &b [byte]) -> [heap] buffer.Buffer {
+    var r = buffer.append(heap, buffer.empty(heap, len(body) + 160), "POST ");
+    r = buffer.append(heap, r, path);
+    r = buffer.append(heap, r, " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ");
+    r = buffer.push_nat(heap, r, len(body));
+    r = buffer.append(heap, r, "\r\n\r\n");
+    return buffer.append(heap, r, body);
+}
+
+// ---------------------------------------------------------------------
+// The runner
+// ---------------------------------------------------------------------
+
+// The runner that is up: its process (it leads a group of its own: ending it ends what it started) and the parent's end of its
+// standard error, which the front copies to its own.
+enum Runner {
+    Down,
+    Up(Child, Pipe),
+}
+
+fn stop(runner: Runner) -> [child_signal] Runner {
+    match runner {
+        Runner::Up(child, errs) => {
+            var c = child;
+            borrow c as &cb in {
+                child_kill_group(cb, signals.sigterm());
+            }
+            child_wait(c);
+            pipe_close(errs);
+            return Runner::Down;
+        }
+        Runner::Down => {
+            return Runner::Down;
+        }
+    }
+}
+
+// End a runner for good (`stop`, with nothing left to hold).
+fn discard(runner: Runner) -> [child_signal] int {
+    match stop(runner) {
+        Runner::Down => {
+        }
+        Runner::Up(c, e) => {
+            child_wait(c);
+            pipe_close(e);
+        }
+    }
+    return 0;
+}
+
+fn start[&x, &d, &p, &a, &e](exec: &x Exec(""), dir: &d Dir, program: &p [byte], argv: &a [byte], env: &e [byte]) -> [exec_under, exec_detached] Runner {
+    match pipe_open() {
+        Piped::Ok(errs, child_errs) => {
+            match exec_spawn_detached_under(exec, dir, program, argv, env, Stdio::Null, Stdio::Null, Stdio::Pipe(child_errs)) {
+                Spawned::Ok(child) => {
+                    var e = errs;
+                    borrow mut e as &!eh in {
+                        pipe_nonblocking(eh);
+                    }
+                    return Runner::Up(child, e);
+                }
+                Spawned::Failed(n) => {
+                    pipe_close(errs);
+                    return Runner::Down;
+                }
+            }
+        }
+        Piped::Failed(n) => {
+            return Runner::Down;
+        }
+    }
+}
+
+// Copy what the runner wrote to its standard error to the front's, as it comes.
+fn relay_errors[&i, &s](runner: Runner, con: &!i Io, scratch: &!s [byte]) -> [pipe_read, err_write] Runner {
+    match runner {
+        Runner::Up(child, errs) => {
+            var e = errs;
+            var more = true;
+            while more {
+                more = false;
+                borrow mut e as &!eh in {
+                    match pipe_read(eh, scratch) {
+                        Received::Data(n) => {
+                            io.error_all(con, scratch[0..n]);
+                            more = true;
+                        }
+                        Received::End => {
+                        }
+                        Received::Again => {
+                        }
+                        Received::Failed(x) => {
+                        }
+                    }
+                }
+            }
+            return Runner::Up(child, e);
+        }
+        Runner::Down => {
+            return Runner::Down;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// The loop
+// ---------------------------------------------------------------------
+
+// The request in flight, `cur`: 0 its ticket (-1 none), 1 its model, 2 its route, 3 whether its connection stays open, 4 its phase
+// (0 waiting for its runner, 1 sending, 2 reading the head, 3 reading a whole answer, 4 streaming, 5 the stream has ended), 5 how much
+// of `req` is sent, 6 the runner connection's slot (-1 none), 7 when it began (ms), 8 the status the runner answered.
+fn cur_width() -> [] int {
+    return 9;
+}
+
+// The requests that wait: 8 of them, each 4 ints (ticket + 1, 0 for a free slot; model; route; keep) and its request in the arena
+// (`slot_bytes()` a slot) with its length in `qlen`.
+fn slot_bytes() -> [] int {
+    return 2097152;
+}
+
+fn serve[&h, &k, &l, &i, &n, &x, &d, &g, &t, &e, &y, &w](heap: &!h Heap, clock: &k Clock, listener: &!l Listener, con: &!i Io, net: &n Net("127.0.0.1:"), exec: &x Exec(""), dir: &d Dir, g: &g Args, table: &t [int], count: int, env: &e [byte], key: &y [byte], port: int, stop_watch: &!w SignalWatch) -> [signals_read, heap, conn_accept, conn_read, conn_write, poll, clock, err_write, net_out("127.0.0.1:"), exec_under, exec_detached, child_signal, pipe_read, args] int {
+    match poller_new() {
+        Polling::Ok(p) => {
+            var srv = server.open(heap, p, listener, slot_bytes(), 0, 600);
+            let keyed = len(key) > 0;
+            let (sc, api, doc) = setup(heap, keyed);
+            var tokens = web.tokens_empty(heap);
+            if keyed {
+                tokens = web.token(heap, tokens, "key", key);
+            }
+            let models_a = models_openai(heap, g, table, count);
+            let models_b = models_tags(heap, g, table, count);
+            var line = buffer.append(heap, buffer.empty(heap, 64), "listening on ");
+            line = buffer.push_nat(heap, line, port);
+            line = buffer.push(heap, line, byte_of(10));
+            borrow line as &lb in {
+                io.error_all(con, buffer.bytes(lb));
+            }
+            buffer.drop(heap, line);
+            var widest = 2;
+            var wide = 2;
+            borrow api as &ar in {
+                if web.most_params(ar) > 1 {
+                    widest = web.most_params(ar);
+                }
+                if web.most_args(ar) > 2 {
+                    wide = web.most_args(ar);
+                }
+            }
+            let params = box_slice(heap, 2 * widest, 0);
+            let pargs = box_slice(heap, wide, 0);
+            let pscratch = box_slice(heap, 256, byte_of(0));
+            let tape = box_slice(heap, 3 * slot_bytes() + 3, 0);
+            let scratch = box_slice(heap, 65536, byte_of(0));
+            let cur = box_slice(heap, cur_width(), 0);
+            let queue = box_slice(heap, 32, 0);
+            let qlen = box_slice(heap, 8, 0);
+            let arena = box_slice(heap, 8 * slot_bytes(), byte_of(0));
+            borrow mut cur as &!cw in {
+                contents(cw)[0] = 0 - 1;
+                contents(cw)[6] = 0 - 1;
+            }
+            var rconns = conns.empty(heap, 4);
+            var runner = Runner::Down;
+            var up = 0 - 1;
+            var req = buffer.empty(heap, 4096);
+            var resp = buffer.empty(heap, 65536);
+            var pend = buffer.empty(heap, 65536);
+            var out = buffer.empty(heap, 4096);
+            var last_try = 0;
+            var running = true;
+            while running {
+                var busy = false;
+                borrow cur as &cr in {
+                    busy = contents(cr)[0] >= 0;
+                }
+                var wait_ms = 1000;
+                if busy {
+                    wait_ms = 5;
+                }
+                srv = server.wait(heap, srv, clock, listener, wait_ms);
+                // INT or TERM: end the runner with the front, so that no model is left on the GPU
+                if signals_pending(stop_watch) != 0 {
+                    running = false;
+                }
+                borrow mut scratch as &!sw in {
+                    runner = relay_errors(runner, con, contents(sw));
+                }
+                let now = clock_ms(clock);
+                // The request in flight, a step.
+                var ticket = 0 - 1;
+                var phase = 0;
+                var model = 0;
+                var route = 0;
+                var keep = false;
+                var slot = 0 - 1;
+                borrow cur as &cr in {
+                    ticket = contents(cr)[0];
+                    model = contents(cr)[1];
+                    route = contents(cr)[2];
+                    keep = contents(cr)[3] == 1;
+                    phase = contents(cr)[4];
+                    slot = contents(cr)[6];
+                }
+                var done = false;
+                var fail = 0;
+                var why = "";
+                if ticket >= 0 && phase == 0 {
+                    if up != model {
+                        discard(runner);
+                        up = 0 - 1;
+                        let argv = runner_args(heap, g, table, model);
+                        borrow argv as &av in {
+                            runner = start(exec, dir, arg(g, table[model * model_width() + 1]), buffer.bytes(av), env);
+                        }
+                        buffer.drop(heap, argv);
+                        match runner {
+                            Runner::Up(c, e) => {
+                                runner = Runner::Up(c, e);
+                                up = model;
+                                var started = buffer.append(heap, buffer.empty(heap, 64), "started the runner of ");
+                                started = buffer.append(heap, started, arg(g, table[model * model_width()]));
+                                started = buffer.push(heap, started, byte_of(10));
+                                borrow started as &sb in {
+                                    io.error_all(con, buffer.bytes(sb));
+                                }
+                                buffer.drop(heap, started);
+                            }
+                            Runner::Down => {
+                                runner = Runner::Down;
+                                fail = 502;
+                                why = "the runner of that model could not be started";
+                            }
+                        }
+                        borrow mut cur as &!cw in {
+                            contents(cw)[7] = now;
+                        }
+                    }
+                    if fail == 0 && now - last_try >= 100 {
+                        last_try = now;
+                        match tcp_connect(net, "127.0.0.1", table[model * model_width() + 2]) {
+                            Dialed::Ok(c) => {
+                                let (t2, s2) = conns.put(heap, rconns, c);
+                                rconns = t2;
+                                borrow mut rconns as &!rt in {
+                                    conns.nonblocking(rt, s2);
+                                }
+                                slot = s2;
+                                phase = 1;
+                                borrow mut cur as &!cw in {
+                                    contents(cw)[4] = 1;
+                                    contents(cw)[5] = 0;
+                                    contents(cw)[6] = s2;
+                                }
+                            }
+                            Dialed::Failed(e) => {
+                                var began = 0;
+                                borrow cur as &cr in {
+                                    began = contents(cr)[7];
+                                }
+                                if now - began > 900000 {
+                                    fail = 504;
+                                    why = "the runner did not start listening in 900 s";
+                                }
+                            }
+                        }
+                    }
+                }
+                if ticket >= 0 && phase == 1 {
+                    var sent = 0;
+                    borrow cur as &cr in {
+                        sent = contents(cr)[5];
+                    }
+                    var gone = false;
+                    borrow req as &rb in {
+                        borrow mut rconns as &!rt in {
+                            match conns.write(rt, slot, buffer.bytes(rb)[sent..len(buffer.bytes(rb))]) {
+                                Sent::Wrote(n) => {
+                                    sent = sent + n;
+                                }
+                                Sent::Again => {
+                                }
+                                Sent::Failed(e) => {
+                                    gone = true;
+                                }
+                            }
+                        }
+                        if !gone && sent == len(buffer.bytes(rb)) {
+                            phase = 2;
+                        }
+                    }
+                    if gone {
+                        fail = 502;
+                        why = "the runner closed the connection before the request was sent";
+                    }
+                    borrow mut resp as &!rr in {
+                        buffer.clear(rr);
+                    }
+                    borrow mut cur as &!cw in {
+                        contents(cw)[5] = sent;
+                        contents(cw)[4] = phase;
+                    }
+                }
+                if ticket >= 0 && fail == 0 && phase >= 2 && phase <= 4 {
+                    // read what the runner sent while the stream has room for it
+                    var ended = false;
+                    var reading = true;
+                    while reading {
+                        reading = false;
+                        var held = 0;
+                        borrow pend as &pb0 in {
+                            held = len(buffer.bytes(pb0));
+                        }
+                        // a client that reads slowly holds the runner back: past 1 MiB waiting, nothing more is read
+                        if held < 1048576 {
+                            borrow mut rconns as &!rt in {
+                                borrow mut scratch as &!sw in {
+                                    match conns.read(rt, slot, contents(sw)) {
+                                        Received::Data(n) => {
+                                            if phase == 4 {
+                                                pend = web.chunk(heap, pend, contents(sw)[0..n]);
+                                            } else {
+                                                resp = buffer.append(heap, resp, contents(sw)[0..n]);
+                                            }
+                                            reading = true;
+                                        }
+                                        Received::End => {
+                                            ended = true;
+                                        }
+                                        Received::Again => {
+                                        }
+                                        Received::Failed(e) => {
+                                            ended = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if phase == 2 {
+                            var he = 0 - 1;
+                            borrow resp as &rb in {
+                                he = index_of(buffer.bytes(rb), "\r\n\r\n");
+                            }
+                            if he >= 0 {
+                                var status = 0;
+                                var streamed = false;
+                                borrow resp as &rb in {
+                                    let r = buffer.bytes(rb);
+                                    if len(r) >= 12 {
+                                        status = number_of(r[9..12]);
+                                    }
+                                    streamed = bytes.starts_with(header_of(r[0..he], "content-type"), "text/event-stream");
+                                }
+                                borrow mut cur as &!cw in {
+                                    contents(cw)[8] = status;
+                                }
+                                if status < 100 {
+                                    fail = 502;
+                                    why = "the runner's answer has no status";
+                                } else if streamed {
+                                    phase = 4;
+                                    pend = web.stream_head(heap, pend, status, "text/event-stream", keep);
+                                    borrow resp as &rb in {
+                                        let r = buffer.bytes(rb);
+                                        if he + 4 < len(r) {
+                                            pend = web.chunk(heap, pend, r[he + 4..len(r)]);
+                                        }
+                                    }
+                                } else {
+                                    phase = 3;
+                                }
+                            }
+                        }
+                    }
+                    if ended && fail == 0 {
+                        if phase == 2 {
+                            fail = 502;
+                            why = "the runner ended without an answer";
+                        } else if phase == 3 {
+                            var status = 0;
+                            borrow cur as &cr in {
+                                status = contents(cr)[8];
+                            }
+                            borrow mut out as &!ob in {
+                                buffer.clear(ob);
+                            }
+                            borrow resp as &rb in {
+                                let r = buffer.bytes(rb);
+                                let he = index_of(r, "\r\n\r\n");
+                                var ct = header_of(r[0..he], "content-type");
+                                if len(ct) == 0 {
+                                    ct = "application/json";
+                                }
+                                out = server.reply_as(heap, out, status, ct, r[he + 4..len(r)], keep, "");
+                            }
+                            borrow mut srv as &!sv in {
+                                borrow out as &ob in {
+                                    server.answer(sv, ticket, buffer.bytes(ob));
+                                }
+                            }
+                            done = true;
+                        } else {
+                            pend = web.chunk(heap, pend, "");
+                            phase = 5;
+                        }
+                    }
+                    borrow mut cur as &!cw in {
+                        contents(cw)[4] = phase;
+                    }
+                }
+                if ticket >= 0 && fail == 0 && phase >= 4 {
+                    // the stream: as much as the client's connection has room for
+                    var room = 0;
+                    borrow srv as &sv in {
+                        room = server.space(sv, server.ticket_slot(ticket));
+                    }
+                    var have = 0;
+                    borrow pend as &pb1 in {
+                        have = len(buffer.bytes(pb1));
+                    }
+                    var give = have;
+                    if give > room {
+                        give = room;
+                    }
+                    if phase == 5 && give == have {
+                        borrow mut srv as &!sv in {
+                            borrow pend as &pb in {
+                                server.answer(sv, ticket, buffer.bytes(pb));
+                            }
+                        }
+                        done = true;
+                    } else if give > 0 {
+                        var took = 0;
+                        borrow mut srv as &!sv in {
+                            borrow pend as &pb in {
+                                took = server.stream(sv, ticket, buffer.bytes(pb)[0..give]);
+                            }
+                        }
+                        if took < 0 {
+                            // the client is gone: the runner's answer goes nowhere
+                            done = true;
+                        } else if took > 0 {
+                            var rest = buffer.empty(heap, 65536);
+                            borrow pend as &pb in {
+                                rest = buffer.append(heap, rest, buffer.bytes(pb)[took..have]);
+                            }
+                            buffer.drop(heap, pend);
+                            pend = rest;
+                        }
+                    }
+                }
+                if fail > 0 {
+                    borrow mut out as &!ob in {
+                        buffer.clear(ob);
+                    }
+                    out = refusal(heap, out, route, fail, why, keep, "");
+                    borrow mut srv as &!sv in {
+                        borrow out as &ob in {
+                            server.answer(sv, ticket, buffer.bytes(ob));
+                        }
+                    }
+                    // a runner that failed a request is ended: the next request starts it again
+                    runner = stop(runner);
+                    up = 0 - 1;
+                    done = true;
+                }
+                if done {
+                    var status = 0;
+                    borrow cur as &cr in {
+                        status = contents(cr)[8];
+                    }
+                    if fail > 0 {
+                        status = fail;
+                    }
+                    var logl = buffer.append(heap, buffer.empty(heap, 96), "  ");
+                    logl = buffer.append(heap, logl, arg(g, table[model * model_width()]));
+                    logl = buffer.append(heap, logl, " ");
+                    logl = buffer.push_nat(heap, logl, status);
+                    logl = buffer.append(heap, logl, " ");
+                    var began = 0;
+                    borrow cur as &cr in {
+                        began = contents(cr)[7];
+                    }
+                    logl = buffer.push_nat(heap, logl, now - began);
+                    logl = buffer.append(heap, logl, "ms\n");
+                    borrow logl as &lb in {
+                        io.error_all(con, buffer.bytes(lb));
+                    }
+                    buffer.drop(heap, logl);
+                    borrow mut rconns as &!rt in {
+                        if slot >= 0 {
+                            conns.close(rt, slot);
+                        }
+                    }
+                    borrow mut pend as &!pb in {
+                        buffer.clear(pb);
+                    }
+                    borrow mut cur as &!cw in {
+                        contents(cw)[0] = 0 - 1;
+                        contents(cw)[6] = 0 - 1;
+                    }
+                }
+                // The next request that waits, if none is in flight.
+                var idle = false;
+                borrow cur as &cr in {
+                    idle = contents(cr)[0] < 0;
+                }
+                if idle {
+                    var qt = 0;
+                    borrow queue as &qr in {
+                        qt = contents(qr)[0];
+                    }
+                    if qt > 0 {
+                        borrow mut req as &!rb in {
+                            buffer.clear(rb);
+                        }
+                        borrow arena as &ab in {
+                            borrow qlen as &lr in {
+                                req = buffer.append(heap, req, contents(ab)[0..contents(lr)[0]]);
+                            }
+                        }
+                        borrow mut cur as &!cw in {
+                            borrow queue as &qr in {
+                                contents(cw)[0] = qt - 1;
+                                contents(cw)[1] = contents(qr)[1];
+                                contents(cw)[2] = contents(qr)[2];
+                                contents(cw)[3] = contents(qr)[3];
+                                contents(cw)[4] = 0;
+                                contents(cw)[5] = 0;
+                                contents(cw)[6] = 0 - 1;
+                                contents(cw)[7] = now;
+                                contents(cw)[8] = 0;
+                            }
+                        }
+                        // the others move up a place
+                        borrow mut queue as &!qw in {
+                            borrow mut qlen as &!lw in {
+                                borrow mut arena as &!aw in {
+                                    var q = 0;
+                                    while q < 7 {
+                                        contents(qw)[4 * q] = contents(qw)[4 * q + 4];
+                                        contents(qw)[4 * q + 1] = contents(qw)[4 * q + 5];
+                                        contents(qw)[4 * q + 2] = contents(qw)[4 * q + 6];
+                                        contents(qw)[4 * q + 3] = contents(qw)[4 * q + 7];
+                                        let nl = contents(lw)[q + 1];
+                                        var b = 0;
+                                        while b < nl {
+                                            contents(aw)[q * slot_bytes() + b] = contents(aw)[(q + 1) * slot_bytes() + b];
+                                            b = b + 1;
+                                        }
+                                        contents(lw)[q] = nl;
+                                        q = q + 1;
+                                    }
+                                    contents(qw)[28] = 0;
+                                    contents(lw)[7] = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+                // New requests.
+                var more = true;
+                while more {
+                    var next_slot = 0 - 1;
+                    borrow mut srv as &!sv in {
+                        next_slot = server.next(heap, sv);
+                    }
+                    if next_slot < 0 {
+                        more = false;
+                    } else {
+                        borrow mut out as &!ob in {
+                            buffer.clear(ob);
+                        }
+                        let t0 = clock_ms(clock);
+                        var hold_as = 0 - 1;
+                        var hold_model = 0;
+                        var hold_keep = 0;
+                        borrow srv as &sv in {
+                            let head = server.head(sv);
+                            let parsed = server.parsed(sv);
+                            let rkeep = http.keeps_alive(parsed);
+                            borrow api as &ar in {
+                                borrow sc as &sr in {
+                                    borrow mut params as &!pw in {
+                                        borrow mut pargs as &!aw in {
+                                            borrow mut pscratch as &!cw in {
+                                                let (routed, id) = web.dispatch(heap, ar, sr, head, parsed, contents(pw), contents(aw), contents(cw), out, rkeep);
+                                                out = routed;
+                                                if id != web.answered() {
+                                                    borrow tokens as &tr in {
+                                                        let (gated, allowed) = web.guard(heap, ar, tr, head, parsed, id, out, rkeep);
+                                                        out = gated;
+                                                        if allowed {
+                                                            if id == op_health() {
+                                                                out = server.reply_as(heap, out, 200, "application/json", "{\"status\":\"ok\"}", rkeep, "");
+                                                            } else if id == op_models() {
+                                                                borrow models_a as &mb in {
+                                                                    out = server.reply_as(heap, out, 200, "application/json", buffer.bytes(mb), rkeep, "");
+                                                                }
+                                                            } else if id == op_tags() {
+                                                                borrow models_b as &mb in {
+                                                                    out = server.reply_as(heap, out, 200, "application/json", buffer.bytes(mb), rkeep, "");
+                                                                }
+                                                            } else if id == op_doc() {
+                                                                borrow doc as &db in {
+                                                                    out = server.reply_as(heap, out, 200, "application/json", buffer.bytes(db), rkeep, "");
+                                                                }
+                                                            } else {
+                                                                let body = server.body(sv);
+                                                                var fallback = 0;
+                                                                if up >= 0 {
+                                                                    fallback = up;
+                                                                }
+                                                                var m = 0 - 2;
+                                                                borrow mut tape as &!tw in {
+                                                                    m = model_of(g, table, count, body, contents(tw), fallback);
+                                                                }
+                                                                if m == 0 - 2 {
+                                                                    out = refusal(heap, out, id, 400, "the body must be a JSON object", rkeep, "");
+                                                                } else if m < 0 {
+                                                                    out = refusal(heap, out, id, 404, "no such model: GET /v1/models lists them", rkeep, "");
+                                                                } else if len(body) + 256 > slot_bytes() {
+                                                                    out = refusal(heap, out, id, 413, "the request is too large", rkeep, "");
+                                                                } else {
+                                                                    hold_as = id;
+                                                                    hold_model = m;
+                                                                    if rkeep {
+                                                                        hold_keep = 1;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // the log line: the answer's status, or where a held request went; written while the request's head is the server's
+                            if hold_as < 0 {
+                                borrow out as &ob in {
+                                    let logl = web.log_line(heap, head, parsed, buffer.bytes(ob), clock_ms(clock) - t0);
+                                    borrow logl as &lb in {
+                                        io.error_all(con, buffer.bytes(lb));
+                                    }
+                                    buffer.drop(heap, logl);
+                                }
+                            } else {
+                                var logl = buffer.append(heap, buffer.empty(heap, 96), http.method(head, parsed));
+                                logl = buffer.append(heap, logl, " ");
+                                logl = buffer.append(heap, logl, http.path(head, parsed));
+                                logl = buffer.append(heap, logl, " -> ");
+                                logl = buffer.append(heap, logl, arg(g, table[hold_model * model_width()]));
+                                logl = buffer.push(heap, logl, byte_of(10));
+                                borrow logl as &lb in {
+                                    io.error_all(con, buffer.bytes(lb));
+                                }
+                                buffer.drop(heap, logl);
+                            }
+                        }
+                        if hold_as > 0 {
+                            // in flight if nothing is, else in the queue's first free place, else a 503
+                            var free = 0 - 1;
+                            var inflight = false;
+                            borrow cur as &cr in {
+                                inflight = contents(cr)[0] >= 0;
+                            }
+                            borrow queue as &qr in {
+                                var q = 7;
+                                while q >= 0 {
+                                    if contents(qr)[4 * q] == 0 {
+                                        free = q;
+                                    }
+                                    q = q - 1;
+                                }
+                            }
+                            if inflight && free < 0 {
+                                borrow srv as &sv in {
+                                    out = refusal(heap, out, hold_as, 503, "too many requests are waiting", hold_keep == 1, "Retry-After: 5\r\n");
+                                }
+                                borrow mut srv as &!sv in {
+                                    borrow out as &ob in {
+                                        server.respond(sv, buffer.bytes(ob));
+                                    }
+                                }
+                            } else {
+                                var built = buffer.empty(heap, 16);
+                                borrow srv as &sv in {
+                                    let head = server.head(sv);
+                                    let parsed = server.parsed(sv);
+                                    buffer.drop(heap, built);
+                                    built = runner_request(heap, http.path(head, parsed), server.body(sv));
+                                }
+                                var t = 0 - 1;
+                                borrow mut srv as &!sv in {
+                                    t = server.hold(sv);
+                                }
+                                if !inflight {
+                                    buffer.drop(heap, req);
+                                    req = built;
+                                    borrow mut cur as &!cw in {
+                                        contents(cw)[0] = t;
+                                        contents(cw)[1] = hold_model;
+                                        contents(cw)[2] = hold_as;
+                                        contents(cw)[3] = hold_keep;
+                                        contents(cw)[4] = 0;
+                                        contents(cw)[5] = 0;
+                                        contents(cw)[6] = 0 - 1;
+                                        contents(cw)[7] = t0;
+                                        contents(cw)[8] = 0;
+                                    }
+                                } else {
+                                    borrow mut queue as &!qw in {
+                                        contents(qw)[4 * free] = t + 1;
+                                        contents(qw)[4 * free + 1] = hold_model;
+                                        contents(qw)[4 * free + 2] = hold_as;
+                                        contents(qw)[4 * free + 3] = hold_keep;
+                                    }
+                                    borrow built as &bb in {
+                                        let bs = buffer.bytes(bb);
+                                        borrow mut arena as &!aw in {
+                                            var b = 0;
+                                            while b < len(bs) {
+                                                contents(aw)[free * slot_bytes() + b] = bs[b];
+                                                b = b + 1;
+                                            }
+                                        }
+                                        borrow mut qlen as &!lw in {
+                                            contents(lw)[free] = len(bs);
+                                        }
+                                    }
+                                    buffer.drop(heap, built);
+                                }
+                            }
+                        } else {
+                            borrow mut srv as &!sv in {
+                                borrow out as &ob in {
+                                    server.respond(sv, buffer.bytes(ob));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            runner = stop(runner);
+            match runner {
+                Runner::Down => {
+                }
+                Runner::Up(c, e) => {
+                    child_wait(c);
+                    pipe_close(e);
+                }
+            }
+            server.close(heap, srv);
+            conns.drop(heap, rconns);
+            buffer.drop(heap, req);
+            buffer.drop(heap, resp);
+            buffer.drop(heap, pend);
+            buffer.drop(heap, out);
+            buffer.drop(heap, models_a);
+            buffer.drop(heap, models_b);
+            buffer.drop(heap, doc);
+            web.tokens_drop(heap, tokens);
+            web.drop(heap, api);
+            schema.drop(heap, sc);
+            unbox_slice(heap, params);
+            unbox_slice(heap, pargs);
+            unbox_slice(heap, pscratch);
+            unbox_slice(heap, tape);
+            unbox_slice(heap, scratch);
+            unbox_slice(heap, cur);
+            unbox_slice(heap, queue);
+            unbox_slice(heap, qlen);
+            unbox_slice(heap, arena);
+            return 0;
+        }
+        Polling::Failed(e) => {
+            return 4;
+        }
+    }
+}
+
+fn usage[&i](con: &!i Io) -> [err_write] int {
+    io.error_all(con, "usage: cancho-gpu-front <port> <runner dir> [--api-key KEY] [--env NAME=VALUE ...] --model NAME PROGRAM RUNNER-PORT [ARG ...] [--model ...]\n");
+    return 2;
+}
+
+fn main(world: World) -> [] int {
+    let Split { io, ffi, fs, heap, args, net, clock, signals, exec, tty } = split(world);
+    release(ffi);
+    release(tty);
+    let stop = narrow(signals, "INT,TERM");
+    // the front listens on this machine's loopback and reaches only its runners there: `net_in` and `net_out` of 127.0.0.1
+    // ("127.0.0.1:" and not "127.0.0.1", which means the same, because the compiler in cancho at this pin traps in `tcp_listen_on` on the
+    // second: docs/one-server.md section 7)
+    let local = narrow(net, "127.0.0.1:");
+    var console = io;
+    var status = 2;
+    borrow args as &g in {
+        borrow mut heap as &!h in {
+            let n = arg_count(g);
+            let table = box_slice(h, most_models() * model_width(), 0);
+            var count = 0;
+            var key_at = 0 - 1;
+            var env = buffer.empty(h, 256);
+            var ok = n >= 3;
+            var port = 0 - 1;
+            if ok {
+                port = number_of(arg(g, 1));
+                ok = port > 0 && port < 65536;
+            }
+            var i = 3;
+            borrow mut table as &!tw in {
+                while ok && i < n {
+                    let a = arg(g, i);
+                    if bytes.equal(a, "--api-key") && i + 1 < n {
+                        key_at = i + 1;
+                        i = i + 2;
+                    } else if bytes.equal(a, "--env") && i + 1 < n && index_of(arg(g, i + 1), "=") > 0 {
+                        env = buffer.append(h, env, arg(g, i + 1));
+                        env = buffer.push(h, env, byte_of(0));
+                        i = i + 2;
+                    } else if bytes.equal(a, "--model") && i + 3 < n && count < most_models() {
+                        let rp = number_of(arg(g, i + 3));
+                        let prog = arg(g, i + 2);
+                        ok = rp > 0 && rp < 65536 && rp != port && len(prog) > 0 && int_of(prog[0]) != 47 && index_of(prog, "..") < 0;
+                        contents(tw)[count * model_width()] = i + 1;
+                        contents(tw)[count * model_width() + 1] = i + 2;
+                        contents(tw)[count * model_width() + 2] = rp;
+                        contents(tw)[count * model_width() + 3] = i + 4;
+                        var j = i + 4;
+                        while j < n && !bytes.equal(arg(g, j), "--model") {
+                            j = j + 1;
+                        }
+                        contents(tw)[count * model_width() + 4] = j - (i + 4);
+                        count = count + 1;
+                        i = j;
+                    } else {
+                        ok = false;
+                    }
+                }
+            }
+            if !ok || count == 0 {
+                borrow mut console as &!c in {
+                    status = usage(c);
+                }
+            } else {
+                borrow fs as &f in {
+                    match open_dir(f, arg(g, 2)) {
+                        DirOpened::Ok(d) => {
+                            var runners = d;
+                            borrow local as &nn in {
+                                match tcp_listen_on(nn, "127.0.0.1", port, 64, 0) {
+                                    Listening::Ok(l) => {
+                                        var listener = l;
+                                        borrow mut listener as &!lh in {
+                                            listener_nonblocking(lh);
+                                            borrow mut console as &!c in {
+                                                borrow clock as &k in {
+                                                    borrow exec as &x in {
+                                                        borrow runners as &rd in {
+                                                            borrow table as &tr in {
+                                                                borrow env as &eb in {
+                                                                    borrow stop as &st in {
+                                                                        match signals_watch(st) {
+                                                                            Watching::Ok(wt) => {
+                                                                                var watch = wt;
+                                                                                borrow mut watch as &!wh in {
+                                                                                    if key_at > 0 {
+                                                                                        status = serve(h, k, lh, c, nn, x, rd, g, contents(tr), count, buffer.bytes(eb), arg(g, key_at), port, wh);
+                                                                                    } else {
+                                                                                        status = serve(h, k, lh, c, nn, x, rd, g, contents(tr), count, buffer.bytes(eb), "", port, wh);
+                                                                                    }
+                                                                                }
+                                                                                signals_close(watch);
+                                                                            }
+                                                                            Watching::Failed(e) => {
+                                                                                status = 4;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        listener_close(listener);
+                                    }
+                                    Listening::Failed(e) => {
+                                        borrow mut console as &!c in {
+                                            io.error_all(c, "error[listen]: cannot listen on that port\n");
+                                        }
+                                        status = 1;
+                                    }
+                                }
+                            }
+                            dir_close(runners);
+                        }
+                        DirOpened::Failed(e) => {
+                            borrow mut console as &!c in {
+                                io.error_all(c, "error[runner-dir]: the runner directory cannot be opened\n");
+                            }
+                            status = 3;
+                        }
+                    }
+                }
+            }
+            buffer.drop(h, env);
+            unbox_slice(h, table);
+        }
+    }
+    release(fs);
+    release(stop);
+    release(local);
+    release(exec);
+    release(clock);
+    release(args);
+    release(console);
+    release(heap);
+    return status;
+}

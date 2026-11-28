@@ -1,0 +1,21 @@
+performs
+    args
+    child_signal
+    clock
+    conn_accept
+    conn_read
+    conn_write
+    err_write
+    exec_detached
+    exec_under
+    fs_read("")
+    heap
+    net_in("127.0.0.1:")
+    net_out("127.0.0.1:")
+    pipe_read
+    poll
+    signals("INT,TERM")
+    signals_read
+never touches
+    foreign code
+provably pure (219 of 397)

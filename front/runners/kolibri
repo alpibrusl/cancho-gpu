@@ -1,0 +1,5 @@
+#!/bin/sh
+# The runner of Kolibri 1.1 for cancho-gpu-front: `scripts/kolibri-serve` (docs/kolibri.md section 18).
+#     kolibri --port N [flags of scripts/kolibri-serve ...]
+HERE=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
+exec "$HERE/scripts/kolibri-serve" "$@"
