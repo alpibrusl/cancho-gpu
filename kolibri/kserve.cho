@@ -31,6 +31,11 @@ import kchat;
 import ktool;
 import kdraw;
 
+// 1 when the server listens on 127.0.0.1 only (`--loopback`: a runner of cancho-gpu-front, docs/one-server.md)
+pub fn c_loopback() -> [] int {
+    return 24;
+}
+
 pub fn c_port() -> [] int {
     return 0;
 }
@@ -103,7 +108,7 @@ fn head_cap() -> [] int {
 }
 
 pub fn usage_text() -> [] &static [byte] {
-    return " <gguf> <model file> [--port N] [--name MODEL] [--api-key KEY] [--ctx STEPS] [--ring SLOTS] [--window KEYS] [--pass TOKENS] [--greedy] [--end ID] [--max-new N] [--cache FILE] [--cache-min TOKENS] [--trace] [NAME=value ...]\n";
+    return " <gguf> <model file> [--port N] [--name MODEL] [--api-key KEY] [--ctx STEPS] [--ring SLOTS] [--window KEYS] [--pass TOKENS] [--greedy] [--end ID] [--max-new N] [--cache FILE] [--cache-min TOKENS] [--loopback] [--trace] [NAME=value ...]\n";
 }
 
 // A whole number of at most 9 digits, or -1.
@@ -128,7 +133,7 @@ pub fn config[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args) -> [args] 
     if arg_count(args) < 3 {
         return 0 - 1;
     }
-    let cfg = mem.grab(m, 24);
+    let cfg = mem.grab(m, 25);
     m[cfg + c_cache()] = 0 - 1;
     m[cfg + 20] = 2048;
     m[cfg + c_port()] = 11434;
@@ -148,6 +153,7 @@ pub fn config[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args) -> [args] 
     m[cfg + c_serial()] = 0;
     m[cfg + 17] = 512;
     m[cfg + c_pass()] = 0;
+    m[cfg + c_loopback()] = 0;
     var ai = 3;
     while ai < arg_count(args) {
         let w = text.from_bytes(m, t, arg(args, ai));
@@ -157,6 +163,8 @@ pub fn config[&m, &t, &a](m: &!m [int], t: &!t [byte], args: &a Args) -> [args] 
         }
         if text.is(t, w, "--greedy") {
             m[cfg + c_samp()] = 0;
+        } else if text.is(t, w, "--loopback") {
+            m[cfg + c_loopback()] = 1;
         } else if text.is(t, w, "--trace") {
             m[cfg + c_trace()] = 1;
         } else if text.is(t, w, "--name") && ai + 1 < arg_count(args) {

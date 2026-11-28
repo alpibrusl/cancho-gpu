@@ -1,5 +1,6 @@
 #!/bin/sh
 # The runner of Kolibri 1.1 for cancho-gpu-front: `scripts/kolibri-serve` (docs/kolibri.md section 18).
+# It listens on 127.0.0.1 only (`--loopback`): the front is the one that faces the network.
 #     kolibri --port N [flags of scripts/kolibri-serve ...]
 HERE=$(cd "$(dirname "$0")/../.." && pwd -P) || exit 1
-exec "$HERE/scripts/kolibri-serve" "$@"
+exec "$HERE/scripts/kolibri-serve" --loopback "$@"
