@@ -57,22 +57,26 @@ $rest
 In one sentence: what does section 7 add?"
 
 # 1 and 2: the long route against the one-tile kernels
-start --long-attention
+start --long-attention --no-spec
 for f in s1 s2 s3; do answer "$W/$f.json" > "$W/$f.long"; done
 stop
-start --no-prefix-cache
+start --no-prefix-cache --no-spec
 for f in s1 s2 s3; do answer "$W/$f.json" > "$W/$f.short"; check "the long route answers $f as the one-tile kernels do" "$(cat "$W/$f.long")" "$(cat "$W/$f.short")"; done
 for f in a b c; do answer "$W/$f.json" > "$W/$f.nocache"; done
 stop
 
 # 3: the prefix cache with its checkpoints, against no cache
-start
+# (with --no-spec on both sides: with the draft head a greedy answer at 13,000 positions can depend on the requests before it,
+# docs/serving.md 13.2, which would make this a check of that and not of the cache)
+start --no-spec
 a=$(reused "$W/a.json"); b=$(reused "$W/b.json"); c=$(reused "$W/c.json"); b2=$(reused "$W/b.json")
 # (printf, not echo, below: sh's echo turns a JSON string's \n into a line break)
 check "a first long prompt reuses nothing" "$(printf '%s' "$a" | jq -r '.[0]')" 0
 check "it answers as with no cache" "$(printf '%s' "$a" | jq -r '.[1]')" "$(cat "$W/a.nocache")"
 nb=$(printf '%s' "$b" | jq -r '.[0]')
-check "one that parts from it at the end reuses a checkpoint, under 1,024 positions from the end" "$([ "$nb" -ge 9216 ] && [ $((nb % 1024)) -eq 0 ] && echo yes)" yes
+nt=$(curl -s "localhost:$PORT/v1/chat/completions" -d @"$W/b.json" | jq -r '.usage.prompt_tokens')
+# a checkpoint or the chat's cut, whichever is later: either way under 1,024 positions are read again, at a multiple of the chunk
+check "one that parts from it at the end reads under 1,024 positions again" "$([ "$nb" -ge $((nt - 1024)) ] && [ $((nb % 16)) -eq 0 ] && echo yes)" yes
 check "it answers as with no cache" "$(printf '%s' "$b" | jq -r '.[1]')" "$(cat "$W/b.nocache")"
 nc=$(printf '%s' "$c" | jq -r '.[0]')
 check "one edited in the middle reuses the checkpoint before the edit" "$([ "$nc" -ge 4096 ] && [ "$nc" -le 6144 ] && [ $((nc % 1024)) -eq 0 ] && echo yes)" yes

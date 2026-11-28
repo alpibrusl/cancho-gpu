@@ -1253,7 +1253,7 @@ cache's own record; found by a crash, fixed before any measurement here.
   nothing. After it, a prompt that parts from it in its last line reuses **11,264** positions (a checkpoint) and answers in **1.6 s**; one
   edited in the middle reuses 5,120 and answers in 44 s; each of the three answers is the answer of a server with the cache off.
   `tests/serve_long.sh` does all of this by hand, on a text of its own (44,000 bytes of this document) and on `/api/generate`:
-  **17 checks, all passing** (one failed first on the script's own `echo`, which turned the answer's `\n` into a line break; fixed,
+  **16 checks, all passing** (*corrected 2026-11-28: this said 17*; one failed first on the script's own `echo`, which turned the answer's `\n` into a line break; fixed,
   and that check run again alone).
 
 **Exit 2, speed [measured], one run each, the machine otherwise quiet but for the gate in some.**
@@ -1287,5 +1287,104 @@ agent's reason was not looked into), as one of Kolibri's did.
 * The prefill's scores read the cache once a row of a chunk (12.3's estimate); a kernel that reads it once a chunk is the next step for
   the 128 tok/s of a tail. Decoding prose at 12,000 positions (29 tok/s) against Ollama's was not measured in one run.
 * `--cache-slots`' memory (about 5 GB a slot) is an estimate from the buffers' sizes; the footprint of a server with both slots in use
-  was not measured.
+  was not measured. *Measured 2026-11-28 (`vmmap`'s physical footprint, the matrix-unit server of section 13, the defaults): 16.4 GB
+  started, 19.5 after a short request, **23.5 after an 11,344-token prompt, 27.7 with a second of 13,549 tokens that shares nothing
+  with it** (the two slots in use, the first's caches parked), and the same after going back to the first. About 4 GB a long
+  conversation, under the estimate: a slot's buffers are touched as they are used, and a checkpoint past the prompt is never written.*
 * A stream on `/api/generate`; `/api/chat`.
+
+## 13. A chunk reads the cache once (design, written before the code, 2026-11-28)
+
+> **Status: built.** The design's reason was wrong (13.1: reading the cache once gains 6%); the time is the arithmetic, and the matrix unit (13.2) takes **18%** off a long tail. Marks as in section 7.
+
+**What costs [measured, 12.5].** Past a checkpoint at 11,264 positions a prompt's new tokens go at about 128 tok/s, against 244 on a
+short prompt: about 59 ms more for each chunk of 16 rows. **[estimate]** `attention_scores_rows.chx` and `attention_pvl_rows.chx` load
+a row's tile of keys and of values from the cache for each of a chunk's 16 rows: at 11,000 positions a layer's keys are 45 MB, so
+16 rows x 16 layers x (keys + values) is about 23 GB a chunk, 57 ms at 400 GB/s. That is the whole difference. *(Corrected
+2026-11-28, measured in 13.1: it is not. Reading the cache once a block of 4 rows took 6% off; the time a long position costs is
+somewhere else, most likely the arithmetic of the scores and the weighted sum, which grows with the position whatever is read.)*
+
+**The design [choice].** The rows of a chunk read a key and a value once: the queries are made head-major (`heads_major.chx`: head
+i's query heads of row 0, then row 1, ...), so that `attention_scores_hm.chx` multiplies a tile of `rb` rows' queries of one head by a
+tile of keys; the masks are each row's repeated for its query heads (`mask_rows_g.chx`, once a pass: they are the same at every
+layer); `attention_stats.chx` is unchanged (it reads rows in any order); `attention_pvl_hm.chx` sums a head's values for `rb` rows at a
+time; `rows_major.chx` turns the output back. `rb` is measured, not assumed: 16 reads the cache once a chunk but gives the weighted sum
+4 x 8 threadgroups; 4 reads it four times and gives 128.
+
+**Held to.** The greedy answers of section 12.5 (an 11,344-token prompt, a checkpoint at the end and in the middle) the same as with
+the kernels of section 12, and `--long-attention` on short prompts the same as the one-tile kernels; goldens for the five kernels.
+
+### 13.1 As built, and what it measured (2026-11-28, M4 Max, one run each)
+
+*(These two head-major kernels, `attention_scores_hm.chx` and `attention_pvl_hm.chx`, were measured here and then replaced by 13.2's and
+removed.)* `attention_scores_hm.chx`, `attention_pvl_hm.chx`, `heads_major.chx`, `rows_major.chx` and `mask_rows_g.chx` in place of
+`attention_scores_rows.chx` and `attention_pvl_rows.chx` on the long route of a chunk (`qwen35.long_rows_go`); the masks repeated once
+a pass. **The same tokens**: the greedy answers of 12.5's three prompts (11,344, 11,341 and 2,598 tokens, the cache off) and, with
+`--long-attention`, of two short ones are the old route's, word for word; `tests/serve_long.sh` (13.2).
+
+New tokens after a checkpoint at 11,264 positions, the seconds of a request (`max_tokens` 1):
+
+| rows a block (`hm_rb`) | 259 new | 659 new |
+|---|---|---|
+| (section 12's kernels: a block of 1 that reads the cache for every row) | 2.20 | 5.34 |
+| 16 (the cache read once a chunk) | 2.37 | 5.80 |
+| 8 | 2.10 | 5.10 |
+| **4 (kept)** | **2.07** | **5.01** |
+| 2 | 2.18 | 5.32 |
+
+**Reading the cache once a chunk is slower than reading it four times**: 16 rows a block leave the weighted sum 32 threadgroups. And
+the best block gains 6%: a token at 11,264 positions still costs 136 tok/s at the margin, where at 1,600 positions it is 215
+(400 tokens in 1.86 s there, 2.94 s here). What the 43 ms a chunk is, was not measured; the arithmetic grows with the position as the
+reads do, and it is the next thing to time (a profile of one pass by kernel, as section 11 did for a round). *Timed in 13.2.*
+
+### 13.2 Where the time is, and the matrix unit (2026-11-28, M4 Max)
+
+**The profile** (`CANCHOGPU_PROFILE=2`, every launch in a command buffer of its own, so the parts overstate what the pipeline overlaps)
+of a 659-token tail after the checkpoint at 11,264 (41 chunks, the long route at t = 12,288): the weighted sum 1,215 ms over 656
+launches (1.85 ms each), the scores 974 ms (1.48 ms), the statistics 216 ms (0.33 ms), against 1,159 ms for the largest weight product
+(`matvec_fp4_swiglu_pass_h`). **About 58 ms a chunk is attention.** A launch of the scores is 16 rows x 24 query heads x 12,288 positions
+x 256 x 2 = 2.4 GFLOP in 1.48 ms: **1.6 TFLOPS, so the kernels are limited by their arithmetic in f32 scalar code**, not by what they
+read (13.1 is the other half of that: reading less changed little).
+
+**What was built.** The chunk's long route on the matrix unit, after the way the diffusion transformer's attention does it
+(`dit_scores_mma.chx`, `dit_pv_mma_f.chx`): `attention_scores_mma.chx` (q k^T of a head's 96 head-major rows on the f32 matrix unit,
+stored unscaled and unmasked: an accumulator cannot be touched after its product), `attention_stats_hm.chx` (each row's maximum and
+normaliser of s / 16 + mask) and `attention_pv_mma.chx` (the weights staged as f32 and multiplied by v on the matrix unit). The queries
+go head-major and the output back as in 13.1; `mask_rows_g.chx` repeats the masks once a pass. Metal only (these schedules are Apple's;
+a token's attention, one row, is unchanged).
+
+**The same tokens, six prompts of seven [measured]:** the greedy answers of an 11,344-token prompt, one of 11,341 edited in the middle, one
+of 2,598, 512 tokens of code after 11,264 kept, and with `--long-attention` a 30-token and the 2,598-token prompt, are those of the server
+before this change, character for character (compared by their sha1). **The seventh is not**: `tests/serve_long.sh`'s 13,549-token
+question about section 9 answers "...the performance ceiling and optimization potential..." before and "...optimization limits..."
+after, both with the draft head off and each the same on three runs: the matrix unit adds in another order, and at a near tie that
+is another token, as section 15 of `docs/kolibri.md` found between a pass and the steps.
+
+**Found while checking it: with the draft head on, a greedy answer can depend on the requests before it.** The server of section 12
+(no change of this section's) answered that question one way on its first request and the other way on its second, the prefix cache
+off; the matrix-unit server the other way round; with `--no-spec` each answers the same every time. The draft head's acceptance changes
+which rows are checked together, and at a near tie that is a token too. So `tests/serve_long.sh` now compares with `--no-spec` (it is
+a check of the cache and the long route, not of the drafting), and the drafting's own determinism at long positions is a gap (13.3).
+
+**Speed [measured], the two servers one after the other:**
+
+| | before (section 12) | **the matrix unit** |
+|---|---|---|
+| 11,344 tokens from nothing | 69.3 s | **62.1 s** (-10%) |
+| 259 new tokens after the checkpoint at 11,264 | 2.22 s | **1.83 s** |
+| 659 new tokens there | 5.39 s | **4.39 s** (-18%) |
+| a token more at 11,264 positions | 136 tok/s | **157 tok/s** |
+
+The weighted sum's tile was swept (six schedules: `bm` 16, `bn` 16 to 128, `bk` 32 or 64, 64 to 512 threads); they are within 6% of one
+another on a tail and the widest (`bn 128`, 512 threads) is kept. The weighted sum is still the largest part of attention (1,408 ms in
+the profile above with the first schedule): it has only 4 x 6 x 2 threadgroups at `bn` 128, each walking every position, and splitting
+the positions across threadgroups needs the merge of `docs/kernels.md` 4.
+
+`tests/serve_long.sh` on this server, with `--no-spec` as above: **16 checks, all passing.**
+
+### 13.3 Not done
+
+The weighted sum split over positions (a merge of partial sums); a token's attention (decoding) on the matrix unit; the f16 cache that
+would halve what a long position reads.
+* **The draft head's answers at long positions depend on the requests before them** (13.2), greedy included: what state of the drafting
+  carries over between requests was not found.

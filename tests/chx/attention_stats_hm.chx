@@ -1,0 +1,39 @@
+// attention_stats.chx over attention_scores_mma.chx's raw head-major scores (docs/serving.md 13.2): each row's maximum m and normaliser
+// z of s / 16 + mask, the mask the row's (mask_rows_g.chx: [nrg, tmax], the same for every head), a chunk of cs positions at a time.
+// The running maximum is m + relu(c - m), started at the first chunk's, as in attention_stats.chx.
+algo attention_stats_hm(nkv, nrg, t, cs, tmax)
+  in  sc:   f32[nkv * nrg, t]
+  in  mask: f32[nrg, tmax]
+  out m:    f32[nkv * nrg]
+  out z:    f32[nkv * nrg]
+{
+  grid i over nkv, r over nrg
+  let f0 = load sc[i * nrg + r, 0 ; 1, cs]
+  let k0 = load mask[r, 0 ; 1, cs]
+  let s0 = f0 * 0.0625
+  let t0 = s0 + k0
+  let m1 = rowmax t0
+  let mx = for c in 1 .. t / cs with m1 {
+    let sm = load sc[i * nrg + r, c * cs ; 1, cs]
+    let mk = load mask[r, c * cs ; 1, cs]
+    let s1 = sm * 0.0625
+    let t1 = s1 + mk
+    let cm = rowmax t1
+    yield m1 + relu (cm - &m1)
+  }
+  let z0 = zeros f32[1]
+  let zz = for c in 0 .. t / cs with z0 {
+    let sm = load sc[i * nrg + r, c * cs ; 1, cs]
+    let mk = load mask[r, c * cs ; 1, cs]
+    let s1 = sm * 0.0625
+    let s2 = s1 + mk
+    let sh = s2 - &mx
+    let e  = exp sh
+    let cz = rowsum e
+    yield z0 + cz
+  }
+  store mx -> m[i * nrg + r]
+  store zz -> z[i * nrg + r]
+}
+
+schedule attention_stats_hm for apple-m-series { threads 64 }

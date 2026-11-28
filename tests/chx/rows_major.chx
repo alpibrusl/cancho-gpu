@@ -1,0 +1,14 @@
+// heads_major.chx the other way: attention_pvl_hm.chx's head-major output turned back to the rows the gate reads (docs/serving.md
+// section 13). A copy: no arithmetic.
+algo rows_major(nr, nkv, g, d)
+  in  o:   f32[nkv * nr * g, d]
+  out out: f32[nr * nkv * g, d]
+{
+  grid r over nr, i over nkv
+  let x = load o[(i * nr + r) * g, 0 ; g, d]
+  store x -> out[(r * nkv + i) * g, 0]
+}
+
+schedule rows_major for apple-m-series { threads 256 }
+schedule rows_major for nvidia-ada     { threads 128 }
+schedule rows_major for amd-cdna3      { threads 128 }

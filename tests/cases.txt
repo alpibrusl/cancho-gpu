@@ -785,3 +785,17 @@ tests/chx/dq_i8.chx n=8 k=64 bn=4 --run
 # experts so (ne experts resident).
 tests/chx/pick_block.chx ne=384 n=512 k=64
 tests/chx/pick_block.chx ne=5 n=2 k=4 --run
+# The long route of a chunk's rows on the matrix unit (docs/serving.md section 13.2), at the 27B's shape (nrg = 96 and 48, a 16,384 cache)
+# and small with the interpreter.
+tests/chx/heads_major.chx nr=16 nkv=4 g=6 d=256
+tests/chx/rows_major.chx nr=16 nkv=4 g=6 d=256
+tests/chx/mask_rows_g.chx nr=16 g=6 ts=256 tmax=16384
+tests/chx/heads_major.chx nr=3 nkv=2 g=6 d=256 --run
+tests/chx/rows_major.chx nr=3 nkv=2 g=6 d=256 --run
+tests/chx/mask_rows_g.chx nr=3 g=6 ts=32 tmax=96 --run
+tests/chx/attention_scores_mma.chx nkv=4 nrg=96 t=2048 d=256 tmax=16384
+tests/chx/attention_stats_hm.chx nkv=4 nrg=48 t=2048 cs=64 tmax=16384
+tests/chx/attention_pv_mma.chx nkv=4 nrg=96 t=2048 d=256 tmax=16384
+tests/chx/attention_scores_mma.chx nkv=2 nrg=64 t=128 d=256 tmax=192 --run
+tests/chx/attention_stats_hm.chx nkv=2 nrg=12 t=64 cs=16 tmax=96 --run
+tests/chx/attention_pv_mma.chx nkv=2 nrg=64 t=128 d=256 tmax=192 --run

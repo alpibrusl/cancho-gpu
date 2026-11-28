@@ -1,0 +1,32 @@
+// The weighted sum of a chunk's rows on the matrix unit (docs/serving.md 13.2): o = sum over chunks of exp(s / 16 + mask - m) / z v
+// for head i's head-major rows, the scores attention_scores_mma.chx's, m and z attention_stats_hm.chx's, the weights staged as f32
+// (as dit_pv_mma_f.chx does), v head i's values. Written head-major, [nkv * nrg, d] (rows_major.chx turns it back).
+algo attention_pv_mma(nkv, nrg, t, d, tmax)
+  in  sc:   f32[nkv * nrg, t]
+  in  mask: f32[nrg, tmax]
+  in  m:    f32[nkv * nrg]
+  in  z:    f32[nkv * nrg]
+  in  v:    f32[nkv * tmax, d]
+  out o:    f32[nkv * nrg, d]
+  tile bm, bn, bk
+{
+  grid i over nkv, r over nrg / bm, j over d / bn
+  let acc = zeros f32[bm, bn] @frag
+  let acc = for p in 0 .. t / bk with acc {
+    let sm = load sc[i * nrg + r * bm, p * bk ; bm, bk]
+    let mk = load mask[r * bm, p * bk ; bm, bk]
+    let s1 = sm * 0.0625
+    let s2 = s1 + mk
+    let mm = load m[i * nrg + r * bm ; bm]
+    let zz = load z[i * nrg + r * bm ; bm]
+    let sh = s2 - mm
+    let e  = exp sh
+    let pp = e / zz
+    let ph = stage f32 pp
+    let vt = load v[i * tmax + p * bk, j * bn ; bk, bn] @shared
+    yield mma_nn acc ph vt
+  }
+  store acc -> o[i * nrg + r * bm, j * bn]
+}
+
+schedule attention_pv_mma for apple-m-series { threads 512 warps 2 8 bm 16 bn 128 bk 32 }

@@ -1,0 +1,15 @@
+// The rows of a chunk's queries, row-major (row r's heads one after another: row (r * nkv + i) * g + j) turned head-major (head i's
+// rows one after another: row (i * nr + r) * g + j), so that attention_scores_hm.chx reads a head's queries of every row as one tile
+// (docs/serving.md section 13). A copy: no arithmetic.
+algo heads_major(nr, nkv, g, d)
+  in  q:   f32[nr * nkv * g, d]
+  out out: f32[nkv * nr * g, d]
+{
+  grid r over nr, i over nkv
+  let x = load q[(r * nkv + i) * g, 0 ; g, d]
+  store x -> out[(i * nr + r) * g, 0]
+}
+
+schedule heads_major for apple-m-series { threads 256 }
+schedule heads_major for nvidia-ada     { threads 128 }
+schedule heads_major for amd-cdna3      { threads 128 }
