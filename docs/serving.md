@@ -1350,9 +1350,18 @@ normaliser of s / 16 + mask) and `attention_pv_mma.chx` (the weights staged as f
 go head-major and the output back as in 13.1; `mask_rows_g.chx` repeats the masks once a pass. Metal only (these schedules are Apple's;
 a token's attention, one row, is unchanged).
 
-**The same tokens [measured]:** the greedy answers of an 11,344-token prompt, one of 11,341 edited in the middle, one of 2,598, 512 tokens
-of code after 11,264 kept, and with `--long-attention` a 30-token and the 2,598-token prompt, are those of the server before this
-change, character for character (six of six; compared by their sha1). `tests/serve_long.sh`: 13.3.
+**The same tokens, six prompts of seven [measured]:** the greedy answers of an 11,344-token prompt, one of 11,341 edited in the middle, one
+of 2,598, 512 tokens of code after 11,264 kept, and with `--long-attention` a 30-token and the 2,598-token prompt, are those of the server
+before this change, character for character (compared by their sha1). **The seventh is not**: `tests/serve_long.sh`'s 13,549-token
+question about section 9 answers "...the performance ceiling and optimization potential..." before and "...optimization limits..."
+after, both with the draft head off and each the same on three runs: the matrix unit adds in another order, and at a near tie that
+is another token, as section 15 of `docs/kolibri.md` found between a pass and the steps.
+
+**Found while checking it: with the draft head on, a greedy answer can depend on the requests before it.** The server of section 12
+(no change of this section's) answered that question one way on its first request and the other way on its second, the prefix cache
+off; the matrix-unit server the other way round; with `--no-spec` each answers the same every time. The draft head's acceptance changes
+which rows are checked together, and at a near tie that is a token too. So `tests/serve_long.sh` now compares with `--no-spec` (it is
+a check of the cache and the long route, not of the drafting), and the drafting's own determinism at long positions is a gap (13.3).
 
 **Speed [measured], the two servers one after the other:**
 
@@ -1368,7 +1377,11 @@ another on a tail and the widest (`bn 128`, 512 threads) is kept. The weighted s
 the profile above with the first schedule): it has only 4 x 6 x 2 threadgroups at `bn` 128, each walking every position, and splitting
 the positions across threadgroups needs the merge of `docs/kernels.md` 4.
 
+`tests/serve_long.sh` on this server, with `--no-spec` as above: **16 checks, all passing.**
+
 ### 13.3 Not done
 
 The weighted sum split over positions (a merge of partial sums); a token's attention (decoding) on the matrix unit; the f16 cache that
 would halve what a long position reads.
+* **The draft head's answers at long positions depend on the requests before them** (13.2), greedy included: what state of the drafting
+  carries over between requests was not found.

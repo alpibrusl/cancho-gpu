@@ -57,16 +57,18 @@ $rest
 In one sentence: what does section 7 add?"
 
 # 1 and 2: the long route against the one-tile kernels
-start --long-attention
+start --long-attention --no-spec
 for f in s1 s2 s3; do answer "$W/$f.json" > "$W/$f.long"; done
 stop
-start --no-prefix-cache
+start --no-prefix-cache --no-spec
 for f in s1 s2 s3; do answer "$W/$f.json" > "$W/$f.short"; check "the long route answers $f as the one-tile kernels do" "$(cat "$W/$f.long")" "$(cat "$W/$f.short")"; done
 for f in a b c; do answer "$W/$f.json" > "$W/$f.nocache"; done
 stop
 
 # 3: the prefix cache with its checkpoints, against no cache
-start
+# (with --no-spec on both sides: with the draft head a greedy answer at 13,000 positions can depend on the requests before it,
+# docs/serving.md 13.2, which would make this a check of that and not of the cache)
+start --no-spec
 a=$(reused "$W/a.json"); b=$(reused "$W/b.json"); c=$(reused "$W/c.json"); b2=$(reused "$W/b.json")
 # (printf, not echo, below: sh's echo turns a JSON string's \n into a line break)
 check "a first long prompt reuses nothing" "$(printf '%s' "$a" | jq -r '.[0]')" 0
