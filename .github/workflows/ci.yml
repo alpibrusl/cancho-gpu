@@ -52,5 +52,38 @@ jobs:
           python3 -m venv ~/media-oracle
           ~/media-oracle/bin/pip install -q pillow numpy
 
+      # cancho-gpu-front's checks (tests/front.sh) build it against the stores its locks pin: cancho's packages at the compiler's pin,
+      # cancho-web and cancho-schema at front/deps/revs.
+      - name: Read the front's pins
+        id: front
+        run: |
+          echo "web=$(sed -n 's/^CANCHO_WEB_REV=//p' front/deps/revs)" >> "$GITHUB_OUTPUT"
+          echo "schema=$(sed -n 's/^CANCHO_SCHEMA_REV=//p' front/deps/revs)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out cancho's packages
+        uses: actions/checkout@v4
+        with:
+          repository: alpibrusl/cancho
+          ref: ${{ steps.pin.outputs.rev }}
+          path: deps/cancho
+          sparse-checkout: packages
+
+      - name: Check out cancho-web
+        uses: actions/checkout@v4
+        with:
+          repository: alpibrusl/cancho-web
+          ref: ${{ steps.front.outputs.web }}
+          path: deps/cancho-web
+
+      - name: Check out cancho-schema
+        uses: actions/checkout@v4
+        with:
+          repository: alpibrusl/cancho-schema
+          ref: ${{ steps.front.outputs.schema }}
+          path: deps/cancho-schema
+
       - name: Gate
-        run: CANCHO=~/cancho-bin/cancho MEDIA_ORACLE_PY=~/media-oracle/bin/python scripts/gate.sh
+        run: >-
+          CANCHO=~/cancho-bin/cancho MEDIA_ORACLE_PY=~/media-oracle/bin/python
+          FRONT_REQUIRED=1 CANCHO_DIR=$PWD/deps/cancho WEB_DIR=$PWD/deps/cancho-web SCHEMA_DIR=$PWD/deps/cancho-schema
+          scripts/gate.sh
