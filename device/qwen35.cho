@@ -61,8 +61,19 @@ pub fn pt() -> [] int {
     return 8;
 }
 
+// The context (docs/serving.md section 12): the key and value caches, the masks and a slot's ids are this long. Attention over at most
+// `short_t()` positions takes the kernels of one [g, t] tile; past it, the long route of `attention_stats.chx` and `attention_pvl.chx`.
 pub fn tmax() -> [] int {
+    return 16384;
+}
+
+pub fn short_t() -> [] int {
     return 1024;
+}
+
+// The long route is compiled for t = long_step(), 2 * long_step(), ..., tmax().
+pub fn long_step() -> [] int {
+    return 2048;
 }
 
 // Every fourth layer is attention.
@@ -692,7 +703,7 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     let k_pv1 = compile_kernel(m, t, ffi, fs, kdir, "attention_pv.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", 512.0), "dw", 32.0), "d", 256.0), "tmax", float_of(tmax())));
     let k_sc2 = compile_kernel(m, t, ffi, fs, kdir, "attention_scores.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", 1024.0), "ts", 32.0), "d", 256.0), "tmax", float_of(tmax())));
     let k_pv2 = compile_kernel(m, t, ffi, fs, kdir, "attention_pv.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", 1024.0), "dw", 32.0), "d", 256.0), "tmax", float_of(tmax())));
-    let b_scratch = metal.cgpu_alloc(ffi, 4 * 24 * 1024);
+    let b_scratch = metal.cgpu_alloc(ffi, 4 * 24 * tmax());
     if err.failed(m) {
         return 0 - 1;
     }
@@ -909,7 +920,9 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
             l = l + 1;
         }
     }
-    let eng = mem.grab(m, 218);
+    let eng = mem.grab(m, 223);
+    // 222: 1 takes the long route of attention at every length (a check: `cancho-gpu-serve --long-attention`)
+    m[eng + 222] = 0;
     m[eng + 214] = 0;
     m[eng + 101] = k_fc;
     m[eng + 102] = m_fc;
@@ -938,6 +951,14 @@ pub fn load[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgp
     m[eng + 156] = k_sc2;
     m[eng + 157] = k_pv2;
     m[eng + 158] = b_scratch;
+    // the long route of one token (218) and its maximum and normaliser (221: four buffers, the token's two and a chunk's two)
+    m[eng + 218] = long_kernels(m, t, ffi, fs, kdir, 1);
+    let lmz = mem.list(m);
+    mem.push(m, lmz, metal.cgpu_alloc(ffi, 4 * 24));
+    mem.push(m, lmz, metal.cgpu_alloc(ffi, 4 * 24));
+    mem.push(m, lmz, metal.cgpu_alloc(ffi, 4 * 24 * mb()));
+    mem.push(m, lmz, metal.cgpu_alloc(ffi, 4 * 24 * mb()));
+    m[eng + 221] = lmz;
     m[eng + 100] = k_attn2;
     m[eng + 0] = k_rms;
     m[eng + 1] = k_qkv;
@@ -1140,7 +1161,7 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
         tn = tn * 2;
         ai = ai + 1;
     }
-    m[eng + 206] = metal.cgpu_alloc(ffi, 4 * 24 * 1024 * mb());
+    m[eng + 206] = metal.cgpu_alloc(ffi, 4 * 24 * tmax() * mb());
     // The chunk's weight products with the rows as a grid axis, compiled for a whole pass and launched over as many row
     // tiles as a pass has (docs/serving.md 9.3): 207.. in the order of 22..28.
     let np = float_of(pt() * mb());
@@ -1154,6 +1175,9 @@ pub fn ensure_batch[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("li
     m[eng + 215] = compile_kernel(m, t, ffi, fs, kdir, "rope_rows.chx", cv(m, t, cv(m, t, c2(m, t, "r", 24, "h", 32), "p", 192.0), "m", np));
     m[eng + 216] = compile_kernel(m, t, ffi, fs, kdir, "rope_rows.chx", cv(m, t, cv(m, t, c2(m, t, "r", 4, "h", 32), "p", 192.0), "m", np));
     m[eng + 217] = compile_kernel(m, t, ffi, fs, kdir, "kv_rows.chx", cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "tmax", tmax()), "d", 256.0), "m", np));
+    // the long route of a chunk's rows (219) and of a half chunk's (220)
+    m[eng + 219] = long_kernels(m, t, ffi, fs, kdir, mb());
+    m[eng + 220] = long_kernels(m, t, ffi, fs, kdir, mb() / 2);
     if err.failed(m) {
         return 0 - 1;
     }
@@ -1185,157 +1209,6 @@ pub fn reset[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu")
         z = z + 1;
     }
     metal.cgpu_upload_at(ffi, b_mask, 0, t[mk..mk + 4 * tmax()]);
-    if m[eng + 114] == 1 {
-        metal.cgpu_upload_at(ffi, m[eng + 113], 0, t[mk..mk + 4 * tmax()]);
-        metal.cgpu_upload_at(ffi, m[eng + 144], 0, t[mk..mk + 4 * tmax()]);
-    }
-    m[mem.text_slot()] = mark0;
-    return 0;
-}
-
-// The prefix cache (docs/serving.md section 7). A second set of buffers shaped like the delta layers' convolution
-// windows and states: a record of three lists indexed by layer (-1 for an attention layer, whose key and value
-// caches are not copied: they stay where they are).
-pub fn snap_size(j: int) -> [] int {
-    if j == 2 {
-        return 4 * 48 * 128 * 128;
-    }
-    return 4 * 3 * 10240;
-}
-
-pub fn snap_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
-    let a = mem.list(m);
-    let b = mem.list(m);
-    let c = mem.list(m);
-    var l = 0;
-    while l < layers() {
-        if is_attention(l) {
-            mem.push(m, a, 0 - 1);
-            mem.push(m, b, 0 - 1);
-            mem.push(m, c, 0 - 1);
-        } else {
-            mem.push(m, a, metal.cgpu_alloc(ffi, snap_size(0)));
-            mem.push(m, b, metal.cgpu_alloc(ffi, snap_size(1)));
-            mem.push(m, c, metal.cgpu_alloc(ffi, snap_size(2)));
-        }
-        l = l + 1;
-    }
-    return mem.rec3(m, a, b, c);
-}
-
-// Copy the delta layers' states between the engine and the snapshot through the host (3 to 5 ms; section 7.9):
-// `to_snap` 1 is engine to snapshot, 0 the way back. `scr` is a scratch of `snap_size(2)` bytes in `t`.
-pub fn snap_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, snap: int, scr: int, to_snap: int) -> [ffi("libmetalgpu")] int {
-    var l = 0;
-    while l < layers() {
-        if !is_attention(l) {
-            var j = 0;
-            while j < 3 {
-                let e = mem.get(m, m[eng + 93 + j], l);
-                let s = mem.get(m, m[snap + j], l);
-                let n = snap_size(j);
-                var from = e;
-                var to = s;
-                if to_snap == 0 {
-                    from = s;
-                    to = e;
-                }
-                if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + n]) < 0 {
-                    return device_fail(m, t, ffi, "copying a state");
-                }
-                if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + n]) < 0 {
-                    return device_fail(m, t, ffi, "copying a state");
-                }
-                j = j + 1;
-            }
-        }
-        l = l + 1;
-    }
-    return 0;
-}
-
-// The attention layers' key and value caches (and the draft head's), for a cache slot that is not the engine's
-// own conversation (docs/serving.md section 8): a list of buffers the size of the engine's, in the order `kv_copy` walks.
-pub fn kv_size() -> [] int {
-    return 4 * 4 * tmax() * 256;
-}
-
-pub fn kv_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
-    let a = mem.list(m);
-    var l = 0;
-    while l < layers() {
-        if is_attention(l) {
-            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
-            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
-        }
-        l = l + 1;
-    }
-    if m[eng + 114] == 1 {
-        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
-        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
-    }
-    return a;
-}
-
-fn kv_one[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), e: int, s: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
-    var from = e;
-    var to = s;
-    if to_store == 0 {
-        from = s;
-        to = e;
-    }
-    if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + kv_size()]) < 0 {
-        return device_fail(m, t, ffi, "copying a cache");
-    }
-    if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + kv_size()]) < 0 {
-        return device_fail(m, t, ffi, "copying a cache");
-    }
-    return 0;
-}
-
-// Whole buffers through the host: `to_store` 1 is engine to store, 0 the way back. `scr` is `kv_size()` bytes in `t`.
-pub fn kv_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, store: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
-    var l = 0;
-    var i = 0;
-    while l < layers() {
-        if is_attention(l) {
-            if kv_one(m, t, ffi, mem.get(m, m[eng + 93], l), mem.get(m, store, i), scr, to_store) < 0 {
-                return 0 - 1;
-            }
-            if kv_one(m, t, ffi, mem.get(m, m[eng + 94], l), mem.get(m, store, i + 1), scr, to_store) < 0 {
-                return 0 - 1;
-            }
-            i = i + 2;
-        }
-        l = l + 1;
-    }
-    if m[eng + 114] == 1 {
-        if kv_one(m, t, ffi, m[eng + 111], mem.get(m, store, i), scr, to_store) < 0 {
-            return 0 - 1;
-        }
-        if kv_one(m, t, ffi, m[eng + 112], mem.get(m, store, i + 1), scr, to_store) < 0 {
-            return 0 - 1;
-        }
-    }
-    return 0;
-}
-
-// Resume a conversation at position `c`: the masks (the engine's and the draft head's) let positions [0, c) be
-// read and close the rest, which is what `reset` and `c` feeds would have left. The key and value rows of [0, c)
-// are the ones in the engine.
-pub fn open_prefix[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, c: int) -> [ffi("libmetalgpu")] int {
-    let mark0 = m[mem.text_slot()];
-    let mk = reserve(m, 4 * tmax());
-    var z = 0;
-    while z < tmax() {
-        if z < c {
-            put_f32(t, mk + 4 * z, 0);
-        } else {
-            put_f32(t, mk + 4 * z, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
-        }
-        z = z + 1;
-    }
-    metal.cgpu_upload_at(ffi, m[eng + 61], 0, t[mk..mk + 4 * tmax()]);
     if m[eng + 114] == 1 {
         metal.cgpu_upload_at(ffi, m[eng + 113], 0, t[mk..mk + 4 * tmax()]);
         metal.cgpu_upload_at(ffi, m[eng + 144], 0, t[mk..mk + 4 * tmax()]);
@@ -1537,8 +1410,10 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 }
             } else {
                 var sl = 194;
+                var lk = m[eng + 219];
                 if set == 2 || set == 3 {
                     sl = 200;
+                    lk = m[eng + 220];
                 }
                 if pos + rows > 256 {
                     sl = sl + 2;
@@ -1549,8 +1424,12 @@ pub fn feed_rows[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libme
                 var ca = 0;
                 while ca < g {
                     let oa = ca * tr;
-                    go(m, ffi, m[eng + sl], at(b_qrs, 4 * 6144 * oa), mem.get(m, st1, l), at(b_masks, 4 * tmax() * oa), m[eng + 206], 0 - 1, 0 - 1, 0 - 1, 0 - 1);
-                    go(m, ffi, m[eng + sl + 1], m[eng + 206], mem.get(m, st2, l), at(b_os, 4 * 6144 * oa), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    if pos + rows > short_t() || m[eng + 222] == 1 {
+                        long_go(m, ffi, eng, lk, 2, pos + rows, at(b_qrs, 4 * 6144 * oa), mem.get(m, st1, l), mem.get(m, st2, l), at(b_masks, 4 * tmax() * oa), m[eng + 206], at(b_os, 4 * 6144 * oa));
+                    } else {
+                        go(m, ffi, m[eng + sl], at(b_qrs, 4 * 6144 * oa), mem.get(m, st1, l), at(b_masks, 4 * tmax() * oa), m[eng + 206], 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                        go(m, ffi, m[eng + sl + 1], m[eng + 206], mem.get(m, st2, l), at(b_os, 4 * 6144 * oa), 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+                    }
                     ca = ca + 1;
                 }
             }
@@ -1872,6 +1751,9 @@ pub fn feed_one[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmet
 // Attention of one token over the first `upto` positions of a layer's cache: the scores over the positions, then the
 // softmax and the product with v over the head dimension (`attention_scores.chx`, `attention_pv.chx`).
 pub fn attn_go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, upto: int, q: int, kc: int, vc: int, mask: int, o: int) -> [ffi("libmetalgpu")] int {
+    if upto > short_t() || m[eng + 222] == 1 {
+        return long_go(m, ffi, eng, m[eng + 218], 0, upto, q, kc, vc, mask, m[eng + 158], o);
+    }
     var sl = 152;
     if upto > 256 {
         sl = 154;
@@ -1882,6 +1764,42 @@ pub fn attn_go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, upto:
     let scratch = m[eng + 158];
     go(m, ffi, m[eng + sl], q, kc, mask, scratch, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
     return go(m, ffi, m[eng + sl + 1], scratch, vc, o, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+}
+
+// The long route's kernels for `nr` rows at once (1: one token, with `attention_scores.chx` and `attention_pvl.chx`; more: the rows of a
+// chunk, with `attention_scores_rows.chx` and `attention_pvl_rows.chx`), three for each t of `long_step()`, ..., `tmax()`: the scores,
+// the maximum and the normaliser (`attention_stats.chx` over the nr * 24 rows of the scores, one a threadgroup), the weighted sum.
+fn long_kernels[&m, &t, &f, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), fs: &f Fs(""), kdir: int, nr: int) -> [ffi("libmetalgpu"), fs_read(""), file_read] int {
+    let ks = mem.list(m);
+    let tm = float_of(tmax());
+    var tn = long_step();
+    while tn <= tmax() {
+        let ta = float_of(tn);
+        if nr == 1 {
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_scores.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", ta), "ts", 32.0), "d", 256.0), "tmax", tm)));
+        } else {
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_scores_rows.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", float_of(nr)), "t", ta), "ts", 32.0), "d", 256.0), "tmax", tm)));
+        }
+        mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_stats.chx", cv(m, t, cv(m, t, c2(m, t, "nkv", 24 * nr, "g", 1), "t", ta), "cs", 64.0)));
+        if nr == 1 {
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_pvl.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "t", ta), "cs", 64.0), "dw", 32.0), "d", 256.0), "tmax", tm)));
+        } else {
+            mem.push(m, ks, compile_kernel(m, t, ffi, fs, kdir, "attention_pvl_rows.chx", cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, cv(m, t, c2(m, t, "nkv", 4, "g", 6), "nr", float_of(nr)), "t", ta), "cs", 64.0), "dw", 32.0), "d", 256.0), "tmax", tm)));
+        }
+        tn = tn + long_step();
+    }
+    return ks;
+}
+
+// Attention over the first `upto` positions by the long route: the kernels `ks` (`long_kernels`) of the smallest t that covers them, the
+// scores into `sc`, the maximum and the normaliser into the buffers `mz` and `mz + 1` of the list at eng + 221, the sum into `o`.
+pub fn long_go[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int, ks: int, mz: int, upto: int, q: int, kc: int, vc: int, mask: int, sc: int, o: int) -> [ffi("libmetalgpu")] int {
+    let j = 3 * ((upto - 1) / long_step());
+    let bm = mem.get(m, m[eng + 221], mz);
+    let bz = mem.get(m, m[eng + 221], mz + 1);
+    go(m, ffi, mem.get(m, ks, j), q, kc, mask, sc, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    go(m, ffi, mem.get(m, ks, j + 1), sc, bm, bz, 0 - 1, 0 - 1, 0 - 1, 0 - 1, 0 - 1);
+    return go(m, ffi, mem.get(m, ks, j + 2), sc, bm, bz, vc, o, 0 - 1, 0 - 1, 0 - 1);
 }
 
 pub fn attn_kernel[&m](m: &!m [int], eng: int, upto: int) -> [] int {

@@ -1,0 +1,173 @@
+edition 5;
+module qwen35slot;
+
+// `qwen35slot` -- what a cache slot of `cancho-gpu-serve` keeps of the engine of `qwen35` (docs/serving.md sections 7, 8 and 12): the delta
+// layers' states copied out at a position (a snapshot) and back, the attention layers' key and value caches copied out and back, and a
+// conversation resumed at a position. Moved out of `device/qwen35.cho`, which is the engine.
+
+import mem;
+import f32;
+import metal;
+import qwen35;
+
+// The prefix cache (docs/serving.md section 7). A second set of buffers shaped like the delta layers' convolution
+// windows and states: a record of three lists indexed by layer (-1 for an attention layer, whose key and value
+// caches are not copied: they stay where they are).
+pub fn snap_size(j: int) -> [] int {
+    if j == 2 {
+        return 4 * 48 * 128 * 128;
+    }
+    return 4 * 3 * 10240;
+}
+
+pub fn snap_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu")) -> [ffi("libmetalgpu")] int {
+    let a = mem.list(m);
+    let b = mem.list(m);
+    let c = mem.list(m);
+    var l = 0;
+    while l < qwen35.layers() {
+        if qwen35.is_attention(l) {
+            mem.push(m, a, 0 - 1);
+            mem.push(m, b, 0 - 1);
+            mem.push(m, c, 0 - 1);
+        } else {
+            mem.push(m, a, metal.cgpu_alloc(ffi, snap_size(0)));
+            mem.push(m, b, metal.cgpu_alloc(ffi, snap_size(1)));
+            mem.push(m, c, metal.cgpu_alloc(ffi, snap_size(2)));
+        }
+        l = l + 1;
+    }
+    return mem.rec3(m, a, b, c);
+}
+
+// Copy the delta layers' states between the engine and the snapshot through the host (3 to 5 ms; section 7.9):
+// `to_snap` 1 is engine to snapshot, 0 the way back. `scr` is a scratch of `snap_size(2)` bytes in `t`.
+pub fn snap_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, snap: int, scr: int, to_snap: int) -> [ffi("libmetalgpu")] int {
+    var l = 0;
+    while l < qwen35.layers() {
+        if !qwen35.is_attention(l) {
+            var j = 0;
+            while j < 3 {
+                let e = mem.get(m, m[eng + 93 + j], l);
+                let s = mem.get(m, m[snap + j], l);
+                let n = snap_size(j);
+                var from = e;
+                var to = s;
+                if to_snap == 0 {
+                    from = s;
+                    to = e;
+                }
+                if metal.cgpu_download_at(ffi, from, 0, t[scr..scr + n]) < 0 {
+                    return qwen35.device_fail(m, t, ffi, "copying a state");
+                }
+                if metal.cgpu_upload_at(ffi, to, 0, t[scr..scr + n]) < 0 {
+                    return qwen35.device_fail(m, t, ffi, "copying a state");
+                }
+                j = j + 1;
+            }
+        }
+        l = l + 1;
+    }
+    return 0;
+}
+
+// The attention layers' key and value caches (and the draft head's), for a cache slot that is not the engine's
+// own conversation (docs/serving.md section 8): a list of buffers the size of the engine's, in the order `kv_copy` walks.
+pub fn kv_size() -> [] int {
+    return 4 * 4 * qwen35.tmax() * 256;
+}
+
+// The piece a cache is copied in: 8 MiB, which divides `kv_size()`.
+pub fn piece() -> [] int {
+    return 8388608;
+}
+
+pub fn kv_new[&m, &g](m: &!m [int], ffi: &g Ffi("libmetalgpu"), eng: int) -> [ffi("libmetalgpu")] int {
+    let a = mem.list(m);
+    var l = 0;
+    while l < qwen35.layers() {
+        if qwen35.is_attention(l) {
+            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+            mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        }
+        l = l + 1;
+    }
+    if m[eng + 114] == 1 {
+        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+        mem.push(m, a, metal.cgpu_alloc(ffi, kv_size()));
+    }
+    return a;
+}
+
+fn kv_one[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), e: int, s: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
+    var from = e;
+    var to = s;
+    if to_store == 0 {
+        from = s;
+        to = e;
+    }
+    // in pieces of `piece()` bytes, so that the scratch is not a whole cache (64 MiB at 16,384 positions)
+    var o = 0;
+    while o < kv_size() {
+        if metal.cgpu_download_at(ffi, from, o, t[scr..scr + piece()]) < 0 {
+            return qwen35.device_fail(m, t, ffi, "copying a cache");
+        }
+        if metal.cgpu_upload_at(ffi, to, o, t[scr..scr + piece()]) < 0 {
+            return qwen35.device_fail(m, t, ffi, "copying a cache");
+        }
+        o = o + piece();
+    }
+    return 0;
+}
+
+// Whole buffers through the host: `to_store` 1 is engine to store, 0 the way back. `scr` is `piece()` bytes in `t`.
+pub fn kv_copy[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, store: int, scr: int, to_store: int) -> [ffi("libmetalgpu")] int {
+    var l = 0;
+    var i = 0;
+    while l < qwen35.layers() {
+        if qwen35.is_attention(l) {
+            if kv_one(m, t, ffi, mem.get(m, m[eng + 93], l), mem.get(m, store, i), scr, to_store) < 0 {
+                return 0 - 1;
+            }
+            if kv_one(m, t, ffi, mem.get(m, m[eng + 94], l), mem.get(m, store, i + 1), scr, to_store) < 0 {
+                return 0 - 1;
+            }
+            i = i + 2;
+        }
+        l = l + 1;
+    }
+    if m[eng + 114] == 1 {
+        if kv_one(m, t, ffi, m[eng + 111], mem.get(m, store, i), scr, to_store) < 0 {
+            return 0 - 1;
+        }
+        if kv_one(m, t, ffi, m[eng + 112], mem.get(m, store, i + 1), scr, to_store) < 0 {
+            return 0 - 1;
+        }
+    }
+    return 0;
+}
+
+// Resume a conversation at position `c`: the masks (the engine's and the draft head's) let positions [0, c) be
+// read and close the rest, which is what `reset` and `c` feeds would have left. The key and value rows of [0, c)
+// are the ones in the engine.
+pub fn open_prefix[&m, &t, &g](m: &!m [int], t: &!t [byte], ffi: &g Ffi("libmetalgpu"), eng: int, c: int) -> [ffi("libmetalgpu")] int {
+    let mark0 = m[mem.text_slot()];
+    let mk = qwen35.reserve(m, 4 * qwen35.tmax());
+    var z = 0;
+    while z < qwen35.tmax() {
+        if z < c {
+            qwen35.put_f32(t, mk + 4 * z, 0);
+        } else {
+            qwen35.put_f32(t, mk + 4 * z, f32.bits32(f32.round(0.0 - 1000000000000000000000000000000.0)));
+        }
+        z = z + 1;
+    }
+    metal.cgpu_upload_at(ffi, m[eng + 61], 0, t[mk..mk + 4 * qwen35.tmax()]);
+    if m[eng + 114] == 1 {
+        metal.cgpu_upload_at(ffi, m[eng + 113], 0, t[mk..mk + 4 * qwen35.tmax()]);
+        metal.cgpu_upload_at(ffi, m[eng + 144], 0, t[mk..mk + 4 * qwen35.tmax()]);
+    }
+    m[mem.text_slot()] = mark0;
+    return 0;
+}
+
