@@ -16,6 +16,9 @@
 #     `finish_reason`, what is no call, and the turn sent back kept by the session.
 #  9. the largest requests (docs/kolibri.md section 27): bodies near the 4 MiB taken, of the kinds that once took minutes or the server's memory, are each answered within
 #     seconds, the one the pools cannot hold with a 413 that says so, and the server answers after each.
+# 10. the caches kept in a file (docs/kolibri.md section 28), with a session whose answer depends on a roll: a prompt's caches are written, a server started again takes them
+#     and asks the session for the prompt's last token only, with the answer of before; when the file is written again and when not; and files that are not this server's,
+#     each said and left alone.
 # What the model answers is not here: that is by hand, on the Metal GPU.
 # KSERVE=<binary> tests another build of the server and builds nothing (build/kolibri_gpu and build/httpc are then there already): the mutants, by hand.
 cd "$(dirname "$0")/.."
@@ -112,6 +115,7 @@ field() { sed -n "s/.*\"$1\":\([0-9a-z._\"-]*\)[,}].*/\1/p" "$T/body" | tr -d '"
 is() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: \`$(printf '%s' "$2" | head -c 300)\`, wanted \`$(printf '%s' "$3" | head -c 300)\`"; fail=1; fi; }
 has() { if grep -q -- "$2" "$T/body"; then echo "ok   $1"; else echo "FAIL $1: $(head -c 300 "$T/body")"; fail=1; fi; }
 body() { printf '%s' "$1" > "$T/b.json"; }
+ids_of_text() { printf '%s' "$1" > "$T/iot.txt"; ids_of "$T/iot.txt" | wc -l | tr -d ' '; }   # how many ids a text is
 ids_of() { "$ROOT/build/cancho-gpu" tokenize "$TOK" "$1" | awk '/^ids / { for (i = 3; i <= NF; i++) print $i }'; }   # the tokenizer's ids of a file's text, a line each
 # awk's answer to a prompt's ids (a file, a line each) with at most $2 new ids: a line `letters count reason`
 sim() { awk "$NEXT"' { p[n++] = $1 } END { id = p[n - 1]; s = n - 1; why = "length"; out = ""; k = 0; while (k < max) { a = nx(id) + s % 2; if (a == 858 || a == 859) { why = "stop"; break } out = out sprintf("%c", a); k++; id = a; s++ } print out, k, why }' max="$2" "$1"; }
@@ -453,6 +457,121 @@ big "4,000,000 digits, the text the tokenizer takes most memory for" $G 400 "mor
 big "100,000 messages, an assistant's with its reasoning every other" $O 400 "more than the $CTX positions" 'print "{\"messages\":[" . join(",", ("{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\",\"reasoning\":\"c\"}") x 50000) . "]}"'
 big "340,000 added tokens" $G 400 "more than the $CTX positions" 'print "{\"raw\":true,\"prompt\":\"" . ("<|im_start|>" x 340000) . "\"}"'
 body '{"prompt":"hi","raw":true,"options":{"num_predict":2}}'; ask POST $G "$T/b.json"; is "and a request after them is answered as before" "$code $(field eval_count)" "200 2"
+
+# --- 10. the caches kept in a file. The session: the id of each position goes into a roll, and a step's answer has two more where the last eight positions' ids sum to an odd
+# number, so what a step answers after a prompt depends on what the prompt left in the roll
+cat > "$T/roll.model" <<'EOM'
+text CHX = tests/chx
+text X = .
+const V = 864
+const NS = 2048
+program cur $CHX/row_mix.chx n=1 bn=1
+input cur.xt
+resident cur.xe $X/zero.txt
+input cur.m
+program nx $CHX/step_add.chx n=1
+table nx.d $X/next.txt $V by cur.y 0
+table nx.w $X/pos.txt $NS
+carry nx.wo -> cur.xe
+program st $CHX/step_add.chx n=1
+link cur.y -> st.w
+resident st.d $X/zero.txt
+store st.wo R $NS
+program gs $CHX/group_sum.chx k=8 G=8
+window gs.x R
+program an $CHX/step_add.chx n=1
+link nx.wo -> an.w
+table an.d $X/par.txt 6912 by gs.s 0
+# a second phase that stores the same roll, four positions a repetition: the roll is one roll in the file
+phase pass 4
+program ps $CHX/step_add.chx n=4
+input ps.w
+resident ps.d $X/zero4.txt
+store ps.wo R $NS
+program pa $CHX/step_add.chx n=1
+input pa.w
+resident pa.d $X/zero.txt
+steps
+answer an.wo
+answer pa.wo
+EOM
+awk 'BEGIN { for (i = 0; i < 6912; i++) print (i % 2) * 2 }' > "$T/par.txt"
+CF="$T/cache.bin"
+rstart() { # the roll session's server, with the flags given: it listens when this returns
+  stop; : > "$T/err"
+  "$B" "$TOK" "$T/roll.model" --port $port --ctx ${CCTX:-$CTX} --end 858 --end 859 --trace --greedy --max-new 5 "$@" CHX="$ROOT/tests/chx" X="$T" NS=$CTX 2> "$T/err" > /dev/null &
+  pid=$!
+  w=0; while [ $w -lt 200 ] && ! grep -q "^listening\|^error\|^usage" "$T/err" 2>/dev/null; do sleep 0.05; w=$((w + 1)); done
+  grep -q "^listening" "$T/err" || { echo "FAIL the roll server does not start: $(head -c 300 "$T/err")"; fail=1; return 1; }
+}
+said() { if grep -q -- "$2" "$T/err"; then echo "ok   $1"; else echo "FAIL $1: $(grep -v '^ask\|^pools' "$T/err" | head -c 300)"; fail=1; fi; }
+LP=$(awk 'BEGIN { for (i = 0; i < 40; i++) printf "the quick brown fox %d ", i }')
+awk -v p="$LP" 'BEGIN { printf "{\"prompt\":\"%s\",\"raw\":true}", p }' > "$T/lp.json"
+printf '%s' "$LP" > "$T/lp.txt"; nlp=$(ids_of "$T/lp.txt" | wc -l | tr -d ' ')
+port=$((port + 1))
+# with no file: every position is asked for, and this is the answer
+rstart || exit 1
+# what the server answers, with no file, to the prompt less its last k words and two more (k = 1 .. 6), and to the prompt and a few words more
+k=1; while [ $k -le 6 ]; do awk -v p="$LP" -v k=$k 'BEGIN { n = split(p, w, " "); printf "{\"prompt\":\""; for (i = 1; i <= n - k; i++) printf "%s ", w[i]; printf "zz yy\",\"raw\":true}" }' > "$T/cut$k.json"; ask POST $G "$T/cut$k.json"; eval "ac$k=\$(field response)"; k=$((k + 1)); done
+awk -v p="$LP" 'BEGIN { printf "{\"prompt\":\"%s and more\",\"raw\":true}", p }' > "$T/lp2.json"
+ask POST $G "$T/lp2.json"; a2=$(field response)
+reset; ask POST $G "$T/lp.json"; a0=$(field response); is "with no --cache the prompt's $nlp positions are all run, and nothing is written" "$(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(ls "$CF" 2>/dev/null | wc -l | tr -d ' ')" "$nlp 0"
+# with a file: the prompt's caches are written after the answer
+rstart --cache "$CF" --cache-min 50 || exit 1
+ask POST $G "$T/lp.json"; is "with --cache the answer is the same" "$(field response)" "$a0"
+sleep 0.2; said "and the prompt's $nlp positions are kept in the file" "^kept $nlp positions in $CF"
+head -6 "$CF" > "$T/head.txt"; is "the file's head: the version, the model file's bytes, the positions, the ids, a roll of an element" "$(tr '\n' ';' < "$T/head.txt")" "kolibri-cache 1;gguf $(wc -c < "$TOK" | tr -d ' ');positions $CTX;vocab 864;rolls 1;1;"
+is "its length is its head and $nlp numbers of four bytes" "$(wc -c < "$CF" | tr -d ' ')" "$(( $(awk '{ n += length($0) + 1 } /^data$/ { print n; exit }' "$CF") + 4 * nlp ))"
+ask POST $G "$T/lp.json"; if grep -c "^kept" "$T/err" | grep -q "^1$"; then echo "ok   the same prompt again is not written again"; else echo "FAIL the same prompt was written again"; fail=1; fi
+cp "$CF" "$T/good.bin"
+# a server started again takes the file: the prompt's last token is all it asks of the session, and the answer is the one of before
+rstart --cache "$CF" --cache-min 50 || exit 1
+said "a server started again takes the file's $nlp positions" "^took $nlp positions from $CF"
+ask POST $G "$T/lp.json"
+is "and the same prompt asks the session for its last token alone, from where the file left it" "$(asked | head -1) $(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(field response)" "seek $((nlp - 1)) 1 $a0"
+# the file's positions are the prompt's, each at its place: a prompt that parts from it k words before its end goes on from there, and answers what a server with no file does
+k=1; got=""; want=""; while [ $k -le 6 ]; do ask POST $G "$T/cut$k.json"; got="$got$(field response) "; eval "want=\"\$want\$ac$k \""; k=$((k + 1)); done
+is "six prompts that part from the file's at six places answer as with no file" "$got" "$want"
+# and a server started again whose first prompt is longer than the file: the session is at the file's end without being told to go there
+rstart --cache "$CF" --cache-min 5000 || exit 1
+ask POST $G "$T/lp2.json"; is "a first prompt that goes on past the file is run from the file's end, with the answer of a server with no file" "$(asked | head -1 | cut -d' ' -f1) $(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(field response)" "1 $(( $(ids_of_text "$LP and more") - nlp )) $a2"
+rstart --cache "$CF" --cache-min 50 || exit 1
+# a prompt that shares nine tenths with the file is not written; one that shares less is
+ask POST $G "$T/lp2.json"; sleep 0.2; if ! grep -q "^kept" "$T/err"; then echo "ok   a prompt that is the file's with a few tokens more is not written"; else echo "FAIL a prompt that shares its start was written"; fail=1; fi
+awk 'BEGIN { printf "{\"prompt\":\""; for (i = 0; i < 60; i++) printf "lazy dogs jump over %d ", i; printf "\",\"raw\":true}" }' > "$T/lp3.json"
+ask POST $G "$T/lp3.json"; sleep 0.2; said "a long prompt of another start is written over it" "^kept [0-9]* positions in $CF"
+body '{"prompt":"a short one","raw":true}'; rstart --cache "$T/none.bin" --cache-min 50 || exit 1
+ask POST $G "$T/b.json"; sleep 0.2; if [ ! -f "$T/none.bin" ] && ! grep -q "^kept\|^took\|not taken" "$T/err"; then echo "ok   a prompt under --cache-min is not kept, and a file that is not there is no word"; else echo "FAIL a short prompt was kept"; fail=1; fi
+# files that are not this server's: each said, left alone, and the server answers as with none
+notmine() { # name, the reason's text, then the flags
+  nname=$1; nwhy=$2; shift 2
+  before=$(cksum < "$CF")
+  rstart --cache "$CF" --cache-min 5000 "$@" || return
+  if grep -q "^the cache $CF is not taken: .*$nwhy" "$T/err" && [ "$(cksum < "$CF")" = "$before" ]; then echo "ok   not taken, and left as it is: $nname"; else echo "FAIL $nname: $(grep -v '^ask\|^pools' "$T/err" | head -c 300)"; fail=1; fi
+  ask POST $G "$T/lp.json"; [ "$(asked | awk '$3 == 1' | wc -l | tr -d ' ') $(field response)" = "$nlp $a0" ] || { echo "FAIL $nname: the server does not answer as with no file"; fail=1; }
+}
+len=$(wc -c < "$T/good.bin" | tr -d ' ')
+head -c $((len - 1)) "$T/good.bin" > "$CF"; notmine "a file a byte short" "what its head says"
+{ cat "$T/good.bin"; printf 'x'; } > "$CF"; notmine "a file a byte long" "what its head says"
+sed '1s/.*/kolibri-cache 2/' "$T/good.bin" > "$CF"; notmine "another version" "not a cache of this version"
+sed '2s/.*/gguf 7/' "$T/good.bin" > "$CF"; notmine "another model file" "of a model file of 7 bytes"
+cp "$T/good.bin" "$CF"; CCTX=1024; notmine "a server of other positions" "of a session of 2048 positions"; CCTX=""
+sed '4s/.*/vocab 900/' "$T/good.bin" > "$CF"; notmine "another vocabulary" "of a session of"
+sed '5s/.*/rolls 2/' "$T/good.bin" > "$CF"; notmine "other rolls" "it has 2 rolls"
+sed '6s/.*/4/' "$T/good.bin" > "$CF"; notmine "a roll of other elements" "other elements a position"
+sed '7s/.*/kept 0/' "$T/good.bin" > "$CF"; notmine "no position kept" "none, or more than the session has"
+sed '7s/.*/kept 3000/' "$T/good.bin" > "$CF"; notmine "more positions than the session has" "none, or more than the session has"
+sed '8s/.*/864/' "$T/good.bin" > "$CF"; notmine "an id that is none of the vocabulary" "no id of the vocabulary"
+sed '8s/.*/x/' "$T/good.bin" > "$CF"; notmine "an id that is no number" "no id of the vocabulary"
+sed 's/^data$/date/' "$T/good.bin" > "$CF"; notmine "a head with no end" "no id of the vocabulary\|does not end"
+printf 'kolibri-cache 1\n' > "$CF"; notmine "a head and nothing more" "its head is not whole"
+: > "$CF"; notmine "an empty file" "not a cache of this version"
+head -c 3000 /dev/urandom > "$CF"; notmine "random bytes" "not a cache of this version"
+# a file that cannot be written is said, and the answer was given
+rstart --cache "$T/no/such/dir/c.bin" --cache-min 50 || exit 1
+ask POST $G "$T/lp.json"; sleep 0.2; is "a file that cannot be written: the answer is given" "$code $(field response)" "200 $a0"; said "and the failure is said" "^the cache .* is not written"
+ask GET /health; is "and the server goes on" "$code" 200
+port=$((port + 1))
 
 # --- 6. a session that refuses: a vocabulary of 800 ids where the template's own ids are over it
 head -800 "$T/next.txt" > "$T/next800.txt"
