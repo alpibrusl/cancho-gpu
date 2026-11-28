@@ -725,16 +725,48 @@ fn merge[&m, &t](m: &!m [int], t: &!t [byte], tk: int, s: int, sn: int, out: int
         if at < 0 {
             live = false;
         } else {
-            // Join parts `at` and `at + 1`: they are adjacent in `s`.
-            mem.set(m, parts, 2 * at + 1, mem.get(m, parts, 2 * at + 1) + mem.get(m, parts, 2 * at + 3));
-            var j = at + 1;
-            while j + 1 < np {
-                mem.set(m, parts, 2 * j, mem.get(m, parts, 2 * j + 2));
-                mem.set(m, parts, 2 * j + 1, mem.get(m, parts, 2 * j + 3));
-                j = j + 1;
+            // Every pair of that rank from `at` on is joined in this one walk, left to right, which is what joining the leftmost
+            // of the lowest rank again and again does: a rank is one pair, and the pairs left of `at` are of a higher rank. The
+            // walk stops joining as soon as a join makes a pair whose rank is not higher (a new pair beside the joined part: in a
+            // vocabulary that was trained there is none, and one that was written by hand may have one), and the next round
+            // looks for the lowest again. (A join a round made a run of 80,000 letters 28 seconds: docs/kolibri.md section 27.)
+            let pairs = m[tk + f_pairs()];
+            var w = at;
+            var i = at;
+            var joining = true;
+            while i < np {
+                var joined = false;
+                if joining && i + 1 < np {
+                    joined = table_get(m, t, pairs, mem.get(m, parts, 2 * i), mem.get(m, parts, 2 * i + 1), mem.get(m, parts, 2 * i + 2), mem.get(m, parts, 2 * i + 3)) == best;
+                }
+                if joined {
+                    // parts `i` and `i + 1` are adjacent in `s`
+                    let js = mem.get(m, parts, 2 * i);
+                    let jn = mem.get(m, parts, 2 * i + 1) + mem.get(m, parts, 2 * i + 3);
+                    mem.set(m, parts, 2 * w, js);
+                    mem.set(m, parts, 2 * w + 1, jn);
+                    var rl = 0 - 1;
+                    if w > 0 {
+                        rl = table_get(m, t, pairs, mem.get(m, parts, 2 * w - 2), mem.get(m, parts, 2 * w - 1), js, jn);
+                    }
+                    var rr = 0 - 1;
+                    if i + 2 < np {
+                        rr = table_get(m, t, pairs, js, jn, mem.get(m, parts, 2 * i + 4), mem.get(m, parts, 2 * i + 5));
+                    }
+                    if rl >= 0 && rl <= best || rr >= 0 && rr <= best {
+                        joining = false;
+                    }
+                    i = i + 2;
+                } else {
+                    mem.set(m, parts, 2 * w, mem.get(m, parts, 2 * i));
+                    mem.set(m, parts, 2 * w + 1, mem.get(m, parts, 2 * i + 1));
+                    i = i + 1;
+                }
+                w = w + 1;
             }
-            mem.pop(m, parts);
-            mem.pop(m, parts);
+            while mem.size(m, parts) > 2 * w {
+                mem.pop(m, parts);
+            }
         }
     }
     var q = 0;
@@ -800,30 +832,51 @@ fn encode_ordinary[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: 
 }
 
 // The first place an added token occurs in `t[from..to]`, the longest of
-// those at that place: `(position, token record)` or `(-1, 0)`.
-fn first_added[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) -> [] (int, int) {
-    var best = 0 - 1;
-    var rec = 0;
-    var a = 0;
+// those at that place: `(position, token record)` or `(-1, 0)`. `firsts` is
+// 256 words, a 1 where some added token begins with that byte (`added_firsts`).
+// One walk over the text, the added tokens tried only where one can begin: the
+// text is walked once however many added tokens it holds. (Each call used to
+// scan to the end for an added token that is not there, so a chat of 40,000
+// messages, 80,000 added tokens, took a minute: docs/kolibri.md section 27.)
+fn first_added[&m, &t](m: &!m [int], t: &!t [byte], tk: int, firsts: int, from: int, to: int) -> [] (int, int) {
     let list = m[tk + f_added()];
+    var p = from;
+    while p < to {
+        if m[firsts + int_of(t[p])] == 1 {
+            var rec = 0;
+            var best = 0;
+            var a = 0;
+            while a < mem.size(m, list) {
+                let r = mem.get(m, list, a);
+                let n = m[r + 1];
+                if n > best && p + n <= to && same(t, p, m[r], n) {
+                    best = n;
+                    rec = r;
+                }
+                a = a + 1;
+            }
+            if best > 0 {
+                return (p, rec);
+            }
+        }
+        p = p + 1;
+    }
+    return (0 - 1, 0);
+}
+
+// 256 words: a 1 at each byte some added token begins with.
+fn added_firsts[&m, &t](m: &!m [int], t: &!t [byte], tk: int) -> [] int {
+    let firsts = mem.grab(m, 256);
+    let list = m[tk + f_added()];
+    var a = 0;
     while a < mem.size(m, list) {
         let r = mem.get(m, list, a);
-        let n = m[r + 1];
-        var p = from;
-        var found = 0 - 1;
-        while found < 0 && p + n <= to && (best < 0 || p <= best) {
-            if same(t, p, m[r], n) {
-                found = p;
-            }
-            p = p + 1;
-        }
-        if found >= 0 && (best < 0 || found < best || found == best && n > m[rec + 1]) {
-            best = found;
-            rec = r;
+        if m[r + 1] > 0 {
+            m[firsts + int_of(t[m[r]])] = 1;
         }
         a = a + 1;
     }
-    return (best, rec);
+    return firsts;
 }
 
 // Text to ids: the ids of the UTF-8 text `t[from..to]` as a list, or -1
@@ -836,10 +889,11 @@ pub fn encode[&m, &t](m: &!m [int], t: &!t [byte], tk: int, from: int, to: int) 
     // normaliser does not see an added token, and does not make one (`<|im_start|>` followed by U+0338 would otherwise compose
     // `>` and U+0338 into U+226F before the token was looked for, issue #51).
     let out = mem.list(m);
+    let firsts = added_firsts(m, t, tk);
     var rest = from;
     var scanning = true;
     while scanning && rest < to {
-        let (at, rec) = first_added(m, t, tk, rest, to);
+        let (at, rec) = first_added(m, t, tk, firsts, rest, to);
         if at < 0 {
             encode_normalised(m, t, tk, rest, to, out);
             scanning = false;

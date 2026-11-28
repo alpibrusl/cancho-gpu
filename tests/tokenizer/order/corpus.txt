@@ -1,0 +1,13 @@
+abab
+%%
+pcdcd
+%%
+ababab pcdcdcd abpcd
+%%
+babab cdcd pcd pcdc
+%%
+<|x|> and <|x and <|x|x|> end<|x
+%%
+abababababababababab pcdcdpcdcdpcdcd
+%%
+<|x|><|x<|x|>

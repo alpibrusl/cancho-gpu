@@ -6,6 +6,10 @@
 #     records, exactly the ids and decoded text in golden/tokenizer/ (what Hugging Face
 #     `tokenizers` prints for the JSON fixtures, tools/tokenizer_dump.py; a regression
 #     record for the GGUF one); tests/tokenizer_hf.py compares with it on real tokenizers;
+#   * tests/tokenizer/order/toy-order.json, whose merges are in an order no training gives (a pair that has a part a
+#     later merge makes ranks before that merge) and which has an added token that begins another, gives over its own
+#     corpus what Hugging Face `tokenizers` prints (golden/tokenizer/order.toy-order.json.txt, by tools/tokenizer_dump.py):
+#     the merge loop joins every pair of a rank in one walk, and must stop where a join makes a pair of a lower rank;
 #   * each fixture of tests/tokenizer/reject/ is refused with the rule its
 #     name starts with, and so is text that is not UTF-8;
 #   * every `tok-` rule in the sources has such a fixture;
@@ -31,6 +35,12 @@ for f in "$D"/*.json "$D"/*.gguf; do
     fi
   done
 done
+n=$((n + 1))
+if ! "$BIN" tokenize "$D/order/toy-order.json" "$D/order/corpus.txt" > "$WORK/out" 2>"$WORK/err"; then
+  echo "order/toy-order.json: refused: $(head -1 "$WORK/err")"; fail=1
+elif ! cmp -s "$WORK/out" "$ROOT/golden/tokenizer/order.toy-order.json.txt"; then
+  echo "order/toy-order.json: differs from golden/tokenizer/order.toy-order.json.txt"; diff "$WORK/out" "$ROOT/golden/tokenizer/order.toy-order.json.txt" | head -4; fail=1
+fi
 rules=$(grep -ho '"tok-[a-z-]*"' "$ROOT"/src/bpe.cho "$ROOT"/src/tokenize.cho | tr -d '"' | sort -u)
 refused=0
 for f in "$D"/reject/*; do

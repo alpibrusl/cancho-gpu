@@ -385,10 +385,29 @@ pub fn last_error[&m, &t](m: &!m [int], t: &!t [byte]) -> [] int {
     return msg;
 }
 
+// The words a request may leave free and still go on: what its fixed allocations take (its job, a line for the session, a message's record) is far under this.
+fn reserve() -> [] int {
+    return 1048576;
+}
+
+// Whether the pools have `words` words and `bytes` bytes beside the reserve: else false, with the refusal (docs/kolibri.md section 27). Asked before every allocation
+// that grows with the request, so that a request the server has no memory for is refused and never a trap.
+fn fits[&m, &t](m: &!m [int], t: &!t [byte], words: int, bytes: int) -> [] bool {
+    if mem.room(m) - reserve() >= words && len(t) - m[mem.text_slot()] - reserve() >= bytes {
+        return true;
+    }
+    let r = err.fail(m, t, "kolibri-memory", text.lit(m, t, "the request needs more memory than the server has left: send a smaller one"));
+    return false;
+}
+
 // A request off the connection: `(0, start, the head's end, the body's length)`, or `(code, 0, 0, 0)` with the refusal recorded for an answer of that status, or `(-1, ...)` when the
 // peer is gone.
 pub fn read_request[&m, &t, &c](m: &!m [int], t: &!t [byte], ch: &!c Conn) -> [conn_read] (int, int, int, int) {
     let cap = max_request();
+    // the largest request is read into the byte pool: a server whose model left it no room for one says so to every request
+    if !fits(m, t, 0, cap) {
+        return (413, 0, 0, 0);
+    }
     let buf = m[mem.text_slot()];
     m[mem.text_slot()] = buf + cap;
     var got = 0;
@@ -451,6 +470,12 @@ fn bad[&m, &t](m: &!m [int], t: &!t [byte], msg: &static [byte]) -> [] int {
     return err.fail(m, t, "kolibri-request", text.lit(m, t, msg));
 }
 
+// The words `bpe.encode` is given for a text of `bytes` bytes: 24 a byte. Measured, not proved (section 27): 19.6 a byte on the worst of seventeen kinds of text (a
+// run of digits), with the toy tokenizer and with Kolibri's; most kinds take 11 to 15.
+pub fn encode_words(bytes: int) -> [] int {
+    return 24 * bytes;
+}
+
 // A string node's text.
 fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) -> [] int {
     let (s, l) = chat.node_text(m, t, tape, hs, i);
@@ -459,7 +484,7 @@ fn node_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, i: int) ->
 
 // The text of member `key` of object `obj`: -1 when it is not there or null, -2 with a refusal when it is not a string.
 fn member_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte]) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
     if v < 0 || json.is_null(m[tape..tape + words], v) {
         return 0 - 1;
@@ -473,7 +498,7 @@ fn member_text[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, 
 
 // The whole number of member `key` of object `obj`, `dflt` when it is not there; a refusal is recorded when it is something else.
 fn member_int[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, obj: int, key: &static [byte], dflt: int) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     let v = json.get(t[hs..hs + n], m[tape..tape + words], obj, key);
     if v < 0 || json.is_null(m[tape..tape + words], v) {
         return dflt;
@@ -487,7 +512,7 @@ fn member_int[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, o
 
 // A message's content: a string, or an array of parts of type text, their texts one after another. As it is, not trimmed: the template writes a message's bytes. -1 with a refusal.
 fn content_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, node: int) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     if node < 0 || json.is_null(m[tape..tape + words], node) {
         return text.empty();
     }
@@ -518,7 +543,7 @@ fn content_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, n
 
 // The effort a request asks for: `reasoning_effort` (a word), `think` (true, false or a word), `enable_thinking` (true or false); none of them: no reasoning. -1 with a refusal.
 fn effort_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     var effort = 0;
     let et = json.get(t[hs..hs + n], m[tape..tape + words], 0, "enable_thinking");
     if et >= 0 && json.is_bool(m[tape..tape + words], et) && json.to_bool(m[tape..tape + words], et) {
@@ -546,7 +571,7 @@ fn effort_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) ->
 // The tools of an OpenAI request (docs/kolibri.md section 21): a list of texts, a tool each as the template writes it; empty when the request has none, or `tool_choice` is `none`. -1
 // with a refusal.
 fn tools_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     let out = mem.list(m);
     let choice = json.get(t[hs..hs + n], m[tape..tape + words], 0, "tool_choice");
     var written = true;
@@ -571,6 +596,11 @@ fn tools_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> 
         if !json.is_object(m[tape..tape + words], tool) {
             return bad(m, t, "a tool must be an object");
         }
+        // a tool written out is at most 16 words and 16 bytes for each of its nodes beside the text of its strings, which the body's bytes bound
+        let nodes = json.skip(m[tape..tape + words], tool) - tool;
+        if written && !fits(m, t, 16 * nodes, 16 * nodes + n) {
+            return 0 - 1;
+        }
         if written {
             mem.push(m, out, ktool.dumps(m, t, tape, words, hs, tool));
         }
@@ -583,7 +613,7 @@ fn tools_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> 
 // The calls of an assistant's message (node `calls`, an array) as kchat's records (name, arguments), or -1 with a refusal. A call is `{function: {name, arguments}}` or
 // `{name, arguments}`; its arguments are written as they are when a string, and as the template writes a value when anything else.
 fn calls_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, calls: int) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     let out = mem.list(m);
     let total = json.count(m[tape..tape + words], calls);
     var i = 0;
@@ -591,6 +621,10 @@ fn calls_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, cal
     while i < total {
         if !json.is_object(m[tape..tape + words], call) {
             return bad(m, t, "a tool call must be an object");
+        }
+        let nodes = json.skip(m[tape..tape + words], call) - call;
+        if !fits(m, t, 16 * nodes, 16 * nodes + n) {
+            return 0 - 1;
         }
         var src = call;
         let f = json.get(t[hs..hs + n], m[tape..tape + words], call, "function");
@@ -623,7 +657,7 @@ fn calls_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int, cal
 
 // The messages of an OpenAI request as kchat's records, or -1 with a refusal.
 fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) -> [] int {
-    let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
+    let words = m[tape - 1];
     let list = json.get(t[hs..hs + n], m[tape..tape + words], 0, "messages");
     if list < 0 || !json.is_array(m[tape..tape + words], list) || json.count(m[tape..tape + words], list) == 0 {
         return bad(m, t, "`messages` must be an array that is not empty");
@@ -636,6 +670,10 @@ fn messages_of[&m, &t](m: &!m [int], t: &!t [byte], tape: int, hs: int, n: int) 
     while i < total {
         if !json.is_object(m[tape..tape + words], msg) {
             return bad(m, t, "a message must be an object");
+        }
+        // a message is a record and a copy of its content, no more than the body
+        if !fits(m, t, 0, n) {
+            return 0 - 1;
         }
         let rn = json.get(t[hs..hs + n], m[tape..tape + words], msg, "role");
         if rn < 0 || !json.is_string(m[tape..tape + words], rn) {
@@ -724,8 +762,14 @@ pub fn j_count() -> [] int {
 
 // The job of the request whose body is t[hs..hs + n], on route 1 or 2, or -1 with a refusal (an answer of status 400).
 pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n: int, now: int) -> [] int {
+    // the tape's length is counted once, and kept in the word before it: what reads the tape reads it there (counting it again for each message made a body of
+    // 40,000 messages 80 seconds: docs/kolibri.md section 27)
     let words = 3 * jstr.node_bound(t, hs, hs + n) + 3;
-    let tape = mem.grab(m, words);
+    if !fits(m, t, words + 1, 4 * n) {
+        return 0 - 1;
+    }
+    let tape = mem.grab(m, words + 1) + 1;
+    m[tape - 1] = words;
     let nodes = json.parse(t[hs..hs + n], m[tape..tape + words]);
     if nodes < 0 {
         return err.fail(m, t, "kolibri-request", text.f1(m, t, "the body is not JSON: $", text.from_bytes(m, t, json.error_message(json.error_code(nodes)))));
@@ -810,6 +854,10 @@ pub fn job[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, route: int, hs: int, n
     }
     if name < 0 {
         name = m[cfg + c_name()];
+    }
+    // the prompt's text may be several times the body (a tool is written out with spaces): what the tokenizer takes is asked for before it
+    if !fits(m, t, encode_words(text.size(prompt)), 8 * text.size(prompt)) {
+        return 0 - 1;
     }
     let ids = bpe.encode(m, t, m[cfg + 13], text.start(prompt), text.start(prompt) + text.size(prompt));
     if ids < 0 {
@@ -1066,7 +1114,15 @@ pub fn open[&m, &t](m: &!m [int], t: &!t [byte], cfg: int, from: int, he: int, b
     }
     let j = job(m, t, cfg, route, he + 4, blen, now);
     if j < 0 {
-        return (400, chat.error_json(m, t, last_error(m, t), "invalid_request_error"));
+        // a request the server has no memory for is too large, not wrong
+        var status = 400;
+        if err.count(m) > 0 {
+            let (rule, message) = err.nth(m, err.count(m) - 1);
+            if text.is(t, rule, "kolibri-memory") {
+                status = 413;
+            }
+        }
+        return (status, chat.error_json(m, t, last_error(m, t), "invalid_request_error"));
     }
     return (0, j);
 }

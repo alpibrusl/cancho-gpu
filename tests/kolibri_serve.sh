@@ -14,6 +14,8 @@
 #     session starts, and the answer is the one without passes.
 #  8. tools (docs/kolibri.md section 21): with a session that answers a table's ids by position, so that an answer is any text: the calls of an answer in the body, its
 #     `finish_reason`, what is no call, and the turn sent back kept by the session.
+#  9. the largest requests (docs/kolibri.md section 27): bodies near the 4 MiB taken, of the kinds that once took minutes or the server's memory, are each answered within
+#     seconds, the one the pools cannot hold with a 413 that says so, and the server answers after each.
 # What the model answers is not here: that is by hand, on the Metal GPU.
 # KSERVE=<binary> tests another build of the server and builds nothing (build/kolibri_gpu and build/httpc are then there already): the mutants, by hand.
 cd "$(dirname "$0")/.."
@@ -431,6 +433,26 @@ body '{"prompt":"hi","raw":true,"tools":[{"name":"f"}],"options":{"num_predict":
 scripted "$T/hi.txt" $KA/two.txt || exit 1
 ask POST $G "$T/b.json"
 is "/api/generate: an answer with a call is its text" "$(field done_reason) $(grep -c '"tool_calls"' "$T/body") $(grep -c '"response":"<tool_call>' "$T/body")" "stop 0 1"
+
+# --- 9. the largest requests: none stops the server, and none takes it long
+start --greedy --max-new 7 || exit 1
+big() { # name, the route, the status wanted, a text of the body's message, then perl that prints the body: answered within 30 seconds, and the server answers after it
+  bname=$1; broute=$2; bwant=$3; btext=$4
+  perl -e "$5" > "$T/big.json"
+  t0=$(date +%s); ask POST "$broute" "$T/big.json"; t1=$(date +%s)
+  if [ "$code" = "$bwant" ] && grep -q -- "$btext" "$T/body" && [ $((t1 - t0)) -le 30 ]; then echo "ok   $bname ($(($(wc -c < "$T/big.json") / 1024)) KiB): $bwant in $((t1 - t0)) s"; else echo "FAIL $bname: status $code in $((t1 - t0)) s: $(head -c 200 "$T/body")"; fail=1; fi
+  ask GET /health; [ "$code" = 200 ] || { echo "FAIL $bname: the server does not answer after it"; fail=1; }
+}
+# 40,000 messages were 80 seconds (a count of the body for every message) and then 60 (a search to the end of the text for every added token)
+big "40,000 messages, a user's and an assistant's with its reasoning in turn" $O 400 "more than the $CTX positions" 'print "{\"messages\":[" . join(",", ("{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\",\"reasoning\":\"c\"}") x 20000) . "]}"'
+# a run the tokenizer merges was the square of its length: 30,000 of this one were 7.5 seconds, so 150,000 three minutes
+big "a run of 150,000 pairs the tokenizer merges" $G 400 "more than the $CTX positions" 'print "{\"raw\":true,\"prompt\":\"" . ("th" x 150000) . "\"}"'
+# 170,000 tools ran the pool of words out, which was a trap: the server stopped with an illegal instruction
+big "170,000 tools, more than the pools hold" $O 413 "needs more memory than the server has left" 'print "{\"messages\":[{\"role\":\"user\",\"content\":\"a\"}],\"tools\":[" . join(",", ("{\"a\":[1,2,{\"b\":null}]}") x 170000) . "]}"'
+big "4,000,000 digits, the text the tokenizer takes most memory for" $G 400 "more than the $CTX positions" 'print "{\"raw\":true,\"prompt\":\"" . ("1 2 3 4 5 6 7 8 9 0 " x 200000) . "\"}"'
+big "100,000 messages, an assistant's with its reasoning every other" $O 400 "more than the $CTX positions" 'print "{\"messages\":[" . join(",", ("{\"role\":\"user\",\"content\":\"a\"},{\"role\":\"assistant\",\"content\":\"b\",\"reasoning\":\"c\"}") x 50000) . "]}"'
+big "340,000 added tokens" $G 400 "more than the $CTX positions" 'print "{\"raw\":true,\"prompt\":\"" . ("<|im_start|>" x 340000) . "\"}"'
+body '{"prompt":"hi","raw":true,"options":{"num_predict":2}}'; ask POST $G "$T/b.json"; is "and a request after them is answered as before" "$code $(field eval_count)" "200 2"
 
 # --- 6. a session that refuses: a vocabulary of 800 ids where the template's own ids are over it
 head -800 "$T/next.txt" > "$T/next800.txt"
